@@ -16,7 +16,7 @@ from .config import CeliaConfig
 from .errors import CeliaError
 from .fixed_context import get_fixed_context_cache
 from .formatter import result_payload
-from .prompt import load_celia_agent_prompt
+from .prompt import load_old_celia_agent_prompt
 from .runtime_context import CeliaRuntimeContext, resolve_runtime_context
 from .sanitizer import clean_turn_events, sanitize_memory_text
 from .tools import (
@@ -363,7 +363,7 @@ class CeliaMemoryProvider(MemoryProvider):
         """Retain the rail hook without calling the removed usage-report tool."""
 
     def system_prompt_block(self) -> str:
-        base = load_celia_agent_prompt()
+        base = load_old_celia_agent_prompt()
         runtime_state = (
             f"The real compatibility state is at {self.config.runtime_state_path}; "
             "MEMORYSTATE=false disables L1/L2 extraction but keeps L3."

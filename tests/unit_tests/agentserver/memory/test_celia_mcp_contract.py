@@ -333,14 +333,14 @@ async def test_old_backend_contract_is_reported_and_lease_released(provider, mon
     provider.client.call_tool.assert_not_awaited()
 
 
-def test_swarm_builder_preserves_remote_request_identity(tmp_path):
+def test_old_celia_swarm_builder_preserves_remote_request_identity(tmp_path):
     from jiuwenswarm.agents.swarm import SwarmBuildContext
     from jiuwenswarm.agents.swarm.providers.member_rails import _build_external_memory_rail
 
     rail = _build_external_memory_rail(
         {},
         SwarmBuildContext(
-            config={"memory": {"engine": "external", "external": {"provider": "celia"}}},
+            config={"memory": {"engine": "external", "external": {"provider": "old-celia"}}},
             workspace=SimpleNamespace(root_path=str(tmp_path)),
             session_id="team-session",
             request_metadata={

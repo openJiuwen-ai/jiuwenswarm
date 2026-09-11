@@ -47,9 +47,13 @@ def build_external_memory_rail(
     provider = None
     try:
         if provider_name == "celia":
+            from .celia.prompt import CeliaMcpPromptRail
+
+            return CeliaMcpPromptRail()
+        if provider_name == "old-celia":
             celia_source_config = dict(config or {})
             celia_source_config["__celia_workspace_dir"] = workspace_dir
-            return _build_celia_rail(
+            return _build_old_celia_rail(
                 celia_source_config, ext_cfg, session_id=session_id,
                 request_metadata=request_metadata,
             )
@@ -90,7 +94,7 @@ def build_external_memory_rail(
         return None
 
 
-def _build_celia_rail(
+def _build_old_celia_rail(
     config: Dict[str, Any],
     ext_cfg: Dict[str, Any],
     *,

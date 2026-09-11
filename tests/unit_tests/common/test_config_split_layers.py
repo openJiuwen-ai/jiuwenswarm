@@ -146,9 +146,9 @@ def test_extract_allowlist_keeps_ui_knobs_not_system_lists() -> None:
         "mcp": {
             "servers": [
                 {
-                    "name": "gausspd-memory",
+                    "name": "celiamcp",
                     "transport": "stdio",
-                    "command": "${GSPD_MCP_EXE}",
+                    "command": "${CELIA_MCP_EXE}",
                     "enabled": True,
                 }
             ]
@@ -166,7 +166,7 @@ def test_extract_allowlist_keeps_ui_knobs_not_system_lists() -> None:
     assert "feishu" not in overlay.get("channels", {})
     assert "permissions" not in overlay
     assert "sandbox" not in overlay
-    assert overlay["mcp"]["servers"][0]["name"] == "gausspd-memory"
+    assert overlay["mcp"]["servers"][0]["name"] == "celiamcp"
     assert list(overlay["mcp"]["servers"][0].keys()) == [
         "name",
         "transport",
@@ -221,9 +221,9 @@ def test_extract_keeps_mcp_server_key_order_and_four_space_list(tmp_path: Path) 
                 "auto_memory_enabled: false",
                 "mcp:",
                 "  servers:",
-                "    - name: gausspd-memory",
+                "    - name: celiamcp",
                 "      transport: stdio",
-                "      command: ${GSPD_MCP_EXE}",
+                "      command: ${CELIA_MCP_EXE}",
                 "      enabled: true",
                 "",
             ]
@@ -232,11 +232,11 @@ def test_extract_keeps_mcp_server_key_order_and_four_space_list(tmp_path: Path) 
     )
     assert extract_user_overlay(user_yaml=user, overlay_yaml=overlay, package_yaml=package) is True
     text = overlay.read_text(encoding="utf-8")
-    name_i = text.index("name: gausspd-memory")
+    name_i = text.index("name: celiamcp")
     assert text.index("transport: stdio") > name_i
     assert text.index("command:") > text.index("transport: stdio")
     assert text.index("enabled: true") > text.index("command:")
-    assert "    - name: gausspd-memory" in text
+    assert "    - name: celiamcp" in text
     assert not any(line.startswith("  - ") for line in text.splitlines())
 
 
@@ -324,11 +324,11 @@ def test_sparse_merge_keeps_system_lists_and_index_merges_temperature() -> None:
         "progressive_tool_always_visible_tools": ["only_user"],
         "modes": {"agent": {"tools": ["bash"]}},
         "models": {"defaults": [{"model_config_obj": {"temperature": 0.1}}]},
-        "mcp": {"servers": [{"name": "gausspd-memory"}]},
+        "mcp": {"servers": [{"name": "celiamcp"}]},
     }
     merged = merge_config_layers(base, overlay, sparse=True)
     assert merged["progressive_tool_always_visible_tools"] == ["todo_create", "bash"]
     assert merged["modes"]["agent"]["tools"] == ["read_file", "write_file"]
     assert merged["models"]["defaults"][0]["model_client_config"]["timeout"] == 360
     assert merged["models"]["defaults"][0]["model_config_obj"]["temperature"] == 0.1
-    assert merged["mcp"]["servers"][0]["name"] == "gausspd-memory"
+    assert merged["mcp"]["servers"][0]["name"] == "celiamcp"

@@ -1,61 +1,69 @@
-# Celia 新版 MCP 工具适配
+# Celia 记忆接入与旧实现切换
 
-本次适配依据 2026-09-08 提供的九工具输入契约。服务端源码和实际响应结构尚未核验；测试使用该契约以及本地真实工具包装器。
+默认使用新 Celia 接入。旧客户端、工具、文件记忆、初始化和历史查询代码保留，通过配置选择是否启用。
 
-## 工具分工
+| provider | 提示词和工具 | 对话投递 |
+|---|---|---|
+| `celia`（默认） | `CeliaMcpPromptRail` 注入新提示词；通用 MCP 提供 `mcp_celiamcp_*` 工具与原始 schema | 部署侧现有扩展负责投递给记忆二进制 |
+| `old-celia` | 原 `CeliaMemoryRail`、`CeliaMemoryProvider` 和私有客户端，保留无前缀的 `memory_*` 工具及独立旧提示词 | 旧 Rail 的 `sync_turn` 调用私有客户端 |
 
-`jiuwenswarm/agents/harness/common/memory/celia/tools.py` 的 `mcp_tool_schemas()` 返回完整九工具传输契约，`tool_schemas()` 生成模型可见的工具定义。
+## 新 Celia 配置
 
-| 工具 | 调用入口 |
-| --- | --- |
-| `memory_add` | 每轮结束的自动入库钩子；不交给模型重复调用 |
-| `memory_store` | 模型显式记忆；直接调用后端持久化 |
-| `memory_record_search` | 模型检索；必须指定 `atomic_fact` 或 `raw_conv` |
-| `memory_global_load` | 自动预加载及模型按需加载 |
-| `memory_scene_load` | 模型按 `sceneIds` 加载，单次 1–5 个 |
-| `memory_scene_search` | 模型按 `subSceneTag` 查找场景 |
-| `memory_backup` | 显式配置启用且后端声明支持后注册 |
-| `memory_restore` | 同上；`dryRun=1` 仅预览，默认 0 会写入 |
-| `memory_update_config` | 同上；修改运行配置，属于写操作 |
+```yaml
+auto_memory_enabled: false  # Swarm 旧提取器
+memory:
+  mode: cloud              # 触发现有记忆扩展 Hook
+  engine: external         # 只挂外接记忆 Rail
+  external:
+    provider: celia
+  dreaming:                # Swarm 旧 Sweeper，不控制 Celia 二进制
+    agent:
+      enabled: false
+    code:
+      enabled: false
+modes:
+  agent:
+    memory:
+      enabled: false       # Swarm 旧文件记忆
+  code:
+    memory:
+      enabled: false       # 旧 CodingMemory / ProjectMemory
+      auto_coding_memory: false
+mcp:
+  servers:
+    - name: celiamcp
+      enabled: true
+      transport: stdio
+      command: ${CELIA_MCP_EXE}
+```
 
-旧的 `memory_open`、`memory_search_l2/l3`、`memory_load_l1`、场景索引接口和用量上报接口不再用于此协议。旧二进制不兼容时，初始化日志会报告缺少的工具；Rail 的静态提示词仍可挂载。
+`CELIA_MCP_EXE` 指向部署环境的 MCP 可执行文件；HTTP 等传输应填写已有连接参数。模板的 `mcp.servers` 保持空列表，服务由部署环境配置。项目 ID 的环境变量兜底名称为 `CELIA_CELIAWORK_PROJECT_ID`。
 
-## 身份与隔离
+Celia 二进制内部负责自动提取和 Dreaming。上述 Swarm 旧实现开关不配置二进制内部功能。`mode: cloud` 只触发记忆 Hook；实际召回、对话投递需要部署环境安装并注册对应扩展。
 
-模型只填写业务参数。`userId`、`sessionId`、`traceId`、`requestScope`、`scope`、`scopeFilter` 由适配层注入，模型传入这些字段会被拒绝。
+普通、代码、设计和集群成员共用新的提示词入口。Memory 优先级为 57，位于运行时 Skills（56）之后；模式切换重建提示词时恢复该段，避免重复。新提示词不包含 `USER.md` / `MEMORY.md` 的读写指令。
 
-- 用户和租户来自请求上下文，配置值作为回退；集群成员也接收序列化的请求 metadata。
-- `request_scope` 配置与可信请求 metadata 的 `celia_request_scope` 合并。`tenantId` 固定取当前租户身份，保留原租户隔离。
-- `memory.external.scope_id` 支持 `user`/`1`、`global`/`0`、`session`/`3`。旧的 `__default__` 按用户范围处理；agent 范围不受新版契约支持。
-- 用户范围检索省略 `sessionId`，以便检索历史会话。会话范围检索携带当前 conversation ID；写入也携带它作为 `sessionId`。
-- 缓存按数据库、用户、租户、授权范围和动态隔离键区分；会话范围还区分 conversation ID。
+旧本地记忆关闭时，请求处理不会重新注册旧写入工具；普通模式上下文也跳过旧记忆文件内容。初始化、迁移和历史查询实现继续保留，已有文件不删除。配置默认值可被用户配置或环境变量覆盖，应以运行时最终配置为准。
 
-## 配置与记忆开关
+## 切换为 old-celia
+
+修改以下配置并重启 Swarm，同时把现有 `celiamcp` 服务的 `enabled` 设为 `false`：
 
 ```yaml
 memory:
+  mode: local              # 关闭部署侧记忆 Hook，避免与旧 Rail 重复投递
   engine: external
   external:
-    provider: celia
-    scope_id: user
-    celia:
-      preflight_enabled: false
-      request_scope: {}
-      advanced_tools: []
+    provider: old-celia
+    celia:                 # 复用旧私有客户端的原配置段
+      server_binary_path: ${CELIA_MEMORY_BINARY_PATH}
+      # db_path、embed、chat 等继续使用原参数
 ```
 
-需要扩展工具时，在 `advanced_tools` 中明确填写相应名称。服务端仅声明支持不会自动启用这些工具。
+`old-celia` 使用 `resources/memory/old-celia/AGENTS.md`，与旧工具名及旧文件同步规则匹配。修改 provider 不会自动关闭通用 MCP 服务；切换时应同时应用上述配置，避免两套工具或两条入库路径并存。
 
-`memory.engine` 决定是否挂载 Rail；`.xiaoyiruntime` 的 `MEMORYSTATE` 独立控制提取及提取后记忆的使用：
+Swarm 内置文件记忆独立于 `old-celia`。如需启用，使用 `mode: local`、`engine: builtin` 及 `modes.agent.memory.enabled: true`；代码记忆、旧自动提取、旧 Sweeper 分别由各自原开关启用。
 
-- 开启：自动写入使用 `skipExtraction=0`，可显式存储、检索原子事实并加载摘要/场景。
-- 关闭：自动写入使用 `skipExtraction=1`，仍可检索 `raw_conv`；直接提取存储和原子事实/场景检索返回关闭状态。
-- 后端不可用时，`memory_store` 返回失败，不再通过本地缓冲返回持久化成功。
+## 验证范围
 
-自动写入按用户/助手角色分开发送；长文本按 UTF-8 边界分块，每块最多 81920 字节。显式 `memory_store` 超过该字节限制会被拒绝。
-
-## 响应与验证范围
-
-业务工具保留后端完整结果结构。全局预加载保留原始响应，避免猜测字段名而丢失导航或场景 ID；无法从导航获得 ID 时，prompt 指引模型先调用 `memory_scene_search`。
-
-测试覆盖参数边界、身份覆盖拒绝、动态隔离、直接存储失败、关闭状态下原文检索、UTF-8 分块、工具注册、真实 `LocalFunction` 参数转换，以及集群和代码/设计模式挂载。真实 Celia 二进制、HTTP 认证和服务端返回结构仍需部署环境联调。
+回归覆盖新旧 provider 构建、原身份隔离和旧客户端契约、新 MCP schema 透传及执行、各模式挂载、流式请求、模式切换、Skills/Memory 顺序、旧工具恢复开关以及旧文件上下文的禁用和重新启用。MCP 后端由测试替身提供，真实二进制和部署侧投递扩展需要联调。

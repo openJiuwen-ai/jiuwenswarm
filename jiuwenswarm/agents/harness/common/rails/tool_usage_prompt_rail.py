@@ -130,6 +130,21 @@ class ToolUsagePromptRail(DeepAgentRail):
         self.system_prompt_builder.add_section(section)
 
 
+class _MemoryFilteredWorkspace:
+    """Hide legacy memory paths from context reads without changing the workspace."""
+
+    def __init__(self, workspace):
+        self._workspace = workspace
+
+    def get_node_path(self, node):
+        if getattr(node, "value", node) in {"USER.md", "MEMORY.md", "memory"}:
+            return None
+        return self._workspace.get_node_path(node)
+
+    def __getattr__(self, name):
+        return getattr(self._workspace, name)
+
+
 class OrderedContextAssembleRail(ContextAssembleRail):
     """Product-scoped Context rail with deterministic Tool Usage placement.
 
@@ -139,6 +154,28 @@ class OrderedContextAssembleRail(ContextAssembleRail):
     behavior on the product-owned subclass avoids changing unrelated agents
     that happen to share the Python process.
     """
+
+    @property
+    def workspace(self):
+        from jiuwenswarm.common.config import get_config
+        from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
+        from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+            get_external_memory_config, is_builtin_memory_allowed, is_external_memory_enabled,
+        )
+
+        workspace = getattr(self, "_context_workspace", None)
+        if workspace is None:
+            return None
+        config = get_config()
+        builtin = (get_memory_mode(config) == "local"
+                   and is_builtin_memory_allowed(config) and is_memory_enabled("agent", config))
+        old_celia = (is_external_memory_enabled(config)
+                     and get_external_memory_config(config)["provider"] == "old-celia")
+        return workspace if builtin or old_celia else _MemoryFilteredWorkspace(workspace)
+
+    @workspace.setter
+    def workspace(self, value):
+        self._context_workspace = value
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         await super().before_model_call(ctx)
