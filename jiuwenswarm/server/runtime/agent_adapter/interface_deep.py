@@ -4214,6 +4214,14 @@ class JiuWenSwarmDeepAdapter:
                             description=str(tool_def.get("description") or ""),
                             input_params=tool_def.get("input_params") or {},
                         )
+                        # 连接器下发的 timeout_s（经 create_mcp_tool 透传进 connector_params）
+                        # 同步写入卡片 resilience 块：外层 AbilityManager 按
+                        # properties["resilience"]["timeout_s"] 决定 per-call 超时上限，
+                        # 不写则默认 300s 会先于长超时连接器（>300s）掐断调用。
+                        _connector_timeout = connector_params.get("timeout_s")
+                        if (isinstance(_connector_timeout, (int, float)) and not isinstance(_connector_timeout, bool)
+                            and _connector_timeout > 0):
+                            card.properties["resilience"] = {"timeout_s": float(_connector_timeout)}
                         # connector_params 是经 create_mcp_tool 安全层过滤的连接参数
                         # （stdio 启动参数，或 sse/streamable-http 连接描述 + _mcp_client_type）；
                         # 首次 invoke 按 (request_id, server_name) 起长生命周期进程/连接并复用。
