@@ -40,6 +40,19 @@ def build_trace_id(session_id: str, interaction_id: str) -> str:
     return build_billing_core(session_id, interaction_id)
 
 
+def request_billing_trace_id(request: AgentRequest) -> str:
+    """本轮计费/模型 x-hag-trace-id 核心段；未注入 TraceContext 时返回空串。
+
+    桌面带 ``metadata.interaction_id`` → ``session&短码``；xiaoyi 渠道 →
+    ``task_id[:45]``；cron → ``cron_{run_id}``。调用方需要日志/出网回退时
+    再用 ``request.request_id``。
+    """
+    trace = build_xiaoyi_trace_context(request)
+    if trace is None:
+        return ""
+    return str(trace.trace_id or "").strip()
+
+
 def _first_text(*values: Any) -> str | None:
     for value in values:
         if value is None:
@@ -290,6 +303,7 @@ __all__ = [
     "build_xiaoyi_device_command_context",
     "build_xiaoyi_invocation_extension",
     "build_xiaoyi_trace_context",
+    "request_billing_trace_id",
     "export_current_xiaoyi_trace_headers",
     "export_xiaoyi_trace_headers",
     "get_xiaoyi_invocation_extension",

@@ -12,6 +12,7 @@ from jiuwenswarm.server.xiaoyi_invocation import (
     build_xiaoyi_trace_context,
     get_xiaoyi_invocation_extension,
     get_xiaoyi_trace_header_exporters,
+    request_billing_trace_id,
 )
 
 
@@ -245,4 +246,32 @@ def test_xiaoyi_bare_conversation_id_session_pins_trace() -> None:
     assert trace.trace_id == f"{conversation_id}&inter-1"
     assert trace.conversation_id == conversation_id
     assert trace.interaction_id == "inter-1"
+
+
+def test_request_billing_trace_id_matches_xiaoyi_trace_context() -> None:
+    """hook/GaussPD 注入值与 build_xiaoyi_trace_context.trace_id 同源。"""
+    desktop = AgentRequest(
+        request_id="e2c7953d-96b4-4aaa-bbbb-cccccccccccc",
+        channel_id="desktop",
+        session_id="desktop_1a08f97a7d6_5e266462c9be",
+        metadata={"interaction_id": "e2c7953d-96b4-4aaa-bbbb-cccccccccccc"},
+    )
+    xiaoyi = AgentRequest(
+        request_id="req-1",
+        channel_id="xiaoyi",
+        session_id="jiuwen-1",
+        metadata={"xiaoyi_task_id": "sess-x&19&ea5d&0"},
+    )
+    bare_desktop = AgentRequest(
+        request_id="req-1",
+        channel_id="desktop",
+        session_id="desktop_sess_1",
+    )
+
+    assert (
+        request_billing_trace_id(desktop)
+        == "desktop_1a08f97a7d6_5e266462c9be&e2c7953d"
+    )
+    assert request_billing_trace_id(xiaoyi) == "sess-x&19&ea5d&0"
+    assert request_billing_trace_id(bare_desktop) == ""
 

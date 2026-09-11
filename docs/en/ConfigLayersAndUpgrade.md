@@ -34,7 +34,7 @@ Snapshot: scalars kept only if present and ≠ current package template; leftove
 2. Leave it listed but the user value already equals the new template → snapshot skips it.
 3. Leave the list unchanged and edit non-listed template keys → copy2 overwrites those anyway.
 
-**Add to the allowlist:** XiaoYi PC/phone click only, key ↔ click; add to `_SCALAR_PATHS` or `LIST_PATHS`; write `config.yaml` (`update_system_config` or desktop); do not pre-write the template default; tests in `test_config_split_layers.py`; ship with desktop. Existing installs lose the old value on **this** upgrade if the key was not listed before.
+**Add to the allowlist:** XiaoYi PC/phone click only, key ↔ click; add to `_SCALAR_PATHS` or `LIST_PATHS`; write `config.yaml` (`update_config` or desktop); do not pre-write the template default; tests in `test_config_split_layers.py`; ship with desktop. Existing installs lose the old value on **this** upgrade if the key was not listed before.
 
 **Remove from the allowlist:** drop the path, ship together. Next upgrade follows the template. Example: stop letting users own sandbox → delete `sandbox.enabled` from `_SCALAR_PATHS` and set the template default.
 

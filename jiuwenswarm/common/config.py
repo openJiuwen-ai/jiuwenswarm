@@ -28,9 +28,6 @@ from jiuwenswarm.common.utils import (
     get_config_dir,
     get_config_file,
 )
-from jiuwenswarm.common.config_split import (
-    PERMISSION_KNOB_PATHS,
-)
 
 logger = logging.getLogger(__name__)
 
@@ -574,11 +571,6 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
             return new_data
 
 
-def update_system_config(mutator, *, lock_timeout: float = 10.0) -> Any:
-    """``update_config`` 的别名（历史分层曾拆写系统 yaml；现都写同一份）。"""
-    return update_config(mutator, lock_timeout=lock_timeout)
-
-
 # Backward-compat aliases — downstream modules import the underscore-prefixed names
 _CONFIG_YAML_PATH = CONFIG_YAML_PATH
 _load_yaml_round_trip = load_yaml_round_trip
@@ -877,37 +869,25 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
-def _set_config_leaf(data: dict[str, Any], path: tuple[str, ...], value: Any) -> bool:
-    if not path:
-        return False
-    current: dict[str, Any] = data
-    for key in path[:-1]:
-        nxt = current.get(key)
-        if not isinstance(nxt, dict):
-            nxt = {}
-            current[key] = nxt
-        current = nxt
-    if current.get(path[-1]) == value:
-        return False
-    current[path[-1]] = value
-    return True
-
-
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled，写入系统 yaml（与权限档同层）。"""
+    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
 
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
-        _set_config_leaf(data, ("permissions", "enabled"), value)
+        if "permissions" not in data or not isinstance(data.get("permissions"), dict):
+            data["permissions"] = {}
+        data["permissions"]["enabled"] = value
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
 
 
 def update_permission_profile_in_config(profile: str) -> bool:
-    """按权限档位补丁更新系统 yaml 旋钮叶，返回是否有实际变更。
+    """按权限档位补丁更新 permissions 段（跨进程互斥），返回是否有实际变更。
 
-    档位映射见 jiuwenswarm/common/permission_profile.py（与桌面端三档对齐）。
-    persist / HITL ``file_guard.paths`` 同写 ``config.yaml``。档位未识别时返回 False 且不写盘。
+    档位映射见 jiuwenswarm/common/permission_profile.py（与桌面端三档对齐）：
+    enabled / permission_mode / tools.bash / 网络工具 / file_guard.defaults.read+write。
+    只动这些已知键，保留 rules / approval_overrides / file_guard.paths 等其余配置。
+    档位未识别时返回 False 且不写盘。调用方据返回值决定是否触发 agent.reload_config。
     """
     from jiuwenswarm.common.permission_profile import permission_profile_config_patch
 
@@ -915,29 +895,42 @@ def update_permission_profile_in_config(profile: str) -> bool:
     if patch is None:
         return False
 
-    tools = patch["tools"]
-    rw = patch["file_guard_rw"]
-    values = {
-        ("permissions", "enabled"): patch["enabled"],
-        ("permissions", "permission_mode"): patch["permission_mode"],
-        ("permissions", "tools", "bash"): tools["bash"],
-        ("permissions", "tools", "mcp_free_search"): tools["mcp_free_search"],
-        ("permissions", "tools", "mcp_paid_search"): tools["mcp_paid_search"],
-        ("permissions", "tools", "mcp_fetch_webpage"): tools["mcp_fetch_webpage"],
-        ("permissions", "file_guard", "defaults", "read"): rw,
-        ("permissions", "file_guard", "defaults", "write"): rw,
-    }
-
     changed = False
 
     def mutator(data: dict[str, Any]) -> dict[str, Any]:
         nonlocal changed
-        for path in PERMISSION_KNOB_PATHS:
-            if _set_config_leaf(data, path, values[path]):
+        section = data.get("permissions")
+        if not isinstance(section, dict):
+            section = {}
+            data["permissions"] = section
+
+        def _set(container: dict[str, Any], key: str, value: Any) -> None:
+            nonlocal changed
+            if container.get(key) != value:
+                container[key] = value
                 changed = True
+
+        _set(section, "enabled", patch["enabled"])
+        _set(section, "permission_mode", patch["permission_mode"])
+        tools = section.get("tools")
+        if not isinstance(tools, dict):
+            tools = {}
+            section["tools"] = tools
+        for tool_name, level in patch["tools"].items():
+            _set(tools, tool_name, level)
+        file_guard = section.get("file_guard")
+        if not isinstance(file_guard, dict):
+            file_guard = {}
+            section["file_guard"] = file_guard
+        defaults = file_guard.get("defaults")
+        if not isinstance(defaults, dict):
+            defaults = {}
+            file_guard["defaults"] = defaults
+        _set(defaults, "read", patch["file_guard_rw"])
+        _set(defaults, "write", patch["file_guard_rw"])
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
     return changed
 
 
@@ -1220,7 +1213,7 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         perms["rules"] = rules
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
     return stored
 
 
@@ -1281,7 +1274,7 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
         perms["rules"] = rules
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
     return merged
 
 
@@ -1304,7 +1297,7 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
             perms["rules"] = new_rules
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
     return found
 
 
@@ -1327,7 +1320,7 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
             perms["approval_overrides"] = new_ov
         return data
 
-    update_system_config(mutator)
+    update_config(mutator)
     return found
 
 

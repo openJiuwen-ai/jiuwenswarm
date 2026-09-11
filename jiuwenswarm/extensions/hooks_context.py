@@ -11,6 +11,9 @@ class MemoryHookContext:
     channel_id: str | None
     agent_name: str
     workspace_dir: str
+    # 计费/模型 x-hag-trace-id 核心段（build_xiaoyi_trace_context.trace_id）；
+    # 空则扩展回退 request_id。
+    trace_id: str = ""
     assistant_message: str | None = None
     # 输入扩展
     extra: dict[str, Any] = field(default_factory=dict)
@@ -42,6 +45,9 @@ class AgentServerChatHookContext:
     channel_id: str
     session_id: str | None
     req_method: str | None
+    # 计费/模型 x-hag-trace-id 核心段（build_xiaoyi_trace_context.trace_id）；
+    # 空则扩展回退 request_id。
+    trace_id: str = ""
     # 扩展可直接原地修改 params，AgentServer 后续逻辑会继续使用 request.params
     params: dict[str, Any] = field(default_factory=dict)
     # 仅由 AgentServer 内已加载的扩展写入，不接受客户端请求字段。宿主分别将

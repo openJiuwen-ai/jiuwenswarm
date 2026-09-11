@@ -566,7 +566,7 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
     """HITL「永久记住」：把相对模板多出的场景 list 写入 config.yaml。"""
     if not isinstance(permissions, dict):
         return False
-    from jiuwenswarm.common.config import update_system_config
+    from jiuwenswarm.common.config import update_config
     from jiuwenswarm.common.config_split import _get, _user_only_list_items, upsert_list_by_id
     from jiuwenswarm.common.utils import get_package_config_file
 
@@ -614,7 +614,7 @@ def persist_merged_allow_rule_snapshot(permissions: dict[str, Any]) -> bool:
         return data
 
     try:
-        update_system_config(mutator)
+        update_config(mutator)
         return True
     except Exception:
         logger.warning(
