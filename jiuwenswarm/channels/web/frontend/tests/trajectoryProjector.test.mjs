@@ -2654,3 +2654,38 @@ test('a compaction still groups when its number is absent', () => {
   assert.equal(groups.length, 1);
   assert.equal(groups[0].title, 'Compaction');
 });
+
+test('content the store no longer holds is told apart from a silent model', () => {
+  const spanId = 'f'.repeat(16);
+  const traceId = 'abababababababababababababababab';
+  const record = legacyInferenceRecord({
+    output: 'never rebuilt',
+    requestNumber: 1,
+    spanId,
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-1',
+    stepNumber: 1,
+  });
+  // What storage leaves behind when the content a record refers to is gone:
+  // the reference itself, which no reader can turn back into messages.
+  const attributes = record.resourceSpans[0].scopeSpans[0].spans[0].attributes;
+  const output = attributes.find(entry => entry.key === 'gen_ai.output.messages');
+  output.value = { stringValue: `@oj-seq:1:${'a'.repeat(64)}:1` };
+
+  const messageText = snapshot => cellsOf(snapshot)
+    .filter(cell => cell.kind === 'message')
+    .map(cell => cell.text);
+
+  const silent = messageText(projectOtelTrajectory([record]));
+  const expired = messageText(projectOtelTrajectory([record], {
+    unresolvedAttributesByRecordId: new Map([
+      [`${traceId}:${spanId}`, ['gen_ai.output.messages']],
+    ]),
+  }));
+
+  assert.ok(silent.includes('No output content'), `got ${JSON.stringify(silent)}`);
+  assert.ok(
+    expired.includes('Output content is no longer stored'),
+    `got ${JSON.stringify(expired)}`,
+  );
+});

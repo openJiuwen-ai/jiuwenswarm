@@ -159,6 +159,26 @@ export function rebuildRecord(
 }
 
 /**
+ * Attribute keys each record could not rebuild, by `traceId:spanId`.
+ *
+ * Content asked for by hash and still not delivered is content the store no
+ * longer holds. The projection needs to know which span lost what, so it can
+ * say that rather than render the span as having said nothing.
+ */
+export function unresolvedAttributesByRecordId(
+  records: readonly TrajectoryDetailRecord[],
+): Map<string, readonly string[]> {
+  const byRecord = new Map<string, readonly string[]>()
+  for (const record of records) {
+    const keys = record.incomplete_sequences
+    if (keys === undefined || keys.length === 0) continue
+    if (record.trace_id === undefined || record.span_id === undefined) continue
+    byRecord.set(`${record.trace_id}:${record.span_id}`, keys)
+  }
+  return byRecord
+}
+
+/**
  * Chain heads a rebuild could not resolve.
  *
  * A page delivers content only when this reader was not assumed to hold it,

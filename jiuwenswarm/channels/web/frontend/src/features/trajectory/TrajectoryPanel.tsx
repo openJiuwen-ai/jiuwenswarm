@@ -44,6 +44,7 @@ import {
   absorbSequencePage,
   createSequenceCache,
   rebuildRecord,
+  unresolvedAttributesByRecordId,
   unresolvedHeadsOf,
 } from './trajectorySequences';
 import {
@@ -849,6 +850,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         replayArchive === null
           ? publishedWindow.sessionCumulativeUsageByRequestIdentity
           : new Map(),
+      unresolvedAttributesByRecordId: unresolvedAttributesByRecordId(group.rawRecords),
       ...(replayArchive === null ? { v2Reducer: trajectoryV2ReducerRef.current } : {}),
     }),
   ), [

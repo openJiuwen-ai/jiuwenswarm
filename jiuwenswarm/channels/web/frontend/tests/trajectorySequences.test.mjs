@@ -11,6 +11,7 @@ import {
   rebuildRecord,
   rebuildSequenceValue,
   sequenceHeadsOf,
+  unresolvedAttributesByRecordId,
   unresolvedHeadsOf,
 } from '../node_modules/.cache/trajectory-sequences/trajectorySequences.mjs';
 
@@ -157,4 +158,27 @@ test('a recovered chain rebuilds on the next attempt', () => {
 
 test('a record with nothing missing asks for nothing', () => {
   assert.deepEqual(unresolvedHeadsOf([{ ingest_seq: 1, raw_valid: true, otlp: null }]), []);
+});
+
+test('records that lost content are indexed by the span that lost it', () => {
+  const held = { ...record(HEAD), trace_id: 'b'.repeat(32), span_id: 'c'.repeat(16) };
+  const lost = {
+    ...record(HEAD),
+    trace_id: 'b'.repeat(32),
+    span_id: 'e'.repeat(16),
+    incomplete_sequences: ['gen_ai.output.messages'],
+  };
+
+  const byRecord = unresolvedAttributesByRecordId([held, lost]);
+
+  // Only the record that lost something is named, keyed the way the
+  // projection addresses a span.
+  assert.deepEqual([...byRecord.keys()], [`${'b'.repeat(32)}:${'e'.repeat(16)}`]);
+  assert.deepEqual(byRecord.get(`${'b'.repeat(32)}:${'e'.repeat(16)}`), ['gen_ai.output.messages']);
+});
+
+test('a record missing its span identity is left out rather than mis-keyed', () => {
+  const orphan = { ...record(HEAD), incomplete_sequences: ['gen_ai.output.messages'] };
+
+  assert.equal(unresolvedAttributesByRecordId([orphan]).size, 0);
 });

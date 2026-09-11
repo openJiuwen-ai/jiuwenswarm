@@ -56,6 +56,7 @@ interface ProjectedSpan {
   streamEvents: readonly NormalizedTrajectoryStreamEvent[]
   span: OtlpSpan
   startTimeUnixNano: bigint
+  unresolvedAttributes: readonly string[]
   traceId: string
   turn: number
   turnKey: string
@@ -66,8 +67,21 @@ interface ProjectedSpan {
 export interface TrajectoryProjectionOptions {
   lifecycleByRecordId?: ReadonlyMap<string, 'running' | 'completed' | 'error'>
   sessionCumulativeUsageByRequestIdentity?: ReadonlyMap<string, TrajectoryUsage>
+  /**
+   * Attribute keys whose addressed content could not be rebuilt, by
+   * `traceId:spanId`.
+   *
+   * Records state their long attributes by reference and the content is
+   * fetched separately. When it cannot be had -- the store aged it out -- the
+   * attribute is absent for a reason worth telling apart from a model that
+   * said nothing.
+   */
+  unresolvedAttributesByRecordId?: ReadonlyMap<string, readonly string[]>
   v2Reducer?: TrajectoryV2Reducer
 }
+
+/** Shared empty list, so a span with nothing missing keeps a stable identity. */
+const NO_UNRESOLVED_ATTRIBUTES: readonly string[] = []
 
 interface StructuredPart {
   arguments?: unknown
@@ -767,11 +781,17 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
   const output = partText(parts, 'text')
   const thinking = partText(parts, 'reasoning')
   const toolCalls = blocks.filter(block => block.type === 'tool-call')
+  // An answer this reader could not rebuild is not an answer that was never
+  // given. Saying so is the difference between a model that stayed silent and
+  // content the store no longer holds.
+  const outputExpired = span.unresolvedAttributes.includes(STANDARD_ATTRIBUTES.outputMessages)
   const text = output
     ?? thinking
     ?? (toolCalls.length > 0
       ? 'Tool call only'
-      : span.lifecycle === 'running' ? 'Waiting for model response…' : 'No output content')
+      : outputExpired
+        ? 'Output content is no longer stored'
+        : span.lifecycle === 'running' ? 'Waiting for model response…' : 'No output content')
   const usageValue = usage(span.attributes)
   const firstChunkSeconds = span.attributes.responseTimeToFirstChunkSeconds
   const start = startedAt(span)
@@ -1491,6 +1511,9 @@ function normalize(
       identityRequestNumber: positiveSafeInteger(attributes.requestNumber),
       requestNumber: undefined,
       streamEvents: normalizeTrajectoryStreamEvents(span.events),
+      unresolvedAttributes: options.unresolvedAttributesByRecordId
+        ?.get(`${span.traceId}:${span.spanId}`)
+        ?? NO_UNRESOLVED_ATTRIBUTES,
       lifecycle,
     }
   }), turnByTrace).sort(compareSpans)
