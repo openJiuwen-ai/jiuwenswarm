@@ -25,6 +25,10 @@ HOST_API_PATH = (
     / "host_api.py"
 )
 
+# 未配置投影的默认策略/模型取决于「本机有没有可用默认模型」，而 get_default_models()
+# 底层是 get_config()，每次都重新读盘，且在 settings 初始化前后可能解析到不同的 config.yaml。
+# 所以不能用 import 期快照当期望值——那会让断言随运行环境（甚至随同一进程的不同阶段）漂移。
+# 需要默认值的用例一律用下面两个 helper 把模型列表钉死。
 UNCONFIGURED_PROJECTION = {
     "configured": False,
     "collection_enabled": False,
@@ -33,8 +37,27 @@ UNCONFIGURED_PROJECTION = {
     "max_pages_per_directory": 20,
     "max_subdirectories_per_directory": 20,
     "model_index": None,
+    "model_id": None,
     "fetch_services": [],
 }
+
+
+def _model_entry(model_name: str, *, provider: str = "OpenAI") -> dict[str, object]:
+    return {
+        "model_client_config": {
+            "client_provider": provider,
+            "api_key": "key",
+            "api_base": "https://example.invalid/v1",
+            "model_name": model_name,
+        },
+        "model_config_obj": {"temperature": 0.2},
+    }
+
+
+def _pin_models(
+    monkeypatch: pytest.MonkeyPatch, entries: list[dict[str, object]]
+) -> None:
+    monkeypatch.setattr(host_module, "get_default_models", lambda: entries)
 
 
 def _config(
@@ -572,7 +595,10 @@ async def test_agent_use_projection_reads_loaded_configuration(
 @pytest.mark.asyncio
 async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    # 钉死「一个可用模型都没有」，断言才是确定的：此时策略必须回落 rules、模型置空。
+    _pin_models(monkeypatch, [])
     host, core = fake_host
 
     assert await host.get_runtime_config() == UNCONFIGURED_PROJECTION
@@ -588,6 +614,7 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
     assert started["max_pages_per_directory"] == 20
     assert started["max_subdirectories_per_directory"] == 20
     assert started["model_index"] is None
+    assert started["model_id"] is None
     assert started["fetch_services"] == []
     assert host._config_path.is_file()
     assert [name for name, _value in core.calls] == [
@@ -595,6 +622,38 @@ async def test_unconfigured_projection_and_stop_are_read_only_until_first_start(
         "activate_runtime",
     ]
     assert core.active is True
+
+
+@pytest.mark.asyncio
+async def test_unconfigured_projection_defaults_to_first_usable_model(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """有可用模型时，未配置投影默认走智能体并指向首个可用模型。"""
+
+    _pin_models(
+        monkeypatch,
+        [_model_entry("model-a"), _model_entry("model-b")],
+    )
+    host, _core = fake_host
+
+    projection = await host.get_runtime_config()
+
+    assert projection["strategy_profile"] == "agent"
+    assert projection["model_index"] == 0
+    assert projection["model_id"] == "openai:model-a"
+
+    # 不可用条目（model_name 为空）必须被跳过，不能当默认值落到坏条目上。
+    _pin_models(
+        monkeypatch,
+        [_model_entry(""), _model_entry("model-b")],
+    )
+
+    fallback = await host.get_runtime_config()
+
+    assert fallback["strategy_profile"] == "agent"
+    assert fallback["model_index"] == 1
+    assert fallback["model_id"] == "openai:model-b"
 
 
 @pytest.mark.asyncio
@@ -1208,6 +1267,8 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
     monkeypatch.setattr(
         host_module, "_validate_repository_pat", validate, raising=False
     )
+    # 首次授权会落一份最小未启用配置，其默认策略/模型同样取决于模型列表——钉死才确定。
+    _pin_models(monkeypatch, [])
 
     result = await host.authorize_provider(
         "github", credentials={"token": "first-token"}
@@ -1232,6 +1293,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
         "max_subdirectories_per_directory": 20,
         "fetch_services": [],
         "model_index": None,
+        "model_id": None,
         "provider_credentials": {"github": {"token": "first-token"}},
     }
     assert "provider_credentials" not in await host.get_runtime_config()
@@ -1609,7 +1671,7 @@ def test_resolve_model_reference_forces_personal_context_transport_retries(
 
 
 @pytest.mark.asyncio
-async def test_select_model_persists_only_model_index(
+async def test_select_model_persists_index_and_stable_model_id(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -1626,25 +1688,38 @@ async def test_select_model_persists_only_model_index(
                     "model_name": "model-a",
                 },
                 "model_config_obj": {"temperature": 0.2},
-            }
+            },
+            {
+                "model_client_config": {
+                    "client_provider": "OpenAI",
+                    "api_key": "key",
+                    "api_base": "https://example.invalid/v1",
+                    "model_name": "model-b",
+                },
+                "model_config_obj": {"temperature": 0.3},
+            },
         ],
     )
     host, core = fake_host
     await host.configure(_config(enabled=False, root_dir=tmp_path))
+    # 配置期已把「首个可用模型」写进 model_index，因此这里必须切到另一个下标，
+    # 否则 select_model 是幂等空操作、不会触发 set_configuration。
+    assert host._stored_config["model_index"] == 0
     core.calls.clear()
 
-    result = await host.select_model(model_index=0)
+    result = await host.select_model(model_index=1)
 
     saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
     applied = next(
         value for name, value in reversed(core.calls) if name == "set_configuration"
     )
-    assert result["model_index"] == 0
-    assert saved["model_index"] == 0
+    assert result["model_index"] == 1
+    assert saved["model_index"] == 1
+    assert saved["model_id"] == "openai:model-b"
     assert "model_origin_index" not in saved
     assert "model_client" not in saved
     assert "model_request" not in saved
-    assert applied.model_request.model_name == "model-a"
+    assert applied.model_request.model_name == "model-b"
     assert applied.model_client.max_retries == 2
     assert "max_retries" not in saved
 
@@ -1698,25 +1773,42 @@ async def test_select_model_rejects_missing_model_without_writing(
 
 
 @pytest.mark.asyncio
-async def test_runtime_model_strategy_requires_selected_model_without_writing(
+async def test_runtime_model_strategy_without_usable_model_falls_back_to_rules(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
-    tmp_path: Path,
-) -> None:
-    host, _core = fake_host
-    await host.configure(_config(enabled=False, root_dir=tmp_path))
-    before = host._config_path.read_bytes()
-
-    with pytest.raises(PersonalContext.Error):
-        await host.patch_runtime_config({"strategy_profile": "agent"})
-
-    assert host._config_path.read_bytes() == before
-
-
-@pytest.mark.asyncio
-async def test_start_rejects_saved_model_index_when_model_was_removed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """没有任何可用模型时，策略不能停在 balanced/agent。
+
+    Core 要求 model_client 与 model_request 同时提供，所以写配置时降级为 rules，
+    而不是把整份配置判为非法——一个失效的模型不该卡死整个个人上下文。
+    """
+
+    monkeypatch.setattr(host_module, "get_default_models", lambda: [])
+    host, _core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+
+    patched = await host.patch_runtime_config({"strategy_profile": "agent"})
+
+    assert patched["strategy_profile"] == "rules"
+    assert patched["model_index"] is None
+    assert patched["model_id"] is None
+    saved = yaml.safe_load(host._config_path.read_text(encoding="utf-8"))
+    assert saved["strategy_profile"] == "rules"
+    assert saved["model_index"] is None
+    assert saved["model_id"] is None
+
+
+@pytest.mark.asyncio
+async def test_start_self_heals_saved_model_that_was_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """磁盘上存的模型已被删除时，启动不报错：清空下标并把策略降回 rules。
+
+    否则一个失效的 model_index 会让整份配置校验失败，用户再也起不来。
+    """
+
     home = tmp_path / "personal_context"
     home.mkdir()
     stored = _config(enabled=True, root_dir=tmp_path)
@@ -1729,11 +1821,102 @@ async def test_start_rejects_saved_model_index_when_model_was_removed(
     monkeypatch.setattr(host_module, "get_default_models", lambda: [])
     host = PersonalContextHostAPI(home=home)
 
-    with pytest.raises(PersonalContext.Error):
-        await host.start()
+    await host.start()
 
-    assert host._config is None
-    assert host._stored_config is None
+    assert host._stored_config is not None
+    assert host._stored_config["strategy_profile"] == "rules"
+    assert host._stored_config["model_index"] is None
+    assert host._stored_config["model_id"] is None
+    assert host._config is not None
+    assert host._config.collection_enabled is True
+
+
+@pytest.mark.asyncio
+async def test_start_uses_stable_model_id_after_model_list_reorder(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """models.list 顺序变化后，稳定 ID 必须优先于过期的 model_index。"""
+
+    def _entry(model_name: str) -> dict[str, object]:
+        return {
+            "model_client_config": {
+                "client_provider": "OpenAI",
+                "api_key": "key",
+                "api_base": "https://example.invalid/v1",
+                "model_name": model_name,
+            },
+            "model_config_obj": {"temperature": 0.2},
+        }
+
+    home = tmp_path / "personal_context"
+    home.mkdir()
+    stored = _config(enabled=True, root_dir=tmp_path)
+    stored["strategy_profile"] = "balanced"
+    stored["model_index"] = 1
+    stored["model_id"] = "openai:model-a"
+    (home / "personal_context.yaml").write_text(
+        yaml.safe_dump(stored, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        host_module,
+        "get_default_models",
+        lambda: [_entry("model-b"), _entry("model-a")],
+    )
+    host = PersonalContextHostAPI(home=home)
+
+    await host.start()
+
+    assert host._stored_config is not None
+    assert host._stored_config["model_index"] == 1
+    assert host._stored_config["model_id"] == "openai:model-a"
+    assert host._config is not None
+    assert host._config.model_request.model_name == "model-a"
+
+
+@pytest.mark.asyncio
+async def test_start_recovers_when_stable_model_id_is_removed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """model_id 已删除时不能信任过期下标，必须回退首个可用模型。"""
+
+    def _entry(model_name: str) -> dict[str, object]:
+        return {
+            "model_client_config": {
+                "client_provider": "OpenAI",
+                "api_key": "key",
+                "api_base": "https://example.invalid/v1",
+                "model_name": model_name,
+            },
+            "model_config_obj": {"temperature": 0.2},
+        }
+
+    home = tmp_path / "personal_context"
+    home.mkdir()
+    stored = _config(enabled=True, root_dir=tmp_path)
+    stored["strategy_profile"] = "balanced"
+    stored["model_index"] = 1
+    stored["model_id"] = "openai:model-removed"
+    (home / "personal_context.yaml").write_text(
+        yaml.safe_dump(stored, sort_keys=False),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        host_module,
+        "get_default_models",
+        lambda: [_entry("model-a"), _entry("model-b")],
+    )
+    host = PersonalContextHostAPI(home=home)
+
+    await host.start()
+
+    assert host._stored_config is not None
+    assert host._stored_config["model_index"] == 0
+    assert host._stored_config["model_id"] == "openai:model-a"
+    assert host._config is not None
+    assert host._config.model_request.model_name == "model-a"
 
 
 @pytest.mark.asyncio

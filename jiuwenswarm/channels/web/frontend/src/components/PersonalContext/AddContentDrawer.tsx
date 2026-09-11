@@ -41,6 +41,7 @@ import {
   validateZhihuColumnUrl,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import type { WebError } from '../../types/websocket';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
 import zhihuIcon from '../../assets/settings/channels/zhihu.svg';
@@ -85,6 +86,10 @@ function maxFreqValue(unit: 'hour' | 'day'): number {
 /** 把频率数值钳制到 [1, 单位上限]，单位切换时也据此收敛（day↔hour 上限不同）。 */
 function clampFreq(value: number, unit: 'hour' | 'day'): number {
   return Math.min(maxFreqValue(unit), Math.max(1, value));
+}
+
+function isRequestTimeout(e: unknown): boolean {
+  return (e as WebError | undefined)?.code === 'REQUEST_TIMEOUT';
 }
 
 /**
@@ -193,15 +198,54 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
     return false;
   }, [provider, feishuMode, feishuResources, feishuWikiSpaceId, rootDir, columnUrl, profileUrl, githubRepoUrl, githubResources, gitcodeRepoUrl, gitcodeResources]);
 
+  // 「添加」按钮被禁用时给出可见原因。顺序与 canSubmit 完全一致，返回 i18n key。
+  // 没有它按钮只会静默置灰，用户无法判断是名称格式、来源地址还是未授权的问题。
+  const submitBlockReasonKey = useMemo(() => {
+    if (submitting) return null;
+    if (!isConfigured) return 'personalContext.addContent.notConfigured';
+    if (!branchValid) {
+      if (provider === 'local_files') return 'personalContext.addContent.localFiles.rootDirHint';
+      if (provider === 'zhihu_reader') return 'personalContext.addContent.zhihu.columnUrlHint';
+      if (provider === 'toutiao_reader') return 'personalContext.addContent.toutiao.profileUrlHint';
+      if (provider === 'github') return 'personalContext.addContent.github.sourceInvalid';
+      if (provider === 'gitcode') return 'personalContext.addContent.gitcode.sourceInvalid';
+      if (provider === 'feishu') {
+        return feishuMode === 'wiki_space'
+          ? 'personalContext.addContent.feishu.wikiSpaceIdRequired'
+          : 'personalContext.addContent.feishu.resourcesRequired';
+      }
+      return null;
+    }
+    if (maxItems !== null && (maxItems < MAX_ITEMS_MIN || maxItems > MAX_ITEMS_MAX)) {
+      return 'personalContext.addContent.maxItemsRangeError';
+    }
+    if (timeRange === 'custom' && (!customStart || !customEnd)) {
+      return 'personalContext.addContent.dateRangeRequired';
+    }
+    if (isEdit) return null; // 编辑：名称/来源已锁定
+    if (!name.trim()) return 'personalContext.addContent.nameRequired';
+    if (requiresAuth && !authorized) return 'personalContext.addContent.providerUnauthorized';
+    if (validateServiceId(name)) return 'personalContext.addContent.nameFormatError';
+    return null;
+  }, [
+    isConfigured,
+    submitting,
+    branchValid,
+    isEdit,
+    name,
+    requiresAuth,
+    authorized,
+    provider,
+    feishuMode,
+    maxItems,
+    timeRange,
+    customStart,
+    customEnd,
+  ]);
+
   const canSubmit = useMemo(() => {
-    if (!isConfigured || submitting) return false;
-    if (!branchValid) return false;
-    if (isEdit) return true; // 编辑：名称/来源已锁定，跳过名称与授权校验
-    if (!name.trim()) return false;
-    if (requiresAuth && !authorized) return false;
-    if (validateServiceId(name)) return false;
-    return true;
-  }, [isConfigured, submitting, branchValid, isEdit, name, requiresAuth, authorized]);
+    return !submitting && submitBlockReasonKey === null;
+  }, [submitting, submitBlockReasonKey]);
 
   const handleSubmit = async () => {
     setError(null);
@@ -332,7 +376,13 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
       }
       onCreated();
     } catch (e) {
-      setError(e instanceof Error ? e.message : String(e));
+      setError(
+        isRequestTimeout(e)
+          ? t('personalContext.addContent.createTimeout')
+          : e instanceof Error
+            ? e.message
+            : String(e),
+      );
     }
   };
 
@@ -592,6 +642,7 @@ export function AddContentDrawer({ initialProvider, editService, onClose, onCrea
         </div>
 
         <footer className="pc-drawer__foot">
+          {submitBlockReasonKey && <div className="pc-drawer__foot-hint">{t(submitBlockReasonKey)}</div>}
           <button type="button" className="pc-drawer__foot-btn pc-drawer__foot-btn--secondary" onClick={onClose} disabled={submitting}>
             {t('personalContext.services.cancel')}
           </button>

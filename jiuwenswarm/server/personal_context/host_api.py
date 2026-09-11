@@ -67,30 +67,150 @@ def _global_embedding_values() -> tuple[str | None, str | None, str | None]:
     )
 
 
+def _is_usable_model_entry(entry: object) -> bool:
+    """条目是否是可用的默认模型（即能被 agent/balanced 策略实际调用）。"""
+
+    if not isinstance(entry, dict):
+        return False
+    client = entry.get("model_client_config")
+    request = entry.get("model_config_obj")
+    if not isinstance(client, dict) or not isinstance(request, dict):
+        return False
+    return bool(str(client.get("model_name") or "").strip())
+
+
+def _model_entry_id(entry: object) -> str | None:
+    """生成跨请求稳定的模型标识。
+
+    model_name 通常已是唯一业务标识；加上 provider 可避免不同网关配置同一个
+    model_name 时相互覆盖。该 ID 只用于定位当前 models.list 条目，不落 Core。
+    """
+
+    if not isinstance(entry, dict):
+        return None
+    client = entry.get("model_client_config")
+    if not isinstance(client, dict):
+        return None
+    model_name = str(client.get("model_name") or "").strip()
+    if not model_name:
+        return None
+    provider = str(client.get("client_provider") or "").strip().casefold()
+    return f"{provider}:{model_name}" if provider else model_name
+
+
+def _find_model_index_by_id(model_id: object) -> int | None:
+    """按稳定 ID 查找当前下标；ID 不存在或格式非法时返回 None。"""
+
+    if not isinstance(model_id, str) or not model_id:
+        return None
+    models = get_default_models()
+    for index, entry in enumerate(models):
+        if _model_entry_id(entry) == model_id:
+            return index
+    return None
+
+
+def _first_usable_model() -> tuple[int | None, str | None]:
+    """返回第一个可用模型及其稳定 ID；列表为空或条目不可用时均为 None。
+
+    环境变量兜底分支会产出一条 model_name 为空的占位条目，它无法用于智能体
+    策略，因此这里按「可用」而非「存在」判断，避免默认值落到坏条目上再报错。
+    """
+
+    for index, entry in enumerate(get_default_models()):
+        if _is_usable_model_entry(entry):
+            return index, _model_entry_id(entry)
+    return None, None
+
+
+def _first_usable_model_index() -> int | None:
+    """兼容旧调用点的第一个可用模型下标。"""
+
+    return _first_usable_model()[0]
+
+
+def _model_index_is_usable(model_index: object) -> bool:
+    if type(model_index) is not int or model_index < 0:
+        return False
+    models = get_default_models()
+    if model_index >= len(models):
+        return False
+    return _is_usable_model_entry(models[model_index])
+
+
+def _reconcile_model_selection(stored: dict[str, object]) -> None:
+    """让「稳定模型 ID + 当前下标 + 采集策略」自洽。
+
+    - model_id 可用：以它为准刷新 model_index，避免 models.list 顺序变化改变选择；
+    - 旧 YAML 只有 model_index：沿用当前有效下标并补写 model_id；
+    - model_id 失效或下标未设置/已失效：回落到第一个可用模型；一个可用模型都没有则置空，
+      并把依赖模型的 balanced/agent 降级为 rules——Core 要求二者必须同时
+      提供 model_client 与 model_request，否则整份配置直接校验失败。
+    """
+
+    if "model_id" in stored and stored.get("model_id") is not None:
+        matched_index = _find_model_index_by_id(stored.get("model_id"))
+        if matched_index is not None:
+            stored["model_index"] = matched_index
+            return
+    elif _model_index_is_usable(stored.get("model_index")):
+        model_index = cast(int, stored["model_index"])
+        stored["model_id"] = _model_entry_id(get_default_models()[model_index])
+        return
+
+    fallback_index, fallback_id = _first_usable_model()
+    fallback = fallback_index
+    if fallback is not None:
+        stored["model_index"] = fallback
+        stored["model_id"] = fallback_id
+        return
+    stored["model_index"] = None
+    stored["model_id"] = None
+    if stored.get("strategy_profile") in {"balanced", "agent"}:
+        stored["strategy_profile"] = "rules"
+
+
+def _default_strategy_and_model() -> tuple[str, int | None, str | None]:
+    """默认采集策略与模型：有可用模型则默认第一个模型走智能体，否则模型置空并回退规则模式。
+
+    agent/balanced 策略强依赖模型（Core 校验要求 model_client 与 model_request 同时提供），
+    因此无可用模型时只能回退 rules——否则首次启用会直接抛 invalid configuration。
+    """
+
+    model_index, model_id = _first_usable_model()
+    if model_index is None:
+        return "rules", None, None
+    return "agent", model_index, model_id
+
+
 def _initial_stored_config(*, collection_enabled: bool) -> dict[str, object]:
     max_pages, max_subdirectories = _directory_capacity_defaults()
+    strategy_profile, model_index, model_id = _default_strategy_and_model()
     return {
         "collection_enabled": collection_enabled,
         "agent_use_enabled": False,
-        "strategy_profile": "rules",
+        "strategy_profile": strategy_profile,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
         "fetch_services": [],
-        "model_index": None,
+        "model_index": model_index,
+        "model_id": model_id,
         "provider_credentials": {},
     }
 
 
 def _unconfigured_projection() -> dict[str, object]:
     max_pages, max_subdirectories = _directory_capacity_defaults()
+    strategy_profile, model_index, model_id = _default_strategy_and_model()
     return {
         "configured": False,
         "collection_enabled": False,
         "agent_use_enabled": False,
-        "strategy_profile": "rules",
+        "strategy_profile": strategy_profile,
         "max_pages_per_directory": max_pages,
         "max_subdirectories_per_directory": max_subdirectories,
-        "model_index": None,
+        "model_index": model_index,
+        "model_id": model_id,
         "fetch_services": [],
     }
 
@@ -354,6 +474,7 @@ def _build_core_config(stored: dict[str, object]) -> PersonalContext.Config:
     raw = deepcopy(stored)
     raw.pop("provider_credentials", None)
     model_index = raw.pop("model_index", None)
+    raw.pop("model_id", None)
     raw.pop("model_client", None)
     raw.pop("model_request", None)
     if model_index is not None:
@@ -368,6 +489,31 @@ def _build_core_config(stored: dict[str, object]) -> PersonalContext.Config:
         _raise_host_error("PersonalContext configuration is invalid", cause=exc)
 
 
+def _semantic_config_dump(config: PersonalContext.Config) -> dict[str, object]:
+    """可比较的配置快照：剔除每次构造都会变的 Core 自动生成字段。"""
+
+    dumped = config.model_dump(mode="json", by_alias=True)
+    client = dumped.get("model_client")
+    if isinstance(client, dict):
+        # Core 的 ModelClientConfig.client_id 是 uuid4 默认值，每次 from_dict 都不同。
+        client.pop("client_id", None)
+    return dumped
+
+
+def _configs_equivalent(
+    left: PersonalContext.Config, right: PersonalContext.Config
+) -> bool:
+    """两份 Core 配置语义是否一致（忽略 volatile 的自动生成字段）。
+
+    直接比较对象时，只要配置里带 model_client 就永远不等，会让幂等快路径失效，
+    于是每次写配置都会走一遍 deactivate → set → activate 重启运行时。
+    """
+
+    if left == right:
+        return True
+    return _semantic_config_dump(left) == _semantic_config_dump(right)
+
+
 def _prepare_stored_config(
     config: dict[str, object],
 ) -> tuple[dict[str, object], PersonalContext.Config]:
@@ -379,12 +525,15 @@ def _prepare_stored_config(
     provider_credentials = _normalize_provider_credentials(
         stored.pop("provider_credentials", {})
     )
+    # 模型不可用时先归一化，再交给 Core 校验；否则会整份配置判为非法。
+    _reconcile_model_selection(stored)
     candidate = _build_core_config(stored)
     normalized = candidate.model_dump(mode="json", by_alias=True)
     normalized.pop("model_client", None)
     normalized.pop("model_request", None)
     if "model_index" in stored:
         normalized["model_index"] = stored["model_index"]
+    normalized["model_id"] = stored.get("model_id")
     normalized["provider_credentials"] = provider_credentials
     return normalized, candidate
 
@@ -492,6 +641,7 @@ class PersonalContextHostAPI:
         self._config: PersonalContext.Config | None = None
         self._stored_config: dict[str, object] | None = None
         self._operation_lock = asyncio.Lock()
+        self._fetch_run_stop_lock = asyncio.Lock()
 
     def _refresh_embedding_configuration(self) -> None:
         model_name, base_url, api_key = _global_embedding_values()
@@ -527,7 +677,9 @@ class PersonalContextHostAPI:
 
         previous = self._config
         previous_stored = self._stored_config
-        same_configuration = previous is not None and previous == candidate
+        same_configuration = previous is not None and _configs_equivalent(
+            previous, candidate
+        )
 
         previous_active = False
         if previous is not None:
@@ -764,8 +916,13 @@ class PersonalContextHostAPI:
         async with self._operation_lock:
             if self._stored_config is None:
                 _raise_host_error("PersonalContext is not configured")
+            # 校验放在锁内，避免 models.list 在校验和写入之间发生变化。
+            # 显式选择必须拦截；_reconcile_model_selection 会把不可用下标静默回退。
+            if not _model_index_is_usable(model_index):
+                _raise_host_error("selected JiuwenSwarm model no longer exists")
             stored = deepcopy(self._stored_config)
             stored["model_index"] = model_index
+            stored["model_id"] = _model_entry_id(get_default_models()[model_index])
             stored, candidate = _prepare_stored_config(stored)
             await self._apply_configuration_locked(
                 candidate,
@@ -819,8 +976,6 @@ class PersonalContextHostAPI:
                     publish_before_apply=not enabled,
                 )
             result = _project_stored_config(stored)
-            if first_start:
-                result["model_index"] = None
             return result
 
     async def set_agent_use_enabled(self, enabled: bool) -> dict[str, object]:
@@ -1153,7 +1308,9 @@ class PersonalContextHostAPI:
         if not isinstance(service_id, str) or not service_id.strip():
             _raise_host_error("service_id must be a non-empty string")
         normalized_id = service_id.strip()
-        async with self._operation_lock:
+        # stop_fetch_run 不修改 Host 配置。它改用独立锁，避免一次 Core 收尾
+        # 阻塞 create/patch/delete；Core 内部仍由 _fetch_lock 保护运行任务。
+        async with self._fetch_run_stop_lock:
             await self._personal_context.stop_fetch_run(normalized_id)
         return {"ok": True}
 

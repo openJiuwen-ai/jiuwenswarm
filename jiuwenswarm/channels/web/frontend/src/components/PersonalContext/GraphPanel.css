@@ -53,6 +53,23 @@
   flex-shrink: 0;
 }
 
+.pc-graph__error--dismissible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pc-graph__error-close {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
 /* 统计 + 过滤芯片行 */
 .pc-graph__stats {
   display: flex;
