@@ -8,8 +8,22 @@ from pathlib import Path, PureWindowsPath
 from typing import Any, Literal, Mapping
 
 EXPERT_GRAPH_GENERATOR = "expert-graph"
-EXPERT_TEAM_MATERIALIZER_VERSION = 2
-EXPERT_TEAM_DISPATCH_CONTRACT = "xiaoyi.expert-team.scheduled.v1"
+EXPERT_TEAM_MATERIALIZER_VERSION = 3
+EXPERT_TEAM_DISPATCH_CONTRACT = "xiaoyi.expert-team.dynamic-scheduled.v1"
+# Packages generated before query-level routing remain runnable.  Keep the
+# exact contract/version pair together: accepting either field independently
+# would turn a partially upgraded package into a prompt/runtime split-brain.
+LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION = 2
+LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT = "xiaoyi.expert-team.scheduled.v1"
+_SUPPORTED_SCHEDULED_CONTRACTS = frozenset(
+    {
+        (
+            LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT,
+            LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION,
+        ),
+        (EXPERT_TEAM_DISPATCH_CONTRACT, EXPERT_TEAM_MATERIALIZER_VERSION),
+    }
+)
 EXPERT_TEAM_STAGE_FILE = "EXPERT_TEAM_STAGE.txt"
 EXPERT_TEAM_STAGE_METADATA_KEY = "expertTeamStageFile"
 
@@ -73,11 +87,18 @@ def classify_expert_team_dispatch_contract(
     has_member_contract = _declares_member_stage_contract(package_dir, manifest)
     if not has_top_level_contract and not has_member_contract:
         return "legacy"
+    contract_pair = (
+        (
+            metadata.get("dispatchContract"),
+            metadata.get("materializerVersion"),
+        )
+        if isinstance(metadata, Mapping)
+        else (None, None)
+    )
     if not isinstance(metadata, Mapping) or not (
         metadata.get("generatedBy") == EXPERT_GRAPH_GENERATOR
         and metadata.get("dispatchMode") == "scheduled"
-        and metadata.get("dispatchContract") == EXPERT_TEAM_DISPATCH_CONTRACT
-        and metadata.get("materializerVersion") == EXPERT_TEAM_MATERIALIZER_VERSION
+        and contract_pair in _SUPPORTED_SCHEDULED_CONTRACTS
     ):
         return "invalid"
     agents = manifest.get("agents")
@@ -147,6 +168,8 @@ __all__ = [
     "EXPERT_TEAM_MATERIALIZER_VERSION",
     "EXPERT_TEAM_STAGE_FILE",
     "EXPERT_TEAM_STAGE_METADATA_KEY",
+    "LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT",
+    "LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION",
     "classify_expert_team_dispatch_contract",
     "supports_scheduled_expert_team",
 ]

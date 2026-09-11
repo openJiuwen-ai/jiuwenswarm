@@ -389,8 +389,9 @@ def _apply_agent_group(
             "专家团声明了版本化调度契约，但包结构或版本不完整，拒绝降级运行"
         )
     scheduled_graph_team = dispatch_profile == "scheduled"
-    # A versioned graph team has a fixed roster and owned task DAG. Enforce both
-    # contracts in the runtime instead of relying on prompt-only prohibitions.
+    # A versioned graph team has a fixed *available* roster; its leader may
+    # create a query-specific subset/DAG.  ``predefined`` prevents arbitrary
+    # spawning, while ``scheduled`` releases only the tasks the leader selected.
     # Legacy AgentGroups retain their existing hybrid/autonomous behavior.
     spec.team_mode = "predefined" if scheduled_graph_team else "hybrid"
     spec.dispatch_mode = "scheduled" if scheduled_graph_team else "autonomous"

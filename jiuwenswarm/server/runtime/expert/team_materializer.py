@@ -38,7 +38,7 @@ _WINDOWS_DEVICE_NAME = re.compile(
     r"^(?:con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\..*)?$", re.IGNORECASE
 )
 _PROMPT_OR_WINDOWS_RESERVED_CHARS = frozenset('<>:"|?*`')
-_MAX_MEMBERS = 4
+_MAX_MEMBERS = 6
 _TEXT_ARTIFACT_WRITE_GUIDANCE = (
     "文本主产物写入：不得把大型完整正文塞入单次 `write_file`/`edit_file` "
     "tool arguments；优先使用简短本地渲染脚本读取结构化交接并动态生成，"
@@ -89,7 +89,6 @@ def materialize_team_candidate(
                 Path(expert_packages[member_id]),
                 staging / "agents" / member_id,
                 member_id=member_id,
-                workflow=candidate.get("workflow"),
             )
         validate_agent_group_package(staging)
         os.replace(staging, destination)
@@ -106,7 +105,7 @@ def _member_ids(candidate: Mapping[str, Any]) -> list[str]:
         raise TeamMaterializationError("candidate.memberIds must be a list")
     member_ids = [_safe_member_id(value) for value in raw]
     if not 2 <= len(member_ids) <= _MAX_MEMBERS:
-        raise TeamMaterializationError("candidate must contain 2 to 4 experts")
+        raise TeamMaterializationError("candidate must contain 2 to 6 experts")
     if len(set(member_ids)) != len(member_ids):
         raise TeamMaterializationError("candidate.memberIds contains duplicates")
     if "leader" in member_ids:
@@ -152,16 +151,31 @@ def _write_top_level(
 ) -> None:
     name = _bounded_text(candidate.get("name"), fallback=team_id, limit=100)
     description = _bounded_text(candidate.get("description"), limit=500)
-    workflow = _workflow_steps(candidate.get("workflow"), limit=12, item_limit=1200)
+    advisory_workflow = _validated_advisory_workflow(
+        candidate.get("workflow"), member_ids
+    )
+    workflow = _workflow_steps(advisory_workflow, limit=12, item_limit=1200)
     quick_prompts = _string_list(candidate.get("quickPrompts"), limit=3, item_limit=300)
     deliverables = _string_list(candidate.get("deliverables"), limit=8, item_limit=200)
     graph_id = _bounded_text(candidate.get("graphId"), limit=160)
+    routing_policy = _routing_policy(member_ids)
+    member_profiles = _member_profiles(candidate.get("memberProfiles"), member_ids)
+    route_examples = _validated_route_examples(
+        candidate.get("routeExamples"), member_ids
+    )
 
     manifest = {
         "package_type": "agent_group",
         "name": team_id,
         "agents": ["leader", *member_ids],
-        "instruction": _team_instruction(name, member_ids, workflow, deliverables),
+        "instruction": _team_instruction(
+            name,
+            member_ids,
+            workflow,
+            deliverables,
+            member_profiles=member_profiles,
+            route_examples=route_examples,
+        ),
         "skills": [],
         "metadata": {
             "displayName": name,
@@ -179,6 +193,9 @@ def _write_top_level(
             "memberExpertIds": member_ids,
             "deliverables": deliverables,
             "workflow": workflow,
+            "routingPolicy": routing_policy,
+            "memberProfiles": member_profiles,
+            "routeExamples": route_examples,
         },
     }
     _write_json(root / "manifest.json", manifest)
@@ -192,6 +209,10 @@ def _write_leader(
 ) -> None:
     name = _bounded_text(candidate.get("name"), fallback="专家团", limit=100)
     description = _bounded_text(candidate.get("description"), limit=500)
+    member_profiles = _member_profiles(candidate.get("memberProfiles"), member_ids)
+    route_examples = _validated_route_examples(
+        candidate.get("routeExamples"), member_ids
+    )
     leader_dir = root / "agents" / "leader"
     persona_dir = leader_dir / "persona"
     persona_dir.mkdir(parents=True)
@@ -209,7 +230,8 @@ def _write_leader(
     roster = "\n".join(f"- `{member_id}`" for member_id in member_ids)
     (persona_dir / "ROLE.md").write_text(
         f"# {name}主理人\n\n"
-        "你负责理解用户目标、按既定调用链调度真实成员、检查交接内容，并把最终成品交给用户。\n\n"
+        "你负责理解用户目标、选择最小充分成员、决定串行或并行调度、检查结果，"
+        "并把最终成品交给用户。专家关系图只提供能力与协作证据，不是固定执行链。\n\n"
         f"## 可调度成员\n\n{roster}\n",
         encoding="utf-8",
     )
@@ -219,100 +241,182 @@ def _write_leader(
         "若已存在与当前请求匹配且未终结的同一组阶段任务，继续使用原任务，禁止重复创建；"
         "否则生成本次请求唯一的 `run_key`：优先使用当前 request id 的短后缀，"
         "拿不到时使用 UTC 时间戳加 4 位随机小写字母/数字。\n"
-        "2. 首次执行必须按下方映射在一次 `create_task` 调用中创建完整任务 DAG。"
-        "每个任务都必须显式填写唯一 `task_id`、对应成员 `assignee` 和 `depends_on`；"
-        "`depends_on` 只能引用同批任务的 `task_id`，绝不能填写 expertId。\n"
-        f"\n{_leader_task_dag(candidate.get('workflow'), member_ids)}\n"
-        "3. 所有专业成员均已由 AgentGroup 预注册，禁止调用 `spawn_teammate` 重复创建成员。\n"
-        "4. 当前图谱团由 scheduled scheduler 独占依赖放行和任务派发；禁止通过 broadcast "
+        "2. 先判断用户意图，再从成员池中选择能完成请求的最小充分集合（1～N 位）。"
+        "简单请求优先只选 1 位；只有存在独立子问题或明确前后置交接时才增加成员。"
+        "专家团 roster 不是本次执行清单，禁止为了展示协作而调用无关成员。\n"
+        "3. 为选中成员设计本次任务 DAG，并在一次 `create_task` 调用中只创建这些任务。"
+        "每个任务必须显式填写唯一 `task_id`、成员 ID 作为 `assignee`、任务 ID 组成的 "
+        "`depends_on`。互不依赖的任务使用空依赖并行；确有产物依赖时才串行。\n"
+        f"\n{_leader_dynamic_routing(member_profiles, route_examples)}\n"
+        "4. 所有专业成员均已由 AgentGroup 预注册，禁止调用 `spawn_teammate` 重复创建成员。\n"
+        "5. 当前专家团由 scheduled scheduler 独占依赖放行和任务派发；禁止通过 broadcast "
         "或 `send_message` 提前启动 pending/blocked 下游。只有成员已经执行且确需澄清时，"
         "才可定向发送补充信息。\n"
-        "5. 不得模拟成员输出；严格按共享 instruction 的调用链等待真实成员完成。"
-        "前序结果通过声明的 `.expert-handoffs/` 契约完整传给后序成员。\n"
-        "6. 运行时主理人成员名固定为 `team-leader`；成员向主理人回传时必须使用该名称。\n"
-        "7. 中间交接不得冒充用户最终成品；只把调用链最后阶段生成且已经打开检查的"
-        "主成品发送给用户。\n",
+        "6. 不得模拟成员输出。等待全部已选任务完成；多成员结果由主理人检查、去重和汇总。"
+        "图谱路线仅为示例，必须按当前 Query 调整，不得机械照抄。\n"
+        "7. 运行时主理人成员名固定为 `team-leader`；成员向主理人回传时必须使用该名称。\n"
+        "8. 只向用户发送其当前请求需要、且已经打开检查的成品；不得强制生成成员声明过"
+        "但本次 Query 未要求的其他文件。\n",
         encoding="utf-8",
     )
 
 
-def _leader_task_dag(workflow: Any, member_ids: list[str]) -> str:
-    """Render the candidate's expert DAG as unambiguous task-id templates."""
-    mapping_steps = _validated_workflow_dag(workflow, member_ids)
-    ordered_experts = [
-        str(item.get("expertId") or "").strip() for item in mapping_steps
-    ]
-    stage_by_expert = {
-        expert_id: index for index, expert_id in enumerate(ordered_experts, start=1)
+def _routing_policy(member_ids: list[str]) -> dict[str, Any]:
+    """Return the executable v3 policy instead of trusting candidate metadata."""
+    return {
+        "mode": "leader_selected",
+        "selection": "minimal_sufficient",
+        "minSelected": 1,
+        "maxSelected": len(member_ids),
+        "allowSingleMember": True,
+        "allowSerial": True,
+        "allowParallel": True,
+        "graphRole": "discovery_and_routing_evidence",
     }
-    lines = [
-        "## 固定任务 ID 映射",
-        "",
-        "下表的 `{run_key}` 在同一次用户请求中必须保持不变。`task_id` 是任务标识，"
-        "`assignee` 才是专家成员名，两者不得混用。",
-        "",
-        "| 阶段 | task_id | assignee | depends_on（task_id） |",
-        "| --- | --- | --- | --- |",
+
+
+def _member_profiles(value: Any, member_ids: list[str]) -> list[dict[str, Any]]:
+    raw_profiles = value if isinstance(value, (list, tuple)) else []
+    profile_by_id: dict[str, dict[str, Any]] = {}
+    for raw in raw_profiles:
+        if not isinstance(raw, Mapping):
+            continue
+        member_id = str(raw.get("id") or "").strip()
+        if member_id not in member_ids or member_id in profile_by_id:
+            continue
+        profile_by_id[member_id] = {
+            "id": member_id,
+            "name": _bounded_text(raw.get("name"), fallback=member_id, limit=100),
+            "description": _bounded_text(raw.get("description"), limit=500),
+            "tags": _string_list(raw.get("tags"), limit=12, item_limit=80),
+            "skills": _string_list(raw.get("skills"), limit=32, item_limit=120),
+            "quickPrompts": _string_list(
+                raw.get("quickPrompts"), limit=3, item_limit=300
+            ),
+            "deliverables": _string_list(
+                raw.get("deliverables"), limit=8, item_limit=200
+            ),
+        }
+    return [
+        profile_by_id.get(
+            member_id,
+            {
+                "id": member_id,
+                "name": member_id,
+                "description": "",
+                "tags": [],
+                "skills": [],
+                "quickPrompts": [],
+                "deliverables": [],
+            },
+        )
+        for member_id in member_ids
     ]
-    for index, item in enumerate(mapping_steps, start=1):
-        expert_id = ordered_experts[index - 1]
-        raw_dependencies = item.get("dependsOn")
-        dependencies = (
-            [str(value or "").strip() for value in raw_dependencies]
-            if isinstance(raw_dependencies, (list, tuple))
-            else []
-        )
-        unknown = [
-            dependency
-            for dependency in dependencies
-            if dependency and dependency not in stage_by_expert
-        ]
-        if unknown:
-            raise TeamMaterializationError(
-                "candidate workflow dependsOn references unknown experts: "
-                + ", ".join(unknown)
+
+
+def _validated_route_examples(
+    value: Any, member_ids: list[str]
+) -> list[dict[str, Any]]:
+    if not isinstance(value, (list, tuple)):
+        return []
+    routes: list[dict[str, Any]] = []
+    for index, raw in enumerate(value[:18], start=1):
+        if not isinstance(raw, Mapping):
+            continue
+        steps = _validated_advisory_workflow(raw.get("steps"), member_ids)
+        if not steps:
+            continue
+        selected = [str(step.get("expertId") or "").strip() for step in steps]
+        # Rendering validates all artifact paths and caps the resulting prompt
+        # clauses; route examples are advisory, but may not carry unsafe text.
+        _workflow_steps(steps, limit=6, item_limit=1200)
+        route_type = str(raw.get("type") or "").strip()
+        if route_type not in {"single", "serial", "parallel"}:
+            route_type = (
+                "serial"
+                if any(step.get("dependsOn") for step in steps)
+                else ("single" if len(steps) == 1 else "parallel")
             )
-        dependency_ids = [
-            f"`{{run_key}}-s{stage_by_expert[dependency]:02d}`"
-            for dependency in dependencies
-            if dependency
-        ]
-        depends_on = "[" + ", ".join(dependency_ids) + "]"
-        lines.append(
-            f"| {index} | `{{run_key}}-s{index:02d}` | `{expert_id}` | {depends_on} |"
+        routes.append(
+            {
+                "id": _bounded_text(
+                    raw.get("id"), fallback=f"route-{index}", limit=160
+                ),
+                "type": route_type,
+                "title": _bounded_text(raw.get("title"), limit=160),
+                "intent": _bounded_text(raw.get("intent"), limit=500),
+                "selectedMemberIds": selected,
+                "steps": [dict(step) for step in steps],
+                "relationEdgeIds": _string_list(
+                    raw.get("relationEdgeIds"), limit=8, item_limit=160
+                ),
+            }
         )
+    return routes
+
+
+def _leader_dynamic_routing(
+    member_profiles: list[dict[str, Any]], route_examples: list[dict[str, Any]]
+) -> str:
+    lines = [
+        "## 成员能力路由表",
+        "",
+        "| member ID | 擅长内容 | 可交付 |",
+        "| --- | --- | --- |",
+    ]
+    for profile in member_profiles:
+        capabilities = "、".join(
+            [
+                *profile.get("tags", [])[:4],
+                *profile.get("skills", [])[:4],
+            ]
+        )
+        if not capabilities:
+            capabilities = str(profile.get("description") or "按成员专业说明执行")[:120]
+        deliverables = "、".join(profile.get("deliverables", [])[:4]) or "按 Query 交付"
+        lines.append(f"| `{profile['id']}` | {capabilities} | {deliverables} |")
     lines.extend(
         [
             "",
-            "批量创建失败或进程恢复时，必须再次查看看板：若这些 `task_id` 已存在，"
-            "复用并继续它们；只有确认本次请求尚无对应任务时才能创建新 `run_key`。",
+            "## 任务创建约束",
+            "",
+            "- task_id 使用 `{run_key}-s01`、`{run_key}-s02`…；assignee 必须逐字使用上表 member ID。",
+            "- depends_on 只允许引用本次已选任务的 task_id，绝不能填写 member ID。",
+            "- 批量创建失败或恢复时先查任务看板；已有相同 task_id 就复用，禁止重复创建。",
         ]
     )
+    if route_examples:
+        lines.extend(["", "## 可调整的路由示例（不是固定流程）", ""])
+        for route in route_examples[:8]:
+            selected = "、".join(f"`{item}`" for item in route["selectedMemberIds"])
+            intent = str(route.get("intent") or route.get("title") or "")
+            lines.append(f"- {route['type']}：{intent} → {selected}")
     return "\n".join(lines)
 
 
-def _validated_workflow_dag(
+def _validated_advisory_workflow(
     workflow: Any, member_ids: list[str]
 ) -> list[Mapping[str, Any]]:
-    """Fail closed unless the workflow is one complete, ordered, single-sink DAG."""
+    """Validate one optional route without requiring it to cover the roster."""
 
-    if not isinstance(workflow, (list, tuple)) or not workflow:
-        raise TeamMaterializationError("candidate workflow must be a non-empty DAG")
+    if workflow in (None, [], ()):
+        return []
+    if not isinstance(workflow, (list, tuple)):
+        raise TeamMaterializationError("candidate workflow must be a route list")
     if not all(isinstance(item, Mapping) for item in workflow):
         raise TeamMaterializationError(
             "candidate workflow must contain structured expert stages"
         )
     steps = list(workflow)
     expert_ids = [str(item.get("expertId") or "").strip() for item in steps]
-    if expert_ids != member_ids or len(set(expert_ids)) != len(expert_ids):
+    if any(
+        not expert_id or expert_id not in member_ids for expert_id in expert_ids
+    ) or len(set(expert_ids)) != len(expert_ids):
         raise TeamMaterializationError(
-            "candidate workflow must cover memberIds exactly once and in stage order"
+            "candidate workflow must use unique experts from memberIds"
         )
 
     stage_by_expert = {expert_id: index for index, expert_id in enumerate(expert_ids)}
-    outgoing = {expert_id: set() for expert_id in expert_ids}
-    undirected = {expert_id: set() for expert_id in expert_ids}
-    final_output_experts: list[str] = []
     for index, item in enumerate(steps):
         expert_id = expert_ids[index]
         raw_dependencies = item.get("dependsOn", [])
@@ -337,33 +441,6 @@ def _validated_workflow_dag(
             raise TeamMaterializationError(
                 "candidate workflow must be acyclic and topologically ordered"
             )
-        for dependency in dependencies:
-            outgoing[dependency].add(expert_id)
-            undirected[dependency].add(expert_id)
-            undirected[expert_id].add(dependency)
-        if _final_output_clause(item.get("finalOutput")):
-            final_output_experts.append(expert_id)
-
-    visited: set[str] = set()
-    frontier = [expert_ids[0]]
-    while frontier:
-        current = frontier.pop()
-        if current in visited:
-            continue
-        visited.add(current)
-        frontier.extend(undirected[current] - visited)
-    if visited != set(expert_ids):
-        raise TeamMaterializationError("candidate workflow DAG must be connected")
-
-    sinks = [expert_id for expert_id, targets in outgoing.items() if not targets]
-    if len(sinks) != 1:
-        raise TeamMaterializationError(
-            "candidate workflow DAG must contain exactly one sink"
-        )
-    if final_output_experts != sinks:
-        raise TeamMaterializationError(
-            "candidate workflow finalOutput must exist only on its unique sink"
-        )
     return steps
 
 
@@ -372,7 +449,6 @@ def _embed_member(
     destination: Path,
     *,
     member_id: str,
-    workflow: Any,
 ) -> None:
     try:
         source = source.expanduser().resolve(strict=True)
@@ -416,7 +492,6 @@ def _embed_member(
         destination,
         embedded,
         member_id=member_id,
-        workflow=workflow,
         skill_names=_declared_skill_names(source, manifest),
     )
     _write_json(destination / "manifest.json", embedded)
@@ -427,7 +502,6 @@ def _inject_team_stage_persona(
     manifest: Mapping[str, Any],
     *,
     member_id: str,
-    workflow: Any,
     skill_names: list[str],
 ) -> None:
     """Write a loader-mounted stage section without replacing source persona files."""
@@ -448,9 +522,7 @@ def _inject_team_stage_persona(
         raise TeamMaterializationError(
             f"embedded member reserves {EXPERT_TEAM_STAGE_FILE!r}: {member_id}"
         )
-    override.write_text(
-        _team_stage_persona(member_id, workflow, skill_names), encoding="utf-8"
-    )
+    override.write_text(_team_stage_persona(member_id, skill_names), encoding="utf-8")
 
 
 def _declared_skill_names(package_root: Path, manifest: Mapping[str, Any]) -> list[str]:
@@ -485,61 +557,26 @@ def _safe_package_dir(root: Path, raw_dir: str, *, label: str) -> Path:
     return resolved
 
 
-def _team_stage_persona(member_id: str, workflow: Any, skill_names: list[str]) -> str:
-    """Render one member's strict graph-stage scope for its embedded persona."""
-    raw_steps = workflow if isinstance(workflow, (list, tuple)) else []
-    steps = [item for item in raw_steps if isinstance(item, Mapping)]
-    stage = next(
-        (
-            item
-            for item in steps
-            if str(item.get("expertId") or "").strip() == member_id
-        ),
-        {},
-    )
-    outgoing_contracts: list[dict[str, str]] = []
-    for item in steps:
-        target = str(item.get("expertId") or "").strip()
-        outgoing_contracts.extend(
-            contract
-            for contract in _step_handoff_contracts(item, target_expert_id=target)
-            if contract["source"] == member_id
-        )
-
+def _team_stage_persona(member_id: str, skill_names: list[str]) -> str:
+    """Render query-scoped member rules without imposing a graph stage."""
     lines = [
-        "# 专家团阶段执行覆盖规则（最高优先级）",
+        "# 专家团按需执行覆盖规则（最高优先级）",
         "",
         "本文件仅在当前专家团中生效；如与原 persona 的产物要求冲突，以本文件为准。",
         "收到已指派任务后，先确认任务已进入可执行状态；仅当运行时提供 `claim_task` "
         "且任务仍为 pending 时调用，scheduled 已自动进入 in_progress 时直接执行，禁止重复领取。",
         "",
-        "## 本阶段产物边界",
+        "## 本次任务边界",
         "",
+        f"你是成员 `{member_id}`。只有主理人把本次 Query 的任务指派给你时才执行；"
+        "未被选择时保持空闲，不得自行加入。",
+        "只完成任务描述明确要求的范围。专家包声明的全部能力和历史产物不是本次必做清单；"
+        "不得为了展示能力额外生成无关文件。",
+        "若任务含 `depends_on`，必须读取主理人/前序任务指定的交接材料后再继续；"
+        "若任务要求给下游交接，使用 `.expert-handoffs/` 下的安全相对路径。",
+        "完成后检查本次实际成品，通过 `send_message` 向 `team-leader` 汇报结果和文件路径；"
+        "不要直接调度其他成员，也不要冒充主理人做最终汇总。",
     ]
-    final_output_clause = _final_output_clause(stage.get("finalOutput"))
-    if final_output_clause:
-        lines.extend(
-            [
-                "你是调用链终点。只生成并发送图谱声明的 `finalOutput`；"
-                "短暂本地渲染脚本必须在完成后删除，不得作为产物。",
-                f"- {final_output_clause}",
-                "不得额外生成或发送其他 standalone/public/primary 主产物。",
-            ]
-        )
-    else:
-        lines.append(
-            "你不是调用链终点。仅允许生成本阶段图谱声明的 hard-edge handoff；"
-            "不得生成或发送任何 standalone/public/primary 主产物。"
-        )
-        if outgoing_contracts:
-            for contract in outgoing_contracts:
-                lines.append(
-                    f"- `{contract['path']}`（{_handoff_contract_details(contract)}），"
-                    f"交给 `{contract['target']}`"
-                )
-        else:
-            lines.append("- 本阶段未声明 hard-edge handoff；不得自行虚构交接文件。")
-
     lines.extend(["", "## 本地 Skills", ""])
     if skill_names:
         lines.append(
@@ -598,21 +635,46 @@ def _team_instruction(
     member_ids: list[str],
     workflow: list[str],
     deliverables: list[str],
+    *,
+    member_profiles: list[dict[str, Any]],
+    route_examples: list[dict[str, Any]],
 ) -> str:
-    stages = workflow or [
-        f"依次调度专家 `{member_id}` 完成其专业阶段" for member_id in member_ids
-    ]
-    stage_text = "\n".join(f"{index}. {stage}" for index, stage in enumerate(stages, 1))
+    examples = (
+        [
+            f"{route['type']}：{route.get('intent') or route.get('title')} → "
+            + "、".join(f"`{member_id}`" for member_id in route["selectedMemberIds"])
+            for route in route_examples[:8]
+        ]
+        or workflow
+        or [
+            f"可按需选择专家 `{member_id}` 独立完成匹配的任务"
+            for member_id in member_ids
+        ]
+    )
+    example_text = "\n".join(
+        f"{index}. {example}" for index, example in enumerate(examples, 1)
+    )
     member_text = "、".join(f"`{member_id}`" for member_id in member_ids)
     deliverable_text = "、".join(deliverables) or "一个可直接使用并可打开的最终成品"
+    profile_text = "；".join(
+        f"`{profile['id']}`："
+        + (
+            "、".join([*profile.get("tags", [])[:3], *profile.get("skills", [])[:3]])
+            or str(profile.get("description") or "专业任务")[:100]
+        )
+        for profile in member_profiles
+    )
+    route_types = sorted({str(route.get("type") or "") for route in route_examples})
     return (
         f"你们是{name}。可用专业成员为 {member_text}。\n\n"
-        f"## 调用链\n{stage_text}\n\n"
-        "每个阶段必须由对应真实成员执行。主理人一次性创建同构任务 DAG，"
-        "用调用链中的 expertId 作为 assignee，并把依赖关系写入 depends_on；"
-        "由 scheduled scheduler 自动放行，不得手工提前启动下游。"
-        "主理人不得代写成员结果；前序中间结果放入 `.expert-handoffs/`。"
-        f"最终交付目标：{deliverable_text}。只发送最后阶段的主成品给用户。"
+        f"## 成员能力\n{profile_text}\n\n"
+        f"## 图谱提供的可选路线示例\n{example_text}\n\n"
+        "关系图和路线示例仅用于发现与路由，不是固定工作流。主理人必须根据每次用户 Query "
+        "选择最小充分的 1～N 位成员，只为选中成员创建任务；简单任务允许单成员直达，"
+        "独立子任务并行，确有产物依赖时串行。"
+        f"当前已知路线类型：{'、'.join(route_types) or 'single'}。"
+        "scheduled scheduler 负责依赖放行，不得手工提前启动下游。"
+        f"可能的交付能力包括：{deliverable_text}；只生成当前 Query 实际要求的成品。"
     )
 
 

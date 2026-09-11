@@ -153,7 +153,13 @@ async def test_rpc_lifecycle_builds_mines_and_materializes_beta3_team(
     assert any(edge["type"] == "can_feed" for edge in graph["edges"])
 
     mined = await service.execute(
-        "experts.teams.mine", {"graph_id": graph["graphId"], "limit": 6}
+        "experts.teams.mine",
+        {
+            "graph_id": graph["graphId"],
+            "min_members": 2,
+            "max_members": 2,
+            "limit": 6,
+        },
     )
     assert mined.ok is True
     assert mined.payload["success"] is True
@@ -179,9 +185,10 @@ async def test_rpc_lifecycle_builds_mines_and_materializes_beta3_team(
     )
     assert installed["status"] == "installed"
     current_graph = await service.execute("experts.graph.get", {})
-    assert current_graph.payload["graph"]["graphId"] == materialized.payload["graph"][
-        "graphId"
-    ]
+    assert (
+        current_graph.payload["graph"]["graphId"]
+        == materialized.payload["graph"]["graphId"]
+    )
     manifest = json.loads(
         (destination_root / candidate["id"] / "manifest.json").read_text(
             encoding="utf-8"
@@ -198,7 +205,10 @@ async def test_materialize_rejects_member_that_changed_into_nested_team(
     service, source_root, _ = _service(tmp_path)
     built = await service.execute("experts.graph.build", {})
     graph_id = built.payload["graph"]["graphId"]
-    mined = await service.execute("experts.teams.mine", {"graph_id": graph_id})
+    mined = await service.execute(
+        "experts.teams.mine",
+        {"graph_id": graph_id, "min_members": 2, "max_members": 2},
+    )
     candidate = mined.payload["candidates"][0]
 
     # Simulate the source changing after mining.  Materialization must inspect
@@ -232,16 +242,17 @@ async def test_materialize_rejects_member_changed_after_mining(
     service, source_root, destination_root = _service(tmp_path)
     built = await service.execute("experts.graph.build", {})
     graph_id = built.payload["graph"]["graphId"]
-    mined = await service.execute("experts.teams.mine", {"graph_id": graph_id})
+    mined = await service.execute(
+        "experts.teams.mine",
+        {"graph_id": graph_id, "min_members": 2, "max_members": 2},
+    )
     candidate = mined.payload["candidates"][0]
     member = source_root / "insight-expert"
 
     if mutation == "collaboration":
         manifest_path = member / "manifest.json"
         manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-        manifest["metadata"]["collaboration"]["outputs"][0]["schema"] = (
-            "insight.v2"
-        )
+        manifest["metadata"]["collaboration"]["outputs"][0]["schema"] = "insight.v2"
         manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     else:
         (member / "persona" / "ROLE.md").write_text(

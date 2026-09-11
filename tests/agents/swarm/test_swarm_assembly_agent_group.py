@@ -25,6 +25,8 @@ from jiuwenswarm.server.runtime.expert.team_contract import (
     EXPERT_TEAM_MATERIALIZER_VERSION,
     EXPERT_TEAM_STAGE_FILE,
     EXPERT_TEAM_STAGE_METADATA_KEY,
+    LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT,
+    LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION,
 )
 
 TESTDATA_GROUP = (
@@ -62,15 +64,20 @@ def _enrich(spec: TeamAgentSpec, agent_group_name: str | None) -> None:
     )
 
 
-def _stamp_scheduled_contract(package: Path) -> None:
+def _stamp_scheduled_contract(
+    package: Path,
+    *,
+    dispatch_contract: str = EXPERT_TEAM_DISPATCH_CONTRACT,
+    materializer_version: int = EXPERT_TEAM_MATERIALIZER_VERSION,
+) -> None:
     manifest_path = package / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["metadata"] = {
         **(manifest.get("metadata") or {}),
         "generatedBy": EXPERT_GRAPH_GENERATOR,
         "dispatchMode": "scheduled",
-        "dispatchContract": EXPERT_TEAM_DISPATCH_CONTRACT,
-        "materializerVersion": EXPERT_TEAM_MATERIALIZER_VERSION,
+        "dispatchContract": dispatch_contract,
+        "materializerVersion": materializer_version,
     }
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     for member_id in manifest["agents"]:
@@ -182,6 +189,28 @@ def test_graph_materialized_agent_group_uses_scheduled_dispatch(
     _stamp_scheduled_contract(graph_group)
     spec = _make_team_spec()
 
+    _enrich(spec, graph_group.name)
+
+    assert spec.dispatch_mode == "scheduled"
+    assert spec.team_mode == "predefined"
+
+
+def test_v2_graph_materialized_group_remains_scheduled_compatible(
+    group_cache: Path,
+) -> None:
+    graph_group = group_cache / "v2-graph-generated-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(
+        graph_group,
+        dispatch_contract=LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT,
+        materializer_version=LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION,
+    )
+
+    spec = _make_team_spec()
     _enrich(spec, graph_group.name)
 
     assert spec.dispatch_mode == "scheduled"

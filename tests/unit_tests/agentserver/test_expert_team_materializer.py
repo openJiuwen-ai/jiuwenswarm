@@ -83,6 +83,52 @@ def _candidate() -> dict:
         ],
         "quickPrompts": ["分析销售表并做一套推广方案"],
         "deliverables": ["可打开的 HTML 内容方案"],
+        "memberProfiles": [
+            {
+                "id": "data-analyst",
+                "name": "数据分析师",
+                "description": "分析数据并定位问题",
+                "tags": ["数据分析"],
+                "skills": ["excel-analysis"],
+                "quickPrompts": ["帮我分析销售数据"],
+                "deliverables": ["数据洞察"],
+            },
+            {
+                "id": "content-designer",
+                "name": "内容设计师",
+                "description": "把洞察做成内容页面",
+                "tags": ["内容创作"],
+                "skills": ["copywriter"],
+                "quickPrompts": ["帮我做内容页面"],
+                "deliverables": ["HTML 页面"],
+            },
+        ],
+        "routeExamples": [
+            {
+                "id": "single-data",
+                "type": "single",
+                "title": "数据分析直达",
+                "intent": "只分析数据时",
+                "selectedMemberIds": ["data-analyst"],
+                "steps": [
+                    {"expertId": "data-analyst", "dependsOn": []},
+                ],
+            },
+            {
+                "id": "serial-campaign",
+                "type": "serial",
+                "title": "数据到内容",
+                "intent": "既要分析又要形成页面时",
+                "selectedMemberIds": ["data-analyst", "content-designer"],
+                "steps": [
+                    {"expertId": "data-analyst", "dependsOn": []},
+                    {
+                        "expertId": "content-designer",
+                        "dependsOn": ["data-analyst"],
+                    },
+                ],
+            },
+        ],
     }
 
 
@@ -114,8 +160,20 @@ def test_materialize_team_preserves_member_skills(tmp_path: Path) -> None:
         "content-designer",
     ]
     assert top["metadata"]["dispatchMode"] == "scheduled"
-    assert top["metadata"]["dispatchContract"] == "xiaoyi.expert-team.scheduled.v1"
-    assert top["metadata"]["materializerVersion"] == 2
+    assert (
+        top["metadata"]["dispatchContract"] == "xiaoyi.expert-team.dynamic-scheduled.v1"
+    )
+    assert top["metadata"]["materializerVersion"] == 3
+    assert top["metadata"]["routingPolicy"] == {
+        "mode": "leader_selected",
+        "selection": "minimal_sufficient",
+        "minSelected": 1,
+        "maxSelected": 2,
+        "allowSingleMember": True,
+        "allowSerial": True,
+        "allowParallel": True,
+        "graphRole": "discovery_and_routing_evidence",
+    }
     assert "team-leader" in (result / "agents" / "leader" / "AGENT.md").read_text(
         encoding="utf-8"
     )
@@ -251,40 +309,36 @@ def test_materialize_renders_hard_edge_handoff_contract(tmp_path: Path) -> None:
     assert (
         "不得把大型完整正文塞入单次 `write_file`/`edit_file`" in manifest["instruction"]
     )
-    assert "一次性创建同构任务 DAG" in manifest["instruction"]
-    assert "expertId 作为 assignee" in manifest["instruction"]
+    assert "只为选中成员创建任务" in manifest["instruction"]
+    assert "简单任务允许单成员直达" in manifest["instruction"]
     leader_rules = (result / "agents" / "leader" / "AGENT.md").read_text(
         encoding="utf-8"
     )
     assert "禁止调用 `spawn_teammate`" in leader_rules
     assert "scheduled scheduler 独占依赖放行" in leader_rules
     assert "禁止通过 broadcast 或 `send_message` 提前启动" in leader_rules
-    assert "`depends_on` 只能引用同批任务的 `task_id`" in leader_rules
-    assert "| 1 | `{run_key}-s01` | `data-analyst` | [] |" in leader_rules
-    assert (
-        "| 2 | `{run_key}-s02` | `content-designer` | [`{run_key}-s01`] |"
-        in leader_rules
-    )
-    assert "若这些 `task_id` 已存在" in leader_rules
-    assert "复用并继续它们" in leader_rules
+    assert "最小充分集合（1～N 位）" in leader_rules
+    assert "只创建这些任务" in leader_rules
+    assert "禁止为了展示协作而调用无关成员" in leader_rules
+    assert "互不依赖的任务使用空依赖并行" in leader_rules
+    assert "图谱路线仅为示例" in leader_rules
+    assert "`data-analyst`" in leader_rules
+    assert "`content-designer`" in leader_rules
     non_sink_persona = (
         result / "agents" / "data-analyst" / "EXPERT_TEAM_STAGE.txt"
     ).read_text(encoding="utf-8")
     assert "仅当运行时提供 `claim_task` 且任务仍为 pending 时调用" in non_sink_persona
     assert "scheduled 已自动进入 in_progress 时直接执行" in non_sink_persona
-    assert "你不是调用链终点" in non_sink_persona
-    assert "仅允许生成本阶段图谱声明的 hard-edge handoff" in non_sink_persona
-    assert ".expert-handoffs/data-insight-brief.json" in non_sink_persona
-    assert "不得生成或发送任何 standalone/public/primary 主产物" in non_sink_persona
+    assert "只有主理人把本次 Query 的任务指派给你时才执行" in non_sink_persona
+    assert "未被选择时保持空闲" in non_sink_persona
+    assert "不得为了展示能力额外生成无关文件" in non_sink_persona
     assert '原始 name："original-excel-analysis"' in non_sink_persona
 
     sink_persona = (
         result / "agents" / "content-designer" / "EXPERT_TEAM_STAGE.txt"
     ).read_text(encoding="utf-8")
-    assert "你是调用链终点" in sink_persona
-    assert "只生成并发送图谱声明的 `finalOutput`" in sink_persona
-    assert "`campaign.html`" in sink_persona
-    assert "不得额外生成或发送其他 standalone/public/primary 主产物" in sink_persona
+    assert "只有主理人把本次 Query 的任务指派给你时才执行" in sink_persona
+    assert "向 `team-leader` 汇报结果和文件路径" in sink_persona
     assert '原始 name："original-copywriter"' in sink_persona
 
 
@@ -417,6 +471,7 @@ def test_materialize_accepts_agent_group_safe_non_slug_member_ids(
     }
     candidate = _candidate()
     candidate["memberIds"] = ["Data_分析师", "Content_Designer"]
+    candidate["routeExamples"] = []
     candidate["workflow"] = [
         {"expertId": "Data_分析师", "dependsOn": []},
         {
@@ -521,34 +576,34 @@ def test_materialize_rejects_unknown_expert_task_dependency(tmp_path: Path) -> N
     assert not (tmp_path / "experts" / candidate["id"]).exists()
 
 
-@pytest.mark.parametrize(
-    "workflow",
-    [
-        [
-            {
-                "expertId": "data-analyst",
-                "dependsOn": [],
-                "finalOutput": {
-                    "id": "result.html",
-                    "mediaType": "text/html",
-                },
-            }
-        ],
-        [
-            {"expertId": "data-analyst", "dependsOn": []},
-            {
-                "expertId": "data-analyst",
-                "dependsOn": ["data-analyst"],
-                "finalOutput": {
-                    "id": "result.html",
-                    "mediaType": "text/html",
-                },
-            },
-        ],
-    ],
-)
-def test_materialize_rejects_incomplete_or_duplicate_workflow_members(
-    tmp_path: Path, workflow: list[dict]
+def test_materialize_accepts_single_member_advisory_workflow(tmp_path: Path) -> None:
+    sources = tmp_path / "sources"
+    packages = {
+        "data-analyst": _expert(sources, "data-analyst", skill_name="excel-analysis"),
+        "content-designer": _expert(
+            sources, "content-designer", skill_name="copywriter"
+        ),
+    }
+    candidate = _candidate()
+    candidate["workflow"] = [
+        {
+            "expertId": "data-analyst",
+            "dependsOn": [],
+            "finalOutput": {"id": "result.html", "mediaType": "text/html"},
+        }
+    ]
+
+    result = materialize_team_candidate(
+        candidate,
+        expert_packages=packages,
+        destination_root=tmp_path / "experts",
+    )
+
+    assert result.is_dir()
+
+
+def test_materialize_rejects_duplicate_advisory_workflow_member(
+    tmp_path: Path,
 ) -> None:
     sources = tmp_path / "sources"
     packages = {
@@ -558,9 +613,12 @@ def test_materialize_rejects_incomplete_or_duplicate_workflow_members(
         ),
     }
     candidate = _candidate()
-    candidate["workflow"] = workflow
+    candidate["workflow"] = [
+        {"expertId": "data-analyst", "dependsOn": []},
+        {"expertId": "data-analyst", "dependsOn": ["data-analyst"]},
+    ]
 
-    with pytest.raises(TeamMaterializationError, match="cover memberIds exactly once"):
+    with pytest.raises(TeamMaterializationError, match="unique experts"):
         materialize_team_candidate(
             candidate,
             expert_packages=packages,

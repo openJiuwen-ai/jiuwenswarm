@@ -3,9 +3,9 @@
 
 This module is deliberately independent from Symphony's Skill graph runtime.  It
 adapts the expert-package contracts that Xiaoyi Work already owns into a small,
-versioned projection suitable for RPC/UI consumers.  Hard execution edges are
-created only from declared I/O contracts; text similarity never becomes an
-executable hand-off.
+versioned projection suitable for RPC/UI consumers.  Precise ``can_feed`` edges
+come only from declared I/O contracts, but every graph relation remains routing
+evidence: the team leader decides the actual members and task DAG per query.
 """
 
 from __future__ import annotations
@@ -36,7 +36,7 @@ from jiuwenswarm.server.runtime.expert.team_contract import (
 
 INVENTORY_SCHEMA_VERSION = "xiaoyi.expert-inventory.v1"
 GRAPH_SCHEMA_VERSION = "xiaoyi.expert-graph.v1"
-TEAM_CANDIDATE_SCHEMA_VERSION = "xiaoyi.expert-team-candidates.v1"
+TEAM_CANDIDATE_SCHEMA_VERSION = "xiaoyi.expert-team-candidates.v2"
 
 _CURRENT_AGENT_PACKAGE_TYPE = "agent_template"
 _TEAM_PACKAGE_TYPE = "agent_group"
@@ -369,6 +369,9 @@ class ExpertTeamCandidate:
     score_breakdown: dict[str, float]
     quick_prompts: tuple[str, ...]
     deliverables: tuple[str, ...]
+    routing_policy: dict[str, Any]
+    member_profiles: tuple[dict[str, Any], ...]
+    route_examples: tuple[dict[str, Any], ...]
     status: str = "ready"
 
     def to_dict(self) -> dict[str, Any]:
@@ -383,6 +386,9 @@ class ExpertTeamCandidate:
             "scoreBreakdown": dict(self.score_breakdown),
             "quickPrompts": list(self.quick_prompts),
             "deliverables": list(self.deliverables),
+            "routingPolicy": dict(self.routing_policy),
+            "memberProfiles": [dict(profile) for profile in self.member_profiles],
+            "routeExamples": [dict(route) for route in self.route_examples],
             "status": self.status,
         }
 
@@ -850,94 +856,214 @@ def build_expert_graph(inventory: ExpertInventorySnapshot) -> ExpertGraphSnapsho
     )
 
 
-def _is_dag(member_ids: set[str], edges: Sequence[ExpertGraphEdge]) -> bool:
-    indegree = {member_id: 0 for member_id in member_ids}
-    adjacency = {member_id: [] for member_id in member_ids}
-    for edge in edges:
-        adjacency[edge.source].append(edge.target)
-        indegree[edge.target] += 1
-    queue = sorted(node for node, degree in indegree.items() if degree == 0)
-    visited = 0
-    while queue:
-        current = queue.pop(0)
-        visited += 1
-        for target in sorted(adjacency[current]):
-            indegree[target] -= 1
-            if indegree[target] == 0:
-                queue.append(target)
-                queue.sort()
-    return visited == len(member_ids)
+_TEAM_RELATION_FACTORS = {"can_feed": 1.0, "complements": 0.85}
 
 
-def _is_connected(member_ids: set[str], edges: Sequence[ExpertGraphEdge]) -> bool:
-    adjacency = {member_id: set() for member_id in member_ids}
-    for edge in edges:
-        adjacency[edge.source].add(edge.target)
-        adjacency[edge.target].add(edge.source)
-    seen: set[str] = set()
-    pending = [min(member_ids)]
-    while pending:
-        current = pending.pop()
-        if current in seen:
+def _pair_key(left: str, right: str) -> frozenset[str]:
+    return frozenset((left, right))
+
+
+def _relation_strength(edge: ExpertGraphEdge) -> float:
+    return edge.confidence * _TEAM_RELATION_FACTORS.get(edge.type, 0.0)
+
+
+def _candidate_member_sets(
+    eligible: Sequence[ExpertDescriptor],
+    positive_edges: Sequence[ExpertGraphEdge],
+    conflict_pairs: set[frozenset[str]],
+    *,
+    min_members: int,
+    max_members: int,
+) -> tuple[frozenset[str], ...]:
+    """Grow a bounded number of high-affinity groups without n-choose-k search.
+
+    A seed is created for every node and for its strongest relationship.  Each
+    seed then greedily adds the compatible node with the strongest aggregate
+    affinity to the current group.  For dozens of experts this is O(n² * k),
+    instead of enumerating every 3..6 member combination.
+    """
+
+    by_id = {member.id: member for member in eligible}
+    affinity: dict[frozenset[str], float] = {}
+    neighbors: dict[str, set[str]] = {member.id: set() for member in eligible}
+    for edge in positive_edges:
+        pair = _pair_key(edge.source, edge.target)
+        if len(pair) != 2:
             continue
-        seen.add(current)
-        pending.extend(sorted(adjacency[current] - seen))
-    return seen == member_ids
+        affinity[pair] = max(affinity.get(pair, 0.0), _relation_strength(edge))
+        neighbors[edge.source].add(edge.target)
+        neighbors[edge.target].add(edge.source)
+
+    seeds: set[tuple[str, ...]] = {(member.id,) for member in eligible}
+    for member_id in sorted(by_id):
+        ranked_neighbors = sorted(
+            neighbors[member_id],
+            key=lambda target: (-affinity[_pair_key(member_id, target)], target),
+        )
+        if ranked_neighbors:
+            seeds.add(tuple(sorted((member_id, ranked_neighbors[0]))))
+
+    groups: set[frozenset[str]] = set()
+    for seed in sorted(seeds):
+        selected = list(seed)
+        if any(pair <= set(selected) for pair in conflict_pairs):
+            continue
+        while len(selected) < max_members:
+            options: list[tuple[float, float, int, str]] = []
+            selected_set = set(selected)
+            for candidate_id in sorted(by_id.keys() - selected_set):
+                if any(
+                    _pair_key(candidate_id, existing) in conflict_pairs
+                    for existing in selected
+                ):
+                    continue
+                strengths = [
+                    affinity.get(_pair_key(candidate_id, existing), 0.0)
+                    for existing in selected
+                ]
+                if not any(strengths):
+                    continue
+                descriptor = by_id[candidate_id]
+                options.append(
+                    (
+                        sum(strengths),
+                        max(strengths),
+                        len(_effective_skills(descriptor)) + len(descriptor.tags),
+                        candidate_id,
+                    )
+                )
+            if not options:
+                break
+            best = min(
+                options,
+                key=lambda item: (-item[0], -item[1], -item[2], item[3]),
+            )
+            selected.append(best[3])
+            if len(selected) >= min_members:
+                groups.add(frozenset(selected))
+    return tuple(sorted(groups, key=lambda group: (len(group), sorted(group))))
 
 
-def _topological_order(
-    member_ids: set[str], edges: Sequence[ExpertGraphEdge]
-) -> list[str]:
-    indegree = {member_id: 0 for member_id in member_ids}
-    adjacency = {member_id: [] for member_id in member_ids}
-    for edge in edges:
-        adjacency[edge.source].append(edge.target)
-        indegree[edge.target] += 1
-    queue = sorted(node for node, degree in indegree.items() if degree == 0)
-    result: list[str] = []
-    while queue:
-        current = queue.pop(0)
-        result.append(current)
-        for target in sorted(adjacency[current]):
-            indegree[target] -= 1
-            if indegree[target] == 0:
-                queue.append(target)
-                queue.sort()
-    return result
+def _public_primary_output(member: ExpertDescriptor) -> ExpertPort | None:
+    return next(
+        (
+            output
+            for output in member.outputs
+            if output.primary and output.visibility == "public"
+        ),
+        None,
+    )
+
+
+def _route_step(
+    member: ExpertDescriptor,
+    *,
+    index: int,
+    dependencies: Sequence[str] = (),
+    handoff: ExpertGraphEdge | None = None,
+    include_final_output: bool = True,
+) -> dict[str, Any]:
+    step: dict[str, Any] = {
+        "step": index,
+        "expertId": member.id,
+        "expertName": member.name,
+        "dependsOn": list(dependencies),
+        "handoffs": [],
+    }
+    if handoff is not None:
+        step["handoffs"] = [
+            {
+                "edgeId": handoff.id,
+                "fromExpertId": handoff.source,
+                "evidence": [dict(item) for item in handoff.evidence],
+            }
+        ]
+    final_output = _public_primary_output(member) if include_final_output else None
+    if final_output is not None:
+        step["finalOutput"] = final_output.to_dict()
+    return step
+
+
+def _route_examples(
+    members: Sequence[ExpertDescriptor],
+    positive_edges: Sequence[ExpertGraphEdge],
+) -> tuple[dict[str, Any], ...]:
+    member_by_id = {member.id: member for member in members}
+    routes: list[dict[str, Any]] = []
+    for member in sorted(members, key=lambda item: item.id):
+        intent = (
+            member.quick_prompts[0]
+            if member.quick_prompts
+            else f"只需要{member.name}独立完成其擅长任务"
+        )
+        routes.append(
+            {
+                "id": f"single-{member.id}",
+                "type": "single",
+                "title": f"{member.name}直达",
+                "intent": intent,
+                "selectedMemberIds": [member.id],
+                "steps": [_route_step(member, index=1)],
+            }
+        )
+
+    for edge in sorted(
+        positive_edges,
+        key=lambda item: (item.type != "can_feed", -item.confidence, item.id),
+    ):
+        source = member_by_id[edge.source]
+        target = member_by_id[edge.target]
+        if edge.type == "can_feed":
+            steps = [
+                _route_step(source, index=1, include_final_output=False),
+                _route_step(
+                    target,
+                    index=2,
+                    dependencies=(source.id,),
+                    handoff=edge,
+                ),
+            ]
+            route_type = "serial"
+            title = f"{source.name} → {target.name}"
+            intent = f"先由{source.name}完成前置工作，再交给{target.name}产出结果"
+        else:
+            steps = [
+                _route_step(source, index=1),
+                _route_step(target, index=2),
+            ]
+            route_type = "parallel"
+            title = f"{source.name} + {target.name}"
+            intent = f"需要{source.name}和{target.name}从不同角度并行协作"
+        routes.append(
+            {
+                "id": f"{route_type}-{edge.id}",
+                "type": route_type,
+                "title": title,
+                "intent": intent,
+                "selectedMemberIds": [source.id, target.id],
+                "steps": steps,
+                "relationEdgeIds": [edge.id],
+            }
+        )
+    # Keep every single-member route visible, then reserve space for both serial
+    # and parallel examples so a dense graph cannot crowd out one execution mode.
+    singles = [route for route in routes if route["type"] == "single"]
+    serial = [route for route in routes if route["type"] == "serial"]
+    parallel = [route for route in routes if route["type"] == "parallel"]
+    selected = [*singles, *serial[:6], *parallel[:6]]
+    if len(selected) < 18:
+        selected_ids = {route["id"] for route in selected}
+        selected.extend(route for route in routes if route["id"] not in selected_ids)
+    return tuple(selected[:18])
 
 
 def _candidate_for(
     graph: ExpertGraphSnapshot,
     members: Sequence[ExpertDescriptor],
-    hard_edges: Sequence[ExpertGraphEdge],
+    positive_edges: Sequence[ExpertGraphEdge],
 ) -> ExpertTeamCandidate:
-    member_by_id = {member.id: member for member in members}
-    member_ids = set(member_by_id)
-    order = _topological_order(member_ids, hard_edges)
-    outdegree = {member_id: 0 for member_id in member_ids}
-    indegree = {member_id: 0 for member_id in member_ids}
-    for edge in hard_edges:
-        outdegree[edge.source] += 1
-        indegree[edge.target] += 1
-    sinks = [member_id for member_id in order if outdegree[member_id] == 0]
-    # The miner validates this invariant before entering candidate rendering.
-    # Keeping the assertion here prevents a future caller from silently choosing
-    # one of multiple final producers and exposing a non-deterministic main artifact.
-    if len(sinks) != 1:
-        raise ValueError("expert team candidate must have exactly one sink")
-    leader_id = sinks[0]
-    leader = member_by_id[leader_id]
-    final_outputs = [
-        output
-        for output in leader.outputs
-        if output.primary and output.visibility == "public"
-    ]
-    if len(final_outputs) != 1:
-        raise ValueError(
-            "expert team sink must declare exactly one public primary output"
-        )
-    final_output = final_outputs[0]
-
+    members = tuple(sorted(members, key=lambda item: item.id))
+    member_ids = {member.id for member in members}
     semantic_edges = [
         edge
         for edge in graph.edges
@@ -947,111 +1073,185 @@ def _candidate_for(
         (edge.confidence for edge in semantic_edges if edge.type == "overlaps"),
         default=0.0,
     )
-    contract_points = (
-        40.0 * sum(edge.confidence for edge in hard_edges) / len(hard_edges)
-    )
-    connectivity_points = 25.0 * min(1.0, len(hard_edges) / (len(members) - 1))
-    pair_diversities: list[float] = []
-    for left, right in itertools.combinations(members, 2):
-        pair_diversities.append(
-            1.0 - _jaccard(_effective_skills(left), _effective_skills(right))
+    best_relation_by_member = {
+        member.id: max(
+            (
+                _relation_strength(edge)
+                for edge in positive_edges
+                if member.id in {edge.source, edge.target}
+            ),
+            default=0.0,
         )
-    diversity_points = 15.0 * (
+        for member in members
+    }
+    relationship_points = 30.0 * sum(best_relation_by_member.values()) / len(members)
+    connectivity_points = 20.0 * min(
+        1.0,
+        len({_pair_key(edge.source, edge.target) for edge in positive_edges})
+        / (len(members) - 1),
+    )
+    pair_diversities = [
+        1.0 - _jaccard(_effective_skills(left), _effective_skills(right))
+        for left, right in itertools.combinations(members, 2)
+    ]
+    diversity_points = 20.0 * (
         sum(pair_diversities) / len(pair_diversities) if pair_diversities else 1.0
     )
+    route_types = {"single"}
+    route_types.update(
+        "serial" if edge.type == "can_feed" else "parallel" for edge in positive_edges
+    )
+    route_flexibility_points = 10.0 * len(route_types) / 3.0
     readiness_points = (
-        10.0
+        15.0
         * sum(
             member.reusable and member.status == _EXECUTABLE_STATUS
             for member in members
         )
         / len(members)
     )
-    simplicity_points = max(6.0, 10.0 - 2.0 * (len(members) - 2))
-    overlap_penalty = 15.0 * overlap_confidence
+    simplicity_points = max(2.0, 5.0 - 0.75 * (len(members) - 3))
+    overlap_penalty = 10.0 * overlap_confidence
     breakdown = {
-        "contractQuality": round(contract_points, 2),
+        "relationshipQuality": round(relationship_points, 2),
         "connectivity": round(connectivity_points, 2),
         "capabilityDiversity": round(diversity_points, 2),
+        "routeFlexibility": round(route_flexibility_points, 2),
         "readiness": round(readiness_points, 2),
         "simplicity": round(simplicity_points, 2),
         "overlapPenalty": round(-overlap_penalty, 2),
     }
     score = round(max(0.0, min(100.0, sum(breakdown.values()))), 2)
 
-    workflow: list[dict[str, Any]] = []
-    for index, member_id in enumerate(order, start=1):
-        incoming = sorted(
-            (edge for edge in hard_edges if edge.target == member_id),
-            key=lambda edge: (edge.source, edge.id),
-        )
-        step: dict[str, Any] = {
-            "step": index,
-            "expertId": member_id,
-            "expertName": member_by_id[member_id].name,
-            "dependsOn": sorted(edge.source for edge in incoming),
-            "handoffs": [
-                {
-                    "edgeId": edge.id,
-                    "fromExpertId": edge.source,
-                    "evidence": [dict(item) for item in edge.evidence],
-                }
-                for edge in incoming
-            ],
+    routes = _route_examples(members, positive_edges)
+    preferred_route = next(
+        (route for route in routes if route["type"] == "serial"),
+        next((route for route in routes if route["type"] == "parallel"), routes[0]),
+    )
+    workflow = tuple(dict(step) for step in preferred_route["steps"])
+    member_profiles = tuple(
+        {
+            "id": member.id,
+            "name": member.name,
+            "description": member.description,
+            "tags": list(member.tags),
+            "skills": list(member.skills),
+            "quickPrompts": list(member.quick_prompts[:3]),
+            "deliverables": list(member.deliverables[:8]),
+            "inputs": [item.to_dict() for item in member.inputs],
+            "outputs": [item.to_dict() for item in member.outputs],
         }
-        if member_id == leader_id:
-            step["finalOutput"] = final_output.to_dict()
-        workflow.append(step)
+        for member in members
+    )
 
-    # The user-visible promise must come from the executable artifact contract,
-    # not free-form metadata that may describe several secondary files.
-    deliverables = (final_output.description or final_output.id,)
-    # Keep the product entry point as simple as a popular standalone expert:
-    # orchestration details stay inside the team instead of leaking into a
-    # long, implementation-shaped user query.
-    quick_prompts = (f"帮我把这份材料一步做成{deliverables[0]}",)
+    deliverable_values: list[str] = []
+    quick_prompt_values: list[str] = []
+    for member in members:
+        for value in member.deliverables:
+            if value and value not in deliverable_values:
+                deliverable_values.append(value)
+        for output in member.outputs:
+            if output.primary and output.visibility == "public":
+                value = output.description or output.id
+                if value and value not in deliverable_values:
+                    deliverable_values.append(value)
+        for value in member.quick_prompts:
+            if value and value not in quick_prompt_values:
+                quick_prompt_values.append(value)
+    deliverables = tuple(deliverable_values[:8] or ["可直接使用的任务结果"])
+    quick_prompts = tuple(
+        quick_prompt_values[:3]
+        or [
+            f"帮我完成一个需要{'、'.join(member.name for member in members[:2])}协作的任务"
+        ]
+    )
+
+    incident_count = {
+        member.id: sum(
+            member.id in {edge.source, edge.target} for edge in positive_edges
+        )
+        for member in members
+    }
+    anchor = max(
+        members,
+        key=lambda member: (
+            incident_count[member.id],
+            _public_primary_output(member) is not None,
+            len(member.deliverables),
+            member.id,
+        ),
+    )
+    shared_tags = set(members[0].tags)
+    for member in members[1:]:
+        shared_tags &= set(member.tags)
+    team_name = (
+        f"{sorted(shared_tags)[0]}专家协作团" if shared_tags else f"{anchor.name}协作团"
+    )
     key = {
-        # Candidate identity is scoped to the participating expert versions,
-        # not the whole inventory.  Installing an unrelated/existing team must
-        # not mint a second ID for the exact same atomic collaboration.
         "members": sorted((member.id, member.content_hash) for member in members),
-        "edges": sorted(edge.id for edge in hard_edges),
-        # A new renderer/runtime contract must mint a new installable package
-        # identity instead of colliding with an older package that cannot be
-        # overwritten safely in place.
+        "edges": sorted(edge.id for edge in positive_edges),
         "materializerVersion": EXPERT_TEAM_MATERIALIZER_VERSION,
         "dispatchContract": EXPERT_TEAM_DISPATCH_CONTRACT,
     }
     return ExpertTeamCandidate(
         id=f"expert-team-{_digest(key, length=16)}",
-        name=f"{leader.name}协作团",
-        description=f"由{' → '.join(member_by_id[member_id].name for member_id in order)}按声明的产物契约协作完成任务。",
-        member_ids=tuple(order),
-        leader_id=leader_id,
-        workflow=tuple(workflow),
+        name=team_name,
+        description=(
+            f"主理人会理解需求，从 {len(members)} 位专业成员中按需选择最小充分的 1～{len(members)} 位；"
+            "简单任务单专家直达，复杂任务可串行交接或并行协作。"
+        ),
+        member_ids=tuple(member.id for member in members),
+        leader_id="leader",
+        workflow=workflow,
         score=score,
         score_breakdown=breakdown,
         quick_prompts=quick_prompts,
         deliverables=deliverables,
+        routing_policy={
+            "mode": "leader_selected",
+            "selection": "minimal_sufficient",
+            "minSelected": 1,
+            "maxSelected": len(members),
+            "allowSingleMember": True,
+            "allowSerial": True,
+            "allowParallel": True,
+            "graphRole": "discovery_and_routing_evidence",
+        },
+        member_profiles=member_profiles,
+        route_examples=routes,
     )
 
 
 def mine_expert_team_candidates(
     graph: ExpertGraphSnapshot,
     *,
-    min_members: int = 2,
-    max_members: int = 4,
+    min_members: int = 3,
+    max_members: int = 6,
     limit: int = 20,
 ) -> tuple[ExpertTeamCandidate, ...]:
-    """Mine connected executable DAGs; teams/invalid nodes never become members."""
-    if min_members < 2 or max_members < min_members or max_members > 4:
-        raise ValueError("成员数范围必须满足 2 <= min_members <= max_members <= 4")
+    """Mine bounded affinity groups; graph relations do not dictate execution.
+
+    ``can_feed`` is useful evidence for a possible serial route and
+    ``complements`` for a possible parallel route.  Neither relation requires
+    every roster member to run for every query.  ``min_members=2`` remains
+    accepted for callers that explicitly request legacy-sized candidates,
+    while product defaults mine 3..6 member teams.
+    """
+    if min_members < 2 or max_members < min_members or max_members > 6:
+        raise ValueError("成员数范围必须满足 2 <= min_members <= max_members <= 6")
     eligible = [
         node
         for node in graph.nodes
         if node.type == "agent" and node.reusable and node.status == _EXECUTABLE_STATUS
     ]
-    hard_edges = [edge for edge in graph.edges if edge.type == "can_feed"]
+    eligible_ids = {node.id for node in eligible}
+    positive_edges = [
+        edge
+        for edge in graph.edges
+        if edge.type in _TEAM_RELATION_FACTORS
+        and edge.source in eligible_ids
+        and edge.target in eligible_ids
+    ]
     conflict_pairs = {
         frozenset((edge.source, edge.target))
         for edge in graph.edges
@@ -1062,43 +1262,26 @@ def mine_expert_team_candidates(
         for node in graph.nodes
         if node.type == "team" and node.status == _EXECUTABLE_STATUS
     }
+    member_by_id = {member.id: member for member in eligible}
+    groups = _candidate_member_sets(
+        eligible,
+        positive_edges,
+        conflict_pairs,
+        min_members=min_members,
+        max_members=min(max_members, len(eligible)),
+    )
     candidates: list[ExpertTeamCandidate] = []
-    for size in range(min_members, min(max_members, len(eligible)) + 1):
-        for members in itertools.combinations(eligible, size):
-            member_ids = {member.id for member in members}
-            if any(pair <= member_ids for pair in conflict_pairs):
-                continue
-            internal = [
-                edge
-                for edge in hard_edges
-                if edge.source in member_ids and edge.target in member_ids
-            ]
-            if (
-                not internal
-                or not _is_connected(member_ids, internal)
-                or not _is_dag(member_ids, internal)
-            ):
-                continue
-            outdegree = {member_id: 0 for member_id in member_ids}
-            for edge in internal:
-                outdegree[edge.source] += 1
-            sinks = [
-                member_id for member_id, degree in outdegree.items() if degree == 0
-            ]
-            if len(sinks) != 1:
-                continue
-            sink = next(member for member in members if member.id == sinks[0])
-            public_primary_outputs = [
-                output
-                for output in sink.outputs
-                if output.primary and output.visibility == "public"
-            ]
-            if len(public_primary_outputs) != 1:
-                continue
-            candidate = _candidate_for(graph, members, internal)
-            if candidate.id in installed_team_ids:
-                candidate = replace(candidate, status="installed")
-            candidates.append(candidate)
+    for member_ids in groups:
+        members = [member_by_id[member_id] for member_id in sorted(member_ids)]
+        internal = [
+            edge
+            for edge in positive_edges
+            if edge.source in member_ids and edge.target in member_ids
+        ]
+        candidate = _candidate_for(graph, members, internal)
+        if candidate.id in installed_team_ids:
+            candidate = replace(candidate, status="installed")
+        candidates.append(candidate)
     candidates.sort(key=lambda item: (-item.score, len(item.member_ids), item.id))
     return tuple(candidates[: max(0, limit)])
 
@@ -1106,8 +1289,8 @@ def mine_expert_team_candidates(
 def mine_expert_teams(
     graph: ExpertGraphSnapshot,
     *,
-    min_members: int = 2,
-    max_members: int = 4,
+    min_members: int = 3,
+    max_members: int = 6,
     limit: int = 20,
 ) -> dict[str, Any]:
     """RPC-ready wrapper around :func:`mine_expert_team_candidates`."""
@@ -1130,8 +1313,8 @@ async def build_and_mine_expert_teams(
     source: ExpertPackageSource,
     *,
     created_at: str | None = None,
-    min_members: int = 2,
-    max_members: int = 4,
+    min_members: int = 3,
+    max_members: int = 6,
     limit: int = 20,
 ) -> dict[str, Any]:
     """One-call service for product adapters; all returned values are JSON-safe."""

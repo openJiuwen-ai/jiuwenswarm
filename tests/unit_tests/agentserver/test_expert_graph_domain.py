@@ -465,7 +465,7 @@ def test_missing_schema_is_needs_adapter_not_executable_can_feed() -> None:
     assert mine_expert_team_candidates(graph) == ()
 
 
-def test_miner_returns_connected_dag_candidates_and_excludes_team_nodes() -> None:
+def test_miner_returns_query_routed_candidates_and_excludes_team_nodes() -> None:
     first = _descriptor(
         "first",
         outputs=(ExpertPort(id="a", media_type="application/json", schema="a.v1"),),
@@ -507,22 +507,35 @@ def test_miner_returns_connected_dag_candidates_and_excludes_team_nodes() -> Non
         for candidate in candidates
         if set(candidate.member_ids) == {"first", "second", "last"}
     )
-    assert full_chain.member_ids == ("first", "second", "last")
-    assert full_chain.leader_id == "last"
+    assert full_chain.member_ids == ("first", "last", "second")
+    assert full_chain.leader_id == "leader"
     assert full_chain.status == "ready"
-    assert full_chain.score > 80
+    assert full_chain.score > 60
     assert sum(full_chain.score_breakdown.values()) == pytest.approx(full_chain.score)
-    assert full_chain.workflow[1]["dependsOn"] == ["first"]
-    assert full_chain.workflow[2]["dependsOn"] == ["second"]
-    assert full_chain.workflow[2]["finalOutput"] == {
-        "id": "page.html",
-        "mediaType": "text/html",
-        "schema": "campaign-page.v1",
-        "description": "",
-        "primary": True,
-        "visibility": "public",
+    assert 1 <= len(full_chain.workflow) < len(full_chain.member_ids)
+    assert full_chain.routing_policy == {
+        "mode": "leader_selected",
+        "selection": "minimal_sufficient",
+        "minSelected": 1,
+        "maxSelected": 3,
+        "allowSingleMember": True,
+        "allowSerial": True,
+        "allowParallel": True,
+        "graphRole": "discovery_and_routing_evidence",
     }
-    assert full_chain.deliverables == ("page.html",)
+    assert {profile["id"] for profile in full_chain.member_profiles} == {
+        "first",
+        "second",
+        "last",
+    }
+    assert {route["type"] for route in full_chain.route_examples} >= {
+        "single",
+        "serial",
+    }
+    assert any(
+        route["selectedMemberIds"] == ["first"] for route in full_chain.route_examples
+    )
+    assert "page.html" in full_chain.deliverables
     assert "existing-team" not in {
         member_id for candidate in candidates for member_id in candidate.member_ids
     }
@@ -544,6 +557,9 @@ def test_miner_returns_connected_dag_candidates_and_excludes_team_nodes() -> Non
         "scoreBreakdown",
         "quickPrompts",
         "deliverables",
+        "routingPolicy",
+        "memberProfiles",
+        "routeExamples",
         "status",
     }
 
@@ -580,7 +596,9 @@ def test_candidate_id_is_stable_when_unrelated_team_is_added() -> None:
         ),
     )
     before = mine_expert_team_candidates(
-        build_expert_graph(_inventory(producer, consumer))
+        build_expert_graph(_inventory(producer, consumer)),
+        min_members=2,
+        max_members=2,
     )[0]
     existing_team = _descriptor(
         "installed-team",
@@ -588,7 +606,9 @@ def test_candidate_id_is_stable_when_unrelated_team_is_added() -> None:
         reusable=False,
     )
     after = mine_expert_team_candidates(
-        build_expert_graph(_inventory(producer, consumer, existing_team))
+        build_expert_graph(_inventory(producer, consumer, existing_team)),
+        min_members=2,
+        max_members=2,
     )[0]
 
     assert after.id == before.id
@@ -617,7 +637,9 @@ def test_installed_team_marks_same_candidate_as_installed() -> None:
         ),
     )
     initial = mine_expert_team_candidates(
-        build_expert_graph(_inventory(producer, consumer))
+        build_expert_graph(_inventory(producer, consumer)),
+        min_members=2,
+        max_members=2,
     )[0]
     installed_team = _descriptor(
         initial.id,
@@ -626,14 +648,16 @@ def test_installed_team_marks_same_candidate_as_installed() -> None:
     )
 
     refreshed = mine_expert_team_candidates(
-        build_expert_graph(_inventory(producer, consumer, installed_team))
+        build_expert_graph(_inventory(producer, consumer, installed_team)),
+        min_members=2,
+        max_members=2,
     )[0]
 
     assert refreshed.id == initial.id
     assert refreshed.status == "installed"
 
 
-def test_miner_rejects_fork_with_multiple_sinks() -> None:
+def test_miner_accepts_fork_with_multiple_possible_routes() -> None:
     source = _descriptor(
         "source",
         outputs=(
@@ -675,10 +699,13 @@ def test_miner_rejects_fork_with_multiple_sinks() -> None:
         build_expert_graph(_inventory(source, sink_one, sink_two))
     )
 
-    assert not any(len(candidate.member_ids) == 3 for candidate in candidates)
+    fork = next(candidate for candidate in candidates if len(candidate.member_ids) == 3)
+    assert set(fork.member_ids) == {"source", "sink-one", "sink-two"}
+    assert sum(route["type"] == "serial" for route in fork.route_examples) == 2
+    assert all(len(route["selectedMemberIds"]) <= 2 for route in fork.route_examples)
 
 
-def test_miner_requires_unique_public_primary_output_on_sink() -> None:
+def test_miner_does_not_require_a_public_primary_output_to_form_a_roster() -> None:
     producer = _descriptor(
         "producer",
         outputs=(
@@ -702,13 +729,18 @@ def test_miner_requires_unique_public_primary_output_on_sink() -> None:
     )
 
     candidates = mine_expert_team_candidates(
-        build_expert_graph(_inventory(producer, no_public_primary))
+        build_expert_graph(_inventory(producer, no_public_primary)),
+        min_members=2,
+        max_members=2,
     )
 
-    assert candidates == ()
+    assert len(candidates) == 1
+    assert candidates[0].deliverables
 
 
-def test_miner_rejects_cycles_conflicts_and_non_reusable_nodes() -> None:
+def test_miner_allows_route_cycles_but_rejects_conflicts_and_non_reusable_nodes() -> (
+    None
+):
     a = _descriptor(
         "a",
         inputs=(ExpertPort(id="b", media_type="application/json", schema="b.v1"),),
@@ -732,12 +764,41 @@ def test_miner_rejects_cycles_conflicts_and_non_reusable_nodes() -> None:
     )
 
     candidates = mine_expert_team_candidates(
-        build_expert_graph(_inventory(a, b, c, pending))
+        build_expert_graph(_inventory(a, b, c, pending)),
+        min_members=2,
+        max_members=2,
     )
 
-    assert not any(set(candidate.member_ids) == {"a", "b"} for candidate in candidates)
+    assert any(set(candidate.member_ids) == {"a", "b"} for candidate in candidates)
     assert not any(set(candidate.member_ids) == {"a", "c"} for candidate in candidates)
     assert not any("pending" in candidate.member_ids for candidate in candidates)
+
+
+def test_miner_forms_three_to_six_member_complementary_teams_deterministically() -> (
+    None
+):
+    experts = tuple(
+        _descriptor(
+            f"expert-{index:02d}",
+            skills=(f"skill-{index:02d}",),
+            tags=("内容创作",),
+        )
+        for index in range(40)
+    )
+    graph = build_expert_graph(_inventory(*experts))
+
+    first = mine_expert_team_candidates(graph, limit=12)
+    second = mine_expert_team_candidates(graph, limit=12)
+
+    assert len(first) == 12
+    assert [candidate.id for candidate in first] == [
+        candidate.id for candidate in second
+    ]
+    assert all(3 <= len(candidate.member_ids) <= 6 for candidate in first)
+    assert all(
+        any(route["type"] == "parallel" for route in candidate.route_examples)
+        for candidate in first
+    )
 
 
 class _FakeSource:
@@ -792,12 +853,14 @@ async def test_rpc_ready_end_to_end_service(tmp_path: Path) -> None:
     payload = await build_and_mine_expert_teams(
         _FakeSource({"producer": producer, "consumer": consumer}),
         created_at=NOW,
+        min_members=2,
+        max_members=2,
     )
 
     assert payload["inventory"]["stats"]["expertCount"] == 2
     assert payload["graph"]["stats"]["edgeTypeCounts"]["can_feed"] == 1
     assert payload["mining"]["stats"]["candidateCount"] == 1
     assert payload["mining"]["candidates"][0]["memberIds"] == [
-        "producer",
         "consumer",
+        "producer",
     ]

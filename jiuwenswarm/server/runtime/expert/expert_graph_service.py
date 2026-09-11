@@ -74,8 +74,8 @@ class ExpertGraphService:
         self._graph: ExpertGraphSnapshot | None = None
         self._candidates: dict[str, dict[str, Any]] = {}
         self._candidate_graph_id = ""
-        self._mine_min_members = 2
-        self._mine_max_members = 4
+        self._mine_min_members = 3
+        self._mine_max_members = 6
         self._mine_limit = 20
         self._lock = asyncio.Lock()
 
@@ -168,10 +168,10 @@ class ExpertGraphService:
         params = params or {}
         graph_id = self._text_param(params, "graph_id", "graphId")
         min_members = self._int_param(
-            params, "min_members", "minMembers", default=2, minimum=2, maximum=4
+            params, "min_members", "minMembers", default=3, minimum=2, maximum=6
         )
         max_members = self._int_param(
-            params, "max_members", "maxMembers", default=4, minimum=2, maximum=4
+            params, "max_members", "maxMembers", default=6, minimum=2, maximum=6
         )
         limit = self._int_param(params, "limit", default=20, minimum=0, maximum=100)
         if max_members < min_members:
@@ -357,9 +357,7 @@ class ExpertGraphService:
                 expert=materialized,
                 inventory=refreshed.to_dict() if refreshed is not None else None,
                 graph=(
-                    refreshed_graph.to_dict()
-                    if refreshed_graph is not None
-                    else None
+                    refreshed_graph.to_dict() if refreshed_graph is not None else None
                 ),
                 candidates=refreshed_candidates,
                 source_refreshed=source_refreshed,
