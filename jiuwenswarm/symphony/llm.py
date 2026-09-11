@@ -211,6 +211,11 @@ class LLMConfig:
             request_config["temperature"] = self.temperature
         if self.top_p is not None:
             request_config["top_p"] = self.top_p
+        from jiuwenswarm.common.reasoning_config import resolve_sampling_override
+
+        override = resolve_sampling_override(self.base_url, self.model)
+        if override:
+            request_config.update(override)
         return request_config
 
     def create_model(self):
