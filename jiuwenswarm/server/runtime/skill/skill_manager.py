@@ -1918,6 +1918,7 @@ class SkillManager:
 
                     # 复制到 skills 目录
                     shutil.copytree(skill_dir, dest)
+                    self._normalize_skill_permissions(dest)
                     for mirror_root in self._get_mirror_skills_dirs():
                         mirror_dest = _safe_child_path(mirror_root, slug, "skill")
                         if mirror_dest.exists():
@@ -1926,6 +1927,7 @@ class SkillManager:
                             _safe_rmtree(mirror_dest)
                         mirror_root.mkdir(parents=True, exist_ok=True)
                         shutil.copytree(skill_dir, mirror_dest)
+                        self._normalize_skill_permissions(mirror_dest)
 
                     # skill_name 必须与磁盘扫描出的规范名（_resolve_skill_name）保持一致，
                     # 否则会被 _register_unmanaged_local_skills 当作"未登记的本地技能"
@@ -2447,6 +2449,9 @@ class SkillManager:
                 dest.rename(backup)
                 moved_old = True
             staging.rename(dest)
+            # source install / prebuilt 等经 zip 解压的技能在此统一归一化权限，
+            # 避免沙箱 daemon（非 root uid）读 SKILL.md 时 EACCES
+            self._normalize_skill_permissions(dest)
             record = self.record_skill_installation(
                 name=skill_name,
                 source_type=normalized_source_type,
@@ -3037,6 +3042,7 @@ class SkillManager:
                     _safe_rmtree(dest)
 
                 shutil.copytree(skill_dir, dest)
+                self._normalize_skill_permissions(dest)
                 if use_custom_output:
                     return {
                         "success": True,
@@ -3055,6 +3061,7 @@ class SkillManager:
                         _safe_rmtree(mirror_dest)
                     mirror_root.mkdir(parents=True, exist_ok=True)
                     shutil.copytree(skill_dir, mirror_dest)
+                    self._normalize_skill_permissions(mirror_dest)
 
                 installed_at = datetime.now(timezone.utc).isoformat()
                 # force 覆盖时：清理同 name 同 source 的旧 origin 记录，避免 asset_id 不同导致残留
@@ -3323,6 +3330,7 @@ class SkillManager:
             _safe_rmtree(dest)
 
         shutil.copytree(skill_dir, dest)
+        self._normalize_skill_permissions(dest)
         for mirror_root in self._get_mirror_skills_dirs():
             mirror_dest = _safe_child_path(mirror_root, skill_name, "skill")
             if mirror_dest.exists():
@@ -3331,6 +3339,7 @@ class SkillManager:
                 _safe_rmtree(mirror_dest)
             mirror_root.mkdir(parents=True, exist_ok=True)
             shutil.copytree(skill_dir, mirror_dest)
+            self._normalize_skill_permissions(mirror_dest)
         return None
 
     def _skillnet_install_files_sync(
@@ -3657,6 +3666,7 @@ class SkillManager:
             try:
                 dest.mkdir(parents=True, exist_ok=True)
                 shutil.copy2(src, dest / src.name)
+                self._normalize_skill_permissions(dest)
             except OSError as exc:
                 return _handle_copy_error(exc, dest, "local import file", src)
         elif src.is_dir():
@@ -3677,6 +3687,7 @@ class SkillManager:
                 _safe_rmtree(dest)
             try:
                 shutil.copytree(src, dest)
+                self._normalize_skill_permissions(dest)
             except OSError as exc:
                 return _handle_copy_error(exc, dest, "local import dir", src)
         else:
@@ -3739,6 +3750,7 @@ class SkillManager:
         if dest.exists():
             _safe_rmtree(dest)
         shutil.copytree(skill_dir, dest)
+        self._normalize_skill_permissions(dest)
         logger.info(
             "[SkillManager] web skill installed to disk: name=%s dest=%s",
             safe,
@@ -5298,6 +5310,36 @@ class SkillManager:
                 dest_path.parent.mkdir(parents=True, exist_ok=True)
                 with extracted:
                     dest_path.write_bytes(extracted.read())
+
+    @staticmethod
+    def _normalize_skill_permissions(skill_dir: Path) -> None:
+        """归一化技能目录权限（目录 0755、文件 0644），失败不阻断安装流程。
+
+        mkdir/write_bytes 落地的文件 mode 受进程 umask 影响（umask 0077 时为
+        0600/0700），jiuwenbox 沙箱 daemon 以非 root uid（app=1000）读取工作区
+        技能文件会 EACCES（表现为 read_file/download 409 Permission denied）。
+        内置技能走 copytree 保留包内 0644/0755 不受影响，因此各安装入口在实体
+        落地后统一调用本方法归一化。symlink 条目跳过（不修改链接目标权限）。
+        """
+        if os.name != "posix" or not skill_dir.exists():
+            return
+        try:
+            os.chmod(skill_dir, 0o755)
+            for root, dirs, files in os.walk(skill_dir):
+                for name in dirs:
+                    path = os.path.join(root, name)
+                    if not os.path.islink(path):
+                        os.chmod(path, 0o755)
+                for name in files:
+                    path = os.path.join(root, name)
+                    if not os.path.islink(path):
+                        os.chmod(path, 0o644)
+        except OSError as exc:
+            logger.warning(
+                "[SkillManager] normalize skill permissions failed: dir=%s error=%s",
+                skill_dir,
+                exc,
+            )
 
     @staticmethod
     def _detect_archive_format(body: bytes) -> str:
