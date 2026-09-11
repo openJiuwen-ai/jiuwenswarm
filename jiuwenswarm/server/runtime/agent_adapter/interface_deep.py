@@ -487,6 +487,9 @@ from jiuwenswarm.common.mcp_config import (
     unregister_live_office_claw_tool_instance,
     validate_office_claw_mcp_config,
 )
+from jiuwenswarm.common.deepagent_task_plan_binding_patch import (
+    apply_deepagent_task_plan_binding_patch,
+)
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
 from jiuwenswarm.perf.interface_hooks import (
     clear_perf_summary_context,
@@ -2102,6 +2105,8 @@ class JiuWenSwarmDeepAdapter:
         # killed remote MCP server fails fast instead of hanging on the MCP
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
+        # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
+        apply_deepagent_task_plan_binding_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 企业多租户：企业版下可用外部传入的隔离 workspace / 租户 ID
