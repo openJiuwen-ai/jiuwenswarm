@@ -53,17 +53,15 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
             "type": "string",
             "minLength": 1,
             "description": (
-                "完整的问题文本（必填，前端原样展示，必须自包含完整题目，"
-                "禁止只写『答案是…』等缩写）/ Complete question text shown to the "
-                "user as-is; must be self-contained (do not write abbreviated "
-                "tails like 'The answer is …')."
+                "Complete question text shown to the user as-is; must be "
+                "self-contained (do not write abbreviated tails like "
+                "'The answer is …')."
             ),
         },
         "header": {
             "type": "string",
             "description": (
-                "简短标签，不要放题目内容 / A short label "
-                "(do not put the question itself here)."
+                "A short label (do not put the question itself here)."
             ),
         },
         "options": {
@@ -192,14 +190,14 @@ class StructuredAskUserPayload(BaseModel):
 class StructuredAskUserTool(Tool):
     """AskUser tool with extended schema supporting structured questions."""
 
-    def __init__(self, language: str = "cn", agent_id: Optional[str] = None):
+    def __init__(self, language: str = "en", agent_id: Optional[str] = None):
         input_params = (
-            EXTENDED_INPUT_PARAMS_EN
-            if language == "en"
-            else EXTENDED_INPUT_PARAMS_CN
+            EXTENDED_INPUT_PARAMS_CN
+            if language == "cn"
+            else EXTENDED_INPUT_PARAMS_EN
         )
         description = (
-            _EXTENDED_DESCRIPTION_EN if language == "en" else _EXTENDED_DESCRIPTION_CN
+            _EXTENDED_DESCRIPTION_CN if language == "cn" else _EXTENDED_DESCRIPTION_EN
         )
         final_tool_id = (
             f"ask_user_{agent_id}" if agent_id else f"ask_user_{uuid.uuid4().hex}"

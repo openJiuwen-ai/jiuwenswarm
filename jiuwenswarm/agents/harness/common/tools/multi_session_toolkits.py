@@ -149,7 +149,7 @@ class MultiSessionToolkit:
                 self._update_session(session_id, Status.COMPLETED, result_str)
                 await self.notify(session_id, Status.COMPLETED, result=result_str)
             except asyncio.TimeoutError:
-                timeout_msg = f"任务超时（超过 {self._task_timeout:.0f} 秒）"
+                timeout_msg = f"Task timed out (exceeded {self._task_timeout:.0f}s)"
                 logger.warning(
                     "[MultiSessionToolkit] 协程超时 session_id=%s timeout=%.1fs",
                     session_id,
@@ -159,7 +159,7 @@ class MultiSessionToolkit:
                 await self.notify(session_id, Status.ERROR, error=timeout_msg)
             except asyncio.CancelledError:
                 logger.info("[MultiSessionToolkit] 协程已取消 session_id=%s", session_id)
-                self._update_session(session_id, Status.CANCELLED, "任务已取消")
+                self._update_session(session_id, Status.CANCELLED, "Task cancelled")
                 await self.notify(session_id, Status.CANCELLED)
                 raise
             except Exception as e:
@@ -263,7 +263,7 @@ class MultiSessionToolkit:
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
             server = AgentWebSocketServer.get_instance()
 
-            session_result_summary = "后台会话任务均已完成：\n"
+            session_result_summary = "All background session tasks are completed:\n"
             for st in self.sessions:
                 session_result_summary += (f"\nsession_id: {st.session_id}\n"
                                            f"description: {st.description}\nresult: {st.result}\n")
@@ -369,7 +369,7 @@ class MultiSessionToolkit:
                 self._tasks[session_id] = task
                 created.append(session_id)
             except Exception as e:
-                error_msg = f"创建任务失败: {str(e)}"
+                error_msg = f"Failed to create task: {str(e)}"
                 logger.error(
                     "[MultiSessionToolkit] 创建协程失败 [%d/%d] description=%s error=%s",
                     i + 1,
@@ -379,11 +379,11 @@ class MultiSessionToolkit:
                 )
                 failed.append(f"{task_description[:40]}... - {error_msg}")
 
-        result_msg = f"已创建 {len(created)} 个协程"
+        result_msg = f"Created {len(created)} session tasks"
         if created:
             result_msg += f": {', '.join(created)}"
         if failed:
-            result_msg += f"\n创建失败 {len(failed)} 个: " + "; ".join(failed)
+            result_msg += f"\nFailed to create {len(failed)}: " + "; ".join(failed)
 
         logger.info(
             "[MultiSessionToolkit] create_new_sessions 完成 成功=%d 失败=%d",
@@ -406,17 +406,17 @@ class MultiSessionToolkit:
                 session_id,
                 list(self._tasks.keys()),
             )
-            return f"未找到 session_id={session_id}"
+            return f"session_id={session_id} not found"
         if task.done():
             logger.info("[MultiSessionToolkit] cancel_session session_id=%s 已结束，无需取消", session_id)
-            return f"session_id={session_id} 已结束"
+            return f"session_id={session_id} already finished"
         task.cancel()
         try:
             await asyncio.gather(task, return_exceptions=True)
         except asyncio.CancelledError:
             pass
         logger.info("[MultiSessionToolkit] cancel_session 已取消 session_id=%s", session_id)
-        return f"已取消 session_id={session_id}"
+        return f"Cancelled session_id={session_id}"
 
     async def list_all_sessions(self) -> str:
         """List all session tasks with status."""
@@ -426,7 +426,7 @@ class MultiSessionToolkit:
             len(self.sessions),
         )
         if not self.sessions:
-            return "暂无协程"
+            return "No session tasks"
         lines = []
         for st in self.sessions:
             lines.append(f"{st.session_id} | {st.description} | {st.status.value} | {st.result}")
@@ -453,8 +453,9 @@ class MultiSessionToolkit:
             make_tool(
                 name="session_new",
                 description=(
-                    "创建多个协程任务。接收任务描述列表，每个任务创建一个子 agent 并异步运行。"
-                    "协程完成后会通过 notify 发送结果。"
+                    "Create multiple background session tasks. Accepts a list of task "
+                    "descriptions; each task spawns a sub-agent and runs asynchronously. "
+                    "Results are pushed via notify when a task completes."
                 ),
                 input_params={
                     "type": "object",
@@ -462,7 +463,7 @@ class MultiSessionToolkit:
                         "task_descriptions": {
                             "type": "array",
                             "items": {"type": "string"},
-                            "description": "任务描述列表",
+                            "description": "List of task descriptions",
                         }
                     },
                     "required": ["task_descriptions"],
@@ -471,13 +472,13 @@ class MultiSessionToolkit:
             ),
             make_tool(
                 name="session_cancel",
-                description="根据 session_id 取消正在运行的协程。",
+                description="Cancel a running session task by session_id.",
                 input_params={
                     "type": "object",
                     "properties": {
                         "session_id": {
                             "type": "string",
-                            "description": "要取消的协程 session_id",
+                            "description": "The session_id of the task to cancel",
                         }
                     },
                     "required": ["session_id"],
@@ -486,7 +487,7 @@ class MultiSessionToolkit:
             ),
             make_tool(
                 name="session_list",
-                description="查看所有协程列表及其状态（session_id | description | status | result）。",
+                description="List all session tasks and their status (session_id | description | status | result).",
                 input_params={"type": "object", "properties": {}},
                 func=self.list_all_sessions,
             ),

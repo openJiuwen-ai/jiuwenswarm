@@ -82,7 +82,7 @@ async def invoke_remote_agent(inputs: dict[str, Any], **kwargs: Any) -> dict[str
                 last_frame = frame
     except Exception as exc:  # noqa: BLE001
         logger.warning("[agent_as_a_tool] runtime agent failed: %s", exc)
-        return {"success": False, "error": f"AgentRuntime 调用失败: {exc}"}
+        return {"success": False, "error": f"AgentRuntime call failed: {exc}"}
 
     return {"result": _extract_context_text(last_frame), "success": True}
 

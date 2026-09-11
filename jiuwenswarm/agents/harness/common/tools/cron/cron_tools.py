@@ -277,7 +277,9 @@ class CronTools:
             if str(d.get("mode") or "").strip().lower() == _PROACTIVE_TICK_MODE:
                 d["protected"] = True
                 d["protected_reason"] = (
-                    "由主动推荐开关自动维护，不可删除/启停；如需关闭请到设置→主动推荐关闭开关。"
+                    "Automatically managed by the proactive recommendation toggle in "
+                    "Settings; cannot be deleted/enabled/disabled. To turn it off, "
+                    "disable the proactive recommendation toggle in Settings."
                 )
             out.append(d)
         return out
@@ -476,7 +478,9 @@ class CronTools:
         existing = await self._local_store.get_job(job_id)
         if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
             raise RuntimeError(
-                "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
+                "Proactive recommendation cron jobs are controlled by the "
+                "Settings→Proactive Recommendation toggle and cannot be toggled "
+                "manually; go to Settings→Proactive Recommendation."
             )
         job = await self._local_store.update_job(job_id, {"enabled": bool(enabled)})
         try:
@@ -663,7 +667,7 @@ class CronTools:
                                     "type": "string",
                                     "enum": [e.value for e in CronTargetChannel],
                                     "description": (
-                                        "推送频道：web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
+                                        "Push channels: web/tui/feishu/dingtalk/whatsapp/wecom/xiaoyi/wechat"
                                     ),
                                 },
                                 "mode": {

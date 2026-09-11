@@ -439,7 +439,7 @@ class SymphonyToolkit:
                 "symphony_compose_score",
                 (
                     "MUST call before answering when the user says to use skill(s) "
-                    "or 技能, or when skill capabilities, skill chaining, skill ordering, "
+                    "or skills, or when skill capabilities, skill chaining, skill ordering, "
                     "or a specialized toolchain could help complete the task. When you identify, "
                     "inspect, or recommend installed Skills that are relevant to the task, you MUST "
                     "pass their exact identifiers or names as candidate_skill_ids. Do not omit "

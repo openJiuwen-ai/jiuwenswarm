@@ -82,10 +82,11 @@ def _parse_time_string_ymd_hhmmss(time_str: str) -> int:
 @tool(
     name="create_calendar_event",
     description=(
-        "在用户设备上创建日程。需要提供日程标题、开始时间和结束时间。"
-        "时间格式必须为：yyyy-mm-dd hh:mm:ss（例如：2024-01-15 14:30:00）。"
-        "注意：该工具执行时间较长（最多60秒），请勿重复调用，超时或失败时最多重试一次。\n"
-        "  注意事项：使用该工具之前需获取当前真实时间\n"
+        "Creates a calendar event on the user's device. Requires the event title, start time, and end time. "
+        "Time format must be: yyyy-mm-dd hh:mm:ss (e.g.: 2024-01-15 14:30:00). "
+        "Note: this tool takes a long time to run (up to 60 seconds); do not call it repeatedly, "
+        "and retry at most once on timeout or failure.\n"
+        "  Note: get the current real time before using this tool\n"
     ),
 )
 async def create_calendar_event(
@@ -111,11 +112,11 @@ async def create_calendar_event(
 
         # 验证参数
         if not title:
-            raise ToolInputError("缺少必填参数 title（日程标题）")
+            raise ToolInputError("Missing required parameter title (event title)")
         if not dt_start:
-            raise ToolInputError("缺少必填参数 dt_start（开始时间）")
+            raise ToolInputError("Missing required parameter dt_start (start time)")
         if not dt_end:
-            raise ToolInputError("缺少必填参数 dt_end（结束时间）")
+            raise ToolInputError("Missing required parameter dt_end (end time)")
 
         # 转换时间字符串为时间戳
         try:
@@ -125,7 +126,7 @@ async def create_calendar_event(
             dt_end_ms = int(end_dt.timestamp() * 1000)
         except ValueError:
             raise ToolInputError(
-                "时间格式错误。必须使用：yyyy-mm-dd hh:mm:ss（例如：2024-01-15 14:30:00）"
+                "Invalid time format. Must use: yyyy-mm-dd hh:mm:ss (e.g.: 2024-01-15 14:30:00)"
             ) from ValueError
 
         intent_param = {
@@ -164,35 +165,35 @@ async def create_calendar_event(
         result = await execute_device_command("CreateCalendarEvent", command)
 
         if isinstance(result, dict):
-            raise_if_device_error(result, "创建日程失败")
+            raise_if_device_error(result, "Failed to create calendar event")
 
         logger.info("[CALENDAR_TOOL] Calendar event created successfully")
         return format_success_response(
             {"title": title, "dt_start": dt_start, "dt_end": dt_end, "result": result},
-            f"日程 '{title}' 创建成功",
+            f"Calendar event '{title}' created successfully",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[CALENDAR_TOOL] Failed to create calendar event: {e}")
-        raise RuntimeError(f"创建日程失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to create calendar event: {str(e)}") from e
 
 
 @tool(
     name="search_calendar_event",
-    description="""检索用户日历中的日程安排。根据时间范围和可选的日程标题进行检索。时间格式必须为：YYYYMMDD hhmmss（例如：20240115 143000）。
+    description="""Searches calendar events in the user's calendar. Searches by time range and an optional event title. Time format must be: YYYYMMDD hhmmss (e.g.: 20240115 143000).
 
-时间范围说明：
-- 查询某一天的日程：使用该天的 00:00:00 到 23:59:59（例如：20240115 000000 到 20240115 235959）
-- 查询上午的日程：使用 06:00:00 到 12:00:00
-- 查询下午的日程：使用 12:00:00 到 18:00:00
-- 查询晚上的日程：使用 18:00:00 到 23:59:59
-- 查询某个时刻附近的日程：使用该时刻前后1小时的区间（例如：查询3点左右的日程，使用 14:00:00 到 16:00:00）
+Time range guide:
+- To query a whole day's events: use that day's 00:00:00 to 23:59:59 (e.g.: 20240115 000000 to 20240115 235959)
+- To query morning events: use 06:00:00 to 12:00:00
+- To query afternoon events: use 12:00:00 to 18:00:00
+- To query evening events: use 18:00:00 to 23:59:59
+- To query events around a specific time: use a 1-hour window before and after that time (e.g.: to query events around 3 PM, use 14:00:00 to 16:00:00)
 
-注意：
-a. 该工具执行时间较长（最多60秒），请勿重复调用，超时或失败时最多重试一次。
-b. 使用该工具之前需获取当前真实时间
+Notes:
+a. This tool takes a long time to run (up to 60 seconds); do not call it repeatedly, and retry at most once on timeout or failure.
+b. Get the current real time before using this tool
 """,
 )
 async def search_calendar_event(
@@ -217,14 +218,14 @@ async def search_calendar_event(
         )
 
         if not start_time or not end_time:
-            raise ToolInputError("缺少必填参数 start_time 与 end_time")
+            raise ToolInputError("Missing required parameters start_time and end_time")
 
         try:
             start_time_ms = _parse_time_string_ymd_hhmmss(start_time)
             end_time_ms = _parse_time_string_ymd_hhmmss(end_time)
         except ValueError as e:
             raise ToolInputError(
-                "时间格式错误。必须使用：YYYYMMDD hhmmss（例如：20240115 143000）。"
+                "Invalid time format. Must use: YYYYMMDD hhmmss (e.g.: 20240115 143000)."
                 f" {e}"
             ) from e
 
@@ -264,7 +265,7 @@ async def search_calendar_event(
         # 执行命令
         outputs = await execute_device_command("SearchCalendarEvent", command)
 
-        raise_if_device_error(outputs, "检索日程失败")
+        raise_if_device_error(outputs, "Failed to search calendar events")
 
         # 获取结果
         result = outputs.get("result", {})
@@ -277,11 +278,11 @@ async def search_calendar_event(
 
         return format_success_response(
             {"events": formatted_items, "count": len(formatted_items)},
-            f"搜索到 {len(formatted_items)} 条日程",
+            f"Found {len(formatted_items)} calendar events",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEARCH_CALENDAR_TOOL] Failed to search calendar: {e}")
-        raise RuntimeError(f"搜索日程失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search calendar events: {str(e)}") from e

@@ -25,38 +25,38 @@ from .utils import (
 
 @tool(
     name="search_photo_gallery",
-    description="""插件功能描述：搜索用户手机图库中的照片
+    description="""Plugin description: Search for photos in the user's phone gallery
 
-  工具使用约束：如果用户说从手机图库中或者从相册中查询xx图片时调用此工具,注意此工具仅支持从本地图库检索，不支持云空间相册检索。
+  Usage constraints: Call this tool when the user asks to find images from the phone gallery or album. Note this tool only supports searching the local gallery; it does not support searching cloud-space albums.
 
-  工具输入输出简介：
-  a. 根据图像描述语料检索匹配的照片,返回照片在手机本地的 mediaUri以及thumbnailUri。
-  b. 返回的 mediaUri以及thumbnailUri 是本地路径,无法直接下载或访问。
-  如需下载、查看、使用或展示照片,请使用 upload_photo 工具将 mediaUri或者thumbnailUri 转换为可访问的公网 URL。
-  c. mediaUri代表手机相册中的图片原图路径，图片大小比较大，清晰度比较高
-  d. thumbnailUri代表手机相册中的图片缩略图路径，图片大小比较小，清晰度适中，建议在upload_photo 工具的入参中优先使用此路径，不容易引起上传超时等问题
+  Input/output overview:
+  a. Retrieves matching photos based on the image description text, returning the photo's local mediaUri and thumbnailUri on the phone.
+  b. The returned mediaUri and thumbnailUri are local paths that cannot be downloaded or accessed directly.
+  To download, view, use, or display photos, use the upload_photo tool to convert the mediaUri or thumbnailUri into a publicly accessible URL.
+  c. mediaUri is the path of the original image in the phone album; the image is larger in size and higher in resolution.
+  d. thumbnailUri is the path of the image thumbnail in the phone album; the image is smaller in size with moderate resolution. Prefer this path as the input to the upload_photo tool, as it is less likely to cause upload timeouts.
 
-  搜索能力边界：
-  a. 支持口语化输入：改写模型会自动提取姓名、种类、地点等实体，可以使用自然语言描述（如"小狗的照片"、"南京拍的风景"）
-  b. 支持相册搜索：可以在query中包含相册名称（如"西安之行相册的照片"）
-  c. 支持人像搜索：前提是照片有人像tag，且需要口语化描述（如"张三的照片"）
-  d. 不支持时间相对词：不支持"最新"、"最旧"、"最早"等表述，需要使用具体时间（如"2024年的照片"而非"去年的照片"）
-  e. 不支持多实体查询：不支持"或"逻辑和时间范围（如"南京或上海的照片"、"近三年的照片"），需要拆分成多次独立查询
-  f. 不支持POI逆地理映射：照片的location是门牌号，用真实场地名称可能搜不到
-  g. 不支持收藏感知：无法感知照片是否被收藏
-  h. 不支持细粒度品种：对于动物、植物等的具体品种识别能力有限
-  i. 注意：POI提取可能不准确：地名可能作为语义搜索条件，可能导致"xx湖"搜到"yy江"或"zz湾"的照片
+  Search capability boundaries:
+  a. Supports colloquial input: the rewriting model automatically extracts entities such as names, categories, and places; natural-language descriptions are supported (e.g. "photos of the puppy", "scenery shot in Nanjing")
+  b. Supports album search: the album name can be included in query (e.g. "photos from the Xi'an trip album")
+  c. Supports people search: requires that photos carry a person tag and a colloquial description (e.g. "photos of Zhang San")
+  d. Relative time words not supported: expressions like "newest", "oldest", "earliest" are not supported; use a concrete time instead (e.g. "photos from 2024" rather than "photos from last year")
+  e. Multi-entity queries not supported: "or" logic and time ranges are not supported (e.g. "photos of Nanjing or Shanghai", "photos from the last three years"); split them into multiple independent queries
+  f. POI reverse geocoding not supported: a photo's location is a street address; searching by real venue names may find nothing
+  g. Favorite awareness not supported: cannot detect whether a photo is marked as favorite
+  h. Fine-grained varieties not supported: limited ability to identify specific breeds of animals, plants, etc.
+  i. Note: POI extraction may be inaccurate: place names may act as semantic search conditions, so searching "xx Lake" may return photos of "yy River" or "zz Bay"
 
-  查询优化建议：
-  a. 时间查询：将"最新"、"去年"、"近三年"等转换为具体年份（如"2024年"、"2023年到2025年"需拆分成"2023年"、"2024年"、"2025年"三次查询）
-  b. 多条件查询：将"或"逻辑拆分成多次查询（如"南京或上海的照片"→先查"南京的照片"，再查"上海的照片"）
-  c. 实体原子化：确保每个query只包含一个原子实体（地点、人名、物品等）
-  d. 相册名称：如果知道相册名，直接在query中包含相册名可以提高准确度
+  Query optimization tips:
+  a. Time queries: convert "newest", "last year", "the last three years" etc. into concrete years (e.g. "2024"; "2023 to 2025" must be split into three queries: "2023", "2024", "2025")
+  b. Multi-condition queries: split "or" logic into multiple queries (e.g. "photos of Nanjing or Shanghai" -> first query "photos of Nanjing", then "photos of Shanghai")
+  c. Atomic entities: make sure each query contains only one atomic entity (place, person name, item, etc.)
+  d. Album names: if the album name is known, including it directly in query improves accuracy
 
-  注意事项：
-  a. 只有当用户明确表达从手机相册搜索或者从图库搜索时才执行此工具，如果用户仅表达要搜索xxx图片，并没有说明搜索数据源，则不要贸然调用此插件，可以优先尝试websearch或者询问用户是否要从手机图库中搜索。
-  b. 操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。
-  c. 如果用户请求包含多个实体或时间范围，需要主动拆分成多次查询并告知用户。
+  Notes:
+  a. Only run this tool when the user explicitly asks to search the phone album or gallery. If the user only wants to find some image without specifying the data source, do not rashly call this plugin; prefer trying websearch or asking the user whether to search the phone gallery.
+  b. The operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once.
+  c. If the user's request contains multiple entities or a time range, proactively split it into multiple queries and inform the user.
   """,
 )
 async def search_photo_gallery(
@@ -74,11 +74,11 @@ async def search_photo_gallery(
         logger.info(f"[SEARCH_PHOTO_GALLERY_TOOL] Searching photos - query: {query}")
 
         if not query or not isinstance(query, str):
-            raise ToolInputError("缺少必填参数 query（搜索关键词）")
+            raise ToolInputError("Missing required parameter: query (search keyword)")
 
         query = query.strip()
         if not query:
-            raise ToolInputError("query 不能为空")
+            raise ToolInputError("query must not be empty")
 
         command = {
             "header": {
@@ -113,7 +113,7 @@ async def search_photo_gallery(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "搜索照片失败")
+        raise_if_device_error(outputs, "Failed to search photos")
 
         result = outputs.get("result")
         if not isinstance(result, dict):
@@ -121,19 +121,19 @@ async def search_photo_gallery(
         n = len(result.get("items", []))
         logger.info(f"[SEARCH_PHOTO_GALLERY_TOOL] Search completed, items={n}")
 
-        return format_success_response(dict(outputs), f"搜索到 {n} 张照片")
+        return format_success_response(dict(outputs), f"Found {n} photos")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEARCH_PHOTO_GALLERY_TOOL] Failed to search photos: {e}")
-        raise RuntimeError(f"搜索照片失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search photos: {str(e)}") from e
 
 
 def _normalize_media_uris(param: Any) -> List[str]:
     """将 media_uris 规范为字符串列表（支持数组或 JSON 数组字符串）。"""
     if param is None:
-        raise ToolInputError("缺少必填参数 media_uris")
+        raise ToolInputError("Missing required parameter: media_uris")
     if isinstance(param, list):
         return param
     if isinstance(param, str):
@@ -141,13 +141,13 @@ def _normalize_media_uris(param: Any) -> List[str]:
             parsed = json.loads(param)
         except json.JSONDecodeError as e:
             raise ToolInputError(
-                f"media_uris 必须是合法 JSON 数组字符串。解析错误: {e}"
+                f"media_uris must be a valid JSON array string. Parse error: {e}"
             ) from e
         if not isinstance(parsed, list):
-            raise ToolInputError("media_uris 解析后必须是数组")
+            raise ToolInputError("media_uris must parse into an array")
         return parsed
     raise ToolInputError(
-        f"media_uris 必须是数组或 JSON 数组字符串，当前类型: {type(param).__name__}"
+        f"media_uris must be an array or a JSON array string; got type: {type(param).__name__}"
     )
 
 
@@ -158,17 +158,17 @@ def _decode_image_url_escapes(url: str) -> str:
 
 @tool(
     name="upload_photo",
-    description="""工具能力描述：将手机本地文件回传并获取可公网访问的 URL。
+    description="""Tool capability: Upload local phone files and obtain publicly accessible URLs.
 
-  前置工具调用：此工具使用前必须先调用 search_photo_gallery 工具获取照片的 mediaUri或者thumbnailUri
-  工具参数说明：
-  a. 入参中的mediaUris中的mediaUri必须与search_photo_gallery结果中对应的mediaUri或者thumbnailUri完全保持一致，不要自行修改，必须是file://开头的路径。
-  b. 优先使用search_photo_gallery结果中的thumbnailUri作为入参，thumbnailUri是缩略图，清晰度与文件大小都非常合适展示给用户，如果thumbnailUri不存在或者用户要求使用原图，则使用search_photo_gallery结果中对应的mediaUri
-  c. media_uris 是照片在手机本地的 URI 数组（从 search_photo_gallery 工具响应中获取）。限制：每次最多支持传入 5 条 mediaUri
+  Prerequisite tool call: before using this tool, you must first call the search_photo_gallery tool to obtain the photo's mediaUri or thumbnailUri
+  Parameter description:
+  a. The mediaUri values in the mediaUris input must exactly match the corresponding mediaUri or thumbnailUri from the search_photo_gallery results; do not modify them yourself. They must be file:// paths.
+  b. Prefer the thumbnailUri from the search_photo_gallery results as input; thumbnailUri is a thumbnail whose resolution and file size are both well suited for displaying to the user. If thumbnailUri does not exist or the user asks for the original image, use the corresponding mediaUri from the search_photo_gallery results.
+  c. media_uris is an array of the photos' local URIs on the phone (obtained from the search_photo_gallery tool response). Limit: at most 5 mediaUri values per call.
 
-  注意事项：
-  a. 操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。
-  b. 此工具返回的图片链接为用户公网可访问的链接，如果需要后续操作需要下载到本地，如果需要返回给用户查看则直接以图片markdown的形式返回给用户""",
+  Notes:
+  a. The operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once.
+  b. The image links returned by this tool are publicly accessible to the user. Download them locally if needed for subsequent operations; if they are to be shown to the user, return them directly in image markdown form.""",
 )
 async def upload_photo(media_uris: Union[str, List[str]]) -> Dict[str, Any]:
     """上传照片
@@ -187,16 +187,16 @@ async def upload_photo(media_uris: Union[str, List[str]]) -> Dict[str, Any]:
         )
 
         if len(normalized) == 0:
-            raise ToolInputError("mediaUris 数组不能为空")
+            raise ToolInputError("The mediaUris array must not be empty")
 
         if len(normalized) > 5:
             raise ToolInputError(
-                f"最多支持 5 条 mediaUri，当前提供了 {len(normalized)} 条。请分批处理。"
+                f"At most 5 mediaUri values are supported; got {len(normalized)}. Please split into batches."
             )
 
         for uri in normalized:
             if not isinstance(uri, str) or not uri.strip():
-                raise ToolInputError("media_uris 中每项必须为非空字符串")
+                raise ToolInputError("Each item in media_uris must be a non-empty string")
 
         image_infos = [{"mediaUri": u.strip()} for u in normalized]
 
@@ -263,7 +263,7 @@ async def upload_photo(media_uris: Union[str, List[str]]) -> Dict[str, Any]:
         payload = {
             "imageUrls": decoded_urls,
             "count": len(decoded_urls),
-            "message": f"成功获取 {len(decoded_urls)} 张照片的公网访问 URL",
+            "message": f"Successfully obtained public URLs for {len(decoded_urls)} photos",
         }
         return {
             "content": [
@@ -278,4 +278,4 @@ async def upload_photo(media_uris: Union[str, List[str]]) -> Dict[str, Any]:
         raise
     except Exception as e:
         logger.error(f"[UPLOAD_PHOTO_TOOL] Failed to upload photos: {e}")
-        raise RuntimeError(f"上传照片失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to upload photos: {str(e)}") from e

@@ -35,7 +35,7 @@ from .utils import (
 def _normalize_file_infos(param: Any) -> List[Dict[str, Any]]:
     """将 fileInfos 规范为数组（支持数组或 JSON 数组字符串）。"""
     if param is None:
-        raise ToolInputError("缺少必填参数 fileInfos")
+        raise ToolInputError("Missing required parameter: fileInfos")
     if isinstance(param, list):
         return param
     if isinstance(param, str):
@@ -43,33 +43,33 @@ def _normalize_file_infos(param: Any) -> List[Dict[str, Any]]:
             parsed = json.loads(param)
         except json.JSONDecodeError as e:
             raise ToolInputError(
-                f"fileInfos 必须是合法 JSON 数组字符串。解析错误: {e}"
+                f"fileInfos must be a valid JSON array string. Parse error: {e}"
             ) from e
         if not isinstance(parsed, list):
             raise ToolInputError(
-                "fileInfos 必须是数组或表示数组的 JSON 字符串（解析结果不是数组）"
+                "fileInfos must be an array or a JSON string representing an array (parsed result is not an array)"
             )
         return parsed
     raise ToolInputError(
-        f"fileInfos 必须是数组或 JSON 数组字符串，当前类型: {type(param).__name__}"
+        f"fileInfos must be an array or a JSON array string; got type: {type(param).__name__}"
     )
 
 
 @tool(
     name="search_file",
-    description="""搜索手机文件系统的文件。
+    description="""Search files in the phone's file system.
 
-【重要】使用约束：此工具仅在用户显著说明要从手机搜索时才执行，例如：
-- "从我手机里面搜索xxxx"
-- "从手机文件系统找一下xxxx"
-- "在手机上查找文件xxxx"
-- "搜索手机里的文件"
+[IMPORTANT] Usage constraints: run this tool only when the user clearly states to search on the phone, for example:
+- "Search for xxxx on my phone"
+- "Look for xxxx in the phone's file system"
+- "Find file xxxx on the phone"
+- "Search files on the phone"
 
-如果用户没有明确说明从手机搜索（如仅说"搜索文件"、"找一下xxxx"），应默认从 openclaw 本地的文件系统查询，不要调用此工具。
+If the user does not explicitly say to search on the phone (e.g. only "search for files" or "find xxxx"), default to querying the local openclaw file system instead; do not call this tool.
 
-功能说明：根据关键词搜索文件名称或内容，返回匹配的文件列表（包括文件名、路径、大小、修改时间等信息）。
+Description: search file names or contents by keyword and return the matched file list (including file name, path, size, modification time, etc.).
 
-注意事项：操作超时时间为60秒，请勿重复调用此工具，如果超时或失败，最多重试一次。""",
+Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once.""",
 )
 async def search_file(
     query: str,
@@ -86,11 +86,11 @@ async def search_file(
         logger.info(f"[SEARCH_FILE_TOOL] Searching files - query: {query}")
 
         if not query or not isinstance(query, str):
-            raise ToolInputError("缺少必填参数 query（搜索关键词）")
+            raise ToolInputError("Missing required parameter: query (search keyword)")
 
         query = query.strip()
         if not query:
-            raise ToolInputError("query 不能为空")
+            raise ToolInputError("query must not be empty")
 
         command = {
             "header": {
@@ -126,7 +126,7 @@ async def search_file(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "搜索文件失败")
+        raise_if_device_error(outputs, "Failed to search files")
 
         result = outputs.get("result")
         if not isinstance(result, dict):
@@ -134,29 +134,29 @@ async def search_file(
         n = len(result.get("items", []))
         logger.info(f"[SEARCH_FILE_TOOL] Found {n} files")
 
-        return format_success_response(dict(outputs), f"搜索到 {n} 个文件")
+        return format_success_response(dict(outputs), f"Found {n} files")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEARCH_FILE_TOOL] Failed to search files: {e}")
-        raise RuntimeError(f"搜索文件失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search files: {str(e)}") from e
 
 
 @tool(
     name="upload_file",
-    description="""工具能力描述：将手机本地文件上传并获取可公网访问的 URL。
+    description="""Tool capability: Upload local phone files and obtain publicly accessible URLs.
 
-  前置工具调用：此工具使用前必须先调用 search_file 或者 query_collection 工具获取文件的 uri
+  Prerequisite tool call: before using this tool, you must first call the search_file or query_collection tool to obtain the file's uri
 
-  工具参数说明：
-  a. 入参中的file_Infos数组，每个元素必须包含mediaUri字段（对应于search_file工具或者query_collection返回结果中的uri），必须与search_file结果中对应的uri完全保持一致，不要自行修改。
-  b. file_infos 中的timeout字段是可选的，表示上传文件超时时间，单位是毫秒，默认是20000（20秒）。
-  c. file_infos 是文件在手机本地的信息数组（从 search_file 工具或者 query_collection 响应中获取）。限制：每次最多支持传入 5 条文件信息。
+  Parameter description:
+  a. Each element of the file_Infos array in the input must contain a mediaUri field (corresponding to the uri in the search_file tool or query_collection results) and must exactly match the corresponding uri in the search_file results; do not modify it yourself.
+  b. The timeout field in file_infos is optional; it is the upload timeout in milliseconds, defaulting to 20000 (20 seconds).
+  c. file_infos is an array of the files' local information on the phone (obtained from the search_file tool or query_collection response). Limit: at most 5 file entries per call.
 
-  注意事项：
-  a. 操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。
-  b. 此工具返回的文件链接为用户公网可访问的链接，如果需要对文件进行额外的操作，需要先根据返回的url下载文件，然后进行下一步处理。""",
+  Notes:
+  a. The operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once.
+  b. The file links returned by this tool are publicly accessible to the user. If further operations on the file are needed, first download the file using the returned url, then proceed with the next step.""",
 )
 async def upload_file(file_infos: Union[str, List[Dict[str, Any]]]) -> Dict[str, Any]:
     """上传文件
@@ -175,23 +175,23 @@ async def upload_file(file_infos: Union[str, List[Dict[str, Any]]]) -> Dict[str,
         )
 
         if len(file_infos_list) == 0:
-            raise ToolInputError("fileInfos 数组不能为空")
+            raise ToolInputError("The fileInfos array must not be empty")
 
         if len(file_infos_list) > 5:
             raise ToolInputError(
-                f"最多支持 5 条文件信息，当前提供了 {len(file_infos_list)} 条。请分批处理。"
+                f"At most 5 file entries are supported; got {len(file_infos_list)}. Please split into batches."
             )
 
         for i, file_info in enumerate(file_infos_list):
             if not isinstance(file_info, dict):
                 raise ToolInputError(
-                    f"fileInfos[{i}] 必须是包含 mediaUri 的对象"
+                    f"fileInfos[{i}] must be an object containing mediaUri"
                 )
             if not file_info.get("mediaUri") or not isinstance(
                 file_info["mediaUri"], str
             ):
                 raise ToolInputError(
-                    f"fileInfos[{i}] 必须包含有效的 mediaUri 字符串"
+                    f"fileInfos[{i}] must contain a valid mediaUri string"
                 )
             if not file_info.get("timeout"):
                 file_info["timeout"] = "20000"
@@ -227,7 +227,7 @@ async def upload_file(file_infos: Union[str, List[Dict[str, Any]]]) -> Dict[str,
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "获取文件 URL 失败")
+        raise_if_device_error(outputs, "Failed to get file URLs")
 
         result = outputs.get("result", {}) if isinstance(outputs, dict) else {}
         file_urls: List[Any] = []
@@ -257,7 +257,7 @@ async def upload_file(file_infos: Union[str, List[Dict[str, Any]]]) -> Dict[str,
         payload = {
             "fileUrls": decoded_urls,
             "count": len(decoded_urls),
-            "message": f"成功获取 {len(decoded_urls)} 个文件的公网访问 URL",
+            "message": f"Successfully obtained public URLs for {len(decoded_urls)} files",
         }
         return {
             "content": [
@@ -272,7 +272,7 @@ async def upload_file(file_infos: Union[str, List[Dict[str, Any]]]) -> Dict[str,
         raise
     except Exception as e:
         logger.error(f"[UPLOAD_FILE_TOOL] Failed to upload files: {e}")
-        raise RuntimeError(f"上传文件失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to upload files: {str(e)}") from e
 
 
 # ---------------------------------------------------------------------------

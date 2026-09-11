@@ -70,7 +70,7 @@ def test_append_reference_send_push(tmp_path):
     ):
         result = asyncio.run(toolkit.append_reference(refs))
 
-    assert "成功发送 1 条引用来源" in result
+    assert "Sent 1 references" in result
     assert mock_server.send_push.await_count == 1
     payload = mock_server.send_push.await_args.args[0]["payload"]
     assert payload["event_type"] == "chat.reference"
@@ -84,4 +84,4 @@ def test_append_reference_rejects_empty():
         channel_id="xiaoyi",
     )
     result = asyncio.run(toolkit.append_reference([]))
-    assert result.startswith("发送引用来源失败")
+    assert result.startswith("Failed to send references")

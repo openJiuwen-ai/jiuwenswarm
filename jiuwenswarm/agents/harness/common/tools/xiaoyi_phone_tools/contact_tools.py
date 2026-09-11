@@ -28,9 +28,9 @@ from .utils import (
 @tool(
     name="search_contact",
     description=(
-        "搜索用户设备上的联系人信息。根据姓名在通讯录中检索联系人详细信息"
-        "（包括姓名、电话号码、邮箱、组织、职位等）。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Search contact information on the user's device. Look up detailed contact information by name in the address book "
+        "(including name, phone number, email, organization, job title, etc.). "
+        "Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once."
     ),
 )
 async def search_contact(name: str) -> Dict[str, Any]:
@@ -44,7 +44,7 @@ async def search_contact(name: str) -> Dict[str, Any]:
     """
     try:
         if not isinstance(name, str) or not name.strip():
-            raise ToolInputError("缺少必填参数 name")
+            raise ToolInputError("Missing required parameter: name")
 
         name_clean = name.strip()
 
@@ -92,11 +92,11 @@ async def search_contact(name: str) -> Dict[str, Any]:
 
         return format_success_response(
             dict(outputs),
-            f"搜索到联系人信息（{n} 条）",
+            f"Found contact information ({n} entries)",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEARCH_CONTACT_TOOL] Failed to search contacts: {e}")
-        raise RuntimeError(f"搜索联系人失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search contacts: {str(e)}") from e

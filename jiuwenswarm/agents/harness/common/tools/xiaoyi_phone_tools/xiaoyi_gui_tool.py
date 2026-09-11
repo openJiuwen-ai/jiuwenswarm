@@ -61,29 +61,33 @@ def _first_text(*values: Any) -> str | None:
 @tool(
     name="xiaoyi_gui_agent",
     description=(
-        "通过模拟人在手机屏幕上的交互行为（点击、滑动、输入、页面导航等），自动完成手机APP中的各类任务。\n\n"
-        "该工具操作方式类似真实用户在手机上的操作，因此可以完成许多无法通过互联网API实现的任务，例如：\n"
-        "- 任务需要真实操作手机APP界面\n"
-        "- 数据仅存在于APP内部\n"
-        "- 无法通过互联网API获取数据\n"
-        "- 需要完成用户行为（签到、关注、购买等）\n"
-        "- 需要在APP中发布或发送内容\n"
-        "- 需要修改APP或手机设置\n\n"
-        "注意事项：\n"
-        "- 操作超时时间为3分钟（180秒）\n"
-        "- 该工具执行时间较长，请勿重复调用\n"
-        "- 该工具执行期间不要执行别的工具调用，必须等到该工具有结果返回或者超时之后才能执行别的操作，"
-        "无论是新的文本回复还是下一步的工具调用，在此工具执行期间必须严格等待\n"
-        "- 如果超时或失败，最多重试一次\n"
-        "- 如果用户指令中包含备忘录读写、日程查看，不需要将这类操作放在query参数中，"
-        "需要使用预置的note相关工具与calendar相关工具完成相关操作\n\n"
-        "参数 query：自然语言操作指令与期望结果。"
+        "Automates various tasks in phone apps by simulating human interactions on the phone screen "
+        "(taps, swipes, text input, page navigation, etc.).\n\n"
+        "This tool operates like a real user on the phone, so it can complete many tasks that cannot be "
+        "done through internet APIs, for example:\n"
+        "- The task requires actually operating a phone app UI\n"
+        "- The data exists only inside an app\n"
+        "- The data cannot be obtained through internet APIs\n"
+        "- User actions need to be performed (check-ins, following, purchasing, etc.)\n"
+        "- Content needs to be posted or sent within an app\n"
+        "- App or phone settings need to be modified\n\n"
+        "Notes:\n"
+        "- The operation timeout is 3 minutes (180 seconds)\n"
+        "- This tool takes a long time to run; do not call it repeatedly\n"
+        "- While this tool is running, do not make any other tool calls; you must wait until this tool "
+        "returns a result or times out before doing anything else. Whether it is a new text reply or the "
+        "next tool call, you must strictly wait while this tool is running\n"
+        "- If it times out or fails, retry at most once\n"
+        "- If the user instruction involves reading/writing notes or viewing calendar events, do not put "
+        "such operations in the query parameter; use the preset note-related tools and calendar-related "
+        "tools to complete those operations\n\n"
+        "Parameter query: the natural-language operation instruction and the expected result."
     ),
 )
 async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
     """执行 GUI Agent 指令."""
     if not query or not isinstance(query, str) or not query.strip():
-        raise ToolInputError("缺少有效参数 query（非空字符串）")
+        raise ToolInputError("Missing valid parameter query (non-empty string)")
 
     query = query.strip()
     invocation = get_current_invocation_context()
@@ -93,7 +97,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             len(query),
         )
         raise RuntimeError(
-            "GUI Agent 调用失败 [INVALID_CONTEXT]: 当前 invocation context 不可用"
+            "GUI Agent call failed [INVALID_CONTEXT]: the current invocation context is unavailable"
         )
     logger.info(
         "[INVOCATION_CTX] TOOL_READ capability=gui invocation_id=%s "
@@ -106,7 +110,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
     )
     if str(invocation.channel_id or "").strip().lower() != "xiaoyi":
         raise RuntimeError(
-            "GUI Agent 调用失败 [INVALID_CONTEXT]: 当前调用不是 Xiaoyi channel"
+            "GUI Agent call failed [INVALID_CONTEXT]: the current invocation is not on the Xiaoyi channel"
         )
     xiaoyi = get_xiaoyi_invocation_extension(invocation)
     xiaoyi_session_id = _first_text(
@@ -127,7 +131,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
     ]
     if missing:
         raise RuntimeError(
-            "GUI Agent 调用失败 [INVALID_CONTEXT]: 当前 Xiaoyi invocation 缺少 "
+            "GUI Agent call failed [INVALID_CONTEXT]: the current Xiaoyi invocation is missing "
             + ", ".join(missing)
         )
     logger.info(
@@ -160,7 +164,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             type(exc).__name__,
         )
         raise RuntimeError(
-            "GUI Agent 调用失败 [TRANSPORT_DISCONNECTED]: Gateway 连接已断开"
+            "GUI Agent call failed [TRANSPORT_DISCONNECTED]: the Gateway connection has been disconnected"
         ) from exc
     except (ReverseRpcTimeoutError, asyncio.TimeoutError) as exc:
         logger.error(
@@ -170,7 +174,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             type(exc).__name__,
         )
         raise RuntimeError(
-            "GUI Agent 调用失败 [GUI_TIMEOUT]: 小艺 GUI Agent 操作超时（3 分钟）"
+            "GUI Agent call failed [GUI_TIMEOUT]: the Xiaoyi GUI Agent operation timed out (3 minutes)"
         ) from exc
     except ReverseRpcError as exc:
         error_code = str(getattr(exc, "code", None) or "REVERSE_RPC_ERROR")
@@ -182,7 +186,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             type(exc).__name__,
         )
         raise RuntimeError(
-            f"GUI Agent 调用失败 [{error_code}]: {exc}"
+            f"GUI Agent call failed [{error_code}]: {exc}"
         ) from exc
     except Exception as exc:
         logger.exception(
@@ -192,7 +196,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             type(exc).__name__,
         )
         raise RuntimeError(
-            f"GUI Agent 调用失败 [INTERNAL_ERROR]: {exc}"
+            f"GUI Agent call failed [INTERNAL_ERROR]: {exc}"
         ) from exc
 
     if not response.success:
@@ -206,7 +210,7 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
             error_code,
         )
         raise RuntimeError(
-            f"GUI Agent 调用失败 [{error_code}]: {error_message}"
+            f"GUI Agent call failed [{error_code}]: {error_message}"
         )
     text = response.result or ""
     logger.info(
@@ -225,5 +229,5 @@ async def xiaoyi_gui_agent(query: str) -> Dict[str, Any]:
     )
     return format_success_response(
         {"success": True, "result": text},
-        "GUI 操作完成",
+        "GUI operation completed",
     )

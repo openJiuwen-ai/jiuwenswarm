@@ -24,9 +24,10 @@ from .utils import (
 @tool(
     name="call_phone",
     description=(
-        "拨打电话。需要提供要拨打的电话号码。"
-        "slotId参数可选，默认为0（主卡），如果用户明确要求使用副卡则设置为1。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Makes a phone call. Requires the phone number to dial. "
+        "The slotId parameter is optional and defaults to 0 (primary SIM); set it to 1 if the user explicitly asks to use the secondary SIM. "
+        "Note: the operation timeout is 60 seconds; do not call this tool repeatedly; "
+        "if it times out or fails, retry at most once."
     ),
 )
 async def call_phone(
@@ -51,14 +52,14 @@ async def call_phone(
         )
 
         if not phone_number or not isinstance(phone_number, str):
-            raise ToolInputError("缺少必填参数 phone_number（电话号码）")
+            raise ToolInputError("Missing required parameter phone_number (phone number)")
 
         phone_number = phone_number.strip()
         if not phone_number:
-            raise ToolInputError("phone_number 不能为空")
+            raise ToolInputError("phone_number cannot be empty")
 
         if slot_id not in (0, 1):
-            raise ToolInputError("slot_id 必须是 0（主卡）或 1（副卡）")
+            raise ToolInputError("slot_id must be 0 (primary SIM) or 1 (secondary SIM)")
 
         command = {
             "header": {
@@ -93,7 +94,7 @@ async def call_phone(
         if not isinstance(outputs, dict):
             outputs = {}
 
-        raise_if_device_error(outputs, "拨打电话失败")
+        raise_if_device_error(outputs, "Failed to make the phone call")
 
         logger.info("[CALL_PHONE_TOOL] Call initiated successfully")
 
@@ -110,4 +111,4 @@ async def call_phone(
         raise
     except Exception as e:
         logger.error(f"[CALL_PHONE_TOOL] Failed to initiate call: {e}")
-        raise RuntimeError(f"拨打电话失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to make the phone call: {str(e)}") from e

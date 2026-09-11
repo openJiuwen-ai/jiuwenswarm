@@ -50,8 +50,8 @@ def test_send_file_skips_duplicate_after_success(tmp_path):
         first = asyncio.run(toolkit.send_file(str(file_path)))
         second = asyncio.run(toolkit.send_file(str(file_path)))
 
-    assert "成功发送" in first
-    assert "跳过重复投递" in second
+    assert "Sent" in first
+    assert "skipping duplicate delivery" in second
     assert not second.startswith("success=False")
     assert mock_server.send_push.await_count == 1
 
@@ -76,7 +76,7 @@ def test_send_file_missing_all_uses_failure_envelope():
 
     assert result.startswith("success=False error='")
     assert "data=None" not in result
-    assert "发送文件失败：所有文件均不存在" in result
+    assert "Failed to send files: none of the files exist" in result
     assert "missing.docx" in result
     assert mock_server.send_push.await_count == 0
 
@@ -103,5 +103,5 @@ def test_send_file_push_error_uses_failure_envelope(tmp_path):
 
     assert result.startswith("success=False error='")
     assert "data=None" not in result
-    assert "提交文件失败:" in result
+    assert "Failed to submit files:" in result
     assert "pipe down" in result

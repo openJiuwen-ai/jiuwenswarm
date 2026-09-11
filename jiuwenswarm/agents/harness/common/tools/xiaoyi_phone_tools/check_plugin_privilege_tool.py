@@ -133,7 +133,7 @@ async def execute_plugin_privilege_check(
         )
     except asyncio.TimeoutError as exc:
         raise RuntimeError(
-            f"检查插件权限超时（60秒）, intentName: {check_intent_name}"
+            f"Plugin privilege check timed out (60 seconds), intentName: {check_intent_name}"
         ) from exc
     logger.info(
         "[CRON_DEVICE] phase=PRIVILEGE_CHECK_DONE intent_name=%s "
@@ -151,34 +151,45 @@ async def execute_plugin_privilege_check(
 @tool(
     name="check_plugin_privilege",
     description=(
-        "定时任务权限检查工具。"
-        "〖使用场景〗仅在创建定时任务时使用，严禁在其他场景调用。当识别到定时任务中需要使用用户设备侧工具时，必须调用此工具进行权限检查。"
-        "〖调用前提〗调用此工具前，必须确认用户定时任务中提到的工具在当前模型可使用的工具列表中存在。如果当前工具列表中不存在符合用户诉求的工具定义，则不要调用此工具，而是直接告知用户当前设备不支持该功能。"
-        "〖支持的意图名称及对应权限〗"
-        "GetCurrentLocation（获取用户位置）, "
-        "SearchCalendarEvent（搜索用户日程）, "
-        "CreateCalendarEvent（新建用户日程）, "
-        "DeleteCalendarEvent（删除用户日程）, "
-        "ModifyCalendarEvent（修改用户日程）, "
-        "SearchNote（搜索用户备忘录）, "
-        "CreateNote（新建用户备忘录）, "
-        "ModifyNote（修改用户备忘录）, "
-        "SearchContactLocal（搜索用户联系人）, "
-        "SearchPhotoVideo（搜索用户图库照片或视频）, "
-        "SaveMediaToGallery（保存图片/视频到图库）, "
-        "SearchFile（搜索用户文件管理里面的文件）, "
-        "SaveFileToFileManager（保存文件到文件管理）, "
-        "SearchAlarm（搜索闹钟）, "
-        "CreateAlarm（新建闹钟）, "
-        "ModifyAlarm（修改闹钟）, "
-        "DeleteAlarm（删除闹钟）, "
-        "SearchMessage（搜索短信）, "
-        "SendShortMessage（发送短信）, "
-        "StartCall（打电话）。"
-        "〖多次调用〗如果用户的定时任务指令中涉及多个端侧工具，则依次分别调用此工具检查每个工具的权限。如果调用超时失败，最多重试一次。"
-        "〖回复约束〗如果工具返回没有授权或其他报错，只需要完整描述没有授权或其他报错内容即可，不需要主动给用户提供解决方案。"
-        "〖使用约束1〗只要是创建定时任务且涉及端插件的使用，则必须调用此工具检查权限"
-        "〖使用约束2〗如果是定时任务执行过程中，禁止调用此工具，此工具仅在创建定时任务时按需调用"
+        "Scheduled-task privilege check tool."
+        "〖Usage scenario〗Use only when creating a scheduled task; calling it in any other scenario is "
+        "strictly forbidden. When a scheduled task is recognized to require the user's device-side tools, "
+        "you must call this tool to check privileges."
+        "〖Prerequisite〗Before calling this tool, you must confirm that the tools mentioned in the user's "
+        "scheduled task exist in the list of tools available to the current model. If the current tool list "
+        "contains no tool definition matching the user's request, do not call this tool; instead, directly "
+        "tell the user that the current device does not support that feature."
+        "〖Supported intent names and their privileges〗"
+        "GetCurrentLocation (get the user's location), "
+        "SearchCalendarEvent (search the user's calendar events), "
+        "CreateCalendarEvent (create a calendar event), "
+        "DeleteCalendarEvent (delete a calendar event), "
+        "ModifyCalendarEvent (modify a calendar event), "
+        "SearchNote (search the user's notes), "
+        "CreateNote (create a note), "
+        "ModifyNote (modify a note), "
+        "SearchContactLocal (search the user's contacts), "
+        "SearchPhotoVideo (search the user's gallery photos or videos), "
+        "SaveMediaToGallery (save images/videos to the gallery), "
+        "SearchFile (search files in the user's file manager), "
+        "SaveFileToFileManager (save a file to the file manager), "
+        "SearchAlarm (search alarms), "
+        "CreateAlarm (create an alarm), "
+        "ModifyAlarm (modify an alarm), "
+        "DeleteAlarm (delete an alarm), "
+        "SearchMessage (search SMS messages), "
+        "SendShortMessage (send an SMS), "
+        "StartCall (make a phone call)."
+        "〖Multiple calls〗If the user's scheduled-task instruction involves multiple device-side tools, call "
+        "this tool once for each tool, in turn, to check its privilege. If a call times out or fails, retry "
+        "at most once."
+        "〖Reply constraint〗If the tool returns that authorization was not granted or any other error, just "
+        "fully describe the missing authorization or the error content; do not proactively provide the user "
+        "with solutions."
+        "〖Usage constraint 1〗Whenever a scheduled task is being created and it involves the use of device "
+        "plugins, this tool must be called to check privileges."
+        "〖Usage constraint 2〗During scheduled-task execution, calling this tool is forbidden; this tool is "
+        "only called on demand when creating a scheduled task."
     ),
 )
 async def check_plugin_privilege(checkIntentName: str) -> dict[str, Any]:
@@ -189,8 +200,8 @@ async def check_plugin_privilege(checkIntentName: str) -> dict[str, Any]:
                 {
                     "type": "text",
                     "text": (
-                        f"不支持的工具意图名称: {checkIntentName}。"
-                        "请确认该意图名称在支持列表中。"
+                        f"Unsupported tool intent name: {checkIntentName}. "
+                        "Please confirm the intent name is in the supported list."
                     ),
                 }
             ]

@@ -20,18 +20,18 @@ from .pushdata_manager import search_push_data, get_all_push_data
 
 @tool(
     name="view_push_result",
-    description="""查看定时任务或推送消息的执行结果。当用户说"查看我xxx的定时任务执行结果"、"查看我的xxxx的推送消息"或类似语料时调用此工具。
+    description="""Views the execution results of scheduled tasks or push messages. Call this tool when the user says things like "check the execution result of my xxx scheduled task", "check my xxxx push messages" or similar.
 
-功能说明：
-- 支持关键词搜索：如果用户提到具体任务名称或内容，可以按关键词筛选
-- 无关键词时：返回最近的推送记录（默认10条）
-- 返回内容包括：推送ID、时间、内容摘要
+Features:
+- Supports keyword search: if the user mentions a specific task name or content, filter by keyword
+- Without a keyword: returns the most recent push records (10 by default)
+- Returned content includes: push ID, time, and content summary
 
-使用场景：
-- "查看我昨天的定时任务执行结果"
-- "帮我看看天气推送消息"
-- "查看最近的推送记录"
-- "我的提醒任务执行了吗" """,
+Usage scenarios:
+- "Check the execution results of my scheduled tasks from yesterday"
+- "Show me the weather push messages"
+- "Show the most recent push records"
+- "Did my reminder task run?" """,
 )
 def view_push_result(
     keywords: Optional[str] = None,
@@ -80,9 +80,9 @@ def view_push_result(
                                 "count": 0,
                                 "items": [],
                                 "message": (
-                                    f'未找到包含关键词"{kw}"的推送记录'
+                                    f'No push records found containing the keyword "{kw}"'
                                     if kw
-                                    else "暂无推送记录"
+                                    else "No push records yet"
                                 ),
                             },
                             ensure_ascii=False,
@@ -122,9 +122,9 @@ def view_push_result(
                             "totalMatched": len(results),
                             "items": formatted_items,
                             "message": (
-                                f'找到 {len(formatted_items)} 条包含"{kw}"的推送记录'
+                                f'Found {len(formatted_items)} push records containing "{kw}"'
                                 if kw
-                                else f"返回最近 {len(formatted_items)} 条推送记录"
+                                else f"Returned the {len(formatted_items)} most recent push records"
                             ),
                         },
                         ensure_ascii=False,
@@ -143,7 +143,7 @@ def view_push_result(
                         {
                             "success": False,
                             "error": str(e),
-                            "message": "查询推送记录失败",
+                            "message": "Failed to query push records",
                         },
                         ensure_ascii=False,
                     ),
