@@ -375,7 +375,26 @@ def build_permission_rail(
                 return ("approve",)
             return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
 
-        def _get_permissions_snapshot():
+        def _persist_session_allow_rule(
+            permissions: dict[str, Any], session_id: str | None = None
+        ) -> bool:
+            """Persist per-session permission overlay (issue #4058 / PR #4012 backport).
+
+            ``PermissionInterruptRail`` only calls this when the user picks
+            "session-remember"; without it the host would silently no-op and the
+            session_permissions.yaml file would never be written.
+            """
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+                persist_session_allow_rule,
+            )
+
+            try:
+                return bool(persist_session_allow_rule(permissions, session_id=session_id))
+            except Exception as exc:
+                logger.warning("[InterruptHelpers] persist_session_allow_rule failed: %s", exc)
+                return False
+
+        def _get_permissions_snapshot(session_id=None):
             # skills.rebuild 静默路径：返回 full_access，避免 ASK 中断。
             if SKILLS_REBUILD_SILENT.get():
                 return {
@@ -384,13 +403,16 @@ def build_permission_rail(
                     "defaults": {"*": "allow"},
                     "file_guard": {"enabled": False},
                 }
-            cfg = get_config()
-            raw = cfg.get("permissions") if isinstance(cfg, dict) else {}
-            return with_package_builtin_rules(raw if isinstance(raw, dict) else {})
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+                get_permissions_with_session_overlay,
+            )
+
+            return get_permissions_with_session_overlay(session_id=session_id)
 
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,
             persist_allow_rule=_persist_allow_rule,
+            persist_session_allow_rule=_persist_session_allow_rule,
             resolve_workspace_dir=get_workspace_dir,
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
