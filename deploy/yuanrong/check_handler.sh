@@ -34,6 +34,27 @@ get_local_ip() {
     echo "127.0.0.1"
 }
 
+# yuanrong systemd 模式（agentos.sh up 默认路径）以 scripts/config.py local-ip 作为
+# values.host_ip（Python get_local_ip：UDP 出口探测 → hostname 解析 → 127.0.0.1）。
+# config.py 不可用（python 缺失 / ~/.agentos/deploy/config.yaml 缺失）时降级 bash get_local_ip。
+_yr_consistent_local_ip() {
+    local cfg_py="${SCRIPT_DIR}/../scripts/config.py"
+    local py yr_ip=""
+    if [ -f "${cfg_py}" ]; then
+        py=$(command -v "python${DEPLOY_VARS["YR_PYTHON_VERSION"]:-3.11}" 2>/dev/null \
+            || command -v python3 2>/dev/null || true)
+        if [ -n "${py}" ]; then
+            yr_ip=$("${py}" "${cfg_py}" local-ip 2>/dev/null | tr -d '\r' | head -n 1)
+            if [ -n "${yr_ip}" ]; then
+                echo "${yr_ip}"
+                return 0
+            fi
+        fi
+    fi
+    warning "scripts/config.py local-ip unavailable, falling back to hostname -I (bash get_local_ip)" >&2
+    get_local_ip
+}
+
 # 读取 config.yaml 的 ingress_virtual_ip（VIP）。gateway 监听端口统一绑定 VIP，
 # 使各服务对外可通过统一入口访问；无 VIP 配置时输出空串。
 _ingress_vip() {
@@ -126,9 +147,9 @@ check_jiuwenswarm_up_dependency() {
     local hosts_str="${DEPLOY_VARS["CLUSTER_HOSTS"]}"
 
     if [ -z "${hosts_str}" ]; then
-        hosts_str=$(get_local_ip)
+        hosts_str=$(_yr_consistent_local_ip)
         DEPLOY_VARS["CLUSTER_HOSTS"]="${hosts_str}"
-        warning "CLUSTER_HOSTS not set, using local IP: ${hosts_str}"
+        warning "CLUSTER_HOSTS not set, using yuanrong-consistent local IP: ${hosts_str}"
     fi
 
     IFS=',' read -ra HOST_LIST <<< "${hosts_str}"
@@ -142,16 +163,10 @@ check_jiuwenswarm_up_dependency() {
 
 check_gateway_up_dependency() {
     if [ -z "${DEPLOY_VARS["MASTER_NODE_IP"]:-}" ]; then
-        if [ -n "${DEPLOY_VARS["CLUSTER_HOSTS"]:-}" ]; then
-            IFS=',' read -ra _gw_host_list <<< "${DEPLOY_VARS["CLUSTER_HOSTS"]}"
-            DEPLOY_VARS["MASTER_NODE_IP"]="${_gw_host_list[0]}"
-            info "MASTER_NODE_IP inferred from CLUSTER_HOSTS: ${DEPLOY_VARS["MASTER_NODE_IP"]}"
-        else
-            local local_ip
-            local_ip=$(get_local_ip)
-            DEPLOY_VARS["MASTER_NODE_IP"]="${local_ip}"
-            info "MASTER_NODE_IP not set, defaulting to local: ${local_ip}"
-        fi
+        local local_ip
+        local_ip=$(_yr_consistent_local_ip)
+        DEPLOY_VARS["MASTER_NODE_IP"]="${local_ip}"
+        info "MASTER_NODE_IP defaulted (yuanrong-consistent local IP): ${local_ip}"
     fi
 
     if [ -z "${DEPLOY_VARS["FRONTEND_PORT"]:-}" ]; then

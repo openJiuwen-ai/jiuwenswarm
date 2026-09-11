@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo >/dev/null 2>&1
 
+# gateway 就绪检查最大重试次数（服务健康检查与部署前端口检查共用）
+GATEWAY_MAX_RETRY=15
+
 gateway_get_config_dir() {
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
     if [ -n "${instance_name}" ]; then
@@ -206,8 +209,7 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     # 健康检查：systemd active 且 GATEWAY_PORT/WEB_PORT 端口均处于 LISTEN，
     # 避免服务"刚开始即崩溃"时 is-active 短暂返回 active 而误报成功。
     local retry=0
-    local max_retry=15
-    while [ ${retry} -lt ${max_retry} ]; do
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
         if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null \
             && port_is_listening "${master_host}" "${gw_port}" \
@@ -216,7 +218,7 @@ Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
             return 0
         fi
         retry=$((retry + 1))
-        info "Waiting for gateway to start... (${retry}/${max_retry})"
+        info "Waiting for gateway to start... (${retry}/${GATEWAY_MAX_RETRY})"
     done
 
     # 服务起不来：分别探测 systemd 状态与端口监听，明确给出是 gateway 未启动、还是启动了但端口未监听。
@@ -260,8 +262,7 @@ gateway_start_nohup() {
     exec_on_host "${master_host}" "bash -c '${start_cmd}'"
 
     local retry=0
-    local max_retry=15
-    while [ ${retry} -lt ${max_retry} ]; do
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
         sleep 2
         if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1" \
             && port_is_listening "${master_host}" "${gw_port}" \
@@ -270,7 +271,7 @@ gateway_start_nohup() {
             return 0
         fi
         retry=$((retry + 1))
-        info "Waiting for gateway to start... (${retry}/${max_retry})"
+        info "Waiting for gateway to start... (${retry}/${GATEWAY_MAX_RETRY})"
     done
 
     # 失败诊断：区分是进程没起来、还是起来了但端口未监听（对标 systemd 分支的 gw_state/监听探测）。
@@ -314,6 +315,20 @@ gateway_is_master_node() {
     return 1
 }
 
+# 带重试的端口就绪检查：网关部署前的前置端口检查改为轮询等待组件就绪，
+# 避免 yuanrong/注册中心 systemd 已 active 但端口尚未监听时单次探测误报失败（如 frontend 8888 绑定滞后）。
+gateway_wait_port() {
+    local host="$1" port="$2" retry=0
+    while [ ${retry} -lt ${GATEWAY_MAX_RETRY} ]; do
+        if port_is_listening "${host}" "${port}"; then
+            return 0
+        fi
+        retry=$((retry + 1))
+        [ ${retry} -lt ${GATEWAY_MAX_RETRY} ] && sleep 2
+    done
+    return 1
+}
+
 gateway_deploy_process() {
     # gateway 部署跟随 master_nodes：本机属于 master_nodes 即安装 systemd 服务，
     # 不区分 VIP 持有；启动时由系统单元的 ExecStartPre (= check-ingress-master) 判定是否持有 VIP。
@@ -327,6 +342,15 @@ gateway_deploy_process() {
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
     info "Deploying gateway on ${master_host}..."
+
+    # 前置端口检查（带重试）：yuanrong/注册中心 systemd 已 active 但组件端口可能仍需数秒才就绪，
+    # 单次探测会命中竞态窗口而误报失败，故等待 GATEWAY_MAX_RETRY 次（每次间隔 2s）。
+    if ! gateway_wait_port "${DEPLOY_VARS["MASTER_NODE_IP"]}" "${DEPLOY_VARS["FRONTEND_PORT"]}"; then
+        error "yuanrong frontend not reachable on ${DEPLOY_VARS["MASTER_NODE_IP"]}:${DEPLOY_VARS["FRONTEND_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure yuanrong is up before jiuwenswarm"
+    fi
+    if ! gateway_wait_port "${DEPLOY_VARS["INGRESS_VIP"]}" "${DEPLOY_VARS["REGISTRY_PORT"]}"; then
+        error "AgentRegistry not reachable on ${DEPLOY_VARS["INGRESS_VIP"]}:${DEPLOY_VARS["REGISTRY_PORT"]} after ${GATEWAY_MAX_RETRY} retries; ensure 'agent-gateway' is up before jiuwenswarm"
+    fi
 
     gateway_gen_config
 
