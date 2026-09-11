@@ -2779,6 +2779,13 @@ class AgentWebSocketServer:
             )
             if isinstance(stored_session_mode, str) and stored_session_mode.strip():
                 params[_SESSION_PREVIOUS_MODE_KEY] = stored_session_mode.strip()
+                # 复用会话的跨端续聊（如 xiaoyi 手机控 PC 反查命中 desktop_*）
+                # 可能不带 mode——Gateway 对复用会话跳过渠道默认注入；此处以
+                # 磁盘锁定的 mode 作为解析基准，让 team / design.team / code.*
+                # 等已锁定模式保持，不回落成 agent。explicit_mode_provided 已在
+                # 上方捕获，此处回填不影响「显式与否」的下游判定。
+                if not explicit_mode_provided:
+                    params["mode"] = stored_session_mode.strip()
             if isinstance(stored_work_mode, str) and stored_work_mode.strip().lower() in {
                 "code",
                 "design",

@@ -366,7 +366,9 @@ def test_identity_extra_team_uses_lead_name(
 
     assert extra["expert_id"] == "sample-expert-group"
     assert extra["expert_type"] == "team"
-    # 团的身份名快照 = 主理人花名（身份行展示主理人，不是团名）
+    # 团的身份名快照 = 主理人花名（主对话答者=主理人，团名归
+    # 会话/面板层）；包未起花名时兜底角色名「主理人」——本测试包 lead 名即
+    # 占位值「主理人」，两条路径同值
     assert extra["expert_name"] == "主理人"
 
 
