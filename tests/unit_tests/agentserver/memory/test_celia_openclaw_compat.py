@@ -354,6 +354,9 @@ def test_endpoint_priority_is_source_local(monkeypatch):
 
 
 def test_empty_home_workspace_init_creates_celia_compatibility_state_without_binary(tmp_path, monkeypatch):
+    monkeypatch.setenv("MEMORY_ENGINE", "external")
+    monkeypatch.setenv("MEMORY_EXTERNAL_PROVIDER", "old-celia")
+    monkeypatch.setenv("MEMORY_MODE", "local")
     home = tmp_path / "home"
     data = home / ".jiuwenswarm"
     home.mkdir()

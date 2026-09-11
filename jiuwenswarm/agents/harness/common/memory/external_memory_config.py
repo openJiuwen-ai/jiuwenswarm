@@ -17,7 +17,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
-from .config import _load_config, get_embed_config
+from .config import _load_config, get_embed_config, get_memory_mode, is_memory_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -78,6 +78,21 @@ def is_external_memory_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     if not is_external_memory_allowed(config):
         return False
     return bool(get_external_memory_config(config).get("provider"))
+
+
+def is_old_celia_enabled(config: Dict[str, Any]) -> bool:
+    """Whether the preserved private Celia client and its file sync are enabled."""
+    return (is_external_memory_enabled(config)
+            and get_external_memory_config(config)["provider"] == "old-celia")
+
+
+def is_legacy_workspace_memory_enabled(config: Dict[str, Any]) -> bool:
+    """Gate USER.md, MEMORY.md and daily_memory with their legacy consumers."""
+    return is_old_celia_enabled(config) or (
+        get_memory_mode(config) == "local"
+        and is_builtin_memory_allowed(config)
+        and is_memory_enabled("agent", config)
+    )
 
 
 def _resolve_ltm_dir() -> Path:

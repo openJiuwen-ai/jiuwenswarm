@@ -10,7 +10,6 @@ _REQUIRED_WORKSPACE_FILES = (
     "IDENTITY.md",
     "SOUL.md",
     "HEARTBEAT.md",
-    "USER.md",
 )
 
 
@@ -26,7 +25,13 @@ def should_prepare_workspace(
     if old_workspace.exists() and not new_workspace.exists():
         return True
 
+    from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_legacy_workspace_memory_enabled
+    from jiuwenswarm.agents.harness.common.memory.workspace import load_workspace_memory_config
+
+    required_files = _REQUIRED_WORKSPACE_FILES
+    if is_legacy_workspace_memory_enabled(load_workspace_memory_config(config_file)):
+        required_files += ("USER.md",)
     return any(
         not (new_workspace / filename).is_file()
-        for filename in _REQUIRED_WORKSPACE_FILES
+        for filename in required_files
     )

@@ -807,6 +807,8 @@ def _migrate_jiuwenclaw_workspace_to_workspace(workspace_dir: Path) -> None:
 def _migrate_legacy_workspace(
     workspace_dir: Path,
     preferred_language: Optional[str] = None,
+    *,
+    memory_enabled: bool = True,
 ) -> None:
     """Migrate from legacy layout to new DeepAgent workspace layout.
 
@@ -884,9 +886,10 @@ def _migrate_legacy_workspace(
 
     # 4. Migrate memory
     new_memory = new_workspace / "memory"
-    new_memory.mkdir(parents=True, exist_ok=True)
+    if memory_enabled:
+        new_memory.mkdir(parents=True, exist_ok=True)
 
-    if old_memory.exists():
+    if old_memory.exists() and memory_enabled:
         # 4.1 Migrate USER.md to workspace root (not in memory/)
         old_user = old_memory / "USER.md"
         new_user = new_workspace / "USER.md"
@@ -936,7 +939,7 @@ def _migrate_legacy_workspace(
         if old_skills.exists():
             shutil.rmtree(old_skills)
             logger.info(f"Removed old skills: {old_skills}")
-        if old_memory.exists():
+        if old_memory.exists() and memory_enabled:
             shutil.rmtree(old_memory)
             logger.info(f"Removed old memory: {old_memory}")
     except OSError as e:
@@ -1125,7 +1128,8 @@ def prepare_workspace(
         durable_relatives = [
             Path("agent/workspace/USER.md"),
             Path("agent/workspace/MEMORY.md"),
-            Path("agent/workspace/memory/celia_memory"),
+            Path("agent/workspace/memory"),
+            Path("agent/workspace/coding_memory"),
         ]
         if any((workspace_dir / relative).exists() for relative in durable_relatives):
             celia_preserve = tempfile.TemporaryDirectory(
@@ -1165,24 +1169,6 @@ def prepare_workspace(
     legacy_dirs_exist = (
         old_home_is_legacy or old_skills.exists() or old_memory.exists()
     )
-
-    if legacy_dirs_exist and not overwrite:
-        _migrate_legacy_workspace(workspace_dir, preferred_language)
-    # If overwrite (init command), clean up old legacy directories first
-    elif overwrite:
-        try:
-            if old_home.exists():
-                # init/overwrite rebuilds the workspace but must NOT drop the
-                # user's cron jobs — agent/home is their canonical location.
-                _clean_home_keep_cron(old_home, context="workspace init")
-            if old_skills.exists():
-                shutil.rmtree(old_skills)
-                logger.info(f"Removed old skills: {old_skills}")
-            if old_memory.exists():
-                shutil.rmtree(old_memory)
-                logger.info(f"Removed old memory: {old_memory}")
-        except OSError as e:
-            logger.warning(f"Failed to remove some old directories: {e}")
 
     # Recover cron jobs mistakenly left in gateway/ (dead path) by an older
     # buggy migration — merge them back into agent/home/cron_jobs.json.
@@ -1230,6 +1216,32 @@ def prepare_workspace(
             shutil.copy2(src, dest)
 
     _copy_system_file(config_yaml_src, config_yaml_dest)
+
+    from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+        is_legacy_workspace_memory_enabled, is_old_celia_enabled,
+    )
+    from jiuwenswarm.agents.harness.common.memory.workspace import load_workspace_memory_config
+
+    memory_config = load_workspace_memory_config(config_yaml_dest)
+    legacy_memory_enabled = is_legacy_workspace_memory_enabled(memory_config)
+
+    if legacy_dirs_exist and not overwrite:
+        _migrate_legacy_workspace(workspace_dir, preferred_language, memory_enabled=legacy_memory_enabled)
+    # If overwrite (init command), clean up old legacy directories first
+    elif overwrite:
+        try:
+            if old_home.exists():
+                # init/overwrite rebuilds the workspace but must NOT drop the
+                # user's cron jobs — agent/home is their canonical location.
+                _clean_home_keep_cron(old_home, context="workspace init")
+            if old_skills.exists():
+                shutil.rmtree(old_skills)
+                logger.info(f"Removed old skills: {old_skills}")
+            if old_memory.exists() and legacy_memory_enabled:
+                shutil.rmtree(old_memory)
+                logger.info(f"Removed old memory: {old_memory}")
+        except OSError as e:
+            logger.warning(f"Failed to remove some old directories: {e}")
 
     resolved_lang = _resolve_preferred_language(
         config_yaml_dest, preferred_language, overlay_yaml_dest
@@ -1326,16 +1338,19 @@ def prepare_workspace(
             _copy_dir(
                 template_agent_workspace,
                 deepagent_workspace,
-                ignore_patterns=("*_ZH.md", "*_EN.md", "skills"),
+                ignore_patterns=("*_ZH.md", "*_EN.md", "skills") + (
+                    () if legacy_memory_enabled else ("USER.md", "MEMORY.md", "memory")
+                ),
             )
     else:
         deepagent_workspace.mkdir(parents=True, exist_ok=True)
-    with TrackCopyDiff(
-        dest=agent_memory,
-        cumulative=cumulative_diff,
-        overwrite=overwrite,
-    ):
-        _copy_dir(template_agent_memory, agent_memory, ignore_patterns=("*_ZH.md", "*_EN.md"))
+    if legacy_memory_enabled:
+        with TrackCopyDiff(
+            dest=agent_memory,
+            cumulative=cumulative_diff,
+            overwrite=overwrite,
+        ):
+            _copy_dir(template_agent_memory, agent_memory, ignore_patterns=("*_ZH.md", "*_EN.md"))
 
     # Copy multi-language files based on resolved language
     # Files with _ZH/_EN suffix are copied to the workspace without suffix
@@ -1348,6 +1363,8 @@ def prepare_workspace(
         (f"memory/MEMORY{suffix}.md", "memory/MEMORY.md"),
     ]
     for src_name, dst_name in multilang_files:
+        if dst_name == "memory/MEMORY.md" and not legacy_memory_enabled:
+            continue
         src_path = template_agent_workspace / src_name
         dst_path = deepagent_workspace / dst_name
         if src_path.exists() and not dst_path.exists():
@@ -1397,7 +1414,8 @@ def prepare_workspace(
     # existing DB/Markdown/marker content during normal initialization.
     from jiuwenswarm.common.celia_setup import initialize_celia_compatibility
 
-    initialize_celia_compatibility(package_root, workspace_dir, deepagent_workspace)
+    if is_old_celia_enabled(memory_config):
+        initialize_celia_compatibility(package_root, workspace_dir, deepagent_workspace)
 
     # ----- 默认安装内置技能: skill-creator 和 swarmskill-creator -----
     _install_default_builtin_skills(

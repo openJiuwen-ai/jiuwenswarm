@@ -96,6 +96,7 @@ from jiuwenswarm.common.coding_memory_paths import (
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
 from jiuwenswarm.common.hooks_config import load_hooks_config
+from jiuwenswarm.agents.harness.common.memory.workspace import configure_workspace_memory
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -537,6 +538,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             agent_workspace_dir=self._agent_workspace_dir,
             description="Coding Agent 记忆模块",
         )
+        configure_workspace_memory(workspace, config_base)
 
         self._instance = create_deep_agent(
             model=model,
