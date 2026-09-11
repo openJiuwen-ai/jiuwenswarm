@@ -10,7 +10,10 @@ from __future__ import annotations
 import argparse
 import logging
 import os
+import signal
 import stat
+import sys
+import time
 from pathlib import Path
 from typing import Tuple, Union
 from urllib.parse import urlparse
@@ -28,6 +31,12 @@ ENV_UDS_MODE = "JIUWENBOX_UDS_MODE"
 ENV_SAVE_LOGS_DIR = "JIUWENBOX_SAVE_LOGS_DIR"
 _ENV_API_TOKEN_NAME = "JIUWENBOX_API_TOKEN"
 DEFAULT_LISTEN = "http://0.0.0.0:8321"
+# Parent supervisor waits on the server child and deletes leftover veths when
+# the child is SIGKILL'd. Set to skip the fork (debug / already a child).
+ENV_NO_SUPERVISOR = "JIUWENBOX_NO_SUPERVISOR"
+ENV_SUPERVISOR_CHILD = "JIUWENBOX_SUPERVISOR_CHILD"
+_PR_SET_PDEATHSIG = 1
+_SUPERVISOR_POLL_SECONDS = 0.05
 
 HttpSpec = Tuple[str, str, int]   # ("http", host, port)
 UnixSpec = Tuple[str, str]        # ("unix", abs_socket_path)
@@ -186,6 +195,15 @@ def _build_parser() -> argparse.ArgumentParser:
             "env; unset means authentication is disabled."
         ),
     )
+    parser.add_argument(
+        "--cleanup-orphans",
+        action="store_true",
+        help=(
+            "Delete leftover jiuwenbox veth interfaces (jwbH*/jwbS*) and "
+            "named netns (jbx-*) then exit. Used after an ungraceful stop "
+            "(SIGKILL / OOM / stop timeout) and by systemd ExecStopPost."
+        ),
+    )
     return parser
 
 
@@ -221,6 +239,108 @@ def _resolve_save_logs_dir(cli_value: str | None) -> str | None:
     return str(Path(raw).expanduser().resolve())
 
 
+def _cleanup_orphans_best_effort(reason: str) -> None:
+    try:
+        from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
+
+        cleanup_orphaned_uplinks(reason=reason)
+    except Exception:  # noqa: BLE001
+        logger.exception("[launcher] orphan network cleanup (%s) failed", reason)
+
+
+def _set_parent_death_signal(signum: int) -> None:
+    """Ask the kernel to SIGTERM this process if the supervisor parent dies.
+
+    ``PR_SET_PDEATHSIG`` fires even when the parent is SIGKILL'd, which is the
+    case we cannot handle with a Python ``try/finally`` in the parent.
+    """
+    if not sys.platform.startswith("linux"):
+        return
+    try:
+        import ctypes
+
+        libc = ctypes.CDLL("libc.so.6", use_errno=True)
+        ret = libc.prctl(_PR_SET_PDEATHSIG, int(signum), 0, 0, 0)
+    except Exception:  # noqa: BLE001
+        logger.warning("[launcher] PR_SET_PDEATHSIG failed", exc_info=True)
+        return
+    if ret != 0:
+        logger.warning(
+            "[launcher] PR_SET_PDEATHSIG returned %d (errno=%d)",
+            ret,
+            ctypes.get_errno(),
+        )
+        return
+    # Race: parent already died between fork() and prctl().
+    if os.getppid() == 1:
+        logger.warning("[launcher] supervisor parent already gone; sending %s to self", signum)
+        os.kill(os.getpid(), signum)
+
+
+def _child_exit_code(status: int) -> int:
+    if os.WIFEXITED(status):
+        return os.WEXITSTATUS(status)
+    if os.WIFSIGNALED(status):
+        return 128 + os.WTERMSIG(status)
+    return 1
+
+
+def _supervise_child(child_pid: int) -> int:
+    """Wait for the server child; delete host veths as soon as it dies or we are asked to stop."""
+    logger.info("[launcher] supervisor watching server pid=%d", child_pid)
+    stop_requested = False
+
+    def _on_stop(signum: int, _frame: object) -> None:
+        nonlocal stop_requested
+        stop_requested = True
+        try:
+            os.kill(child_pid, signal.SIGTERM)
+        except ProcessLookupError:
+            return
+
+    signal.signal(signal.SIGTERM, _on_stop)
+    signal.signal(signal.SIGINT, _on_stop)
+
+    nics_dropped = False
+    status = 0
+    while True:
+        if stop_requested and not nics_dropped:
+            # Do this on the supervisor thread, not in the signal handler:
+            # cleanup runs subprocesses and is not async-signal-safe.
+            _cleanup_orphans_best_effort("supervisor-signal")
+            nics_dropped = True
+        try:
+            waited, status = os.waitpid(child_pid, os.WNOHANG)
+        except ChildProcessError:
+            status = 0
+            break
+        if waited == child_pid:
+            break
+        time.sleep(_SUPERVISOR_POLL_SECONDS)
+
+    _cleanup_orphans_best_effort("supervisor")
+    code = _child_exit_code(status)
+    logger.info("[launcher] server pid=%d exited status=%d; host uplinks reaped", child_pid, code)
+    return code
+
+
+def _should_supervise() -> bool:
+    if os.environ.get(ENV_NO_SUPERVISOR, "").strip():
+        return False
+    if os.environ.get(ENV_SUPERVISOR_CHILD, "").strip():
+        return False
+    if not hasattr(os, "fork"):
+        return False
+    return True
+
+
+def _run_server(uvicorn_kwargs: dict) -> int:
+    import uvicorn
+
+    uvicorn.run("jiuwenbox.server.app:app", **uvicorn_kwargs)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     """jiuwenbox-server CLI 入口.
 
@@ -232,6 +352,12 @@ def main(argv: list[str] | None = None) -> int:
 
     log_level = getattr(logging, args.log_level.upper(), logging.INFO)
     configure_logging(level=log_level)
+
+    if args.cleanup_orphans:
+        from jiuwenbox.supervisor.network import cleanup_orphaned_uplinks
+
+        cleanup_orphaned_uplinks(reason="cli")
+        return 0
 
     # 启动期错误报告 (URI 解析 / uvicorn 导入 / UDS 文件冲突) 走 logger.error,
     # 而非 print(..., file=sys.stderr)。Python 的 ``logging.lastResort`` 在无
@@ -292,8 +418,19 @@ def main(argv: list[str] | None = None) -> int:
         uvicorn_kwargs["uds"] = path
         logger.info("[launcher] starting jiuwenbox on unix://%s", path)
 
-    uvicorn.run("jiuwenbox.server.app:app", **uvicorn_kwargs)
-    return 0
+    if _should_supervise():
+        try:
+            child_pid = os.fork()
+        except OSError:
+            logger.warning("[launcher] fork() failed; running without supervisor", exc_info=True)
+            return _run_server(uvicorn_kwargs)
+        if child_pid == 0:
+            os.environ[ENV_SUPERVISOR_CHILD] = "1"
+            _set_parent_death_signal(signal.SIGTERM)
+            return _run_server(uvicorn_kwargs)
+        return _supervise_child(child_pid)
+
+    return _run_server(uvicorn_kwargs)
 
 
 if __name__ == "__main__":  # pragma: no cover - module entry

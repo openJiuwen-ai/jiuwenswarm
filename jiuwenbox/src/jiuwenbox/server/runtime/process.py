@@ -2123,6 +2123,24 @@ class ProcessRuntime(RuntimeAdapter):
         text = data.decode("utf-8", errors="replace").rstrip()
         return text
 
+    def drop_all_host_uplinks(self) -> None:
+        """Delete every tracked host veth immediately, without waiting on daemons.
+
+        Used at the start of process shutdown so ``jwbH*`` disappears even if
+        later SIGKILL interrupts ``shutdown_all_sandboxes``.
+        """
+        handles = list(self._uplink_handles.items())
+        self._uplink_handles.clear()
+        for sandbox_id, handle in handles:
+            try:
+                network_module.teardown_network_uplink(handle)
+            except Exception:
+                logger.warning(
+                    "Failed to drop host uplink for sandbox %s during shutdown",
+                    sandbox_id,
+                    exc_info=True,
+                )
+
     def _cleanup_sandbox_artifacts(
         self,
         sandbox_id: str,
