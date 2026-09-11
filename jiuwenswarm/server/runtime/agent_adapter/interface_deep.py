@@ -8487,7 +8487,7 @@ class JiuWenSwarmDeepAdapter:
         if dropped:
             logger.info(
                 "[JiuWenSwarmDeepAdapter] profile=%s dropped rails: %s",
-                self._active_agent_kind,
+                getattr(self, "_active_agent_kind", None),
                 dropped,
             )
         return out
