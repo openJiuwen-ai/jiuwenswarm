@@ -1,5 +1,6 @@
 from types import SimpleNamespace
 
+from jiuwenswarm.common import reasoning_injector
 from jiuwenswarm.llm_provider_compat_patch import (
     _patch_anthropic_modelarts,
     _patch_openai_modelarts_tool_choice,
@@ -66,3 +67,21 @@ def test_other_openai_model_or_host_keeps_auto_tool_choice():
 
     assert modelarts_client()._build_request_params()["tool_choice"] == "auto"
     assert other_client()._build_request_params()["tool_choice"] == "auto"
+
+
+def test_shared_model_builder_installs_provider_patches(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        reasoning_injector,
+        "apply_provider_compat_patches",
+        lambda: calls.append(True),
+    )
+
+    result = reasoning_injector.build_reasoning_model_request_kwargs(
+        model_client_config={"client_provider": "OpenAI"},
+        model_config_obj={},
+        model_name="qwen3-32b",
+    )
+
+    assert calls == [True]
+    assert result["model"] == "qwen3-32b"
