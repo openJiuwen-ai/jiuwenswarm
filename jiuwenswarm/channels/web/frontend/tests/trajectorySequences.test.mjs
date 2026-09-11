@@ -68,11 +68,16 @@ test('a record rebuilds the attribute its chain states', () => {
   assert.equal(attributes['gen_ai.request.model'], 'model-x');
 });
 
-test('a sequence of one restates its single element', () => {
+test('a chain of one rebuilds as an array of one', () => {
+  // A model turn states one assistant message, so this is the ordinary
+  // shape, not an edge case. Returning the element on its own dropped the
+  // brackets and left every finished answer unreadable.
   const cache = createSequenceCache();
-  absorbSequencePage(cache, { sequences: { [HEAD]: ['h1'] }, blobs: { h1: 'be brief' } });
+  const message = '{"role":"assistant","parts":[{"type":"text","content":"hi"}]}';
+  absorbSequencePage(cache, { sequences: { [HEAD]: ['h1'] }, blobs: { h1: message } });
 
-  assert.equal(rebuildSequenceValue(cache, HEAD), 'be brief');
+  assert.equal(rebuildSequenceValue(cache, HEAD), `[${message}]`);
+  assert.deepEqual(JSON.parse(rebuildSequenceValue(cache, HEAD)), [JSON.parse(message)]);
 });
 
 test('content already cached is reusable without the server resending it', () => {
@@ -82,7 +87,7 @@ test('content already cached is reusable without the server resending it', () =>
   // reader was assumed to still hold it.
   absorbSequencePage(cache, { sequences: { [HEAD]: ['h1'] } });
 
-  assert.equal(rebuildSequenceValue(cache, HEAD), 'held');
+  assert.equal(rebuildSequenceValue(cache, HEAD), '[held]');
   assert.deepEqual(missingSequenceContent(cache, [HEAD]), []);
 });
 

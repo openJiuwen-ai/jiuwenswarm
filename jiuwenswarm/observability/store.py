@@ -2516,7 +2516,11 @@ def _parse_sequence_reference(value: object) -> tuple[str, int] | None:
 
 
 def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str | None:
-    """Return the attribute value a chain states, or None if an element is gone."""
+    """Return the attribute value a chain states, or None if an element is gone.
+
+    Always an array: a chain is built only from one, so it rebuilds into one
+    at any depth. Nothing here inspects the count.
+    """
     parts: list[str] = []
     for element in elements:
         content = blobs.get(element)
@@ -2525,8 +2529,6 @@ def _rebuilt_sequence_value(elements: list[str], blobs: dict[str, str]) -> str |
         parts.append(content)
     if not parts:
         return None
-    if len(parts) == 1:
-        return parts[0]
     return "[" + ",".join(parts) + "]"
 
 

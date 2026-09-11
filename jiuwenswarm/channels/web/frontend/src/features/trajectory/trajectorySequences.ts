@@ -82,8 +82,8 @@ export function missingSequenceContent(
 /**
  * Rebuild the value a chain states.
  *
- * A sequence of one restates its single element, which is how a scalar
- * attribute round-trips through the same path as an array.
+ * Always an array: a chain is built only from one, so it rebuilds into one
+ * at any depth. Nothing here inspects the count.
  */
 export function rebuildSequenceValue(
   cache: SequenceCache,
@@ -97,7 +97,6 @@ export function rebuildSequenceValue(
     if (content === undefined) return undefined
     parts.push(content)
   }
-  if (parts.length === 1) return parts[0]
   return `[${parts.join(',')}]`
 }
 
