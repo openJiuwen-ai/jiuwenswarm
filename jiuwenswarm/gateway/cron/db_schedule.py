@@ -165,8 +165,8 @@ async def _claim_update(
             updated_at = :updated_at
         WHERE job_id = :job_id
           AND next_run_at = :fire_at
-          AND enabled = 1
-          AND expired = 0
+          AND enabled = :enabled
+          AND expired = :expired
     """
     params = {
         "job_id": job_id,
@@ -174,6 +174,8 @@ async def _claim_update(
         "next_run_at": next_db,
         "last_run_at": last_db,
         "updated_at": now_db,
+        "enabled": True,
+        "expired": False,
     }
     rows = await _execute_claim_sql(sql, params)
     if rows == 1:
@@ -199,20 +201,24 @@ async def _claim_expire(*, job_id: str, fire_at: datetime) -> bool:
     now_db = datetime_to_db_value(datetime.now(dt_timezone.utc))
     sql = f"""
         UPDATE {_CRON_JOB_TABLE}
-        SET expired = 1,
-            enabled = 0,
+        SET expired = :set_expired,
+            enabled = :set_enabled,
             last_run_at = :last_run_at,
             updated_at = :updated_at
         WHERE job_id = :job_id
           AND next_run_at = :fire_at
-          AND enabled = 1
-          AND expired = 0
+          AND enabled = :enabled
+          AND expired = :expired
     """
     params = {
         "job_id": job_id,
         "fire_at": fire_db,
         "last_run_at": last_db,
         "updated_at": now_db,
+        "set_expired": True,
+        "set_enabled": False,
+        "enabled": True,
+        "expired": False,
     }
     rows = await _execute_claim_sql(sql, params)
     if rows == 1:
@@ -266,7 +272,16 @@ async def _execute_claim_sql(sql: str, params: dict[str, Any]) -> int:
 
     from jiuwenswarm.infrastructure.db.database import Database
 
+    from jiuwenswarm.gateway.storage.backends.db.bool_codec import (
+        normalize_boolean_columns_for_write,
+    )
+    from jiuwenswarm.gateway.storage.backends.db.datetime_codec import (
+        normalize_datetime_columns_for_write,
+    )
+
     handler = await Database.current().ensure_ready(log_prefix="cron_db_schedule")
+    params = normalize_datetime_columns_for_write(handler, _CRON_JOB_TABLE, params)
+    params = normalize_boolean_columns_for_write(handler, _CRON_JOB_TABLE, params)
     engine = handler.get_engine()
     async with engine.begin() as conn:
         result = await conn.execute(text(sql), params)
