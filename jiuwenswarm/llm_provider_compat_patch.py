@@ -14,6 +14,7 @@ logger = logging.getLogger("jiuwenswarm.llm_provider_compat_patch")
 _MODELARTS_TOOLS_NONE_MODELS = frozenset({"qwen3-32b"})
 _ANTHROPIC_PATCHED_CLASSES: WeakSet[type] = WeakSet()
 _OPENAI_PATCHED_CLASSES: WeakSet[type] = WeakSet()
+_PROVIDER_PATCHES_APPLIED = False
 
 
 def _host_from_client(client: Any) -> str:
@@ -86,6 +87,9 @@ def _patch_openai_modelarts_tool_choice(client_class: type) -> None:
 
 def apply_provider_compat_patches() -> None:
     """Install narrowly-scoped request-shape patches once per process."""
+    global _PROVIDER_PATCHES_APPLIED  # pylint: disable=global-statement
+    if _PROVIDER_PATCHES_APPLIED:
+        return
     try:
         from openjiuwen.core.foundation.llm.model_clients.anthropic_model_client import (
             AnthropicModelClient,
@@ -99,6 +103,7 @@ def apply_provider_compat_patches() -> None:
 
     _patch_anthropic_modelarts(AnthropicModelClient)
     _patch_openai_modelarts_tool_choice(OpenAIModelClient)
+    _PROVIDER_PATCHES_APPLIED = True
     logger.info("Provider compatibility patches applied")
 
 
