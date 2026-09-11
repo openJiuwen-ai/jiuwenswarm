@@ -166,18 +166,8 @@ def invoke_function_name_description() -> str:
 
 
 def invoke_tool_description() -> str:
-    """Short ToolCard: current zone + passthrough invoke from loaded skill tables."""
-    zone = plugin_runtime_zone_label()
-    other = "蓝绿" if zone == "现网" else "现网"
-    return (
-        f"当前插件运行区：{zone}。"
-        f"functionName 与 bundleName 必须使用已加载 skill 中「{zone}」表；"
-        f"禁止混用{other}名字。"
-        "业务字段原样透传。"
-        "调用形态：顶层 functionName 为真实云端能力名，arguments 必含 bundleName；"
-        "可选顶层 timeout_s。"
-        "远程 Agent：functionName=agent_as_a_tool。"
-    )
+    """Short ToolCard: invoke cloud tools from loaded skill tables."""
+    return "根据 skill 调用相关云端工具。"
 
 
 __all__ = [

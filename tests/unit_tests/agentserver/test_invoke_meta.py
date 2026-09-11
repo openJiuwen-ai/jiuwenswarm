@@ -455,7 +455,6 @@ async def test_invoke_missing_bundle_name_errors(monkeypatch):
 
 def test_invoke_tool_description_omits_internal_transport():
     desc = invoke_tool_description()
-    assert "当前插件运行区：" in desc
     assert "skill_tool" not in desc
     assert "禁止臆造" not in desc
     assert "禁止臆造" not in invoke_arguments_description()
@@ -1001,7 +1000,7 @@ def _lyrics_write_args(**extra: Any) -> dict[str, Any]:
 
 def test_invoke_tool_description_points_at_skills_not_recipes():
     text = invoke_tool_description()
-    assert "当前插件运行区：" in text
+    assert "skill" in text
     assert "skill_tool" not in text
     assert "禁止臆造" not in text
     assert "lyricsGeneration" not in text
@@ -1541,11 +1540,9 @@ async def test_invoke_test_zone_accepts_prod_seedream_passthrough(monkeypatch):
     assert captured["spec"].tool_name == "SeedreamPro_5"
 
 
-def test_invoke_tool_description_prod_uses_zone_sentence(monkeypatch):
+def test_invoke_tool_description_prod_omits_catalog_names(monkeypatch):
     monkeypatch.setenv("AGENT_RUNTIME_MCP_RUN", _PROD_MCP)
     text = invoke_tool_description()
-    assert "当前插件运行区：现网" in text
-    assert "「现网」表" in text
     assert "seedreamBatch5" not in text
     assert "SeedreamPro_5" not in text
     assert _PLUGIN_PLATFORM not in text
