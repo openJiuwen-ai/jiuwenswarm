@@ -181,6 +181,7 @@ class FakeCore:
         self.deactivate_error: BaseException | None = None
         self.deactivate_changes_active_before_error = False
         self.set_error: BaseException | None = None
+        self.append_service_error: BaseException | None = None
         self.activate_error: BaseException | None = None
         self.activate_started: asyncio.Event | None = None
         self.activate_release: asyncio.Event | None = None
@@ -281,6 +282,30 @@ class FakeCore:
         enabled: bool,
     ) -> None:
         self.calls.append(("set_fetch_service_enabled", (service_id, enabled)))
+
+    async def _append_fetch_service_config(self, service: object) -> None:
+        self.calls.append(("append_fetch_service_config", service))
+        assert self.configured is not None
+        services = (*self.configured.fetch_services, service)
+        self.configured = self.configured.model_copy(
+            update={"fetch_services": services}
+        )
+        if self.append_service_error is not None:
+            error = self.append_service_error
+            self.append_service_error = None
+            raise error
+
+    async def _remove_fetch_service_config(self, service_id: str) -> None:
+        self.calls.append(("remove_fetch_service_config", service_id))
+        assert self.configured is not None
+        services = tuple(
+            service
+            for service in self.configured.fetch_services
+            if service.service_id != service_id
+        )
+        self.configured = self.configured.model_copy(
+            update={"fetch_services": services}
+        )
 
     async def snapshot(self) -> object:
         self.calls.append(("snapshot", None))
@@ -2221,6 +2246,25 @@ async def test_create_fetch_service_normalizes_and_publishes_yaml_immediately(
 
 
 @pytest.mark.asyncio
+async def test_create_fetch_service_hot_appends_without_restarting_runtime(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+) -> None:
+    host, core = fake_host
+    await host.configure(_config(enabled=True, root_dir=tmp_path))
+    core.calls.clear()
+
+    created = await host.create_fetch_service(_bookmark_service("bookmarks-created"))
+
+    assert created["service_id"] == "bookmarks-created"
+    assert [name for name, _value in core.calls] == ["append_fetch_service_config"]
+    assert all(
+        name not in {"deactivate_runtime", "set_configuration", "activate_runtime"}
+        for name, _value in core.calls
+    )
+
+
+@pytest.mark.asyncio
 async def test_create_and_patch_fetch_service_persist_normalized_time_range(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     tmp_path: Path,
@@ -2324,7 +2368,7 @@ async def test_create_fetch_service_apply_failure_restores_yaml_memory_and_core(
     old_yaml = host._config_path.read_bytes()
     old_config = host._config
     old_stored = deepcopy(host._stored_config)
-    core.set_error = RuntimeError("candidate set failed")
+    core.append_service_error = RuntimeError("candidate append failed")
 
     with pytest.raises(PersonalContext.Error):
         await host.create_fetch_service(_bookmark_service("bookmarks-00"))
@@ -2345,7 +2389,7 @@ async def test_create_fetch_service_cancellation_restores_yaml_memory_and_core(
     old_yaml = host._config_path.read_bytes()
     old_config = host._config
     old_stored = deepcopy(host._stored_config)
-    core.set_error = asyncio.CancelledError()
+    core.append_service_error = asyncio.CancelledError()
 
     task = asyncio.create_task(
         host.create_fetch_service(_bookmark_service("bookmarks-00"))
@@ -2697,6 +2741,32 @@ async def test_get_fetch_run_status_returns_all_or_one_service(
 
 
 @pytest.mark.asyncio
+async def test_get_fetch_run_status_does_not_wait_for_configuration_lock(
+    fake_host, tmp_path, monkeypatch
+):
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    expected = {"service_id": "local-notes", "runs": []}
+    started = asyncio.Event()
+
+    async def query(service_id, *, run_id=None):
+        assert service_id == "local-notes"
+        assert run_id is None
+        started.set()
+        return expected
+
+    monkeypatch.setattr(core, "get_fetch_run_status", query, raising=False)
+    await host._operation_lock.acquire()
+    try:
+        task = asyncio.create_task(host.get_fetch_run_status("local-notes"))
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        assert await task == expected
+    finally:
+        if host._operation_lock.locked():
+            host._operation_lock.release()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize(
     "params",
     [
@@ -2829,6 +2899,39 @@ async def test_stop_fetch_run_delegates_without_modifying_yaml(
     assert core.calls == [("stop_fetch_run", "local-notes")]
     assert host._config is configured
     assert config_path.read_bytes() == saved
+
+
+@pytest.mark.asyncio
+async def test_stop_fetch_run_does_not_hold_or_wait_for_configuration_lock(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+    await host.configure(_config(enabled=False, root_dir=tmp_path))
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def stop(service_id: str) -> None:
+        assert service_id == "local-notes"
+        started.set()
+        await release.wait()
+
+    monkeypatch.setattr(core, "stop_fetch_run", stop)
+    await host._operation_lock.acquire()
+    task = asyncio.create_task(host.stop_fetch_run("local-notes"))
+    try:
+        await asyncio.wait_for(started.wait(), timeout=0.5)
+        release.set()
+        assert await task == {"ok": True}
+    finally:
+        release.set()
+        if host._operation_lock.locked():
+            host._operation_lock.release()
+        if not task.done():
+            task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await task
 
 
 @pytest.mark.asyncio
