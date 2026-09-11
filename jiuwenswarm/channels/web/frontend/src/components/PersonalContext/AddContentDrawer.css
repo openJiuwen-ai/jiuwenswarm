@@ -78,6 +78,15 @@
   flex-shrink: 0;
 }
 
+/* 提交条件未满足时的说明，靠左显示、与按钮同一行 */
+.pc-drawer__foot-hint {
+  margin-right: auto;
+  align-self: center;
+  font-size: 12px;
+  line-height: 18px;
+  color: #8a8f99;
+}
+
 /* 表单字段 */
 .pc-drawer__field {
   display: flex;

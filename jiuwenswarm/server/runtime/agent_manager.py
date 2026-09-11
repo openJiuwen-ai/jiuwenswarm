@@ -10,7 +10,8 @@ import logging
 import os
 import time
 import uuid
-from typing import Any, NamedTuple, TYPE_CHECKING
+from contextlib import asynccontextmanager
+from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
 from jiuwenswarm.common.e2a.acp.protocol import build_acp_initialize_result
@@ -19,9 +20,22 @@ from jiuwenswarm.common.config import get_config, get_default_models
 from jiuwenswarm.common.mode_matrix import (
     NEW_AGENT_WORK_NORMAL,
     NEW_AGENT_WORK_PLAN,
+    canonicalize_mode_text,
+    compose_web_mode,
     deprecate_mode,
+    normalize_work_mode,
 )
-
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+    is_auto_permission_enabled,
+    resolve_declared_auto_workspace,
+    supports_phase_auto_root,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    is_interrupt_resume_payload,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueueError,
+)
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -52,6 +66,44 @@ def _normalize_project_dir(project_dir: str | None) -> str:
         return os.path.normcase(os.path.abspath(os.path.expanduser(raw))).casefold()
     except Exception:
         return raw
+
+
+def _auto_permission_request_workspace(request: Any) -> str | None:
+    """Resolve the first immutable Auto workspace without changing generic E2A."""
+
+    params = getattr(request, "params", {})
+    params = params if isinstance(params, dict) else {}
+    permission_config = get_config().get("permissions", {})
+    if (
+        not isinstance(permission_config, dict)
+        or not is_auto_permission_enabled(permission_config)
+        or not supports_phase_auto_root(params)
+    ):
+        return None
+    metadata = getattr(request, "metadata", {})
+    metadata = metadata if isinstance(metadata, dict) else {}
+    declared = resolve_declared_auto_workspace(params, metadata)
+    return os.path.normcase(str(declared)) if declared is not None else ""
+
+
+def _resolve_request_owner_mode(
+    params: dict[str, Any],
+    *,
+    mode: str | None,
+    sub_mode: str | None,
+) -> tuple[str, str | None]:
+    """Resolve the manager owner without duplicating Web mode composition."""
+
+    if mode is not None:
+        return mode, sub_mode
+    mode_text = canonicalize_mode_text(params.get("mode", "agent"))
+    work_mode = normalize_work_mode(params.get("work_mode"))
+    if work_mode is not None:
+        composed = compose_web_mode(mode_text, work_mode)
+        if composed is not None:
+            manager_mode, manager_sub_mode, _canonical_mode = composed
+            return manager_mode, manager_sub_mode
+    return mode_text.split(".", 1)[0], sub_mode
 
 
 # 单 agent 的 plan 是**会话运行期状态**（``DeepAgentState.plan_mode``），不是另一种
@@ -137,6 +189,10 @@ class AgentManager:
         self._heartbeat_service: Any | None = None
         self._pending_tui_retirements: set[int] = set()
         self._retirement_tasks: dict[int, asyncio.Task] = {}
+        self._permissions_reload_tasks: set[asyncio.Task[None]] = set()
+        self._permissions_reload_closing = False
+        self._permissions_reload_tail: asyncio.Task[None] | None = None
+        self._permissions_reload_schedule_failure: tuple[object, Exception] | None = None
         self._agent_create_locks: WeakValueDictionary[
             tuple[str, str], asyncio.Lock
         ] = WeakValueDictionary()
@@ -158,6 +214,128 @@ class AgentManager:
         for agents in self.agents.values():
             for agent in agents.values():
                 agent.set_heartbeat_service(service)
+
+    async def _run_scheduled_permissions_reload(
+        self,
+        config: dict[str, Any] | None,
+        observed_schedule_failure: tuple[object, Exception] | None,
+    ) -> None:
+        if config is None:
+            # Smart grants/add-dir publish D only, without reloading ordinary owners.
+            async with self._reload_lock:
+                desired = get_config()
+                for agents in self.agents.values():
+                    for agent in list(agents.values()):
+                        if agent.has_smart_permission_lifecycle(desired):
+                            await agent.reload_permissions_config(desired, include_legacy=False)
+        else:
+            # RPCs retain develop's captured full reload for ordinary owners.
+            await self.reload_agents_config(config, None, permission_notification=True)
+        if (
+            self._permissions_reload_tail is asyncio.current_task()
+            and self._permissions_reload_schedule_failure
+            is observed_schedule_failure
+        ):
+            self._permissions_reload_schedule_failure = None
+
+    def has_smart_permission_lifecycle(self, config: dict[str, Any]) -> bool:
+        return any(
+            agent.has_smart_permission_lifecycle(config)
+            for agents in self.agents.values() for agent in agents.values()
+        )
+
+    def schedule_permissions_reload(
+        self, config: dict[str, Any] | None = None,
+    ) -> asyncio.Task[None]:
+        """Publish one manager-owned reload tail after permission persistence."""
+        if self._permissions_reload_closing:
+            raise RuntimeError("permission reload owner is closing")
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError as exc:
+            self._permissions_reload_schedule_failure = (object(), exc)
+            raise
+
+        reload_coro = self._run_scheduled_permissions_reload(
+            config,
+            self._permissions_reload_schedule_failure,
+        )
+        try:
+            task = loop.create_task(reload_coro)
+        except Exception as exc:
+            reload_coro.close()
+            self._permissions_reload_schedule_failure = (object(), exc)
+            raise
+        self._permissions_reload_tail = task
+        self._permissions_reload_tasks.add(task)
+
+        def _finish(done: asyncio.Task[None]) -> None:
+            self._permissions_reload_tasks.discard(done)
+            if done.cancelled():
+                if not self._permissions_reload_closing:
+                    self._permissions_reload_schedule_failure = (
+                        object(), RuntimeError("permission reload cancelled"),
+                    )
+                return
+            failure = done.exception()
+            if failure is not None:
+                self._permissions_reload_schedule_failure = (object(), failure)
+                logger.error("[AgentManager] permissions reload notification failed: %s", failure)
+
+        task.add_done_callback(_finish)
+        return task
+
+    async def wait_for_permissions_ready(self) -> None:
+        """Wait for all visible notifications, including an older unfinished task."""
+        tasks = set(self._permissions_reload_tasks)
+        if self._permissions_reload_tail is not None:
+            tasks.add(self._permissions_reload_tail)
+        results = await asyncio.gather(
+            *(asyncio.shield(task) for task in tasks), return_exceptions=True,
+        )
+        for result in results:
+            if isinstance(result, BaseException):
+                raise result
+        schedule_failure = self._permissions_reload_schedule_failure
+        if schedule_failure is not None:
+            raise RuntimeError("permission reload scheduling failed") from schedule_failure[1]
+
+    def build_permissions_external_input_context(self, install_session_config):
+        """Serialize one Host external-input Permission publication attempt."""
+        if not callable(install_session_config):
+            raise TypeError("install_session_config must be callable")
+
+        @asynccontextmanager
+        async def external_input_context():
+            for _attempt in range(3):
+                tail = self._permissions_reload_tail
+                tail_error: BaseException | None = None
+                try:
+                    await self.wait_for_permissions_ready()
+                except asyncio.CancelledError as exc:
+                    current = asyncio.current_task()
+                    if current is not None and current.cancelling():
+                        raise
+                    tail_error = exc
+                except BaseException as exc:
+                    tail_error = exc
+
+                async with self._reload_lock:
+                    if tail is not self._permissions_reload_tail:
+                        continue
+                    schedule_failure = self._permissions_reload_schedule_failure
+                    if schedule_failure is not None:
+                        raise RuntimeError(
+                            "permission reload scheduling failed"
+                        ) from schedule_failure[1]
+                    if tail_error is not None:
+                        raise tail_error
+                    await install_session_config()
+                    yield
+                    return
+            raise RuntimeError("permission_reload_not_stable")
+
+        return external_input_context
 
     def _get_agent_create_lock(
         self,
@@ -470,6 +648,10 @@ class AgentManager:
         setter = getattr(agent, "set_personal_context_runtime_enabled", None)
         if callable(setter):
             setter(self._personal_context_runtime_enabled)
+        agent.set_permissions_changed_notifier(self.schedule_permissions_reload)
+        agent.set_permissions_external_input_context_builder(
+            self.build_permissions_external_input_context
+        )
         await agent.create_instance(config, mode=mode_key, sub_mode=sub_mode_key or None)
         setattr(agent, "_jiuwenswarm_agent_cache_key", agent_cache_key)
         setattr(agent, "_jiuwenswarm_agent_mode", mode_key)
@@ -1062,6 +1244,33 @@ class AgentManager:
                 )
         return None
 
+    def get_auto_permission_agent_for_session_nowait(
+        self,
+        channel_id: str,
+        session_id: str,
+    ) -> "JiuWenSwarm | None":
+        """Return the exact cached channel agent owning this Auto session."""
+
+        sid = str(session_id or "").strip()
+        if not sid:
+            return None
+        channel_agents = self.agents.get(_normalize_channel_id(channel_id), {})
+        if not isinstance(channel_agents, dict):
+            return None
+        for agent in channel_agents.values():
+            checker = getattr(agent, "has_auto_permission_session", None)
+            try:
+                if callable(checker) and checker(sid):
+                    return self._borrow_agent(agent)
+            except Exception:
+                logger.exception(
+                    "[AgentManager] Auto session owner lookup failed: "
+                    "channel_id=%s session_id=%s",
+                    channel_id,
+                    sid,
+                )
+        return None
+
     def get_agent_nowait(
         self,
         channel_id: str = "",
@@ -1216,6 +1425,7 @@ class AgentManager:
         target_channel_id: str | None = None,
         target_session_id: str | None = None,
         reload_scopes: set[str] | None = None,
+        permission_notification: bool = False,
     ) -> None:
         """reload agent config.
 
@@ -1310,7 +1520,10 @@ class AgentManager:
                         reload_kwargs["target_session_id"] = target_session
                     if scope_set:
                         reload_kwargs["reload_scopes"] = scope_set
-                    await agent.reload_agent_config(**reload_kwargs)
+                    if permission_notification:
+                        await agent.reload_permissions_config(effective_config, include_legacy=True)
+                    else:
+                        await agent.reload_agent_config(**reload_kwargs)
                 try:
                     team_config = effective_config if isinstance(effective_config, dict) else get_config()
                     await get_team_manager(channel_id).update_evolution_config(team_config)
@@ -1496,6 +1709,159 @@ class AgentManager:
             existing_modes,
         )
 
+    async def get_agent_for_request(
+        self,
+        request: Any,
+        *,
+        mode: str | None = None,
+        sub_mode: str | None = None,
+        project_dir: str | None = None,
+        admit_request: Callable[[], str | None] | None = None,
+    ) -> "JiuWenSwarm | None":
+        """Admit one request and pin Auto sessions to their first owner/root."""
+
+        channel_id = getattr(request, "channel_id", "")
+        params = getattr(request, "params", {})
+        params = params if isinstance(params, dict) else {}
+        mode_full = params.get("mode", "agent")
+        selected_mode, selected_sub_mode = _resolve_request_owner_mode(
+            params,
+            mode=mode,
+            sub_mode=sub_mode,
+        )
+        if project_dir is None:
+            project_dir = params.get("project_dir")
+        auto_workspace = _auto_permission_request_workspace(request)
+        session_id = getattr(request, "session_id", "")
+        owner = self.get_auto_permission_agent_for_session_nowait(
+            channel_id, session_id
+        )
+        owner_auto = getattr(owner, "has_auto_permission_session", None)
+        needs_auto_owner = supports_phase_auto_root(params) and (
+            auto_workspace is not None
+            or (
+                owner is not None
+                and callable(owner_auto)
+                and owner_auto(session_id)
+            )
+        )
+        if needs_auto_owner:
+            lock = self._get_agent_create_lock(
+                _normalize_channel_id(channel_id),
+                f"auto-session:{session_id or 'default'}",
+            )
+            async with lock:
+                params = getattr(request, "params", {})
+                params = params if isinstance(params, dict) else {}
+                metadata = getattr(request, "metadata", {})
+                metadata = metadata if isinstance(metadata, dict) else {}
+                declared_before_admission = resolve_declared_auto_workspace(
+                    params,
+                    metadata,
+                )
+                permission_resume = is_interrupt_resume_payload(params)
+                owner = self.get_auto_permission_agent_for_session_nowait(
+                    channel_id, session_id
+                )
+                owner_auto = getattr(owner, "has_auto_permission_session", None)
+                has_auto_owner = bool(
+                    owner is not None
+                    and callable(owner_auto)
+                    and owner_auto(session_id)
+                )
+                if permission_resume and not has_auto_owner:
+                    # A pending manual call still belongs to its installed owner
+                    # after Smart is selected. Never prepare a new owner for an answer.
+                    owner = self.get_agent_for_session_nowait(channel_id, session_id)
+                    if owner is None:
+                        raise RootPermissionQueueError("permission_resume_owner_missing")
+                new_task_without_owner = not has_auto_owner and not permission_resume
+                if (
+                    new_task_without_owner
+                    and session_id
+                    and declared_before_admission is not None
+                ):
+                    # Cold recovery has no in-memory owner to validate the root.
+                    # Reject against the persisted lock before the admission
+                    # callback can update unrelated session metadata.
+                    from jiuwenswarm.server.runtime.session.session_metadata import (
+                        get_session_metadata,
+                    )
+
+                    persisted_metadata = get_session_metadata(
+                        str(session_id),
+                        cache_bust=True,
+                        enable_writeback=False,
+                    )
+                    persisted_workspace = resolve_declared_auto_workspace(
+                        {},
+                        persisted_metadata,
+                    )
+                    if (
+                        persisted_workspace is not None
+                        and persisted_workspace != declared_before_admission
+                    ):
+                        raise RootPermissionQueueError(
+                            "auto_permission_workspace_changed:new_session_required"
+                        )
+                validator = getattr(
+                    owner, "validate_auto_permission_workspace_request", None
+                )
+                if callable(validator):
+                    validator(request)
+                if admit_request is not None:
+                    project_dir = admit_request()
+                params = getattr(request, "params", {})
+                params = params if isinstance(params, dict) else {}
+                auto_workspace = _auto_permission_request_workspace(request)
+                metadata = getattr(request, "metadata", {})
+                metadata = metadata if isinstance(metadata, dict) else {}
+                declared_after_admission = resolve_declared_auto_workspace(
+                    params,
+                    metadata,
+                )
+                if (
+                    declared_before_admission is not None
+                    and declared_after_admission is not None
+                    and declared_before_admission != declared_after_admission
+                ):
+                    raise RootPermissionQueueError(
+                        "auto_permission_workspace_changed:new_session_required"
+                    )
+                validator = getattr(
+                    owner, "validate_auto_permission_workspace_request", None
+                )
+                if callable(validator):
+                    validator(request)
+                if has_auto_owner or permission_resume:
+                    return owner
+                if auto_workspace is not None:
+                    agent = await self.get_agent(
+                        channel_id=channel_id,
+                        mode=selected_mode,
+                        project_dir=auto_workspace,
+                        sub_mode=selected_sub_mode,
+                    )
+                    prepare = getattr(agent, "prepare_session", None)
+                    if not callable(prepare):
+                        raise RuntimeError("auto_permission_session_owner_unavailable")
+                    await prepare(
+                        session_id=str(session_id or "default"),
+                        channel_id=channel_id,
+                        mode=str(mode_full or selected_mode),
+                        project_dir=auto_workspace or None,
+                    )
+                    return agent
+        else:
+            if admit_request is not None:
+                project_dir = admit_request()
+        return await self.get_agent(
+            channel_id=channel_id,
+            mode=selected_mode,
+            project_dir=project_dir,
+            sub_mode=selected_sub_mode,
+        )
+
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.
 
@@ -1508,16 +1874,7 @@ class AgentManager:
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
             channel_id = getattr(request, "channel_id", "")
-            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-            mode_full = params.get("mode", "agent")
-            mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            project_dir = params.get("project_dir")
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=project_dir,
-            )
+            agent = await self.get_agent_for_request(request)
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
@@ -1538,16 +1895,7 @@ class AgentManager:
         try:
             await self.wait_for_session_prewarm(getattr(request, "session_id", None))
             channel_id = getattr(request, "channel_id", "")
-            params = getattr(request, "params", {}) if isinstance(getattr(request, "params", {}), dict) else {}
-            mode_full = params.get("mode", "agent")
-            mode = str(mode_full).split(".")[0] if mode_full else "agent"
-            project_dir = params.get("project_dir")
-
-            agent = await self.get_agent(
-                channel_id=channel_id,
-                mode=mode,
-                project_dir=project_dir,
-            )
+            agent = await self.get_agent_for_request(request)
             if agent is None:
                 raise RuntimeError(f"[AgentManager] No agent available for channel {channel_id}")
 
@@ -1560,6 +1908,20 @@ class AgentManager:
 
     async def cleanup(self) -> None:
         """清理所有 agent 实例."""
+        self._permissions_reload_closing = True
+        reload_tasks = [
+            task for task in self._permissions_reload_tasks
+            if task is not asyncio.current_task()
+        ]
+        for task in reload_tasks:
+            if not task.done() and not task.cancelling():
+                task.cancel()
+        if reload_tasks:
+            # Wait for adapter/SDK finally blocks before tearing down agents.
+            await asyncio.gather(*reload_tasks, return_exceptions=True)
+        self._permissions_reload_tasks.clear()
+        self._permissions_reload_tail = None
+        self._permissions_reload_schedule_failure = None
         await self.warm_pool.close()
         retirement_tasks = [
             task

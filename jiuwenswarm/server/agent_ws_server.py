@@ -192,10 +192,6 @@ def _parse_single_byte_range(
     end = min(int(end_text), file_size - 1) if end_text else file_size - 1
     return (start, end) if end >= start else None
 
-# 后台权限重载任务引用集合,防止 fire-and-forget 任务被 GC 提前回收。
-# task 完成后自动从集合移除(Python 官方推荐模式)。
-_background_permission_reload_tasks: set[asyncio.Task] = set()
-
 # Session owner preparation completes before the response. Optional KVC signals
 # run after the response so affinity latency cannot fail a UI session change.
 _background_session_kvc_tasks: set[asyncio.Task] = set()
@@ -286,16 +282,6 @@ async def _reset_requested_browser_runtime_if_available(
             browser_binary=str(params.get("browser_binary") or "").strip(),
         )
     return await _reset_active_browser_runtimes_if_available(browser_move)
-
-
-def _log_permission_reload_failure(task: asyncio.Task) -> None:
-    """后台权限重载任务完成回调: 仅在异常时记 debug(与原同步 try/except 语义一致)。"""
-    exc = task.exception()
-    if exc is not None:
-        logger.debug(
-            "[AgentWebSocketServer] post-permissions reload failed (non-critical)",
-            exc_info=exc,
-        )
 
 
 def _log_background_session_kvc_failure(task: asyncio.Task) -> None:
@@ -5066,26 +5052,14 @@ class AgentWebSocketServer:
             dispatch_permissions_config_request
 
         resp = dispatch_permissions_config_request(request)
-
-        # After any successful mutation (delete / update / set / create),
-        # reload agent config so the PermissionInterruptRail picks up the
-        # change immediately instead of waiting for the next tool call's
-        # get_permissions_snapshot refresh.
         read_only_methods = {
             ReqMethod.PERMISSIONS_TOOLS_GET,
             ReqMethod.PERMISSIONS_RULES_GET,
             ReqMethod.PERMISSIONS_APPROVAL_OVERRIDES_GET,
         }
         if resp.ok and request.req_method not in read_only_methods:
-            # 后台异步重载: 不阻塞权限 RPC 回包(避免 reload 慢导致 AgentServer
-            # request timed out)。reload_agents_config 内部有 _reload_lock 串行化
-            # + fingerprint 去重,fire-and-forget 安全。
-            reload_task = asyncio.create_task(
-                self._agent_manager.reload_agents_config(get_config(), None)
-            )
-            _background_permission_reload_tasks.add(reload_task)
-            reload_task.add_done_callback(_background_permission_reload_tasks.discard)
-            reload_task.add_done_callback(_log_permission_reload_failure)
+            # Preserve develop's capture time and outer request error handling.
+            self._agent_manager.schedule_permissions_reload(get_config())
 
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
@@ -6080,6 +6054,8 @@ class AgentWebSocketServer:
                 persist = {"ok": False, "error": "path is required"}
             else:
                 persist = persist_cli_trusted_directory(str(directory_path))
+            if persist.get("ok") is True and self._agent_manager.has_smart_permission_lifecycle(get_config()):
+                self._agent_manager.schedule_permissions_reload()
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -8914,7 +8890,8 @@ class AgentWebSocketServer:
                 ok=True,
                 payload={
                     "session_id": session_id,
-                    "remote_url": f"https://example.com/session/{session_id}",
+                    # Reserved test-only host for this mock command handler.
+                    "remote_url": f"https://example.invalid/session/{session_id}",
                     "qr_text": f"session:{session_id}",
                 },
             )

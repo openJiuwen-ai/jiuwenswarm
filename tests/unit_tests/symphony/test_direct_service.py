@@ -1628,6 +1628,9 @@ def test_production_uses_only_stable_openjiuwen_symphony_imports():
     allowed_modules = {
         "openjiuwen.symphony.agent",
         "openjiuwen.symphony.discovery",
+        "openjiuwen.symphony.flow.models",
+        "openjiuwen.symphony.flow.distill",
+        "openjiuwen.symphony.flow.narrative",
     }
     offenders = []
     for path in package_root.rglob("*.py"):

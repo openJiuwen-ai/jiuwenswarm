@@ -23,6 +23,13 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
 
+DEFAULT_FLOW_ENABLED = True
+DEFAULT_FLOW_MIN_EDGE_SUPPORT = 1
+DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE = 0.5
+DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE = 1
+DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED = 3
+DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED = 0.8
+
 DEFAULT_ORCHESTRATION_MODE = "fast"
 DEFAULT_ORCHESTRATION_TOP_K = 3
 DEFAULT_ORCHESTRATION_MAX_DEPTH = 4
@@ -65,8 +72,19 @@ class SymphonyBuildConfig:
 
 
 @dataclass(frozen=True)
+class SymphonyFlowDistillConfig:
+    enabled: bool = DEFAULT_FLOW_ENABLED
+    min_edge_support: int = DEFAULT_FLOW_MIN_EDGE_SUPPORT
+    min_edge_success_rate: float = DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE
+    min_successes_candidate: int = DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE
+    min_successes_verified: int = DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED
+    min_pack_success_rate_verified: float = DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED
+
+
+@dataclass(frozen=True)
 class SymphonyEvolutionConfig:
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
+    flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
 
 
 @dataclass(frozen=True)
@@ -169,6 +187,32 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
             enabled=_bool(
                 evolution.get("enabled"),
                 DEFAULT_EVOLUTION_ENABLED,
+            ),
+            flow=SymphonyFlowDistillConfig(
+                enabled=_bool(
+                    evolution.get("flow", {}).get("enabled"),
+                    DEFAULT_FLOW_ENABLED,
+                ),
+                min_edge_support=_positive_int(
+                    evolution.get("flow", {}).get("min_edge_support"),
+                    DEFAULT_FLOW_MIN_EDGE_SUPPORT,
+                ),
+                min_edge_success_rate=_clamped_float(
+                    evolution.get("flow", {}).get("min_edge_success_rate"),
+                    DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE,
+                ),
+                min_successes_candidate=_positive_int(
+                    evolution.get("flow", {}).get("min_successes_candidate"),
+                    DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE,
+                ),
+                min_successes_verified=_positive_int(
+                    evolution.get("flow", {}).get("min_successes_verified"),
+                    DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED,
+                ),
+                min_pack_success_rate_verified=_clamped_float(
+                    evolution.get("flow", {}).get("min_pack_success_rate_verified"),
+                    DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED,
+                ),
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(

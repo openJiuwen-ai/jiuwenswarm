@@ -23,6 +23,7 @@ const REPULSION_MAX_FORCE = 0.07;
 const REPULSION_MIN_DIST2 = 80;
 const LINK_DISTANCE = 105;
 const LINK_FORCE_CAN_FEED = 0.025;
+const LINK_FORCE_CONTAINS = 0.008; // pack 连接边的弹簧系数较弱
 const LINK_FORCE_DEFAULT = 0.014;
 const CENTER_GRAVITY = 0.002;
 const DAMPING = 0.82;
@@ -50,7 +51,18 @@ function addLinkForces(nodesById: Map<string, LayoutNode>, edges: LayoutEdge[], 
     const dx = target.x - source.x;
     const dy = target.y - source.y;
     const dist = Math.max(1, Math.hypot(dx, dy));
-    const force = (dist - linkDistance) * (edge.type === 'can_feed' ? LINK_FORCE_CAN_FEED : LINK_FORCE_DEFAULT);
+
+    // 根据边类型选择不同的力系数
+    let forceMultiplier: number;
+    if (edge.type === 'can_feed') {
+      forceMultiplier = LINK_FORCE_CAN_FEED;
+    } else if (edge.type === 'contains') {
+      forceMultiplier = LINK_FORCE_CONTAINS;
+    } else {
+      forceMultiplier = LINK_FORCE_DEFAULT;
+    }
+
+    const force = (dist - linkDistance) * forceMultiplier;
 
     source.vx += (dx / dist) * force;
     source.vy += (dy / dist) * force;

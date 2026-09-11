@@ -22,6 +22,7 @@ from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
 from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
+from jiuwenswarm.runtime.request import prepare_chat_turn
 
 
 async def _collect_events(stream) -> list[RuntimeEvent]:
@@ -70,6 +71,22 @@ class FakeAgentManager:
     async def get_agent(self, **kwargs: object) -> object:
         self.agent_calls.append(kwargs)
         return self.agent
+
+    async def get_agent_for_request(
+        self,
+        request: AgentRequest,
+        *,
+        mode: str | None = None,
+        sub_mode: str | None = None,
+        admit_request=None,
+    ) -> object:
+        project_dir = admit_request() if callable(admit_request) else None
+        return await self.get_agent(
+            channel_id=request.channel_id,
+            mode=mode,
+            project_dir=project_dir,
+            sub_mode=sub_mode,
+        )
 
     def get_agent_nowait(self, *args: object, **kwargs: object) -> None:
         return None
@@ -470,6 +487,29 @@ async def test_prepare_chat_turn_uses_runtime_manager() -> None:
             "sub_mode": None,
         }
     ]
+
+
+@pytest.mark.asyncio
+async def test_prepare_chat_turn_requires_atomic_manager_admission() -> None:
+    manager = SimpleNamespace(
+        wait_for_session_prewarm=AsyncMock(),
+        get_agent=AsyncMock(),
+    )
+    request = AgentRequest(
+        request_id="process-cli-request",
+        channel_id="process_cli",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"query": "hello", "mode": "agent", "work_mode": "work"},
+    )
+
+    with pytest.raises(TypeError, match="atomic get_agent_for_request"):
+        await prepare_chat_turn(
+            manager,
+            request,
+            "process_cli",
+        )
+
+    manager.get_agent.assert_not_awaited()
 
 
 @pytest.mark.asyncio

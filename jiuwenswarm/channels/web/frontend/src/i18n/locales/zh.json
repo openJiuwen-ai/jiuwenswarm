@@ -43,7 +43,7 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "我的\n上下文"
+    "personalContext": "个人\n上下文"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -63,7 +63,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
-      "personalContext": "我的上下文",
+      "personalContext": "个人上下文",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -1654,17 +1654,17 @@
       "sourceType": "来源类型",
       "sourceLocator": "原始链接",
       "sourceFirstSeen": "采集时间",
-      "graphTitle": "知识大脑，让知识交织成网",
-      "graphSubtitle": "把零散的本地文档、网络来源、讨论的原文，一键转化为清晰可视的结构化知识大脑",
-      "tabNodes": "知识节点",
+      "graphTitle": "你的专属上下文",
+      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文",
+      "tabNodes": "上下文节点",
       "tabEdges": "连线",
-      "addKnowledge": "添加知识",
+      "addKnowledge": "来源管理",
       "resultUnit": "项结果",
       "guideDesc": "开启个人上下文，添加内容来源，系统将自动构建知识图谱。",
       "guideAction": "去完成"
     },
     "services": {
-      "addContent": "添加内容",
+      "addContent": "上下文采集",
       "colName": "内容名称",
       "colProvider": "内容来源",
       "colState": "当前状态",
@@ -1695,13 +1695,15 @@
       "empty": "暂无采集内容，点击右上角「添加内容」创建",
       "noContentInCategory": "暂无内容",
       "runSubmitted": "已提交采集请求",
+      "startedAt": "开始",
+      "finishedAt": "结束",
       "backToGraph": "返回图谱",
-      "addKnowledge": "添加知识",
+      "addKnowledge": "添加上下文",
       "collectAll": "全部开始采集",
       "statSources": "来源",
-      "statKnowledge": "知识数",
+      "statKnowledge": "上下文节点数",
       "statCollecting": "正在采集",
-      "knowledgeSource": "知识来源",
+      "knowledgeSource": "上下文来源",
       "lastRun": "上次采集"
     },
     "addContent": {
@@ -1709,6 +1711,8 @@
       "editTitle": "编辑采集任务",
       "nameLabel": "采集内容名称",
       "namePlaceholder": "如 my-task，字母数字开头，仅 . _ -",
+      "nameRequired": "请填写采集内容名称",
+      "nameFormatError": "名称须以字母或数字开头，仅可包含字母、数字、. _ -（不支持空格和中文）",
       "providerLabel": "内容采集来源",
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
@@ -1736,6 +1740,7 @@
       "save": "保存",
       "notConfigured": "尚未配置个人上下文，请先在设置页开启",
       "providerUnauthorized": "未授权，请先去设置页授权",
+      "createTimeout": "创建请求超时，请稍后确认任务是否已创建，再决定是否重试",
       "goAuthorize": "去授权",
       "feishuPlaceholder": "飞书采集下一步单独详细开发",
       "localFiles": {
@@ -1768,6 +1773,7 @@
         "repoUrlLabel": "GitHub 仓库链接",
         "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
         "repoUrlHint": "或 git@github.com:<owner>/<repo>",
+        "sourceInvalid": "请填写正确的 GitHub 仓库链接，并至少选择一项采集内容",
         "resourcesLabel": "要采集的内容",
         "readme": "README",
         "issues": "议题（Issue）",
@@ -1781,6 +1787,7 @@
         "repoUrlLabel": "GitCode 仓库链接",
         "repoUrlPlaceholder": "https://gitcode.com/<owner>/<repo>",
         "repoUrlHint": "或 git@gitcode.com:<owner>/<repo>",
+        "sourceInvalid": "请填写正确的 GitCode 仓库链接，并至少选择一项采集内容",
         "resourcesLabel": "要采集的内容",
         "readme": "README",
         "issues": "议题（Issue）",
@@ -1816,7 +1823,7 @@
       "localFiles": "本地文件夹",
       "github": "GitHub",
       "gitcode": "GitCode",
-      "feishu": "飞书",
+      "feishu": "飞书文档",
       "browserBookmarks": "Edge 收藏夹",
       "zhihuReader": "知乎专栏",
       "toutiaoReader": "今日头条"

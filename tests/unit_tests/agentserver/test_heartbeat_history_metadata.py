@@ -9,7 +9,14 @@ from typing import Any, AsyncIterator
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+    root_decision_context_from_extra,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     JiuWenSwarm,
     _history_user_extra,
@@ -29,6 +36,39 @@ def _heartbeat_params() -> dict:
     return {
         "automation": automation,
     }
+
+
+@pytest.mark.parametrize("location", ["params", "metadata", "nested", "both", "none"])
+def test_web_heartbeat_is_history_not_user_authority(monkeypatch, location):
+    marker = _heartbeat_params()
+    params = {"query": "inspect notes", "mode": "agent"}
+    metadata = {}
+    if location in {"params", "both"}:
+        params.update(marker)
+    if location in {"metadata", "both"}:
+        metadata.update(marker)
+        # A later metadata merge must not erase an inbound authority downgrade.
+        params["metadata"] = {"automation": {"kind": "other"}}
+    if location == "nested":
+        params["metadata"] = marker
+    request = AgentRequest(
+        request_id="heartbeat-origin", session_id="origin-session", channel_id="web",
+        req_method=ReqMethod.CHAT_SEND, params=params, metadata=metadata,
+    )
+    monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
+    monkeypatch.setattr(interface_module, "get_memory_mode", lambda _cfg: "off")
+    inputs, _, turn = JiuWenSwarm()._build_inputs(request)
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped(request.session_id)
+    inputs = adapter._with_root_context(request, inputs)
+    context = root_decision_context_from_extra(inputs["run"]["context"]["extra"])
+    external = location == "none"
+    assert turn.origin_kind == (
+        HOST_USER_ORIGIN_EXTERNAL if external else HOST_USER_ORIGIN_INTERNAL
+    )
+    assert adapter._is_host_permission_update_input(request) is external
+    assert len(context.trusted_turns) == int(external)
+    assert interface_module._should_record_user_history(params) is True
 
 
 def test_heartbeat_user_history_retains_automation_context() -> None:

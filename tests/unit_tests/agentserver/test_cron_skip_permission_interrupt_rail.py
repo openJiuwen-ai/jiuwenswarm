@@ -5,6 +5,8 @@ from __future__ import annotations
 
 from types import SimpleNamespace
 
+import pytest
+
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
@@ -51,29 +53,41 @@ def _stub_deep_rail_builders(adapter, monkeypatch, *, permission_rail):
     )
 
 
-def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypatch):
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_deep_adapter_omits_permission_interrupt_rail_for_cron_session(monkeypatch, mode):
     permission_rail = object()
     adapter = JiuWenSwarmDeepAdapter()
+    adapter._channel_id = "__cron__"
     adapter._is_cron_execution = True
+    adapter = adapter._new_session_scoped_adapter("scheduled-without-cron-prefix")
     _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
 
-    rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
+    config = {"models": {}, "permissions": {"enabled": True, "mode": mode}}
+    rails = adapter._build_agent_rails({}, config, mode="agent")
 
     assert permission_rail not in rails
+    assert not adapter._enable_auto_permission
+    assert not adapter._uses_smart_permission_lifecycle(config)
+    assert adapter._root_permission_queue_rail is None
+    assert adapter._root_context_rail is None
+    assert adapter._root_permission_completion_rail is None
 
 
 def test_deep_adapter_keeps_permission_interrupt_rail_for_user_session(monkeypatch):
     permission_rail = object()
     adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("cron_prefix_but_user_session")
     adapter._is_cron_execution = False
     _stub_deep_rail_builders(adapter, monkeypatch, permission_rail=permission_rail)
 
     rails = adapter._build_agent_rails({}, {"models": {}}, mode="agent")
 
     assert permission_rail in rails
+    assert adapter._auto_permission_capability_enabled()
 
 
-def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatch):
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatch, mode):
     created = []
 
     def fake_build_permission_rail(**_kwargs):
@@ -82,14 +96,16 @@ def test_update_permission_rail_does_not_create_rail_for_cron_session(monkeypatc
         return rail
 
     adapter = JiuWenSwarmDeepAdapter()
+    adapter._channel_id = "__cron__"
     adapter._is_cron_execution = True
+    adapter = adapter._new_session_scoped_adapter("scheduled-without-cron-prefix")
     adapter._permission_rail = None
     adapter._model = None
     monkeypatch.setattr(
         interface_deep_module, "build_permission_rail", fake_build_permission_rail
     )
 
-    adapter._update_permission_rail({"permissions": {"enabled": True}, "models": {}})
+    adapter._update_permission_rail({"permissions": {"enabled": True, "mode": mode}, "models": {}})
 
     assert adapter._permission_rail is None
     assert created == []

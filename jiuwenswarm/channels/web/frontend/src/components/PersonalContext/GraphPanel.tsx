@@ -15,7 +15,7 @@ import {
   useState,
 } from 'react';
 import { useTranslation } from 'react-i18next';
-import { ChevronDown, Loader2, Plus, RefreshCw, Search, X } from 'lucide-react';
+import { ChevronDown, Loader2, RefreshCw, Search, X } from 'lucide-react';
 import {
   computeConnectedComponents,
   seedPositions,
@@ -30,6 +30,7 @@ import {
   type ContextNode,
   type ContextSearchResultItem,
   type ContextSourceDetail,
+  isFetchStopTimeoutError,
   PROVIDER_LABEL_KEYS,
   pcApi,
 } from '../../services/personalContextApi';
@@ -44,11 +45,17 @@ interface PersonalContextGraphPanelProps {
 
 type Transform = { x: number; y: number; scale: number };
 
-// 连线按类型分色：归属（contains，蓝色）更重要；提及（黄色）
-const GRAPH_EDGE_BELONG = '#6FA9FF';
-const GRAPH_EDGE_MENTION = '#F5C16B';
+// 连线按类型分色：归属（contains，蓝色）更重要；提及（黄色）。默认态按层级逐级淡化。
+const GRAPH_EDGE_BELONG = '#A6C6FA';
+const GRAPH_EDGE_MENTION = '#F8DBA8';
 const GRAPH_EDGE_BELONG_ACTIVE = '#4E82E0';
 const GRAPH_EDGE_MENTION_ACTIVE = '#D9A94D';
+const GRAPH_EDGE_DEPTH_STYLES = [
+  { alpha: 0.55, arrowAlpha: 0.62, width: 1.1 },
+  { alpha: 0.42, arrowAlpha: 0.48, width: 0.9 },
+  { alpha: 0.34, arrowAlpha: 0.4, width: 0.8 },
+  { alpha: 0.28, arrowAlpha: 0.34, width: 0.75 },
+] as const;
 const GRAPH_LABEL_DEFAULT = '#808080';
 const GRAPH_LABEL_DIMMED = '#bdbdbd';
 const GRAPH_LABEL_ACTIVE = '#191919';
@@ -56,6 +63,12 @@ const GRAPH_LABEL_ACTIVE = '#191919';
 const DIM_ALPHA = 0.4;
 // 来源悬浮卡片最大宽度，用于贴边收口，避免超出视口右侧
 const SOURCE_CARD_MAX_WIDTH = 340;
+
+/** 层级边默认态样式：root→二级最清晰，之后每层减弱。 */
+function graphEdgeIdleStyle(depth: number) {
+  const level = Math.max(1, Math.min(GRAPH_EDGE_DEPTH_STYLES.length, depth - 1));
+  return GRAPH_EDGE_DEPTH_STYLES[level - 1];
+}
 
 // 高保真节点多层光晕调色板（CSS background 多层 radial-gradient → Canvas 叠加）
 type GlowLayer = { r: number; g: number; b: number; stops: Array<[number, number]> };
@@ -112,8 +125,11 @@ function truncate(value: string, limit: number): string {
   return value.length > limit ? `${value.slice(0, limit - 1)}...` : value;
 }
 
-/** 取节点的文件名（path/label 的最后一段）；取不到返回空串，调用方据此决定是否显示。 */
-function nodeFileName(node: { label?: string; path?: string }): string {
+/** 取画布节点展示名：目录用 description.md 的标题，文档用文件名。 */
+function nodeDisplayName(node: { kind?: string; label?: string; path?: string }): string {
+  if (node.kind === 'directory') {
+    return node.label?.trim() ?? '';
+  }
   const raw = (node.path && node.path.trim()) || (node.label && node.label.trim()) || '';
   if (!raw) return '';
   const segs = raw.split(/[\\/]+/).map((s) => s.trim()).filter(Boolean);
@@ -209,8 +225,8 @@ function buildFileTree(nodes: ContextNode[]): TreeNode[] {
     return parent as TreeNode;
   };
 
-  // 收录 document 与 source 节点（source 节点 path 形如 src_xxx.md，也平铺在根）
-  const leaves = nodes.filter((n) => n.kind === 'document' || n.kind === 'source');
+  // directory 节点本身就是各层级的 description.md；它作为文件叶子展示，同时由路径自动形成所在虚拟目录。
+  const leaves = nodes.filter((n) => n.kind === 'directory' || n.kind === 'document' || n.kind === 'source');
   leaves
     .slice()
     .sort((a, b) => a.path.localeCompare(b.path))
@@ -222,19 +238,22 @@ function buildFileTree(nodes: ContextNode[]): TreeNode[] {
       (parent ? parent.children : roots).push(leaf);
     });
 
-  // 同层级排序：文件夹（无 node 的目录节点）排在文件前，同类按名称字典序
-  const sortDirFirst = (list: TreeNode[]): TreeNode[] => {
+  // 同层级排序：description.md 最前，其次文件夹（无 node 的目录节点），同类按名称字典序
+  const sortTreeNodes = (list: TreeNode[]): TreeNode[] => {
     list.sort((a, b) => {
+      const aIsDescription = a.node?.kind === 'directory';
+      const bIsDescription = b.node?.kind === 'directory';
+      if (aIsDescription !== bIsDescription) return aIsDescription ? -1 : 1;
       const aIsDir = !a.node;
       const bIsDir = !b.node;
       if (aIsDir !== bIsDir) return aIsDir ? -1 : 1;
       return a.name.localeCompare(b.name);
     });
-    list.forEach((n) => sortDirFirst(n.children));
+    list.forEach((n) => sortTreeNodes(n.children));
     return list;
   };
 
-  return sortDirFirst(roots);
+  return sortTreeNodes(roots);
 }
 
 /** 高亮 snippet 中的查询关键字，返回分段 + 命中次数。 */
@@ -286,6 +305,7 @@ export function PersonalContextGraphPanel({
   const [sourceCardLoading, setSourceCardLoading] = useState(false);
   const [sourceHover, setSourceHover] = useState<{ x: number; y: number } | null>(null);
   const [collapsedDirs, setCollapsedDirs] = useState<Set<string>>(new Set());
+  const [dismissedLastError, setDismissedLastError] = useState<string | null>(null);
   const collapsedDirsRef = useRef<Set<string>>(new Set());
 
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -297,6 +317,8 @@ export function PersonalContextGraphPanel({
   const rafRef = useRef<number | null>(null);
   const dragRef = useRef({ active: false, moved: false, x: 0, y: 0 });
   const hoveredRef = useRef<string | null>(null);
+  const collapseBadgeVisibleIdRef = useRef<string | null>(null);
+  const collapseBadgeHideTimerRef = useRef<number | null>(null);
   const autoFitRequestRef = useRef(0);
   const autoFitCancelledRef = useRef(false);
   const layoutTicksRemainingRef = useRef(0);
@@ -317,10 +339,26 @@ export function PersonalContextGraphPanel({
     collapsedDirsRef.current = collapsedDirs;
   }, [collapsedDirs]);
 
+  useEffect(() => () => {
+    if (collapseBadgeHideTimerRef.current !== null) {
+      window.clearTimeout(collapseBadgeHideTimerRef.current);
+      collapseBadgeHideTimerRef.current = null;
+    }
+  }, []);
+
   // 上下文是否就绪
   const contextReady = status?.context_ready === true || (graph?.context_ready ?? false);
   const runtimeState = status?.state ?? 'CREATED';
-  const lastErrorText = status?.last_error?.message ?? null;
+  const lastError = status?.last_error ?? null;
+  const lastErrorSignature = lastError
+    ? `${lastError.code}:${lastError.status}:${lastError.operation}:${lastError.message}`
+    : null;
+  const lastErrorText =
+    lastError &&
+      !isFetchStopTimeoutError(lastError) &&
+      dismissedLastError !== lastErrorSignature
+    ? lastError.message
+    : null;
   const nodeCount = graph?.nodes.length ?? 0;
   const edgeCount = graph?.edges.length ?? 0;
 
@@ -454,6 +492,7 @@ export function PersonalContextGraphPanel({
       const n = nodes[i];
       const ctxNode = nodeByIdRef.current.get(n.id);
       if (!ctxNode || ctxNode.kind !== 'directory' || !ctxNode.has_children) continue;
+      if (collapseBadgeVisibleIdRef.current !== n.id) continue;
       const radius = nodeRadius(depthMap.get(n.id) || 1, nodes.length) / scale;
       const displayRadius = n.id === selectedNodeId ? radius + 2 / scale : radius;
       const badgeR = Math.max(4, displayRadius * 0.42);
@@ -463,6 +502,22 @@ export function PersonalContextGraphPanel({
     }
     return null;
   }, [screenToWorld, selectedNodeId]);
+
+  /** 展开按钮随节点 hover 出现；移出后保留 100ms，避免边缘移动导致闪烁。 */
+  const setCollapseBadgeVisible = useCallback((nodeId: string | null) => {
+    if (collapseBadgeHideTimerRef.current !== null) {
+      window.clearTimeout(collapseBadgeHideTimerRef.current);
+      collapseBadgeHideTimerRef.current = null;
+    }
+    if (nodeId) {
+      collapseBadgeVisibleIdRef.current = nodeId;
+      return;
+    }
+    collapseBadgeHideTimerRef.current = window.setTimeout(() => {
+      collapseBadgeHideTimerRef.current = null;
+      collapseBadgeVisibleIdRef.current = null;
+    }, 100);
+  }, []);
 
   const fitView = useCallback(() => {
     const canvas = canvasRef.current;
@@ -645,11 +700,12 @@ export function PersonalContextGraphPanel({
         if (!source || !target) return;
         const active = Boolean(focusId && (edge.source === focusId || edge.target === focusId));
         const isBelong = edge.type === 'contains';
+        const idleStyle = graphEdgeIdleStyle(depthMap.get(edge.target) || 1);
         const edgeColor = isBelong ? GRAPH_EDGE_BELONG : GRAPH_EDGE_MENTION;
         ctx.strokeStyle = active ? (isBelong ? GRAPH_EDGE_BELONG_ACTIVE : GRAPH_EDGE_MENTION_ACTIVE) : edgeColor;
-        ctx.globalAlpha = active ? 0.8 : focusId ? DIM_ALPHA : 0.55;
-        // 边线宽度用屏幕像素（普通 1px、高亮 1.5px），反缩放避免少节点图 fitView 放大后变粗。
-        ctx.lineWidth = (active ? 1.5 : 1) / transform.scale;
+        ctx.globalAlpha = active ? 0.8 : focusId ? DIM_ALPHA : idleStyle.alpha;
+        // 边线宽度用屏幕像素（默认按层级减弱、高亮 1.5px），反缩放避免少节点图 fitView 放大后变粗。
+        ctx.lineWidth = (active ? 1.5 : idleStyle.width) / transform.scale;
         ctx.beginPath();
         ctx.moveTo(source.x, source.y);
         ctx.lineTo(target.x, target.y);
@@ -663,7 +719,7 @@ export function PersonalContextGraphPanel({
         const y = target.y - Math.sin(angle) * radius;
         // 箭头边长用屏幕像素（4px），反缩放保证不随 fitView 放大；比节点半径小一档，避免与节点体量相当。
         const arrowLen = 4 / transform.scale;
-        ctx.globalAlpha = active ? 0.92 : focusId ? DIM_ALPHA : 0.68;
+        ctx.globalAlpha = active ? 0.92 : focusId ? DIM_ALPHA : idleStyle.arrowAlpha;
         ctx.fillStyle = ctx.strokeStyle;
         ctx.beginPath();
         ctx.moveTo(x, y);
@@ -681,7 +737,7 @@ export function PersonalContextGraphPanel({
         const ctxNode = nodeByIdRef.current.get(n.id);
         if (!ctxNode) return;
         const selected = selectedId === n.id;
-        const hovered = hoveredId === n.id;
+        const hovered = hoveredId === n.id || collapseBadgeVisibleIdRef.current === n.id;
         const depth = depthMap.get(n.id) || 1;
         const radius = nodeRadius(depth, nodes.length);
         const focused = focusId === n.id;
@@ -689,7 +745,7 @@ export function PersonalContextGraphPanel({
         const dimmed = Boolean(focusId && !focused && !relatedNodeIds.has(n.id));
         const displayRadius = selected ? radius + 2 : radius;
         // 只显示根节点和二级节点的名称；三级及以下节点数量多、显示名称会让页面更乱，故不显示标签。
-        const fileName = nodeFileName(ctxNode);
+        const fileName = nodeDisplayName(ctxNode);
         if (fileName && depth <= 2) {
           labels.push({
             text: truncate(fileName, 26),
@@ -766,8 +822,10 @@ export function PersonalContextGraphPanel({
         }
         ctx.restore();
         ctx.globalAlpha = 1;
-        // 绘制 +/- 展开收起标记
-        if (ctxNode.kind === 'directory' && ctxNode.has_children) {
+        // 绘制 +/- 展开收起标记（仅节点 hover 时显示）
+        const shouldShowCollapseBadge = hoveredId === n.id
+          || collapseBadgeVisibleIdRef.current === n.id;
+        if (ctxNode.kind === 'directory' && ctxNode.has_children && shouldShowCollapseBadge) {
           const isCollapsed = collapsed.has(n.id);
           const badgeR = Math.max(4, displayRadius * 0.42);
           const bx = n.x + displayRadius + badgeR + 2;
@@ -1096,6 +1154,15 @@ export function PersonalContextGraphPanel({
     const found = findNodeAt(event.clientX, event.clientY);
     const badge = findCollapseBadgeAt(event.clientX, event.clientY);
     hoveredRef.current = found ? found.id : null;
+    if (badge) setCollapseBadgeVisible(badge.id);
+    else if (found) {
+      const ctxNode = nodeByIdRef.current.get(found.id);
+      setCollapseBadgeVisible(
+        ctxNode?.kind === 'directory' && ctxNode.has_children ? found.id : null,
+      );
+    } else {
+      setCollapseBadgeVisible(null);
+    }
     // 光标：拖动中 grabbing；悬停节点/按钮 pointer；空白处 grab
     event.currentTarget.style.cursor = (drag.active && drag.moved)
       ? 'grabbing'
@@ -1109,7 +1176,14 @@ export function PersonalContextGraphPanel({
       drag.x = event.clientX;
       drag.y = event.clientY;
     }
-  }, [findNodeAt, findCollapseBadgeAt]);
+  }, [findNodeAt, findCollapseBadgeAt, setCollapseBadgeVisible]);
+
+  const handlePointerLeave = useCallback(() => {
+    hoveredRef.current = null;
+    dragRef.current.active = false;
+    setCollapseBadgeVisible(null);
+    if (canvasRef.current) canvasRef.current.style.cursor = 'grab';
+  }, [setCollapseBadgeVisible]);
 
   const handlePointerUp = useCallback((event: React.PointerEvent<HTMLCanvasElement>) => {
     const drag = dragRef.current;
@@ -1179,15 +1253,24 @@ export function PersonalContextGraphPanel({
             className="pc-graph__add"
             onClick={onNavigateServices}
           >
-            <Plus size={16} />
             <span>{t('personalContext.info.addKnowledge')}</span>
           </button>
         </div>
       </div>
 
       {lastErrorText && (
-        <div className="pc-graph__error" role="alert">
-          {t('personalContext.info.publishFailed')}: {lastErrorText}
+        <div className="pc-graph__error pc-graph__error--dismissible" role="alert">
+          <span>
+            {t('personalContext.info.publishFailed')}: {lastErrorText}
+          </span>
+          <button
+            type="button"
+            className="pc-graph__error-close"
+            aria-label={t('common.close')}
+            onClick={() => setDismissedLastError(lastErrorSignature)}
+          >
+            <X size={14} />
+          </button>
         </div>
       )}
 
@@ -1315,7 +1398,7 @@ export function PersonalContextGraphPanel({
             onPointerDown={handlePointerDown}
             onPointerMove={handlePointerMove}
             onPointerUp={handlePointerUp}
-            onPointerLeave={() => { hoveredRef.current = null; dragRef.current.active = false; if (canvasRef.current) canvasRef.current.style.cursor = 'grab'; }}
+            onPointerLeave={handlePointerLeave}
             onWheel={handleWheel}
           />
           {!contextReady && nodeCount === 0 && (

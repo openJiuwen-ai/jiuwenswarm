@@ -106,6 +106,80 @@ async def test_workspace_upload_chunks_stay_in_injected_user_dir(
     assert Path(actual_path).read_bytes() == b"first-second"
 
 
+@pytest.mark.asyncio
+async def test_workspace_verified_download_revalidates_every_bounded_chunk(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common.tools.verified_download_assets import (
+        VerifiedDownloadAssetOwner,
+    )
+    from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+        WebFileDownloadManager,
+    )
+
+    source = tmp_path / "approved report.txt"
+    source.write_bytes(b"approved-content")
+    owner = VerifiedDownloadAssetOwner(
+        root=tmp_path / "assets",
+        start_sweeper=False,
+    )
+    asset = owner.stage(
+        source,
+        file_name=source.name,
+        expires_at=10_000_000_000,
+    )
+    manager = WebFileDownloadManager("s" * 32, asset_owner=owner)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_verified_asset_token(
+        asset,
+        file_name=source.name,
+        session_id="current-session",
+    )
+    adapter = WorkspaceFileAdapter()
+
+    first = await adapter.handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": token, "offset": 0, "limit": 8},
+        )
+    )
+    assert first.ok is True
+    assert base64.b64decode(first.payload["data_base64"]) == b"approved"
+    assert first.payload["name"] == source.name
+    assert first.payload["size"] == len(b"approved-content")
+
+    owner.revoke(asset)
+    rejected = await adapter.handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": token, "offset": 8, "limit": 8},
+        )
+    )
+    assert rejected.ok is False
+    assert rejected.payload["code"] == "FORBIDDEN"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("offset", "limit"),
+    [(-1, 1), (0, 0), (0, 512 * 1024 + 1)],
+)
+async def test_workspace_verified_download_rejects_unbounded_ranges(
+    offset: int,
+    limit: int,
+) -> None:
+    response = await WorkspaceFileAdapter().handle(
+        _request(
+            ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+            {"token": "opaque", "offset": offset, "limit": limit},
+        )
+    )
+
+    assert response.ok is False
+    assert response.payload["code"] == "BAD_REQUEST"
+
+
 @pytest.fixture
 def patched_sessions(monkeypatch: pytest.MonkeyPatch):
     """替换 SessionAdapter 依赖的 get_all_sessions_metadata。"""
