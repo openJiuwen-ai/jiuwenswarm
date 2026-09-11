@@ -571,7 +571,8 @@ react:
       - todo_list
       - todo_modify
       - task_tool                   # 常驻可见，否则 ProgressiveToolRail 会滤掉，主 agent 无法委派 subagent
-    enable_for_models: []          # 模型白名单（空=全部启用，所有模型生效）
+    enable_for_models:             # 模型白名单（空=全部启用）
+      - glm
     subagents:                      # 子 agent 延迟加载配置
       enabled: false                # 子 agent 总开关，默认关闭
       inherit_parent_eager_tools: true  # 继承父 agent 的 eager 列表

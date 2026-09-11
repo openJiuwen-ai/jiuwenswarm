@@ -286,12 +286,12 @@ class FlashGlobTool(GlobTool):
         gitignore_applied = False
         if gitignore_patterns:
             before_count = len(all_items)
-            all_items = [
-                item for item in all_items
-                if not _matches_gitignore(
-                    _relative_path(item.path, path), gitignore_patterns
-                )
-            ]
+            filtered: List[Any] = []
+            for item in all_items:
+                rel = _relative_path(item.path, path)
+                if not _matches_gitignore(rel, gitignore_patterns):
+                    filtered.append(item)
+            all_items = filtered
             gitignore_applied = len(all_items) < before_count
             if gitignore_applied:
                 logger.debug(
@@ -303,12 +303,12 @@ class FlashGlobTool(GlobTool):
         # 3. Apply user-specified exclude_patterns
         if exclude_patterns:
             before_count = len(all_items)
-            all_items = [
-                item for item in all_items
-                if not _matches_gitignore(
-                    _relative_path(item.path, path), exclude_patterns
-                )
-            ]
+            filtered2: List[Any] = []
+            for item in all_items:
+                rel = _relative_path(item.path, path)
+                if not _matches_gitignore(rel, exclude_patterns):
+                    filtered2.append(item)
+            all_items = filtered2
             logger.debug(
                 "[FlashGlob] exclude_patterns filtered %d -> %d files",
                 before_count,
