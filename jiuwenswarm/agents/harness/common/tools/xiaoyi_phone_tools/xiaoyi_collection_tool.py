@@ -26,20 +26,21 @@ from .file_upload_helpers import XiaoyiObsUploadConfig, upload_local_file_public
 
 @tool(
     name="query_collection",
-    description="""检索用户在小艺收藏中记下来的公共知识数据，本技能支持查询用户收藏的
-公共知识数据，也可以根据特定语义化描述进行特定内容的检索，通过参数进行控制。
-本技能返回结果
-中，linkTitle是收藏内容的标题，description是对收藏内容的总结，label是收藏内容的标签，
-linkUrl是可以直接访问的原始内容链接。如果你认为某条数据对用户交互有用，可以通过
-linkUrl抓取更加丰富的原始数据。
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,最多只能重试一次，不可以重复调用多次。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+    description="""Retrieves public knowledge data that the user saved in Xiaoyi Collection. This skill supports
+querying all of the user's saved public knowledge data, and can also search for specific content based on a
+particular semantic description, controlled via parameters.
+In the results returned by this skill,
+linkTitle is the title of the saved content, description is a summary of the saved content, label is the tag of the
+saved content, and linkUrl is a directly accessible link to the original content. If you think a given item is
+useful for the interaction with the user, you can use linkUrl to fetch richer original data.
+  Notes:
+  a. The operation timeout is 60 seconds; do not call this tool repeatedly
+  b. If any call failure occurs, retry at most once; do not call it repeatedly multiple times.
+  c. Carefully check that the call parameters meet the tool's requirements before calling
 
-  回复约束：如果工具返回没有授权或者其他报错，只需要完整描述没有授权或者其他报错
-内容即可，不需要主动给用户提供解决方案，例如告诉用户如何授权，如何解决报错等都是
-不需要的，请严格遵守。
+  Reply constraint: if the tool returns that authorization was not granted or any other error, just fully
+describe the missing authorization or the error content; do not proactively provide the user with solutions
+(e.g. telling the user how to authorize or how to resolve the error is not needed). Strictly comply.
   """,
 )
 async def query_collection(
@@ -63,7 +64,7 @@ async def query_collection(
         )
 
         if query_all != "true" and (not query or not isinstance(query, str)):
-            raise ToolInputError("queryAll不为true时，query参数必填")
+            raise ToolInputError("The query parameter is required when queryAll is not \"true\"")
 
         intent_param: Dict[str, str] = {}
         if query_all == "true":
@@ -103,7 +104,7 @@ async def query_collection(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "查询小艺收藏失败")
+        raise_if_device_error(outputs, "Failed to query Xiaoyi Collection")
 
         logger.info("[QUERY_COLLECTION_TOOL] Query completed successfully")
 
@@ -120,13 +121,13 @@ async def query_collection(
         raise
     except Exception as e:
         logger.error(f"[QUERY_COLLECTION_TOOL] Failed to query collection: {e}")
-        raise RuntimeError(f"查询小艺收藏失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to query Xiaoyi Collection: {str(e)}") from e
 
 
 def _normalize_item_ids(param: Any) -> List[str]:
     """将 item_ids 规范为字符串列表（支持数组或 JSON 数组字符串）。"""
     if param is None:
-        raise ToolInputError("缺少必填参数 itemIds")
+        raise ToolInputError("Missing required parameter itemIds")
     if isinstance(param, list):
         return param
     if isinstance(param, str):
@@ -148,18 +149,18 @@ def _normalize_item_ids(param: Any) -> List[str]:
 
 @tool(
     name="delete_collection",
-    description="""从小艺收藏中删除之前已保存的公共知识数据。任何用户希望删除已保存到
-个人
-知识库的数据都可以调用本技能。如果用户想更新之前的收藏数据，需要先query获取itemId
-然后再delete，最后执行Add，按照这个步骤完成收藏数据更新。
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,最多只能重试一次，不可以重复调用多次。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+    description="""Deletes public knowledge data that was previously saved in Xiaoyi Collection. Call this skill
+whenever the user wants to delete data saved in the personal knowledge base. If the user wants to update
+previously saved collection data, first query to get the itemId, then delete, and finally add, completing the
+collection data update in that order.
+  Notes:
+  a. The operation timeout is 60 seconds; do not call this tool repeatedly
+  b. If any call failure occurs, retry at most once; do not call it repeatedly multiple times.
+  c. Carefully check that the call parameters meet the tool's requirements before calling
 
-  回复约束：如果工具返回没有授权或者其他报错，只需要完整描述没有授权或者其他报错
-内容即可，不需要主动给用户提供解决方案，例如告诉用户如何授权，如何解决报错等都是
-不需要的，请严格遵守。
+  Reply constraint: if the tool returns that authorization was not granted or any other error, just fully
+describe the missing authorization or the error content; do not proactively provide the user with solutions
+(e.g. telling the user how to authorize or how to resolve the error is not needed). Strictly comply.
   """,
 )
 async def delete_collection(
@@ -217,7 +218,7 @@ async def delete_collection(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "删除小艺收藏失败")
+        raise_if_device_error(outputs, "Failed to delete from Xiaoyi Collection")
 
         logger.info("[DELETE_COLLECTION_TOOL] Delete completed successfully")
 
@@ -234,42 +235,43 @@ async def delete_collection(
         raise
     except Exception as e:
         logger.error(f"[DELETE_COLLECTION_TOOL] Failed to delete collection: {e}")
-        raise RuntimeError(f"删除小艺收藏失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to delete from Xiaoyi Collection: {str(e)}") from e
 
 
 @tool(
     name="add_collection",
-    description="""向小艺收藏中添加公共知识数据，可以给用户提供个性化体验。任何用户
-希望
-保存到个人化知识库中的数据都可以调用本技能。不同类型的数据对应的数据要求如下：
-请求入参说明：
-● content:必填字段，数据类型为string，功能描述是该字段是用户添加收藏的链接url或
-  文本原文。适用于HYPER_LINK和TEXT类型。
-● uri:必填字段，数据类型为string，功能描述是该字段是图片或文件的端存储地址链接。
-  适用于IMAGE和FILE类型。优先传入本地文件路径，工具会自动上传并换取可公网访问的
-  下载链接；若传入http(s)链接，须为可直接下载到文件本身的可公开访问地址，请勿
-  自行上传到外部站点再传其链接（容易返回非文件内容导致收藏异常）。
-● sourceAppBundleName:非必填字段，数据类型为string，功能描述是标识该数据的来源
-  应用。
-● dataType:必填字段，数据类型为string，功能描述是标识数据类型。HYPER_LINK标识
-  网页，TEXT标识文本，IMAGE标识图片，FILE标识文件。
-● title:非必填字段，数据类型为string，功能描述是标识文件类型数据的文件名称。
-  适用于FILE类型。
-说明：如果dataType为HYPER_LINK或TEXT，则content字段必填且不能为空；如果dataType
-为IMAGE或FILE，则uri字段必填且不能为空。当用户希望收藏海报、截图等图片类数据时，
-请将数据以图片IMAGE的形式存入到小艺帮记；当用户希望收藏电子书、笔记、报告、素材、
-文档、合同、协议、简历、证书、报表、日志、安装包、压缩包等描述的文件时，请将数据
-以文件FILE的形式存入到小艺帮记。
-当你成功收藏这个数据到小艺帮记后，请在最后显示"已成功把数据添加到[小艺帮记]
-(vassistant://voice/main?page=CollectionPage&jumpHomePageTab=myCollection)"，
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,最多只能重试一次，不可以重复调用多次。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+    description="""Adds public knowledge data to Xiaoyi Collection, providing the user with a personalized
+experience. Call this skill for any data the user wants to save to the personalized knowledge base. Different
+types of data have the following requirements:
+Request parameter description:
+● content: required field, type string; this field is the link URL or the original text that the user adds to
+  the collection. Applies to the HYPER_LINK and TEXT types.
+● uri: required field, type string; this field is the on-device storage address link of the image or file.
+  Applies to the IMAGE and FILE types. Pass a local file path first; the tool automatically uploads it and
+  exchanges it for a publicly accessible download link. If an http(s) link is passed, it must be a publicly
+  accessible address from which the file itself can be downloaded directly; do not upload the file to an
+  external site yourself and pass that link (it easily returns non-file content, causing the collection to fail).
+● sourceAppBundleName: optional field, type string; identifies the source app
+  of the data.
+● dataType: required field, type string; identifies the data type. HYPER_LINK marks
+  a web page, TEXT marks text, IMAGE marks an image, FILE marks a file.
+● title: optional field, type string; identifies the file name of file-type data.
+  Applies to the FILE type.
+Note: if dataType is HYPER_LINK or TEXT, the content field is required and cannot be empty; if dataType is
+IMAGE or FILE, the uri field is required and cannot be empty. When the user wants to collect images such as
+posters or screenshots, save the data into Xiaoyi Notes as an IMAGE; when the user wants to collect files such
+as e-books, notes, reports, materials, documents, contracts, agreements, resumes, certificates, spreadsheets,
+logs, installation packages, or archives, save the data into Xiaoyi Notes as a FILE.
+After you successfully save this data to Xiaoyi Notes, display at the end "Data has been successfully added to
+[Xiaoyi Notes](vassistant://voice/main?page=CollectionPage&jumpHomePageTab=myCollection)",
+  Notes:
+  a. The operation timeout is 60 seconds; do not call this tool repeatedly
+  b. If any call failure occurs, retry at most once; do not call it repeatedly multiple times.
+  c. Carefully check that the call parameters meet the tool's requirements before calling
 
-  回复约束：如果工具返回没有授权或者其他报错，只需要完整描述没有授权或者其他报错
-内容即可，不需要主动给用户提供解决方案，例如告诉用户如何授权，如何解决报错等都是
-不需要的，请严格遵守。
+  Reply constraint: if the tool returns that authorization was not granted or any other error, just fully
+describe the missing authorization or the error content; do not proactively provide the user with solutions
+(e.g. telling the user how to authorize or how to resolve the error is not needed). Strictly comply.
   """,
 )
 async def add_collection(
@@ -295,14 +297,15 @@ async def add_collection(
         valid_types = ("HYPER_LINK", "TEXT", "IMAGE", "FILE")
         if not data_type or data_type not in valid_types:
             raise ToolInputError(
-                f"dataType必填且必须为 HYPER_LINK、TEXT、IMAGE、FILE 之一，当前值: {data_type}"
+                f"dataType is required and must be one of HYPER_LINK, TEXT, IMAGE, FILE; "
+                f"current value: {data_type}"
             )
 
         if data_type in ("HYPER_LINK", "TEXT") and (not content or not isinstance(content, str)):
-            raise ToolInputError(f"dataType为{data_type}时，content字段必填且不能为空")
+            raise ToolInputError(f"When dataType is {data_type}, the content field is required and cannot be empty")
 
         if data_type in ("IMAGE", "FILE") and (not uri or not isinstance(uri, str)):
-            raise ToolInputError(f"dataType为{data_type}时，uri字段必填且不能为空")
+            raise ToolInputError(f"When dataType is {data_type}, the uri field is required and cannot be empty")
 
         logger.info(
             "[ADD_COLLECTION_TOOL] Adding collection - dataType=%s",
@@ -322,14 +325,14 @@ async def add_collection(
             api_key = xc.get("api_key")
             uid = str(xc.get("uid"))
             if not base or not api_key or not uid:
-                raise RuntimeError("缺少 channels.xiaoyi 的 file_upload_url / api_key / uid 配置")
+                raise RuntimeError("Missing channels.xiaoyi configuration for file_upload_url / api_key / uid")
 
             obs_cfg = XiaoyiObsUploadConfig(base_url=base, api_key=api_key, uid=uid)
             async with aiohttp.ClientSession() as session:
                 public_uri = await upload_local_file_public_url(session, obs_cfg, uri)
 
             if not public_uri:
-                raise RuntimeError("本地文件上传失败，无法获取公网URL")
+                raise RuntimeError("Local file upload failed: unable to obtain a public URL")
 
         intent_param: Dict[str, str] = {"dataType": data_type}
         if content:
@@ -372,7 +375,7 @@ async def add_collection(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "添加小艺收藏失败")
+        raise_if_device_error(outputs, "Failed to add to Xiaoyi Collection")
 
         logger.info("[ADD_COLLECTION_TOOL] Add completed successfully")
 
@@ -389,4 +392,4 @@ async def add_collection(
         raise
     except Exception as e:
         logger.error(f"[ADD_COLLECTION_TOOL] Failed to add collection: {e}")
-        raise RuntimeError(f"添加小艺收藏失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to add to Xiaoyi Collection: {str(e)}") from e

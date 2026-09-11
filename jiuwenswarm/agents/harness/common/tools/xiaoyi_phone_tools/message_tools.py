@@ -60,9 +60,9 @@ def _log_outputs_summary(intent: str, outputs: Dict[str, Any]) -> None:
 @tool(
     name="send_sms",
     description=(
-        "通过手机发送短信。需要提供接收方手机号码和短信内容。"
-        "手机号码会自动添加+86前缀（如果没有的话）。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Send an SMS message from the phone. Requires the recipient's phone number and the SMS content. "
+        "A +86 prefix is added to the phone number automatically (if missing). "
+        "Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once."
     ),
 )
 async def send_sms(phone_number: str, content: str) -> Dict[str, Any]:
@@ -81,19 +81,21 @@ async def send_sms(phone_number: str, content: str) -> Dict[str, Any]:
         )
 
         if not phone_number or not isinstance(phone_number, str):
-            raise ToolInputError("缺少必填参数 phone_number（接收方手机号码）")
+            raise ToolInputError(
+                "Missing required parameter: phone_number (recipient's phone number)"
+            )
 
         if not content or not isinstance(content, str):
-            raise ToolInputError("缺少必填参数 content（短信内容）")
+            raise ToolInputError("Missing required parameter: content (SMS text)")
 
         phone_number = phone_number.strip()
         content = content.strip()
 
         if not phone_number:
-            raise ToolInputError("phone_number 不能为空")
+            raise ToolInputError("phone_number must not be empty")
 
         if not content:
-            raise ToolInputError("content 不能为空")
+            raise ToolInputError("content must not be empty")
 
         # 未带 +86 时：去掉前导 0、再去 86 前缀，再加 +86
         if not phone_number.startswith("+86"):
@@ -143,24 +145,24 @@ async def send_sms(phone_number: str, content: str) -> Dict[str, Any]:
             outputs = {"outputs": outputs}
 
         _log_outputs_summary("SEND_MESSAGE", dict(outputs))
-        raise_if_device_error(outputs, "发送短信失败")
+        raise_if_device_error(outputs, "Failed to send SMS")
         nested_err = _nested_result_error_message(outputs)
         if nested_err:
             logger.error(
                 "[SEND_MESSAGE_TOOL] nested result error: %s",
                 nested_err,
             )
-            raise RuntimeError(f"发送短信失败: {nested_err}") from None
+            raise RuntimeError(f"Failed to send SMS: {nested_err}") from None
 
         logger.info("[SEND_MESSAGE_TOOL] Message send completed")
 
-        return format_success_response(dict(outputs), f"短信已发送至 {phone_number}")
+        return format_success_response(dict(outputs), f"SMS sent to {phone_number}")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEND_MESSAGE_TOOL] Failed to send message: {e}")
-        raise RuntimeError(f"发送短信失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to send SMS: {str(e)}") from e
 
 
 # Python import compatibility only. The exposed LLM tool name is ``send_sms``.
@@ -170,8 +172,8 @@ send_message = send_sms
 @tool(
     name="search_message",
     description=(
-        "搜索手机短信。根据关键词搜索短信内容。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Search SMS messages on the phone. Search SMS content by keyword. "
+        "Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once."
     ),
 )
 async def search_message(
@@ -191,7 +193,9 @@ async def search_message(
             or not isinstance(content, str)
             or content.strip() == ""
         ):
-            raise ToolInputError("缺少必填参数 content（须为非空字符串）")
+            raise ToolInputError(
+                "Missing required parameter: content (must be a non-empty string)"
+            )
 
         content = content.strip()
         logger.info(
@@ -248,4 +252,4 @@ async def search_message(
         raise
     except Exception as e:
         logger.error(f"[SEARCH_MESSAGE_TOOL] Failed to search messages: {e}")
-        raise RuntimeError(f"搜索短信失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search SMS messages: {str(e)}") from e

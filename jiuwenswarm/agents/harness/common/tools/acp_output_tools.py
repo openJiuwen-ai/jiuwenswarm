@@ -490,19 +490,19 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         make_tool(
             name="read_text_file",
             description=(
-                "[ACP] 通过 IDE 读取用户本地文件内容。"
-                "这是唯一可用的文件读取工具。"
-                "必须调用此工具才能读取文件。"
+                "[ACP] Read the user's local file content via the IDE. "
+                "This is the only available file reading tool. "
+                "You must call this tool to read files."
             ),
             input_params={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "要读取的文件路径"},
+                    "path": {"type": "string", "description": "Path of the file to read"},
                     "offset": {
                         "type": "integer",
-                        "description": "起始行号（可选，从 1 开始）",
+                        "description": "Starting line number (optional, 1-based)",
                     },
-                    "limit": {"type": "integer", "description": "读取行数（可选）"},
+                    "limit": {"type": "integer", "description": "Number of lines to read (optional)"},
                 },
                 "required": ["path"],
             },
@@ -511,15 +511,15 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         make_tool(
             name="write_text_file",
             description=(
-                "[ACP] 通过 IDE 写入文件到用户本地。"
-                "这是唯一可用的文件写入工具。"
-                "必须调用此工具才能写入文件。"
+                "[ACP] Write a file to the user's local machine via the IDE. "
+                "This is the only available file writing tool. "
+                "You must call this tool to write files."
             ),
             input_params={
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "要写入的文件路径"},
-                    "content": {"type": "string", "description": "要写入的文件内容"},
+                    "path": {"type": "string", "description": "Path of the file to write"},
+                    "content": {"type": "string", "description": "Content to write into the file"},
                 },
                 "required": ["path", "content"],
             },
@@ -528,15 +528,15 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         make_tool(
             name="create_terminal",
             description=(
-                "[ACP] 通过 IDE 创建终端并执行命令。"
-                "这是唯一可用的命令执行工具。"
-                "必须调用此工具才能执行命令。"
+                "[ACP] Create a terminal via the IDE and execute a command. "
+                "This is the only available command execution tool. "
+                "You must call this tool to run commands."
             ),
             input_params={
                 "type": "object",
                 "properties": {
-                    "cmd": {"type": "string", "description": "要执行的命令"},
-                    "cwd": {"type": "string", "description": "工作目录（可选）"},
+                    "cmd": {"type": "string", "description": "Command to execute"},
+                    "cwd": {"type": "string", "description": "Working directory (optional)"},
                 },
                 "required": ["cmd"],
             },
@@ -544,11 +544,11 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         ),
         make_tool(
             name="read_terminal_output",
-            description="读取终端输出内容。",
+            description="Read terminal output content.",
             input_params={
                 "type": "object",
                 "properties": {
-                    "terminal_id": {"type": "string", "description": "终端 ID"},
+                    "terminal_id": {"type": "string", "description": "Terminal ID"},
                 },
                 "required": ["terminal_id"],
             },
@@ -557,13 +557,14 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         make_tool(
             name="wait_for_terminal_exit",
             description=(
-                "等待终端命令执行完成。若返回 timedOut=true / running=true / shouldRetry=true，"
-                "表示任务仍在执行中，应继续使用同一个 terminal_id 再次调用本工具轮询。"
+                "Wait for the terminal command to finish. If it returns "
+                "timedOut=true / running=true / shouldRetry=true, the task is still "
+                "running and you should keep polling with the same terminal_id."
             ),
             input_params={
                 "type": "object",
                 "properties": {
-                    "terminal_id": {"type": "string", "description": "终端 ID"},
+                    "terminal_id": {"type": "string", "description": "Terminal ID"},
                 },
                 "required": ["terminal_id"],
             },
@@ -571,11 +572,11 @@ def get_tools(session_id: str = "", request_id: str = "") -> List["Tool"]:
         ),
         make_tool(
             name="release_terminal",
-            description="释放终端资源（命令完成后必须调用）。",
+            description="Release terminal resources (must be called once the command finishes).",
             input_params={
                 "type": "object",
                 "properties": {
-                    "terminal_id": {"type": "string", "description": "终端 ID"},
+                    "terminal_id": {"type": "string", "description": "Terminal ID"},
                 },
                 "required": ["terminal_id"],
             },

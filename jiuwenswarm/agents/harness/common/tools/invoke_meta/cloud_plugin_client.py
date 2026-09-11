@@ -22,8 +22,8 @@ logger = logging.getLogger(__name__)
 
 # 错误码映射
 CLOUD_PLUGIN_ERRORS = {
-    (401, "001000"): "鉴权失败",
-    (500, "001002"): "服务内部错误",
+    (401, "001000"): "Authentication failed",
+    (500, "001002"): "Internal server error",
 }
 
 
@@ -98,8 +98,8 @@ def _map_error_code(status_code: int | None, err_code: str | None) -> str:
         if key in CLOUD_PLUGIN_ERRORS:
             return CLOUD_PLUGIN_ERRORS[key]
     if err_code:
-        return f"错误码: {err_code}"
-    return "未知错误"
+        return f"Error code: {err_code}"
+    return "Unknown error"
 
 
 class CloudPluginClient(AgentRuntimeClient):
@@ -143,7 +143,7 @@ class CloudPluginClient(AgentRuntimeClient):
         if error_frames:
             first_error = error_frames[0]
             mm = first_error.get("mappedMessage", "")
-            em = first_error.get("errMessage", "云插件调用失败")
+            em = first_error.get("errMessage", "Cloud plugin call failed")
             if mm:
                 error = f"{mm}; {em}"
             else:
@@ -368,7 +368,7 @@ class CloudPluginClient(AgentRuntimeClient):
                 "[session=%s] [%s] [CloudPluginClient] WS connect failed after retries: %s",
                 self.session_id, self.plugin_session_id, e
             )
-            return self._build_error_response(spec, f"WebSocket 连接失败: {e}")
+            return self._build_error_response(spec, f"WebSocket connection failed: {e}")
 
         # 接收帧并返回结果（handshake_ok 仅在 async with 真正握上之后）
         frames = await self._receive_frames(ws_ctx, message, spec)
@@ -382,7 +382,7 @@ class CloudPluginClient(AgentRuntimeClient):
             logger.warning(
                 "[session=%s] [%s] [CloudPluginClient] pluginId=%s toolName=%s success=False error=%s",
                 self.session_id, self.plugin_session_id, plugin_id, tool_name,
-                rsp.get("error") or "云插件调用失败",
+                rsp.get("error") or "Cloud plugin call failed",
             )
         return rsp
 
@@ -425,7 +425,7 @@ class CloudPluginClient(AgentRuntimeClient):
                             self._timeout,
                             message,
                         )
-                        return [self._build_error_frame(spec, f"响应超时 ({self._timeout}s)")]
+                        return [self._build_error_frame(spec, f"Response timeout ({self._timeout}s)")]
 
                     frame = self._parse_raw_frame(raw)
                     parsed = self._parse_cloud_response(frame)
@@ -453,7 +453,7 @@ class CloudPluginClient(AgentRuntimeClient):
                 self.plugin_session_id,
                 message,
             )
-            frames.append(self._build_error_frame(spec, "WebSocket 连接超时"))
+            frames.append(self._build_error_frame(spec, "WebSocket connection timeout"))
         except Exception as e:
             self._log_handshake_reject(e, plugin_id, tool_name)
             logger.error(
@@ -461,7 +461,7 @@ class CloudPluginClient(AgentRuntimeClient):
                 self.session_id,
                 self.plugin_session_id, e, message, exc_info=True
             )
-            frames.append(self._build_error_frame(spec, f"WebSocket 消息接收循环异常退出: {e}"))
+            frames.append(self._build_error_frame(spec, f"WebSocket receive loop exited unexpectedly: {e}"))
 
         return frames
 

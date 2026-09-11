@@ -36,7 +36,7 @@ async def _ensure_public_url(
         return url
     public_url = await upload_local_file_public_url(session, obs_cfg, url)
     if not public_url:
-        raise RuntimeError("本地文件上传失败，无法获取公网URL")
+        raise RuntimeError("Local file upload failed; unable to obtain a public URL")
     return public_url
 
 
@@ -50,24 +50,26 @@ def _get_obs_config() -> XiaoyiObsUploadConfig:
     api_key = xc.get("api_key")
     uid = str(xc.get("uid"))
     if not base or not api_key or not uid:
-        raise ToolInputError("缺少 channels.xiaoyi 的 file_upload_url / api_key / uid 配置，无法上传文件")
+        raise ToolInputError(
+            "Missing channels.xiaoyi file_upload_url / api_key / uid configuration; unable to upload files"
+        )
     return XiaoyiObsUploadConfig(base_url=base, api_key=api_key, uid=uid)
 
 
 @tool(
     name="save_media_to_gallery",
-    description="""将图片文件或者视频文件保存到手机图库。
-  工具参数说明：
-  a. mediaType：非必填，string类型，不传端侧默认为pic。支持传 pic(图片) 或 video(视频)。
-  b. fileName：非必填，string类型，文件名称，不传手机侧默认生成随机uuid。
-  c. url：必填，string类型，支持本地路径或者公网url路径。如果是本地路径，会先上传获取公网url再保存到图库。
+    description="""Save image or video files to the phone's photo gallery.
+  Parameter description:
+  a. mediaType: optional, string. Defaults to pic on the device side when omitted. Supports pic (image) or video.
+  b. fileName: optional, string, the file name. When omitted, the phone side generates a random uuid by default.
+  c. url: required, string. Supports a local path or a public URL path. If a local path is given, it is uploaded first to obtain a public URL and then saved to the gallery.
 
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,最多只能重试一次，不可以重复调用多次。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+  Note:
+  a. The operation timeout is 60 seconds. Do not call this tool repeatedly.
+  b. If any call failure occurs, retry at most once; do not call it repeatedly.
+  c. Before calling the tool, carefully check that the call parameters meet the tool's requirements.
 
-  回复约束：如果工具返回没有授权或者其他报错，只需要完整描述没有授权或者其他报错内容即可，不需要主动给用户提供解决方案，例如告诉用户如何授权，如何解决报错等都是不需要的，请严格遵守。
+  Reply constraint: if the tool returns a missing-authorization error or any other error, just fully describe the missing authorization or other error content. Do not proactively offer the user solutions; telling the user how to authorize or how to resolve the error is not needed. Strictly comply.
   """,
 )
 async def save_media_to_gallery(
@@ -87,10 +89,12 @@ async def save_media_to_gallery(
     """
     try:
         if not url or not isinstance(url, str):
-            raise ToolInputError("缺少必填参数: url")
+            raise ToolInputError("Missing required parameter: url")
 
         if media_type and media_type not in ("pic", "video"):
-            raise ToolInputError(f"mediaType只支持 pic 或 video，当前值: {media_type}")
+            raise ToolInputError(
+                f"mediaType only supports pic or video; got: {media_type}"
+            )
 
         # 去除 fileName 后缀
         sanitized_name = file_name
@@ -148,7 +152,7 @@ async def save_media_to_gallery(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "保存媒体到图库失败")
+        raise_if_device_error(outputs, "Failed to save media to gallery")
 
         logger.info("[SAVE_MEDIA_TO_GALLERY_TOOL] Save completed successfully")
 
@@ -165,23 +169,23 @@ async def save_media_to_gallery(
         raise
     except Exception as e:
         logger.error(f"[SAVE_MEDIA_TO_GALLERY_TOOL] Failed to save media: {e}")
-        raise RuntimeError(f"保存媒体到图库失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to save media to gallery: {str(e)}") from e
 
 
 @tool(
     name="save_file_to_file_manager",
-    description="""将文件保存到手机文件管理器。
-  工具参数说明：
-  a. fileName：必填，string类型，文件名称。
-  b. url：必填，string类型，支持本地路径或者公网url路径。如果是本地路径，会先上传获取公网url再保存到手机。
-  c. suffix：必填，string类型，文件后缀，例如 ppt、doc、pdf 等。
+    description="""Save a file to the phone's file manager.
+  Parameter description:
+  a. fileName: required, string, the file name.
+  b. url: required, string. Supports a local path or a public URL path. If a local path is given, it is uploaded first to obtain a public URL and then saved to the phone.
+  c. suffix: required, string, the file extension, e.g. ppt, doc, pdf.
 
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,不可以重试，直接返回错误。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+  Note:
+  a. The operation timeout is 60 seconds. Do not call this tool repeatedly.
+  b. If any call failure occurs, do not retry; return the error directly.
+  c. Before calling the tool, carefully check that the call parameters meet the tool's requirements.
 
-  回复约束：如果工具返回没有授权或者其他报错，只需要完整描述没有授权或者其他报错内容即可，不需要主动给用户提供解决方案，例如告诉用户如何授权，如何解决报错等都是不需要的，请严格遵守。
+  Reply constraint: if the tool returns a missing-authorization error or any other error, just fully describe the missing authorization or other error content. Do not proactively offer the user solutions; telling the user how to authorize or how to resolve the error is not needed. Strictly comply.
   """,
 )
 async def save_file_to_file_manager(
@@ -201,11 +205,11 @@ async def save_file_to_file_manager(
     """
     try:
         if not url or not isinstance(url, str):
-            raise ToolInputError("缺少必填参数: url")
+            raise ToolInputError("Missing required parameter: url")
         if not file_name or not isinstance(file_name, str):
-            raise ToolInputError("缺少必填参数: fileName")
+            raise ToolInputError("Missing required parameter: fileName")
         if not suffix or not isinstance(suffix, str):
-            raise ToolInputError("缺少必填参数: suffix")
+            raise ToolInputError("Missing required parameter: suffix")
 
         obs_cfg = _get_obs_config()
 
@@ -257,7 +261,7 @@ async def save_file_to_file_manager(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "保存文件到手机失败")
+        raise_if_device_error(outputs, "Failed to save file to phone")
 
         logger.info("[SAVE_FILE_TO_PHONE_TOOL] Save completed successfully")
 
@@ -274,4 +278,4 @@ async def save_file_to_file_manager(
         raise
     except Exception as e:
         logger.error(f"[SAVE_FILE_TO_PHONE_TOOL] Failed to save file: {e}")
-        raise RuntimeError(f"保存文件到手机失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to save file to phone: {str(e)}") from e

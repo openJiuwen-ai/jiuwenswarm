@@ -115,9 +115,9 @@ def _normalize_days_of_week(
         try:
             parsed = json.loads(raw)
         except json.JSONDecodeError as e:
-            raise ToolInputError(f"days_of_week 不是合法 JSON 数组字符串: {e}") from e
+            raise ToolInputError(f"days_of_week is not a valid JSON array string: {e}") from e
         if not isinstance(parsed, list):
-            raise ToolInputError("days_of_week JSON 须为数组")
+            raise ToolInputError("days_of_week JSON must be an array")
         days = parsed
     else:
         days = list(raw)
@@ -125,7 +125,7 @@ def _normalize_days_of_week(
     for d in days:
         if not isinstance(d, str) or d not in _DAYS_OF_WEEK:
             raise ToolInputError(
-                f"days_of_week 元素须为: {', '.join(_DAYS_OF_WEEK)}，当前: {d!r}"
+                f"days_of_week elements must be one of: {', '.join(_DAYS_OF_WEEK)}, got: {d!r}"
             )
         out.append(d)
     return out
@@ -139,53 +139,53 @@ def _normalize_delete_items(
     if items is None and alarm_id:
         return [{"entityId": str(alarm_id)}]
     if items is None:
-        raise ToolInputError("须提供 items（列表或 JSON 字符串）或 alarm_id（单个删除）")
+        raise ToolInputError("Must provide items (list or JSON string) or alarm_id (for single deletion)")
 
     parsed_list: List[Any]
     if isinstance(items, str):
         try:
             parsed = json.loads(items)
         except json.JSONDecodeError as e:
-            raise ToolInputError(f"items 不是合法 JSON 数组: {e}") from e
+            raise ToolInputError(f"items is not a valid JSON array: {e}") from e
         if not isinstance(parsed, list):
-            raise ToolInputError("items JSON 须为数组")
+            raise ToolInputError("items JSON must be an array")
         parsed_list = parsed
     elif isinstance(items, list):
         parsed_list = items
     else:
-        raise ToolInputError("items 须为列表或 JSON 数组字符串")
+        raise ToolInputError("items must be a list or a JSON array string")
 
     if not parsed_list:
-        raise ToolInputError("items 不能为空")
+        raise ToolInputError("items cannot be empty")
 
     result: List[Dict[str, str]] = []
     for i, item in enumerate(parsed_list):
         if not isinstance(item, dict):
-            raise ToolInputError(f"items[{i}] 须为对象")
+            raise ToolInputError(f"items[{i}] must be an object")
         eid = item.get("entityId") or item.get("entity_id")
         if not eid or not isinstance(eid, str):
-            raise ToolInputError(f"items[{i}] 缺少有效 entityId/entity_id")
+            raise ToolInputError(f"items[{i}] is missing a valid entityId/entity_id")
         result.append({"entityId": eid})
     return result
 
 
 @tool(
     name="create_alarm",
-    description="""在用户设备上创建闹钟。
+    description="""Creates an alarm on the user's device.
 
-时间（二选一，优先 alarm_time）：
-- alarm_time: 字符串 YYYYMMDD hhmmss（例如 20240315 143000）
-- hour + minute: 仅时分时使用，将取「下一次」该时刻（本地时间）
+Time (provide one of the two; alarm_time takes precedence):
+- alarm_time: string YYYYMMDD hhmmss (e.g. 20240315 143000)
+- hour + minute: use when only hour/minute are known; the alarm is set to the "next" occurrence of that time (local time)
 
-可选：
-- alarm_title / label: 标题，默认「闹钟」（label 为 alarm_title 的别名）
-- alarm_snooze_duration: 小睡间隔（分钟），5/10/15/20/25/30，默认 10
-- alarm_snooze_total: 再响次数，0/1/3/5/10，默认 0
-- alarm_ring_duration: 响铃时长（分钟），1/5/10/15/20/30，默认 5
-- days_of_wake_type: 0 单次 1 法定节假日 2 每天 3 自定义 4 法定工作日，默认 0
-- days_of_week: 仅当 days_of_wake_type=3 时必填；JSON 字符串或单元素列表，值 Mon..Sun
+Optional:
+- alarm_title / label: title, defaults to "闹钟" (label is an alias of alarm_title)
+- alarm_snooze_duration: snooze interval (minutes), 5/10/15/20/25/30, default 10
+- alarm_snooze_total: number of snooze repeats, 0/1/3/5/10, default 0
+- alarm_ring_duration: ring duration (minutes), 1/5/10/15/20/30, default 5
+- days_of_wake_type: 0 once 1 public holidays 2 every day 3 custom 4 workdays, default 0
+- days_of_week: required only when days_of_wake_type=3; JSON string or single-element list, values Mon..Sun
 
-注意：操作约 60 秒超时；失败最多重试一次；创建前宜确认当前真实日期时间。
+Note: the operation times out after about 60 seconds; retry at most once on failure; confirm the current real date and time before creating.
 """,
 )
 async def create_alarm(
@@ -212,29 +212,29 @@ async def create_alarm(
         wake_t = 0 if days_of_wake_type is None else days_of_wake_type
 
         if snooze_d not in _ALARM_SNOOZE_DURATION:
-            raise ToolInputError(f"alarm_snooze_duration 须为: {sorted(_ALARM_SNOOZE_DURATION)}")
+            raise ToolInputError(f"alarm_snooze_duration must be one of: {sorted(_ALARM_SNOOZE_DURATION)}")
         if snooze_t not in _ALARM_SNOOZE_TOTAL:
-            raise ToolInputError(f"alarm_snooze_total 须为: {sorted(_ALARM_SNOOZE_TOTAL)}")
+            raise ToolInputError(f"alarm_snooze_total must be one of: {sorted(_ALARM_SNOOZE_TOTAL)}")
         if ring_d not in _ALARM_RING_DURATION:
-            raise ToolInputError(f"alarm_ring_duration 须为: {sorted(_ALARM_RING_DURATION)}")
+            raise ToolInputError(f"alarm_ring_duration must be one of: {sorted(_ALARM_RING_DURATION)}")
         if wake_t not in _DAYS_OF_WAKE_TYPE:
-            raise ToolInputError(f"days_of_wake_type 须为: {sorted(_DAYS_OF_WAKE_TYPE)}")
+            raise ToolInputError(f"days_of_wake_type must be one of: {sorted(_DAYS_OF_WAKE_TYPE)}")
 
         alarm_ms: Optional[int] = None
         if alarm_time:
             alarm_ms = _parse_alarm_time_to_ms(alarm_time)
             if alarm_ms is None:
                 raise ToolInputError(
-                    "alarm_time 格式须为 YYYYMMDD hhmmss（例如 20240315 143000）"
+                    "alarm_time must be in the format YYYYMMDD hhmmss (e.g. 20240315 143000)"
                 )
         elif hour is not None and minute is not None:
             if not isinstance(hour, int) or hour < 0 or hour > 23:
-                raise ToolInputError("hour 须为 0-23 的整数")
+                raise ToolInputError("hour must be an integer between 0-23")
             if not isinstance(minute, int) or minute < 0 or minute > 59:
-                raise ToolInputError("minute 须为 0-59 的整数")
+                raise ToolInputError("minute must be an integer between 0-59")
             alarm_ms = _alarm_time_ms_from_hour_minute(hour, minute)
         else:
-            raise ToolInputError("请提供 alarm_time（YYYYMMDD hhmmss）或同时提供 hour 与 minute")
+            raise ToolInputError("Provide alarm_time (YYYYMMDD hhmmss), or provide both hour and minute")
 
         week_list: List[str] = []
         if wake_t == 3:
@@ -285,7 +285,7 @@ async def create_alarm(
 
         outputs = await execute_device_command("CreateAlarm", command)
 
-        raise_if_device_error(outputs, "创建闹钟失败")
+        raise_if_device_error(outputs, "Failed to create alarm")
 
         result = outputs.get("result", {})
         code = outputs.get("code")
@@ -307,28 +307,28 @@ async def create_alarm(
                 },
                 "code": code,
             },
-            "闹钟创建成功",
+            "Alarm created successfully",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[ALARM_TOOL] Failed to create alarm: {e}")
-        raise RuntimeError(f"创建闹钟失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to create alarm: {str(e)}") from e
 
 
 @tool(
     name="search_alarms",
-    description="""检索用户设备上的闹钟。至少满足一种检索条件（默认查询全部）。
+    description="""Searches alarms on the user's device. At least one search criterion must be met (by default, queries all).
 
-条件（可组合）：
+Criteria (combinable):
 - range_type: all / next / current
-- alarm_state: 0 关闭 1 开启
-- days_of_wake_type: 0-4（与创建时含义相同）
-- start_time + end_time: 时间区间，格式均为 YYYYMMDD hhmmss，须成对出现；
-  设备侧为 timeInterval: [startMs, endMs]
+- alarm_state: 0 off 1 on
+- days_of_wake_type: 0-4 (same meaning as when creating)
+- start_time + end_time: time range, both in YYYYMMDD hhmmss format, must be provided as a pair;
+  device side uses timeInterval: [startMs, endMs]
 
-注意：操作约 60 秒超时；检索前宜确认当前时间。
+Note: the operation times out after about 60 seconds; confirm the current time before searching.
 """,
 )
 async def search_alarms(
@@ -347,7 +347,7 @@ async def search_alarms(
         has_end = end_time is not None
 
         if has_start != has_end:
-            raise ToolInputError("start_time 与 end_time 须同时提供或同时省略")
+            raise ToolInputError("start_time and end_time must be provided together or omitted together")
 
         if not (has_range or has_as or has_wake or (has_start and has_end)):
             range_type = "all"
@@ -355,25 +355,25 @@ async def search_alarms(
         intent_param: Dict[str, Any] = {}
         if range_type is not None:
             if range_type not in _RANGE_TYPE:
-                raise ToolInputError(f"range_type 须为: {sorted(_RANGE_TYPE)}")
+                raise ToolInputError(f"range_type must be one of: {sorted(_RANGE_TYPE)}")
             intent_param["rangeType"] = range_type
         if alarm_state is not None:
             if alarm_state not in _ALARM_STATE:
-                raise ToolInputError("alarm_state 须为 0 或 1")
+                raise ToolInputError("alarm_state must be 0 or 1")
             intent_param["alarmState"] = alarm_state
         if days_of_wake_type is not None:
             if days_of_wake_type not in _DAYS_OF_WAKE_TYPE:
-                raise ToolInputError(f"days_of_wake_type 须为: {sorted(_DAYS_OF_WAKE_TYPE)}")
+                raise ToolInputError(f"days_of_wake_type must be one of: {sorted(_DAYS_OF_WAKE_TYPE)}")
             intent_param["daysOfWakeType"] = days_of_wake_type
         if has_start and has_end:
             sm = _parse_alarm_time_to_ms(start_time or "")
             em = _parse_alarm_time_to_ms(end_time or "")
             if sm is None:
-                raise ToolInputError("start_time 格式须为 YYYYMMDD hhmmss")
+                raise ToolInputError("start_time must be in the format YYYYMMDD hhmmss")
             if em is None:
-                raise ToolInputError("end_time 格式须为 YYYYMMDD hhmmss")
+                raise ToolInputError("end_time must be in the format YYYYMMDD hhmmss")
             if sm >= em:
-                raise ToolInputError("start_time 须早于 end_time")
+                raise ToolInputError("start_time must be earlier than end_time")
             intent_param["timeInterval"] = [sm, em]
 
         logger.info("[ALARM_TOOL] Searching alarms, intent keys=%s", list(intent_param.keys()))
@@ -403,7 +403,7 @@ async def search_alarms(
 
         outputs = await execute_device_command("SearchAlarm", command)
 
-        raise_if_device_error(outputs, "检索闹钟失败")
+        raise_if_device_error(outputs, "Failed to search alarms")
 
         result = outputs.get("result", {})
         items = result.get("items", []) if isinstance(result, dict) else []
@@ -426,31 +426,31 @@ async def search_alarms(
 
         return format_success_response(
             {"alarms": parsed_alarms, "count": len(parsed_alarms)},
-            f"找到 {len(parsed_alarms)} 个闹钟",
+            f"Found {len(parsed_alarms)} alarms",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[ALARM_TOOL] Failed to search alarms: {e}")
-        raise RuntimeError(f"搜索闹钟失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search alarms: {str(e)}") from e
 
 
 @tool(
     name="modify_alarm",
-    description="""修改用户设备上已有闹钟。须提供 entity_id（设备返回的 entityId）。
+    description="""Modifies an existing alarm on the user's device. Must provide entity_id (the entityId returned by the device).
 
-可选字段（与创建一致，仅填需要修改的项）：
+Optional fields (same as creation; only fill in the items to modify):
 - alarm_time: YYYYMMDD hhmmss
-- alarm_title: 标题
-- alarm_state: 0 关 1 开
-- alarm_snooze_duration / alarm_snooze_total / alarm_ring_duration: 枚举同创建
-- days_of_wake_type / days_of_week: 自定义星期规则同创建
+- alarm_title: title
+- alarm_state: 0 off 1 on
+- alarm_snooze_duration / alarm_snooze_total / alarm_ring_duration: same enums as creation
+- days_of_wake_type / days_of_week: custom weekday rules same as creation
 
-兼容：alarm_id 与 entity_id 二选一（同为设备侧闹钟实体 ID）。
-enabled: true/false 与 alarm_state 二选一（enabled 映射为 1/0）。
+Compatibility: alarm_id and entity_id are interchangeable (both are the device-side alarm entity ID).
+enabled: true/false and alarm_state are interchangeable (enabled maps to 1/0).
 
-注意：修改未涉及的字段时，若希望保持原值，宜先 search_alarms 取原值再一并传入，避免默认覆盖。
+Note: for fields not being modified, if you want to keep their original values, first use search_alarms to fetch the original values and pass them in as well, to avoid them being overwritten by defaults.
 """,
 )
 async def modify_alarm(
@@ -470,7 +470,7 @@ async def modify_alarm(
     try:
         eid = (entity_id or alarm_id or "").strip()
         if not eid:
-            raise ToolInputError("缺少 entity_id 或 alarm_id（设备侧闹钟 entityId）")
+            raise ToolInputError("Missing entity_id or alarm_id (device-side alarm entityId)")
 
         intent_param: Dict[str, Any] = {
             "entityName": "Alarm",
@@ -480,7 +480,7 @@ async def modify_alarm(
         if alarm_time is not None:
             ms = _parse_alarm_time_to_ms(alarm_time)
             if ms is None:
-                raise ToolInputError("alarm_time 格式须为 YYYYMMDD hhmmss")
+                raise ToolInputError("alarm_time must be in the format YYYYMMDD hhmmss")
             intent_param["alarmTime"] = ms
 
         if alarm_title is not None:
@@ -491,33 +491,33 @@ async def modify_alarm(
             eff_state = 1 if enabled else 0
         if eff_state is not None:
             if eff_state not in _ALARM_STATE:
-                raise ToolInputError("alarm_state 须为 0 或 1")
+                raise ToolInputError("alarm_state must be 0 or 1")
             intent_param["alarmState"] = eff_state
 
         if alarm_snooze_duration is not None:
             if alarm_snooze_duration not in _ALARM_SNOOZE_DURATION:
-                raise ToolInputError(f"alarm_snooze_duration 须为: {sorted(_ALARM_SNOOZE_DURATION)}")
+                raise ToolInputError(f"alarm_snooze_duration must be one of: {sorted(_ALARM_SNOOZE_DURATION)}")
             intent_param["alarmSnoozeDuration"] = alarm_snooze_duration
 
         if alarm_snooze_total is not None:
             if alarm_snooze_total not in _ALARM_SNOOZE_TOTAL:
-                raise ToolInputError(f"alarm_snooze_total 须为: {sorted(_ALARM_SNOOZE_TOTAL)}")
+                raise ToolInputError(f"alarm_snooze_total must be one of: {sorted(_ALARM_SNOOZE_TOTAL)}")
             intent_param["alarmSnoozeTotal"] = alarm_snooze_total
 
         if alarm_ring_duration is not None:
             if alarm_ring_duration not in _ALARM_RING_DURATION:
-                raise ToolInputError(f"alarm_ring_duration 须为: {sorted(_ALARM_RING_DURATION)}")
+                raise ToolInputError(f"alarm_ring_duration must be one of: {sorted(_ALARM_RING_DURATION)}")
             intent_param["alarmRingDuration"] = alarm_ring_duration
 
         if days_of_wake_type is not None:
             if days_of_wake_type not in _DAYS_OF_WAKE_TYPE:
-                raise ToolInputError(f"days_of_wake_type 须为: {sorted(_DAYS_OF_WAKE_TYPE)}")
+                raise ToolInputError(f"days_of_wake_type must be one of: {sorted(_DAYS_OF_WAKE_TYPE)}")
             intent_param["daysOfWakeType"] = days_of_wake_type
 
         if days_of_week is not None:
             if days_of_wake_type != 3:
                 if days_of_wake_type is None:
-                    raise ToolInputError("使用 days_of_week 时请同时指定 days_of_wake_type=3")
+                    raise ToolInputError("When using days_of_week, also specify days_of_wake_type=3")
                 logger.warning(
                     "[ALARM_TOOL] 已忽略 days_of_week（仅当 days_of_wake_type=3 时有效）"
                 )
@@ -553,7 +553,7 @@ async def modify_alarm(
 
         outputs = await execute_device_command("ModifyAlarm", command)
 
-        raise_if_device_error(outputs, "修改闹钟失败")
+        raise_if_device_error(outputs, "Failed to modify alarm")
 
         result = outputs.get("result", {})
 
@@ -569,25 +569,25 @@ async def modify_alarm(
                 "alarmSnoozeTotal": result.get("alarmSnoozeTotal"),
                 "daysOfWakeType": result.get("daysOfWakeType"),
             },
-            "闹钟修改成功",
+            "Alarm modified successfully",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[ALARM_TOOL] Failed to modify alarm: {e}")
-        raise RuntimeError(f"修改闹钟失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to modify alarm: {str(e)}") from e
 
 
 @tool(
     name="delete_alarm",
-    description="""删除用户设备上的闹钟。
+    description="""Deletes alarms on the user's device.
 
-参数（二选一）：
-- items: 待删列表，每项含 entityId（或 entity_id）；可为 JSON 数组字符串
-- alarm_id: 仅删一个时可直接传实体 ID
+Parameters (provide one of the two):
+- items: list of alarms to delete, each item containing entityId (or entity_id); may be a JSON array string
+- alarm_id: the entity ID can be passed directly when deleting a single alarm
 
-注意：删除不可恢复；操作约 60 秒超时。
+Note: deletion is irreversible; the operation times out after about 60 seconds.
 """,
 )
 async def delete_alarm(
@@ -625,7 +625,7 @@ async def delete_alarm(
 
         outputs = await execute_device_command("DeleteAlarm", command)
 
-        raise_if_device_error(outputs, "删除闹钟失败")
+        raise_if_device_error(outputs, "Failed to delete alarm")
 
         result = outputs.get("result", {})
 
@@ -635,11 +635,11 @@ async def delete_alarm(
                 "entityId": result.get("entityId"),
                 "success": True,
             },
-            "闹钟已删除",
+            "Alarm deleted",
         )
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[ALARM_TOOL] Failed to delete alarm: {e}")
-        raise RuntimeError(f"删除闹钟失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to delete alarm: {str(e)}") from e

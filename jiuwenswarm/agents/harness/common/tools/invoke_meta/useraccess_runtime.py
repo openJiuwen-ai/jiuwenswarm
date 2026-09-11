@@ -318,7 +318,8 @@ def missing_plugin_url_error(*, plugin_id: str = "", tool_name: str = "") -> dic
     return {
         "success": False,
         "error": (
-            "缺少插件 WS 地址：需 AGENT_RUNTIME_MCP_RUN（桌面 spawn 注入 127.0.0.1:19694）"
+            "Missing plugin WS URL: set AGENT_RUNTIME_MCP_RUN "
+            "(injected by desktop spawn, 127.0.0.1:19694)"
         ),
         "pluginId": plugin_id,
         "toolName": tool_name,
@@ -329,8 +330,9 @@ def missing_desktop_proxy_error(*, plugin_id: str = "", tool_name: str = "") -> 
     return {
         "success": False,
         "error": (
-            "插件 mcp/run 只走桌面本机代理：需 AGENT_RUNTIME_MCP_RUN 指向 "
-            "ws://127.0.0.1:19694/.../mcp/run（桌面 spawn 注入）"
+            "Plugin mcp/run must go through the desktop local proxy: "
+            "AGENT_RUNTIME_MCP_RUN must point to "
+            "ws://127.0.0.1:19694/.../mcp/run (injected by desktop spawn)"
         ),
         "pluginId": plugin_id,
         "toolName": tool_name,
@@ -341,7 +343,8 @@ def missing_plugin_ws_token_error(*, plugin_id: str = "", tool_name: str = "") -
     return {
         "success": False,
         "error": (
-            "缺少插件 WS 代理令牌：密钥包缺少 pluginWsToken（桌面 spawn 下发）"
+            "Missing plugin WS proxy token: pluginWsToken missing from the "
+            "secret bundle (delivered by desktop spawn)"
         ),
         "pluginId": plugin_id,
         "toolName": tool_name,
@@ -352,7 +355,8 @@ def missing_agent_baseurl_error() -> dict[str, Any]:
     return {
         "success": False,
         "error": (
-            "缺少 Agent Runtime 地址：请配置环境变量 AGENT_RUNTIME_BASEURL"
+            "Missing Agent Runtime URL: configure the AGENT_RUNTIME_BASEURL "
+            "environment variable"
         ),
     }
 

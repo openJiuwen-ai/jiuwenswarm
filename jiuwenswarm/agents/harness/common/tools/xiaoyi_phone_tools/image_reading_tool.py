@@ -204,34 +204,35 @@ def _content_payload(payload: Dict[str, Any]) -> Dict[str, Any]:
 @tool(
     name="image_reading",
     description="""
-工具使用场景：
-【必须调用此工具的情况】
-1. 用户消息中包含 mediaPath 字段且不为空（表示用户发送了图片）
-2. 用户希望理解图片内容，询问图片是什么，例如：
-   - "这是什么？"
-   - "图片里有什么？"
-   - "帮我看看这张图"
-   - "描述一下这张图片"
-   - "分析一下这张照片"
-   - "这个图片是什么意思"
-   - "识别一下图片内容"
-   - 或任何关于图片内容的理解、识别、分析类询问
+Tool usage scenarios:
+【Situations where this tool MUST be called】
+1. The user message contains a mediaPath field that is not empty (indicating the user sent an image)
+2. The user wants to understand the image content or asks what the image is, for example:
+   - "What is this?"
+   - "What is in the image?"
+   - "Take a look at this image for me"
+   - "Describe this image"
+   - "Analyze this photo"
+   - "What does this image mean?"
+   - "Recognize the content of the image"
+   - Or any question about understanding, recognizing, or analyzing image content
 
-当同时满足以上两个条件时，必须优先调用此工具进行图像理解。
+When both conditions above are met, you must call this tool first to perform image understanding.
 
-工具能力描述：对图片进行理解和分析，返回图片的描述内容。
+Tool capability: understands and analyzes images, returning a description of the image content.
 
-工具参数说明：
-a. local_url：本地图片文件路径（可选，通常从用户消息的 mediaPath 字段获取）
-b. remote_url：公网图片地址（可选）
-c. prompt：对图片的提示问题，默认为"描述这张图片内容"，可根据用户的具体问题自定义
-d. local_url 与 remote_url 任意一个不为空即可，优先使用 local_url
+Tool parameter description:
+a. local_url: local image file path (optional, usually obtained from the mediaPath field of the user message)
+b. remote_url: public internet image URL (optional)
+c. prompt: the prompt question about the image; defaults to "描述这张图片内容" and can be customized
+   based on the user's specific question
+d. Either local_url or remote_url must be non-empty; local_url takes priority
 
-注意事项：
-a. 支持常见图片格式（jpg, png, gif等）
-b. 远程图片会先下载到本地再处理
-c. 操作超时时间为2分钟（120秒）
-d. 返回图像理解的文本描述内容
+Notes:
+a. Common image formats are supported (jpg, png, gif, etc.)
+b. Remote images are downloaded locally before being processed
+c. The operation timeout is 2 minutes (120 seconds)
+d. Returns the text description of the image understanding result
 """,
 )
 async def image_reading(
@@ -243,7 +244,7 @@ async def image_reading(
     lu_sel = local_url if isinstance(local_url, str) and local_url else ""
     ru_sel = remote_url if isinstance(remote_url, str) and remote_url else ""
     if not lu_sel and not ru_sel:
-        raise ToolInputError("须至少提供 localUrl 或 remoteUrl 之一")
+        raise ToolInputError("At least one of localUrl or remoteUrl must be provided")
 
     # 与 TS：params.prompt || "描述这张图片内容"
     text = prompt if isinstance(prompt, str) and prompt else "描述这张图片内容"
@@ -257,7 +258,8 @@ async def image_reading(
     uid = str(xc.get("uid"))
     if not base or not api_key or not uid:
         raise ToolInputError(
-            "缺少 channels.xiaoyi 的 file_upload_url / api_key / uid 配置，无法上传图片"
+            "Missing channels.xiaoyi configuration for file_upload_url / api_key / uid; "
+            "cannot upload the image"
         )
 
     obs_cfg = XiaoyiObsUploadConfig(base_url=base, api_key=api_key, uid=uid)
@@ -287,7 +289,7 @@ async def image_reading(
                 )
 
         if not image_obs_url:
-            raise RuntimeError("图片上传失败：无法获取图片访问地址")
+            raise RuntimeError("Image upload failed: unable to obtain the image access URL")
 
         caption = await _call_image_understanding_api(
             image_obs_url, text, api_key, uid, base
@@ -304,7 +306,7 @@ async def image_reading(
         raise
     except Exception as e:
         logger.error("[IMAGE_READING_TOOL] execution failed: %s", e)
-        msg = str(e) if str(e) else "图片分析失败"
+        msg = str(e) if str(e) else "Image analysis failed"
         return _content_payload(
             {
                 "error": msg,

@@ -25,11 +25,11 @@ from .utils import (
 
 @tool(
     name="create_note",
-    description="""在用户设备上创建备忘录。需要提供备忘录标题和内容。
-  注意:
-  a. 操作超时时间为60秒,请勿重复调用此工具
-  b. 如果遇到各类调用失败场景,最多只能重试一次，不可以重复调用多次。
-  c. 调用工具前需认真检查调用参数是否满足工具要求
+    description="""Create a note on the user's device. Requires the note title and content.
+  Note:
+  a. The operation timeout is 60 seconds. Do not call this tool repeatedly.
+  b. If any call failure occurs, retry at most once; do not call it repeatedly.
+  c. Before calling the tool, carefully check that the call parameters meet the tool's requirements.
   """,
 )
 async def create_note(title: str, content: str) -> Dict[str, Any]:
@@ -46,9 +46,9 @@ async def create_note(title: str, content: str) -> Dict[str, Any]:
         logger.info(f"[CREATE_NOTE_TOOL] Creating note - title: {title}")
 
         if not title or not isinstance(title, str):
-            raise ToolInputError("缺少必填参数 title（备忘录标题）")
+            raise ToolInputError("Missing required parameter: title (note title)")
         if not content or not isinstance(content, str):
-            raise ToolInputError("缺少必填参数 content（备忘录内容）")
+            raise ToolInputError("Missing required parameter: content (note content)")
 
         # CreateNote：executeParam 不含 appType、permissionId
         command = {
@@ -84,24 +84,24 @@ async def create_note(title: str, content: str) -> Dict[str, Any]:
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "创建备忘录失败")
+        raise_if_device_error(outputs, "Failed to create note")
 
         logger.info("[CREATE_NOTE_TOOL] Note create completed")
 
-        return format_success_response(dict(outputs), f"备忘录 '{title}' 创建成功")
+        return format_success_response(dict(outputs), f"Note '{title}' created successfully")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[CREATE_NOTE_TOOL] Failed to create note: {e}")
-        raise RuntimeError(f"创建备忘录失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to create note: {str(e)}") from e
 
 
 @tool(
     name="search_notes",
     description=(
-        "搜索用户设备上的备忘录内容。根据关键词在备忘录的标题、内容和附件名称中进行检索。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Search notes on the user's device. Search by keyword across note titles, contents, and attachment names. "
+        "Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once."
     ),
 )
 async def search_notes(query: str) -> Dict[str, Any]:
@@ -117,11 +117,11 @@ async def search_notes(query: str) -> Dict[str, Any]:
         logger.info(f"[SEARCH_NOTE_TOOL] Searching notes - query: {query}")
 
         if not query or not isinstance(query, str):
-            raise ToolInputError("缺少必填参数 query（搜索关键词）")
+            raise ToolInputError("Missing required parameter: query (search keyword)")
 
         query = query.strip()
         if not query:
-            raise ToolInputError("query 不能为空")
+            raise ToolInputError("query must not be empty")
 
         # SearchNote：executeParam 不含 appType、permissionId
         command = {
@@ -156,7 +156,7 @@ async def search_notes(query: str) -> Dict[str, Any]:
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "搜索备忘录失败")
+        raise_if_device_error(outputs, "Failed to search notes")
 
         result = outputs.get("result")
         if not isinstance(result, dict):
@@ -164,22 +164,22 @@ async def search_notes(query: str) -> Dict[str, Any]:
         n = len(result.get("items", []))
         logger.info(f"[SEARCH_NOTE_TOOL] Search completed, items={n}")
 
-        return format_success_response(dict(outputs), f"搜索到 {n} 条备忘录")
+        return format_success_response(dict(outputs), f"Found {n} notes")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[SEARCH_NOTE_TOOL] Failed to search notes: {e}")
-        raise RuntimeError(f"搜索备忘录失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to search notes: {str(e)}") from e
 
 
 @tool(
     name="modify_note",
     description=(
-        "在指定备忘录中追加新内容。使用前必须先调用 search_notes 工具获取备忘录的 entityId。"
-        "参数说明：entityId 是备忘录的唯一标识符（从 search_notes 工具获取），"
-        "text 是要追加的文本内容。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Append new content to the specified note. Before use, you must first call the search_notes tool to obtain the note's entityId. "
+        "Parameter description: entityId is the note's unique identifier (obtained from the search_notes tool), "
+        "and text is the text content to append. "
+        "Note: the operation timeout is 60 seconds. Do not call this tool repeatedly; if it times out or fails, retry at most once."
     ),
 )
 async def modify_note(
@@ -199,9 +199,13 @@ async def modify_note(
         logger.info(f"[MODIFY_NOTE_TOOL] Modifying note - entity_id: {entity_id}")
 
         if not entity_id or not isinstance(entity_id, str):
-            raise ToolInputError("缺少必填参数 entity_id（设备侧 entityId）")
+            raise ToolInputError(
+                "Missing required parameter: entity_id (device-side entityId)"
+            )
         if not text or not isinstance(text, str):
-            raise ToolInputError("缺少必填参数 text（要追加的文本内容）")
+            raise ToolInputError(
+                "Missing required parameter: text (text content to append)"
+            )
 
         command = {
             "header": {
@@ -238,14 +242,14 @@ async def modify_note(
         if not isinstance(outputs, dict):
             outputs = {"outputs": outputs}
 
-        raise_if_device_error(outputs, "修改备忘录失败")
+        raise_if_device_error(outputs, "Failed to modify note")
 
         logger.info("[MODIFY_NOTE_TOOL] Note modified successfully")
 
-        return format_success_response(dict(outputs), "备忘录修改成功")
+        return format_success_response(dict(outputs), "Note modified successfully")
 
     except ToolInputError:
         raise
     except Exception as e:
         logger.error(f"[MODIFY_NOTE_TOOL] Failed to modify note: {e}")
-        raise RuntimeError(f"修改备忘录失败: {str(e)}") from e
+        raise RuntimeError(f"Failed to modify note: {str(e)}") from e

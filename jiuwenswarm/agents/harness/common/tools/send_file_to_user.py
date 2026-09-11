@@ -206,7 +206,7 @@ class SendFileToolkit:
                 logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
 
         if not valid_files:
-            msg_parts = ["发送文件失败：所有文件均不存在"]
+            msg_parts = ["Failed to send files: none of the files exist"]
             for mf in missing_files:
                 msg_parts.append(f"  - {mf}")
             return _tool_fail("\n".join(msg_parts))
@@ -221,15 +221,15 @@ class SendFileToolkit:
             )
             msg_parts: list[str] = []
             if skipped_files:
-                msg_parts.append("文件已在本次会话发送过，跳过重复投递：")
+                msg_parts.append("Files already sent in this session; skipping duplicate delivery:")
                 for sf in skipped_files:
                     msg_parts.append(f"  - {sf}")
             if missing_files:
-                msg_parts.append("以下文件不存在，未发送：")
+                msg_parts.append("The following files do not exist and were not sent:")
                 for mf in missing_files:
                     msg_parts.append(f"  - {mf}")
             if not msg_parts:
-                msg_parts.append("没有可发送的文件")
+                msg_parts.append("No files available to send")
             return "\n".join(msg_parts)
 
         logger.info(
@@ -334,13 +334,13 @@ class SendFileToolkit:
                 msg["metadata"] = merged_meta
             await server.send_push(msg)
             _mark_files_sent(self.session_id, valid_files)
-            result_parts = [f"成功发送 {len(valid_files)} 个文件"]
+            result_parts = [f"Sent {len(valid_files)} files"]
             if skipped_files:
-                result_parts.append("以下文件已在本次会话发送过，已跳过：")
+                result_parts.append("The following files were already sent in this session and were skipped:")
                 for sf in skipped_files:
                     result_parts.append(f"  - {sf}")
             if missing_files:
-                result_parts.append("以下文件不存在，未发送：")
+                result_parts.append("The following files do not exist and were not sent:")
                 for mf in missing_files:
                     result_parts.append(f"  - {mf}")
             return "\n".join(result_parts)
@@ -350,7 +350,7 @@ class SendFileToolkit:
                 self.session_id,
                 str(e),
             )
-            return _tool_fail(f"提交文件失败: {str(e)}")
+            return _tool_fail(f"Failed to submit files: {str(e)}")
 
     def get_tools(self) -> List[Tool]:
         """Return tools for registration in Runner.
@@ -376,16 +376,27 @@ class SendFileToolkit:
             make_tool(
                 name="send_file_to_user",
                 description=(
-                    "【强制】任务过程中每新建、修改、下载或重命名一个产物（文件、文档、图片、视频、音乐等），都必须调用本工具发送给用户；不得跳过。"
-                    "【产物发送工具】当需要将生成、下载、导出、新建、修改或重命名后的文档、图片、视频、音乐等产物发送给用户时使用此工具。"
-                    "使用场景包括：用户请求导出/下载文件、任务完成后需要交付文件、生成报告/文档后发送给用户。"
-                    "参数格式：abs_file_path_list 接受单个路径字符串或路径数组，路径必须是绝对路径。"
-                    "示例：'/tmp/report.pdf' 或 ['/tmp/file1.csv', '/tmp/file2.xlsx']。"
-                    "target_channels 可选：指定文件投递目标，每项可以是 channel id（如 'web'）"
-                    "或 team 人类席位名（如 'human-player-1'）。"
-                    "省略时默认投给最近发起请求的人类成员（按 session 记录的发起者）；web 发起或无人类成员时投 web。"
-                    "多 app 场景定向到指定 feishu 用户时，传入该用户的 member_name（不会误投其它 app）；"
-                    "跨端投递（如把文件发给飞书用户、或发给 web）时传入对应 member_name 或 'web'。"
+                    "[MANDATORY] Every time a deliverable (file, document, image, video, "
+                    "music, etc.) is created, modified, downloaded, or renamed during the "
+                    "task, you MUST call this tool to send it to the user; do not skip it. "
+                    "[Deliverable sending tool] Use this tool whenever generated, downloaded, "
+                    "exported, created, modified, or renamed documents, images, videos, music, "
+                    "or other deliverables need to be sent to the user. Typical scenarios: the "
+                    "user asks to export/download files, deliverables must be handed over after "
+                    "the task, or a report/document has been generated and should be sent. "
+                    "Parameter format: abs_file_path_list accepts a single path string or an "
+                    "array of paths; paths must be absolute. "
+                    "Examples: '/tmp/report.pdf' or ['/tmp/file1.csv', '/tmp/file2.xlsx']. "
+                    "target_channels is optional: delivery targets for the files; each item "
+                    "can be a channel id (e.g. 'web') or a team human seat name "
+                    "(e.g. 'human-player-1'). "
+                    "When omitted, files are delivered to the human member who issued the most "
+                    "recent request (the initiator recorded on the session); if the request came "
+                    "from web or no human member exists, deliver to web. "
+                    "To target a specific feishu user in multi-app scenarios, pass that user's "
+                    "member_name (avoids mis-delivery to other apps); "
+                    "for cross-device delivery (e.g. sending files to a feishu user or to web), "
+                    "pass the corresponding member_name or 'web'."
                 ),
                 input_params={
                     "type": "object",
@@ -393,20 +404,24 @@ class SendFileToolkit:
                         "abs_file_path_list": {
                             "type": "string",
                             "description": (
-                                "要发送的文件绝对路径。"
-                                "可以是单个路径字符串如 '/path/to/file.pdf'，"
-                                "或 JSON 数组字符串如 '[\"/path/file1.csv\", \"/path/file2.xlsx\"]'。"
-                                "支持任意文件类型（pdf、xlsx、docx、png、zip等）。"
+                                "Absolute path(s) of the files to send. "
+                                "Accepts a single path string such as '/path/to/file.pdf', "
+                                "or a JSON array string such as "
+                                "'[\"/path/file1.csv\", \"/path/file2.xlsx\"]'. "
+                                "Any file type is supported (pdf, xlsx, docx, png, zip, etc.)."
                             ),
                         },
                         "target_channels": {
                             "type": "array",
                             "items": {"type": "string"},
                             "description": (
-                                "可选：文件投递目标列表。每项可为 channel id（如 'web'）"
-                                "或 team 人类席位名（如 'human-player-1'）。"
-                                "省略时默认投给最近发起请求的人类成员；web 发起或无人类成员时投 web。"
-                                "定向到指定 feishu 用户传其 member_name；跨端投递传对应 member_name 或 'web'。"
+                                "Optional: delivery target list. Each item can be a channel id "
+                                "(e.g. 'web') or a team human seat name (e.g. 'human-player-1'). "
+                                "When omitted, delivered to the human member who issued the most "
+                                "recent request; if the request came from web or no human member "
+                                "exists, deliver to web. "
+                                "Pass a feishu user's member_name to target that user; for "
+                                "cross-device delivery pass the corresponding member_name or 'web'."
                             ),
                         },
                     },

@@ -142,42 +142,36 @@ def plugin_runtime_zone_label() -> str:
 def invoke_arguments_description() -> str:
     """ToolCard arguments.description — passthrough; names come from SKILL.md."""
     return (
-        "必含 bundleName（当前区表中的包名）以及该能力的业务字段，原样透传。"
-        "functionName 写在顶层，不要把业务参数包进 content，除非 SKILL.md 要求数组。"
-        "不要把 timeout_s 写进 arguments（顶层可选字段）。"
+        "Must include bundleName (the package name from the current-zone table) "
+        "plus the capability's business fields, passed through as-is. "
+        "Put functionName at the top level; do not wrap business parameters in "
+        "content unless the SKILL.md requires an array. Do not put timeout_s "
+        "inside arguments (it is an optional top-level field)."
     )
 
 
 def invoke_timeout_s_description() -> str:
     """ToolCard timeout_s.description — optional local wait budget."""
     return (
-        "可选。云插件单次等待上限（秒）。组图/成曲可加大；"
-        "不传则：组图 60×max_images，成曲 600s，其余 300s。上限 3600。"
-        "只作用于本地墙钟，不会送给云端插件。"
+        "Optional. Max local wait in seconds for a single cloud plugin call. "
+        "Can be raised for group image generation or song generation. Defaults "
+        "when omitted: group image 60×max_images, song 600s, others 300s. "
+        "Hard cap 3600. Applies to the local wall clock only; never sent to "
+        "the cloud plugin."
     )
 
 
 def invoke_function_name_description() -> str:
     """ToolCard functionName.description — flattened capability name."""
     return (
-        "云端能力：填已加载 skill 中当前区表的真实 functionName；"
-        "远程 Agent：agent_as_a_tool。"
+        "Cloud capability: the real functionName from the current-zone table "
+        "of the loaded skill. Remote Agent: agent_as_a_tool."
     )
 
 
 def invoke_tool_description() -> str:
-    """Short ToolCard: current zone + passthrough invoke from loaded skill tables."""
-    zone = plugin_runtime_zone_label()
-    other = "蓝绿" if zone == "现网" else "现网"
-    return (
-        f"当前插件运行区：{zone}。"
-        f"functionName 与 bundleName 必须使用已加载 skill 中「{zone}」表；"
-        f"禁止混用{other}名字。"
-        "业务字段原样透传。"
-        "调用形态：顶层 functionName 为真实云端能力名，arguments 必含 bundleName；"
-        "可选顶层 timeout_s。"
-        "远程 Agent：functionName=agent_as_a_tool。"
-    )
+    """Short ToolCard: invoke cloud tools from loaded skill tables."""
+    return "Invoke the relevant cloud tools according to the loaded skills."
 
 
 __all__ = [

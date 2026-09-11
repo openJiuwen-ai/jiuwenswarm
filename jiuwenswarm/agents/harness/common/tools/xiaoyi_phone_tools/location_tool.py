@@ -19,8 +19,10 @@ from .utils import execute_device_command, raise_if_device_error
 @tool(
     name="get_user_location",
     description=(
-        "获取用户当前位置（经纬度坐标，WGS84坐标系）。需要用户设备授权位置访问权限。"
-        "注意:操作超时时间为60秒,请勿重复调用此工具,如果超时或失败,最多重试一次。"
+        "Gets the user's current location (latitude/longitude coordinates, WGS84 coordinate system). "
+        "Requires the user's device to grant location access permission. "
+        "Note: the operation timeout is 60 seconds; do not call this tool repeatedly; "
+        "if it times out or fails, retry at most once."
     ),
 )
 async def get_user_location(request_type: Literal["current_location"], ) -> Dict[str, Any]:
@@ -70,7 +72,7 @@ async def get_user_location(request_type: Literal["current_location"], ) -> Dict
     if not isinstance(outputs, dict):
         outputs = {"value": outputs}
 
-    raise_if_device_error(outputs, "获取位置失败")
+    raise_if_device_error(outputs, "Failed to get location")
 
     logger.info(
         f"[LOCATION_TOOL] Location retrieved successfully - outputs keys: {list(outputs.keys())}"

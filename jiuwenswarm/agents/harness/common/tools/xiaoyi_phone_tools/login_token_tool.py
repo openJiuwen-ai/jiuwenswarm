@@ -187,8 +187,8 @@ def _match_valid_token(
 def _token_result_text(token_value: str | None) -> str:
     """根据是否拿到 token 翻译结果文案（对齐 login-token-tool.ts 语义）."""
     if token_value:
-        return "获取用户授权成功"
-    return "获取用户授权失败"
+        return "Successfully obtained user authorization"
+    return "Failed to obtain user authorization"
 
 
 async def _poll_for_token(client_id: str, baseline_expire: float | None = None) -> str:
@@ -214,7 +214,7 @@ async def _poll_for_token(client_id: str, baseline_expire: float | None = None) 
                 "[LOGIN_TOKEN] 超时未拿到授权 clientId=%s elapsed_ms=%d",
                 client_id, int(elapsed_ms),
             )
-            return "获取用户授权失败"
+            return "Failed to obtain user authorization"
 
         env = _read_xiaoyienv()
         token_value = _match_valid_token(env, client_id, baseline_expire)
@@ -234,10 +234,13 @@ async def _poll_for_token(client_id: str, baseline_expire: float | None = None) 
 @tool(
     name="huawei_id_tool",
     description=(
-        "获取用户授权信息。当skill需要用户鉴权时调用此工具，工具会通过当前小艺对话渠道向你的设备"
-        "下发授权请求（弹授权卡片），等待你完成授权后返回结果。请勿重复调用此工具。"
-        "参数 clientId：账号服务唯一标识，在执行具体skill过程中会提供；"
-        "参数 skillName：具体skill的名称。"
+        "Obtains the user's authorization information. Call this tool when a skill requires user "
+        "authentication. The tool sends an authorization request to the user's device via the current "
+        "Xiaoyi conversation channel (an authorization card pops up), and returns the result once you "
+        "complete the authorization. Do not call this tool repeatedly. "
+        "Parameter clientId: the unique identifier of the account service, which is provided during "
+        "the execution of a specific skill; "
+        "Parameter skillName: the name of the specific skill."
     ),
 )
 async def huawei_id_tool(clientId: str, skillName: str) -> Dict[str, Any]:
@@ -256,9 +259,9 @@ async def huawei_id_tool(clientId: str, skillName: str) -> Dict[str, Any]:
     client_id = (clientId or "").strip()
     skill_name = (skillName or "").strip()
     if not client_id:
-        raise ToolInputError("缺少必填参数: clientId 必须为非空字符串")
+        raise ToolInputError("Missing required parameter: clientId must be a non-empty string")
     if not skill_name:
-        raise ToolInputError("缺少必填参数: skillName 必须为非空字符串")
+        raise ToolInputError("Missing required parameter: skillName must be a non-empty string")
 
     invocation = get_current_invocation_context()
     if invocation is None:
@@ -303,7 +306,7 @@ async def huawei_id_tool(clientId: str, skillName: str) -> Dict[str, Any]:
         # 桥下发失败（channel 不可用 / gateway 未连 / 超时）——如实抛出，让上层
         # 把错误透传给 LLM，不要静默吞掉。
         logger.exception("[LOGIN_TOKEN] 下发授权请求失败（桥）: %s", exc)
-        raise RuntimeError(f"下发授权请求失败: {exc}") from exc
+        raise RuntimeError(f"Failed to send the authorization request: {exc}") from exc
 
     logger.info("[LOGIN_TOKEN] 授权请求已下发，开始轮询 token 文件")
     result_text = await _poll_for_token(client_id, baseline_expire)

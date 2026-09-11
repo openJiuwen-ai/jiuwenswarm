@@ -47,7 +47,10 @@ logger = logging.getLogger(__name__)
 _AGENT_FUNC_NAME = "agent_as_a_tool"
 _PLUGIN_SKILL_EXEC = "PluginSkillExecTool"
 _BUNDLE_NAME_KEY = "bundleName"
-_DEVICE_UNSUPPORTED_MSG = "当前不支持pluginType为Device的端插件调用，请到真机进行测试"
+_DEVICE_UNSUPPORTED_MSG = (
+    "Device-type on-device plugins (pluginType=Device) are not supported here; "
+    "test on a real device instead."
+)
 _MUSIC_FUNC = "musicGeneration"
 _INVOKE_TIMEOUT_MIN_S = 1.0
 _INVOKE_TIMEOUT_MAX_S = 3600.0
@@ -74,7 +77,7 @@ def _parse_invoke_inputs(inputs: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     if params is None:
         params = {}
     if not isinstance(params, dict):
-        raise ValueError("arguments 必须是对象")
+        raise ValueError("arguments must be an object")
     params = dict(params)
 
     func_name = str(inputs.get("functionName") or inputs.get("funcName") or "").strip()
@@ -162,8 +165,9 @@ def _normalize_plugin_skill_call(
     nested_name = str(params.get("functionName") or params.get("funcName") or "").strip()
     if not nested_name:
         raise ValueError(
-            "functionName=PluginSkillExecTool 时，arguments.functionName 为必填"
-            "（真实云端能力名，如 seedreamLite4Skill / seedanceMiniTask / musicGeneration）"
+            "When functionName=PluginSkillExecTool, arguments.functionName is "
+            "required (the real cloud capability name, e.g. seedreamLite4Skill / "
+            "seedanceMiniTask / musicGeneration)"
         )
     return nested_name, dict(params), True
 
@@ -205,7 +209,7 @@ def _build_plugin_spec(func_name: str, params: dict[str, Any]) -> ExternalToolSp
     if not plugin_id:
         return {
             "success": False,
-            "error": "无法解析 bundleName/pluginId，请在 arguments 中提供 bundleName",
+            "error": "Cannot resolve bundleName/pluginId; provide bundleName in arguments",
             "toolName": func_name,
         }
 
@@ -308,7 +312,7 @@ async def _dispatch_invoke(
     if not str(params.get(_BUNDLE_NAME_KEY) or "").strip() and not _resolve_plugin_id(func_name, params):
         return {
             "success": False,
-            "error": "无法解析 bundleName/pluginId，请在 arguments 中提供 bundleName",
+            "error": "Cannot resolve bundleName/pluginId; provide bundleName in arguments",
             "toolName": func_name,
         }
 
@@ -370,7 +374,7 @@ class InvokeTool(Tool):
             return {"success": False, "error": str(exc)}
 
         if not func_name:
-            return {"success": False, "error": "functionName 为必填参数"}
+            return {"success": False, "error": "functionName is required"}
 
         explicit_timeout = _extract_explicit_timeout_s(merged, params)
         logger.info(

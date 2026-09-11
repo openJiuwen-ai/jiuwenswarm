@@ -18,33 +18,33 @@ from .utils import ToolInputError
 
 @tool(
     name="convert_timestamp_to_utc8_time",
-    description="""将时间戳转换为标准 UTC+8 时间格式。支持秒级时间戳和毫秒级时间戳。
+    description="""Converts a timestamp to the standard UTC+8 time format. Supports second-level and millisecond-level timestamps.
 
-输入参数：
-- timestamp: 时间戳（数字类型），可以是秒级（10位）或毫秒级（13位）
+Input parameter:
+- timestamp: the timestamp (numeric type), either second-level (10 digits) or millisecond-level (13 digits)
 
-输出格式：
-- YYYYMMDD hhmmss（例如：20240315 143000 表示 2024年3月15日 14:30:00 北京时间）
+Output format:
+- YYYYMMDD hhmmss (e.g.: 20240315 143000 means March 15, 2024 14:30:00 Beijing time)
 
-重要说明：
-搜索日程工具（search_calendar_event）和搜索闹钟工具（search_alarm）等工具中返回结果如果包含时间戳。
-建议优先调用本时间戳转换工具，将时间戳转换为标准北京时间格式，再基于标准时间进行用户回答或下一步操作。
+Important:
+If results returned by tools such as the calendar search tool (search_calendar_event) and the alarm search tool (search_alarm) contain timestamps,
+call this timestamp conversion tool first to convert them into the standard Beijing time format, then answer the user or take the next step based on the standard time.
 
-示例：
-- 输入：1710498600（秒级）或 1710498600000（毫秒级）
-- 输出：20240315 143000""",
+Example:
+- Input: 1710498600 (seconds) or 1710498600000 (milliseconds)
+- Output: 20240315 143000""",
 )
 def convert_timestamp_to_utc8_time(timestamp: float) -> dict:
     """将时间戳转换为 UTC+8 时间格式."""
     if timestamp is None:
-        raise ToolInputError("缺少必需参数：timestamp")
+        raise ToolInputError("Missing required parameter: timestamp")
 
     if not isinstance(timestamp, (int, float)):
-        raise ToolInputError("timestamp 必须是数字类型")
+        raise ToolInputError("timestamp must be a numeric type")
 
     import math
     if math.isnan(timestamp) or math.isinf(timestamp):
-        raise ToolInputError("timestamp 不是有效数字")
+        raise ToolInputError("timestamp is not a valid number")
 
     # 判断秒级还是毫秒级
     ts_abs = abs(timestamp)
@@ -64,7 +64,7 @@ def convert_timestamp_to_utc8_time(timestamp: float) -> dict:
     try:
         dt = datetime.fromtimestamp(timestamp_in_ms / 1000, tz=utc8_tz)
     except (OSError, OverflowError, ValueError) as e:
-        raise ToolInputError(f"无效的时间戳，无法转换为日期: {e}") from e
+        raise ToolInputError(f"Invalid timestamp, cannot convert to a date: {e}") from e
 
     formatted = dt.strftime("%Y%m%d %H%M%S")
 
