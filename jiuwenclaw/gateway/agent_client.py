@@ -38,7 +38,10 @@ from jiuwenclaw.utils import FileTransferStartParams
 logger = logging.getLogger(__name__)
 _STREAM_TRAILING_MESSAGE_GRACE_SECONDS = 0.7
 _UNARY_REQUEST_TIMEOUT_SECONDS = 60.0
-_WS_MAX_SIZE = 8 * 2**20
+# 单帧上限默认 64 MiB（websockets 默认 1 MiB 会拒收 skill 列表等大 JSON 下行，
+# 触发 1009 断连）；与 WSServiceMessageChannel.ws_max_size 保持一致，可经
+# GATEWAY_AGENT_CLIENT_WS_MAX_SIZE 覆盖。
+_WS_MAX_SIZE = int(os.getenv("GATEWAY_AGENT_CLIENT_WS_MAX_SIZE", str(64 * 2**20)))
 
 
 def _wire_request_id_key(request_id: Any) -> str:
