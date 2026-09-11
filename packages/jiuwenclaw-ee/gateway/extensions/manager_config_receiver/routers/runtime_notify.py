@@ -1,9 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
-"""Manager 写库后通知 agent-runtime 强制刷新 AgentServer Pod（与 RuntimeRoutedAgentClient 无关）。
-
-走 config_refresh（优雅日落）：老 Pod 停接新会话、存量会话亲和不受影响，
-runtime 重读 DB 存量配置后由 autoscale 重建——区别于 cleanup 批删（强杀，
-中断进行中会话，仅灾难恢复/重部署用）。"""
+"""Manager 写库后通知 agent-runtime 强制刷新 AgentServer Pod（与 RuntimeRoutedAgentClient 无关）。"""
+# 走 config_refresh（优雅日落）：老 Pod 停接新会话、存量会话亲和不受影响，
+# runtime 重读 DB 存量配置后由 autoscale 重建——区别于 cleanup 批删（强杀，
+# 中断进行中会话，仅灾难恢复/重部署用）。
 
 from __future__ import annotations
 
