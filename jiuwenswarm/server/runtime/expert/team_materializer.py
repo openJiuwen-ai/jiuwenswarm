@@ -654,6 +654,17 @@ def _team_instruction(
     example_text = "\n".join(
         f"{index}. {example}" for index, example in enumerate(examples, 1)
     )
+    workflow_text = "\n".join(
+        f"{index}. {step}" for index, step in enumerate(workflow, 1)
+    )
+    workflow_section = (
+        "\n\n## 一条可选路线的交接契约\n"
+        f"{workflow_text}\n\n"
+        "这里只描述该路线被当前 Query 选中时必须遵守的交接格式；"
+        "不代表其他成员必须执行，也不要求每次任务生成其中全部产物。"
+        if workflow_text
+        else ""
+    )
     member_text = "、".join(f"`{member_id}`" for member_id in member_ids)
     deliverable_text = "、".join(deliverables) or "一个可直接使用并可打开的最终成品"
     profile_text = "；".join(
@@ -669,6 +680,7 @@ def _team_instruction(
         f"你们是{name}。可用专业成员为 {member_text}。\n\n"
         f"## 成员能力\n{profile_text}\n\n"
         f"## 图谱提供的可选路线示例\n{example_text}\n\n"
+        f"{workflow_section}\n\n"
         "关系图和路线示例仅用于发现与路由，不是固定工作流。主理人必须根据每次用户 Query "
         "选择最小充分的 1～N 位成员，只为选中成员创建任务；简单任务允许单成员直达，"
         "独立子任务并行，确有产物依赖时串行。"
