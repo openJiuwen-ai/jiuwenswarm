@@ -4538,6 +4538,38 @@
   cursor: pointer;
 }
 
+.chat-panel-file-download-item--with-preview {
+  flex-direction: column;
+  align-items: stretch;
+  gap: 0.75rem;
+}
+
+.chat-panel-file-download-item__row {
+  display: flex;
+  align-items: center;
+  gap: 0.75rem;
+  width: 100%;
+}
+
+.chat-panel-file-download-image-preview {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  object-fit: cover;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-default);
+}
+
+.chat-panel-file-download-video-preview {
+  display: block;
+  width: 100%;
+  max-height: 320px;
+  border-radius: var(--radius-md, 8px);
+  border: 1px solid var(--color-border-default);
+  background-color: #000;
+  cursor: default;
+}
+
 .chat-panel-file-download-item:hover {
   border-color: var(--color-border-hover);
   box-shadow: var(--effect-shadow-md);

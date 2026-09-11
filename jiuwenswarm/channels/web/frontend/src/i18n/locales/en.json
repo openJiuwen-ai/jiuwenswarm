@@ -236,6 +236,8 @@
       "video": "Video understanding",
       "videoDescription": "Enable video understanding; disabling it keeps the saved model configuration.",
       "videoConfigTitle": "Configure video understanding model",
+      "videoGenConfigTitle": "Configure video generation model",
+      "visualGenConfigTitle": "Configure visual generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -320,6 +322,24 @@
       "video_api_key": { "title": "API key" },
       "video_model": { "title": "Model name" },
       "video_provider": { "title": "Model provider" },
+      "video_gen_provider": { "title": "Model provider" },
+      "video_gen_protocol": { "title": "Protocol" },
+      "video_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
+      "video_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
+      "video_gen_model": { "title": "Model name", "placeholder": "e.g. bytedance/seedance-2.0-fast" },
+      "video_gen_enabled": {
+        "title": "Video generation",
+        "description": "Enable video generation tools (text-to-video); disabling it keeps the saved model configuration."
+      },
+      "visual_gen_provider": { "title": "Model provider" },
+      "visual_gen_protocol": { "title": "Protocol" },
+      "visual_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
+      "visual_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
+      "visual_gen_model": { "title": "Model name", "placeholder": "e.g. google/gemini-3.1-flash-image" },
+      "visual_gen_enabled": {
+        "title": "Visual generation",
+        "description": "Enable image generation tools (text-to-image); disabling it keeps the saved model configuration."
+      },
       "permissions_mode": {
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."

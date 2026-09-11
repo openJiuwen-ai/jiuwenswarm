@@ -156,6 +156,18 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISION_ENABLED",
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
+    "VIDEO_GEN_ENABLED",
+    "VIDEO_GEN_API_BASE",
+    "VIDEO_GEN_API_KEY",
+    "VIDEO_GEN_MODEL_NAME",
+    "VIDEO_GEN_PROVIDER",
+    "VIDEO_GEN_PROTOCOL",
+    "VISUAL_GEN_ENABLED",
+    "VISUAL_GEN_API_BASE",
+    "VISUAL_GEN_API_KEY",
+    "VISUAL_GEN_MODEL_NAME",
+    "VISUAL_GEN_PROVIDER",
+    "VISUAL_GEN_PROTOCOL",
 }
 
 
@@ -1012,6 +1024,23 @@ _CONFIG_SET_ENV_MAP = {
     "video_vendor_key": "VIDEO_VENDOR_KEY",
     "video_plan": "VIDEO_PLAN",
     "video_enabled": "VIDEO_ENABLED",
+    # video processing (generation) - dedicated slot, separate from the
+    # video-understanding fields above.
+    "video_gen_api_base": "VIDEO_GEN_API_BASE",
+    "video_gen_api_key": "VIDEO_GEN_API_KEY",
+    "video_gen_model": "VIDEO_GEN_MODEL_NAME",
+    "video_gen_provider": "VIDEO_GEN_PROVIDER",
+    "video_gen_protocol": "VIDEO_GEN_PROTOCOL",
+    "video_gen_enabled": "VIDEO_GEN_ENABLED",
+    # visual processing (image generation) - dedicated slot, independent of
+    # both visual_question_answering's VISION_* slot and image_tools.py's
+    # DashScope-only generate_image (IMAGE_GEN_* slot).
+    "visual_gen_api_base": "VISUAL_GEN_API_BASE",
+    "visual_gen_api_key": "VISUAL_GEN_API_KEY",
+    "visual_gen_model": "VISUAL_GEN_MODEL_NAME",
+    "visual_gen_provider": "VISUAL_GEN_PROVIDER",
+    "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
+    "visual_gen_enabled": "VISUAL_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
