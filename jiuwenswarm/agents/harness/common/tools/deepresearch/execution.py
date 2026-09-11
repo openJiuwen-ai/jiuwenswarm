@@ -900,10 +900,12 @@ async def _handle_outcome(
     description=(
         "Execute one complete interactive DeepResearch workflow. It preserves "
         "the standard detail, research-question, and outline review cards, "
-        "resumes the same SDK conversation, and directly delivers the terminal result."
+        "resumes the same SDK conversation, and directly delivers the terminal result. "
+        "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
+        "single-page concise reports; infer from the user's original wording."
     ),
 )
-async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any]:
+async def deepresearch_execute(query: str, file_name: str = "", report_type: DeepResearchReportType | None = None) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
     if context is None:
@@ -922,7 +924,12 @@ async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any
             "query": query.strip(),
             "file_name": file_name.strip(),
             "conversation_id": str(uuid.uuid4()),
-            "requested_report_type": context.requested_report_type,
+            # report_type 优先取 Main Agent 工具入参（从用户原话识别）；未传入时
+            # 回退执行上下文（params 通道），最终兜底 brief。归一后写入 state，
+            # resume 路径读此值不重新识别。deepresearch_stream:1918 据此写
+            # config REPORT_TYPE -> run_deepsearch.py -> SDK config.report_type，
+            # 触发 IntentRecognitionNode 锁死 report_type 字段，LLM 无决定权。
+            "requested_report_type": report_type or context.requested_report_type or "brief",
             "revision": 0,
         }
     if not str(state.get("query") or "").strip():
