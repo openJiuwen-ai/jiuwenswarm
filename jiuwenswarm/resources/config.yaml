@@ -851,6 +851,41 @@ execution_guard:
     # 未知/错误工具连续调用达到该次数时停止重试并中断
     unknown_tool_threshold: 10
 
+# AgentSSAS 安全态势感知系统配置
+ssas:
+  # 总开关. 关闭后不注册 AgentSSASSecurityRail
+  enabled: true
+  # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
+  mode: inprocess
+  # HTTP 模式配置 (mode=http 时生效)
+  http_endpoint: "http://localhost:8443"
+  http_timeout: 5.0
+  http_token:
+  http_host: "0.0.0.0"
+  http_port: 8443
+  # 存储配置 (遵循 JIUWENSWARM_HOME 约定)
+  ssas_home:
+  storage_backend: sqlite
+  event_ttl_days: 30
+  alert_ttl_days: 90
+  # Rail 配置
+  rail_priority: 80
+  enable_exception_hooks: true
+  # 风险报告阈值: safe / low / medium / high / critical
+  risk_report_threshold: low
+  # auth 模式超时 (秒)
+  auth_timeout: 2.0
+  # AgentSSASSecurityRail 决策策略:
+  # - observe_only: 全部放行 (仅感知)
+  # - active_protection: 按风险等级处理 (critical->阻断, high/medium/low->告警)
+  # 策略定义在 AgentSSAS 的 decision_policies.yaml 中
+  decision_policy: observe_only
+  # 检测模块配置覆盖 (可覆盖 module.yaml 的 enabled 字段)
+  modules:
+    # test_detection 默认 disabled, 测试时设为 true 启用
+    test_detection:
+      enabled: false
+
 channels:
   web:
     send_file_allowed: true
