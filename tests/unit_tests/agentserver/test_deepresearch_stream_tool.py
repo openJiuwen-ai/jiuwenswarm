@@ -1961,6 +1961,72 @@ async def test_final_report_idle_stream_emits_processing_heartbeat_without_cance
 
 
 @pytest.mark.asyncio
+async def test_processing_status_sent_during_stage_1_3_silence(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """SDK silence before final-report stage must still emit processing heartbeats."""
+    initial = (
+        json.dumps(
+            {"__deepsearch_status__": "started", "conversation_id": "C1"}
+        ).encode("utf-8")
+        + b"\n"
+    )
+    terminal = (
+        json.dumps(
+            {
+                "__deepsearch_status__": "error",
+                "conversation_id": "C1",
+                "error_code": "workflow_boom",
+                "error": "boom",
+            }
+        ).encode("utf-8")
+        + b"\n"
+    )
+    reader = _DelayedFinalReportReader(initial, terminal, delay=0.08)
+    proc = _Proc()
+    proc.stdout = reader
+    route = {
+        "request_id": "R1",
+        "channel_id": "CH1",
+        "session_id": "S1",
+        "service_id": "default",
+        "agent_id": "default",
+    }
+    push = AsyncMock()
+    heartbeat_observations: list[int] = []
+
+    async def record_push(envelope: dict[str, Any]) -> None:
+        payload = envelope["payload"]
+        if (
+            payload.get("event_type") == "chat.processing_status"
+            and payload.get("current_task") == "in_progress"
+        ):
+            heartbeat_observations.append(reader.reads)
+
+    push.send_push.side_effect = record_push
+
+    monkeypatch.setattr(
+        dt,
+        "DEEPRESEARCH_FINAL_REPORT_PROGRESS_INTERVAL_SECONDS",
+        0.02,
+        raising=False,
+    )
+    patches = _stream_patches(proc, route=route)
+    with ExitStack() as stack:
+        for item in patches:
+            stack.enter_context(item)
+        stack.enter_context(
+            patch.object(dt, "WebSocketGatewayPushTransport", return_value=push)
+        )
+        outcome = json.loads(
+            await dt.deepresearch_stream._func(action="start", query="q")
+        )
+
+    assert len(heartbeat_observations) >= 1
+    assert outcome["status"] == "error"
+
+
+@pytest.mark.asyncio
 async def test_brief_final_report_idle_stream_emits_processing_heartbeat(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ):

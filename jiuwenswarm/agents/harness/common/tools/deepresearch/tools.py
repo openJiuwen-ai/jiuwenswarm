@@ -2211,9 +2211,10 @@ async def _consume_stream(
     }
     first_sdk_node_ns: int | None = None
     report_delivery_settled = False
+    seen_started = False
 
-    async def send_final_report_progress() -> None:
-        if not state.final_report_started or report_delivery_settled:
+    async def send_processing_progress() -> None:
+        if not seen_started or report_delivery_settled:
             return
         await send(
             {
@@ -2250,7 +2251,7 @@ async def _consume_stream(
             session_id=str(route.get("session_id") or ""),
             conversation_id=conversation_id,
         ),
-        send_final_report_progress,
+        send_processing_progress,
     ):
         try:
             line = raw.decode("utf-8").strip()
@@ -2282,6 +2283,7 @@ async def _consume_stream(
             if is_timed_node and chunk.get("event") != "done":
                 first_sdk_node_ns = time.monotonic_ns()
         if status_value in {"started", "resuming"}:
+            seen_started = True
             outcome_cid = str(chunk.get("conversation_id") or outcome_cid)
             stage = 1
             if action == "resume" and node == "outline_interaction":
@@ -2418,7 +2420,7 @@ async def _consume_stream(
                 if response_content_type == "text/html":
                     primary_path = await _await_with_periodic_progress(
                         _write_report_html(response_content, file_name),
-                        send_final_report_progress,
+                        send_processing_progress,
                     )
                     artifacts = {"html": primary_path}
                 else:
@@ -2429,7 +2431,7 @@ async def _consume_stream(
                             str(chunk.get("conversation_id") or outcome_cid),
                             _normalize_citation_artifacts(chunk),
                         ),
-                        send_final_report_progress,
+                        send_processing_progress,
                     )
                     if isinstance(artifact_result, tuple) and len(artifact_result) == 4:
                         (
