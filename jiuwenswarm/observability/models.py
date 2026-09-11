@@ -53,6 +53,54 @@ class OtlpSpanSnapshotRecordLike(Protocol):
     execution_subject_parent_id: str | None
 
 
+@dataclass(frozen=True, slots=True)
+class SequenceNodeData:
+    """One prefix of a content-addressed sequence."""
+
+    seq_hash: str
+    prev_hash: str | None
+    blob_hash: str
+    depth: int
+
+
+@dataclass(frozen=True, slots=True)
+class AddressedSequenceData:
+    """One restated attribute expressed as a chain, plus what it introduced.
+
+    The GenAI convention has every call state its whole input. Storage keeps
+    one copy of each distinct element and one node per distinct prefix, so a
+    conversation costs what it added rather than what it restated.
+    """
+
+    key: str
+    seq_hash: str
+    depth: int
+    nodes: tuple[SequenceNodeData, ...]
+    blobs: dict[str, bytes]
+
+    @classmethod
+    def from_core_sequence(cls, sequence: object) -> AddressedSequenceData:
+        """Copy one sequence as Agent Core published it."""
+        nodes = tuple(
+            SequenceNodeData(
+                seq_hash=str(node.seq_hash),
+                prev_hash=None if node.prev_hash is None else str(node.prev_hash),
+                blob_hash=str(node.blob_hash),
+                depth=int(node.depth),
+            )
+            for node in getattr(sequence, "nodes", ())
+        )
+        if not nodes:
+            raise ValueError("an addressed sequence states no nodes")
+        return cls(
+            key=str(getattr(sequence, "key", "")),
+            seq_hash=str(sequence.seq_hash),
+            depth=int(sequence.depth),
+            nodes=nodes,
+            blobs={str(k): bytes(v) for k, v in dict(getattr(sequence, "blobs", {})).items()},
+        )
+
+
 class StreamFrameRecordLike(Protocol):
     """Structural contract implemented by the Agent Core stream frame record."""
 
@@ -181,6 +229,11 @@ class TraceRecordData:
     record_revision: int = 1
     observed_time_unix_nano: int = 0
     update_kind: str = "completed"
+    # What this record measures once its references are rebuilt. A reader is
+    # budgeted by what it receives, and it receives the rebuilt span, so the
+    # reference-carrying length of raw_json would understate a page badly.
+    logical_size_bytes: int = 0
+    sequences: tuple[AddressedSequenceData, ...] = ()
 
     @classmethod
     def from_core_record(
@@ -251,6 +304,8 @@ class TraceRecordData:
                 int(getattr(record, "observed_time_unix_nano", end_time) or end_time),
             ),
             update_kind="completed",
+            logical_size_bytes=_logical_size(record, raw_json),
+            sequences=_addressed_sequences(record),
         )
 
     @classmethod
@@ -318,6 +373,8 @@ class TraceRecordData:
             record_revision=revision,
             observed_time_unix_nano=observed_time,
             update_kind=update_kind,
+            logical_size_bytes=_logical_size(record, raw_json),
+            sequences=_addressed_sequences(record),
         )
 
 
@@ -371,6 +428,26 @@ def _normalize_text(value: str | None, *, lowercase: bool = False) -> str | None
     if not normalized:
         return None
     return normalized.lower() if lowercase else normalized
+
+
+def _addressed_sequences(record: object) -> tuple[AddressedSequenceData, ...]:
+    """Copy the sequences a Core record references, if it states any.
+
+    A record that predates content addressing simply states none, and the
+    whole path degrades to storing its payload as it always did.
+    """
+    stated = getattr(record, "sequences", ()) or ()
+    return tuple(AddressedSequenceData.from_core_sequence(item) for item in stated)
+
+
+def _logical_size(record: object, raw_json: bytes) -> int:
+    """Return what a reader receives once this record's references are rebuilt."""
+    stated = getattr(record, "logical_size_bytes", None)
+    try:
+        size = int(stated)
+    except (TypeError, ValueError):
+        return len(raw_json)
+    return size if size > 0 else len(raw_json)
 
 
 def _frame_text(value: str | None) -> str | None:

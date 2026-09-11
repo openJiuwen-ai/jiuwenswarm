@@ -225,6 +225,34 @@ DROP INDEX IF EXISTS idx_trajectory_frames_session_seq;
 -- to be incomplete, both address frames by the span that produced them.
 CREATE INDEX IF NOT EXISTS idx_trajectory_frames_span_sequence
     ON trajectory_stream_frames(trace_id, span_id, sequence);
+
+-- One piece of content, stored once however many records state it. The GenAI
+-- convention has every model call restate its whole input; this is where that
+-- repetition stops. created_at is refreshed on every reference, so content a
+-- live conversation keeps restating never ages out from under it.
+CREATE TABLE IF NOT EXISTS trajectory_blobs (
+    blob_hash  TEXT PRIMARY KEY,
+    content    BLOB NOT NULL,
+    byte_size  INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- One prefix of a sequence, addressed by the content of that prefix:
+--     seq_hash = H(prev_hash || blob_hash)
+-- Equal seq_hash means every element is equal, in order, so a reader knows
+-- nothing changed without fetching anything. Sequences sharing a prefix share
+-- these rows, which is what makes a growing conversation cost its increment.
+CREATE TABLE IF NOT EXISTS trajectory_sequences (
+    seq_hash   TEXT PRIMARY KEY,
+    prev_hash  TEXT,
+    blob_hash  TEXT NOT NULL,
+    depth      INTEGER NOT NULL,
+    created_at INTEGER NOT NULL
+);
+
+-- Walking a chain back to its root follows prev_hash.
+CREATE INDEX IF NOT EXISTS idx_trajectory_sequences_prev
+    ON trajectory_sequences(prev_hash);
 """
 
 # A final span's payload already lives in otlp_span_records, so
@@ -466,6 +494,7 @@ class TrajectoryStore:
                     record.span_id,
                 )
 
+            self._store_addressed_sequences(connection, records)
             frame_watermarks = self._append_stream_frames(connection, frames)
             # A span whose record did not change in this batch can still have
             # produced frames, and a reader learns about those only if that
@@ -681,12 +710,71 @@ class TrajectoryStore:
                 record.created_at,
                 int(resolved_has_error),
                 sqlite3.Binary(stored_raw_json),
-                len(record.raw_json),
+                record.logical_size_bytes or len(record.raw_json),
                 record.raw_sha256,
                 record.update_kind,
             ),
         )
         return True
+
+    @staticmethod
+    def _store_addressed_sequences(
+        connection: sqlite3.Connection,
+        records: Sequence[TraceRecordData],
+    ) -> None:
+        """Persist the content every record references, once per distinct piece.
+
+        Both writes are idempotent by construction: a hash names its own
+        content, so re-inserting is a no-op on the data and a refresh of when
+        that content was last needed.
+
+        Args:
+            connection: The open write transaction.
+            records: Records whose references must resolve afterwards.
+        """
+        blobs: dict[str, tuple[bytes, int]] = {}
+        nodes: dict[str, tuple[str | None, str, int, int]] = {}
+        for record in records:
+            for sequence in record.sequences:
+                for blob_hash, content in sequence.blobs.items():
+                    blobs[blob_hash] = (content, record.created_at)
+                for node in sequence.nodes:
+                    nodes[node.seq_hash] = (
+                        node.prev_hash,
+                        node.blob_hash,
+                        node.depth,
+                        record.created_at,
+                    )
+        if blobs:
+            connection.executemany(
+                """
+                INSERT INTO trajectory_blobs (blob_hash, content, byte_size, created_at)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(blob_hash) DO UPDATE SET created_at = excluded.created_at
+                """,
+                [
+                    (
+                        blob_hash,
+                        sqlite3.Binary(_encode_payload(content)),
+                        len(content),
+                        created_at,
+                    )
+                    for blob_hash, (content, created_at) in blobs.items()
+                ],
+            )
+        if nodes:
+            connection.executemany(
+                """
+                INSERT INTO trajectory_sequences (
+                    seq_hash, prev_hash, blob_hash, depth, created_at
+                ) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(seq_hash) DO UPDATE SET created_at = excluded.created_at
+                """,
+                [
+                    (seq_hash, prev_hash, blob_hash, depth, created_at)
+                    for seq_hash, (prev_hash, blob_hash, depth, created_at) in nodes.items()
+                ],
+            )
 
     @staticmethod
     def _migrate_final_current(connection: sqlite3.Connection) -> int:
@@ -922,6 +1010,18 @@ class TrajectoryStore:
             # with how much the models say. Retention has to reach them.
             connection.execute(
                 "DELETE FROM trajectory_stream_frames WHERE created_at < ?",
+                (cutoff,),
+            )
+            # Addressed content ages by when it was last referenced, not when
+            # it first appeared: a tool definition restated all session long
+            # keeps being refreshed, and so outlives the records that named it
+            # only at the start.
+            connection.execute(
+                "DELETE FROM trajectory_sequences WHERE created_at < ?",
+                (cutoff,),
+            )
+            connection.execute(
+                "DELETE FROM trajectory_blobs WHERE created_at < ?",
                 (cutoff,),
             )
             if cursor.rowcount > 0 or current_cursor.rowcount > 0:
