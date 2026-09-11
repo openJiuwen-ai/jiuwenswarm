@@ -97,7 +97,7 @@ def _enable_auth(router: AgentOSRouterClient, result: AuthResult) -> _FakeAuthCl
 
 
 def _file_api_app(router: AgentOSRouterClient):
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     return build_web_channel_app(channel)
 

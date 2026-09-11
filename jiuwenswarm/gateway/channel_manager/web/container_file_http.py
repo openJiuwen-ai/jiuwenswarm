@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""Gateway WebChannel ``/file-api`` HTTP routes (agentos_router + dual_protocol)."""
+"""Gateway WebChannel ``/file-api`` HTTP routes (agentos_router, same port as ``/ws``)."""
 
 from __future__ import annotations
 
