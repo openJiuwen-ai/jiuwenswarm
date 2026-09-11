@@ -27,12 +27,14 @@ from typing import Any
 
 from openjiuwen.agent_evolving.trajectory import InMemoryTrajectoryRegistry
 from openjiuwen.agent_teams.paths import team_home
+from openjiuwen.agent_teams.schema.deep_agent_spec import RailSpec
 from openjiuwen.agent_teams.schema.team import TeamMemberSpec, TeamRole
 from openjiuwen.harness.schema.extension_spec import AgentTemplateSpec
 
 from jiuwenswarm.agents.swarm.config_specs import build_member_deep_agent_spec
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.registry import (
+    EXPERT_TEAM_DELEGATION_GATE,
     register_swarm_providers,
     TEAM_MEMBER_IDENTITY,
 )
@@ -40,6 +42,8 @@ from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
 from jiuwenswarm.common.utils import get_agent_skills_dir
 from jiuwenswarm.server.runtime.expert.team_contract import (
+    EXPERT_TEAM_DISPATCH_CONTRACT,
+    EXPERT_TEAM_MATERIALIZER_VERSION,
     classify_expert_team_dispatch_contract,
 )
 
@@ -63,6 +67,22 @@ def _expert_group_dispatch_profile(package_dir: Path) -> str:
         classify_expert_team_dispatch_contract(package_dir, payload)
         if isinstance(payload, dict)
         else "legacy"
+    )
+
+
+def _is_dynamic_scheduled_group(package_dir: Path) -> bool:
+    """Return whether *package_dir* declares the current dynamic v3 contract."""
+    try:
+        payload = json.loads(
+            (package_dir / "manifest.json").read_text(encoding="utf-8")
+        )
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError):
+        return False
+    metadata = payload.get("metadata") if isinstance(payload, dict) else None
+    return isinstance(metadata, dict) and (
+        metadata.get("dispatchContract") == EXPERT_TEAM_DISPATCH_CONTRACT
+        and metadata.get("materializerVersion")
+        == EXPERT_TEAM_MATERIALIZER_VERSION
     )
 
 
@@ -389,6 +409,9 @@ def _apply_agent_group(
             "专家团声明了版本化调度契约，但包结构或版本不完整，拒绝降级运行"
         )
     scheduled_graph_team = dispatch_profile == "scheduled"
+    dynamic_scheduled_team = scheduled_graph_team and _is_dynamic_scheduled_group(
+        package_dir
+    )
     # A versioned graph team has a fixed *available* roster; its leader may
     # create a query-specific subset/DAG.  ``predefined`` prevents arbitrary
     # spawning, while ``scheduled`` releases only the tasks the leader selected.
@@ -396,6 +419,16 @@ def _apply_agent_group(
     spec.team_mode = "predefined" if scheduled_graph_team else "hybrid"
     spec.dispatch_mode = "scheduled" if scheduled_graph_team else "autonomous"
     spec.enable_task_verification = False
+    if dynamic_scheduled_team:
+        leader_spec = spec.agents["leader"]
+        rails = list(leader_spec.rails or [])
+        if not any(
+            rail.type == EXPERT_TEAM_DELEGATION_GATE for rail in rails
+        ):
+            rails.append(RailSpec(type=EXPERT_TEAM_DELEGATION_GATE))
+            spec.agents["leader"] = leader_spec.model_copy(
+                update={"rails": rails}
+            )
 
 
 def enrich_team_spec_for_swarm(

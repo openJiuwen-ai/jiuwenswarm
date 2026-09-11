@@ -5,7 +5,7 @@
 当前方案需要把“专家图谱”和“执行图”拆成两层：
 
 1. **专家图谱是静态能力图**：用于发现互补专家、形成可复用的专家团候选，表达“谁可能和谁合作”，不规定每次任务必须走哪条边。
-2. **执行图是 Query 级临时子图**：每次收到用户自然语言后，由主理人从专家团成员中选择 0～N 位，生成本次任务独有的串行、并行或条件分支计划；未选成员明确标记为 skipped。
+2. **执行图是 Query 级临时子图**：每次收到用户自然语言后，由主理人生成本次任务独有的串行、并行或条件分支计划。可执行任务必须选择最小充分的 1～N 位成员；只有团队介绍、能力说明或信息不足需先澄清时允许 0 位。未选成员明确标记为 skipped。
 3. **模型负责语义判断，代码负责协议约束**：Router/Planner 用模型理解 Query 和选择成员；Executor 只执行结构化、已校验的计划，保证幂等、依赖、权限、产物和恢复语义。
 
 WorkBuddy 的专家团包只声明主理人、成员和 Skill 集合，没有把一条固定 DAG 写进包协议。真实运行中，主理人会结合 Query 和中间结果动态选择成员、改变策略并跳过不必要成员。这种灵活性值得参考，但它也暴露了纯提示词编排的不稳定性：成员跳过可以与包内 SOP 矛盾，任务空间切换会出现状态重建，依赖缺失时可能发生多轮澄清。因此，小艺 Work 不应照搬“完全自由的主理人”，而应实现**结构化动态计划 + 确定性执行器 + 可审计重规划**。
@@ -186,9 +186,9 @@ LangGraph Supervisor 由中央 supervisor 根据上下文和任务要求决定�
 
 ---
 
-## 五、当前固定 DAG 方案的 Gap
+## 五、改造前固定 DAG 方案的 Gap
 
-当前实现的优点是确定性强、可恢复、产物边界严格；问题是把“候选团队拓扑”误当成“每次 Query 的必跑拓扑”。代码层面的硬约束包括：
+改造前实现的优点是确定性强、可恢复、产物边界严格；问题是把“候选团队拓扑”误当成“每次 Query 的必跑拓扑”。代码层面的硬约束包括：
 
 1. 物化时要求 `workflow` 完整覆盖 `memberIds`，且每个成员恰好一次；
 2. 要求图连通、只有一个 sink，只有该 sink 可以声明 `finalOutput`；
@@ -605,7 +605,7 @@ Query：`帮我优化一下。`
 | 专家团静态包 | `~/.workbuddy/plugins/marketplaces/experts/plugins/redfox-xiaohongshu-ops-team/.codebuddy-plugin/plugin.json` | 第 9～35 行：Agent 与团队成员；第 16～29 行：13 个 Skill；第 66～71 行：市场成员卡 |
 | 主理人 SOP | `~/.workbuddy/plugins/marketplaces/experts/plugins/redfox-xiaohongshu-ops-team/agents/redfox-xhs-he.md` | 第 17～38 行：成员与三条 Workflow；第 40～61 行：调度规则 |
 | 真实会话 | `~/.workbuddy/projects/Users-wujianyu-WorkBuddy-2026-09-11-09-56-11/c4ed5a94-1951-4024-a8d4-ff2ca4df5084.jsonl` | 第 38 行：只激活灵感猎手；第 46、49、63、70 行：阻塞和成员回传；第 60 行：replan；第 90、106 行：HTML 写入与交付；第 121、132 行：成员选择解释 |
-| 当前固定 DAG | `jiuwenswarm_xiaoyi_expert_graph/jiuwenswarm/server/runtime/expert/team_materializer.py` | 第 216～234 行：一次性完整 DAG；第 294～367 行：全成员、连通、单 sink；第 488～541 行：固定阶段产物边界 |
+| 改造前固定 DAG 基线 | `jiuwenswarm_xiaoyi_expert_graph/jiuwenswarm/server/runtime/expert/team_materializer.py` | 旧版实现曾要求一次性完整 DAG、全成员覆盖、连通与单 sink；当前 v3 已改为主理人按 Query 生成本次任务 DAG |
 
 ### 外部一手资料
 

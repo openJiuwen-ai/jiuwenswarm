@@ -321,6 +321,10 @@ def test_materialize_renders_hard_edge_handoff_contract(tmp_path: Path) -> None:
     assert "最小充分集合（1～N 位）" in leader_rules
     assert "只创建这些任务" in leader_rules
     assert "禁止为了展示协作而调用无关成员" in leader_rules
+    assert "不可绕过的成员执行门禁" in leader_rules
+    assert "每个非澄清请求都必须先选择至少 1 位已注册成员" in leader_rules
+    assert "‘单成员直达’是指只调度 1 位专业成员" in leader_rules
+    assert "不得以‘任务很简单’" in leader_rules
     assert "互不依赖的任务使用空依赖并行" in leader_rules
     assert "图谱路线仅为示例" in leader_rules
     assert ".expert-handoffs/data-insight-brief.json" in leader_rules
@@ -329,6 +333,8 @@ def test_materialize_renders_hard_edge_handoff_contract(tmp_path: Path) -> None:
     assert "逐字复制到已选成员的 task description" in leader_rules
     assert "`data-analyst`" in leader_rules
     assert "`content-designer`" in leader_rules
+    assert "主理人自身不是专业执行成员" in manifest["instruction"]
+    assert "‘单成员直达’只表示调度 1 位成员" in manifest["instruction"]
     non_sink_persona = (
         result / "agents" / "data-analyst" / "EXPERT_TEAM_STAGE.txt"
     ).read_text(encoding="utf-8")

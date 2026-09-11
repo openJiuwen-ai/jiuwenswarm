@@ -18,6 +18,7 @@ from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 
 from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
+from jiuwenswarm.agents.swarm.registry import EXPERT_TEAM_DELEGATION_GATE
 from jiuwenswarm.server.runtime.expert import expert_store as es
 from jiuwenswarm.server.runtime.expert.team_contract import (
     EXPERT_GRAPH_GENERATOR,
@@ -228,6 +229,11 @@ def test_graph_materialized_agent_group_uses_scheduled_dispatch(
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.team_mode == "predefined"
+    leader_rails = [rail.type for rail in (spec.agents["leader"].rails or [])]
+    assert leader_rails.count(EXPERT_TEAM_DELEGATION_GATE) == 1
+    for member_id in ("member1", "member2"):
+        member_rails = [rail.type for rail in (spec.agents[member_id].rails or [])]
+        assert EXPERT_TEAM_DELEGATION_GATE not in member_rails
 
 
 def test_v2_graph_materialized_group_remains_scheduled_compatible(
@@ -251,6 +257,9 @@ def test_v2_graph_materialized_group_remains_scheduled_compatible(
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.team_mode == "predefined"
+    assert EXPERT_TEAM_DELEGATION_GATE not in [
+        rail.type for rail in (spec.agents["leader"].rails or [])
+    ]
     assert "旧版固定路由契约：member1 -> member2" in spec.leader.prompt
     assert (
         "旧版固定路由契约：member1 -> member2"
@@ -317,6 +326,9 @@ def test_legacy_generated_by_only_group_stays_autonomous(
 
     assert spec.dispatch_mode == "autonomous"
     assert spec.team_mode == "hybrid"
+    assert EXPERT_TEAM_DELEGATION_GATE not in [
+        rail.type for rail in (spec.agents["leader"].rails or [])
+    ]
 
 
 def test_member_stage_marker_without_top_contract_fails_closed(

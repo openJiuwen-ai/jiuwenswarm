@@ -49,6 +49,39 @@ def test_team_event_queue_is_bounded() -> None:
     assert queue.maxsize > 0
 
 
+def test_scheduled_expert_query_adds_member_execution_gate() -> None:
+    original = "帮我整理成 6 页 PPT 大纲"
+
+    gated = team_helpers._apply_scheduled_expert_routing_gate(
+        original, SimpleNamespace(dispatch_mode="scheduled")
+    )
+
+    assert gated.startswith("[EXPERT_TEAM_ROUTING_GATE]")
+    assert "必须先从已注册成员中选择最少且足够的至少 1 位" in gated
+    assert "单成员直达=只调度 1 位成员，不是零成员" in gated
+    assert gated.endswith(original)
+
+
+@pytest.mark.parametrize(
+    ("query", "dispatch_mode"),
+    [
+        ("普通问题", "autonomous"),
+        ("$human-reporter claim task", "scheduled"),
+        ("/evolve_list demo", "scheduled"),
+        ("[EXPERT_TEAM_ROUTING_GATE]\nalready wrapped", "scheduled"),
+    ],
+)
+def test_scheduled_expert_query_gate_preserves_control_inputs(
+    query: str, dispatch_mode: str
+) -> None:
+    assert (
+        team_helpers._apply_scheduled_expert_routing_gate(
+            query, SimpleNamespace(dispatch_mode=dispatch_mode)
+        )
+        == query
+    )
+
+
 def test_build_team_request_metadata_preserves_request_fields_and_trace() -> None:
     request = AgentRequest(
         session_id="sess-team-metadata",
@@ -4276,7 +4309,7 @@ async def test_broadcast_team_state_snapshot_task_event_carries_title_content_an
                     {
                         "task_id": "task-trunc",
                         "team_name": "team-snap-trunc",
-                        "title": "T" * 512 + "…(truncated, total 542 chars)",
+                        "title": long_title[:512] + "…(truncated, total 542 chars)",
                         "title_truncated": True,
                         "title_original_size": 542,
                         "content": short_content,
