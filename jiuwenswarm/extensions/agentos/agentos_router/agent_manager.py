@@ -19,6 +19,7 @@ logger = logging.getLogger(__name__)
 AgentCreator = Callable[[AgentInfo], Awaitable[AgentInfo | None]]
 AgentKey = tuple[str, ...]
 BUILTIN_AGENT_TYPE = "jiuwenswarm"
+OPENCLAW_AGENT_TYPE = "openclaw"
 SUPPORTED_AGENT_KEY_FIELDS = frozenset({"user_id", "agent_type", "session_id"})
 DEFAULT_AGENT_KEY_FIELDS = ("user_id", "agent_type")
 
@@ -26,6 +27,11 @@ DEFAULT_AGENT_KEY_FIELDS = ("user_id", "agent_type")
 def is_third_party_agent_type(agent_type: str) -> bool:
     """True when *agent_type* is not the builtin swarm type."""
     return str(agent_type or "").strip().lower() not in {"", BUILTIN_AGENT_TYPE}
+
+
+def is_openclaw_agent_type(agent_type: str) -> bool:
+    """True when *agent_type* is the openclaw type."""
+    return str(agent_type or "").strip().lower() == OPENCLAW_AGENT_TYPE
 
 
 def normalize_agent_key_fields(raw: Any = None) -> tuple[str, ...]:
@@ -64,6 +70,12 @@ def normalize_agent_key_fields(raw: Any = None) -> tuple[str, ...]:
     if "user_id" not in seen or "agent_type" not in seen:
         raise ValueError("agent_key_fields must include user_id and agent_type")
     return tuple(unique)
+
+
+class AgentCreating(RuntimeError):
+    """Another request is already creating this agent; caller should retry."""
+
+    retry_after_seconds = 5
 
 
 class AgentCreatingTimeout(TimeoutError):
@@ -321,6 +333,7 @@ class AgentManager:
         timeout_seconds: float | None = None,
         metadata: dict[str, Any] | None = None,
         acquire: bool = False,
+        wait: bool = True,
     ) -> AgentRuntime:
         """Get a READY Agent runtime or create one, waiting for in-flight creation.
 
@@ -328,6 +341,9 @@ class AgentManager:
         incremented atomically before the snapshot is returned, so the idle
         reaper can never reclaim an agent between resolve and use. Callers
         must pair it with :meth:`release`.
+
+        ``wait=False`` still single-flights create (only one owner), but
+        non-owners raise :class:`AgentCreating` instead of blocking.
         """
 
         key = self._make_key(user_id, agent_type, key_values=key_values)
@@ -371,6 +387,8 @@ class AgentManager:
                         raise AgentCreateFailed(
                             self._failed_message(runtime, key_desc)
                         )
+                    if not wait:
+                        raise AgentCreating(f"AGENT_CREATING: {key_desc}")
                 creator_base = runtime.info.copy()
 
             if owner:
