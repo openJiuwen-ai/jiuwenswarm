@@ -90,6 +90,88 @@ class EventRenderer:
             raw_skills = payload.get("skills")
             self._human_ui.skills(raw_skills if isinstance(raw_skills, list) else [])
             return
+        if view == "session.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_sessions = payload.get("sessions")
+            self._human_ui.sessions(
+                raw_sessions if isinstance(raw_sessions, list) else [],
+                current_session_id=str(payload.get("current_session_id") or ""),
+            )
+            return
+        if view == "model.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_models = payload.get("models")
+            self._human_ui.models(
+                raw_models if isinstance(raw_models, list) else [],
+                current_selection=str(payload.get("current_selection") or ""),
+            )
+            return
+        if view == "model.select" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            model = payload.get("model")
+            self._human_ui.model_selected(
+                model if isinstance(model, dict) else {},
+                persisted=bool(payload.get("persisted")),
+            )
+            return
+        if view == "context.compact" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            self._human_ui.context_compacted(payload)
+            return
+        if view == "session.rewind.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_turns = payload.get("turns")
+            self._human_ui.rewind_turns(
+                raw_turns if isinstance(raw_turns, list) else []
+            )
+            return
+        if view == "session.rewind" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            self._human_ui.session_rewound(payload)
+            return
+        if view == "memory.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_files = payload.get("files")
+            self._human_ui.memory_files(
+                raw_files if isinstance(raw_files, list) else []
+            )
+            return
+        if view == "memory.status" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            self._human_ui.memory_status(payload)
+            return
+        if view == "memory.open" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            self._human_ui.memory_locations(payload)
+            return
+        if view in {"mcp.list", "mcp.show"} and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            server = payload.get("server")
+            if isinstance(server, dict):
+                self._human_ui.mcp_server(server)
+            else:
+                servers = payload.get("servers")
+                self._human_ui.mcp_servers(servers if isinstance(servers, list) else [])
+            return
+        if view == "agents.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            agents = payload.get("agents")
+            self._human_ui.agent_definitions(agents if isinstance(agents, list) else [])
+            return
+        if view == "agents.get" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            agent = payload.get("agent")
+            self._human_ui.agent_definition(agent if isinstance(agent, dict) else {})
+            return
+        if view == "agents.tools" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            tools = payload.get("tools")
+            self._human_ui.agent_tools(tools if isinstance(tools, list) else [])
+            return
+        if view == "permissions.show" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            self._human_ui.permission_snapshot(payload)
+            return
         self._render_human(event)
 
     def finish(

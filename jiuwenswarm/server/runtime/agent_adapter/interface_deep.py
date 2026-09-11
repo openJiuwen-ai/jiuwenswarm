@@ -5600,6 +5600,18 @@ class JiuWenSwarmDeepAdapter:
                     "default model", global_idx, requested, cache_key,
                 )
                 return self._model
+            mapped_model_name, separator, _ = cache_key.rpartition("#")
+            if not separator or mapped_model_name != bare_name:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] model resolve: global index %d "
+                    "for %r maps to model %r (mapped_key=%s), falling back to "
+                    "default model",
+                    global_idx,
+                    requested,
+                    mapped_model_name,
+                    cache_key,
+                )
+                return self._model
             return self._model_cache[cache_key]
 
         # Opencode Zen 免费模型（纯内存态，不入 config.yaml）：从进程内存缓存

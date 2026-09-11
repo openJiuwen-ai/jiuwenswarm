@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Iterable
 from pathlib import Path
 from types import SimpleNamespace
@@ -430,6 +431,360 @@ async def test_describe_session_returns_transport_neutral_persisted_facts(
 
 
 @pytest.mark.asyncio
+async def test_list_sessions_returns_only_channel_owned_stable_facts(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.common import utils
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    sessions_root.mkdir()
+    metadata_by_id = {
+        "process-new": {
+            "channel_id": "process_cli",
+            "title": "new",
+            "mode": "team.code.normal",
+            "work_mode": "code",
+            "model": "model-a",
+            "last_message_at": 20,
+            "message_count": "3",
+        },
+        "web-newer": {
+            "channel_id": "web",
+            "title": "foreign",
+            "last_message_at": 30,
+        },
+        "process-old": {
+            "channel_id": "process_cli",
+            "title": "old",
+            "mode": "agent.work.normal",
+            "work_mode": "work",
+            "last_message_at": 10,
+        },
+    }
+    for session_id, metadata in metadata_by_id.items():
+        session_dir = sessions_root / session_id
+        session_dir.mkdir()
+        (session_dir / "metadata.json").write_text(
+            json.dumps({"session_id": session_id, **metadata}),
+            encoding="utf-8",
+        )
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr(
+        session_metadata,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+
+    async def initialize() -> None:
+        return None
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=initialize,
+    )
+    await runtime.start()
+
+    result = await runtime.list_sessions(
+        channel_id="process_cli",
+        limit=1,
+    )
+
+    assert result == runtime_package.SessionListResult(
+        sessions=(
+            runtime_package.SessionSummary(
+                session_id="process-new",
+                channel_id="process_cli",
+                title="new",
+                mode="team.code.normal",
+                work_mode="code",
+                model="model-a",
+                last_message_at=20.0,
+                message_count=3,
+            ),
+        ),
+        total=2,
+        limit=1,
+        offset=0,
+    )
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_model_catalog_and_selection_are_channel_scoped_and_preserve_time(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.common import config, utils
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    sessions_root = tmp_path / "sessions"
+    process_dir = sessions_root / "process-session"
+    web_dir = sessions_root / "web-session"
+    process_dir.mkdir(parents=True)
+    web_dir.mkdir()
+    process_metadata = {
+        "session_id": "process-session",
+        "channel_id": "process_cli",
+        "model": "old-model",
+        "last_message_at": 123.5,
+    }
+    web_metadata = {
+        "session_id": "web-session",
+        "channel_id": "web",
+        "model": "web-model",
+        "last_message_at": 456.5,
+    }
+    (process_dir / "metadata.json").write_text(
+        json.dumps(process_metadata),
+        encoding="utf-8",
+    )
+    (web_dir / "metadata.json").write_text(
+        json.dumps(web_metadata),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr(
+        session_metadata,
+        "get_agent_sessions_dir",
+        lambda: sessions_root,
+    )
+    monkeypatch.setattr(
+        config,
+        "get_default_models",
+        lambda: [
+            {
+                "is_default": True,
+                "model_client_config": {
+                    "model_name": "default-model",
+                    "client_provider": "openai",
+                    "api_key": "secret",
+                    "api_base": "https://secret.invalid/v1",
+                },
+                "model_config_obj": {},
+            },
+            {
+                "alias": "selected-alias",
+                "model_client_config": {
+                    "model_name": "selected-model",
+                    "client_provider": "openai",
+                    "api_key": "other-secret",
+                    "api_base": "https://other-secret.invalid/v1",
+                },
+                "model_config_obj": {"reasoning_level": "high"},
+            },
+        ],
+    )
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+    )
+    await runtime.start()
+
+    catalog = await runtime.list_models(
+        channel_id="process_cli",
+        session_id="process-session",
+    )
+    selected = await runtime.select_model(
+        channel_id="process_cli",
+        session_id="process-session",
+        selection="selected-alias",
+    )
+
+    assert catalog.current_selection == "default-model"
+    assert selected.model.selection_key == "selected-alias"
+    assert selected.persisted is True
+    updated = json.loads((process_dir / "metadata.json").read_text(encoding="utf-8"))
+    untouched = json.loads((web_dir / "metadata.json").read_text(encoding="utf-8"))
+    assert updated["model"] == "selected-alias"
+    assert updated["last_message_at"] == 123.5
+    assert untouched == web_metadata
+
+    with pytest.raises(runtime_package.ModelCatalogError) as foreign:
+        await runtime.select_model(
+            channel_id="process_cli",
+            session_id="web-session",
+            selection="selected-alias",
+        )
+    # Channel ownership is deliberately non-enumerating: callers must not be
+    # able to distinguish a foreign Session from a missing Session.
+    assert foreign.value.code == "NOT_FOUND"
+    with pytest.raises(runtime_package.ModelCatalogError) as missing:
+        await runtime.list_models(
+            channel_id="process_cli",
+            session_id="missing",
+        )
+    assert missing.value.code == "NOT_FOUND"
+    with pytest.raises(runtime_package.ModelCatalogError) as bad_channel:
+        await runtime.select_model(
+            channel_id=" ",
+            selection="selected-alias",
+        )
+    assert bad_channel.value.code == "BAD_REQUEST"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_capability_catalogs_are_runtime_owned_and_channel_scoped(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
+    agent_result = object()
+    permission_result = object()
+    build_agents = MagicMock(return_value=agent_result)
+    get_agent = MagicMock(return_value="agent")
+    build_tools = MagicMock(return_value="tools")
+    read_permissions = MagicMock(return_value=permission_result)
+    monkeypatch.setattr(runtime_service_module, "build_agent_catalog", build_agents)
+    monkeypatch.setattr(runtime_service_module, "get_catalog_agent", get_agent)
+    monkeypatch.setattr(
+        runtime_service_module,
+        "build_agent_tool_catalog",
+        build_tools,
+    )
+    monkeypatch.setattr(
+        runtime_service_module,
+        "read_permission_snapshot",
+        read_permissions,
+    )
+
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+    )
+    await runtime.start()
+
+    agent_input = runtime_package.AgentCatalogInput(
+        channel_id="process_cli",
+        project_dir=str(project_dir),
+        trusted_dirs=(str(project_dir),),
+    )
+    permission_input = runtime_package.PermissionSnapshotInput(channel_id="process_cli")
+    assert await runtime.list_agent_definitions(agent_input) is agent_result
+    assert await runtime.get_agent_definition(agent_input, name="reviewer") == "agent"
+    assert await runtime.list_agent_definition_tools(agent_input) == "tools"
+    assert await runtime.get_permission_snapshot(permission_input) is permission_result
+    build_agents.assert_called_once()
+    assert build_agents.call_args.args[0].project_dir == project_dir.resolve()
+    assert get_agent.call_args.args[0].project_dir == project_dir.resolve()
+    assert get_agent.call_args.args[1] == "reviewer"
+    assert build_tools.call_args.args[0].project_dir == project_dir.resolve()
+    read_permissions.assert_called_once_with(permission_input)
+
+    bound_project = tmp_path / "bound-project"
+    bound_project.mkdir()
+    owned = runtime_package.SessionDescriptor(
+        session_id="process-session",
+        channel_id="process_cli",
+        mode="agent.code.normal",
+        work_mode="code",
+        project_dir=str(bound_project),
+    )
+    monkeypatch.setattr(runtime, "describe_session", AsyncMock(return_value=owned))
+    session_input = runtime_package.AgentCatalogInput(
+        channel_id="process_cli",
+        session_id="process-session",
+        project_dir=str(tmp_path / "caller-project-must-not-win"),
+        trusted_dirs=(str(tmp_path / "caller-trust-must-not-win"),),
+    )
+    assert await runtime.get_agent_definition(session_input, name="reviewer") == "agent"
+    assert get_agent.call_args.args[0].project_dir == bound_project.resolve()
+
+    foreign = runtime_package.SessionDescriptor(
+        session_id="web-session",
+        channel_id="web",
+        mode="agent.work.normal",
+        work_mode="work",
+    )
+    monkeypatch.setattr(runtime, "describe_session", AsyncMock(return_value=foreign))
+    foreign_agent_input = runtime_package.AgentCatalogInput(
+        channel_id="process_cli",
+        session_id="web-session",
+        project_dir=str(project_dir),
+        trusted_dirs=(str(project_dir),),
+    )
+    foreign_permission_input = runtime_package.PermissionSnapshotInput(
+        channel_id="process_cli",
+        session_id="web-session",
+    )
+    with pytest.raises(runtime_package.AgentCatalogError) as agent_error:
+        await runtime.list_agent_definitions(foreign_agent_input)
+    assert agent_error.value.code == "NOT_FOUND"
+    with pytest.raises(runtime_package.PermissionCatalogError) as permission_error:
+        await runtime.get_permission_snapshot(foreign_permission_input)
+    assert permission_error.value.code == "NOT_FOUND"
+    assert build_agents.call_count == 1
+    assert read_permissions.call_count == 1
+
+    monkeypatch.setattr(runtime, "describe_session", AsyncMock(return_value=None))
+    with pytest.raises(runtime_package.AgentCatalogError) as missing_agent:
+        await runtime.list_agent_definitions(foreign_agent_input)
+    assert missing_agent.value.code == "NOT_FOUND"
+    with pytest.raises(runtime_package.PermissionCatalogError) as missing_permission:
+        await runtime.get_permission_snapshot(foreign_permission_input)
+    assert missing_permission.value.code == "NOT_FOUND"
+
+    with pytest.raises(runtime_package.AgentCatalogError) as empty_agent_channel:
+        await runtime.list_agent_definitions(
+            runtime_package.AgentCatalogInput(
+                channel_id=" ",
+                project_dir=str(project_dir),
+                trusted_dirs=(str(project_dir),),
+            )
+        )
+    assert empty_agent_channel.value.code == "BAD_REQUEST"
+    with pytest.raises(
+        runtime_package.PermissionCatalogError
+    ) as empty_permission_channel:
+        await runtime.get_permission_snapshot(
+            runtime_package.PermissionSnapshotInput(channel_id=" ")
+        )
+    assert empty_permission_channel.value.code == "BAD_REQUEST"
+    await runtime.close()
+
+
+@pytest.mark.asyncio
+async def test_mcp_catalog_runtime_query_is_static_and_secret_free(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    runtime = AgentRuntime(
+        agent_manager=FakeAgentManager(),
+        initializer=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_load_static_mcp_entries",
+        lambda: [
+            {
+                "name": "demo",
+                "transport": "stdio",
+                "enabled": True,
+                "command": "secret-command",
+                "args": ["--token", "secret-token"],
+                "env": {"API_KEY": "secret"},
+            }
+        ],
+    )
+    await runtime.start()
+
+    listed = await runtime.list_mcp_servers()
+    shown = await runtime.show_mcp_server(
+        runtime_package.McpCatalogShowInput(name="demo")
+    )
+
+    assert listed.servers == (shown.server,)
+    serialized = json.dumps(shown.to_dict())
+    assert "secret" not in serialized
+    assert "command" not in serialized
+    assert "env" not in serialized
+    await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_session_operations_require_started_runtime() -> None:
     runtime = AgentRuntime(agent_manager=FakeAgentManager(), initializer=lambda: None)
 
@@ -437,6 +792,29 @@ async def test_session_operations_require_started_runtime() -> None:
         await runtime.create_or_resume_session(channel_id="process_cli")
     with pytest.raises(RuntimeStateError, match="not started"):
         await runtime.describe_session(session_id="process_cli_target")
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.list_sessions(channel_id="process_cli")
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.list_models(channel_id="process_cli")
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.select_model(
+            channel_id="process_cli",
+            selection="model-a",
+        )
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.list_agent_definitions(
+            runtime_package.AgentCatalogInput(
+                channel_id="process_cli",
+                project_dir="D:/project",
+                trusted_dirs=("D:/project",),
+            )
+        )
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.list_mcp_servers()
+    with pytest.raises(RuntimeStateError, match="not started"):
+        await runtime.get_permission_snapshot(
+            runtime_package.PermissionSnapshotInput(channel_id="process_cli")
+        )
 
 
 @pytest.mark.asyncio
@@ -498,9 +876,7 @@ async def test_cancel_and_cleanup_session_are_runtime_operations() -> None:
     assert response.ok is True
     assert response.payload["event_type"] == "chat.interrupt_result"
     assert cleaned is True
-    assert manager.cleanup_session_calls == [
-        ("process_cli", "process-cli-session")
-    ]
+    assert manager.cleanup_session_calls == [("process_cli", "process-cli-session")]
 
 
 @pytest.mark.asyncio
@@ -826,9 +1202,7 @@ async def test_cleanup_session_does_not_require_runtime_start() -> None:
 
     assert cleaned is True
     assert runtime.started is False
-    assert manager.cleanup_session_calls == [
-        ("tui", "disconnect-during-start")
-    ]
+    assert manager.cleanup_session_calls == [("tui", "disconnect-during-start")]
     assert plan.reset_calls == ["disconnect-during-start"]
 
 
@@ -877,9 +1251,7 @@ async def test_cleanup_session_preserves_plan_and_original_failure(
         )
 
     assert caught.value is cleanup_error
-    assert manager.cleanup_session_calls == [
-        ("web", "cleanup-failure-session")
-    ]
+    assert manager.cleanup_session_calls == [("web", "cleanup-failure-session")]
     assert plan.reset_calls == []
 
 
@@ -1217,7 +1589,9 @@ async def test_stale_interrupt_resume_retains_normal_admission() -> None:
 
 
 @pytest.mark.asyncio
-async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission() -> None:
+async def test_interrupt_resume_stream_does_not_wait_for_existing_user_admission() -> (
+    None
+):
     admission = FakeAdmissionController(user_active=True)
     manager = FakeAgentManager()
 
@@ -1328,10 +1702,10 @@ async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
         is_stream=True,
         params=request_params,
     )
-    original_events = await _collect_events(runtime.stream(original, trigger_hook=False))
-    assert [event.event_type for event in original_events] == [
-        "chat.ask_user_question"
-    ]
+    original_events = await _collect_events(
+        runtime.stream(original, trigger_hook=False)
+    )
+    assert [event.event_type for event in original_events] == ["chat.ask_user_question"]
     waiting_snapshot = runtime.session_coordinator.snapshot_session(session_id)
     assert waiting_snapshot is not None
     parent = next(
@@ -1365,9 +1739,7 @@ async def test_interrupt_answer_resumes_session_execution_after_stream_ends(
     snapshot = runtime.session_coordinator.snapshot_session(session_id)
     assert snapshot is not None
     control = next(
-        item
-        for item in snapshot.executions
-        if item.work_kind.value == "control_input"
+        item for item in snapshot.executions if item.work_kind.value == "control_input"
     )
     assert control.parent_execution_id == parent.execution_id
     completed_parent = next(
@@ -1610,6 +1982,7 @@ async def test_agent_server_auto_fork_uses_runtime_public_api() -> None:
         session_id="fork-target",
         title="Forked session",
     )
+
     async def commit_fork(
         _prepared: object,
         *,
@@ -1966,9 +2339,7 @@ async def test_plan_post_error_does_not_replace_agent_error() -> None:
     stream_request.metadata = {"trace_id": "stream-error"}
 
     unary = await runtime.invoke(unary_request)
-    streamed = [
-        event async for event in runtime.stream(stream_request)
-    ]
+    streamed = [event async for event in runtime.stream(stream_request)]
 
     assert unary[-1].event_type == "runtime.error"
     assert unary[-1].ok is False
@@ -2691,9 +3062,15 @@ async def test_agent_server_stop_replaces_closed_one_shot_runtime(monkeypatch) -
     assert recovered_plan_controller.active_sessions == set()
     assert recovered_plan_controller.exited_sessions == set()
     assert recovered_plan_controller.sync_locks.get("session-before-stop") is None
-    assert server_module._plan_active_sessions is recovered_plan_controller.active_sessions
-    assert server_module._plan_exited_sessions is recovered_plan_controller.exited_sessions
-    assert server_module._session_mode_sync_locks is recovered_plan_controller.sync_locks
+    assert (
+        server_module._plan_active_sessions is recovered_plan_controller.active_sessions
+    )
+    assert (
+        server_module._plan_exited_sessions is recovered_plan_controller.exited_sessions
+    )
+    assert (
+        server_module._session_mode_sync_locks is recovered_plan_controller.sync_locks
+    )
     assert previous_lock is not None
 
 

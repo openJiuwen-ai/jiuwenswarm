@@ -34,6 +34,7 @@ def _make_adapter(default_model_name: str = "my-default-model") -> JiuWenSwarmDe
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._model_cache: dict[str, Any] = {}
     adapter._model_name_to_keys: dict[str, list[str]] = {}
+    adapter._global_index_to_cache_key: dict[int, str] = {}
     adapter._model = SimpleNamespace(
         model_config=SimpleNamespace(model_name=default_model_name)
     )
@@ -63,3 +64,27 @@ def test_resolve_model_total_miss_falls_back_with_warning(monkeypatch):
     assert warning_msgs, "total miss must log a warning instead of silent fallback"
     assert "no-such-model" in warning_msgs[0]
     assert "my-default-model" in warning_msgs[0]
+
+
+def test_global_index_name_mismatch_falls_back_with_warning(monkeypatch):
+    """A stale global index must never route to a differently named model."""
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_module
+
+    adapter = _make_adapter()
+    wrong_model = object()
+    adapter._model_cache["other-model#0"] = wrong_model
+    adapter._global_index_to_cache_key[3] = "other-model#0"
+    warning_msgs: list[str] = []
+
+    def _capture_warning(msg: str, *args: Any) -> None:
+        warning_msgs.append(msg % args if args else msg)
+
+    monkeypatch.setattr(interface_module.logger, "warning", _capture_warning)
+
+    model = adapter._resolve_model_by_name("requested-model#3")
+
+    assert model is adapter._model
+    assert model is not wrong_model
+    assert len(warning_msgs) == 1
+    assert "requested-model#3" in warning_msgs[0]
+    assert "other-model" in warning_msgs[0]

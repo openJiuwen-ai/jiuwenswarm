@@ -36,6 +36,7 @@ def _args(**overrides) -> argparse.Namespace:
         "timeout": None,
         "show_reasoning": False,
         "show_tools": False,
+        "model": None,
     }
     values.update(overrides)
     return argparse.Namespace(**values)
@@ -160,6 +161,17 @@ def test_worker_command_marks_runtime_invoke_operation() -> None:
     )
 
     assert command[command.index("--_operation") + 1] == "skills.list"
+
+
+def test_worker_command_carries_request_scoped_model_selection() -> None:
+    command = repl._worker_command(
+        _args(model="model-a#2"),
+        prompt_file="D:/temp/prompt.txt",
+        session_id="process_cli_session_1",
+        session_result_file="D:/temp/session.txt",
+    )
+
+    assert command[command.index("--model") + 1] == "model-a#2"
 
 
 def test_worker_entry_reads_prompt_from_internal_file(monkeypatch, tmp_path) -> None:
@@ -490,9 +502,7 @@ async def test_repl_mode_switch_is_local_and_next_worker_uses_canonical_mode(
     monkeypatch,
     capsys,
 ) -> None:
-    prompts = iter(
-        ("/mode", "/mode team.code", "hello", "/mode plan", "/exit")
-    )
+    prompts = iter(("/mode", "/mode team.code", "hello", "/mode plan", "/exit"))
     calls: list[tuple[str, str, str]] = []
 
     async def fake_read_prompt(_session) -> str:
@@ -576,6 +586,292 @@ async def test_repl_skills_list_uses_fresh_runtime_worker_without_changing_sessi
     output = capsys.readouterr().out
     assert "用法：/skills list" in output
     assert "当前 Runtime 会话：runtime-session" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_sessions_uses_fresh_runtime_worker_without_changing_session(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(("/sessions", "/sessions extra", "/session", "/exit"))
+    calls: list[tuple[str, str | None, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        return 0, "must-not-replace-parent-session"
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert calls == [("", "runtime-session", "session.list")]
+    output = capsys.readouterr().out
+    assert "用法：/sessions" in output
+    assert "当前 Runtime 会话：runtime-session" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_model_uses_fresh_workers_and_applies_selection_to_next_chat(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(
+        (
+            "/model",
+            "/model list",
+            "/model selected-model#2",
+            "hello",
+            "/model too many arguments",
+            "/exit",
+        )
+    )
+    calls: list[tuple[str, str | None, str, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation, str(args.model or "")))
+        if operation == "model.select":
+            args.model = "selected-model#2"
+            args._last_worker_result = {
+                "operation": operation,
+                "session_id": session_id or "",
+                "model_name": args.model,
+            }
+        return 0, session_id or "runtime-session"
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "default")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert calls == [
+        ("", "runtime-session", "model.list", ""),
+        ("", "runtime-session", "model.list", ""),
+        ("selected-model#2", "runtime-session", "model.select", ""),
+        ("hello", "runtime-session", "chat", "selected-model#2"),
+    ]
+    output = capsys.readouterr().out
+    assert "用法：/model [list|<模型名或选择键>]" in output
+
+
+@pytest.mark.asyncio
+async def test_repl_compact_uses_fresh_worker_and_requires_current_session(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(("/compact", "/compact extra", "/exit"))
+    calls: list[tuple[str, str | None, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        return 0, session_id
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert calls == [("", "runtime-session", "context.compact")]
+    assert "用法：/compact" in capsys.readouterr().out
+
+    prompts = iter(("/compact", "/exit"))
+    calls.clear()
+    assert await repl.run_repl(_args(session=None)) == 0
+    assert calls == []
+    assert "当前没有可压缩的会话" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_repl_rewind_lists_and_confirms_mutation_in_fresh_workers(
+    monkeypatch,
+) -> None:
+    prompts = iter(
+        (
+            "/rewind",
+            "/rewind list",
+            "/rewind 2",
+            "/rewind 1 all",
+            "/rewind 3 files",
+            "/exit",
+        )
+    )
+    calls: list[tuple[str, str | None, str]] = []
+    confirmations: list[tuple[int, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        return 0, session_id
+
+    async def fake_confirm(turn_index: int, action: str) -> bool:
+        confirmations.append((turn_index, action))
+        return action != "all"
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_confirm_rewind", fake_confirm)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert confirmations == [(2, "conversation"), (1, "all"), (3, "files")]
+    assert calls == [
+        ("", "runtime-session", "session.rewind.list"),
+        ("", "runtime-session", "session.rewind.list"),
+        ("2 conversation", "runtime-session", "session.rewind"),
+        ("3 files", "runtime-session", "session.rewind"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repl_rewind_rejects_invalid_or_missing_session(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(("/rewind zero", "/rewind 0", "/rewind 1 unknown", "/exit"))
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fail_run_worker(*_args, **_kwargs):
+        pytest.fail("invalid rewind must not start a worker")
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fail_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert capsys.readouterr().out.count("用法：/rewind") == 3
+
+    prompts = iter(("/rewind", "/exit"))
+    assert await repl.run_repl(_args(session=None)) == 0
+    assert "当前没有可回退的会话" in capsys.readouterr().out
+
+
+@pytest.mark.asyncio
+async def test_repl_read_only_capability_commands_use_fresh_workers(
+    monkeypatch,
+) -> None:
+    prompts = iter(
+        (
+            "/mcp",
+            "/mcp list",
+            "/mcp show",
+            "/mcp show demo",
+            "/agents",
+            "/agents list",
+            "/agents get reviewer",
+            "/agents tools",
+            "/permissions",
+            "/permissions list",
+            "/exit",
+        )
+    )
+    calls: list[tuple[str, str | None, str]] = []
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fake_run_worker(
+        args,
+        *,
+        prompt: str,
+        session_id: str | None,
+        operation: str = "chat",
+    ):
+        calls.append((prompt, session_id, operation))
+        return 0, session_id
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fake_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args(session="runtime-session")) == 0
+    assert calls == [
+        ("", "runtime-session", "mcp.list"),
+        ("", "runtime-session", "mcp.list"),
+        ("", "runtime-session", "mcp.show"),
+        ("demo", "runtime-session", "mcp.show"),
+        ("", "runtime-session", "agents.list"),
+        ("", "runtime-session", "agents.list"),
+        ("reviewer", "runtime-session", "agents.get"),
+        ("", "runtime-session", "agents.tools"),
+        ("", "runtime-session", "permissions.show"),
+        ("", "runtime-session", "permissions.show"),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_repl_rejects_mutating_or_incomplete_capability_commands(
+    monkeypatch,
+    capsys,
+) -> None:
+    prompts = iter(
+        (
+            "/mcp add demo",
+            "/agents get",
+            "/agents delete reviewer",
+            "/permissions deny bash",
+            "/exit",
+        )
+    )
+
+    async def fake_read_prompt(_session) -> str:
+        return next(prompts)
+
+    async def fail_run_worker(*_args, **_kwargs):
+        pytest.fail("invalid capability command must not start a worker")
+
+    monkeypatch.setattr(repl, "_read_prompt", fake_read_prompt)
+    monkeypatch.setattr(repl, "_create_prompt_session", lambda: None)
+    monkeypatch.setattr(repl, "_run_worker", fail_run_worker)
+    monkeypatch.setattr(repl, "_resolve_configured_model_name", lambda: "model")
+
+    assert await repl.run_repl(_args()) == 0
+    output = capsys.readouterr().out
+    assert output.count("用法：/mcp") == 1
+    assert output.count("用法：/agents") == 2
+    assert output.count("用法：/permissions") == 1
 
 
 @pytest.mark.asyncio
@@ -845,7 +1141,7 @@ async def test_successful_stateful_worker_without_result_is_reported_as_failure(
     )
 
     assert result == (1, "process_cli_current")
-    assert "Session" in capsys.readouterr().err
+    assert "状态结果" in capsys.readouterr().err
 
 
 def test_mode_switch_updates_the_matching_work_mode() -> None:

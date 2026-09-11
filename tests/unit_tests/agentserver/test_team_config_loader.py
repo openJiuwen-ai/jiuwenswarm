@@ -103,6 +103,93 @@ def test_effective_team_models_select_from_normalized_entries(monkeypatch):
     assert entries[0]["model_client_config"]["custom_headers"] == {"X-Trace-Id": "trace-one"}
 
 
+def test_team_default_model_selection_accepts_unique_alias():
+    """A Process CLI alias selects the same Team fallback model as Agent mode."""
+    config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "model_name": "model-a",
+                        "client_provider": "openai",
+                        "api_base": "https://model-a.example/v1",
+                    },
+                    "model_config_obj": {},
+                },
+                {
+                    "alias": "team-choice",
+                    "model_client_config": {
+                        "model_name": "model-b",
+                        "client_provider": "openai",
+                        "api_base": "https://model-b.example/v1",
+                    },
+                    "model_config_obj": {},
+                },
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}},
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(
+        config_base=config,
+        requested_model_name="team-choice",
+    )
+
+    selected = spec["agents"]["leader"]["model"]["model_client_config"]
+    assert selected["model_name"] == "model-b"
+    assert selected["api_base"] == "https://model-b.example/v1"
+
+
+def test_team_default_model_selection_uses_exact_global_index():
+    """A duplicate model name plus global index selects the exact Team entry."""
+    config = {
+        "models": {
+            "defaults": [
+                {
+                    "model_client_config": {
+                        "model_name": "shared-model",
+                        "client_provider": "openai",
+                        "api_base": "https://first.example/v1",
+                    },
+                    "model_config_obj": {},
+                },
+                {
+                    "model_client_config": {
+                        "model_name": "shared-model",
+                        "client_provider": "openai",
+                        "api_base": "https://second.example/v1",
+                    },
+                    "model_config_obj": {},
+                },
+            ]
+        },
+        **_wrap_modes_team(
+            {
+                "demo_team": {
+                    "team_name": "demo_team",
+                    "agents": {"leader": {}},
+                }
+            }
+        ),
+    }
+
+    spec = load_team_spec_dict(
+        config_base=config,
+        requested_model_name="shared-model#1",
+    )
+
+    selected = spec["agents"]["leader"]["model"]["model_client_config"]
+    assert selected["model_name"] == "shared-model"
+    assert selected["api_base"] == "https://second.example/v1"
+
+
 def test_team_manager_builds_pool_for_single_configured_model(monkeypatch):
     """A single configured model remains available to external fallback."""
     from jiuwenswarm.agents.harness.team import team_manager as team_manager_module

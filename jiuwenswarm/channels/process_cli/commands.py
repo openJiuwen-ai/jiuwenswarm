@@ -65,16 +65,53 @@ _NEW_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
     SlashCommandArgument("--persist-session", "为新会话启用持久记忆"),
 )
 
+_MODEL_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("list", "列出可选聊天模型"),
+)
+
+_REWIND_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("list", "列出可回退的对话轮次"),
+)
+
+_MEMORY_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("status", "查看记忆配置状态"),
+    SlashCommandArgument("list", "列出安全范围内的记忆文件"),
+    SlashCommandArgument("open", "显示记忆目录位置"),
+)
+
+_MCP_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("list", "列出已配置的 MCP 服务"),
+    SlashCommandArgument("show", "查看 MCP 静态配置详情"),
+)
+
+_AGENTS_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("list", "列出自定义 Agent 定义"),
+    SlashCommandArgument("get", "查看 Agent 安全元数据"),
+    SlashCommandArgument("tools", "列出 Agent 可配置工具"),
+)
+
+_PERMISSIONS_ARGUMENTS: tuple[SlashCommandArgument, ...] = (
+    SlashCommandArgument("list", "查看当前有效权限配置"),
+)
+
 
 SLASH_COMMANDS: tuple[SlashCommand, ...] = (
     SlashCommand("/help", "查看所有命令"),
     SlashCommand("/mode", "查看或切换运行模式"),
+    SlashCommand("/model", "查看或选择聊天模型"),
     SlashCommand("/status", "查看当前状态"),
     SlashCommand("/skills", "查看可用技能"),
+    SlashCommand("/compact", "压缩当前会话上下文"),
+    SlashCommand("/rewind", "查看或回退当前会话"),
+    SlashCommand("/memory", "查看记忆状态与文件位置"),
+    SlashCommand("/mcp", "查看 MCP 静态配置"),
+    SlashCommand("/permissions", "查看当前有效权限配置"),
+    SlashCommand("/agents", "查看自定义 Agent 配置"),
     SlashCommand("/new", "创建并切换到新会话"),
     SlashCommand("/resume", "按 ID 恢复会话", aliases=("/continue",)),
     SlashCommand("/branch", "从当前会话创建分支", aliases=("/fork",)),
     SlashCommand("/delete", "删除指定会话"),
+    SlashCommand("/sessions", "列出进程式 CLI 会话"),
     SlashCommand("/session", "查看当前会话"),
     SlashCommand("/exit", "退出 JiuwenSwarm", aliases=("/quit",)),
 )
@@ -130,10 +167,22 @@ def matching_slash_arguments(prefix: str) -> tuple[SlashCommandArgument, ...]:
         return ()
     if command_name == "/mode":
         options = MODE_ARGUMENTS
+    elif command_name == "/model":
+        options = _MODEL_ARGUMENTS
     elif command_name == "/skills":
         options = _SKILLS_ARGUMENTS
     elif command_name == "/new":
         options = _NEW_ARGUMENTS
+    elif command_name == "/rewind":
+        options = _REWIND_ARGUMENTS
+    elif command_name == "/memory":
+        options = _MEMORY_ARGUMENTS
+    elif command_name == "/mcp":
+        options = _MCP_ARGUMENTS
+    elif command_name == "/agents":
+        options = _AGENTS_ARGUMENTS
+    elif command_name == "/permissions":
+        options = _PERMISSIONS_ARGUMENTS
     else:
         return ()
     return tuple(option for option in options if option.value.startswith(fragment))

@@ -59,18 +59,21 @@ from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
 from jiuwenswarm.runtime import (
     AgentRuntime,
+    ContextCompactInput,
     SessionCreateInput,
     SessionForkInput,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
     SessionProvisionError,
     SessionProvisionState,
+    SessionRewindAction,
+    SessionRewindContextPolicy,
+    SessionRewindInput,
     SessionSwitchInput,
 )
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
 from jiuwenswarm.server.runtime.session.session_history import (
-    append_compact_history_records,
     append_history_record,
     enqueue_history_request_completion,
     history_exists,
@@ -708,14 +711,6 @@ Return ONLY a JSON object:
 """
 
 
-def _extract_compact_summary_processor(summary: str) -> str:
-    for line in str(summary or "").splitlines():
-        key, sep, value = line.partition(":")
-        if sep and key.strip().lower() == "processor":
-            return value.strip()
-    return ""
-
-
 def _is_restorable_history_record(record: Any) -> bool:
     """Coarsely filter records that the web history UI cannot use for pagination."""
     if not isinstance(record, dict):
@@ -1027,7 +1022,7 @@ class AgentWebSocketServer:
         # dispatch occurs before the legacy handler chain below.
         self._adapter_registry = AdapterRegistry()
         for adapter in (
-            SessionAdapter(),
+            SessionAdapter(runtime=self._runtime),
             WorkspaceFileAdapter(),
             MemoryAdapter(),
             ProjectAdapter(),
@@ -1732,7 +1727,7 @@ class AgentWebSocketServer:
                 )
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
-                    SessionAdapter(),
+                    SessionAdapter(runtime=self._runtime),
                     WorkspaceFileAdapter(),
                     MemoryAdapter(),
                     ProjectAdapter(),
@@ -4681,74 +4676,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _resolve_rewind_agent(
-        self,
-        channel_id: str,
-        session_id: str | None = None,
-    ) -> tuple[Any, Any] | None:
-        """Return (deep_agent, react_agent) for rewind context rebuild.
-
-        Prefer the live **session-scoped** DeepAgent used by chat.send.
-        Root ``agent.get_instance()`` is a separate DeepAgent whose
-        context_engine / ``_interaction_session`` are not the ones the next
-        user turn will read — updating them leaves the model still seeing
-        rewound turns.
-        """
-        sid = str(session_id or "").strip()
-        agent = (
-            self._agent_manager.get_agent_for_session_nowait(
-                channel_id=channel_id or "default",
-                session_id=sid,
-            )
-            if sid
-            else None
-        )
-        if agent is None:
-            agent = self._agent_manager.get_agent_nowait(
-                channel_id=channel_id or "default"
-            )
-        if agent is None:
-            return None
-
-        deep_agent = None
-        if sid:
-            adapter = self._resolve_adapter(agent)
-            if adapter is not None:
-                # Already session-scoped (rare): use it directly.
-                if getattr(adapter, "_is_session_scoped_adapter", False):
-                    deep_agent = getattr(adapter, "_instance", None)
-                else:
-                    get_cached = getattr(adapter, "_get_cached_session_adapter", None)
-                    if callable(get_cached):
-                        session_adapter = get_cached(sid)
-                        if session_adapter is not None:
-                            deep_agent = getattr(session_adapter, "_instance", None)
-                            if deep_agent is None:
-                                logger.warning(
-                                    "[AgentWS] rewind: cached session adapter has no "
-                                    "instance for session_id=%s",
-                                    sid,
-                                )
-
-        if deep_agent is None:
-            # Fallback: no live session adapter yet (e.g. rewind before any chat
-            # on this process). Checkpointer-only rebuild still helps cold start,
-            # so build the root DeepAgent here if it has not been needed yet.
-            deep_agent = await agent.ensure_instance()
-            if deep_agent is not None and sid:
-                logger.info(
-                    "[AgentWS] rewind: no session-scoped DeepAgent for %s; "
-                    "falling back to root instance",
-                    sid,
-                )
-
-        if deep_agent is None:
-            return None
-        react_agent = deep_agent.react_agent
-        if react_agent is None:
-            return None
-        return (deep_agent, react_agent)
-
     @staticmethod
     def _send_error_response(ws: Any, request: AgentRequest,
                               send_lock: asyncio.Lock, error: str,
@@ -4774,12 +4701,7 @@ class AgentWebSocketServer:
         restore_files: bool = False,
         compact: bool = False,
     ) -> None:
-        """Full rewind: truncate history.json + context_engine + update checkpointer."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            rewind_session,
-            rewind_session_context,
-        )
-
+        """Map the established rewind wire contract to Runtime Public API."""
         params = request.params if isinstance(request.params, dict) else {}
         target_sid = str(params.get("session_id") or request.session_id or "").strip()
         turn_index = params.get("turn_index")
@@ -4808,149 +4730,37 @@ class AgentWebSocketServer:
             return
 
         try:
-            # Step 1: Optionally restore files first
-            restore_result: dict[str, Any] = {}
-            if restore_files:
-                from jiuwenswarm.agents.harness.common.session_ops_service import restore_session_files
-                restore_result = restore_session_files(session_id=target_sid, turn_index=turn_index)
-
-            # Step 2: Truncate history.json (local file operation)
-            # "up_to" direction: keep messages from turn_index onward, summarize the prefix.
-            # compact_partial_session handles this correctly (rewind_session only supports
-            # the "from" direction — keeping the prefix and truncating the tail).
-            if compact and direction == "up_to":
-                from jiuwenswarm.agents.harness.common.session_ops_service import compact_partial_session
-                rewind_result = compact_partial_session(
+            if compact:
+                action = (
+                    SessionRewindAction.COMPACT_UP_TO
+                    if direction == "up_to"
+                    else SessionRewindAction.COMPACT_FROM
+                )
+            elif restore_files:
+                action = SessionRewindAction.CONVERSATION_AND_FILES
+            else:
+                action = SessionRewindAction.CONVERSATION
+            result = await self._execution_runtime().rewind_session(
+                SessionRewindInput(
+                    operation_id=request.request_id,
+                    channel_id=request.channel_id or "default",
                     session_id=target_sid,
                     turn_index=turn_index,
-                    direction="up_to",
-                    llm_summary=compact_summary,
+                    action=action,
+                    context_policy=SessionRewindContextPolicy.LIVE_ONLY,
+                    compact_summary=(
+                        compact_summary
+                        if isinstance(compact_summary, str)
+                        else ""
+                    ),
+                    summarized_count=summarized_count,
                 )
-            else:
-                rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
-
-            # Step 3: Truncate context_engine in-place + persist to checkpointer.
-            # rewind_session_context reads the already-truncated history.json and
-            # converts ALL records to context messages, so it naturally produces the
-            # correct result for both "from" and "up_to" directions.
-            context_ok = False
-            pair = await self._resolve_rewind_agent(
-                request.channel_id or "default",
-                session_id=target_sid,
             )
-            if pair is None:
-                logger.warning(
-                    "[AgentWS] session.rewind: no agent for context rebuild "
-                    "(session_id=%s channel=%s); history truncated but model "
-                    "context may still contain rewound turns",
-                    target_sid,
-                    request.channel_id,
-                )
-            else:
-                deep_agent, _react_agent = pair
-                try:
-                    context_ok = await rewind_session_context(
-                        deep_agent=deep_agent,
-                        session_id=target_sid,
-                        turn_index=turn_index,
-                    )
-                except Exception as exc:
-                    logger.warning(
-                        "[AgentWS] session.rewind context truncation failed: %s", exc,
-                    )
-                if not context_ok:
-                    logger.warning(
-                        "[AgentWS] session.rewind: history truncated but "
-                        "rewind_context=false (session_id=%s)",
-                        target_sid,
-                    )
-
-            payload = {**rewind_result, "rewind_context": context_ok}
-            if restore_files:
-                payload["restored_files"] = restore_result.get("restored_files", [])
-                payload["deleted_files"] = restore_result.get("deleted_files", [])
-                payload["restore_errors"] = restore_result.get("errors", [])
-
-            # Step 4: For compact mode, append boundary + rewind_summary + compact_summary records.
-            # compact_partial_session already writes these for "up_to", so only append for "from".
-            if compact and direction == "from":
-                import uuid as _uuid
-                import time as _time
-
-                request_id = str(_uuid.uuid4())
-                now = _time.time()
-
-                short_text = (
-                    f"Summarized {summarized_count} messages from this point."
-                    if direction == "from"
-                    else f"Summarized {summarized_count} messages up to this point."
-                )
-
-                append_history_record(
-                    session_id=target_sid,
-                    request_id=request_id,
-                    channel_id=request.channel_id or "tui",
-                    role="assistant",
-                    event_type="context.compact_boundary",
-                    content="Conversation compacted",
-                    timestamp=now,
-                    extra={
-                        "compact_metadata": {
-                            "trigger": "manual_rewind",
-                            "direction": direction,
-                            "turn_index": turn_index,
-                            "summarized_messages": summarized_count,
-                        },
-                    },
-                )
-
-                append_history_record(
-                    session_id=target_sid,
-                    request_id=request_id,
-                    channel_id=request.channel_id or "tui",
-                    role="assistant",
-                    event_type="context.rewind_summary",
-                    content=short_text,
-                    timestamp=now + 0.001,
-                    extra={
-                        "compact_metadata": {
-                            "trigger": "manual_rewind",
-                            "direction": direction,
-                            "turn_index": turn_index,
-                            "summarized_messages": summarized_count,
-                        },
-                        "is_compact_summary": True,
-                    },
-                )
-
-                if isinstance(compact_summary, str) and compact_summary.strip():
-                    append_history_record(
-                        session_id=target_sid,
-                        request_id=request_id,
-                        channel_id=request.channel_id or "tui",
-                        role="assistant",
-                        event_type="context.compact_summary",
-                        content=compact_summary.strip(),
-                        timestamp=now + 0.002,
-                        extra={
-                            "compact_metadata": {
-                                "trigger": "manual_rewind",
-                                "direction": direction,
-                                "turn_index": turn_index,
-                                "summarized_messages": summarized_count,
-                            },
-                            "is_compact_summary": True,
-                            "transcript_only": True,
-                        },
-                    )
-
-                payload["summarized_messages"] = summarized_count
-
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload=payload,
+                payload=result.to_dict(),
                 metadata=request.metadata,
             )
         except ValueError as exc:
@@ -4958,7 +4768,10 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc), "code": "BAD_REQUEST"},
+                payload={
+                    "error": str(exc),
+                    "code": getattr(exc, "code", "BAD_REQUEST"),
+                },
                 metadata=request.metadata,
             )
         except Exception as exc:
@@ -4978,12 +4791,7 @@ class AgentWebSocketServer:
     async def _handle_session_rewind_context(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
-        """Truncate history.json + in-memory context_engine for a session."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            rewind_session,
-            rewind_session_context,
-        )
-
+        """Map the legacy context-required rewind to Runtime Public API."""
         params = request.params if isinstance(request.params, dict) else {}
         target_sid = str(params.get("session_id") or request.session_id or "").strip()
         turn_index = params.get("turn_index")
@@ -5008,34 +4816,23 @@ class AgentWebSocketServer:
                 await send_wire_payload(ws, wire)
             return
 
-        pair = await self._resolve_rewind_agent(
-            request.channel_id or "default",
-            session_id=target_sid,
-        )
-        if pair is None:
-            wire = AgentWebSocketServer._send_error_response(
-                ws, request, send_lock, "no agent instance available",
-            )
-            async with send_lock:
-                await send_wire_payload(ws, wire)
-            return
-        deep_agent, _react_agent = pair
-
         try:
-            # Truncate history.json first so rewind_session_context reads the
-            # correct truncated state (the new implementation rebuilds context
-            # from history.json on disk).
-            rewind_result = rewind_session(session_id=target_sid, turn_index=turn_index)
-            context_ok = await rewind_session_context(
-                deep_agent=deep_agent,
-                session_id=target_sid,
-                turn_index=turn_index,
+            result = await self._execution_runtime().rewind_session(
+                SessionRewindInput(
+                    operation_id=request.request_id,
+                    channel_id=request.channel_id or "default",
+                    session_id=target_sid,
+                    turn_index=turn_index,
+                    action=SessionRewindAction.CONVERSATION,
+                    context_policy=SessionRewindContextPolicy.LIVE_ONLY,
+                    require_context=True,
+                )
             )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={**rewind_result, "rewind_context": context_ok},
+                payload=result.to_dict(),
                 metadata=request.metadata,
             )
         except ValueError as exc:
@@ -5043,7 +4840,10 @@ class AgentWebSocketServer:
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc), "code": "BAD_REQUEST"},
+                payload={
+                    "error": str(exc),
+                    "code": getattr(exc, "code", "BAD_REQUEST"),
+                },
                 metadata=request.metadata,
             )
         except Exception as exc:
@@ -6126,139 +5926,42 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_command_compact(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        # 提前 import 观测 span 工具（同 interface_deep 处理）：原 import 若放 try 内，
-        # 中途异常会让 finally 的 close_agent_run_span 因名字未绑定抛 UnboundLocalError。
-        from openjiuwen.harness.observability import (  # noqa: E402
-            close_agent_run_span,
-            open_agent_run_span,
-        )
-
-        from jiuwenswarm.agents.harness.agent_observability import (  # noqa: E402
-            sync_agent_observability,
-        )
-        _run_span: Any = None
-        summary = ""
         try:
             session_id = request.session_id or "default"
             params = request.params or {}
-
             channel_id = request.channel_id or "default"
-            mode, sub_mode, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
-            agent_mode = "agent" if mode == "auto_harness" else mode
-            # 同 command.btw：先按 session_id 找承载会话的 agent，按 mode 兜底会命中影子 agent。
-            agent = self._agent_manager.get_agent_for_session_nowait(
-                channel_id=channel_id,
-                session_id=session_id,
-            )
-            if agent is None:
-                agent = await self._agent_manager.get_agent(
-                    channel_id=channel_id,
-                    mode=agent_mode,
-                    project_dir=resolve_request_project_dir(request),
-                    sub_mode=sub_mode,
+
+            async def publish_runtime_event(event: RuntimeEvent) -> None:
+                await self.send_push(
+                    {
+                        "channel_id": event.channel_id,
+                        "session_id": event.session_id,
+                        "payload": event.payload,
+                    }
                 )
 
-            if agent is None:
-                raise ValueError("Failed to get agent")
-
-            # /compact 同 /btw：非 chat 通道 RPC 需先 ensure_instance 懒构建根 DeepAgent，
-            # 否则 self._instance 为 None 时 compress_context 会直接 noop（误报"无需压缩"）。
-            await agent.ensure_instance()
-
-            # 手动压缩发生在 agent turn 之外，本无录制中的 root span，compaction.completed
-            # 轨迹事件会因 ContextCompressionObservabilityBridge 找不到 parent 而被丢弃。
-            # 与 chat 流式路径一致，先同步 observability 再开一个 run root span（session-keyed
-            # registry），使压缩状态回调能解析到 parent，事件进入轨迹 v2 展示。
-            sync_agent_observability()
-            execution_subject = None
-            if is_team_mode(canonical_mode):
-                from jiuwenswarm.agents.harness.team import get_team_manager
-
-                team_agent = get_team_manager(channel_id).get_team_agent(session_id)
-                if team_agent is not None:
-                    execution_subject = team_agent.observability_execution_subject(session_id)
-            _run_span = open_agent_run_span(
-                session_id=session_id,
-                mode=params.get("mode", "agent"),
-                request_id=request.request_id,
-                run_id=request.request_id,
-                turn_id=request.request_id,
-                execution_subject=execution_subject,
-            )
-            try:
-                result_data = await agent.compress_context(session_id=session_id, return_state=True)
-
-                result = result_data.get("result")
-                stats = result_data.get("stats")
-                state = result_data.get("state") if isinstance(result_data.get("state"), dict) else {}
-                summary = str(
-                    result_data.get("compact_summary")
-                    or state.get("compact_summary")
-                    or result_data.get("summary")
-                    or ""
-                ).strip()
-
-                if result == "compressed" and stats:
-                    before_tokens = stats.get("raw_total_tokens", 0)
-                    after_tokens = stats.get("total_tokens", 0)
-                    if before_tokens > 0:
-                        rate = round((before_tokens - after_tokens) / before_tokens * 100, 1)
-                    else:
-                        rate = 0
-                    stats_summary = (
-                        f"\u2713 Context compacted: {after_tokens / 1000:.1f}K/"
-                        f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
-                    )
-
-                    if summary:
-                        append_compact_history_records(
-                            session_id=session_id,
-                            request_id=request.request_id,
-                            channel_id=channel_id,
-                            summary=summary,
-                            timestamp=_dt.datetime.now().timestamp(),
-                            trigger="manual",
-                            stats=stats,
-                            mode=params.get("mode", "agent"),
-                        )
-                        compression_state_payload: dict[str, Any] = {
-                            **state,
-                            "event_type": "context.compression_state",
-                            "status": state.get("status") or "completed",
-                            "phase": state.get("phase") or "active_compress",
-                            "processor": state.get("processor") or _extract_compact_summary_processor(summary),
-                            "before": state.get("before") or {"tokens": before_tokens},
-                            "after": state.get("after") or {"tokens": after_tokens},
-                            "saved": state.get("saved") or {
-                                "tokens": before_tokens - after_tokens,
-                                "percent": rate,
-                            },
-                            "summary": stats_summary,
-                            "compact_summary": summary,
-                        }
-                        await self.send_push({
-                            "channel_id": channel_id,
-                            "session_id": session_id,
-                            "payload": compression_state_payload,
-                        })
-
-                resp = AgentResponse(
+            result = await self._execution_runtime().compact_context(
+                ContextCompactInput(
                     request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={
-                        "result": result,
-                        "stats": stats,
-                        **({"summary": summary} if summary else {}),
-                        **({"compact_summary": summary} if summary else {}),
-                    },
-                )
-            finally:
-                close_agent_run_span(
-                    _run_span,
+                    channel_id=channel_id,
                     session_id=session_id,
-                    output=summary,
-                )
+                    mode=params.get("mode", "agent"),
+                    project_dir=resolve_request_project_dir(request),
+                ),
+                on_event=publish_runtime_event,
+            )
+            summary = result.summary
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=True,
+                payload={
+                    "result": result.result,
+                    "stats": result.stats,
+                    **({"summary": summary} if summary else {}),
+                    **({"compact_summary": summary} if summary else {}),
+                },
+            )
         except Exception as e:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] command.compact failed: %s", e)
             resp = AgentResponse(

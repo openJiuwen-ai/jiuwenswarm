@@ -1,4 +1,4 @@
-"""_resolve_rewind_agent must prefer the session-scoped DeepAgent used by chat."""
+"""Runtime rewind resolution prefers the Session-scoped DeepAgent used by chat."""
 
 from __future__ import annotations
 
@@ -10,10 +10,10 @@ import pytest
 
 
 @pytest.fixture
-def server_cls():
-    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+def runtime_cls():
+    from jiuwenswarm.runtime import AgentRuntime
 
-    return AgentWebSocketServer
+    return AgentRuntime
 
 
 def _returning(value):
@@ -29,7 +29,7 @@ def _returning(value):
     return _ensure_instance
 
 
-def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
+def test_resolve_rewind_agent_prefers_session_scoped_instance(runtime_cls):
     root_deep = MagicMock(name="root_deep")
     root_deep.react_agent = MagicMock(name="root_react")
 
@@ -48,20 +48,26 @@ def test_resolve_rewind_agent_prefers_session_scoped_instance(server_cls):
     agent.get_instance = lambda: root_deep
     agent.ensure_instance = _returning(root_deep)
 
-    server = MagicMock()
-    server._agent_manager = MagicMock()
-    server._agent_manager.get_agent_for_session_nowait.return_value = agent
-    server._agent_manager.get_agent_nowait.return_value = agent
-    server._resolve_adapter = server_cls._resolve_adapter
+    runtime = runtime_cls.__new__(runtime_cls)
+    runtime._agent_manager = MagicMock()
+    runtime._agent_manager.get_agent_for_session_nowait.return_value = agent
+    runtime._agent_manager.get_agent_nowait.return_value = agent
 
-    pair = asyncio.run(server_cls._resolve_rewind_agent(server, "tui", session_id="sess-1"))
+    pair = asyncio.run(
+        runtime._resolve_rewind_context_agent(
+            channel_id="tui",
+            session_id="sess-1",
+            descriptor=None,
+            ensure=False,
+        )
+    )
     assert pair is not None
     deep, react = pair
     assert deep is session_deep
     assert react is session_deep.react_agent
 
 
-def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_cls):
+def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(runtime_cls):
     root_deep = MagicMock(name="root_deep")
     root_deep.react_agent = MagicMock(name="root_react")
 
@@ -76,19 +82,25 @@ def test_resolve_rewind_agent_falls_back_to_root_when_no_session_adapter(server_
     agent.get_instance = lambda: root_deep
     agent.ensure_instance = _returning(root_deep)
 
-    server = MagicMock()
-    server._agent_manager = MagicMock()
-    server._agent_manager.get_agent_for_session_nowait.return_value = None
-    server._agent_manager.get_agent_nowait.return_value = agent
-    server._resolve_adapter = server_cls._resolve_adapter
+    runtime = runtime_cls.__new__(runtime_cls)
+    runtime._agent_manager = MagicMock()
+    runtime._agent_manager.get_agent_for_session_nowait.return_value = None
+    runtime._agent_manager.get_agent_nowait.return_value = agent
 
-    pair = asyncio.run(server_cls._resolve_rewind_agent(server, "tui", session_id="missing"))
+    pair = asyncio.run(
+        runtime._resolve_rewind_context_agent(
+            channel_id="tui",
+            session_id="missing",
+            descriptor=None,
+            ensure=False,
+        )
+    )
     assert pair is not None
     deep, _react = pair
     assert deep is root_deep
 
 
-def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls):
+def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(runtime_cls):
     from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
     wrong_root = MagicMock(name="wrong_root")
@@ -129,13 +141,16 @@ def test_resolve_rewind_agent_finds_session_owner_across_cached_roots(server_cls
         "agent::": wrong_agent,
         "code:normal:D:/workspace": code_agent,
     }
-    server = SimpleNamespace(
-        _agent_manager=manager,
-        _resolve_adapter=server_cls._resolve_adapter,
-    )
+    runtime = runtime_cls.__new__(runtime_cls)
+    runtime._agent_manager = manager
 
     pair = asyncio.run(
-        server_cls._resolve_rewind_agent(server, "tui", session_id="sess-code")
+        runtime._resolve_rewind_context_agent(
+            channel_id="tui",
+            session_id="sess-code",
+            descriptor=None,
+            ensure=False,
+        )
     )
     assert pair is not None
     deep, react = pair

@@ -17,7 +17,55 @@ from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.context_compaction import (
+    ContextCompactInput,
+    ContextCompactResult,
+)
+from jiuwenswarm.runtime.agent_catalog import (
+    AgentCatalogInput,
+    AgentCatalogResult,
+    AgentDescriptor,
+    AgentToolDescriptor,
+    AgentToolsResult,
+)
+from jiuwenswarm.runtime.mcp_catalog import (
+    McpCatalogListInput,
+    McpCatalogListResult,
+    McpCatalogShowInput,
+    McpCatalogShowResult,
+    McpServerDescriptor,
+)
+from jiuwenswarm.runtime.model_catalog import (
+    ModelCatalogError,
+    ModelCatalogResult,
+    ModelSelectionResult,
+    RuntimeModelDescriptor,
+)
+from jiuwenswarm.runtime.memory_catalog import (
+    MemoryListResult,
+    MemoryLocationsResult,
+    MemoryScopeInput,
+    MemoryStatusResult,
+)
+from jiuwenswarm.runtime.permission_catalog import (
+    PermissionCatalogError,
+    PermissionLayerSnapshot,
+    PermissionRuleSnapshot,
+    PermissionSnapshotInput,
+    PermissionSnapshotResult,
+    PermissionToolSnapshot,
+)
 from jiuwenswarm.runtime.request import resolve_request_runtime_mode
+from jiuwenswarm.runtime.session_catalog import SessionListResult, SessionSummary
+from jiuwenswarm.runtime.session_rewind import (
+    SessionRewindAction,
+    SessionRewindContextPolicy,
+    SessionRewindInput,
+    SessionRewindListInput,
+    SessionRewindListResult,
+    SessionRewindResult,
+    SessionRewindTurn,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateResult,
     SessionDeleteResult,
@@ -215,6 +263,174 @@ class SlowSkillsClient(FakeClient):
         return []
 
 
+class SessionsClient(FakeClient):
+    async def list_sessions(self, *, channel_id, limit=20, offset=0):
+        self.calls.append(f"list:{channel_id}:{limit}:{offset}")
+        return SessionListResult(
+            sessions=(
+                SessionSummary(
+                    session_id="process_cli_current",
+                    channel_id="process_cli",
+                    title="当前会话",
+                    mode="agent.code.normal",
+                    work_mode="code",
+                ),
+            ),
+            total=1,
+            limit=limit,
+            offset=offset,
+        )
+
+
+class ModelsClient(FakeClient):
+    descriptor = RuntimeModelDescriptor(
+        selection_key="reasoning-model",
+        display_name="reasoning-model",
+        model_name="provider/model",
+        provider="openai",
+        reasoning_level="high",
+        is_default=True,
+        is_current=True,
+    )
+
+    async def list_models(
+        self,
+        *,
+        channel_id,
+        session_id=None,
+        selected_model="",
+    ):
+        self.calls.append(f"models:{channel_id}:{session_id or ''}:{selected_model}")
+        return ModelCatalogResult(
+            models=(self.descriptor,),
+            current_selection=self.descriptor.selection_key,
+            current_display_name=self.descriptor.display_name,
+        )
+
+    async def select_model(self, *, channel_id, selection, session_id=None):
+        self.calls.append(f"select:{channel_id}:{session_id or ''}:{selection}")
+        return ModelSelectionResult(
+            model=self.descriptor,
+            session_id=session_id or "",
+            persisted=bool(session_id),
+        )
+
+
+class MemoryClient(FakeClient):
+    async def list_memory_sources(self, memory_input):
+        self.calls.append(f"memory:list:{memory_input.session_id or ''}")
+        return MemoryListResult(
+            files=(),
+            mode=memory_input.mode,
+            project_dir=memory_input.project_dir,
+        )
+
+    async def get_memory_status(self, memory_input):
+        self.calls.append(f"memory:status:{memory_input.session_id or ''}")
+        return MemoryStatusResult(
+            current_mode=memory_input.mode,
+            storage_mode="local",
+            engine="builtin",
+            enabled=True,
+            proactive=False,
+            forbidden_enabled=False,
+            auto_memory_enabled=True,
+            auto_coding_memory=True,
+        )
+
+    async def get_memory_locations(self, memory_input):
+        self.calls.append(f"memory:open:{memory_input.session_id or ''}")
+        return MemoryLocationsResult(
+            agent_memory_dir="D:/memory/agent",
+            project_dir=memory_input.project_dir,
+            project_memory_dir=memory_input.project_dir,
+            coding_memory_dir="D:/memory/coding",
+            user_memory_dir="D:/memory/user",
+        )
+
+
+class CapabilityCatalogClient(FakeClient):
+    agent = AgentDescriptor(
+        name="reviewer",
+        description="Review changes",
+        source="project",
+        model=None,
+        tools=("read_file",),
+        disallowed_tools=(),
+        color=None,
+        permission_mode="ask",
+        memory_scope=None,
+        shadowed_by=None,
+        enabled=True,
+        when_to_use="Before merge",
+        max_iterations=3,
+        skills=("review",),
+    )
+    mcp_server = McpServerDescriptor(
+        name="demo",
+        transport="stdio",
+        default_enabled=True,
+        connection_state="configured",
+    )
+    permission_layer = PermissionLayerSnapshot(
+        enabled=True,
+        tools=(PermissionToolSnapshot(name="bash", level="ask"),),
+        rules=(
+            PermissionRuleSnapshot(
+                rule_id="deny-delete",
+                tools=("bash",),
+                pattern="rm *",
+                action="deny",
+            ),
+        ),
+    )
+
+    async def list_agent_definitions(self, catalog_input):
+        self.calls.append(f"agents:list:{catalog_input.session_id or ''}")
+        return AgentCatalogResult(agents=(self.agent,))
+
+    async def get_agent_definition(self, catalog_input, *, name):
+        self.calls.append(f"agents:get:{catalog_input.session_id or ''}:{name}")
+        return self.agent
+
+    async def list_agent_definition_tools(self, catalog_input):
+        self.calls.append(f"agents:tools:{catalog_input.session_id or ''}")
+        return AgentToolsResult(
+            tools=(
+                AgentToolDescriptor(
+                    name="Read",
+                    internal_name="read_file",
+                    description="Read a file",
+                    group="filesystem",
+                ),
+            ),
+            groups=("filesystem",),
+            disallowed_for_subagents=(),
+        )
+
+    async def list_mcp_servers(self, catalog_input=None):
+        enabled_only = bool(catalog_input and catalog_input.enabled_only)
+        self.calls.append(f"mcp:list:{enabled_only}")
+        return McpCatalogListResult(servers=(self.mcp_server,))
+
+    async def show_mcp_server(self, catalog_input):
+        self.calls.append(f"mcp:show:{catalog_input.name}")
+        return McpCatalogShowResult(server=self.mcp_server)
+
+    async def get_permission_snapshot(self, snapshot_input):
+        self.calls.append(
+            f"permissions:{snapshot_input.channel_id}:{snapshot_input.session_id or ''}"
+        )
+        return PermissionSnapshotResult(
+            scope="session" if snapshot_input.session_id else "host",
+            session_id=snapshot_input.session_id or "",
+            global_layer=self.permission_layer,
+            user_layer=PermissionLayerSnapshot(enabled=None, tools=(), rules=()),
+            session_layer=PermissionLayerSnapshot(enabled=None, tools=(), rules=()),
+            effective=self.permission_layer,
+        )
+
+
 class _PreparedSession:
     def __init__(self, kind: str, result) -> None:
         self.kind = kind
@@ -282,8 +498,7 @@ class SessionOperationClient(FakeClient):
 
     async def prepare_session_fork(self, provision_input):
         self.calls.append(
-            f"prepare:fork:{provision_input.source_session_id}:"
-            f"{provision_input.title}"
+            f"prepare:fork:{provision_input.source_session_id}:{provision_input.title}"
         )
         return _PreparedSession(
             "fork",
@@ -373,6 +588,7 @@ def _args(tmp_path: Path, **overrides) -> argparse.Namespace:
         "timeout": None,
         "show_reasoning": False,
         "show_tools": False,
+        "model": None,
         "_interactive_worker": False,
         "_session_result_file": None,
         "_worker_result_file": None,
@@ -419,6 +635,36 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
             calls.append(("describe", session_id))
             return "descriptor"
 
+        async def list_sessions(self, *, channel_id, limit, offset):
+            calls.append(("list", (channel_id, limit, offset)))
+            return "sessions"
+
+        async def list_models(
+            self,
+            *,
+            channel_id,
+            session_id,
+            selected_model,
+        ):
+            calls.append(("models", (channel_id, session_id, selected_model)))
+            return "models"
+
+        async def select_model(self, *, channel_id, selection, session_id):
+            calls.append(("select_model", (channel_id, selection, session_id)))
+            return "selected"
+
+        async def compact_context(self, compact_input):
+            calls.append(("compact", compact_input))
+            return "compacted"
+
+        async def list_rewind_turns(self, rewind_input):
+            calls.append(("rewind_list", rewind_input))
+            return "rewind turns"
+
+        async def rewind_session(self, rewind_input):
+            calls.append(("rewind", rewind_input))
+            return "rewound"
+
         async def prepare_session_create(self, value):
             calls.append(("create", value))
             return prepared
@@ -450,6 +696,40 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
     assert await client.describe_session(session_id="process_cli_target") == (
         "descriptor"
     )
+    assert (
+        await client.list_sessions(
+            channel_id="process_cli",
+            limit=10,
+            offset=2,
+        )
+        == "sessions"
+    )
+    assert (
+        await client.list_models(
+            channel_id="process_cli",
+            session_id="process_cli_target",
+            selected_model="model-a",
+        )
+        == "models"
+    )
+    assert (
+        await client.select_model(
+            channel_id="process_cli",
+            selection="model-b",
+            session_id="process_cli_target",
+        )
+        == "selected"
+    )
+    compact_input = ContextCompactInput(
+        request_id="compact-request",
+        channel_id="process_cli",
+        session_id="process_cli_target",
+    )
+    assert await client.compact_context(compact_input) == "compacted"
+    rewind_list_input = object()
+    rewind_input = object()
+    assert await client.list_rewind_turns(rewind_list_input) == "rewind turns"
+    assert await client.rewind_session(rewind_input) == "rewound"
     assert await client.prepare_session_create(create_input) is prepared
     assert await client.prepare_session_switch(switch_input) is prepared
     assert await client.prepare_session_fork(fork_input) is prepared
@@ -470,6 +750,12 @@ async def test_runtime_client_session_methods_only_delegate_to_runtime() -> None
     )
     assert [name for name, _value in calls] == [
         "describe",
+        "list",
+        "models",
+        "select_model",
+        "compact",
+        "rewind_list",
+        "rewind",
         "create",
         "switch",
         "fork",
@@ -501,7 +787,9 @@ async def test_runtime_client_close_drains_team_work_before_runtime() -> None:
 
 
 @pytest.mark.asyncio
-async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> None:
+async def test_runtime_client_close_attempts_every_stage_after_cleanup_failure() -> (
+    None
+):
     calls: list[str] = []
 
     class RuntimeStub:
@@ -1076,6 +1364,957 @@ async def test_skills_list_timeout_closes_without_chat_cleanup(
 
 
 @pytest.mark.asyncio
+async def test_sessions_list_uses_runtime_query_without_chat_session_or_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(app, "InProcessRuntimeClient", SessionsClient)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session="process_cli_current",
+            output="json",
+            _operation="session.list",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    client = SessionsClient.latest
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client is not None
+    assert client.calls == ["start", "list:process_cli:20:0", "close"]
+    assert document["events"][0]["payload"] == {
+        "event_type": "session.listed",
+        "sessions": [
+            {
+                "session_id": "process_cli_current",
+                "channel_id": "process_cli",
+                "title": "当前会话",
+                "mode": "agent.code.normal",
+                "work_mode": "code",
+                "project_id": "",
+                "project_dir": "",
+                "model": "",
+                "created_at": 0.0,
+                "last_message_at": 0.0,
+                "message_count": 0,
+            }
+        ],
+        "total": 1,
+        "limit": 20,
+        "offset": 0,
+        "current_session_id": "process_cli_current",
+    }
+
+
+@pytest.mark.asyncio
+async def test_model_list_uses_runtime_query_and_never_exposes_credentials(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    monkeypatch.setattr(app, "InProcessRuntimeClient", ModelsClient)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session="process_cli_current",
+            model="reasoning-model",
+            output="json",
+            _operation="model.list",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    client = ModelsClient.latest
+    document = json.loads(stdout.getvalue())
+    serialized = json.dumps(document, ensure_ascii=False)
+    assert result == 0
+    assert client is not None
+    assert client.calls == [
+        "start",
+        "models:process_cli:process_cli_current:reasoning-model",
+        "close",
+    ]
+    assert document["events"][0]["payload"]["event_type"] == "model.listed"
+    assert document["events"][0]["payload"]["current_selection"] == ("reasoning-model")
+    assert "api_key" not in serialized
+    assert "api_base" not in serialized
+    assert not any(call.startswith("cleanup:") for call in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_runtime_client_memory_methods_only_delegate_to_runtime() -> None:
+    calls: list[tuple[str, MemoryScopeInput]] = []
+    memory_input = MemoryScopeInput(
+        channel_id="process_cli",
+        project_dir="D:/project",
+        trusted_dirs=("D:/project",),
+    )
+
+    class RuntimeStub:
+        async def list_memory_sources(self, value):
+            calls.append(("list", value))
+            return "listed"
+
+        async def get_memory_status(self, value):
+            calls.append(("status", value))
+            return "status"
+
+        async def get_memory_locations(self, value):
+            calls.append(("open", value))
+            return "locations"
+
+    client = InProcessRuntimeClient(RuntimeStub())
+
+    assert await client.list_memory_sources(memory_input) == "listed"
+    assert await client.get_memory_status(memory_input) == "status"
+    assert await client.get_memory_locations(memory_input) == "locations"
+    assert calls == [
+        ("list", memory_input),
+        ("status", memory_input),
+        ("open", memory_input),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_runtime_client_capability_catalog_methods_only_delegate() -> None:
+    calls: list[tuple[str, object]] = []
+    agent_input = AgentCatalogInput(
+        channel_id="process_cli",
+        project_dir="D:/project",
+        trusted_dirs=("D:/project",),
+    )
+    mcp_list_input = McpCatalogListInput(enabled_only=True)
+    mcp_show_input = McpCatalogShowInput(name="demo")
+    permission_input = PermissionSnapshotInput(channel_id="process_cli")
+
+    class RuntimeStub:
+        async def list_agent_definitions(self, value):
+            calls.append(("agents.list", value))
+            return "agents"
+
+        async def get_agent_definition(self, value, *, name):
+            calls.append(("agents.get", (value, name)))
+            return "agent"
+
+        async def list_agent_definition_tools(self, value):
+            calls.append(("agents.tools", value))
+            return "tools"
+
+        async def list_mcp_servers(self, value=None):
+            calls.append(("mcp.list", value))
+            return "mcp-servers"
+
+        async def show_mcp_server(self, value):
+            calls.append(("mcp.show", value))
+            return "mcp-server"
+
+        async def get_permission_snapshot(self, value):
+            calls.append(("permissions.show", value))
+            return "permissions"
+
+    client = InProcessRuntimeClient(RuntimeStub())
+
+    assert await client.list_agent_definitions(agent_input) == "agents"
+    assert await client.get_agent_definition(agent_input, name="reviewer") == "agent"
+    assert await client.list_agent_definition_tools(agent_input) == "tools"
+    assert await client.list_mcp_servers(mcp_list_input) == "mcp-servers"
+    assert await client.show_mcp_server(mcp_show_input) == "mcp-server"
+    assert await client.get_permission_snapshot(permission_input) == "permissions"
+    assert calls == [
+        ("agents.list", agent_input),
+        ("agents.get", (agent_input, "reviewer")),
+        ("agents.tools", agent_input),
+        ("mcp.list", mcp_list_input),
+        ("mcp.show", mcp_show_input),
+        ("permissions.show", permission_input),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "prompt", "expected_event", "expected_call"),
+    [
+        ("agents.list", "", "agents.listed", "agents:list:process_cli_current"),
+        (
+            "agents.get",
+            "reviewer",
+            "agents.detail",
+            "agents:get:process_cli_current:reviewer",
+        ),
+        (
+            "agents.tools",
+            "",
+            "agents.tools",
+            "agents:tools:process_cli_current",
+        ),
+        ("mcp.list", "", "mcp.listed", "mcp:list:False"),
+        ("mcp.show", "demo", "mcp.detail", "mcp:show:demo"),
+        ("mcp.show", "", "mcp.listed", "mcp:list:True"),
+        (
+            "permissions.show",
+            "",
+            "permissions.snapshot",
+            "permissions:process_cli:process_cli_current",
+        ),
+    ],
+)
+async def test_capability_catalog_commands_use_one_runtime_without_chat_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    prompt: str,
+    expected_event: str,
+    expected_call: str,
+) -> None:
+    client = CapabilityCatalogClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt=prompt,
+            session="process_cli_current",
+            output="json",
+            _operation=operation,
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client.calls == ["start", expected_call, "close"]
+    assert document["events"][0]["payload"]["event_type"] == expected_event
+    assert not any(
+        call.startswith(("session:", "cleanup:", "stream:")) for call in client.calls
+    )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "prompt"),
+    [
+        ("agents.list", "unexpected"),
+        ("agents.get", ""),
+        ("agents.tools", "unexpected"),
+        ("mcp.list", "unexpected"),
+        ("mcp.show", "too many"),
+        ("permissions.show", "deny bash"),
+    ],
+)
+async def test_capability_catalog_rejects_bad_syntax_before_query(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    prompt: str,
+) -> None:
+    client = CapabilityCatalogClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt=prompt,
+            output="json",
+            _operation=operation,
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == ["start", "close"]
+    assert document["events"][0]["payload"]["event_type"] == "runtime.error"
+    assert document["events"][0]["metadata"]["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+async def test_permission_snapshot_has_human_output_without_chat_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = CapabilityCatalogClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            output="human",
+            _operation="permissions.show",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    text = stdout.getvalue()
+    assert result == 0
+    assert "权限快照（只读）" in text
+    assert "bash: ask" in text
+    assert "deny-delete: deny" in text
+    assert "执行完成" not in text
+    assert client.calls == ["start", "permissions:process_cli:", "close"]
+
+
+@pytest.mark.asyncio
+async def test_capability_query_error_preserves_code_and_closes_runtime(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class PermissionFailureClient(CapabilityCatalogClient):
+        async def get_permission_snapshot(self, snapshot_input):
+            self.calls.append("permissions:failed")
+            raise PermissionCatalogError(
+                "failed to read permissions",
+                code="READ_FAILED",
+            )
+
+    client = PermissionFailureClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            output="json",
+            _operation="permissions.show",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == ["start", "permissions:failed", "close"]
+    assert document["events"][0]["metadata"]["code"] == "READ_FAILED"
+    assert not any(call.startswith("cleanup:") for call in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_capability_query_timeout_closes_without_cancel_or_chat_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    class SlowMcpClient(CapabilityCatalogClient):
+        async def list_mcp_servers(self, catalog_input=None):
+            self.calls.append("mcp:list:slow")
+            await asyncio.sleep(10)
+            return McpCatalogListResult(servers=())
+
+    client = SlowMcpClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            output="jsonl",
+            timeout=0.01,
+            _operation="mcp.list",
+        ),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+
+    assert result == 124
+    assert client.calls == ["start", "mcp:list:slow", "close"]
+    assert not any(call.startswith(("cancel:", "cleanup:")) for call in client.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "expected_event", "expected_call"),
+    [
+        ("memory.list", "memory.listed", "memory:list:process_cli_current"),
+        ("memory.status", "memory.status", "memory:status:process_cli_current"),
+        ("memory.open", "memory.locations", "memory:open:process_cli_current"),
+    ],
+)
+async def test_memory_commands_use_fresh_runtime_without_chat_cleanup(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+    operation: str,
+    expected_event: str,
+    expected_call: str,
+) -> None:
+    client = MemoryClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session="process_cli_current",
+            output="json",
+            _operation=operation,
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client.calls == ["start", expected_call, "close"]
+    assert document["events"][0]["payload"]["event_type"] == expected_event
+    assert not any(
+        call.startswith(("session:", "cleanup:", "stream:")) for call in client.calls
+    )
+
+
+@pytest.mark.asyncio
+async def test_memory_status_has_human_output_without_chat_completion(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> None:
+    client = MemoryClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            output="human",
+            _operation="memory.status",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    assert result == 0
+    assert "builtin" in stdout.getvalue()
+    assert client.calls == ["start", "memory:status:", "close"]
+
+
+@pytest.mark.asyncio
+async def test_model_select_publishes_only_committed_local_state(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = ModelsClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+    worker_result = tmp_path / "worker-result.json"
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="reasoning-model",
+            session="process_cli_current",
+            output="json",
+            _operation="model.select",
+            _worker_result_file=str(worker_result),
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    state = json.loads(worker_result.read_text(encoding="utf-8"))
+    assert result == 0
+    assert client.calls == [
+        "start",
+        "select:process_cli:process_cli_current:reasoning-model",
+        "close",
+    ]
+    assert state == {
+        "operation": "model.select",
+        "session_id": "process_cli_current",
+        "mode": "code.normal",
+        "work_mode": "code",
+        "project_dir": str(tmp_path),
+        "model_name": "reasoning-model",
+    }
+    assert not any(call.startswith("cleanup:") for call in client.calls)
+
+
+def test_chat_request_carries_selected_model_without_transport_fields(
+    tmp_path: Path,
+) -> None:
+    request = app._build_request(
+        _args(tmp_path, model="reasoning-model"),
+        session_id="process_cli_current",
+        request_id="request-model",
+    )
+
+    assert request.params["model_name"] == "reasoning-model"
+    assert "api_key" not in request.params
+    assert "api_base" not in request.params
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_invalid_model_before_session_or_agent_work(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class InvalidModelClient(FakeClient):
+        async def select_model(self, *, channel_id, selection, session_id=None):
+            self.calls.append(f"select:{channel_id}:{session_id or ''}:{selection}")
+            raise ModelCatalogError("model not found", code="NOT_FOUND")
+
+    client = InvalidModelClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(tmp_path, model="missing-model", output="json"),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == [
+        "start",
+        "select:process_cli::missing-model",
+        "close",
+    ]
+    assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
+
+
+@pytest.mark.asyncio
+async def test_chat_rejects_foreign_explicit_session_before_resume(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class ForeignSessionClient(FakeClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="web",
+                mode="agent.work.normal",
+                work_mode="work",
+            )
+
+    client = ForeignSessionClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            session="web-session",
+            model=None,
+            output="json",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == ["start", "describe:web-session", "close"]
+    assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "mode",
+    (
+        "agent.work.normal",
+        "agent.code.normal",
+        "team.work.normal",
+        "team.code.normal",
+    ),
+)
+async def test_validated_model_key_reaches_all_supported_chat_modes(
+    monkeypatch,
+    tmp_path: Path,
+    mode: str,
+) -> None:
+    class CapturingModelClient(ModelsClient):
+        async def stream(self, request):
+            self.request = request
+            async for event in super().stream(request):
+                yield event
+
+    client = CapturingModelClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+
+    result = await app.run(
+        _args(tmp_path, mode=mode, model="reasoning-model"),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+
+    assert result == 0
+    assert client.request.params["mode"] == mode
+    assert client.request.params["model_name"] == "reasoning-model"
+    assert client.calls == [
+        "start",
+        "select:process_cli::reasoning-model",
+        "session:process_cli:",
+        "stream:runtime-session",
+        "cleanup:process_cli:runtime-session",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_cold_session_model_is_validated_and_forwarded_to_chat(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class ColdSessionModelClient(ModelsClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="process_cli",
+                mode="team.code.normal",
+                work_mode="code",
+                model="reasoning-model",
+            )
+
+        async def stream(self, request):
+            self.request = request
+            async for event in super().stream(request):
+                yield event
+
+    client = ColdSessionModelClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            session="process_cli_existing",
+            mode="team.code.normal",
+            model=None,
+        ),
+        stdout=io.StringIO(),
+        stderr=io.StringIO(),
+    )
+
+    assert result == 0
+    assert client.request.params["model_name"] == "reasoning-model"
+    assert client.calls == [
+        "start",
+        "describe:process_cli_existing",
+        "select:process_cli::reasoning-model",
+        "session:process_cli:process_cli_existing",
+        "stream:process_cli_existing",
+        "cleanup:process_cli:process_cli_existing",
+        "close",
+    ]
+
+
+@pytest.mark.asyncio
+async def test_compact_uses_runtime_public_api_without_chat_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    compact_state = RuntimeEvent.control(
+        request_id="compact-request",
+        channel_id="process_cli",
+        session_id="process_cli_existing",
+        payload={
+            "event_type": "context.compression_state",
+            "status": "completed",
+        },
+    )
+
+    class CompactClient(FakeClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="process_cli",
+                mode="team.code.normal",
+                work_mode="code",
+                project_dir="D:/persisted-project",
+            )
+
+        async def compact_context(self, compact_input):
+            self.calls.append("compact")
+            self.compact_input = compact_input
+            return ContextCompactResult(
+                result="compressed",
+                stats={"raw_total_tokens": 1000, "total_tokens": 300},
+                summary="compact summary",
+                events=(compact_state,),
+            )
+
+    client = CompactClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session="process_cli_existing",
+            mode="agent.work.normal",
+            output="json",
+            _operation="context.compact",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client.compact_input.channel_id == "process_cli"
+    assert client.compact_input.session_id == "process_cli_existing"
+    assert client.compact_input.mode == "team.code.normal"
+    assert client.compact_input.project_dir == "D:/persisted-project"
+    assert client.calls == [
+        "start",
+        "describe:process_cli_existing",
+        "compact",
+        "close",
+    ]
+    assert [event["payload"]["event_type"] for event in document["events"]] == [
+        "context.compression_state",
+        "context.compact.result",
+    ]
+    assert document["events"][1]["payload"]["compact_summary"] == ("compact summary")
+
+
+@pytest.mark.asyncio
+async def test_compact_requires_owned_current_session_before_runtime_work(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    client = FakeClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session=None,
+            output="json",
+            _operation="context.compact",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == ["start", "close"]
+    assert document["events"][0]["metadata"] == {"code": "BAD_REQUEST"}
+
+
+@pytest.mark.asyncio
+async def test_rewind_list_uses_runtime_api_without_chat_session_or_cleanup(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class RewindListClient(FakeClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="process_cli",
+                mode="agent.code.normal",
+                work_mode="code",
+                project_dir="D:/persisted-project",
+            )
+
+        async def list_rewind_turns(self, rewind_input):
+            self.calls.append("rewind:list")
+            self.rewind_input = rewind_input
+            return SessionRewindListResult(
+                turns=(
+                    SessionRewindTurn(
+                        turn_index=2,
+                        content_preview="second prompt",
+                        files_changed=1,
+                    ),
+                ),
+                total=2,
+            )
+
+    client = RewindListClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="",
+            session="process_cli_existing",
+            output="json",
+            _operation="session.rewind.list",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client.calls == [
+        "start",
+        "describe:process_cli_existing",
+        "rewind:list",
+        "close",
+    ]
+    assert client.rewind_input == SessionRewindListInput(
+        channel_id="process_cli",
+        session_id="process_cli_existing",
+        project_dir="D:/persisted-project",
+    )
+    assert document["events"][0]["payload"] == {
+        "event_type": "session.rewind.turns",
+        "turns": [
+            {
+                "turn_index": 2,
+                "content_preview": "second prompt",
+                "timestamp": 0,
+                "id": "",
+                "request_id": "",
+                "stats": {
+                    "filesChanged": 1,
+                    "linesAdded": 0,
+                    "linesRemoved": 0,
+                },
+                "files": [],
+            }
+        ],
+        "total": 2,
+    }
+    assert not any(call.startswith("cleanup:") for call in client.calls)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("prompt", "expected_action", "require_context"),
+    [
+        ("2 conversation", SessionRewindAction.CONVERSATION, True),
+        ("2 all", SessionRewindAction.CONVERSATION_AND_FILES, True),
+        ("2 files", SessionRewindAction.FILES_ONLY, False),
+    ],
+)
+async def test_rewind_mutation_uses_persisted_runtime_context_policy(
+    monkeypatch,
+    tmp_path: Path,
+    prompt: str,
+    expected_action: SessionRewindAction,
+    require_context: bool,
+) -> None:
+    class RewindClient(FakeClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="process_cli",
+                mode="agent.code.normal",
+                work_mode="code",
+            )
+
+        async def rewind_session(self, rewind_input):
+            self.calls.append("rewind")
+            self.rewind_input = rewind_input
+            return SessionRewindResult(
+                action=rewind_input.action,
+                session_id=rewind_input.session_id,
+                turn_index=rewind_input.turn_index,
+                context_rebuilt=(
+                    None
+                    if rewind_input.action is SessionRewindAction.FILES_ONLY
+                    else True
+                ),
+            )
+
+    client = RewindClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt=prompt,
+            session="process_cli_existing",
+            output="json",
+            _operation="session.rewind",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 0
+    assert client.calls == [
+        "start",
+        "describe:process_cli_existing",
+        "rewind",
+        "close",
+    ]
+    assert isinstance(client.rewind_input, SessionRewindInput)
+    assert client.rewind_input.action is expected_action
+    assert client.rewind_input.turn_index == 2
+    assert (
+        client.rewind_input.context_policy
+        is SessionRewindContextPolicy.ENSURE_PERSISTED
+    )
+    assert client.rewind_input.require_context is require_context
+    assert document["events"][0]["payload"]["event_type"] == "session.rewound"
+    assert document["events"][0]["payload"]["action"] == expected_action.value
+    assert not any(call.startswith("cleanup:") for call in client.calls)
+
+
+@pytest.mark.asyncio
+async def test_rewind_rejects_invalid_input_before_runtime_mutation(
+    monkeypatch,
+    tmp_path: Path,
+) -> None:
+    class RewindClient(FakeClient):
+        async def describe_session(self, *, session_id: str):
+            self.calls.append(f"describe:{session_id}")
+            return SessionDescriptor(
+                session_id=session_id,
+                channel_id="process_cli",
+                mode="agent.code.normal",
+                work_mode="code",
+            )
+
+        async def rewind_session(self, rewind_input):
+            pytest.fail(f"invalid input reached Runtime mutation: {rewind_input}")
+
+    client = RewindClient()
+    monkeypatch.setattr(app, "InProcessRuntimeClient", lambda: client)
+    stdout = io.StringIO()
+
+    result = await app.run(
+        _args(
+            tmp_path,
+            prompt="not-a-turn all",
+            session="process_cli_existing",
+            output="json",
+            _operation="session.rewind",
+        ),
+        stdout=stdout,
+        stderr=io.StringIO(),
+    )
+
+    document = json.loads(stdout.getvalue())
+    assert result == 1
+    assert client.calls == [
+        "start",
+        "describe:process_cli_existing",
+        "close",
+    ]
+    assert document["events"][0]["metadata"] == {"code": "BAD_REQUEST"}
+
+
+@pytest.mark.asyncio
 async def test_session_create_delivers_result_before_after_delivery_commit(
     monkeypatch,
     tmp_path: Path,
@@ -1226,11 +2465,14 @@ async def test_session_switch_uses_persisted_modes_not_current_cli_mode(
         "mode": target_mode,
         "work_mode": target_work_mode,
         "project_dir": "D:/target-project",
+        "model_name": "",
     }
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()])
+@pytest.mark.parametrize(
+    "commit_error", [RuntimeError("commit failed"), asyncio.CancelledError()]
+)
 async def test_session_create_post_delivery_failure_aborts_only_prepared_lease(
     monkeypatch,
     tmp_path: Path,
@@ -1551,8 +2793,7 @@ async def test_session_operations_reject_foreign_owned_metadata(
     assert result == 1
     assert document["events"][0]["metadata"] == {"code": "NOT_FOUND"}
     assert not any(
-        call.startswith(("prepare:", "commit:", "delete:"))
-        for call in client.calls
+        call.startswith(("prepare:", "commit:", "delete:")) for call in client.calls
     )
 
 
@@ -1608,9 +2849,7 @@ def test_runtime_has_no_process_cli_dependency() -> None:
             elif isinstance(node, ast.Import):
                 for alias in node.names:
                     if alias.name.startswith("jiuwenswarm.channels.process_cli"):
-                        violations.append(
-                            f"{source.name}:{node.lineno}:{alias.name}"
-                        )
+                        violations.append(f"{source.name}:{node.lineno}:{alias.name}")
     assert violations == []
 
 

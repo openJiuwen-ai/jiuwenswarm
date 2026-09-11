@@ -13,6 +13,24 @@ if TYPE_CHECKING:
 
     from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.runtime import (
+        AgentCatalogInput,
+        AgentCatalogResult,
+        AgentDescriptor,
+        AgentToolsResult,
+        ContextCompactInput,
+        ContextCompactResult,
+        MemoryListResult,
+        MemoryLocationsResult,
+        MemoryScopeInput,
+        MemoryStatusResult,
+        McpCatalogListInput,
+        McpCatalogListResult,
+        McpCatalogShowInput,
+        McpCatalogShowResult,
+        ModelCatalogResult,
+        ModelSelectionResult,
+        PermissionSnapshotInput,
+        PermissionSnapshotResult,
         PreparedSessionProvision,
         SessionCreateInput,
         SessionCreateResult,
@@ -20,6 +38,11 @@ if TYPE_CHECKING:
         SessionDescriptor,
         SessionForkInput,
         SessionForkResult,
+        SessionListResult,
+        SessionRewindInput,
+        SessionRewindListInput,
+        SessionRewindListResult,
+        SessionRewindResult,
         SessionProvisionCommitContext,
         SessionProvisionCommitTiming,
         SessionProvisionResult,
@@ -63,6 +86,128 @@ class InProcessRuntimeClient:
     ) -> SessionDescriptor | None:
         """Read persisted Session facts through the Runtime boundary."""
         return await self._runtime.describe_session(session_id=session_id)
+
+    async def list_sessions(
+        self,
+        *,
+        channel_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> SessionListResult:
+        """List persisted Sessions through the Runtime boundary."""
+        return await self._runtime.list_sessions(
+            channel_id=channel_id,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def list_models(
+        self,
+        *,
+        channel_id: str,
+        session_id: str | None = None,
+        selected_model: str = "",
+    ) -> ModelCatalogResult:
+        """List safe model descriptors through the Runtime boundary."""
+        return await self._runtime.list_models(
+            channel_id=channel_id,
+            session_id=session_id,
+            selected_model=selected_model,
+        )
+
+    async def select_model(
+        self,
+        *,
+        channel_id: str,
+        selection: str,
+        session_id: str | None = None,
+    ) -> ModelSelectionResult:
+        """Select a request/session model through the Runtime boundary."""
+        return await self._runtime.select_model(
+            channel_id=channel_id,
+            selection=selection,
+            session_id=session_id,
+        )
+
+    async def compact_context(
+        self,
+        compact_input: ContextCompactInput,
+    ) -> ContextCompactResult:
+        """Compact one Session through the shared Runtime boundary."""
+        return await self._runtime.compact_context(compact_input)
+
+    async def list_memory_sources(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryListResult:
+        return await self._runtime.list_memory_sources(memory_input)
+
+    async def get_memory_status(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryStatusResult:
+        return await self._runtime.get_memory_status(memory_input)
+
+    async def get_memory_locations(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryLocationsResult:
+        return await self._runtime.get_memory_locations(memory_input)
+
+    async def list_agent_definitions(
+        self,
+        catalog_input: AgentCatalogInput,
+    ) -> AgentCatalogResult:
+        return await self._runtime.list_agent_definitions(catalog_input)
+
+    async def get_agent_definition(
+        self,
+        catalog_input: AgentCatalogInput,
+        *,
+        name: str,
+    ) -> AgentDescriptor:
+        return await self._runtime.get_agent_definition(
+            catalog_input,
+            name=name,
+        )
+
+    async def list_agent_definition_tools(
+        self,
+        catalog_input: AgentCatalogInput,
+    ) -> AgentToolsResult:
+        return await self._runtime.list_agent_definition_tools(catalog_input)
+
+    async def list_mcp_servers(
+        self,
+        catalog_input: McpCatalogListInput | None = None,
+    ) -> McpCatalogListResult:
+        return await self._runtime.list_mcp_servers(catalog_input)
+
+    async def show_mcp_server(
+        self,
+        catalog_input: McpCatalogShowInput,
+    ) -> McpCatalogShowResult:
+        return await self._runtime.show_mcp_server(catalog_input)
+
+    async def get_permission_snapshot(
+        self,
+        snapshot_input: PermissionSnapshotInput,
+    ) -> PermissionSnapshotResult:
+        return await self._runtime.get_permission_snapshot(snapshot_input)
+
+    async def list_rewind_turns(
+        self,
+        rewind_input: SessionRewindListInput,
+    ) -> SessionRewindListResult:
+        """List selectable Session turns through the shared Runtime."""
+        return await self._runtime.list_rewind_turns(rewind_input)
+
+    async def rewind_session(
+        self,
+        rewind_input: SessionRewindInput,
+    ) -> SessionRewindResult:
+        """Rewind one Session through the shared Runtime."""
+        return await self._runtime.rewind_session(rewind_input)
 
     async def prepare_session_create(
         self,
@@ -152,5 +297,6 @@ class InProcessRuntimeClient:
             cleanup_errors.append(exc)
         if cleanup_errors:
             raise cleanup_errors[0]
+
 
 __all__ = ["InProcessRuntimeClient"]

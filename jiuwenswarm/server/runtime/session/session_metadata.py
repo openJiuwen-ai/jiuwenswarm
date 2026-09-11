@@ -1661,6 +1661,8 @@ def _resolve_legacy_work_mode(
 def get_all_sessions_metadata(
     limit: int = 20,
     offset: int = 0,
+    *,
+    channel_id: str | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """
     获取所有会话的元数据。
@@ -1673,6 +1675,9 @@ def get_all_sessions_metadata(
         return [], 0
 
     sessions = []
+    normalized_channel_id = (
+        str(channel_id).strip().lower() if channel_id is not None else None
+    )
     # 批量入口构建一次 project 映射,所有会话共用,避免 N+1 扫描 project_store。
     dir_to_projects, id_to_work_mode = _build_project_lookup()
     for session_dir in sessions_dir.iterdir():
@@ -1723,6 +1728,11 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
 
+        if normalized_channel_id is not None and (
+            str(metadata.get("channel_id") or "").strip().lower()
+            != normalized_channel_id
+        ):
+            continue
         sessions.append(metadata)
 
     # 按最后消息时间倒序排序

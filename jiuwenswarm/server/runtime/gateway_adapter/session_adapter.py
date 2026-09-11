@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from typing import Final
+from typing import Any, Final
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -46,6 +46,11 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     set_session_pinned,
 )
 from jiuwenswarm.server.runtime.session.session_rename import apply_session_rename
+from jiuwenswarm.runtime.session_rewind import (
+    SessionRewindAction,
+    SessionRewindInput,
+    SessionRewindListInput,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -120,6 +125,9 @@ class SessionAdapter(GatewayAdapter):
         }
     )
 
+    def __init__(self, runtime: Any | None = None) -> None:
+        self._runtime = runtime
+
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
         if method == ReqMethod.SESSION_GET_METADATA:
@@ -142,10 +150,6 @@ class SessionAdapter(GatewayAdapter):
 
     async def _handle_history_list_turns(self, request: AgentRequest) -> AgentResponse:
         """Return session turns without entering the chat request path."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            list_session_turns,
-        )
-
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         if not session_id:
@@ -153,7 +157,23 @@ class SessionAdapter(GatewayAdapter):
                 request, "session_id is required", code="BAD_REQUEST"
             )
         try:
-            payload = await asyncio.to_thread(list_session_turns, session_id=session_id)
+            if self._runtime is None:
+                from jiuwenswarm.agents.harness.common.session_ops_service import (
+                    list_session_turns,
+                )
+
+                payload = await asyncio.to_thread(
+                    list_session_turns,
+                    session_id=session_id,
+                )
+            else:
+                result = await self._runtime.list_rewind_turns(
+                    SessionRewindListInput(
+                        channel_id=request.channel_id or "default",
+                        session_id=session_id,
+                    )
+                )
+                payload = result.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.warning("[SessionAdapter] history.list_turns failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -167,10 +187,6 @@ class SessionAdapter(GatewayAdapter):
 
     async def _handle_restore_files(self, request: AgentRequest) -> AgentResponse:
         """Restore files for a historical turn without creating a chat turn."""
-        from jiuwenswarm.agents.harness.common.session_ops_service import (
-            restore_session_files,
-        )
-
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()
         if not session_id:
@@ -189,9 +205,27 @@ class SessionAdapter(GatewayAdapter):
                 request, "turn_index must be an integer", code="BAD_REQUEST"
             )
         try:
-            payload = await asyncio.to_thread(
-                restore_session_files, session_id=session_id, turn_index=turn_index
-            )
+            if self._runtime is None:
+                from jiuwenswarm.agents.harness.common.session_ops_service import (
+                    restore_session_files,
+                )
+
+                payload = await asyncio.to_thread(
+                    restore_session_files,
+                    session_id=session_id,
+                    turn_index=turn_index,
+                )
+            else:
+                result = await self._runtime.rewind_session(
+                    SessionRewindInput(
+                        operation_id=request.request_id,
+                        channel_id=request.channel_id or "default",
+                        session_id=session_id,
+                        turn_index=turn_index,
+                        action=SessionRewindAction.FILES_ONLY,
+                    )
+                )
+                payload = result.to_dict()
         except ValueError as exc:
             return build_error_response(request, str(exc), code="BAD_REQUEST")
         except Exception as exc:  # noqa: BLE001

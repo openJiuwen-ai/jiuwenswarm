@@ -10,6 +10,130 @@ from typing import Any
 _EXPORTS = {
     "AgentRuntime": ("jiuwenswarm.runtime.service", "AgentRuntime"),
     "RuntimeStateError": ("jiuwenswarm.runtime.service", "RuntimeStateError"),
+    "AgentCatalogError": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentCatalogError",
+    ),
+    "AgentCatalogInput": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentCatalogInput",
+    ),
+    "AgentCatalogResult": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentCatalogResult",
+    ),
+    "AgentDescriptor": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentDescriptor",
+    ),
+    "AgentToolDescriptor": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentToolDescriptor",
+    ),
+    "AgentToolsResult": (
+        "jiuwenswarm.runtime.agent_catalog",
+        "AgentToolsResult",
+    ),
+    "ContextCompactInput": (
+        "jiuwenswarm.runtime.context_compaction",
+        "ContextCompactInput",
+    ),
+    "ContextCompactResult": (
+        "jiuwenswarm.runtime.context_compaction",
+        "ContextCompactResult",
+    ),
+    "ContextCompactStatus": (
+        "jiuwenswarm.runtime.context_compaction",
+        "ContextCompactStatus",
+    ),
+    "ModelCatalogError": (
+        "jiuwenswarm.runtime.model_catalog",
+        "ModelCatalogError",
+    ),
+    "ModelCatalogResult": (
+        "jiuwenswarm.runtime.model_catalog",
+        "ModelCatalogResult",
+    ),
+    "ModelSelectionResult": (
+        "jiuwenswarm.runtime.model_catalog",
+        "ModelSelectionResult",
+    ),
+    "RuntimeModelDescriptor": (
+        "jiuwenswarm.runtime.model_catalog",
+        "RuntimeModelDescriptor",
+    ),
+    "MemoryCatalogError": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemoryCatalogError",
+    ),
+    "MemoryListResult": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemoryListResult",
+    ),
+    "MemoryLocationsResult": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemoryLocationsResult",
+    ),
+    "MemoryScopeInput": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemoryScopeInput",
+    ),
+    "MemorySource": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemorySource",
+    ),
+    "MemoryStatusResult": (
+        "jiuwenswarm.runtime.memory_catalog",
+        "MemoryStatusResult",
+    ),
+    "McpCatalogError": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpCatalogError",
+    ),
+    "McpCatalogListInput": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpCatalogListInput",
+    ),
+    "McpCatalogListResult": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpCatalogListResult",
+    ),
+    "McpCatalogShowInput": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpCatalogShowInput",
+    ),
+    "McpCatalogShowResult": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpCatalogShowResult",
+    ),
+    "McpServerDescriptor": (
+        "jiuwenswarm.runtime.mcp_catalog",
+        "McpServerDescriptor",
+    ),
+    "PermissionCatalogError": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionCatalogError",
+    ),
+    "PermissionLayerSnapshot": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionLayerSnapshot",
+    ),
+    "PermissionRuleSnapshot": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionRuleSnapshot",
+    ),
+    "PermissionSnapshotInput": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionSnapshotInput",
+    ),
+    "PermissionSnapshotResult": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionSnapshotResult",
+    ),
+    "PermissionToolSnapshot": (
+        "jiuwenswarm.runtime.permission_catalog",
+        "PermissionToolSnapshot",
+    ),
     "RuntimeSessionProvisioner": (
         "jiuwenswarm.runtime.session_provisioner",
         "RuntimeSessionProvisioner",
@@ -85,6 +209,54 @@ _EXPORTS = {
     "SessionSwitchResult": (
         "jiuwenswarm.runtime.session_provisioner",
         "SessionSwitchResult",
+    ),
+    "SessionListResult": (
+        "jiuwenswarm.runtime.session_catalog",
+        "SessionListResult",
+    ),
+    "SessionSummary": (
+        "jiuwenswarm.runtime.session_catalog",
+        "SessionSummary",
+    ),
+    "SessionRewindAction": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindAction",
+    ),
+    "SessionRewindContextPolicy": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindContextPolicy",
+    ),
+    "SessionRewindError": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindError",
+    ),
+    "SessionRewindFile": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindFile",
+    ),
+    "SessionRewindFileError": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindFileError",
+    ),
+    "SessionRewindInput": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindInput",
+    ),
+    "SessionRewindListInput": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindListInput",
+    ),
+    "SessionRewindListResult": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindListResult",
+    ),
+    "SessionRewindResult": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindResult",
+    ),
+    "SessionRewindTurn": (
+        "jiuwenswarm.runtime.session_rewind",
+        "SessionRewindTurn",
     ),
     "RuntimeSessionCoordinator": (
         "jiuwenswarm.runtime.session",

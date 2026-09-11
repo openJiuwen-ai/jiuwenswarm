@@ -11,6 +11,7 @@ import os
 import sys
 import time
 import uuid
+from dataclasses import asdict
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, TextIO
 
@@ -21,6 +22,12 @@ from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import (
+    AgentCatalogInput,
+    ContextCompactInput,
+    MemoryScopeInput,
+    McpCatalogListInput,
+    McpCatalogShowInput,
+    PermissionSnapshotInput,
     SessionCreateInput,
     SessionDescriptor,
     SessionForkInput,
@@ -28,6 +35,10 @@ from jiuwenswarm.runtime import (
     SessionProvisionCommitTiming,
     SessionProvisionError,
     SessionProvisionState,
+    SessionRewindAction,
+    SessionRewindContextPolicy,
+    SessionRewindInput,
+    SessionRewindListInput,
     SessionSwitchInput,
 )
 from jiuwenswarm.runtime.events import RuntimeEvent
@@ -38,6 +49,28 @@ if TYPE_CHECKING:
 CHANNEL_ID = "process_cli"
 CHAT_OPERATION = "chat"
 SKILLS_LIST_OPERATION = "skills.list"
+MODEL_LIST_OPERATION = "model.list"
+MODEL_SELECT_OPERATION = "model.select"
+CONTEXT_COMPACT_OPERATION = "context.compact"
+MEMORY_LIST_OPERATION = "memory.list"
+MEMORY_STATUS_OPERATION = "memory.status"
+MEMORY_OPEN_OPERATION = "memory.open"
+MEMORY_OPERATIONS = frozenset(
+    {MEMORY_LIST_OPERATION, MEMORY_STATUS_OPERATION, MEMORY_OPEN_OPERATION}
+)
+MCP_LIST_OPERATION = "mcp.list"
+MCP_SHOW_OPERATION = "mcp.show"
+MCP_OPERATIONS = frozenset({MCP_LIST_OPERATION, MCP_SHOW_OPERATION})
+AGENTS_LIST_OPERATION = "agents.list"
+AGENTS_GET_OPERATION = "agents.get"
+AGENTS_TOOLS_OPERATION = "agents.tools"
+AGENT_CATALOG_OPERATIONS = frozenset(
+    {AGENTS_LIST_OPERATION, AGENTS_GET_OPERATION, AGENTS_TOOLS_OPERATION}
+)
+PERMISSIONS_SHOW_OPERATION = "permissions.show"
+SESSION_REWIND_LIST_OPERATION = "session.rewind.list"
+SESSION_REWIND_OPERATION = "session.rewind"
+SESSION_LIST_OPERATION = "session.list"
 SESSION_CREATE_OPERATION = "session.create"
 SESSION_SWITCH_OPERATION = "session.switch"
 SESSION_FORK_OPERATION = "session.fork"
@@ -93,6 +126,7 @@ def _build_request(
             "query": args.prompt,
             "content": args.prompt,
             "mode": args.mode,
+            "model_name": str(getattr(args, "model", None) or "").strip() or None,
             "work_mode": work_mode,
             "cwd": cwd,
             "project_dir": project_dir,
@@ -135,6 +169,7 @@ def _write_worker_result(
     mode: str,
     work_mode: str,
     project_dir: str = "",
+    model_name: str | None = None,
 ) -> None:
     """Publish committed worker state to the parent REPL without a transport."""
     session_result_file = getattr(args, "_session_result_file", None)
@@ -142,17 +177,17 @@ def _write_worker_result(
         Path(session_result_file).write_text(session_id, encoding="utf-8")
     worker_result_file = getattr(args, "_worker_result_file", None)
     if worker_result_file:
+        result = {
+            "operation": operation,
+            "session_id": session_id,
+            "mode": mode,
+            "work_mode": work_mode,
+            "project_dir": project_dir,
+        }
+        if model_name is not None:
+            result["model_name"] = model_name
         Path(worker_result_file).write_text(
-            json.dumps(
-                {
-                    "operation": operation,
-                    "session_id": session_id,
-                    "mode": mode,
-                    "work_mode": work_mode,
-                    "project_dir": project_dir,
-                },
-                ensure_ascii=False,
-            ),
+            json.dumps(result, ensure_ascii=False),
             encoding="utf-8",
         )
 
@@ -254,6 +289,7 @@ async def _create_session(
                 project_dir="",
                 cwd=cwd,
                 work_mode=args.work_mode,
+                model_name=str(getattr(args, "model", None) or ""),
             )
         )
         result = prepared.result
@@ -364,6 +400,7 @@ async def _switch_session(
             mode=target_mode,
             work_mode=target_work_mode,
             project_dir=target_descriptor.project_dir,
+            model_name=target_descriptor.model,
         )
         _render_session_event(
             renderer,
@@ -421,6 +458,7 @@ async def _fork_session(
                 fallback=args.work_mode,
             ),
             project_dir=source_descriptor.project_dir,
+            model_name=source_descriptor.model,
         )
         _render_session_event(
             renderer,
@@ -653,6 +691,522 @@ async def _invoke_skills_list(
     return (1 if renderer.failed else 0), request, session_id
 
 
+async def _list_sessions(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Query channel-owned Sessions without provisioning a chat Session."""
+    session_id = str(args.session or "").strip()
+    result = await client.list_sessions(channel_id=CHANNEL_ID)
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload={
+                "event_type": "session.listed",
+                "sessions": [asdict(item) for item in result.sessions],
+                "total": result.total,
+                "limit": result.limit,
+                "offset": result.offset,
+                "current_session_id": session_id,
+            },
+        ),
+        view=SESSION_LIST_OPERATION,
+    )
+    return session_id
+
+
+async def _list_models(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Query safe model metadata without creating a chat Session."""
+    session_id = str(args.session or "").strip()
+    result = await client.list_models(
+        channel_id=CHANNEL_ID,
+        session_id=session_id or None,
+        selected_model=str(getattr(args, "model", None) or ""),
+    )
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload={
+                "event_type": "model.listed",
+                "models": [asdict(item) for item in result.models],
+                "current_selection": result.current_selection,
+                "current_display_name": result.current_display_name,
+            },
+        ),
+        view=MODEL_LIST_OPERATION,
+    )
+    return session_id
+
+
+async def _select_model(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Select one validated model and publish committed REPL state."""
+    session_id = str(args.session or "").strip()
+    result = await client.select_model(
+        channel_id=CHANNEL_ID,
+        selection=str(args.prompt or "").strip(),
+        session_id=session_id or None,
+    )
+    selected = result.model
+    _write_worker_result(
+        args,
+        operation=MODEL_SELECT_OPERATION,
+        session_id=session_id,
+        mode=args.mode,
+        work_mode=args.work_mode,
+        project_dir=str(args.project_dir or ""),
+        model_name=selected.selection_key,
+    )
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload={
+                "event_type": "model.selected",
+                "model": asdict(selected),
+                "session_id": session_id,
+                "persisted": result.persisted,
+            },
+        ),
+        view=MODEL_SELECT_OPERATION,
+    )
+    return session_id
+
+
+async def _resolve_chat_model(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    *,
+    requested_session_id: str,
+) -> str:
+    """Validate and canonicalize the model before metadata or Agent work."""
+    requested_model = str(getattr(args, "model", None) or "").strip()
+    if requested_session_id:
+        descriptor = await _owned_session_descriptor(client, requested_session_id)
+        if descriptor is None:
+            raise SessionProvisionError("session not found", code="NOT_FOUND")
+        requested_model = requested_model or descriptor.model
+    if not requested_model:
+        return ""
+    selected = await client.select_model(
+        channel_id=CHANNEL_ID,
+        selection=requested_model,
+        session_id=None,
+    )
+    selection_key = selected.model.selection_key
+    args.model = selection_key
+    return selection_key
+
+
+async def _compact_context(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Compact the current owned Session through Runtime Public API."""
+    if str(args.prompt or "").strip():
+        raise SessionProvisionError("usage: /compact", code="BAD_REQUEST")
+    target_session_id = str(args.session or "").strip()
+    if not target_session_id:
+        raise SessionProvisionError(
+            "current session is required",
+            code="BAD_REQUEST",
+        )
+    descriptor = await _owned_session_descriptor(client, target_session_id)
+    if descriptor is None:
+        raise SessionProvisionError("session not found", code="NOT_FOUND")
+    result = await client.compact_context(
+        ContextCompactInput(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            mode=descriptor.mode or args.mode,
+            project_dir=(descriptor.project_dir or str(args.project_dir or "")),
+        )
+    )
+    for event in result.events:
+        renderer.render(event)
+    payload: dict[str, Any] = {
+        "event_type": "context.compact.result",
+        "result": result.result,
+        "stats": result.stats,
+    }
+    if result.summary:
+        payload["summary"] = result.summary
+        payload["compact_summary"] = result.summary
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            payload=payload,
+        ),
+        view=CONTEXT_COMPACT_OPERATION,
+    )
+    return target_session_id
+
+
+async def _list_rewind_turns(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """List rewind targets for the current process-CLI Session."""
+    if str(args.prompt or "").strip():
+        raise SessionProvisionError("usage: /rewind [list]", code="BAD_REQUEST")
+    target_session_id = str(args.session or "").strip()
+    if not target_session_id:
+        raise SessionProvisionError(
+            "current session is required",
+            code="BAD_REQUEST",
+        )
+    descriptor = await _owned_session_descriptor(client, target_session_id)
+    if descriptor is None:
+        raise SessionProvisionError("session not found", code="NOT_FOUND")
+    result = await client.list_rewind_turns(
+        SessionRewindListInput(
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            project_dir=descriptor.project_dir or None,
+        )
+    )
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            payload={
+                "event_type": "session.rewind.turns",
+                **result.to_dict(),
+            },
+        ),
+        view=SESSION_REWIND_LIST_OPERATION,
+    )
+    return target_session_id
+
+
+def _parse_rewind_request(value: str) -> tuple[int, SessionRewindAction]:
+    parts = value.strip().lower().split()
+    if len(parts) not in {1, 2}:
+        raise SessionProvisionError(
+            "usage: /rewind <turn> [conversation|all|files]",
+            code="BAD_REQUEST",
+        )
+    try:
+        turn_index = int(parts[0])
+    except ValueError as exc:
+        raise SessionProvisionError(
+            "rewind turn must be a positive integer",
+            code="BAD_REQUEST",
+        ) from exc
+    if turn_index < 1:
+        raise SessionProvisionError(
+            "rewind turn must be a positive integer",
+            code="BAD_REQUEST",
+        )
+    action_name = parts[1] if len(parts) == 2 else "conversation"
+    actions = {
+        "conversation": SessionRewindAction.CONVERSATION,
+        "all": SessionRewindAction.CONVERSATION_AND_FILES,
+        "files": SessionRewindAction.FILES_ONLY,
+    }
+    action = actions.get(action_name)
+    if action is None:
+        raise SessionProvisionError(
+            "usage: /rewind <turn> [conversation|all|files]",
+            code="BAD_REQUEST",
+        )
+    return turn_index, action
+
+
+async def _rewind_session(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Apply a confirmed rewind through the transport-neutral Runtime API."""
+    target_session_id = str(args.session or "").strip()
+    if not target_session_id:
+        raise SessionProvisionError(
+            "current session is required",
+            code="BAD_REQUEST",
+        )
+    descriptor = await _owned_session_descriptor(client, target_session_id)
+    if descriptor is None:
+        raise SessionProvisionError("session not found", code="NOT_FOUND")
+    turn_index, action = _parse_rewind_request(str(args.prompt or ""))
+    result = await client.rewind_session(
+        SessionRewindInput(
+            operation_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            turn_index=turn_index,
+            action=action,
+            context_policy=SessionRewindContextPolicy.ENSURE_PERSISTED,
+            require_context=action is not SessionRewindAction.FILES_ONLY,
+        )
+    )
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=target_session_id,
+            payload={
+                "event_type": "session.rewound",
+                "action": action.value,
+                **result.to_dict(),
+            },
+        ),
+        view=SESSION_REWIND_OPERATION,
+    )
+    return target_session_id
+
+
+def _memory_scope_input(args: argparse.Namespace) -> MemoryScopeInput:
+    _cwd, project_dir = _resolved_workspace(args)
+    trusted_dirs = [project_dir]
+    trusted_dirs.extend(
+        str(Path(value).expanduser().resolve())
+        for value in args.trusted_dir
+        if str(value or "").strip()
+    )
+    return MemoryScopeInput(
+        channel_id=CHANNEL_ID,
+        session_id=str(args.session or "").strip() or None,
+        mode=str(args.mode or "agent.code.normal"),
+        project_dir=project_dir,
+        trusted_dirs=tuple(dict.fromkeys(trusted_dirs)),
+    )
+
+
+async def _inspect_memory(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+    operation: str,
+) -> str:
+    """Run one read-only Memory query through Runtime Public API."""
+    if str(args.prompt or "").strip():
+        raise SessionProvisionError(
+            "usage: /memory [status|list|open]",
+            code="BAD_REQUEST",
+        )
+    memory_input = _memory_scope_input(args)
+    if operation == MEMORY_LIST_OPERATION:
+        payload = {
+            "event_type": "memory.listed",
+            **(await client.list_memory_sources(memory_input)).to_dict(),
+        }
+    elif operation == MEMORY_STATUS_OPERATION:
+        payload = {
+            "event_type": "memory.status",
+            **(await client.get_memory_status(memory_input)).to_dict(),
+        }
+    else:
+        payload = {
+            "event_type": "memory.locations",
+            **(await client.get_memory_locations(memory_input)).to_dict(),
+        }
+    session_id = str(args.session or "").strip()
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload=payload,
+        ),
+        view=operation,
+    )
+    return session_id
+
+
+def _agent_catalog_input(args: argparse.Namespace) -> AgentCatalogInput:
+    _cwd, project_dir = _resolved_workspace(args)
+    trusted_dirs = [project_dir]
+    trusted_dirs.extend(
+        str(Path(value).expanduser().resolve())
+        for value in args.trusted_dir
+        if str(value or "").strip()
+    )
+    return AgentCatalogInput(
+        channel_id=CHANNEL_ID,
+        session_id=str(args.session or "").strip() or None,
+        project_dir=project_dir,
+        trusted_dirs=tuple(dict.fromkeys(trusted_dirs)),
+    )
+
+
+async def _inspect_agent_catalog(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+    operation: str,
+) -> str:
+    """Run one read-only custom-Agent catalog query through Runtime."""
+    value = str(args.prompt or "").strip()
+    catalog_input = _agent_catalog_input(args)
+    if operation == AGENTS_LIST_OPERATION:
+        if value:
+            raise SessionProvisionError(
+                "usage: /agents [list|get <name>|tools]",
+                code="BAD_REQUEST",
+            )
+        payload = {
+            "event_type": "agents.listed",
+            **(await client.list_agent_definitions(catalog_input)).to_dict(),
+        }
+    elif operation == AGENTS_GET_OPERATION:
+        if not value or len(value.split()) != 1:
+            raise SessionProvisionError(
+                "usage: /agents get <name>",
+                code="BAD_REQUEST",
+            )
+        payload = {
+            "event_type": "agents.detail",
+            "agent": (
+                await client.get_agent_definition(
+                    catalog_input,
+                    name=value,
+                )
+            ).to_dict(),
+        }
+    else:
+        if value:
+            raise SessionProvisionError(
+                "usage: /agents tools",
+                code="BAD_REQUEST",
+            )
+        payload = {
+            "event_type": "agents.tools",
+            **(await client.list_agent_definition_tools(catalog_input)).to_dict(),
+        }
+    session_id = str(args.session or "").strip()
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload=payload,
+        ),
+        view=operation,
+    )
+    return session_id
+
+
+async def _inspect_mcp_catalog(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+    operation: str,
+) -> str:
+    """Run one static MCP query without probing tools or endpoints."""
+    value = str(args.prompt or "").strip()
+    if operation == MCP_LIST_OPERATION:
+        if value:
+            raise SessionProvisionError(
+                "usage: /mcp [list|show [name]]",
+                code="BAD_REQUEST",
+            )
+        payload = {
+            "event_type": "mcp.listed",
+            **(await client.list_mcp_servers()).to_dict(),
+        }
+    elif value:
+        if len(value.split()) != 1:
+            raise SessionProvisionError(
+                "usage: /mcp show [name]",
+                code="BAD_REQUEST",
+            )
+        payload = {
+            "event_type": "mcp.detail",
+            **(await client.show_mcp_server(McpCatalogShowInput(name=value))).to_dict(),
+        }
+    else:
+        payload = {
+            "event_type": "mcp.listed",
+            **(
+                await client.list_mcp_servers(McpCatalogListInput(enabled_only=True))
+            ).to_dict(),
+        }
+    session_id = str(args.session or "").strip()
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload=payload,
+        ),
+        view=operation,
+    )
+    return session_id
+
+
+async def _inspect_permissions(
+    client: InProcessRuntimeClient,
+    args: argparse.Namespace,
+    renderer: EventRenderer,
+    *,
+    request_id: str,
+) -> str:
+    """Read one permission snapshot through Runtime Public API."""
+    if str(args.prompt or "").strip():
+        raise SessionProvisionError(
+            "usage: /permissions [list]",
+            code="BAD_REQUEST",
+        )
+    session_id = str(args.session or "").strip()
+    result = await client.get_permission_snapshot(
+        PermissionSnapshotInput(
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+        )
+    )
+    renderer.render(
+        RuntimeEvent.control(
+            request_id=request_id,
+            channel_id=CHANNEL_ID,
+            session_id=session_id or None,
+            payload={
+                "event_type": "permissions.snapshot",
+                **result.to_dict(),
+            },
+        ),
+        view=PERMISSIONS_SHOW_OPERATION,
+    )
+    return session_id
+
+
 async def run(
     args: argparse.Namespace,
     *,
@@ -664,6 +1218,7 @@ async def run(
     client = InProcessRuntimeClient()
     request: AgentRequest | None = None
     session_id = str(args.session or "").strip()
+    chat_session_acquired = False
     request_id = _new_request_id()
     operation = str(getattr(args, "_operation", CHAT_OPERATION) or CHAT_OPERATION)
     renderer = EventRenderer(
@@ -676,7 +1231,7 @@ async def run(
     renderer.start()
 
     async def execute() -> int:
-        nonlocal request, session_id
+        nonlocal chat_session_acquired, request, session_id
         await client.start()
         if operation == SKILLS_LIST_OPERATION:
             result, request, session_id = await _invoke_skills_list(
@@ -686,6 +1241,98 @@ async def run(
                 request_id=request_id,
             )
             return result
+        if operation == SESSION_LIST_OPERATION:
+            renderer.working()
+            session_id = await _list_sessions(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+            )
+            return 0
+        if operation in {MODEL_LIST_OPERATION, MODEL_SELECT_OPERATION}:
+            renderer.working()
+            if operation == MODEL_LIST_OPERATION:
+                session_id = await _list_models(
+                    client,
+                    args,
+                    renderer,
+                    request_id=request_id,
+                )
+            else:
+                session_id = await _select_model(
+                    client,
+                    args,
+                    renderer,
+                    request_id=request_id,
+                )
+            return 0
+        if operation == CONTEXT_COMPACT_OPERATION:
+            renderer.working()
+            session_id = await _compact_context(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+            )
+            return 0
+        if operation == SESSION_REWIND_LIST_OPERATION:
+            renderer.working()
+            session_id = await _list_rewind_turns(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+            )
+            return 0
+        if operation == SESSION_REWIND_OPERATION:
+            renderer.working()
+            session_id = await _rewind_session(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+            )
+            return 0
+        if operation in MEMORY_OPERATIONS:
+            renderer.working()
+            session_id = await _inspect_memory(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+                operation=operation,
+            )
+            return 0
+        if operation in AGENT_CATALOG_OPERATIONS:
+            renderer.working()
+            session_id = await _inspect_agent_catalog(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+                operation=operation,
+            )
+            return 0
+        if operation in MCP_OPERATIONS:
+            renderer.working()
+            session_id = await _inspect_mcp_catalog(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+                operation=operation,
+            )
+            return 0
+        if operation == PERMISSIONS_SHOW_OPERATION:
+            renderer.working()
+            session_id = await _inspect_permissions(
+                client,
+                args,
+                renderer,
+                request_id=request_id,
+            )
+            return 0
         if operation in SESSION_OPERATIONS:
             renderer.working()
             if operation == SESSION_CREATE_OPERATION:
@@ -719,10 +1366,17 @@ async def run(
             return 0
         if operation != CHAT_OPERATION:
             raise ValueError(f"unsupported process CLI operation: {operation}")
+        requested_session_id = str(args.session or "").strip()
+        selected_model = await _resolve_chat_model(
+            client,
+            args,
+            requested_session_id=requested_session_id,
+        )
         session_id = await client.create_or_resume_session(
             channel_id=CHANNEL_ID,
             session_id=args.session,
         )
+        chat_session_acquired = True
         _write_worker_result(
             args,
             operation=CHAT_OPERATION,
@@ -730,6 +1384,7 @@ async def run(
             mode=args.mode,
             work_mode=args.work_mode,
             project_dir=str(args.project_dir or ""),
+            model_name=selected_model or None,
         )
         request = _build_request(
             args,
@@ -783,8 +1438,9 @@ async def run(
         raise
     except Exception as exc:  # noqa: BLE001 - CLI converts failures to events
         error_metadata = None
-        if isinstance(exc, SessionProvisionError) and exc.code is not None:
-            error_metadata = {"code": exc.code}
+        error_code = getattr(exc, "code", None)
+        if isinstance(error_code, str) and error_code:
+            error_metadata = {"code": error_code}
         renderer.render(
             RuntimeEvent.error(
                 request_id=request_id,
@@ -802,7 +1458,7 @@ async def run(
         return 1
     finally:
         try:
-            if session_id and operation == CHAT_OPERATION:
+            if chat_session_acquired and session_id and operation == CHAT_OPERATION:
                 await _bounded_cleanup(
                     client.cleanup_session(
                         channel_id=CHANNEL_ID,
@@ -825,11 +1481,26 @@ async def _bounded_cleanup(awaitable: Any) -> None:
 
 
 __all__ = [
+    "AGENTS_GET_OPERATION",
+    "AGENTS_LIST_OPERATION",
+    "AGENTS_TOOLS_OPERATION",
     "CHANNEL_ID",
     "CHAT_OPERATION",
+    "CONTEXT_COMPACT_OPERATION",
+    "MEMORY_LIST_OPERATION",
+    "MEMORY_OPEN_OPERATION",
+    "MEMORY_STATUS_OPERATION",
+    "MCP_LIST_OPERATION",
+    "MCP_SHOW_OPERATION",
+    "MODEL_LIST_OPERATION",
+    "MODEL_SELECT_OPERATION",
+    "PERMISSIONS_SHOW_OPERATION",
     "SESSION_CREATE_OPERATION",
     "SESSION_DELETE_OPERATION",
     "SESSION_FORK_OPERATION",
+    "SESSION_LIST_OPERATION",
+    "SESSION_REWIND_LIST_OPERATION",
+    "SESSION_REWIND_OPERATION",
     "SESSION_SWITCH_OPERATION",
     "SKILLS_LIST_OPERATION",
     "run",

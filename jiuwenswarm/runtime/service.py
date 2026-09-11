@@ -10,11 +10,62 @@ operations; WebSocket framing remains in AgentServer.
 from __future__ import annotations
 
 import asyncio
+import datetime as _dt
 import inspect
 import logging
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.agent_catalog import (
+    AgentCatalogError,
+    AgentCatalogInput,
+    AgentCatalogResult,
+    AgentCatalogScope,
+    AgentDescriptor,
+    AgentToolsResult,
+    get_agent as get_catalog_agent,
+    list_agent_tools as build_agent_tool_catalog,
+    list_agents as build_agent_catalog,
+    resolve_agent_catalog_scope,
+)
+from jiuwenswarm.runtime.context_compaction import (
+    ContextCompactInput,
+    ContextCompactResult,
+)
+from jiuwenswarm.runtime.memory_catalog import (
+    MemoryCatalogError,
+    MemoryListResult,
+    MemoryLocationsResult,
+    MemoryScopeInput,
+    MemoryStatusResult,
+    ResolvedMemoryScope,
+    ensure_trusted_project,
+    get_memory_locations as build_memory_locations,
+    get_memory_status as build_memory_status,
+    list_memory_sources as build_memory_source_list,
+    resolve_existing_directory,
+)
+from jiuwenswarm.runtime.mcp_catalog import (
+    McpCatalogListInput,
+    McpCatalogListResult,
+    McpCatalogShowInput,
+    McpCatalogShowResult,
+    list_mcp_servers as build_mcp_catalog,
+    show_mcp_server as build_mcp_detail,
+)
+from jiuwenswarm.runtime.model_catalog import (
+    ModelCatalogError,
+    ModelCatalogResult,
+    ModelSelectionResult,
+    build_model_catalog,
+    resolve_model_selection,
+)
+from jiuwenswarm.runtime.permission_catalog import (
+    PermissionCatalogError,
+    PermissionSnapshotInput,
+    PermissionSnapshotResult,
+    read_permission_snapshot,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
@@ -36,6 +87,20 @@ from jiuwenswarm.runtime.session import (
     RuntimeSessionState,
     SessionPersistencePolicy,
     SessionWorkKind,
+)
+from jiuwenswarm.runtime.session_catalog import SessionListResult, SessionSummary
+from jiuwenswarm.runtime.session_mutation import session_mutation_lock
+from jiuwenswarm.runtime.session_rewind import (
+    SessionRewindAction,
+    SessionRewindContextPolicy,
+    SessionRewindError,
+    SessionRewindFile,
+    SessionRewindFileError,
+    SessionRewindInput,
+    SessionRewindListInput,
+    SessionRewindListResult,
+    SessionRewindResult,
+    SessionRewindTurn,
 )
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
@@ -60,6 +125,14 @@ _PROCESS_RUNTIME_EXTENSION_LOCK = asyncio.Lock()
 _PROCESS_RUNTIME_EXTENSION_USERS = 0
 _PROCESS_RUNTIME_EXTENSION_MANAGER: Any = None
 _PROCESS_RUNTIME_EXTENSION_REGISTRY: Any = None
+
+
+def _extract_compact_summary_processor(summary: str) -> str:
+    for line in str(summary or "").splitlines():
+        key, separator, value = line.partition(":")
+        if separator and key.strip().lower() == "processor":
+            return value.strip()
+    return ""
 
 
 class RuntimeStateError(RuntimeError):
@@ -111,8 +184,7 @@ async def _acquire_process_runtime_dependencies() -> None:
                     cleanup_errors.append(cleanup_error)
                 for cleanup_error in cleanup_errors:
                     logger.warning(
-                        "Runtime dependency rollback failed while preserving "
-                        "%s: %s",
+                        "Runtime dependency rollback failed while preserving %s: %s",
                         type(start_error).__name__,
                         cleanup_error,
                         exc_info=(
@@ -197,8 +269,7 @@ async def _acquire_process_runtime_extensions() -> bool:
                     ExtensionRegistry.reset_instance()
                 if cleanup_error is not None:
                     logger.warning(
-                        "Runtime extension rollback failed while preserving "
-                        "%s: %s",
+                        "Runtime extension rollback failed while preserving %s: %s",
                         type(load_error).__name__,
                         cleanup_error,
                         exc_info=(
@@ -297,9 +368,7 @@ class AgentRuntime:
         self._stateless_agents: dict[str, Any] = {}
         self._lifecycle_lock = asyncio.Lock()
         self._session_provision_prepares = 0
-        self._pending_session_provisions: set[
-            PreparedSessionProvision[Any]
-        ] = set()
+        self._pending_session_provisions: set[PreparedSessionProvision[Any]] = set()
         self._started = False
         self._closed = False
 
@@ -465,7 +534,978 @@ class AgentRuntime:
             work_mode=str(metadata.get("work_mode") or "").strip().lower(),
             project_id=str(metadata.get("project_id") or "").strip(),
             project_dir=str(metadata.get("project_dir") or "").strip(),
+            model=str(metadata.get("model") or "").strip(),
         )
+
+    async def list_models(
+        self,
+        *,
+        channel_id: str,
+        session_id: str | None = None,
+        selected_model: str = "",
+    ) -> ModelCatalogResult:
+        """Return a credential-free model catalog for a Runtime client."""
+        self._require_started()
+        normalized_channel_id = str(channel_id or "").strip().lower()
+        if not normalized_channel_id:
+            raise ModelCatalogError("channel_id is required", code="BAD_REQUEST")
+        current_selection = str(selected_model or "").strip()
+        target_session_id = str(session_id or "").strip()
+        if target_session_id:
+            descriptor = await self.describe_session(session_id=target_session_id)
+            if descriptor is None:
+                raise ModelCatalogError("session not found", code="NOT_FOUND")
+            if descriptor.channel_id.strip().lower() != normalized_channel_id:
+                raise ModelCatalogError(
+                    "session not found",
+                    code="NOT_FOUND",
+                )
+            current_selection = current_selection or descriptor.model
+
+        from jiuwenswarm.common.config import get_default_models
+
+        return build_model_catalog(
+            get_default_models(),
+            current_selection=current_selection,
+        )
+
+    async def select_model(
+        self,
+        *,
+        channel_id: str,
+        selection: str,
+        session_id: str | None = None,
+    ) -> ModelSelectionResult:
+        """Validate a model and persist it only to one owned Session."""
+        self._require_started()
+        normalized_session_id = str(session_id or "").strip()
+        catalog = await self.list_models(
+            channel_id=channel_id,
+            session_id=normalized_session_id or None,
+        )
+        selected = resolve_model_selection(catalog, selection)
+        if normalized_session_id:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                update_session_metadata,
+            )
+
+            update_session_metadata(
+                session_id=normalized_session_id,
+                model=selected.selection_key,
+                touch_last_message_at=False,
+                cache_bust=True,
+                sync_write=True,
+            )
+        return ModelSelectionResult(
+            model=selected,
+            session_id=normalized_session_id,
+            persisted=bool(normalized_session_id),
+        )
+
+    async def list_memory_sources(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryListResult:
+        """List Memory metadata without starting an index or opening files."""
+        scope = await self._resolve_memory_scope(memory_input)
+        return await asyncio.to_thread(build_memory_source_list, scope)
+
+    async def get_memory_status(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryStatusResult:
+        """Read safe configured Memory state without allocating resources."""
+        scope = await self._resolve_memory_scope(memory_input)
+        return await asyncio.to_thread(build_memory_status, scope)
+
+    async def get_memory_locations(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> MemoryLocationsResult:
+        """Resolve Memory paths without opening programs or creating folders."""
+        scope = await self._resolve_memory_scope(memory_input)
+        return build_memory_locations(scope)
+
+    async def list_agent_definitions(
+        self,
+        catalog_input: AgentCatalogInput,
+    ) -> AgentCatalogResult:
+        """List configured Agent definitions without creating an Agent."""
+        scope = await self._resolve_agent_catalog_scope(catalog_input)
+        return await asyncio.to_thread(build_agent_catalog, scope)
+
+    async def get_agent_definition(
+        self,
+        catalog_input: AgentCatalogInput,
+        *,
+        name: str,
+    ) -> AgentDescriptor:
+        """Read one active Agent definition through a safe DTO."""
+        scope = await self._resolve_agent_catalog_scope(catalog_input)
+        return await asyncio.to_thread(get_catalog_agent, scope, name)
+
+    async def list_agent_definition_tools(
+        self,
+        catalog_input: AgentCatalogInput,
+    ) -> AgentToolsResult:
+        """List static custom-Agent tool choices without Agent initialization."""
+        scope = await self._resolve_agent_catalog_scope(catalog_input)
+        return await asyncio.to_thread(build_agent_tool_catalog, scope)
+
+    async def _resolve_agent_catalog_scope(
+        self,
+        catalog_input: AgentCatalogInput,
+    ) -> AgentCatalogScope:
+        self._require_started()
+        channel_id = str(catalog_input.channel_id or "").strip().lower()
+        if not channel_id:
+            raise AgentCatalogError("channel_id is required")
+
+        session_id = str(catalog_input.session_id or "").strip()
+        descriptor = (
+            await self.describe_session(session_id=session_id) if session_id else None
+        )
+        if session_id and (
+            descriptor is None
+            or (
+                descriptor.channel_id
+                and descriptor.channel_id.strip().lower() != channel_id
+            )
+        ):
+            raise AgentCatalogError("session not found", code="NOT_FOUND")
+
+        bound_project = descriptor.project_dir if descriptor is not None else ""
+        project_dir = bound_project or catalog_input.project_dir
+        trusted_dirs = (bound_project,) if bound_project else catalog_input.trusted_dirs
+        return resolve_agent_catalog_scope(
+            project_dir,
+            trusted_dirs=trusted_dirs,
+        )
+
+    async def list_mcp_servers(
+        self,
+        catalog_input: McpCatalogListInput | None = None,
+    ) -> McpCatalogListResult:
+        """List safe static MCP configuration without probing MCP servers."""
+        self._require_started()
+        entries = await asyncio.to_thread(self._load_static_mcp_entries)
+        return build_mcp_catalog(entries, catalog_input)
+
+    async def show_mcp_server(
+        self,
+        catalog_input: McpCatalogShowInput,
+    ) -> McpCatalogShowResult:
+        """Read one safe static MCP descriptor without querying its tools."""
+        self._require_started()
+        entries = await asyncio.to_thread(self._load_static_mcp_entries)
+        return build_mcp_detail(entries, catalog_input)
+
+    @staticmethod
+    def _load_static_mcp_entries() -> list[dict[str, Any]]:
+        """Load established MCP stores without resolving secrets or endpoints."""
+        from jiuwenswarm.common.config import get_mcp_servers
+
+        entries = [dict(item) for item in get_mcp_servers()]
+        try:
+            from jiuwenswarm.server.runtime.mcp.state_store import read_mcp_state
+
+            state = read_mcp_state()
+            records = state.get("mcp") if isinstance(state, dict) else {}
+            records = records if isinstance(records, dict) else {}
+        except Exception:  # noqa: BLE001 - state enrichment is best effort
+            records = {}
+        for entry in entries:
+            name = str(entry.get("name") or "").strip()
+            record = records.get(name)
+            if not isinstance(record, dict):
+                continue
+            entry["connection_state"] = record.get("state")
+            entry["integration_type"] = record.get("integration_type")
+        return entries
+
+    async def get_permission_snapshot(
+        self,
+        snapshot_input: PermissionSnapshotInput,
+    ) -> PermissionSnapshotResult:
+        """Read effective permission configuration without mutating it."""
+        self._require_started()
+        channel_id = str(snapshot_input.channel_id or "").strip().lower()
+        if not channel_id:
+            raise PermissionCatalogError(
+                "channel_id is required",
+                code="BAD_REQUEST",
+            )
+        session_id = str(snapshot_input.session_id or "").strip()
+        if session_id:
+            descriptor = await self.describe_session(session_id=session_id)
+            if descriptor is None or (
+                descriptor.channel_id
+                and descriptor.channel_id.strip().lower() != channel_id
+            ):
+                raise PermissionCatalogError(
+                    "session not found",
+                    code="NOT_FOUND",
+                )
+        return await asyncio.to_thread(read_permission_snapshot, snapshot_input)
+
+    async def _resolve_memory_scope(
+        self,
+        memory_input: MemoryScopeInput,
+    ) -> ResolvedMemoryScope:
+        self._require_started()
+        channel_id = str(memory_input.channel_id or "").strip().lower()
+        if not channel_id:
+            raise MemoryCatalogError("channel_id is required")
+
+        session_id = str(memory_input.session_id or "").strip()
+        descriptor = (
+            await self.describe_session(session_id=session_id) if session_id else None
+        )
+        if session_id and (
+            descriptor is None
+            or (
+                descriptor.channel_id
+                and descriptor.channel_id.strip().lower() != channel_id
+            )
+        ):
+            raise MemoryCatalogError("session not found", code="NOT_FOUND")
+
+        bound_project = descriptor.project_dir if descriptor is not None else ""
+        project_dir = resolve_existing_directory(
+            bound_project or memory_input.project_dir,
+            field_name="project directory",
+        )
+        if not bound_project:
+            ensure_trusted_project(project_dir, memory_input.trusted_dirs)
+        mode = str(
+            (descriptor.mode if descriptor is not None else "")
+            or memory_input.mode
+            or "agent.code.normal"
+        ).strip()
+        return ResolvedMemoryScope(
+            channel_id=channel_id,
+            session_id=session_id,
+            mode=mode,
+            project_dir=project_dir,
+        )
+
+    async def list_sessions(
+        self,
+        *,
+        channel_id: str,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> SessionListResult:
+        """Return one channel-owned Session page without transport metadata."""
+        self._require_started()
+        normalized_channel_id = str(channel_id or "").strip().lower()
+        if not normalized_channel_id:
+            raise ValueError("channel_id is required")
+        if (
+            isinstance(limit, bool)
+            or not isinstance(limit, int)
+            or not 1 <= limit <= 200
+        ):
+            raise ValueError("limit must be between 1 and 200")
+        if isinstance(offset, bool) or not isinstance(offset, int) or offset < 0:
+            raise ValueError("offset must be a non-negative integer")
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_all_sessions_metadata,
+        )
+
+        metadata_items, total = get_all_sessions_metadata(
+            limit=limit,
+            offset=offset,
+            channel_id=normalized_channel_id,
+        )
+
+        def _float_value(value: Any) -> float:
+            if isinstance(value, bool):
+                return 0.0
+            try:
+                return float(value or 0.0)
+            except (TypeError, ValueError):
+                return 0.0
+
+        def _int_value(value: Any) -> int:
+            if isinstance(value, bool):
+                return 0
+            try:
+                return int(value or 0)
+            except (TypeError, ValueError):
+                return 0
+
+        sessions = tuple(
+            SessionSummary(
+                session_id=str(item.get("session_id") or "").strip(),
+                channel_id=str(item.get("channel_id") or "").strip(),
+                title=str(item.get("title") or "").strip(),
+                mode=str(item.get("mode") or "").strip(),
+                work_mode=str(item.get("work_mode") or "").strip().lower(),
+                project_id=str(item.get("project_id") or "").strip(),
+                project_dir=str(item.get("project_dir") or "").strip(),
+                model=str(item.get("model") or "").strip(),
+                created_at=_float_value(item.get("created_at")),
+                last_message_at=_float_value(item.get("last_message_at")),
+                message_count=_int_value(item.get("message_count")),
+            )
+            for item in metadata_items
+        )
+        return SessionListResult(
+            sessions=sessions,
+            total=total,
+            limit=limit,
+            offset=offset,
+        )
+
+    async def list_rewind_turns(
+        self,
+        rewind_input: SessionRewindListInput,
+    ) -> SessionRewindListResult:
+        """List selectable turns without exposing history storage to callers."""
+        self._require_started()
+        session_id, descriptor, _session_dir = await self._rewind_session_scope(
+            channel_id=rewind_input.channel_id,
+            session_id=rewind_input.session_id,
+            require_existing=False,
+        )
+        from jiuwenswarm.agents.harness.common.session_ops_service import (
+            list_session_turns,
+        )
+
+        project_dir = (
+            str(rewind_input.project_dir or "").strip()
+            or (descriptor.project_dir if descriptor is not None else "")
+            or None
+        )
+        payload = await asyncio.to_thread(
+            list_session_turns,
+            session_id=session_id,
+            project_dir=project_dir,
+        )
+        raw_turns = payload.get("turns") if isinstance(payload, dict) else []
+        turns: list[SessionRewindTurn] = []
+        for raw_turn in raw_turns if isinstance(raw_turns, list) else []:
+            if not isinstance(raw_turn, dict):
+                continue
+            stats = raw_turn.get("stats")
+            stats = stats if isinstance(stats, dict) else {}
+            raw_files = raw_turn.get("files")
+            files: list[SessionRewindFile] = []
+            for raw_file in raw_files if isinstance(raw_files, list) else []:
+                if not isinstance(raw_file, dict):
+                    continue
+                files.append(
+                    SessionRewindFile(
+                        path=str(raw_file.get("path") or ""),
+                        lines_added=self._safe_int(raw_file.get("linesAdded")),
+                        lines_removed=self._safe_int(raw_file.get("linesRemoved")),
+                        is_new_file=bool(raw_file.get("isNewFile")),
+                    )
+                )
+            turns.append(
+                SessionRewindTurn(
+                    turn_index=self._safe_int(raw_turn.get("turn_index")),
+                    content_preview=str(raw_turn.get("content_preview") or ""),
+                    timestamp=raw_turn.get("timestamp", 0),
+                    message_id=str(raw_turn.get("id") or ""),
+                    request_id=str(raw_turn.get("request_id") or ""),
+                    files_changed=self._safe_int(stats.get("filesChanged")),
+                    lines_added=self._safe_int(stats.get("linesAdded")),
+                    lines_removed=self._safe_int(stats.get("linesRemoved")),
+                    files=tuple(files),
+                )
+            )
+        total = self._safe_int(payload.get("total")) if isinstance(payload, dict) else 0
+        return SessionRewindListResult(turns=tuple(turns), total=total)
+
+    async def rewind_session(
+        self,
+        rewind_input: SessionRewindInput,
+    ) -> SessionRewindResult:
+        """Apply one durable rewind through the shared Runtime boundary.
+
+        Waiting for another process is cancellable and has no side effects.
+        Once the first mutation starts, cancellation is deferred until history,
+        files and persisted Agent context reach the same terminal state.
+        """
+        self._require_started()
+        if isinstance(rewind_input.turn_index, bool):
+            raise SessionRewindError("turn_index must be integer")
+        try:
+            turn_index = int(rewind_input.turn_index)
+        except (TypeError, ValueError) as exc:
+            raise SessionRewindError("turn_index must be integer") from exc
+        if turn_index < 1:
+            raise SessionRewindError("turn_index must be >= 1")
+        if not isinstance(rewind_input.action, SessionRewindAction):
+            raise SessionRewindError("unknown rewind action")
+
+        session_id, descriptor, session_dir = await self._rewind_session_scope(
+            channel_id=rewind_input.channel_id,
+            session_id=rewind_input.session_id,
+            require_existing=True,
+        )
+        if (
+            rewind_input.context_policy is SessionRewindContextPolicy.ENSURE_PERSISTED
+            and descriptor is not None
+            and not self.is_single_agent_session_mode(
+                descriptor.mode,
+                work_mode=descriptor.work_mode,
+            )
+        ):
+            raise SessionRewindError(
+                "session rewind is not supported for this mode",
+                code="UNSUPPORTED_MODE",
+            )
+        async with session_mutation_lock(session_dir):
+            resolved_pair: tuple[Any, Any] | None = None
+            if (
+                rewind_input.require_context
+                or rewind_input.context_policy
+                is SessionRewindContextPolicy.ENSURE_PERSISTED
+            ):
+                resolved_pair = await self._resolve_rewind_context_agent(
+                    channel_id=rewind_input.channel_id,
+                    session_id=session_id,
+                    descriptor=descriptor,
+                    ensure=(
+                        rewind_input.context_policy
+                        is SessionRewindContextPolicy.ENSURE_PERSISTED
+                    ),
+                )
+                if rewind_input.require_context and resolved_pair is None:
+                    raise RuntimeError("no agent instance available")
+
+            mutation = asyncio.create_task(
+                self._apply_session_rewind(
+                    rewind_input,
+                    session_id=session_id,
+                    turn_index=turn_index,
+                    descriptor=descriptor,
+                    resolved_pair=resolved_pair,
+                )
+            )
+            try:
+                return await asyncio.shield(mutation)
+            except asyncio.CancelledError:
+                # Do not let Ctrl+C or a disconnected transport stop between
+                # history truncation and checkpointer persistence.
+                current = asyncio.current_task()
+                while not mutation.done():
+                    if current is not None:
+                        current.uncancel()
+                    try:
+                        await asyncio.shield(mutation)
+                    except asyncio.CancelledError:
+                        continue
+                    except BaseException:
+                        break
+                if not mutation.cancelled():
+                    try:
+                        mutation.result()
+                    except BaseException as exc:
+                        logger.warning(
+                            "Session rewind failed while completing cancelled "
+                            "operation %s: %s",
+                            rewind_input.operation_id,
+                            exc,
+                            exc_info=(type(exc), exc, exc.__traceback__),
+                        )
+                raise
+
+    async def _rewind_session_scope(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        require_existing: bool,
+    ) -> tuple[str, SessionDescriptor | None, Any]:
+        normalized_channel = str(channel_id or "").strip().lower()
+        normalized_session = str(session_id or "").strip()
+        if not normalized_channel:
+            raise SessionRewindError("channel_id is required")
+        if not normalized_session:
+            raise SessionRewindError("session_id is required")
+
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+        from jiuwenswarm.server.runtime.session.session_history import (
+            resolve_session_dir,
+        )
+
+        session_dir, invalid_reason = resolve_session_dir(
+            normalized_session,
+            sessions_root=get_agent_sessions_dir(),
+        )
+        if session_dir is None:
+            raise SessionRewindError(invalid_reason or "invalid session_id")
+        descriptor = await self.describe_session(session_id=normalized_session)
+        if (
+            descriptor is not None
+            and descriptor.channel_id
+            and descriptor.channel_id.strip().lower() != normalized_channel
+        ):
+            raise SessionRewindError("session not found", code="NOT_FOUND")
+        if require_existing and not session_dir.is_dir():
+            raise SessionRewindError("session history not found")
+        return normalized_session, descriptor, session_dir
+
+    async def _apply_session_rewind(
+        self,
+        rewind_input: SessionRewindInput,
+        *,
+        session_id: str,
+        turn_index: int,
+        descriptor: SessionDescriptor | None,
+        resolved_pair: tuple[Any, Any] | None,
+    ) -> SessionRewindResult:
+        from jiuwenswarm.agents.harness.common.session_ops_service import (
+            compact_partial_session,
+            restore_session_files,
+            rewind_session,
+            rewind_session_context,
+        )
+
+        restore_payload: dict[str, Any] = {}
+        if rewind_input.action in {
+            SessionRewindAction.CONVERSATION_AND_FILES,
+            SessionRewindAction.FILES_ONLY,
+        }:
+            restore_payload = await asyncio.to_thread(
+                restore_session_files,
+                session_id=session_id,
+                turn_index=turn_index,
+                project_dir=(
+                    descriptor.project_dir
+                    if descriptor is not None and descriptor.project_dir
+                    else None
+                ),
+            )
+            if rewind_input.action is SessionRewindAction.FILES_ONLY:
+                return self._build_rewind_result(
+                    rewind_input.action,
+                    restore_payload,
+                    session_id=session_id,
+                    turn_index=turn_index,
+                )
+
+        if rewind_input.action is SessionRewindAction.COMPACT_UP_TO:
+            rewind_payload = await asyncio.to_thread(
+                compact_partial_session,
+                session_id=session_id,
+                turn_index=turn_index,
+                direction="up_to",
+                llm_summary=rewind_input.compact_summary,
+            )
+        else:
+            rewind_payload = await asyncio.to_thread(
+                rewind_session,
+                session_id=session_id,
+                turn_index=turn_index,
+            )
+
+        pair = resolved_pair
+        if pair is None:
+            pair = await self._resolve_rewind_context_agent(
+                channel_id=rewind_input.channel_id,
+                session_id=session_id,
+                descriptor=descriptor,
+                ensure=False,
+            )
+        context_ok = False
+        if pair is None:
+            logger.warning(
+                "Runtime rewind has no Agent context for session_id=%s channel_id=%s",
+                session_id,
+                rewind_input.channel_id,
+            )
+        else:
+            deep_agent, _react_agent = pair
+            try:
+                context_ok = await rewind_session_context(
+                    deep_agent=deep_agent,
+                    session_id=session_id,
+                    turn_index=turn_index,
+                )
+            except Exception as exc:  # preserve established partial-success contract
+                logger.warning("Runtime rewind context rebuild failed: %s", exc)
+            if not context_ok:
+                logger.warning(
+                    "Runtime rewind committed history with context_rebuilt=false "
+                    "for session_id=%s",
+                    session_id,
+                )
+
+        if rewind_input.action is SessionRewindAction.COMPACT_FROM:
+            self._append_rewind_compact_records(
+                session_id=session_id,
+                channel_id=rewind_input.channel_id,
+                turn_index=turn_index,
+                summarized_count=rewind_input.summarized_count,
+                compact_summary=rewind_input.compact_summary,
+            )
+            rewind_payload = {
+                **rewind_payload,
+                "summarized_messages": rewind_input.summarized_count,
+            }
+
+        return self._build_rewind_result(
+            rewind_input.action,
+            rewind_payload,
+            session_id=session_id,
+            turn_index=turn_index,
+            context_rebuilt=context_ok,
+            restore_payload=restore_payload,
+        )
+
+    async def _resolve_rewind_context_agent(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        descriptor: SessionDescriptor | None,
+        ensure: bool,
+    ) -> tuple[Any, Any] | None:
+        agent = self._agent_manager.get_agent_for_session_nowait(
+            channel_id=channel_id or "default",
+            session_id=session_id,
+        )
+        if agent is None:
+            agent = self._agent_manager.get_agent_nowait(
+                channel_id=channel_id or "default"
+            )
+        if agent is None and ensure:
+            from jiuwenswarm.runtime.request import resolve_agent_request_mode
+
+            requested_mode = (
+                descriptor.mode
+                if descriptor is not None and descriptor.mode
+                else "agent"
+            )
+            mode, sub_mode, _canonical = resolve_agent_request_mode(
+                requested_mode,
+                work_mode=(descriptor.work_mode if descriptor is not None else None),
+            )
+            agent = await self._agent_manager.get_agent(
+                channel_id=channel_id or "default",
+                mode="agent" if mode == "auto_harness" else mode,
+                project_dir=(
+                    descriptor.project_dir if descriptor is not None else None
+                ),
+                sub_mode=sub_mode,
+            )
+        if agent is None:
+            return None
+
+        deep_agent = None
+        adapter = self._rewind_adapter(agent)
+        if adapter is not None:
+            if getattr(adapter, "_is_session_scoped_adapter", False):
+                deep_agent = getattr(adapter, "_instance", None)
+            else:
+                get_cached = getattr(adapter, "_get_cached_session_adapter", None)
+                if callable(get_cached):
+                    session_adapter = get_cached(session_id)
+                    if session_adapter is not None:
+                        deep_agent = getattr(session_adapter, "_instance", None)
+        if deep_agent is None:
+            deep_agent = await agent.ensure_instance()
+        if deep_agent is None:
+            return None
+        react_agent = getattr(deep_agent, "react_agent", None)
+        if react_agent is None:
+            return None
+        return deep_agent, react_agent
+
+    @staticmethod
+    def _rewind_adapter(agent: Any) -> Any:
+        for attribute in ("_adapter", "adapter", "_active_adapter"):
+            adapter = getattr(agent, attribute, None)
+            if adapter is not None:
+                return adapter
+        return agent
+
+    @staticmethod
+    def _build_rewind_result(
+        action: SessionRewindAction,
+        payload: dict[str, Any],
+        *,
+        session_id: str,
+        turn_index: int,
+        context_rebuilt: bool | None = None,
+        restore_payload: dict[str, Any] | None = None,
+    ) -> SessionRewindResult:
+        restore = restore_payload if restore_payload is not None else payload
+        raw_errors = restore.get("errors")
+        error_items = raw_errors if isinstance(raw_errors, list) else []
+        errors = tuple(
+            SessionRewindFileError(
+                file=str(item.get("file") or ""),
+                error=str(item.get("error") or ""),
+            )
+            for item in error_items
+            if isinstance(item, dict)
+        )
+        return SessionRewindResult(
+            action=action,
+            session_id=str(payload.get("session_id") or session_id),
+            turn_index=AgentRuntime._safe_int(
+                payload.get("turn_index"), fallback=turn_index
+            ),
+            content=(
+                str(payload.get("content") or "") if "content" in payload else None
+            ),
+            content_preview=(
+                str(payload.get("content_preview") or "")
+                if "content_preview" in payload
+                else None
+            ),
+            remaining_records=(
+                AgentRuntime._safe_int(payload.get("remaining_records"))
+                if "remaining_records" in payload
+                else None
+            ),
+            removed_records=(
+                AgentRuntime._safe_int(payload.get("removed_records"))
+                if "removed_records" in payload
+                else None
+            ),
+            context_rebuilt=context_rebuilt,
+            restored_files=tuple(
+                str(item) for item in restore.get("restored_files", [])
+            ),
+            deleted_files=tuple(str(item) for item in restore.get("deleted_files", [])),
+            restore_errors=errors,
+            summarized_messages=(
+                AgentRuntime._safe_int(payload.get("summarized_messages"))
+                if "summarized_messages" in payload
+                else None
+            ),
+            direction=(
+                str(payload.get("direction") or "") if "direction" in payload else None
+            ),
+        )
+
+    @staticmethod
+    def _append_rewind_compact_records(
+        *,
+        session_id: str,
+        channel_id: str,
+        turn_index: int,
+        summarized_count: int,
+        compact_summary: str,
+    ) -> None:
+        import time
+        import uuid
+
+        from jiuwenswarm.server.runtime.session.session_history import (
+            append_history_record,
+        )
+
+        request_id = str(uuid.uuid4())
+        now = time.time()
+        metadata = {
+            "trigger": "manual_rewind",
+            "direction": "from",
+            "turn_index": turn_index,
+            "summarized_messages": summarized_count,
+        }
+        append_history_record(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=channel_id or "tui",
+            role="assistant",
+            event_type="context.compact_boundary",
+            content="Conversation compacted",
+            timestamp=now,
+            extra={"compact_metadata": metadata},
+        )
+        append_history_record(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=channel_id or "tui",
+            role="assistant",
+            event_type="context.rewind_summary",
+            content=f"Summarized {summarized_count} messages from this point.",
+            timestamp=now + 0.001,
+            extra={"compact_metadata": metadata, "is_compact_summary": True},
+        )
+        if compact_summary.strip():
+            append_history_record(
+                session_id=session_id,
+                request_id=request_id,
+                channel_id=channel_id or "tui",
+                role="assistant",
+                event_type="context.compact_summary",
+                content=compact_summary.strip(),
+                timestamp=now + 0.002,
+                extra={
+                    "compact_metadata": metadata,
+                    "is_compact_summary": True,
+                    "transcript_only": True,
+                },
+            )
+
+    @staticmethod
+    def _safe_int(value: Any, *, fallback: int = 0) -> int:
+        if isinstance(value, bool):
+            return fallback
+        try:
+            return int(value)
+        except (TypeError, ValueError):
+            return fallback
+
+    async def compact_context(
+        self,
+        compact_input: ContextCompactInput,
+        *,
+        on_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
+    ) -> ContextCompactResult:
+        """Compact one Session without depending on a transport or Server."""
+        self._require_started()
+
+        from openjiuwen.harness.observability import (
+            close_agent_run_span,
+            open_agent_run_span,
+        )
+
+        from jiuwenswarm.agents.harness.agent_observability import (
+            sync_agent_observability,
+        )
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from jiuwenswarm.runtime.events import RuntimeEvent
+        from jiuwenswarm.runtime.request import resolve_agent_request_mode
+        from jiuwenswarm.server.runtime.session.session_history import (
+            append_compact_history_records,
+        )
+
+        session_id = compact_input.session_id or "default"
+        channel_id = compact_input.channel_id or "default"
+        requested_mode = compact_input.mode or "agent"
+        mode, sub_mode, canonical_mode = resolve_agent_request_mode(requested_mode)
+        agent_mode = "agent" if mode == "auto_harness" else mode
+
+        agent = self._agent_manager.get_agent_for_session_nowait(
+            channel_id=channel_id,
+            session_id=session_id,
+        )
+        if agent is None:
+            agent = await self._agent_manager.get_agent(
+                channel_id=channel_id,
+                mode=agent_mode,
+                project_dir=compact_input.project_dir,
+                sub_mode=sub_mode,
+            )
+        if agent is None:
+            raise ValueError("Failed to get agent")
+
+        await agent.ensure_instance()
+        sync_agent_observability()
+
+        execution_subject = None
+        if is_team_mode(canonical_mode):
+            from jiuwenswarm.agents.harness.team import get_team_manager
+
+            team_agent = get_team_manager(channel_id).get_team_agent(session_id)
+            if team_agent is not None:
+                execution_subject = team_agent.observability_execution_subject(
+                    session_id
+                )
+
+        summary = ""
+        run_span = open_agent_run_span(
+            session_id=session_id,
+            mode=requested_mode,
+            request_id=compact_input.request_id,
+            run_id=compact_input.request_id,
+            turn_id=compact_input.request_id,
+            execution_subject=execution_subject,
+        )
+        try:
+            result_data = await agent.compress_context(
+                session_id=session_id,
+                return_state=True,
+            )
+            result = result_data.get("result")
+            stats = result_data.get("stats")
+            state = (
+                result_data.get("state")
+                if isinstance(result_data.get("state"), dict)
+                else {}
+            )
+            summary = str(
+                result_data.get("compact_summary")
+                or state.get("compact_summary")
+                or result_data.get("summary")
+                or ""
+            ).strip()
+            events: list[RuntimeEvent] = []
+
+            if result == "compressed" and stats:
+                before_tokens = stats.get("raw_total_tokens", 0)
+                after_tokens = stats.get("total_tokens", 0)
+                if before_tokens > 0:
+                    rate = round(
+                        (before_tokens - after_tokens) / before_tokens * 100,
+                        1,
+                    )
+                else:
+                    rate = 0
+                stats_summary = (
+                    f"\u2713 Context compacted: {after_tokens / 1000:.1f}K/"
+                    f"{before_tokens / 1000:.1f}K tokens ({rate:.1f}% saved)"
+                )
+
+                if summary:
+                    append_compact_history_records(
+                        session_id=session_id,
+                        request_id=compact_input.request_id,
+                        channel_id=channel_id,
+                        summary=summary,
+                        timestamp=_dt.datetime.now().timestamp(),
+                        trigger="manual",
+                        stats=stats,
+                        mode=requested_mode,
+                    )
+                    event = RuntimeEvent.control(
+                        request_id=compact_input.request_id,
+                        channel_id=channel_id,
+                        session_id=session_id,
+                        payload={
+                            **state,
+                            "event_type": "context.compression_state",
+                            "status": state.get("status") or "completed",
+                            "phase": state.get("phase") or "active_compress",
+                            "processor": state.get("processor")
+                            or _extract_compact_summary_processor(summary),
+                            "before": state.get("before") or {"tokens": before_tokens},
+                            "after": state.get("after") or {"tokens": after_tokens},
+                            "saved": state.get("saved")
+                            or {
+                                "tokens": before_tokens - after_tokens,
+                                "percent": rate,
+                            },
+                            "summary": stats_summary,
+                            "compact_summary": summary,
+                        },
+                    )
+                    events.append(event)
+                    if on_event is not None:
+                        await on_event(event)
+
+            return ContextCompactResult(
+                result=result,
+                stats=stats,
+                summary=summary,
+                events=tuple(events),
+            )
+        finally:
+            close_agent_run_span(
+                run_span,
+                session_id=session_id,
+                output=summary,
+            )
 
     async def prepare_session_fork(
         self,
@@ -686,9 +1726,7 @@ class AgentRuntime:
                 and response.payload.get("success") is False
             )
         ):
-            await self._clear_pending_interaction(
-                request.session_id or "default"
-            )
+            await self._clear_pending_interaction(request.session_id or "default")
         if request.session_id and self.owns_session(request.session_id):
             params = request.params if isinstance(request.params, dict) else {}
             target_request_id = str(params.get("target_request_id") or "").strip()
@@ -836,11 +1874,7 @@ class AgentRuntime:
                 params = request.params if isinstance(request.params, dict) else {}
                 await self._clear_pending_interaction(
                     request.session_id or "default",
-                    str(
-                        params.get("request_id")
-                        or params.get("interaction_id")
-                        or ""
-                    ),
+                    str(params.get("request_id") or params.get("interaction_id") or ""),
                 )
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
@@ -1073,15 +2107,11 @@ class AgentRuntime:
         channel_id = request.channel_id or "default"
         is_chat_turn = request.req_method in self._chat_turn_methods()
         foreground = is_chat_turn and not background
-        tracks_kvc_task = (
-            is_chat_turn and not background and self._enable_kvc_tracking
-        )
+        tracks_kvc_task = is_chat_turn and not background and self._enable_kvc_tracking
         kvc_task_started = False
         kvc_task_succeeded = False
         admitted = (
-            is_chat_turn
-            and not background
-            and not self._request_targets_team(request)
+            is_chat_turn and not background and not self._request_targets_team(request)
         )
         interrupt_resume = self._is_interrupt_resume_request(request)
         interaction_answer = (
@@ -1113,11 +2143,7 @@ class AgentRuntime:
                 params = request.params if isinstance(request.params, dict) else {}
                 await self._clear_pending_interaction(
                     request.session_id or "default",
-                    str(
-                        params.get("request_id")
-                        or params.get("interaction_id")
-                        or ""
-                    ),
+                    str(params.get("request_id") or params.get("interaction_id") or ""),
                 )
             if stateless:
                 agent = await self._get_stateless_agent(channel_id)
@@ -1216,7 +2242,9 @@ class AgentRuntime:
                         succeeded=kvc_task_succeeded,
                     )
 
-            primary_error: BaseException | None = generator_exit or cancellation or error
+            primary_error: BaseException | None = (
+                generator_exit or cancellation or error
+            )
             if primary_error is not None:
                 self._log_suppressed_cleanup_error(
                     "plan post-processing",
@@ -1279,9 +2307,7 @@ class AgentRuntime:
         )
         lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
         agent = (
-            lookup(channel_id, request.session_id or "")
-            if callable(lookup)
-            else None
+            lookup(channel_id, request.session_id or "") if callable(lookup) else None
         )
         if agent is None:
             raise RuntimeError(
@@ -1376,10 +2402,7 @@ class AgentRuntime:
                 return
             for prepared in tuple(self._pending_session_provisions):
                 self._discard_finalized_session_provision(prepared)
-            if (
-                self._session_provision_prepares > 0
-                or self._pending_session_provisions
-            ):
+            if self._session_provision_prepares > 0 or self._pending_session_provisions:
                 raise RuntimeStateError(
                     "runtime has unfinished session provisions; "
                     "commit or abort them before close"
@@ -1395,7 +2418,9 @@ class AgentRuntime:
                 cleanup_errors.append(exc)
             try:
                 await self._agent_manager.cancel_all_inflight_work("[runtime close] ")
-            except BaseException as exc:  # preserve cancellation until cleanup completes
+            except (
+                BaseException
+            ) as exc:  # preserve cancellation until cleanup completes
                 cleanup_errors.append(exc)
             for agent in self._stateless_agents.values():
                 cleanup = getattr(agent, "cleanup", None)
@@ -1552,9 +2577,11 @@ class AgentRuntime:
             return None
         if params.get("attach_goal") is True:
             return SessionWorkKind.GOAL_ATTACH
-        input_mode = str(
-            params.get("input_mode") or params.get("runtime_mode") or ""
-        ).strip().lower()
+        input_mode = (
+            str(params.get("input_mode") or params.get("runtime_mode") or "")
+            .strip()
+            .lower()
+        )
         if input_mode in {"follow_up", "steer"}:
             return SessionWorkKind.CONTROL_INPUT
         return (

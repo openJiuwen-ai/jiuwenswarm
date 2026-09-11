@@ -143,6 +143,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="可信目录；可重复指定多个目录。",
     )
     parser.add_argument("--mode", default="code.normal", help="Runtime 运行模式。")
+    parser.add_argument("--model", help="本次请求使用的已配置聊天模型。")
     parser.add_argument(
         "--work-mode",
         choices=("code", "work"),
@@ -186,6 +187,21 @@ def build_parser() -> argparse.ArgumentParser:
             "session.switch",
             "session.fork",
             "session.delete",
+            "session.list",
+            "model.list",
+            "model.select",
+            "context.compact",
+            "session.rewind.list",
+            "session.rewind",
+            "memory.list",
+            "memory.status",
+            "memory.open",
+            "mcp.list",
+            "mcp.show",
+            "agents.list",
+            "agents.get",
+            "agents.tools",
+            "permissions.show",
         ),
         default="chat",
         help=argparse.SUPPRESS,

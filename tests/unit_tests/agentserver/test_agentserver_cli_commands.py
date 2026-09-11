@@ -9,6 +9,8 @@ from jiuwenswarm.server.runtime.mcp import state_store as state_store_mod
 from jiuwenswarm.server.runtime.mcp import registry as registry_mod
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime import ContextCompactInput, ContextCompactResult
+from jiuwenswarm.runtime.events import RuntimeEvent
 
 
 class FakeWebSocket:
@@ -267,37 +269,23 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
         params={"instructions": "focus on architecture"},
     )
 
-    class MockAgent:
-        async def ensure_instance(self):
-            # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
-            return None
+    compact_calls = []
 
-        async def compress_context(self, session_id, *, return_state=False):
-            return {
-                "result": "compressed",
-                "stats": {
+    class MockRuntime:
+        async def compact_context(self, compact_input, *, on_event=None):
+            compact_calls.append((compact_input, on_event))
+            return ContextCompactResult(
+                result="compressed",
+                stats={
                     "raw_total_tokens": 1000,
                     "total_tokens": 300,
                 },
-            }
+            )
 
-    mock_agent = MockAgent()
-
-    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
-        return mock_agent
-
-    async def mock_send_push(msg):
-        pass
-
-    monkeypatch.setattr(
-        server.get_agent_manager_for_test(),
-        "get_agent",
-        mock_get_agent,
-    )
     monkeypatch.setattr(
         server,
-        "send_push",
-        mock_send_push,
+        "_execution_runtime",
+        lambda: MockRuntime(),
     )
 
     await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
@@ -315,6 +303,14 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
             "ok": True,
         }
     ]
+    assert compact_calls[0][0] == ContextCompactInput(
+        request_id="req-compact",
+        channel_id="tui",
+        session_id="default",
+        mode="agent",
+        project_dir=None,
+    )
+    assert callable(compact_calls[0][1])
 
 
 @pytest.mark.asyncio
@@ -327,39 +323,35 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
         params={"mode": "agent.plan"},
     )
 
-    class MockAgent:
-        async def ensure_instance(self):
-            # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
-            return None
-
-        async def compress_context(self, session_id, *, return_state=False):
-            return {
-                "result": "compressed",
-                "stats": {
-                    "raw_total_tokens": 1000,
-                    "total_tokens": 300,
-                },
-                "state": {
-                    "status": "completed",
-                    "phase": "active_compress",
-                    "compact_summary": "manual compact summary",
-                },
-                "compact_summary": "manual compact summary",
-            }
-
     pushed = []
-
-    async def mock_get_agent(channel_id, mode, project_dir=None, sub_mode=None):
-        return MockAgent()
 
     async def mock_send_push(msg):
         pushed.append(msg)
 
-    monkeypatch.setattr(
-        server.get_agent_manager_for_test(),
-        "get_agent",
-        mock_get_agent,
-    )
+    class MockRuntime:
+        async def compact_context(self, compact_input, *, on_event=None):
+            assert on_event is not None
+            await on_event(
+                RuntimeEvent.control(
+                    request_id=compact_input.request_id,
+                    channel_id=compact_input.channel_id,
+                    session_id=compact_input.session_id,
+                    payload={
+                        "event_type": "context.compression_state",
+                        "compact_summary": "manual compact summary",
+                    },
+                )
+            )
+            return ContextCompactResult(
+                result="compressed",
+                stats={
+                    "raw_total_tokens": 1000,
+                    "total_tokens": 300,
+                },
+                summary="manual compact summary",
+            )
+
+    monkeypatch.setattr(server, "_execution_runtime", lambda: MockRuntime())
     monkeypatch.setattr(server, "send_push", mock_send_push)
 
     await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
@@ -371,14 +363,20 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
     assert len(compression_state_pushes) == 1
     assert compression_state_pushes[0]["session_id"] == "session-1"
     assert compression_state_pushes[0]["payload"]["compact_summary"] == "manual compact summary"
+    assert "request_id" not in compression_state_pushes[0]
+    assert fake_ws.sent[0]["payload"] == {
+        "result": "compressed",
+        "stats": {
+            "raw_total_tokens": 1000,
+            "total_tokens": 300,
+        },
+        "summary": "manual compact summary",
+        "compact_summary": "manual compact summary",
+    }
 
 
 @pytest.mark.asyncio
-async def test_handle_command_compact_attributes_team_work_to_live_leader(server, fake_ws, monkeypatch):
-    from openjiuwen.harness import observability as harness_observability
-    from jiuwenswarm.agents.harness import agent_observability
-    from jiuwenswarm.agents.harness import team as team_package
-
+async def test_handle_command_compact_delegates_team_mode_to_runtime(server, fake_ws, monkeypatch):
     request = AgentRequest(
         request_id="req-team-compact",
         channel_id="web",
@@ -387,42 +385,26 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
         params={"mode": "team.work.normal"},
     )
 
-    class MockAgent:
-        async def ensure_instance(self):
-            return None
+    compact_inputs = []
 
-        async def compress_context(self, session_id, *, return_state=False):
-            return {"result": "noop", "stats": None}
+    class MockRuntime:
+        async def compact_context(self, compact_input, *, on_event=None):
+            compact_inputs.append(compact_input)
+            return ContextCompactResult(result="noop", stats=None)
 
-    subject = SimpleNamespace(
-        subject_id="team-member:session-team:demo:leader",
-        display_name="Leader",
-        kind="team_leader",
-        parent_subject_id="",
-        session_id="session-team",
-    )
-    leader = SimpleNamespace(observability_execution_subject=lambda session_id: subject)
-    team_manager = SimpleNamespace(get_team_agent=lambda session_id: leader)
-    captured = {}
-
-    monkeypatch.setattr(
-        server.get_agent_manager_for_test(),
-        "get_agent_for_session_nowait",
-        lambda channel_id, session_id: MockAgent(),
-    )
-    monkeypatch.setattr(team_package, "get_team_manager", lambda channel_id: team_manager)
-    monkeypatch.setattr(agent_observability, "sync_agent_observability", lambda: None)
-    monkeypatch.setattr(
-        harness_observability,
-        "open_agent_run_span",
-        lambda **kwargs: captured.update(kwargs) or SimpleNamespace(),
-    )
-    monkeypatch.setattr(harness_observability, "close_agent_run_span", lambda *args, **kwargs: None)
+    monkeypatch.setattr(server, "_execution_runtime", lambda: MockRuntime())
 
     await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
 
-    assert captured["execution_subject"] is subject
-    assert captured["mode"] == "team.work.normal"
+    assert compact_inputs == [
+        ContextCompactInput(
+            request_id="req-team-compact",
+            channel_id="web",
+            session_id="session-team",
+            mode="team.work.normal",
+            project_dir=None,
+        )
+    ]
 
 
 @pytest.mark.asyncio

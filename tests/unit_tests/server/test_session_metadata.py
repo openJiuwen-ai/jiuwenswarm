@@ -630,6 +630,34 @@ class TestGetAllSessionsMetadata:
         assert sessions[1]["session_id"] == "o3"
 
     @staticmethod
+    def test_channel_filter_applies_before_pagination(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        now = time.time()
+        for index, channel_id in enumerate(
+            ("web", "process_cli", "tui", "process_cli")
+        ):
+            _write_metadata_sync(
+                f"channel-{index}",
+                {
+                    "session_id": f"channel-{index}",
+                    "channel_id": channel_id,
+                    "last_message_at": now - index,
+                },
+            )
+
+        sessions, total = get_all_sessions_metadata(
+            limit=1,
+            channel_id="PROCESS_CLI",
+        )
+
+        assert total == 2
+        assert [item["session_id"] for item in sessions] == ["channel-1"]
+
+    @staticmethod
     def test_fallback_for_old_sessions(sessions_dir):
         """没有 metadata.json 的旧会话应用目录时间戳构造最小信息"""
         from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata

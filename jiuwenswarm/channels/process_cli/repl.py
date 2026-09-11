@@ -50,12 +50,28 @@ _SESSION_CREATE_OPERATION = "session.create"
 _SESSION_SWITCH_OPERATION = "session.switch"
 _SESSION_FORK_OPERATION = "session.fork"
 _SESSION_DELETE_OPERATION = "session.delete"
+_SESSION_LIST_OPERATION = "session.list"
+_MODEL_LIST_OPERATION = "model.list"
+_MODEL_SELECT_OPERATION = "model.select"
+_CONTEXT_COMPACT_OPERATION = "context.compact"
+_SESSION_REWIND_LIST_OPERATION = "session.rewind.list"
+_SESSION_REWIND_OPERATION = "session.rewind"
+_MEMORY_LIST_OPERATION = "memory.list"
+_MEMORY_STATUS_OPERATION = "memory.status"
+_MEMORY_OPEN_OPERATION = "memory.open"
+_MCP_LIST_OPERATION = "mcp.list"
+_MCP_SHOW_OPERATION = "mcp.show"
+_AGENTS_LIST_OPERATION = "agents.list"
+_AGENTS_GET_OPERATION = "agents.get"
+_AGENTS_TOOLS_OPERATION = "agents.tools"
+_PERMISSIONS_SHOW_OPERATION = "permissions.show"
 _STATEFUL_WORKER_OPERATIONS = frozenset(
     {
         _SESSION_CREATE_OPERATION,
         _SESSION_SWITCH_OPERATION,
         _SESSION_FORK_OPERATION,
         _SESSION_DELETE_OPERATION,
+        _MODEL_SELECT_OPERATION,
     }
 )
 
@@ -99,6 +115,9 @@ def _worker_command(
         "--_prompt-file",
         prompt_file,
     ]
+    selected_model = str(getattr(args, "model", None) or "").strip()
+    if selected_model:
+        command.extend(("--model", selected_model))
     if worker_result_file:
         command.extend(("--_worker-result-file", worker_result_file))
     if operation != "chat":
@@ -235,10 +254,7 @@ async def _run_worker(
             except (OSError, json.JSONDecodeError) as exc:
                 log_tail.append(f"工作进程结果无效：{exc}")
             else:
-                if (
-                    isinstance(loaded, dict)
-                    and loaded.get("operation") == operation
-                ):
+                if isinstance(loaded, dict) and loaded.get("operation") == operation:
                     worker_result = loaded
                     setattr(args, "_last_worker_result", dict(loaded))
                     value = loaded.get("session_id")
@@ -256,6 +272,10 @@ async def _run_worker(
                     project_dir = loaded.get("project_dir")
                     if isinstance(project_dir, str):
                         args.project_dir = project_dir.strip()
+                    if "model_name" in loaded:
+                        model_name = loaded.get("model_name")
+                        if isinstance(model_name, str):
+                            args.model = model_name.strip()
                 else:
                     log_tail.append("工作进程结果与当前操作不匹配")
         if worker_result is None and result_path.exists() and operation == "chat":
@@ -268,7 +288,7 @@ async def _run_worker(
             and worker_result is None
         ):
             return_code = 1
-            log_tail.append("工作进程未返回已提交的 Session 结果")
+            log_tail.append("工作进程未返回已提交的状态结果")
         if return_code not in (0, 130):
             diagnostics = [f"工作进程退出码：{return_code}", *log_tail]
             ProcessCliUI(stream=sys.stderr).diagnostics(diagnostics)
@@ -311,6 +331,242 @@ async def _handle_skills_command(
         prompt="/skills list",
         session_id=session_id,
         operation="skills.list",
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_sessions_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    if arguments:
+        ui.notice("用法：/sessions")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt="",
+        session_id=session_id,
+        operation=_SESSION_LIST_OPERATION,
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_model_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    state: _ReplState,
+    ui: ProcessCliUI,
+) -> None:
+    value = arguments.strip()
+    if value.lower() in {"", "list"}:
+        operation = _MODEL_LIST_OPERATION
+        prompt = ""
+    elif len(value.split()) == 1:
+        operation = _MODEL_SELECT_OPERATION
+        prompt = value
+    else:
+        ui.notice("用法：/model [list|<模型名或选择键>]")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt=prompt,
+        session_id=state.session_id,
+        operation=operation,
+    )
+    if operation == _MODEL_SELECT_OPERATION and _worker_delivered(args, operation):
+        state.model_name = str(getattr(args, "model", None) or "").strip()
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_compact_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    if arguments:
+        ui.notice("用法：/compact")
+        return
+    if not session_id:
+        ui.notice("当前没有可压缩的会话。")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt="",
+        session_id=session_id,
+        operation=_CONTEXT_COMPACT_OPERATION,
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _confirm_rewind(turn_index: int, action: str) -> bool:
+    action_names = {
+        "conversation": "对话记录",
+        "all": "对话记录和工作区文件",
+        "files": "工作区文件",
+    }
+    answer = await asyncio.to_thread(
+        input,
+        f"确认将{action_names[action]}回退到第 {turn_index} 轮？[y/N] ",
+    )
+    return answer.strip().lower() in {"y", "yes"}
+
+
+async def _handle_rewind_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    if not session_id:
+        ui.notice("当前没有可回退的会话。")
+        return
+    value = arguments.strip().lower()
+    if value in {"", "list"}:
+        return_code, _unchanged_session = await _run_worker(
+            args,
+            prompt="",
+            session_id=session_id,
+            operation=_SESSION_REWIND_LIST_OPERATION,
+        )
+    else:
+        parts = value.split()
+        if len(parts) not in {1, 2}:
+            ui.notice("用法：/rewind <轮次> [conversation|all|files]")
+            return
+        try:
+            turn_index = int(parts[0])
+        except ValueError:
+            turn_index = 0
+        action = parts[1] if len(parts) == 2 else "conversation"
+        if turn_index < 1 or action not in {"conversation", "all", "files"}:
+            ui.notice("用法：/rewind <轮次> [conversation|all|files]")
+            return
+        if not await _confirm_rewind(turn_index, action):
+            ui.notice("已取消回退。")
+            return
+        return_code, _unchanged_session = await _run_worker(
+            args,
+            prompt=f"{turn_index} {action}",
+            session_id=session_id,
+            operation=_SESSION_REWIND_OPERATION,
+        )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_memory_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    subcommand = arguments.strip().lower() or "status"
+    operations = {
+        "status": _MEMORY_STATUS_OPERATION,
+        "list": _MEMORY_LIST_OPERATION,
+        "open": _MEMORY_OPEN_OPERATION,
+    }
+    operation = operations.get(subcommand)
+    if operation is None:
+        ui.notice("用法：/memory [status|list|open]")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt="",
+        session_id=session_id,
+        operation=operation,
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_mcp_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    parts = arguments.split()
+    subcommand = parts[0].lower() if parts else "list"
+    if subcommand == "list" and len(parts) <= 1:
+        operation = _MCP_LIST_OPERATION
+        prompt = ""
+    elif subcommand == "show" and len(parts) <= 2:
+        operation = _MCP_SHOW_OPERATION
+        prompt = parts[1] if len(parts) == 2 else ""
+    else:
+        ui.notice("用法：/mcp [list|show [name]]")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt=prompt,
+        session_id=session_id,
+        operation=operation,
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_agents_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    parts = arguments.split()
+    subcommand = parts[0].lower() if parts else "list"
+    if subcommand == "list" and len(parts) <= 1:
+        operation = _AGENTS_LIST_OPERATION
+        prompt = ""
+    elif subcommand == "get" and len(parts) == 2:
+        operation = _AGENTS_GET_OPERATION
+        prompt = parts[1]
+    elif subcommand == "tools" and len(parts) == 1:
+        operation = _AGENTS_TOOLS_OPERATION
+        prompt = ""
+    else:
+        ui.notice("用法：/agents [list|get <name>|tools]")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt=prompt,
+        session_id=session_id,
+        operation=operation,
+    )
+    if return_code == 130:
+        ui.notice("已中断当前指令，可以继续输入。")
+
+
+async def _handle_permissions_command(
+    args: argparse.Namespace,
+    *,
+    arguments: str,
+    session_id: str | None,
+    ui: ProcessCliUI,
+) -> None:
+    value = arguments.strip().lower()
+    if value not in {"", "list"}:
+        ui.notice("用法：/permissions [list]")
+        return
+    return_code, _unchanged_session = await _run_worker(
+        args,
+        prompt="",
+        session_id=session_id,
+        operation=_PERMISSIONS_SHOW_OPERATION,
     )
     if return_code == 130:
         ui.notice("已中断当前指令，可以继续输入。")
@@ -447,6 +703,70 @@ async def _handle_slash_command(
             ui=ui,
         )
         return False
+    if command.name == "/sessions":
+        await _handle_sessions_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/model":
+        await _handle_model_command(
+            args,
+            arguments=command.arguments,
+            state=state,
+            ui=ui,
+        )
+        return False
+    if command.name == "/compact":
+        await _handle_compact_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/rewind":
+        await _handle_rewind_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/memory":
+        await _handle_memory_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/mcp":
+        await _handle_mcp_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/agents":
+        await _handle_agents_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
+    if command.name == "/permissions":
+        await _handle_permissions_command(
+            args,
+            arguments=command.arguments,
+            session_id=state.session_id,
+            ui=ui,
+        )
+        return False
     if command.name == "/new":
         await _handle_new_command(
             args,
@@ -513,7 +833,10 @@ async def run_repl(args: argparse.Namespace) -> int:
     state = _ReplState(
         session_id=args.session,
         cwd=resolved_cwd(args.cwd),
-        model_name=_resolve_configured_model_name(),
+        model_name=(
+            str(getattr(args, "model", None) or "").strip()
+            or _resolve_configured_model_name()
+        ),
         display_mode=_resolve_display_mode(args.mode, args.work_mode),
     )
     prompt_session = _create_prompt_session()
@@ -527,7 +850,10 @@ async def run_repl(args: argparse.Namespace) -> int:
         # These values are best-effort previews for the next fresh worker.
         # Refresh them every turn so configuration changes are not displayed
         # indefinitely after the worker would observe a newer configuration.
-        state.model_name = _resolve_configured_model_name()
+        state.model_name = (
+            str(getattr(args, "model", None) or "").strip()
+            or _resolve_configured_model_name()
+        )
         state.display_mode = _resolve_display_mode(args.mode, args.work_mode)
         ui.status(
             model_name=state.model_name,

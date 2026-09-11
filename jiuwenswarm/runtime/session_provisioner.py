@@ -177,6 +177,7 @@ class SessionDescriptor:
     work_mode: str
     project_id: str = ""
     project_dir: str = ""
+    model: str = ""
 
 
 SessionProvisionInput: TypeAlias = (
