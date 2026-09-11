@@ -127,7 +127,7 @@ log "  预检通过 (repo=$REPO_ROOT)"
 log "步骤 1/6: 安装纯 Python 依赖"
 # ============================================================================
 # 版本与本机验证过的组合一致；json-repair==0.58.0 同时满足
-# jiuwenclaw(>=0.58.0) 与 deepsearch(==0.58.0)
+# jiuwenswarm 与 deepsearch 预置 wheel 的约束
 PKGS="jinja2==3.1.6 json-repair==0.58.0 networkx==3.4.2 pyvis==0.3.2 \
 aiolimiter==1.1.0 tldextract==5.3.2 requests-file==3.0.1 \
 python-dateutil==2.9.0.post0 pytz==2026.3.post1 openpyxl==3.1.5 \
@@ -488,7 +488,7 @@ log "步骤 5/6: 配置 deepresearch skill 目录兜底链接"
 # ============================================================================
 _skill_probe_ok() {
     [ -n "$CANARY_OK" ] || return 1   # 受限终端 import 必然失败，直接走目录检查
-    py_ok "from jiuwenclaw.agentserver.tools.deepresearch.tools import _resolve_skill_root as r; import sys; sys.exit(0 if r() else 1)"
+    py_ok "from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import _resolve_skill_root as r; import sys; sys.exit(0 if r() else 1)"
 }
 if _skill_probe_ok; then
     log "  skill 目录已可解析，跳过"
@@ -551,11 +551,11 @@ mods = [
     "openjiuwen_deepsearch.algorithm.report_style.service",
     "openjiuwen_deepsearch.framework.openjiuwen.agent.agent_factory",
     "openjiuwen_deepsearch.framework.openjiuwen.agent.workflow",
-    "jiuwenclaw.agentserver.tools.deepresearch_task_manager",
-    "jiuwenclaw.agentserver.tools.deepresearch.tools",
-    "jiuwenclaw.agentserver.tools.deepresearch_tools",
-    "jiuwenclaw.agentserver.tools.deepresearch.rewrite_tools",
-    "jiuwenclaw.agentserver.tools.deepresearch_plugin.styled_html_export",
+    "jiuwenswarm.agents.harness.common.tools.deepresearch",
+    "jiuwenswarm.agents.harness.common.tools.deepresearch.tools",
+    "jiuwenswarm.agents.harness.common.tools.deepresearch.execution",
+    "jiuwenswarm.agents.harness.common.tools.deepresearch.rewrite_tools",
+    "jiuwenswarm.common.platform",
 ]
 for m in mods:
     try:
@@ -583,7 +583,7 @@ except Exception as e:
     print(f"  FAIL pypdfium2 功能: {e}")
 
 try:
-    from jiuwenclaw.agentserver.tools.deepresearch_tools import get_deepresearch_tools
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import get_deepresearch_tools
     tools = get_deepresearch_tools()
     names = []
     for t in tools:
@@ -597,7 +597,7 @@ except Exception as e:
     print(f"  FAIL 工具注册: {e}")
 
 try:
-    from jiuwenclaw.agentserver.tools.deepresearch.tools import _resolve_skill_root
+    from jiuwenswarm.agents.harness.common.tools.deepresearch.tools import _resolve_skill_root
     root = _resolve_skill_root()
     if root:
         print(f"  OK   skill 目录: {root}")

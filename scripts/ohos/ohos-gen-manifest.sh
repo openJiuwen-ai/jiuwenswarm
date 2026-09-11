@@ -6,8 +6,8 @@
 #   sh scripts/ohos/ohos-gen-manifest.sh agentcore-minimal /path/to/out.tsv
 #
 # 数据源:
-#   agentserver-minimal — requirements-minimal.txt + native 传递依赖
-#   agentcore-minimal   — agent-core/harmonyos/pyproject.toml − requirements-minimal
+#   agentserver-minimal — requirements-harmony.txt + native 传递依赖
+#   agentcore-minimal   — agent-core/harmonyos/pyproject.toml − requirements-harmony
 
 set -u
 
@@ -25,7 +25,7 @@ export OHOS_ENV_SCRIPTS_DIR="$SCRIPT_DIR"
 REPO_ROOT=${OHOS_REPO_ROOT:-$(CDPATH= cd -- "$SCRIPT_DIR/../.." && pwd)}
 export OHOS_REPO_ROOT="$REPO_ROOT"
 GEN_PY="${OHOS_DEPS_MANIFEST_PY:-$SCRIPT_DIR/ohos-deps-manifest.py}"
-REQ="${REQUIREMENTS_MINIMAL:-$REPO_ROOT/requirements-minimal.txt}"
+REQ="${REQUIREMENTS_HARMONY:-${REQUIREMENTS_MINIMAL:-$REPO_ROOT/requirements-harmony.txt}}"
 PY="${OHOS_MANIFEST_PYTHON:-${PYTHON:-${OHOS_REAL_PYTHON:-python3}}}"
 
 resolve_harmonyos_pyproject() {

@@ -1,0 +1,123 @@
+# JiuwenSwarm AgentServer 鸿蒙精简依赖配置
+# 用于鸿蒙等受限编译环境
+#
+# 使用方式：
+#   pip install -r requirements-harmony.txt
+#
+# 注意：
+# - 此文件排除渠道适配器（飞书、钉钉、Telegram、Slack 等）
+# - 排除了向量存储（chromadb, faiss, sqlite-vec, pgvector, minio）与重型 DB 客户端（asyncpg/pymysql）
+# - 排除了 tree-sitter（C 扩展）；pdfplumber 为 OfficeAce 导出/预览链所需
+# - 排除测试依赖（pytest 系列）
+# - openjiuwen 过渡期用预置的 openjiuwen-harmonyos wheel（enterprise-dev 血统，
+#   见 wheels/openjiuwen_harmonyos-0.1.10-py3-none-any.whl）；agent-core dev-stable
+#   血统的 harmonyos wheel 就绪后切换到对应 git ref
+#
+# 如需本地 openjiuwen，设置环境变量：
+#   USE_LOCAL_OPENJIUWEN=1
+#   AGENT_CORE_PATH=/path/to/agent-core
+
+# ============================================================
+# 核心 HTTP 和网络依赖
+# ============================================================
+aiohttp>=3.11.12
+requests>=2.32.3
+httpx>=0.24.0
+websockets>=12.0
+
+# ============================================================
+# 异步 IO 和文件处理
+# ============================================================
+aiofiles>=25.1.0
+anyio>=4.0.0
+aiosqlite>=0.22.1
+jieba>=0.42
+watchdog>=6.0.0
+
+# ============================================================
+# 数据库和 ORM
+# ============================================================
+sqlalchemy>=2.0.41
+sqlmodel>=0.0.37
+alembic>=1.13.1
+greenlet>=3.3.2
+
+# ============================================================
+# 数据校验和序列化
+# ============================================================
+pydantic>=2.11.0
+pydantic-core>=2.46.0
+pydantic-settings>=2.0
+ruamel.yaml>=0.18.0
+json-repair>=0.58.0
+
+# ============================================================
+# 文档处理（OfficeAce 导出/预览链；纯 Python wheel 无鸿蒙编译问题，已预置于 wheels/）
+# ============================================================
+latex2mathml>=3.81.0
+mathml2omml==0.0.2
+markdown>=3.8
+markdown-it-py>=4.0.0,<5.0.0
+python-docx>=1.2.0
+pyyaml>=6.0
+python-pptx==1.0.2
+XlsxWriter==3.2.9
+pdfplumber==0.11.6
+pdfminer.six==20250327
+linkify-it-py==2.1.0
+mdit-py-plugins==0.6.1
+uc-micro-py==2.0.0
+
+# ============================================================
+# Web 服务（AgentServer HTTP 面）
+# ============================================================
+fastapi>=0.115
+uvicorn>=0.30
+python-multipart>=0.0.27
+mcp>=1.27.2,<2
+
+# ============================================================
+# 工具与运行时
+# ============================================================
+python-dateutil>=2.9.0.post0
+croniter>=2.0.0
+tzdata>=2024.1
+loguru>=0.7.3
+python-json-logger>=2.0.0
+psutil>=7.2.2
+tqdm>=4.66.0
+filelock>=3.20.1
+portalocker>=3.2.0
+tenacity>=9.1.2
+python-dotenv>=1.2.1
+pycryptodome>=3.23.0
+charset-normalizer>=3.4.4
+openai>=1.108.0
+tiktoken>=0.12.0
+numpy>=1.26.0
+
+# ============================================================
+# dev-stable 新增核心依赖（鸿蒙可用的纯 Python 部分）
+# ============================================================
+a2ui-agent-sdk==0.2.1
+google-genai>=1.68.0
+beautifulsoup4>=4.12.0
+docx2txt>=0.8
+trafilatura>=1.6.0,<2
+lxml>=6.1.0,<6.1.1
+lxml_html_clean>=0.4.0,<0.4.5
+
+# ============================================================
+# OpenTelemetry（telemetry 模块；版本上界沿用 harmony_dev 真机验证值）
+# ============================================================
+opentelemetry-api>=1.25.0,<=1.42.1
+opentelemetry-sdk>=1.25.0,<=1.42.1
+opentelemetry-exporter-otlp-proto-common>=1.25.0
+opentelemetry-proto>=1.25.0
+protobuf>=5.0.0,<8
+
+# ============================================================
+# openjiuwen（agent-core）鸿蒙发行版
+# 过渡期：预置 wheel（enterprise-dev 血统）；dev-stable 血统 wheel 就绪后切换 ref
+# ============================================================
+openjiuwen-harmonyos @ git+https://gitcode.com/openJiuwen/agent-core.git@enterprise-dev#subdirectory=harmonyos

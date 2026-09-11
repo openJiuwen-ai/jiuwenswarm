@@ -1,6 +1,6 @@
 #!/bin/sh
 # Incrementally add the required DeepSearch runtime to an existing
-# HarmonyOS JiuwenClaw virtual environment without reinstalling AgentCore.
+# HarmonyOS JiuwenSwarm virtual environment without reinstalling AgentCore.
 
 set -u
 

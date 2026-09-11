@@ -329,7 +329,7 @@ def collect_agentserver_minimal(
     seen: set[str],
     requirements_path: Path,
 ) -> None:
-    """requirements-minimal.txt + AgentServer 所需 native 传递依赖。"""
+    """requirements-harmony.txt + AgentServer 所需 native 传递依赖。"""
     req_specs = parse_requirements_file(requirements_path)
     req_keys = {_spec_package_key(s) for s in req_specs}
 
@@ -351,9 +351,9 @@ def collect_agentserver_minimal(
             rows,
             seen,
             "agentserver-minimal",
-            "requirements-minimal",
+            "requirements-harmony",
             spec,
-            "requirements-minimal.txt",
+            "requirements-harmony.txt",
             dedupe_by_spec=True,
         )
 
@@ -426,7 +426,7 @@ def collect_agentcore_minimal(
 
     req_keys = {_spec_package_key(s) for s in parse_requirements_file(requirements_path)}
     harmony_deps = load_pyproject(harmonyos_path).get("project", {}).get("dependencies") or []
-    rel_note = f"harmonyos/pyproject.toml (minus requirements-minimal)"
+    rel_note = f"harmonyos/pyproject.toml (minus requirements-harmony)"
 
     for spec in harmony_deps:
         s = str(spec).strip()
@@ -496,7 +496,7 @@ def main() -> int:
     parser.add_argument(
         "--requirements",
         default=os.environ.get("REQUIREMENTS_MINIMAL", ""),
-        help="requirements-minimal.txt path (agentserver-minimal / agentcore-minimal diff)",
+        help="requirements-harmony.txt path (agentserver-minimal / agentcore-minimal diff)",
     )
     parser.add_argument(
         "--harmonyos-pyproject",
@@ -525,10 +525,10 @@ def main() -> int:
     if profile == "jiuwenswarm-runtime":
         collect_jiuwenswarm_runtime(rows, seen, agent_core, jiuwen_root)
     elif profile == "agentserver-minimal":
-        req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-minimal.txt")
+        req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-harmony.txt")
         collect_agentserver_minimal(rows, seen, req_path)
     elif profile == "agentcore-minimal":
-        req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-minimal.txt")
+        req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-harmony.txt")
         harmony_path = (
             Path(args.harmonyos_pyproject)
             if args.harmonyos_pyproject

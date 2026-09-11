@@ -1,5 +1,5 @@
 #!/bin/sh
-# Start JiuwenClaw AgentServer with the complete HNP runtime environment.
+# Start JiuwenSwarm AgentServer with the complete HNP runtime environment.
 
 set -u
 
@@ -15,6 +15,8 @@ export OFFICE_CLAW
 # shellcheck disable=SC1091
 . "$OHOS_ENV_SCRIPTS_DIR/ohos-env.sh"
 
+export JIUWENSWARM_RUNTIME_PLATFORM=ohos
+# Legacy name kept for on-device launchers / docs that still reference it.
 export JIUWENCLAW_RUNTIME_PLATFORM=ohos
 TMPDIR=${TMPDIR:-${OHOS_STORAGE_ROOT:-/storage/Users/currentUser}/tmp}
 export TMPDIR
@@ -36,10 +38,10 @@ if [ -n "$_verify_ld" ]; then
   export LD_LIBRARY_PATH="$_verify_ld"
 fi
 
-if ! "$PYTHON" -c 'import openjiuwen, jiuwenclaw' >/dev/null 2>&1; then
+if ! "$PYTHON" -c 'import openjiuwen, jiuwenswarm' >/dev/null 2>&1; then
   printf '[ohos-agentserver] ERROR: core Python imports failed\n' >&2
   exit 1
 fi
 
 printf '[ohos-agentserver] python=%s port=%s\n' "$PYTHON" "$PORT"
-exec "$PYTHON" -m jiuwenclaw.app_agentserver --port "$PORT"
+exec "$PYTHON" -m jiuwenswarm.server.app_agentserver --port "$PORT"
