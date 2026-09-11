@@ -9,6 +9,11 @@ import asyncio
 import pytest
 
 from jiuwenswarm.server.runtime.session.session_manager import SessionManager
+from jiuwenswarm.server.runtime.usage_cost import (
+    add_session_usage,
+    get_session_cost_summary,
+    set_session_cost_limit,
+)
 
 
 async def _wait_until_idle(manager: SessionManager, session_id: str) -> None:
@@ -49,6 +54,40 @@ async def test_close_session_releases_idle_processor_state() -> None:
         if not processor.done():
             processor.cancel()
         await asyncio.gather(processor, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+async def test_close_session_clears_usage_cost_state(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {
+            "usage_cost": {
+                "enabled": True,
+                "mode": "provider_reported",
+                "enforce_limits": True,
+            }
+        },
+        raising=False,
+    )
+    manager = SessionManager()
+    completed = asyncio.Event()
+    session_id = "tui_cost_cleanup"
+
+    async def quick_task() -> None:
+        completed.set()
+
+    add_session_usage(session_id, {"total_cost": 0.02})
+    set_session_cost_limit(session_id, 0.03)
+
+    await manager.submit_task(session_id, quick_task)
+    await asyncio.wait_for(completed.wait(), timeout=1)
+    await _wait_until_idle(manager, session_id)
+    assert await manager.close_session(session_id) is True
+
+    summary = get_session_cost_summary(session_id)
+    assert summary["total_cost"] == 0.0
+    assert summary["cost_limit"] is None
+    assert summary["cost_available"] is False
 
 
 @pytest.mark.asyncio

@@ -8889,11 +8889,22 @@ export class AppScreen implements Component, Focusable {
   private buildUsageTabItems(): SelectItem[] {
     const summary = this.state.getUsageSummary();
     const fmt = (n: number) => n.toLocaleString("en-US");
+    const fmtCost = (n: number) => {
+      const currency = summary.currency?.trim();
+      return currency ? `${n.toFixed(4)} ${currency}` : n.toFixed(4);
+    };
     const items: SelectItem[] = [
       { value: "__display__", label: `input_tokens: ${fmt(summary.total_input_tokens)}`, description: "" },
       { value: "__display__", label: `output_tokens: ${fmt(summary.total_output_tokens)}`, description: "" },
       { value: "__display__", label: `total_tokens: ${fmt(summary.total_tokens)}`, description: "" },
     ];
+    if (summary.cost_available && typeof summary.total_cost === "number") {
+      items.push({ value: "__display__", label: `cost_source: ${summary.cost_source ?? "provider_reported"}`, description: "" });
+      items.push({ value: "__display__", label: `total_cost: ${fmtCost(summary.total_cost)}`, description: "" });
+      if (summary.cost_limit != null) {
+        items.push({ value: "__display__", label: `cost_limit: ${fmtCost(summary.cost_limit)}`, description: "" });
+      }
+    }
 
     for (const entry of summary.byModel) {
       items.push(
@@ -8901,6 +8912,9 @@ export class AppScreen implements Component, Focusable {
         { value: "__display__", label: `  input`, description: fmt(entry.input_tokens) },
         { value: "__display__", label: `  output`, description: fmt(entry.output_tokens) },
       );
+      if (typeof entry.total_cost === "number") {
+        items.push({ value: "__display__", label: `  cost`, description: fmtCost(entry.total_cost) });
+      }
     }
     return items;
   }
