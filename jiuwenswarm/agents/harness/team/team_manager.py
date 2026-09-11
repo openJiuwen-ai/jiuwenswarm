@@ -11,6 +11,7 @@ import re
 import time
 import weakref
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Awaitable, Callable, Literal
 
 from openjiuwen.agent_teams.agent.team_agent import TeamAgent
@@ -1902,6 +1903,145 @@ class TeamManager:
                     mount_team_skill_create_rail=False,
                     mount_skill_evolution_rail=True,
                 )
+
+    # ------------------------------------------------------------------
+    # Team Resume from Checkpoint
+    # ------------------------------------------------------------------
+
+    async def resume_team_from_checkpoint(
+        self,
+        session_id: str,
+        deep_agent: DeepAgent,
+        *,
+        checkpoint_path: str | None = None,
+        model_override: str | None = None,
+        channel_id: str | None = None,
+        request_id: str | None = None,
+    ) -> dict[str, Any]:
+        """Restore team state from a previously saved checkpoint.
+
+        .. note:: **v1 — reporting-only resume.**
+
+            This method reads the checkpoint metadata (task board and member
+            roster snapshot) and creates a **fresh** team, but does **not**
+            restore individual member state or re-create tasks in the new
+            team's task board.  The returned summary dict reports the
+            checkpoint contents so the Leader can decide how to proceed
+            (e.g. re-create tasks manually via ``update_task``).
+
+            Full member/task restoration (``_restore_member`` /
+            ``_restore_task``) is planned for v2.
+
+        Args:
+            session_id: New session ID.
+            deep_agent: Current DeepAgent instance.
+            checkpoint_path: Explicit checkpoint file path. When *None*,
+                the latest checkpoint under ``.team/`` is auto-detected
+                (recursive search).
+            model_override: Optional model name to override all members'.
+                Currently stored in the result but not applied to members
+                (v2 will wire this into member creation).
+            channel_id: Channel ID.
+            request_id: Request ID.
+
+        Returns:
+            Summary dict with ``resumed``, ``team_name``, counts, etc.
+        """
+        from datetime import datetime, timezone
+
+        # 1. Locate checkpoint file
+        if checkpoint_path:
+            cp_path = Path(checkpoint_path)
+        else:
+            cp_path = self._find_latest_checkpoint()
+
+        if cp_path is None or not cp_path.exists():
+            logger.info("[TeamManager] resume: no checkpoint found")
+            return {"resumed": False, "reason": "no_checkpoint"}
+
+        # 2. Load checkpoint
+        checkpoint = TeamMonitorHandler.load_task_checkpoint(str(cp_path.parent))
+        if checkpoint is None:
+            return {"resumed": False, "reason": "invalid_checkpoint"}
+
+        # 3. Parse checkpoint data with defensive access
+        try:
+            cp_time = datetime.fromisoformat(checkpoint.get("timestamp", ""))
+            age_seconds = (datetime.now(timezone.utc) - cp_time).total_seconds()
+            team_name = checkpoint.get("team_name", "unknown")
+            tasks = checkpoint.get("tasks", [])
+            members = checkpoint.get("members", [])
+        except (ValueError, TypeError, AttributeError):
+            logger.warning("[TeamManager] resume: checkpoint data malformed")
+            return {"resumed": False, "reason": "invalid_checkpoint"}
+
+        logger.info(
+            "[TeamManager] resume: checkpoint age=%.0fs, team=%s, tasks=%d, members=%d",
+            age_seconds,
+            team_name,
+            len(tasks),
+            len(members),
+        )
+
+        # 4. Create new team
+        team_agent = await self.create_team(
+            session_id,
+            deep_agent,
+            request_id=request_id,
+            channel_id=channel_id,
+        )
+
+        # 5. Count tasks by status
+        tasks_restored = 0
+        tasks_completed = 0
+        for task_info in tasks:
+            status = task_info.get("status", "unknown")
+            if status in ("completed", "cancelled"):
+                tasks_completed += 1
+            else:
+                tasks_restored += 1
+
+        result = {
+            "resumed": True,
+            "team_name": team_name,
+            "members_in_checkpoint": len(members),
+            "tasks_restored": tasks_restored,
+            "tasks_completed": tasks_completed,
+            "checkpoint_age_seconds": age_seconds,
+            "model_override": model_override,
+            # v1 limitation: members and tasks are NOT actually restored
+            # in the new team's runtime. The Leader should use the
+            # checkpoint metadata above to manually re-create tasks.
+            "version": "v1-reporting-only",
+            "note": (
+                "v1 resume creates a fresh team and reports checkpoint "
+                "metadata. Individual member/task restoration is not yet "
+                "implemented. Use the checkpoint info to re-create tasks "
+                "manually."
+            ),
+        }
+        logger.info("[TeamManager] resume complete: %s", result)
+        return result
+
+    @staticmethod
+    def _find_latest_checkpoint() -> "Path | None":
+        """Search for the most recent checkpoint.json under .team/."""
+        try:
+            base = get_user_workspace_dir() / ".agent_teams"
+            if not base.exists():
+                return None
+            # Use recursive glob (**) to handle nested directory structures
+            # (e.g. .agent_teams/<session>/team-workspace/checkpoint.json
+            # or deeper paths if the layout changes in the future).
+            candidates = sorted(
+                base.glob("**/team-workspace/checkpoint.json"),
+                key=lambda p: p.stat().st_mtime,
+                reverse=True,
+            )
+            return candidates[0] if candidates else None
+        except Exception as e:
+            logger.warning("[TeamManager] checkpoint search failed: %s", e)
+            return None
 
     async def destroy_team(self, session_id: str) -> bool:
         async with self._bootstrap_lock:
