@@ -3,6 +3,7 @@ from __future__ import annotations
 import ast
 import asyncio
 import contextlib
+import inspect
 from copy import deepcopy
 from pathlib import Path
 from types import SimpleNamespace
@@ -446,6 +447,11 @@ def test_host_module_imports_only_personal_context_from_core() -> None:
         ):
             imported.extend(alias.name for alias in node.names)
     assert imported == ["PersonalContext"]
+
+
+def test_locked_core_supports_live_fetch_service_updates() -> None:
+    assert inspect.iscoroutinefunction(PersonalContext._append_fetch_service_config)
+    assert inspect.iscoroutinefunction(PersonalContext._remove_fetch_service_config)
 
 
 def test_boolean_switches_use_isinstance_guards() -> None:
