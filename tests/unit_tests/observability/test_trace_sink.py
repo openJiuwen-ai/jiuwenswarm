@@ -43,7 +43,6 @@ def _settings(
         queue_size=queue_size,
         batch_size=batch_size,
         flush_interval_ms=flush_interval_ms,
-        poll_interval_ms=2000,
     )
 
 

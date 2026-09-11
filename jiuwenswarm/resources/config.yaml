@@ -535,7 +535,6 @@ trajectory_ui:
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
-  poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 experimental:
