@@ -1,4 +1,5 @@
 import type { FunctionComponent, SVGProps } from 'react';
+import { Play as TestIcon } from 'lucide-react';
 import GeneralIcon from './navigation/general.svg?react';
 import ModelsIcon from './navigation/models.svg?react';
 import AgentIcon from './navigation/agent.svg?react';
@@ -33,6 +34,7 @@ export const settingsNavigationIcons = {
 
 export const settingsActionIcons = {
   refresh: RefreshIcon,
+  test: TestIcon,
   edit: EditIcon,
   enable: EnableIcon,
   disable: DisableIcon,
