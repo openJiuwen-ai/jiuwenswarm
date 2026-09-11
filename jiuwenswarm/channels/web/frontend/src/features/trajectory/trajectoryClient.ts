@@ -60,6 +60,10 @@ export interface TrajectoryDetailRecord {
   trace_id?: string;
   span_id?: string;
   raw_size_bytes?: number;
+  /** Chain each restated attribute refers to, by attribute key. */
+  sequences?: Record<string, { hash: string; depth: number }>;
+  /** Attributes whose chain could not be rebuilt from what is held. */
+  incomplete_sequences?: string[];
   projection_omitted?: 'record_too_large';
 }
 
@@ -99,6 +103,10 @@ export interface TrajectorySubjectRecordsResponse {
   next_since_revision: number;
   projected_raw_bytes?: number;
   max_projected_raw_bytes?: number;
+  /** Element hashes of every chain this page refers to, in order. */
+  sequences?: Record<string, string[]>;
+  /** Element content this reader was not assumed to already hold. */
+  blobs?: Record<string, string>;
 }
 
 export class TrajectoryApiError extends Error {
@@ -376,6 +384,9 @@ export async function getTrajectorySubjectRecords(
       ...(traceId === undefined ? {} : { trace_id: traceId }),
       ...(spanId === undefined ? {} : { span_id: spanId }),
       ...(rawSizeBytes === undefined ? {} : { raw_size_bytes: rawSizeBytes }),
+      ...(object(candidate.sequences)
+        ? { sequences: candidate.sequences as Record<string, { hash: string; depth: number }> }
+        : {}),
       ...(projectionOmitted === undefined ? {} : { projection_omitted: projectionOmitted }),
     };
   });
@@ -388,6 +399,8 @@ export async function getTrajectorySubjectRecords(
     records,
     has_more: payload.has_more,
     next_since_revision: Number(payload.next_since_revision),
+    ...(object(payload.sequences) ? { sequences: payload.sequences as Record<string, string[]> } : {}),
+    ...(object(payload.blobs) ? { blobs: payload.blobs as Record<string, string> } : {}),
     ...(Number.isSafeInteger(payload.projected_raw_bytes)
       ? { projected_raw_bytes: Number(payload.projected_raw_bytes) }
       : {}),

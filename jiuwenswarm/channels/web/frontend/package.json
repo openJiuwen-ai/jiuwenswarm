@@ -92,7 +92,8 @@
     "lint": "eslint . --ext ts,tsx --report-unused-disable-directives --max-warnings 0",
     "preview": "vite preview",
     "test:trajectory-lanes": "esbuild src/features/trajectory/teamTrajectoryLanes.ts --bundle --packages=external --platform=node --format=esm --outfile=node_modules/.cache/trajectory-lanes/teamTrajectoryLanes.mjs && node --test tests/teamTrajectoryLanes.test.mjs",
-    "test:trajectory-frames": "esbuild src/features/trajectory/trajectoryFrames.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-frames/trajectoryFrames.mjs && node --test tests/trajectoryFrames.test.mjs"
+    "test:trajectory-frames": "esbuild src/features/trajectory/trajectoryFrames.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-frames/trajectoryFrames.mjs && node --test tests/trajectoryFrames.test.mjs",
+    "test:trajectory-sequences": "esbuild src/features/trajectory/trajectorySequences.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/trajectory-sequences/trajectorySequences.mjs && node --test tests/trajectorySequences.test.mjs"
   },
   "dependencies": {
     "@a2ui/react": "0.8.0",

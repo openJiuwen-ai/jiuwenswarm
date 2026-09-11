@@ -39,6 +39,11 @@ import {
   withStreamFrames,
 } from './trajectoryFrames';
 import {
+  absorbSequencePage,
+  createSequenceCache,
+  rebuildRecord,
+} from './trajectorySequences';
+import {
   exitTrajectoryReplay,
   parseTrajectoryArchive,
   shouldCatchUpTrajectory,
@@ -200,6 +205,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const rawContentId = useId();
   const archiveInputRef = useRef<HTMLInputElement>(null);
   const rawSelectionBySubjectRef = useRef(new Map<string, string>());
+  // Content is addressed by the hash of itself, so a cached element can never
+  // go stale and is reusable for the life of the session.
+  const sequenceCacheRef = useRef(createSequenceCache());
   const subjectViewCacheRef = useRef(
     createTrajectorySubjectViewCache<ReturnType<typeof projectOtelTrajectory>>(),
   );
@@ -474,11 +482,21 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const staged = await stageTrajectoryChainPages(
       current,
       signal,
-      (sinceRevision, pageSignal) => getTrajectorySubjectRecords(sessionId, subjectId, {
-        signal: pageSignal,
-        sinceRevision,
-        limit: DETAIL_LIMIT,
-      }),
+      async (sinceRevision, pageSignal) => {
+        const page = await getTrajectorySubjectRecords(sessionId, subjectId, {
+          signal: pageSignal,
+          sinceRevision,
+          limit: DETAIL_LIMIT,
+        });
+        // Records state their restated attributes by reference. Take in what
+        // this page delivered, then rebuild them from what is now held: the
+        // server sends content only when it was not assumed to be cached.
+        absorbSequencePage(sequenceCacheRef.current, page);
+        const rebuilt = page.records.map(
+          record => rebuildRecord(record, sequenceCacheRef.current),
+        );
+        return { ...page, records: rebuilt };
+      },
       publishPage,
     );
     if (staged === null
