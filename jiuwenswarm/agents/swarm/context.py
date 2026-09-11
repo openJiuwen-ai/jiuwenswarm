@@ -64,6 +64,16 @@ class SwarmBuildContext(BuildContext):
     trajectory_registry: Any = None
     config: dict[str, Any] | None = None
 
+    def derive(self, **overrides: Any) -> "SwarmBuildContext":
+        from jiuwenswarm.agents.harness.common.memory.workspace import configure_workspace_memory
+
+        clone = super().derive(**overrides)
+        # DeepAgentSpec supplies a fresh workspace before SDK initialization.
+        # Apply the policy here for local, distributed and restored members.
+        if overrides.get("workspace") is not None:
+            configure_workspace_memory(clone.workspace, clone.config or {})
+        return clone
+
     def to_seed(self) -> dict[str, Any]:
         """Export the serializable per-team / per-process fields as a seed.
 

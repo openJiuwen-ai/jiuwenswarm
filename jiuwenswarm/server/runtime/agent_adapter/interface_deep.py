@@ -192,6 +192,7 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_proactive_memory,
 )
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
+from jiuwenswarm.agents.harness.common.memory.workspace import configure_workspace_memory  # noqa: E402
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.agents.harness.common.channel_runtime_context import (
@@ -5282,6 +5283,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "[JiuWenSwarmDeepAdapter] ensure workspace/todo dir failed: %s", exc
             )
         workspace_obj = Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
+        configure_workspace_memory(workspace_obj, config_base)
         normalized_tool_cards = [
             tool.card if hasattr(tool, "card") else tool for tool in (tool_cards or [])
         ]
@@ -5855,9 +5857,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             add_general_purpose_agent=should_enable_general_agent,
             max_iterations=config.get("max_iterations", 15),
-            workspace=Workspace(
-                root_path=self._workspace_dir or "./",
-                language=self._resolve_runtime_language(),
+            workspace=configure_workspace_memory(
+                Workspace(root_path=self._workspace_dir or "./", language=self._resolve_runtime_language()),
+                config_base,
             ),
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),

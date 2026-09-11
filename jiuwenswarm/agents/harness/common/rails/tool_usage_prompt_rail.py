@@ -158,20 +158,15 @@ class OrderedContextAssembleRail(ContextAssembleRail):
     @property
     def workspace(self):
         from jiuwenswarm.common.config import get_config
-        from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
         from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
-            get_external_memory_config, is_builtin_memory_allowed, is_external_memory_enabled,
+            is_legacy_workspace_memory_enabled,
         )
 
         workspace = getattr(self, "_context_workspace", None)
         if workspace is None:
             return None
         config = get_config()
-        builtin = (get_memory_mode(config) == "local"
-                   and is_builtin_memory_allowed(config) and is_memory_enabled("agent", config))
-        old_celia = (is_external_memory_enabled(config)
-                     and get_external_memory_config(config)["provider"] == "old-celia")
-        return workspace if builtin or old_celia else _MemoryFilteredWorkspace(workspace)
+        return workspace if is_legacy_workspace_memory_enabled(config) else _MemoryFilteredWorkspace(workspace)
 
     @workspace.setter
     def workspace(self, value):
