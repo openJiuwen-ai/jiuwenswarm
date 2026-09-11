@@ -489,6 +489,44 @@ export async function getTrajectoryStreamFrames(
   };
 }
 
+/** Most hashes one request may name; the server rejects more. */
+export const MAX_SEQUENCE_REQUEST = 200;
+
+/**
+ * Fetch chains by hash, for content this reader turned out not to hold.
+ *
+ * A page read delivers content only when the reader was not assumed to have
+ * it already. That assumption holds for a reader following along from the
+ * start, and this is the way back for one it does not hold for: a reload, a
+ * second device, an entry dropped from the browser's cache. Asking by hash
+ * rather than by position is what makes the answer conclusive -- content
+ * still missing after this is content the store no longer has.
+ */
+export async function getTrajectorySequences(
+  sessionId: string,
+  hashes: readonly string[],
+  options: { signal?: AbortSignal } = {},
+): Promise<{ sequences: Record<string, string[]>; blobs: Record<string, string> }> {
+  if (hashes.length === 0) return { sequences: {}, blobs: {} };
+  const query = new URLSearchParams({ hashes: hashes.join(','), since_revision: '0' });
+  const response = await fetch(trajectoryUrl(
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/sequences?${query.toString()}`,
+  ), {
+    cache: 'no-store',
+    signal: options.signal,
+  });
+  const payload = await readResponse(response);
+  if (!object(payload)
+    || payload.schema_version !== 1
+    || payload.session_id !== sessionId) {
+    throw new TrajectoryApiError('Trajectory sequence response is invalid', 502, 'INVALID_RESPONSE');
+  }
+  return {
+    sequences: object(payload.sequences) ? payload.sequences as Record<string, string[]> : {},
+    blobs: object(payload.blobs) ? payload.blobs as Record<string, string> : {},
+  };
+}
+
 export async function getTrajectoryRawRecord(
   sessionId: string,
   traceId: string,

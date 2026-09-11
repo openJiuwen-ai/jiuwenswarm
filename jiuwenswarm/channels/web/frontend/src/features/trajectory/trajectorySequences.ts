@@ -158,6 +158,26 @@ export function rebuildRecord(
   } as TrajectoryDetailRecord
 }
 
+/**
+ * Chain heads a rebuild could not resolve.
+ *
+ * A page delivers content only when this reader was not assumed to hold it,
+ * and that assumption can be wrong -- a reload, a second device, an entry
+ * dropped from the browser's cache. These are the chains to ask for by hash.
+ */
+export function unresolvedHeadsOf(
+  records: readonly TrajectoryDetailRecord[],
+): string[] {
+  const heads = new Set<string>()
+  for (const record of records) {
+    for (const key of record.incomplete_sequences ?? []) {
+      const reference = record.sequences?.[key]
+      if (reference?.hash) heads.add(reference.hash)
+    }
+  }
+  return [...heads]
+}
+
 /** Chain heads one page of records refers to. */
 export function sequenceHeadsOf(
   records: readonly TrajectoryDetailRecord[],

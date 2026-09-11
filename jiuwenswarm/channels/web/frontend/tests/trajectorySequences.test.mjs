@@ -11,6 +11,7 @@ import {
   rebuildRecord,
   rebuildSequenceValue,
   sequenceHeadsOf,
+  unresolvedHeadsOf,
 } from '../node_modules/.cache/trajectory-sequences/trajectorySequences.mjs';
 
 const HEAD = 'a'.repeat(64);
@@ -121,4 +122,39 @@ test('chain heads are collected across a page', () => {
   const heads = sequenceHeadsOf([record(HEAD), record(other), record(HEAD)]);
 
   assert.deepEqual(heads.sort(), [HEAD, other].sort());
+});
+
+test('a rebuild that fell short names the chains to ask for', () => {
+  // The server sends content only when the reader was not assumed to hold
+  // it. Where that assumption was wrong, these are the heads to request by
+  // hash -- the head itself, not the element, because a chain resolves whole.
+  const other = 'd'.repeat(64);
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, {
+    sequences: { [HEAD]: ['h1', 'h2'], [other]: ['h3', 'h4'] },
+    blobs: { h1: '{"role":"user"}', h2: '{"role":"assistant"}' },
+  });
+
+  const rebuilt = [record(HEAD), record(other)].map(one => rebuildRecord(one, cache));
+
+  // The complete chain rebuilt; only the starved one is asked for.
+  assert.deepEqual(unresolvedHeadsOf(rebuilt), [other]);
+});
+
+test('a recovered chain rebuilds on the next attempt', () => {
+  const cache = createSequenceCache();
+  absorbSequencePage(cache, { sequences: { [HEAD]: ['h1', 'h2'] }, blobs: { h1: 'one' } });
+  const firstTry = rebuildRecord(record(HEAD), cache);
+  assert.deepEqual(unresolvedHeadsOf([firstTry]), [HEAD]);
+
+  // What the by-hash request brings back.
+  absorbSequencePage(cache, { sequences: { [HEAD]: ['h1', 'h2'] }, blobs: { h2: 'two' } });
+  const secondTry = rebuildRecord(record(HEAD), cache);
+
+  assert.deepEqual(unresolvedHeadsOf([secondTry]), []);
+  assert.equal(attributesOf(secondTry)['gen_ai.input.messages'], '[one,two]');
+});
+
+test('a record with nothing missing asks for nothing', () => {
+  assert.deepEqual(unresolvedHeadsOf([{ ingest_seq: 1, raw_valid: true, otlp: null }]), []);
 });

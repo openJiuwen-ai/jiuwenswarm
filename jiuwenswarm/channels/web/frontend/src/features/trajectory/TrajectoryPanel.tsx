@@ -26,10 +26,12 @@ import type { TrajectoryDiagnostic, TrajectoryUsage } from './trajectory/model';
 import {
   getTrajectoryRawRecord,
   getTrajectoryArchive,
+  getTrajectorySequences,
   getTrajectorySessionUsage,
   getTrajectoryStreamFrames,
   getTrajectorySubjectRecords,
   listTrajectorySubjects,
+  MAX_SEQUENCE_REQUEST,
   TrajectoryApiError,
   type TrajectoryDetailRecord,
   type TrajectorySubjectSummary,
@@ -42,6 +44,7 @@ import {
   absorbSequencePage,
   createSequenceCache,
   rebuildRecord,
+  unresolvedHeadsOf,
 } from './trajectorySequences';
 import {
   exitTrajectoryReplay,
@@ -444,6 +447,26 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     publish(operationCoordinatorRef.current.currentGeneration());
   }, [active, publish]);
 
+  const recoverSequences = useCallback(async (
+    heads: readonly string[],
+    signal: AbortSignal,
+  ) => {
+    for (let offset = 0; offset < heads.length; offset += MAX_SEQUENCE_REQUEST) {
+      const batch = heads.slice(offset, offset + MAX_SEQUENCE_REQUEST);
+      try {
+        const page = await getTrajectorySequences(sessionId, batch, { signal });
+        absorbSequencePage(sequenceCacheRef.current, page);
+      } catch (recoveryError) {
+        // Recovering content must not cost the reader the page that needed
+        // it. What could not be rebuilt stays marked on its record, and the
+        // next page that states the same chain asks again.
+        if (signal.aborted) return;
+        void recoveryError;
+        return;
+      }
+    }
+  }, [sessionId]);
+
   const loadChain = useCallback(async (
     subjectId: string,
     targetRevision: number,
@@ -492,9 +515,20 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         // this page delivered, then rebuild them from what is now held: the
         // server sends content only when it was not assumed to be cached.
         absorbSequencePage(sequenceCacheRef.current, page);
-        const rebuilt = page.records.map(
+        let rebuilt = page.records.map(
           record => rebuildRecord(record, sequenceCacheRef.current),
         );
+        // That assumption can be wrong -- a reload, a second device, an entry
+        // the browser dropped. Ask for what is still missing by hash, which
+        // makes the answer conclusive: content absent after this is content
+        // the store no longer has, not content still on its way.
+        const unresolved = unresolvedHeadsOf(rebuilt);
+        if (unresolved.length > 0) {
+          await recoverSequences(unresolved, pageSignal);
+          rebuilt = page.records.map(
+            record => rebuildRecord(record, sequenceCacheRef.current),
+          );
+        }
         return { ...page, records: rebuilt };
       },
       publishPage,
@@ -503,7 +537,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       || signal.aborted
       || !operationCoordinatorRef.current.isCurrent(generation)) return;
     setError(null);
-  }, [publish, sessionId]);
+  }, [publish, recoverSequences, sessionId]);
 
   const loadSummaries = useCallback(async (
     summaries: readonly TrajectorySubjectSummary[],
