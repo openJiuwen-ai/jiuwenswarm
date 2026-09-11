@@ -2689,3 +2689,43 @@ test('content the store no longer holds is told apart from a silent model', () =
     `got ${JSON.stringify(expired)}`,
   );
 });
+
+test('a resumed run does not present the messages it resumed with as newly said', () => {
+  // A restart commits a baseline: the whole window, not the change. Every
+  // message the run resumed with is in it, so without comparing against the
+  // epoch before, the user sees their old messages again next to the new one.
+  const askedBefore = {
+    ...contextMessage('msg-first', 'user', 'the first thing asked'),
+    source_kind: 'query',
+  };
+  const askedNow = {
+    ...contextMessage('msg-second', 'user', 'what was asked after the restart'),
+    source_kind: 'query',
+  };
+  const records = [
+    v2Record({
+      eventId: 'event-1',
+      sequence: 1,
+      sequenceEpoch: 'epoch-1',
+      turn: 1,
+      payload: contextCommit('window-1', null, [askedBefore], []),
+    }),
+    v2Record({
+      eventId: 'event-2',
+      sequence: 1,
+      sequenceEpoch: 'epoch-2',
+      turn: 2,
+      payload: contextCommit('window-2', null, [askedBefore, askedNow], []),
+    }),
+  ];
+
+  const snapshot = projectOtelTrajectory(records);
+  const userText = snapshot.turns
+    .flatMap(turn => turn.groups.flatMap(group => group.cells))
+    .filter(cell => cell.kind === 'user')
+    .map(cell => String(cell.text ?? ''));
+
+  // Each message appears once. Presenting the baseline as all-new would show
+  // the first one twice, which is what a reader saw after every restart.
+  assert.deepEqual(userText, ['the first thing asked', 'what was asked after the restart']);
+});

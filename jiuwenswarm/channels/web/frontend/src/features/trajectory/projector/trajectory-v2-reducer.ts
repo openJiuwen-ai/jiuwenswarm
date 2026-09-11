@@ -496,6 +496,11 @@ function epochBaselineCells(
   behaviorOrder: number,
 ): TrajectoryCell[] {
   const previousSlots = new Map(logicalSystemSlots(previous).map(slot => [slot.key, slot]))
+  // What the epoch before this one already carried. A baseline restates its
+  // whole window rather than the change, so a run that resumes an existing
+  // conversation restates everything the user ever said. Without this, each
+  // restart presents those messages again as though they were just spoken.
+  const carriedOver = new Set(previous.map(message => message.message_id))
   const operations: ContextDelta[] = []
   for (const slot of logicalSystemSlots(messages)) {
     const previousSlot = previousSlots.get(slot.key)
@@ -512,6 +517,10 @@ function epochBaselineCells(
     if (message.role !== 'user' || message.origin !== 'external_user'
       || message.source_kind === undefined
       || !EPOCH_INPUT_SOURCE_KINDS.has(message.source_kind)) return
+    // Message ids survive a restart, so one already in the previous window is
+    // one this reader has seen. Only what the user said since is new, which
+    // is the same test the system slots above make by fingerprint.
+    if (carriedOver.has(message.message_id)) return
     operations.push({
       op: 'insert',
       message_id: message.message_id,
