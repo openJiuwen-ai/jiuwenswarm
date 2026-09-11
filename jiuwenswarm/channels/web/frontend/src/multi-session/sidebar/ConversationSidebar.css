@@ -618,7 +618,9 @@
 }
 
 .conversation-list-item:hover,
-.conversation-list-item.is-active:hover {
+.conversation-list-item.is-active:hover,
+/* 菜单门户化后指针移入浮层不算行 hover，用 is-menu-open 维持行的悬停观感 */
+.conversation-list-item.is-menu-open {
   background: var(--color-sidebar-nav-active);
 }
 
@@ -753,6 +755,8 @@
 
 .conversation-list-item__actions:hover,
 .conversation-list-item__actions:focus-visible,
+/* 菜单打开期间更多按钮维持悬停/激活观感（data-state 由 DropdownMenuTrigger 注入） */
+.conversation-list-item__actions[data-state='open'],
 .conversation-list-item__pin-action:hover,
 .conversation-list-item__pin-action:focus-visible {
   background: var(--color-action-secondary);
@@ -760,7 +764,8 @@
 }
 
 .conversation-entity-row>.conversation-list-item__actions:hover,
-.conversation-entity-row>.conversation-list-item__actions:focus-visible {
+.conversation-entity-row>.conversation-list-item__actions:focus-visible,
+.conversation-entity-row>.conversation-list-item__actions[data-state='open'] {
   background: var(--color-icon-btn-hover-surface);
 }
 
@@ -795,19 +800,6 @@
 .conversation-list-item__pin-action:focus-visible,
 .conversation-list-item__menu-item:focus-visible {
   outline: none;
-}
-
-.conversation-list-item__menu {
-  position: absolute;
-  top: 32px;
-  right: 6px;
-  z-index: 50;
-  min-width: 154px;
-  padding: 8px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 8px;
-  background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
 }
 
 .conversation-sidebar__add-menu {
@@ -853,10 +845,6 @@
 
 .conversation-list-item__menu-item:hover:not(:disabled) {
   background: var(--color-action-secondary);
-}
-
-.conversation-list-item__menu-item--danger {
-  color: var(--color-text-primary);
 }
 
 .conversation-list-item__menu-item:disabled {
