@@ -85,7 +85,7 @@ inject_data_volume() {
 # 剔除无效/不需要的 hostPath 卷(+ 引用它们的 volumeMounts):
 # 规则1(两模式通用):三个代码目录变量(CLAW_CODE_PATH/RUNTIME_CODE_PATH/CORE_CODE_PATH)任一为空,
 #   引用该变量的 hostPath 路径会变坏、不能挂载,一并剔除。映射(按 hostPath path 引用):
-#   CLAW_CODE_PATH    -> hp-code, hp-jiuwenbox
+#   CLAW_CODE_PATH    -> hp-code
 #   RUNTIME_CODE_PATH -> hp-rt-foundation, hp-rt-management
 #   CORE_CODE_PATH    -> hp-openjiuwen
 # 规则2(仅 product):agentserver 镜像内置代码,4 个 agentserver 代码挂载,1 个 jiuwenbox代码挂载
@@ -96,7 +96,7 @@ drop_hostpath_volumes() {
     local json_file="$1"
     local drop_names=()
     if [[ -z "${DEPLOY_VARS["CLAW_CODE_PATH"]:-}" ]]; then
-        drop_names+=(hp-code hp-jiuwenbox)
+        drop_names+=(hp-code)
     fi
     if [[ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ]]; then
         drop_names+=(hp-rt-foundation hp-rt-management)
@@ -105,7 +105,7 @@ drop_hostpath_volumes() {
         drop_names+=(hp-openjiuwen)
     fi
     if [[ "${DEPLOY_VARS["MODE"]}" == "product" ]]; then
-        drop_names+=(hp-code hp-rt-foundation hp-rt-management hp-openjiuwen hp-jiuwenbox)
+        drop_names+=(hp-code hp-rt-foundation hp-rt-management hp-openjiuwen)
     fi
 
     if [ "${#drop_names[@]}" -gt 0 ]; then

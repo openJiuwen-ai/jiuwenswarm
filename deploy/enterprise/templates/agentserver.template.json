@@ -127,8 +127,8 @@
             "mountPath": "/sys/fs/cgroup"
           },
           {
-            "name": "hp-jiuwenbox",
-            "mountPath": "<<CLAW_POD_CODE_PATH>>/jiuwenbox/src"
+            "name": "hp-code",
+            "mountPath": "<<CLAW_POD_CODE_PATH>>"
           },
           {
             "name": "data",
@@ -195,13 +195,6 @@
             "name": "hp-cgroup",
             "hostPath": {
               "path": "/sys/fs/cgroup",
-              "type": "Directory"
-            }
-          },
-          {
-            "name": "hp-jiuwenbox",
-            "hostPath": {
-              "path": "<<CLAW_CODE_PATH>>/jiuwenbox/src",
               "type": "Directory"
             }
           }
