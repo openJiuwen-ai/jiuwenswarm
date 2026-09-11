@@ -765,7 +765,7 @@ async def test_container_file_http_raw_file_returns_binary_and_json() -> None:
             eof=True,
         )
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -823,7 +823,7 @@ async def test_container_file_http_downloads_sent_file_from_token() -> None:
     payload = base64.urlsafe_b64encode(
         json.dumps({"path": "/home/agentos/reports/result.txt", "sid": "session-1"}).encode()
     ).decode().rstrip("=")
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -866,7 +866,7 @@ async def test_container_file_http_upload_multipart() -> None:
             "size": 4,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -908,7 +908,7 @@ async def test_container_file_http_upload_multipart_with_dir() -> None:
             "size": 4,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -944,7 +944,7 @@ async def test_container_file_http_file_content_text() -> None:
             "size": 7,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -976,7 +976,7 @@ async def test_container_file_http_absent_without_router_client() -> None:
     from jiuwenswarm.gateway.channel_manager.web.web_channel_app import build_web_channel_app
     from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannelConfig
 
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     app = build_web_channel_app(channel)
     paths = {getattr(r, "path", None) for r in app.router.routes}
     assert "/file-api/upload" not in paths
@@ -1047,7 +1047,7 @@ async def test_container_file_http_list_files_and_markdown() -> None:
 
     router = _make_router_with_runtime()
     router.list_container_files = AsyncMock(return_value=yuanrong_items)  # type: ignore[method-assign]
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 
@@ -1110,7 +1110,7 @@ async def test_container_file_http_mkdir() -> None:
             "created": True,
         }
     )
-    channel = WebChannel(WebChannelConfig(enabled=True, dual_protocol=True), RobotMessageRouter())
+    channel = WebChannel(WebChannelConfig(enabled=True), RobotMessageRouter())
     channel.container_file_client = router
     app = build_web_channel_app(channel)
 

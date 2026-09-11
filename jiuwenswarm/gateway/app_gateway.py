@@ -1546,7 +1546,6 @@ async def _run(
         web_host: str,
         web_port: int,
         web_path: str,
-        web_dual_protocol: bool = True,
 ) -> None:
     from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import A2AChannel, A2AChannelConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.dingtalk.dingtalk_connect import DingTalkChannel, \
@@ -1910,7 +1909,6 @@ async def _run(
         host=web_host,
         port=web_port,
         path=web_path,
-        dual_protocol=web_dual_protocol,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
 
@@ -3040,8 +3038,6 @@ def main() -> None:
     web_host = args.host or os.getenv("WEB_HOST", "127.0.0.1")
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
-    _dual_raw = os.getenv("WEB_DUAL_PROTOCOL", "1").strip().lower()
-    web_dual_protocol = _dual_raw not in {"0", "false", "no", "off"}
 
     install_async_dump_handler("gateway")
     asyncio.run(
@@ -3050,7 +3046,6 @@ def main() -> None:
             web_host=web_host,
             web_port=web_port,
             web_path=web_path,
-            web_dual_protocol=web_dual_protocol,
         )
     )
 

@@ -26,11 +26,7 @@ from jiuwenswarm.gateway.routing.base_ws_channel import BaseWsChannel
 from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 from jiuwenswarm.common.security.ws_origin import (
-    extract_handshake_request,
-    forbidden_origin_response,
     get_header_value,
-    is_origin_check_enabled,
-    is_allowed_browser_origin,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
 from jiuwenswarm.common.ws_diagnostics import (
@@ -108,9 +104,6 @@ class WebChannelConfig:
     port: int = 19000
     path: str = "/ws"
     allow_from: list[str] = field(default_factory=list)
-    # True: uvicorn+FastAPI on the same port (WS now; HTTP routes can be added later).
-    # False: legacy websockets.serve only (rollback).
-    dual_protocol: bool = True
 
 
 class WebChannel(BaseWsChannel):
@@ -132,7 +125,6 @@ class WebChannel(BaseWsChannel):
         self.config: WebChannelConfig = config
         # Phase 2：注入 AgentServerClient，供 _process_files 文件导入 E2A 转发使用
         self.agent_client: Any = agent_client
-        self._server: Any = None
         self._uvicorn_server: Any = None
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
@@ -574,13 +566,6 @@ class WebChannel(BaseWsChannel):
             logger.warning("WebChannel 未启用（enabled=False）")
             return
 
-        if self.config.dual_protocol:
-            await self._start_dual_protocol()
-            return
-        await self._start_websockets_legacy()
-
-    async def _start_dual_protocol(self) -> None:
-        """Same port: FastAPI/uvicorn (WS today; HTTP routes can be mounted later)."""
         import uvicorn
 
         from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
@@ -600,41 +585,12 @@ class WebChannel(BaseWsChannel):
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
         logger.info(
-            "WebChannel 已启动(dual_protocol): ws://%s:%s%s (HTTP-ready same port)",
+            "WebChannel 已启动: ws://%s:%s%s (HTTP+WS same port)",
             self.config.host,
             self.config.port,
             self.config.path,
         )
         await self._uvicorn_server.serve()
-
-    async def _start_websockets_legacy(self) -> None:
-        """Rollback path: pure websockets.serve (no HTTP on this port)."""
-        try:
-            from websockets.legacy.server import serve as ws_serve
-        except Exception:  # pragma: no cover
-            import websockets
-
-            ws_serve = websockets.serve
-
-        from jiuwenswarm.common.ws_limits import WEB_WS_MAX_MESSAGE_BYTES
-
-        self._server = await ws_serve(
-            self.handle_connection,
-            self.config.host,
-            self.config.port,
-            process_request=self._process_request,
-            ping_interval=20,
-            ping_timeout=60,
-            max_size=WEB_WS_MAX_MESSAGE_BYTES,
-        )
-        self._running = True
-        logger.info(
-            "WebChannel 已启动(legacy): ws://%s:%s%s",
-            self.config.host,
-            self.config.port,
-            self.config.path,
-        )
-        await self._server.wait_closed()
 
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
@@ -649,10 +605,6 @@ class WebChannel(BaseWsChannel):
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
         # 兜底清理未走正常断连路径的 writer 协程（正常断连已由 unregister_ws 清理）
         await self._shutdown_all_writers()
         logger.info("WebChannel 已停止")
@@ -664,52 +616,6 @@ class WebChannel(BaseWsChannel):
     async def disconnect(self) -> None:
         """兼容方法：调用 stop."""
         await self.stop()
-
-    async def _process_request(self, *args: Any) -> Any:
-        """在握手阶段执行 Origin 校验，兼容 legacy/new websockets APIs。"""
-        path, request_headers = extract_handshake_request(args)
-        origin = get_header_value(request_headers, "Origin")
-        enable_origin_check = is_origin_check_enabled()
-        if not enable_origin_check:
-            logger.info(
-                "WebChannel 握手检查 path=%s origin=%s enable_origin_check=%s allowed=%s",
-                path,
-                origin,
-                enable_origin_check,
-                True,
-            )
-            return await self._handshake_auth_response(args, path, request_headers)
-
-        allowed = is_allowed_browser_origin(origin)
-        logger.info(
-            "WebChannel 握手检查 path=%s origin=%s enable_origin_check=%s allowed=%s",
-            path,
-            origin,
-            enable_origin_check,
-            allowed,
-        )
-        if allowed:
-            return await self._handshake_auth_response(args, path, request_headers)
-
-        logger.warning(
-            "WebChannel 握手拒绝 path=%s origin=%s reason=origin_not_allowed",
-            path,
-            origin,
-        )
-        return forbidden_origin_response(args)
-
-    async def _handshake_auth_response(
-        self,
-        process_request_args: tuple[Any, ...],
-        path: str,
-        request_headers: Any,
-    ) -> Any:
-        if not await self.handshake_auth_denied(
-            path=path, headers=request_headers, channel="web"
-        ):
-            return None
-        logger.warning("WebChannel 握手拒绝 path=%s reason=unauthorized", path)
-        return self.unauthorized_handshake_response(process_request_args)
 
     @staticmethod
     def _should_preserve_full_payload(event_name: str) -> bool:
@@ -1062,7 +968,7 @@ class WebChannel(BaseWsChannel):
     # ── 内部实现 ──────────────────────────────────────────
 
     async def handle_connection(self, ws: Any, path: str | None = None) -> None:
-        """Public entry for serving one accepted WebSocket (dual-protocol / adapters)."""
+        """Public entry for serving one accepted WebSocket (FastAPI adapter or tests)."""
         await self._connection_handler(ws, path=path)
 
     async def _connection_handler(self, ws: Any, path: str | None = None) -> None:

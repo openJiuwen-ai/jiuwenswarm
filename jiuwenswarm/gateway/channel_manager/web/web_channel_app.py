@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""FastAPI app for WebChannel: WebSocket now, optional HTTP routes later (same port)."""
+"""FastAPI app for WebChannel: WebSocket and HTTP on the same port."""
 
 from __future__ import annotations
 
@@ -39,11 +39,11 @@ def normalize_web_ws_path(path: str | None) -> str:
 
 
 def build_web_channel_app(channel: WebChannel) -> FastAPI:
-    """Build the dual-protocol capable app bound to one WebChannel instance.
+    """Build the same-port HTTP+WS app bound to one WebChannel instance.
 
-    Phase 1: WebSocket endpoints for ``channel.config.path`` (default ``/ws``)
-    and hard-coded ``/ws/git``. Later: register HTTP routes on the same ``app``
-    without changing existing WS JSON-RPC methods.
+    WebSocket endpoints for ``channel.config.path`` (default ``/ws``) and
+    hard-coded ``/ws/git``. HTTP routes (e.g. ``/file-api``) register on the
+    same ``app`` without changing existing WS JSON-RPC methods.
     """
     app = FastAPI(
         title="JiuwenSwarm WebChannel",
@@ -53,8 +53,6 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
     )
     app.state.web_channel = channel
 
-    # Extension point for future same-port HTTP (e.g. container file API).
-    # Keep unused in Phase 1 so WS behavior stays the sole surface.
     register_http_routes(app, channel)
 
     main_path = normalize_web_ws_path(channel.config.path)
@@ -62,7 +60,7 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
     async def websocket_endpoint(websocket: WebSocket) -> None:
         await _serve_channel_websocket(channel, websocket)
 
-    # Honor WEB_PATH / --web-path (same as legacy handle_connection path check).
+    # Honor WEB_PATH / --web-path (same as handle_connection path check).
     app.add_api_websocket_route(main_path, websocket_endpoint)
     if main_path != _GIT_WS_PATH:
         app.add_api_websocket_route(_GIT_WS_PATH, websocket_endpoint)
@@ -101,7 +99,7 @@ async def _serve_channel_websocket(channel: WebChannel, websocket: WebSocket) ->
         await channel.handle_connection(adapter, path=adapter.path)
     except Exception:  # noqa: BLE001 — connection-level isolation
         logger.exception(
-            "WebChannel dual-protocol WS handler crashed path=%s remote=%s",
+            "WebChannel WS handler crashed path=%s remote=%s",
             adapter.path,
             adapter.remote_address,
         )

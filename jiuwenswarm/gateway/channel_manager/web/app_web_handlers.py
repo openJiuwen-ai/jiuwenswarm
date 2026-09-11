@@ -6085,7 +6085,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.export", _harness_export_handler)
 
     real_agent_client = _resolve(agent_client)
-    # Container file transfer is HTTP on the WebChannel port (dual_protocol),
+    # Container file transfer is HTTP on the WebChannel port, not WS JSON-RPC.
     # not WS JSON-RPC. Bind any client that already exposes the container-file
     # methods so build_web_channel_app can mount /file-api/* at channel.start().
     # Do not import AgentOSRouterClient here: this module must not depend on extensions.
