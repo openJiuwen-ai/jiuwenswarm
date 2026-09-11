@@ -144,6 +144,10 @@ ERROR_EVENT_TYPE = _ERROR_EVENT.value
 STREAM_SOURCE_ID_FIELD = "stream_source_id"
 _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT = 20
 _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
+# 忙时中断续跑 ACK 的最长挂起时间：ACK 终结帧必须晚于被注入回合的所有
+# 输出帧（见 _await_busy_interrupt_output_idle），故等待当前输出租约释放，
+# 仅在超长回合异常悬挂时兜底放行。
+_INTERRUPT_ACK_HOLD_TIMEOUT_SECONDS = 1800.0
 
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
@@ -13077,6 +13081,69 @@ class JiuWenSwarmDeepAdapter:
         )
         return None
 
+    async def _await_busy_interrupt_output_idle(
+        self,
+        session_id: str,
+        *,
+        timeout: float = _INTERRUPT_ACK_HOLD_TIMEOUT_SECONDS,
+    ) -> None:
+        """Hold the busy-path interrupt ACK until the current output consumer unwinds.
+
+        The interrupt resume already injected its answer via ``send_input``;
+        the resumed round keeps streaming on the previous consumer's output
+        lease.  Relay clients forward this ACK's terminal frame into their
+        still-listening parent stream, so an early terminal makes them tear
+        the parent down mid-round and drop the resumed round's task/chat
+        events.  Wait for the current lease to be released (round finished /
+        consumer detached) before the ACK emits its terminal frame.
+        """
+        try:
+            manager = self._instance._interaction_output  # pylint: disable=protected-access
+            lease = manager.current_lease()
+            if lease is None:
+                # 无活跃租约（已空闲）：无需挂起。
+                return
+            await asyncio.wait_for(lease.closed.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] interrupt ACK hold timed out waiting for "
+                "busy output lease: session_id=%s timeout_ms=%.0f",
+                session_id,
+                timeout * 1000,
+            )
+        except (AttributeError, TypeError):
+            # 测试替身 / 运行时无租约管理器：无可等待的租约事件，直接放行
+            # （保持 ACK 立即终结的旧行为）。
+            return
+        except Exception:
+            # 租约等待异常不得反噬 ACK 流本身。
+            logger.exception(
+                "[JiuWenSwarmDeepAdapter] interrupt ACK hold failed: session_id=%s",
+                session_id,
+            )
+
+    def _clear_round_scoped_permission_grants(self) -> None:
+        """新一轮用户消息开始时回收「本次允许」的轮级授权。
+
+        SkillAuthorizationPermissionRail 会把 allow_once 授权写入会话
+        auto_confirm 表并打轮级标记（同一轮任务内同 key 免重复弹卡）。
+        此处在普通用户新消息（非 HITL resume / 非 goal 控制）开始时回收
+        这些轮级条目；用户显式选择「会话内记住 / 永久记住」的授权不受影响。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+                clear_round_scoped_auto_confirm,
+            )
+
+            clear_round_scoped_auto_confirm(
+                getattr(self._instance, "_interaction_session", None)
+            )
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] clear round-scoped auto_confirm failed",
+                exc_info=True,
+            )
+
     @staticmethod
     def _resolve_input_dispatch_mode(params: Any) -> InputDispatchMode | None:
         """Map host ``input_mode`` / ``runtime_mode`` onto OpenJiuwen dispatch mode.
@@ -16787,6 +16854,9 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
             else:
+                # 新一轮用户消息：回收「本次允许」的轮级授权（allow_once
+                # 只在本轮任务内复用，跨用户消息不生效）。
+                self._clear_round_scoped_permission_grants()
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is not None:
                     await self._instance.send_input(
@@ -18031,11 +18101,34 @@ class JiuWenSwarmDeepAdapter:
                         request.session_id or "default"
                     )
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
+                    # Busy interaction: the injected answer resumes the round
+                    # whose output the previous chat.send consumer still
+                    # streams.  Relay clients forward this ACK's terminal
+                    # frame into their still-listening parent stream, so an
+                    # immediate terminal would tear the parent down mid-round
+                    # and drop the resumed round's task/chat events.  Hold the
+                    # ACK open until the busy consumer releases its lease.
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload={"event_type": "runtime.accepted", "request_id": rid},
+                        is_complete=False,
+                    )
+                    await self._await_busy_interrupt_output_idle(
+                        request.session_id or "default"
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=None,
+                        is_complete=True,
+                    )
                     interaction_stream_abort = False
                     return
             else:
+                # 新一轮用户消息：回收「本次允许」的轮级授权（allow_once
+                # 只在本轮任务内复用，跨用户消息不生效）。
+                self._clear_round_scoped_permission_grants()
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
