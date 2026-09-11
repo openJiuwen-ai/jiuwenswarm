@@ -80,6 +80,23 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
     def get_third_agent(self) -> ThirdAgent:
         return self._third_agent
 
+    async def resolve_web_endpoint(
+        self,
+        user_id: str,
+        agent_type: str,
+        protocol: str,
+        *,
+        acquire: bool = False,
+    ) -> str | None:
+        """Delegate to router client for the WebChannel agent UI proxy."""
+        return await self._router_client.resolve_web_endpoint(
+            user_id, agent_type, protocol, acquire=acquire
+        )
+
+    async def release_web_endpoint(self, user_id: str, agent_type: str) -> None:
+        """Drop one web-proxy task hold taken by ``resolve_web_endpoint``."""
+        await self._router_client.release_web_endpoint(user_id, agent_type)
+
     def set_key_issuer(
         self,
         key_issuer,

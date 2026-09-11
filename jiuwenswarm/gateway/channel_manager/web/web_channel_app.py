@@ -54,6 +54,7 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
         docs_url=None,
         redoc_url=None,
         openapi_url=None,
+        redirect_slashes=False,
     )
     app.state.web_channel = channel
     plugin_registry = getattr(channel, "application_plugin_registry", None)
@@ -106,6 +107,12 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
             main_path,
         )
 
+    # Catch-all /{agent_type} must be last so /ws and /file-api keep priority.
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+        attach_web_proxy_routes,
+    )
+
+    attach_web_proxy_routes(app, channel)
     return app
 
 
