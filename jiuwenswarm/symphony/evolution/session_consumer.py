@@ -647,7 +647,7 @@ def _classify_outcome(
         if record.get("event_type") == "chat.error":
             error = str(record.get("error") or record.get("content") or "execution failed")
             return "failure", str(record.get("error_type") or "agent_error"), error[:1000]
-    # 2. 检查失败的 tool_result（在 chat.final 之前检查，因为工具失败应该优先于最终回复）
+    # 2. 检查失败的 tool_result
     for record in records:
         if record.get("event_type") != "chat.tool_result":
             continue
@@ -655,7 +655,10 @@ def _classify_outcome(
             tool_name = str(record.get("tool_name") or "tool")
             detail = str(record.get("error") or record.get("result") or "tool execution failed")
             return "failure", f"{tool_name}_failed", detail[:1000]
-    # 3. 检查 chat.final（有最终回复就算成功）
+    # 3. 检查 chat.ask_user_question
+    if any(record.get("event_type") == "chat.ask_user_question" for record in records):
+        return "needs_input", "missing_input", "execution paused for user input"
+    # 4. 检查 chat.final（有最终回复就算成功）
     final_text = "\n".join(
         str(record.get("content") or "").strip()
         for record in records
@@ -665,9 +668,6 @@ def _classify_outcome(
         if _NON_EXECUTION_FINAL_RE.search(final_text):
             return None
         return "success", "", final_text[-1000:]
-    # 4. 检查 chat.ask_user_question
-    if any(record.get("event_type") == "chat.ask_user_question" for record in records):
-        return "needs_input", "missing_input", "execution paused for user input"
     return None
 
 
