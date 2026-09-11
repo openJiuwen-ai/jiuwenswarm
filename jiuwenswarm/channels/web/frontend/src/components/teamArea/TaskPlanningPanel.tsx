@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
-import { File, Maximize2, Puzzle } from 'lucide-react';
+import { File, GitBranch, Maximize2, Puzzle } from 'lucide-react';
 import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import type { TeamTask as SessionTeamTask } from '../../stores/sessionStore';
 import recentTasksIcon from '../../assets/work-mode/recent-tasks.svg';
@@ -14,6 +14,9 @@ import BoardViewIcon from '../../assets/work-mode/view-board.svg?react';
 import { BOARD_COLUMNS, getBoardTaskContent, getBoardTaskTitle, getMemberDisplayName, getTaskColumnKey, type TaskColumnKey, type TeamMember } from './shared';
 import { getTotalTaskVisualProgressPercent } from './taskProgress';
 import { resolveTaskAssigneePresentation } from './taskAssigneePresentation';
+import { SwarmflowGraphView } from './SwarmflowGraphView';
+import { SwarmflowTreeView } from './SwarmflowTreeView';
+import type { WorkflowRun } from './workflowTypes';
 
 type TaskPlanningPanelProps = {
   variant: 'compact' | 'expanded';
@@ -31,6 +34,9 @@ type TaskPlanningPanelProps = {
   hideBorder?: boolean;
   /** 自定义标题（不传则默认用 team.taskOverview） */
   title?: string;
+  /** beta3 runtime events adapted to develop's Swarmflow renderer. */
+  workflowRuns?: WorkflowRun[];
+  sessionId?: string;
 };
 
 const compactStatusIcons: Record<TaskColumnKey, string> = {
@@ -52,10 +58,12 @@ export function TaskPlanningPanel({
   hideAssignee = false,
   hideBorder = false,
   title,
+  workflowRuns = [],
+  sessionId = '',
 }: TaskPlanningPanelProps) {
   const { t } = useTranslation();
   const [now, setNow] = useState(() => Date.now());
-  const [view, setView] = useState<'board' | 'list'>('board');
+  const [view, setView] = useState<'board' | 'list' | 'workflow'>('list');
   const groupedTasks = useMemo(() => {
     const groups: Record<TaskColumnKey, SessionTeamTask[]> = {
       waiting: [],
@@ -199,6 +207,18 @@ export function TaskPlanningPanel({
       >
         <BoardViewIcon className="h-4 w-4 shrink-0" aria-hidden="true" />
       </button>
+      {workflowRuns.length > 0 && (
+        <button
+          type="button"
+          onClick={() => setView('workflow')}
+          className={`flex h-8 w-8 items-center justify-center rounded-sm transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-accent focus-visible:ring-offset-2 focus-visible:ring-offset-card ${view === 'workflow' ? 'bg-secondary text-text' : 'text-text-muted hover:bg-secondary/50 hover:text-text'}`}
+          aria-label={t('team.planning.views.workflow')}
+          title={t('team.planning.views.workflow')}
+          aria-pressed={view === 'workflow'}
+        >
+          <GitBranch className="h-4 w-4 shrink-0" aria-hidden="true" />
+        </button>
+      )}
     </div>
   );
 
@@ -210,7 +230,27 @@ export function TaskPlanningPanel({
             <h2 className="text-sm font-medium leading-5 text-text-strong">{t('team.planning.progressTitle')}</h2>
             {viewSwitcher}
           </div>
-          <ExpandedTaskList tasks={tasks} groupedTasks={groupedTasks} globalIndexMap={globalIndexMap} progressPercent={progressPercent} />
+          {workflowRuns.length > 0 && sessionId ? (
+            <div className="flex min-h-0 flex-1 flex-col">
+              <WorkflowProgressHeader groupedTasks={groupedTasks} progressPercent={progressPercent} />
+              <div className="mt-3 min-h-0 flex-1 overflow-hidden">
+                <SwarmflowTreeView runs={workflowRuns} sessionId={sessionId} />
+              </div>
+            </div>
+          ) : (
+            <ExpandedTaskList tasks={tasks} groupedTasks={groupedTasks} globalIndexMap={globalIndexMap} progressPercent={progressPercent} />
+          )}
+        </div>
+      ) : view === 'workflow' ? (
+        <div className="flex h-full flex-col px-6 pb-6">
+          <div className="flex h-8 items-center gap-3">
+            <h2 className="text-sm font-medium leading-5 text-text-strong">{t('team.planning.progressTitle')}</h2>
+            {viewSwitcher}
+          </div>
+          <WorkflowProgressHeader groupedTasks={groupedTasks} progressPercent={progressPercent} />
+          <div className="mt-3 min-h-0 flex-1 overflow-hidden rounded-lg border border-border bg-bg-muted">
+            {workflowRuns.length > 0 && sessionId ? <SwarmflowGraphView runs={workflowRuns} sessionId={sessionId} /> : null}
+          </div>
         </div>
       ) : (
         <div className="flex h-full flex-col px-6 pb-6">
@@ -237,6 +277,29 @@ export function TaskPlanningPanel({
         </div>
       )}
     </div>
+  );
+}
+
+function WorkflowProgressHeader({ groupedTasks, progressPercent }: { groupedTasks: Record<TaskColumnKey, SessionTeamTask[]>; progressPercent: number }) {
+  const { t } = useTranslation();
+  return (
+    <>
+      <div className="mt-2 flex min-h-7 flex-wrap items-baseline gap-x-8 gap-y-2">
+        <div className="flex shrink-0 items-baseline gap-2">
+          <span className="text-sm leading-5 text-text-muted">{t('team.planning.metrics.progress')}</span>
+          <span className="text-base font-semibold leading-6 text-text">{progressPercent}%</span>
+        </div>
+        {BOARD_COLUMNS.map(column => (
+          <div key={column.key} className="flex shrink-0 items-baseline gap-2">
+            <span className="text-sm leading-5 text-text-muted">{t(column.labelKey)}</span>
+            <span className="text-base font-semibold leading-6 text-text">{groupedTasks[column.key].length}</span>
+          </div>
+        ))}
+      </div>
+      <div className="h-1 overflow-hidden rounded-full bg-secondary">
+        <div className="h-full rounded-full bg-accent transition-all duration-300" style={{ width: `${progressPercent}%` }} />
+      </div>
+    </>
   );
 }
 

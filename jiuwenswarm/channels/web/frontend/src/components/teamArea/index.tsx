@@ -4,61 +4,71 @@
 
 import { useMemo } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileCheck2, FileText, Minimize2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message } from '../../types';
-import { ArtifactsPanel, useSessionArtifactsCount } from '../ArtifactsPanel';
 import { TaskPlanningPanel } from './TaskPlanningPanel';
 import { TeamMembersPanel } from './TeamMembersPanel';
-import teamProcessIcon from '../../assets/team-process.svg';
 import teamIcon from '../../assets/team.svg';
 import { normalizeTaskStatus, type TabType, type TeamDetailTab, type TeamAreaProps, type TeamMember } from './shared';
-import { getTasksForCurrentProgress } from '../../features/teamTaskProgressBaseline';
-import { filterInvokedTeamMembers } from './invokedTeamMembers';
+import { filterInvokedTeamMembers, isCurrentTurnEvidence, latestUserTurnStartedAtMs } from './invokedTeamMembers';
+import { buildCurrentTurnWorkflowRuns } from './teamWorkflowAdapter';
+import type { WorkflowRun } from './workflowTypes';
+import { ExpandedPanel } from './ExpandedPanel';
 
-function useTaskPlanningMetrics() {
+function useTaskPlanningMetrics(currentTurnStartedAtMs: number | null) {
   const activeSessionId = useChatStore(s => s.activeSessionId);
   const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
-  const teamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
-  const teamTasks = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
-  const taskProgressBaseline = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskProgressBaseline);
-  const progressTasks = useMemo(
-    () => (taskProgressBaseline ? getTasksForCurrentProgress(teamTasks, taskProgressBaseline) : teamTasks),
-    [taskProgressBaseline, teamTasks],
+  const allTeamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
+  const allTeamTasks = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTasks ?? []);
+  const teamTaskEvents = useMemo(
+    () => allTeamTaskEvents.filter(event => isCurrentTurnEvidence(event, currentTurnStartedAtMs)),
+    [allTeamTaskEvents, currentTurnStartedAtMs],
   );
+  const teamTasks = useMemo(() => allTeamTasks.filter(task => isCurrentTurnEvidence(task, currentTurnStartedAtMs)), [allTeamTasks, currentTurnStartedAtMs]);
+  const progressTasks = teamTasks;
 
   const totalTasks = useMemo(() => {
     if (teamTasks.length > 0) return teamTasks.length;
     const taskIds = new Set<string>();
-    todos.forEach(todo => taskIds.add(todo.id));
+    if (currentTurnStartedAtMs === null) todos.forEach(todo => taskIds.add(todo.id));
     teamTaskEvents.forEach(event => {
       if (event.task_id) taskIds.add(event.task_id);
     });
     return taskIds.size;
-  }, [teamTaskEvents, teamTasks.length, todos]);
+  }, [currentTurnStartedAtMs, teamTaskEvents, teamTasks.length, todos]);
 
   const completedTasks = useMemo(() => {
     if (teamTasks.length > 0) {
       return teamTasks.filter(task => task.status === 'completed').length;
     }
     const completed = new Set<string>();
-    todos.forEach(todo => {
-      if (normalizeTaskStatus(todo.status) === 'completed') completed.add(todo.id);
-    });
+    if (currentTurnStartedAtMs === null) {
+      todos.forEach(todo => {
+        if (normalizeTaskStatus(todo.status) === 'completed') completed.add(todo.id);
+      });
+    }
     teamTaskEvents.forEach(event => {
       if (event.task_id && normalizeTaskStatus(event.status, event.type) === 'completed') {
         completed.add(event.task_id);
       }
     });
     return completed.size;
-  }, [teamTaskEvents, teamTasks, todos]);
+  }, [currentTurnStartedAtMs, teamTaskEvents, teamTasks, todos]);
 
   return { completedTasks, progressTasks, teamTasks, totalTasks };
 }
 
-function CompactTeamArea({ members, onExpand }: { members: TeamMember[]; onExpand?: (tab: TabType, memberId?: string) => void }) {
-  const { completedTasks, progressTasks, teamTasks, totalTasks } = useTaskPlanningMetrics();
+function CompactTeamArea({
+  members,
+  currentTurnStartedAtMs,
+  onExpand,
+}: {
+  members: TeamMember[];
+  currentTurnStartedAtMs: number | null;
+  onExpand?: (tab: TabType, memberId?: string) => void;
+}) {
+  const { completedTasks, progressTasks, teamTasks, totalTasks } = useTaskPlanningMetrics(currentTurnStartedAtMs);
 
   return (
     <>
@@ -95,6 +105,9 @@ function ExpandedTeamArea({
   onArtifactSelect,
   onCollapse,
   reviewPanel,
+  currentTurnStartedAtMs,
+  workflowRuns,
+  activeSessionId,
 }: {
   members: TeamMember[];
   historyMessages?: Message[];
@@ -108,11 +121,12 @@ function ExpandedTeamArea({
   onArtifactSelect?: (artifactId: string) => void;
   onCollapse?: () => void;
   reviewPanel?: ReactNode;
+  currentTurnStartedAtMs: number | null;
+  workflowRuns: WorkflowRun[];
+  activeSessionId: string;
 }) {
   const { t } = useTranslation();
-  const { completedTasks, progressTasks, teamTasks, totalTasks } = useTaskPlanningMetrics();
-  const artifactsCount = useSessionArtifactsCount();
-  const resolvedTab = (activeTab === 'artifacts' && artifactsCount === 0) || (activeTab === 'review' && !reviewPanel) ? 'planning' : activeTab;
+  const { completedTasks, progressTasks, teamTasks, totalTasks } = useTaskPlanningMetrics(currentTurnStartedAtMs);
 
   const selectedMember = useMemo(() => {
     if (!externalSelectedMemberId) return null;
@@ -123,85 +137,43 @@ function ExpandedTeamArea({
     onMemberSelect?.(memberId);
   };
 
-  const tabs = [
-    {
-      key: 'planning',
-      label: t('team.planning.tab'),
-      count: completedTasks + '/' + totalTasks,
-      icon: <img src={teamProcessIcon} width={16} height={16} />,
-    },
-    {
-      key: 'team',
-      label: t('team.membersTab'),
-      icon: <img src={teamIcon} width={16} height={16} />,
-    },
-    ...(artifactsCount > 0
-      ? [
-          {
-            key: 'artifacts' as const,
-            label: t('artifacts.tab'),
-            count: artifactsCount,
-            icon: <FileText size={16} />,
-          },
-        ]
-      : []),
-    ...(reviewPanel ? [{ key: 'review' as const, label: t('codeMode.review'), icon: <FileCheck2 size={16} /> }] : []),
-  ];
-
   return (
-    <div className="flex h-full flex-col overflow-hidden bg-card">
-      <div className="flex shrink-0 items-center justify-between px-6 py-4 bg-card border-b border-border">
-        <div className="flex items-center gap-2">
-          {tabs.map(tab => (
-            <button
-              key={tab.key}
-              className={`h-9 rounded-lg px-4 text-sm  flex items-center gap-2 ${
-                resolvedTab === tab.key ? 'bg-secondary font-medium text-text' : 'text-text-muted hover:bg-secondary/50 hover:text-text'
-              }`}
-              onClick={() => onTabChange(tab.key as TabType)}
-            >
-              {tab.icon}
-              {tab.label}
-              {'count' in tab ? ' (' + tab.count + ')' : ''}
-            </button>
-          ))}
-        </div>
-
-        <button onClick={onCollapse} className="rounded p-2 text-text-muted  hover:bg-secondary hover:text-text" title={t('team.collapse')}>
-          <Minimize2 size={12} />
-        </button>
-      </div>
-
-      <div className="flex min-h-0 flex-1 overflow-hidden">
-        {resolvedTab === 'planning' ? (
-          <TaskPlanningPanel
-            variant="expanded"
-            tasks={teamTasks}
-            progressTasks={progressTasks}
-            members={members}
-            totalTasks={totalTasks}
-            completedTasks={completedTasks}
-          />
-        ) : resolvedTab === 'artifacts' ? (
-          <div className="flex min-w-0 flex-1 overflow-hidden">
-            <ArtifactsPanel selectedArtifactId={selectedArtifactId} onSelectArtifact={onArtifactSelect} />
-          </div>
-        ) : resolvedTab === 'review' && reviewPanel ? (
-          <div className="flex min-w-0 flex-1 overflow-hidden">{reviewPanel}</div>
-        ) : (
-          <TeamMembersPanel
-            variant="expanded"
-            members={members}
-            selectedMemberId={selectedMember?.member_id || ''}
-            selectedMember={selectedMember}
-            activeDetailTab={activeDetailTab}
-            historyMessages={historyMessages}
-            onSelectMember={handleSelectMember}
-            onDetailTabChange={onDetailTabChange}
-          />
-        )}
-      </div>
-    </div>
+    <ExpandedPanel
+      activeTab={activeTab}
+      onTabChange={tab => onTabChange(tab as TabType)}
+      onCollapse={onCollapse ?? (() => {})}
+      reviewPanel={reviewPanel}
+      selectedArtifactId={selectedArtifactId}
+      onArtifactSelect={onArtifactSelect}
+      middleTab={{ key: 'team', label: t('team.membersTab'), icon: <img src={teamIcon} width={16} height={16} aria-hidden="true" /> }}
+      showMiddleTab
+      resolveActiveTab={(tab, artifactsCount, panel) => ((tab === 'artifacts' && artifactsCount === 0) || (tab === 'review' && !panel) ? 'planning' : tab)}
+      renderPlanningContent={() => (
+        <TaskPlanningPanel
+          variant="expanded"
+          tasks={teamTasks}
+          progressTasks={progressTasks}
+          members={members}
+          totalTasks={totalTasks}
+          completedTasks={completedTasks}
+          workflowRuns={workflowRuns}
+          sessionId={activeSessionId}
+        />
+      )}
+      renderMiddleTabContent={() => (
+        <TeamMembersPanel
+          variant="expanded"
+          members={members}
+          selectedMemberId={selectedMember?.member_id || ''}
+          selectedMember={selectedMember}
+          activeDetailTab={activeDetailTab}
+          historyMessages={historyMessages}
+          onSelectMember={handleSelectMember}
+          onDetailTabChange={onDetailTabChange}
+        />
+      )}
+      testIdPrefix="team-area"
+    />
   );
 }
 
@@ -212,9 +184,27 @@ export function TeamArea(props: TeamAreaProps) {
   const teamTaskEvents = useSessionStore(state => state.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
   const teamMemberExecutionEvents = useSessionStore(state => state.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
   const teamLeaderMemberIds = useSessionStore(state => state.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
+  const messages = useChatStore(state => state.runtimes[activeSessionId ?? '']?.messages ?? []);
+  const isProcessing = useChatStore(state => state.runtimes[activeSessionId ?? '']?.isProcessing ?? false);
+  const currentTurnStartedAtMs = useMemo(() => latestUserTurnStartedAtMs(messages), [messages]);
+  const currentQuery = useMemo(() => [...messages].reverse().find(message => message.role === 'user')?.content ?? '', [messages]);
   const invokedMembers = useMemo(
-    () => filterInvokedTeamMembers(members, teamTasks, teamTaskEvents, teamMemberExecutionEvents, teamLeaderMemberIds),
-    [members, teamLeaderMemberIds, teamMemberExecutionEvents, teamTaskEvents, teamTasks],
+    () => filterInvokedTeamMembers(members, teamTasks, teamTaskEvents, teamMemberExecutionEvents, teamLeaderMemberIds, currentTurnStartedAtMs),
+    [currentTurnStartedAtMs, members, teamLeaderMemberIds, teamMemberExecutionEvents, teamTaskEvents, teamTasks],
+  );
+  const workflowRuns = useMemo(
+    () =>
+      buildCurrentTurnWorkflowRuns({
+        members: invokedMembers,
+        tasks: teamTasks,
+        taskEvents: teamTaskEvents,
+        executionEvents: teamMemberExecutionEvents,
+        leaderMemberIds: teamLeaderMemberIds,
+        currentTurnStartedAtMs,
+        query: currentQuery,
+        isProcessing,
+      }),
+    [currentQuery, currentTurnStartedAtMs, invokedMembers, isProcessing, teamLeaderMemberIds, teamMemberExecutionEvents, teamTaskEvents, teamTasks],
   );
 
   if (props.expanded) {
@@ -232,8 +222,11 @@ export function TeamArea(props: TeamAreaProps) {
         onArtifactSelect={props.onArtifactSelect}
         onCollapse={props.onCollapse}
         reviewPanel={reviewPanel}
+        currentTurnStartedAtMs={currentTurnStartedAtMs}
+        workflowRuns={workflowRuns}
+        activeSessionId={activeSessionId ?? ''}
       />
     );
   }
-  return <CompactTeamArea members={invokedMembers} onExpand={props.onExpand} />;
+  return <CompactTeamArea members={invokedMembers} currentTurnStartedAtMs={currentTurnStartedAtMs} onExpand={props.onExpand} />;
 }

@@ -361,6 +361,18 @@ export const InteractiveRelationshipGraph = forwardRef<InteractiveRelationshipGr
       return { x: clientX - (rect?.left || 0), y: clientY - (rect?.top || 0) };
     }, []);
 
+    useEffect(() => {
+      const canvas = canvasRef.current;
+      if (!canvas) return undefined;
+      const handleWheel = (event: WheelEvent) => {
+        event.preventDefault();
+        const point = pointerPoint(event.clientX, event.clientY);
+        zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, point.x, point.y);
+      };
+      canvas.addEventListener('wheel', handleWheel, { passive: false });
+      return () => canvas.removeEventListener('wheel', handleWheel);
+    }, [pointerPoint, zoomAt]);
+
     const findNodeAt = useCallback(
       (clientX: number, clientY: number) => {
         const point = pointerPoint(clientX, clientY);
@@ -469,11 +481,6 @@ export const InteractiveRelationshipGraph = forwardRef<InteractiveRelationshipGr
         onPointerLeave={event => {
           if (!pointerRef.current) hoveredNodeIdRef.current = '';
           if (!pointerRef.current) event.currentTarget.style.cursor = 'grab';
-        }}
-        onWheel={event => {
-          event.preventDefault();
-          const point = pointerPoint(event.clientX, event.clientY);
-          zoomAt(event.deltaY < 0 ? 1.12 : 1 / 1.12, point.x, point.y);
         }}
         onDoubleClick={event => {
           const node = findNodeAt(event.clientX, event.clientY);

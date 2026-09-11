@@ -1,0 +1,57 @@
+.panel-tab-icon-btn:hover,
+.panel-tab-icon-btn--collapse {
+  border-radius: 10px;
+  background: var(--color-tool-tab-active-bg);
+}
+
+.single-agent-tool-tabs {
+  display: flex;
+  min-height: 68px;
+  flex-shrink: 0;
+  align-items: stretch;
+  justify-content: space-between;
+  border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-surface-card);
+  padding: 0 24px;
+}
+
+.single-agent-tool-tabs__list {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 16px;
+}
+
+.single-agent-tool-tab {
+  position: relative;
+  display: inline-flex;
+  height: 36px;
+  align-items: center;
+  gap: 8px;
+  border-bottom: 2px solid transparent;
+  padding: 8px 16px;
+  color: var(--color-text-primary);
+  font-size: var(--font-size-sm);
+  white-space: nowrap;
+}
+
+.single-agent-tool-tab::after {
+  position: absolute;
+  right: 12px;
+  bottom: -1px;
+  left: 12px;
+  height: 2px;
+  border-radius: 999px;
+  background: transparent;
+  content: '';
+}
+
+.single-agent-tool-tab--active {
+  border-radius: 8px;
+  background: var(--color-tool-tab-active-bg);
+  font-weight: 500;
+}
+
+.single-agent-tool-tab--active::after {
+  background: var(--color-accent);
+}
