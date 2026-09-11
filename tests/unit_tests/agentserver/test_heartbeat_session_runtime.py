@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
@@ -207,6 +208,33 @@ async def _wait_heartbeat_state(chain, expected):
 
 def _executions(chain):
     return chain.runtime.session_coordinator.snapshot_session(SESSION).executions
+
+
+@contextlib.contextmanager
+def _service_logs(level=logging.WARNING):
+    """Collect what the runtime service logs, from the logger that emits it.
+
+    ``caplog`` attaches to the root logger, and ``setup_logger`` sets
+    ``propagate = False`` on ``jiuwenswarm`` when it is imported, so these
+    records only reach the root on pytest 9.1+, which also attaches to
+    non-propagating loggers. Attaching here holds on every version.
+    """
+    logger = logging.getLogger("jiuwenswarm.runtime.service")
+    records: list[logging.LogRecord] = []
+
+    class _Collect(logging.Handler):
+        def emit(self, record):
+            records.append(record)
+
+    handler = _Collect(level)
+    original = logger.level
+    logger.setLevel(level)
+    logger.addHandler(handler)
+    try:
+        yield records
+    finally:
+        logger.removeHandler(handler)
+        logger.setLevel(original)
 
 
 def _user_request(chain, **params):
@@ -1200,7 +1228,7 @@ async def test_heartbeat_does_not_serialize_active_goal_execution(make_chain):
 
 
 async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
-    make_chain, caplog
+    make_chain,
 ):
     """A question nobody owns must be logged, and must not steal the slot."""
     chain = await make_chain(behavior="ask_live")
@@ -1244,12 +1272,13 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
         assert heartbeat.waiting_control_id == "question-2"
 
-        with caplog.at_level(logging.WARNING, logger="jiuwenswarm.runtime.service"):
+        with _service_logs() as logged:
             chain.agent.answered.set()
             await asyncio.wait_for(third_emitted.wait(), 2)
 
-        assert "dropping heartbeat interaction" in caplog.text
-        assert "question-3" in caplog.text
+        text = "\n".join(record.getMessage() for record in logged)
+        assert "dropping heartbeat interaction" in text
+        assert "question-3" in text
         # The dropped question must not overwrite the slot the user still owes.
         parked = next(
             item
