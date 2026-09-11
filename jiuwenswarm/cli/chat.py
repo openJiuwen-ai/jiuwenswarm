@@ -170,7 +170,7 @@ def _remove_dir_from_config(dir_path: str) -> bool:
     """从系统 yaml 移除信任目录。"""
     from jiuwenswarm.common.config import (
         CONFIG_YAML_PATH,
-        update_system_config,
+        update_config,
     )
 
     target = _normalize_dir(dir_path)
@@ -185,7 +185,7 @@ def _remove_dir_from_config(dir_path: str) -> bool:
 
     cfg_path = Path(CONFIG_YAML_PATH) if not isinstance(CONFIG_YAML_PATH, Path) else CONFIG_YAML_PATH
     if cfg_path.exists():
-        update_system_config(system_mutator)
+        update_config(system_mutator)
     return removed
 
 

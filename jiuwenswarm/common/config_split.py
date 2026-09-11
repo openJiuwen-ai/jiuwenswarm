@@ -52,18 +52,6 @@ _SCALAR_PATHS: tuple[tuple[str, ...], ...] = (
     ("sandbox", "enabled"),
 )
 
-# 整工具档位：写 config.yaml。不进升级白名单（升级后桌面 waitForUp 打回）。
-PERMISSION_KNOB_PATHS: tuple[tuple[str, ...], ...] = (
-    ("permissions", "enabled"),
-    ("permissions", "permission_mode"),
-    ("permissions", "tools", "bash"),
-    ("permissions", "tools", "mcp_free_search"),
-    ("permissions", "tools", "mcp_paid_search"),
-    ("permissions", "tools", "mcp_fetch_webpage"),
-    ("permissions", "file_guard", "defaults", "read"),
-    ("permissions", "file_guard", "defaults", "write"),
-)
-
 # 小艺 PC/手机 HITL「永久记住」。按 id（路径条目按 path）upsert 回新模板 list。
 # 从本表拿掉 = 下次升级不再写回用户条目。Web/TUI rules、/add-dir 不进本表。
 LIST_PATHS: tuple[tuple[str, ...], ...] = (
