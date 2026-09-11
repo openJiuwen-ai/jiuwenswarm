@@ -1567,6 +1567,9 @@ async def _run(
         SlackChannelConfig
     from jiuwenswarm.gateway.channel_manager.im_platforms.wecom.wecom_connect import WecomChannel, WecomConfig
     from jiuwenswarm.gateway.channel_manager.protocol.ssh.ssh_connect import SshChannel, SshChannelConfig
+    from jiuwenswarm.gateway.channel_manager.protocol.web_proxy.web_proxy_connect import (
+        WebProxyChannelConfig,
+    )
     from jiuwenswarm.extensions.agentos.auth.ssh_key_registry import KeyRegistry
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.cleanup import start_background_cleanup
@@ -2248,6 +2251,7 @@ async def _run(
             "wecom",
             "wechat",
             "ssh",
+            "web_proxy",
         ]:
             if _should_restart_channel(channel_name, _last_channels_conf, conf) or channel_name in restart_pending:
                 if channel_name in restart_pending and not _should_restart_channel(
@@ -2761,6 +2765,54 @@ async def _run(
                     )
             else:
                 logger.info("[App] channels.ssh missing or invalid, SshChannel disabled")
+
+        if "web_proxy" in changed_channels:
+            web_proxy_conf = conf.get("web_proxy") if isinstance(conf, dict) else None
+            web_channel.web_proxy_enabled = False
+            web_channel.web_resolver = None
+            if isinstance(web_proxy_conf, dict):
+                enabled, reason = _is_channel_enabled(web_proxy_conf, [])
+                full_cfg = get_config()
+                gateway_cfg = full_cfg.get("gateway") if isinstance(full_cfg, dict) else {}
+                agent_client_cfg = (
+                    gateway_cfg.get("agent_client") if isinstance(gateway_cfg, dict) else {}
+                )
+                client_type = (
+                    str(agent_client_cfg.get("type") or "websocket").strip().lower()
+                    if isinstance(agent_client_cfg, dict)
+                    else "websocket"
+                )
+                wp_config = WebProxyChannelConfig.from_dict(web_proxy_conf)
+                if not enabled:
+                    logger.info("[App] channels.web_proxy.%s, web proxy disabled", reason or "enabled=false")
+                elif client_type != "agentos_router":
+                    logger.warning(
+                        "[App] channels.web_proxy.enabled=true but gateway.agent_client.type=%s "
+                        "(require agentos_router); web proxy will not start",
+                        client_type,
+                    )
+                elif not web_channel.config.dual_protocol:
+                    logger.warning(
+                        "[App] channels.web_proxy.enabled=true requires WebChannel dual_protocol "
+                        "(WEB_DUAL_PROTOCOL=0 cannot host /<agent_type> HTTP/WS proxy)"
+                    )
+                else:
+                    web_resolver = getattr(agent_server_ext, "resolve_web_endpoint", None)
+                    if not callable(web_resolver):
+                        logger.warning(
+                            "[App] channels.web_proxy.enabled=true but agent_server_ext has no "
+                            "resolve_web_endpoint; web proxy will not start"
+                        )
+                    else:
+                        web_channel.web_proxy_enabled = wp_config.enabled
+                        web_channel.web_resolver = web_resolver
+                        logger.info(
+                            "[App] web proxy mounted on WebChannel :%s /{agent_type}/... "
+                            "(shares /ws and /file-api)",
+                            web_channel.config.port,
+                        )
+            else:
+                logger.info("[App] channels.web_proxy missing or invalid, web proxy disabled")
 
         _schedule_agent_prewarm_sync(
             "agent-prewarm-sync-after-channel-change",

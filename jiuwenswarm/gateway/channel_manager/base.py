@@ -37,6 +37,7 @@ class ChannelType(str, Enum):
     WECOM = "wecom"
     WECHAT = "wechat"
     SSH = "ssh"
+    WEB_PROXY = "web_proxy"
     CLI = "tui"
 
 

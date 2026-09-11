@@ -149,6 +149,10 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
+        # 3rd-agent Web UI proxy on the same port (set by app_gateway).
+        self.web_proxy_enabled: bool = False
+        self.web_resolver: Any = None
+        self._web_proxy_session: Any = None
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -646,6 +650,14 @@ class WebChannel(BaseWsChannel):
             await asyncio.gather(*close_tasks, return_exceptions=True)
         self._clients_by_key.clear()
 
+        session = getattr(self, "_web_proxy_session", None)
+        if session is not None:
+            try:
+                if not session.closed:
+                    await session.close()
+            except Exception:  # noqa: BLE001
+                pass
+            self._web_proxy_session = None
         if self._uvicorn_server is not None:
             self._uvicorn_server.should_exit = True
             self._uvicorn_server = None

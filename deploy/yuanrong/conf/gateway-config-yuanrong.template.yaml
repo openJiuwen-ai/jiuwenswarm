@@ -713,6 +713,11 @@ channels:
       # 过期清理间隔（秒）
       cleanup_interval_sec: 60
 
+  web_proxy:
+    # 3rd-agent Web UI 透明代理，挂在 WebChannel 同端口（默认 :19000）。
+    # URL: http://<gateway>:19000/<agent_type>/?user_id=<uid>&token=<iam>
+    enabled: true
+
 # ========== 细粒度权限管控（tiered_policy）==========
 #
 # schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；

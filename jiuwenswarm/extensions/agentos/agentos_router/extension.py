@@ -80,6 +80,17 @@ class AgentOSRouter(AgentServerClientExtension, ThirdAgentExtension):
     def get_third_agent(self) -> ThirdAgent:
         return self._third_agent
 
+    async def resolve_web_endpoint(
+        self,
+        user_id: str,
+        agent_type: str,
+        protocol: str,
+    ) -> str | None:
+        """Delegate to router client for the WebChannel agent UI proxy."""
+        return await self._router_client.resolve_web_endpoint(
+            user_id, agent_type, protocol
+        )
+
     def set_key_issuer(
         self,
         key_issuer,

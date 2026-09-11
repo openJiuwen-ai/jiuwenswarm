@@ -13,8 +13,10 @@ from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
+    OPENCLAW_WEB_PORT,
     AgentManager,
     AgentRuntime,
+    is_openclaw_agent_type,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.config import (
     DEFAULT_AGENT_WORKSPACE_ROOT,
@@ -2781,3 +2783,107 @@ async def test_register_agent_skips_when_runtime_already_cleaned() -> None:
         assert len(registry.registered) == 1  # 无新增
     finally:
         await client.shutdown()
+
+
+def test_is_openclaw_agent_type() -> None:
+    assert is_openclaw_agent_type("openclaw") is True
+    assert is_openclaw_agent_type("OpenClaw") is True
+    assert is_openclaw_agent_type("opencode") is False
+    assert is_openclaw_agent_type("") is False
+
+
+@pytest.mark.asyncio
+async def test_openclaw_create_publishes_web_port() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(
+        yuanrong, FakeRegistryClient(), agent_manager, ssh_channel_endpoint=_ssh_channel()
+    )
+    try:
+        response = await client.thirdagent_switch(
+            user_id="u1",
+            agent_type="openclaw",
+        )
+        assert response["ok"] is True
+        ports = yuanrong.create_payloads[0]["runtime_spec"]["rootfs"]["ports"]
+        assert "tcp:22" in ports
+        assert f"tcp:{OPENCLAW_WEB_PORT}" in ports
+        runtime = await agent_manager.get_agent("u1", "openclaw")
+        assert runtime is not None
+        assert runtime.info.metadata.get("web_port") == OPENCLAW_WEB_PORT
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_http_and_ws() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={"web_port": 18789},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        http_url = await client.resolve_web_endpoint("u1", "openclaw", "http")
+        ws_url = await client.resolve_web_endpoint("u1", "openclaw", "ws")
+        assert http_url == (
+            "http://yuanrong.test:8888/serverless/v1/http"
+            "?instance=sbx-web&tenant_id=default&port=18789"
+        )
+        assert ws_url == (
+            "ws://yuanrong.test:8888/serverless/v1/ws"
+            "?instance=sbx-web&tenant_id=default&port=18789"
+        )
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_resolve_web_endpoint_falls_back_to_openclaw_port() -> None:
+    yuanrong = FakeYuanRongClient()
+    agent_manager = AgentManager()
+    client = _router_client(yuanrong, FakeRegistryClient(), agent_manager)
+    key = AgentRuntime.build_key(
+        agent_manager.key_fields, user_id="u1", agent_type="openclaw"
+    )
+    info = AgentInfo(
+        user_id="u1",
+        agent_type="openclaw",
+        status=AgentStatus.READY,
+        sandbox_id="sbx-web",
+        metadata={},
+    )
+    agent_manager._runtimes[key] = AgentRuntime(info=info, key=key)
+    try:
+        url = await client.resolve_web_endpoint("u1", "openclaw", "http")
+        assert url is not None
+        assert "port=18789" in url
+        assert await client.resolve_web_endpoint("u1", "missing", "http") is None
+    finally:
+        await client.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_agentos_router_extension_delegates_web_endpoint() -> None:
+    captured: dict[str, Any] = {}
+
+    class _FakeClient:
+        async def resolve_web_endpoint(
+            self, user_id: str, agent_type: str, protocol: str
+        ) -> str | None:
+            captured["args"] = (user_id, agent_type, protocol)
+            return "http://example/http"
+
+    ext = AgentOSRouter.__new__(AgentOSRouter)
+    ext._router_client = _FakeClient()  # type: ignore[attr-defined]
+    url = await ext.resolve_web_endpoint("u1", "openclaw", "http")
+    assert url == "http://example/http"
+    assert captured["args"] == ("u1", "openclaw", "http")
