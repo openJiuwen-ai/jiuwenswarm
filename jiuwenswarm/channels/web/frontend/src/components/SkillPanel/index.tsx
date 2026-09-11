@@ -611,10 +611,12 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const { t, i18n } = useTranslation();
   const readOnly = isEnterprise();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled" | "builtin" | "prebuilt" | "user">("all");
+  // 企业版「我的技能」默认落在「企业预置」页签；个人版保持「全部」
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled" | "builtin" | "prebuilt" | "user">(readOnly ? "prebuilt" : "all");
   const [mySkillsPage, setMySkillsPage] = useState(1);
   const [mySkillsPageSize, setMySkillsPageSize] = useState(MY_SKILLS_PAGE_SIZE_DEFAULT);
-  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
+  // 企业版不提供「内置」页签（不向客户提供内置技能安装入口），默认落在 SwarmSkills
+  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">(readOnly ? "swarmskills" : "builtin");
   // 企业版：技能源为空时不展示 SwarmSkills 入口（null=未知，加载中先展示）
   const [enterpriseSourceCount, setEnterpriseSourceCount] = useState<number | null>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -2178,7 +2180,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
             </div>
 
             <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" && marketplaceSubTab === "builtin" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`}>
-              {marketplaceSubTab === "builtin" && (
+              {marketplaceSubTab === "builtin" && !readOnly && (
                 <>
                   {listState === "loading" && (
                     <div className="flex items-center justify-center h-full text-text-muted">{t('common.loading')}</div>
