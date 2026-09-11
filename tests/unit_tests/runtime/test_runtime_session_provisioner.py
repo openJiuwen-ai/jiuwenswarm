@@ -199,7 +199,7 @@ def delete_env(
     ) -> None:
         state.hit("kvc.mark", session_id, channel_id, is_team)
 
-    async def evict_plan_session(
+    async def release_session_kvc(
         *,
         session_id: str,
     ) -> bool:
@@ -258,8 +258,8 @@ def delete_env(
     )
     monkeypatch.setattr(
         kv_cache_product_hooks,
-        "evict_plan_session",
-        evict_plan_session,
+        "release_session_kvc",
+        release_session_kvc,
     )
     monkeypatch.setattr(
         kv_cache_product_hooks,

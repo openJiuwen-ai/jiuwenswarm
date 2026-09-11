@@ -274,6 +274,7 @@ class AgentRuntime:
         session_delete_lifecycle: SessionDeleteLifecycle | None = None,
         enable_kvc_tracking: bool = False,
         session_coordinator: RuntimeSessionCoordinator | None = None,
+        before_agent_cleanup: Callable[[], Awaitable[None]] | None = None,
     ) -> None:
         self._agent_manager = agent_manager or AgentManager()
         self._initializer = initializer or _initialize_runtime_dependencies
@@ -295,6 +296,7 @@ class AgentRuntime:
             delete_lifecycle=session_delete_lifecycle,
         )
         self._enable_kvc_tracking = bool(enable_kvc_tracking)
+        self._before_agent_cleanup = before_agent_cleanup
         self._session_coordinator = session_coordinator or RuntimeSessionCoordinator()
         self._stateless_agents: dict[str, Any] = {}
         self._lifecycle_lock = asyncio.Lock()
@@ -1454,16 +1456,17 @@ class AgentRuntime:
         caller knows whether a two-phase operation must commit or compensate.
         A rejected close leaves the Runtime started and can be retried after the
         caller finalizes every issued provision lease.
+
+        The optional host cleanup runs after cancellation attempts and before
+        Agent resources are disposed. The host owns its timeout budget;
+        ordinary callback failures never prevent the remaining cleanup.
         """
         async with self._lifecycle_lock:
             if self._closed:
                 return
             for prepared in tuple(self._pending_session_provisions):
                 self._discard_finalized_session_provision(prepared)
-            if (
-                self._session_provision_prepares > 0
-                or self._pending_session_provisions
-            ):
+            if self._session_provision_prepares > 0 or self._pending_session_provisions:
                 raise RuntimeStateError(
                     "runtime has unfinished session provisions; "
                     "commit or abort them before close"
@@ -1481,6 +1484,13 @@ class AgentRuntime:
                 await self._agent_manager.cancel_all_inflight_work("[runtime close] ")
             except BaseException as exc:  # preserve cancellation until cleanup completes
                 cleanup_errors.append(exc)
+            if self._before_agent_cleanup is not None:
+                try:
+                    await self._before_agent_cleanup()
+                except Exception:
+                    logger.warning("Optional host cleanup failed; continue runtime close", exc_info=True)
+                except BaseException as exc:
+                    cleanup_errors.append(exc)
             for agent in self._stateless_agents.values():
                 cleanup = getattr(agent, "cleanup", None)
                 if callable(cleanup):

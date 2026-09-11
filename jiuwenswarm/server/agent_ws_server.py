@@ -1000,6 +1000,7 @@ class AgentWebSocketServer:
         self._runtime = AgentRuntime(
             plan_controller=_SERVER_PLAN_CONTROLLER,
             enable_kvc_tracking=True,
+            before_agent_cleanup=self._close_kv_cache,
         )
         self._agent_manager = self._runtime.agent_manager
         self._runtime_push_handler = None
@@ -1665,18 +1666,6 @@ class AgentWebSocketServer:
             await self._server.wait_closed()
             self._server = None
 
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-            cancel_pending_tasks,
-        )
-
-        await cancel_pending_tasks()
-
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-            close_kv_cache_runtime,
-        )
-
-        await close_kv_cache_runtime()
-
         closing_runtime = self._runtime
         runtime_close_completed = False
         runtime_close_error: BaseException | None = None
@@ -1687,7 +1676,7 @@ class AgentWebSocketServer:
             runtime_close_error = exc
             if isinstance(exc, Exception):
                 logger.warning(
-                    "[AgentWebSocketServer] runtime.close failed: %s",
+                    "[AgentWebSocketServer] runtime shutdown failed: %s",
                     exc,
                 )
         finally:
@@ -1704,6 +1693,7 @@ class AgentWebSocketServer:
                 self._runtime = AgentRuntime(
                     plan_controller=plan_controller,
                     enable_kvc_tracking=True,
+                    before_agent_cleanup=self._close_kv_cache,
                 )
                 self._agent_manager = self._runtime.agent_manager
                 self._heartbeat_runtime = HeartbeatRailRuntime(self)
@@ -1752,6 +1742,24 @@ class AgentWebSocketServer:
         ):
             raise runtime_close_error
         logger.info("[AgentWebSocketServer] 已停止")
+
+    @staticmethod
+    async def _close_kv_cache() -> None:
+        """Release application-owned KVC while Runtime model resources are alive."""
+        try:
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                cancel_pending_tasks,
+            )
+
+            await cancel_pending_tasks()
+        except Exception:
+            logger.warning("KVC task cleanup failed; continue shutdown", exc_info=True)
+
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+            close_kv_cache_runtime,
+        )
+
+        await close_kv_cache_runtime()
 
     # ---------- 连接处理 ----------
 
@@ -3331,6 +3339,7 @@ class AgentWebSocketServer:
             runtime = AgentRuntime(
                 agent_manager=manager,
                 initializer=_reuse_server_runtime_dependencies,
+                before_agent_cleanup=self._close_kv_cache,
                 plan_controller=_SERVER_PLAN_CONTROLLER,
                 admission_controller=getattr(
                     getattr(self, "_heartbeat_runtime", None),
@@ -4538,18 +4547,11 @@ class AgentWebSocketServer:
                                 reason="team.delete: ",
                             )
                             if kv_cache_team_delete_guard.is_enabled():
-                                from openjiuwen.core.session.agent_team import (
-                                    create_agent_team_session,
-                                )
-                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-                                    get_kv_cache_runtime,
+                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                                    release_session_kvc,
                                 )
 
-                                session = create_agent_team_session(
-                                    session_id=team_session_id,
-                                    kv_cache_runtime=get_kv_cache_runtime(),
-                                )
-                                await session.release_kvc()
+                                await release_session_kvc(session_id=team_session_id, is_team=True)
 
                         runtime_deleted = await Runner.delete_agent_team(
                             team_name=team_name,

@@ -2806,6 +2806,160 @@ async def test_close_finishes_cleanup_before_propagating_cancellation() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("error_type", [TimeoutError, RuntimeError])
+async def test_close_drain_failure_still_runs_host_and_agent_cleanup(error_type) -> None:
+    manager = FakeAgentManager()
+    host_cleanup = AsyncMock()
+    runtime = AgentRuntime(agent_manager=manager, before_agent_cleanup=host_cleanup)
+    coordinator_close = AsyncMock(side_effect=error_type("drain failed"))
+    runtime._session_coordinator.close = coordinator_close
+
+    with pytest.raises(error_type, match="drain failed"):
+        await runtime.close()
+
+    assert runtime.closed
+    assert manager.cleanup_calls == 1
+    host_cleanup.assert_awaited_once()
+    coordinator_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_optional_host_cleanup_failure_is_ignored_and_only_runs_once() -> None:
+    manager = FakeAgentManager()
+    cleanup = AsyncMock(side_effect=RuntimeError("optional cleanup failed"))
+    runtime = AgentRuntime(agent_manager=manager, before_agent_cleanup=cleanup)
+
+    await runtime.close()
+    await runtime.close()
+
+    cleanup.assert_awaited_once()
+    assert manager.cleanup_calls == 1
+    assert runtime.closed
+
+
+@pytest.mark.asyncio
+async def test_plain_runtime_does_not_run_another_owners_cleanup() -> None:
+    cleanup = AsyncMock()
+    owner = AgentRuntime(agent_manager=FakeAgentManager(), before_agent_cleanup=cleanup)
+    plain = AgentRuntime(agent_manager=FakeAgentManager())
+
+    await plain.close()
+    cleanup.assert_not_awaited()
+    await owner.close()
+    cleanup.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("phase", ["cancel_pending_tasks", "close_kv_cache_runtime"])
+@pytest.mark.parametrize("error_type", [RuntimeError, TimeoutError, asyncio.CancelledError])
+async def test_agent_server_kvc_cleanup_failure_still_closes_runtime(
+    monkeypatch, phase, error_type,
+) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_application_runtime,
+        kv_cache_product_hooks,
+    )
+
+    server = AgentWebSocketServer()
+    previous_runtime = server.get_runtime()
+    server._personal_context_host.stop = AsyncMock()
+    error = error_type("optional KVC cleanup failed")
+    drain = AsyncMock(side_effect=error if phase == "cancel_pending_tasks" else None)
+    close_kvc = AsyncMock(side_effect=error if phase == "close_kv_cache_runtime" else None)
+    monkeypatch.setattr(kv_cache_product_hooks, "cancel_pending_tasks", drain)
+    monkeypatch.setattr(kv_cache_application_runtime, "close_kv_cache_runtime", close_kvc)
+
+    if error_type is asyncio.CancelledError:
+        with pytest.raises(asyncio.CancelledError):
+            await server.stop()
+    else:
+        await server.stop()
+        close_kvc.assert_awaited_once()
+
+    assert previous_runtime.closed
+    assert server.get_runtime() is not previous_runtime
+    server._personal_context_host.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_agent_server_drain_cancellation_still_closes_runtime(monkeypatch) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_model_provider
+
+    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: True)
+
+    server = AgentWebSocketServer()
+    previous_runtime = server.get_runtime()
+    previous_runtime._session_coordinator.close = AsyncMock(
+        side_effect=asyncio.CancelledError
+    )
+    server._personal_context_host.stop = AsyncMock()
+
+    with pytest.raises(asyncio.CancelledError):
+        await server.stop()
+
+    assert previous_runtime.closed
+    assert server.get_runtime() is not previous_runtime
+    server._personal_context_host.stop.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("affinity_enabled", [False, True])
+async def test_agent_server_close_orders_drain_kvc_and_agent_cleanup(
+    monkeypatch, affinity_enabled,
+) -> None:
+    from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_application_runtime,
+        kv_cache_model_provider,
+        kv_cache_product_hooks,
+    )
+
+    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: affinity_enabled)
+    events: list[str] = []
+
+    async def record(event: str) -> None:
+        events.append(event)
+
+    server = AgentWebSocketServer()
+    closing_runtime = server.get_runtime()
+    async def drain_sessions():
+        await record("session-drain")
+
+    async def cancel_work(*args):
+        await record("inflight-cancel")
+
+    async def dispose_agents():
+        await record("agent-cleanup")
+
+    closing_runtime._session_coordinator.close = AsyncMock(side_effect=drain_sessions)
+    closing_runtime.agent_manager.cancel_all_inflight_work = AsyncMock(side_effect=cancel_work)
+    closing_runtime.agent_manager.cleanup = AsyncMock(side_effect=dispose_agents)
+    monkeypatch.setattr(
+        kv_cache_product_hooks,
+        "cancel_pending_tasks",
+        lambda: record("kvc-task-drain"),
+    )
+    monkeypatch.setattr(
+        kv_cache_application_runtime,
+        "close_kv_cache_runtime",
+        lambda: record("kvc-runtime-close"),
+    )
+
+    await server.stop()
+
+    assert events == [
+        "session-drain",
+        "inflight-cancel",
+        "kvc-task-drain",
+        "kvc-runtime-close",
+        "agent-cleanup",
+    ]
+    closing_runtime._session_coordinator.close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
 async def test_agent_server_stop_replaces_closed_one_shot_runtime(monkeypatch) -> None:
     from jiuwenswarm.server import agent_ws_server as server_module
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -2847,7 +3001,13 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
 ) -> None:
     from jiuwenswarm.server import agent_ws_server as server_module
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
-    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_product_hooks
+    from jiuwenswarm.server.runtime.session.kv_cache import (
+        kv_cache_application_runtime,
+        kv_cache_model_provider,
+        kv_cache_product_hooks,
+    )
+
+    monkeypatch.setattr(kv_cache_model_provider, "is_kv_cache_affinity_enabled", lambda: True)
 
     class FakeWebSocketServer:
         def __init__(self) -> None:
@@ -2876,7 +3036,14 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     close_rejected = RuntimeStateError(
         "runtime has unfinished session provisions; commit or abort them before close"
     )
-    previous_runtime.close = AsyncMock(side_effect=[close_rejected, None])
+    previous_runtime._session_provision_prepares = 1
+    previous_runtime.close = AsyncMock(wraps=previous_runtime.close)
+    close_kv_cache_runtime = AsyncMock()
+    monkeypatch.setattr(
+        kv_cache_application_runtime,
+        "close_kv_cache_runtime",
+        close_kv_cache_runtime,
+    )
     monkeypatch.setattr(
         kv_cache_product_hooks,
         "cancel_pending_tasks",
@@ -2886,7 +3053,7 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     with pytest.raises(RuntimeStateError) as caught:
         await server.stop()
 
-    assert caught.value is close_rejected
+    assert str(caught.value) == str(close_rejected)
     assert server.get_runtime() is previous_runtime
     assert server.get_agent_manager() is previous_runtime.agent_manager
     assert listener.closed is True
@@ -2897,10 +3064,14 @@ async def test_agent_server_stop_retains_runtime_when_close_is_rejected(
     )
     server._jiuwenbox_runner.stop.assert_awaited_once_with()
     server._personal_context_host.stop.assert_awaited_once_with()
+    previous_runtime.close.assert_awaited_once_with()
+    close_kv_cache_runtime.assert_not_awaited()
 
+    previous_runtime._session_provision_prepares = 0
     await server.stop()
 
     assert previous_runtime.close.await_count == 2
+    close_kv_cache_runtime.assert_awaited_once_with()
     assert server.get_runtime() is not previous_runtime
     assert server.get_runtime().agent_manager is server.get_agent_manager()
 
@@ -2984,7 +3155,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     first_runtime = server.get_runtime()
     first_manager = server.get_agent_manager()
     first_runtime.start = AsyncMock()
-    first_runtime.close = AsyncMock()
+    first_runtime.close = AsyncMock(wraps=first_runtime.close)
 
     await server.start()
     await server._checkpointer_warmup_task
@@ -2993,7 +3164,7 @@ async def test_agent_server_start_restores_remote_service_after_stop(
     recovered_runtime = server.get_runtime()
     recovered_manager = server.get_agent_manager()
     recovered_runtime.start = AsyncMock()
-    recovered_runtime.close = AsyncMock()
+    recovered_runtime.close = AsyncMock(wraps=recovered_runtime.close)
 
     await server.start()
     await server._checkpointer_warmup_task
