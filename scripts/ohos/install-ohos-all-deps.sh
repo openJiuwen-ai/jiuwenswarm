@@ -1,16 +1,16 @@
-﻿#!/bin/sh
-# 楦胯挋璁惧渚濊禆閫愬寘瀹夎 + import 楠岃瘉锛坖iuwenclaw AgentServer 鑷寘鍚級
+#!/bin/sh
+# 鸿蒙设备依赖逐包安装 + import 验证（jiuwenclaw AgentServer 自包含）
 #
-# manifest 鐢?ohos-gen-manifest.sh 鎸?profile 鍔ㄦ€佺敓鎴愶紙鏃犻渶浠撳簱鍐?*.tsv锛?
-#   agentserver-minimal 鈥?requirements-harmony.txt
-#   agentcore-minimal   鈥?harmonyos/pyproject.toml 鈭?requirements-harmony
+# manifest 由 ohos-gen-manifest.sh 按 profile 动态生成（无需仓库内 *.tsv）:
+#   agentserver-minimal — requirements-harmony.txt
+#   agentcore-minimal   — harmonyos/pyproject.toml − requirements-harmony
 #
-# 鎺ㄨ崘鍏ュ彛: sh scripts/install-ohos-agentserver.sh
+# 推荐入口: sh scripts/install-ohos-agentserver.sh
 #
-# 鍗曠嫭璺戞煇闃舵:
+# 单独跑某阶段:
 #   USE_VENV=1 MANIFEST_PROFILE=agentserver-minimal sh scripts/ohos/install-ohos-all-deps.sh
 #
-# 杈撳嚭:
+# 输出:
 #   ~/ohos/deps-verify/install-report-YYYYMMDD-HHMMSS.log
 #   ~/ohos/deps-verify/install-summary-YYYYMMDD-HHMMSS.tsv
 
@@ -70,7 +70,7 @@ python_under_venv() {
   return 1
 }
 
-# 鍕?readlink -f venv/bin/python锛歄hOS 涓婁細瑙ｆ瀽鍒?OHOS_REAL_PYTHON锛宲ip 瑁呭埌绯荤粺 site-packages
+# 勿 readlink -f venv/bin/python：OhOS 上会解析到 OHOS_REAL_PYTHON，pip 装到系统 site-packages
 canonicalize_python() {
   _p=$1
   if python_under_venv "$_p"; then
@@ -91,7 +91,7 @@ else
   exit 1
 fi
 
-# 瀹氫綅 WHEEL_BUILD_ROOT锛堜紭鍏?$REPO_ROOT锛屽洖閫€ ohos-wheel-build锛?
+# 定位 WHEEL_BUILD_ROOT（优先 $REPO_ROOT，回退 ohos-wheel-build）
 if [ -z "${OFFICE_CLAW:-}" ]; then
   _oc=$(CDPATH= cd -- "$SCRIPT_DIR/../.." 2>/dev/null && pwd || true)
   if [ -n "$_oc" ]; then
@@ -167,12 +167,12 @@ bootstrap_pep517() {
   pip_install -U pip setuptools wheel cffi >>"$LOG" 2>&1 \
     || log "WARN: pip install base build deps failed (see log)"
 
-  # setuptools-rust 蹇呴』鍏堜簬 maturin锛坢aturin sdist 鐨?setup 渚濊禆瀹冿級
+  # setuptools-rust 必须先于 maturin（maturin sdist 的 setup 依赖它）
   log "bootstrap PEP517: setuptools-rust meson-python ..."
   pip_install --no-build-isolation -U setuptools-rust meson-python >>"$LOG" 2>&1 \
     || log "WARN: pip install setuptools-rust meson-python failed (see log)"
 
-  log "bootstrap PEP517: maturin (ohos 璺宠繃 pip 缂?sdist锛岀洿鎺?py shim + cargo CLI) ..."
+  log "bootstrap PEP517: maturin (ohos 跳过 pip 编 sdist，直接 py shim + cargo CLI) ..."
   log "  RUSTC=${RUSTC:-unset} CARGO=${CARGO:-unset} MATURIN=${MATURIN:-unset} AR=${AR:-unset}"
   if ! install_maturin_py_shim >>"$LOG" 2>&1; then
     log "WARN: maturin py shim failed (see log)"
@@ -191,7 +191,7 @@ bootstrap_pep517() {
     fi
   done
   if [ -z "$_numpy_ok" ]; then
-    log "WARN: no numpy ohos wheel on index 鈥?put numpy-*-ohos_aarch64.whl in WHEEL_DIR or build offline"
+    log "WARN: no numpy ohos wheel on index — put numpy-*-ohos_aarch64.whl in WHEEL_DIR or build offline"
   fi
 
   verify_pep517_backends
@@ -200,8 +200,8 @@ bootstrap_pep517() {
 }
 
 install_maturin_py_shim() {
-  # pip 缂?maturin 鎵╁睍鍦?HiShell 瀛愯繘绋嬮噷甯告壘涓嶅埌 rustc锛沜argo install 鍙湁 CLI銆?
-  # 浠?sdist 鍙В鍘?maturin/*.py锛宨mport maturin 浼?delegate 鍒?PATH 涓婄殑 maturin 浜岃繘鍒躲€?
+  # pip 编 maturin 扩展在 HiShell 子进程里常找不到 rustc；cargo install 只有 CLI。
+  # 从 sdist 只解压 maturin/*.py，import maturin 会 delegate 到 PATH 上的 maturin 二进制。
   if ! command -v maturin >/dev/null 2>&1; then
     log "maturin py shim: maturin CLI not in PATH"
     return 1
@@ -299,7 +299,7 @@ resolve_real_tool() {
 }
 
 ensure_build_tool_shims() {
-  # 鍙啓鐩綍鏀惧伐鍏?symlink锛堥』鎸囧悜鐪熷疄浜岃繘鍒讹紝閬垮厤鑷紩鐢ㄥ潖閾撅級
+  # 可写目录放工具 symlink（须指向真实二进制，避免自引用坏链）
   _shimdir="${WHEEL_BUILD_ROOT:-}/bin"
   if [ -n "$_shimdir" ]; then
     mkdir -p "$_shimdir" 2>/dev/null || true
@@ -381,7 +381,7 @@ install_ohos_python_site_hook() {
   _src="$_root/sitepatch/ohos_build_env.py"
   _sc="$_root/sitepatch/sitecustomize.py"
   [ -f "$_src" ] || {
-    log "WARN: missing $_src 鈥?skip python site hook"
+    log "WARN: missing $_src — skip python site hook"
     return 0
   }
   write_ohos_toolchain_env
@@ -535,10 +535,10 @@ verify_pep517_subprocess() {
   WHEEL_BUILD_ROOT="${WHEEL_BUILD_ROOT:-}" "$PYTHON" >>"$LOG" 2>&1 <<'PY'
 import os, subprocess, sys
 
-# OhOS/HNP Python 渚濊禆鐖惰繘绋嬩腑鐨勮繍琛屾椂鐜銆?
-# 涓嶈兘鏋勯€犱竴涓繎涔庣┖鐧界殑 env锛屽惁鍒欏姩鎬佸姞杞藉櫒鍙兘鎵句笉鍒?
-# libpython3.12.so.1.0 / libintl.so.8銆?
-# 杩欓噷鍙Щ闄ゆ湰娴嬭瘯鍒绘剰瑕侀殣钘忕殑 Rust/Maturin 鍙橀噺锛屽叾浣欑幆澧冨畬鏁寸户鎵裤€?
+# OhOS/HNP Python 依赖父进程中的运行时环境。
+# 不能构造一个近乎空白的 env，否则动态加载器可能找不到
+# libpython3.12.so.1.0 / libintl.so.8。
+# 这里只移除本测试刻意要隐藏的 Rust/Maturin 变量，其余环境完整继承。
 env = os.environ.copy()
 for key in ("RUSTC", "CARGO", "MATURIN"):
     env.pop(key, None)
@@ -710,7 +710,7 @@ _discover_pkgconfig_dir() {
 }
 
 ensure_native_lib_env() {
-  # Python libdir锛坧ydantic_core/tiktoken 绛夛級+ cmd-pkgs OpenSSL/libffi锛坈ryptography/cffi锛?
+  # Python libdir（pydantic_core/tiktoken 等）+ cmd-pkgs OpenSSL/libffi（cryptography/cffi）
   _py_for_libdir=${OHOS_REAL_PYTHON:-$PYTHON}
   _pylibdir=$(CDPATH= cd -- "$(dirname "$_py_for_libdir")/../lib" 2>/dev/null && pwd || true)
   if [ -z "$_pylibdir" ] || [ ! -d "$_pylibdir" ]; then
@@ -735,7 +735,7 @@ ensure_native_lib_env() {
     "$HOME/usr/lib"; do
     if [ -f "$_libdir/libffi.so" ] || [ -f "$_libdir/libffi.so.8" ]; then
       _prepend_path_var LD_LIBRARY_PATH "$_libdir"
-      # cffi 缂栬瘧闇€瑕?ffi.h 澶存枃浠?
+      # cffi 编译需要 ffi.h 头文件
       _ffi_parent=$(dirname "$_libdir")/include
       _ffi_incs=""
       [ -f "$_ffi_parent/ffi.h" ] && _ffi_incs="-I$_ffi_parent"
@@ -755,7 +755,7 @@ ensure_native_lib_env() {
     fi
   done
 
-  # libxml2/libxslt锛歝md-pkgs usr/local 鎴?HNP cmd-pkgs 鍖呯洰褰?
+  # libxml2/libxslt：cmd-pkgs usr/local 或 HNP cmd-pkgs 包目录
   for _root in \
     $(ohos_hnp_pkg_glob_roots 2>/dev/null) \
     "$OHOS_USR_LOCAL" \
@@ -789,7 +789,7 @@ ensure_native_lib_env() {
   _dedupe_path_var LD_LIBRARY_PATH
   _dedupe_path_var PKG_CONFIG_PATH
 
-  # cryptography 杩愯鏃堕』鍔犺浇 cmd-pkgs OpenSSL锛?=3.2锛夛紝涓嶈兘琚?HNP 鏃?libssl 鎶㈠厛
+  # cryptography 运行时须加载 cmd-pkgs OpenSSL（>=3.2），不能被 HNP 旧 libssl 抢先
   if [ -n "${OPENSSL_DIR:-}" ] && [ -d "${OPENSSL_DIR}/lib" ]; then
     _prepend_path_var LD_LIBRARY_PATH "${OPENSSL_DIR}/lib"
     _dedupe_path_var LD_LIBRARY_PATH
@@ -810,7 +810,7 @@ verify_native_libs() {
     log "  OPENSSL_DIR=$OPENSSL_DIR (openssl=${_ossl_ver:-unknown})"
     case "${_ossl_ver:-}" in
       3.0.*|3.1.*|2.*|1.*)
-        log "  WARN: openssl ${_ossl_ver} < 3.2 鈥?cryptography 48 闇€瑕?OSSL_get_max_threads锛涜 cmd-pkgs 瀹夎 openssl 3.5.6"
+        log "  WARN: openssl ${_ossl_ver} < 3.2 — cryptography 48 需要 OSSL_get_max_threads；请 cmd-pkgs 安装 openssl 3.5.6"
         ;;
     esac
   else
@@ -830,7 +830,7 @@ verify_native_libs() {
   fi
   log "  PKG_CONFIG_PATH=${PKG_CONFIG_PATH:-unset}"
   log "  LD_LIBRARY_PATH=${LD_LIBRARY_PATH:-unset}"
-  # OhOS/HNP 涓嬩笉瑕佺敤澶栭儴 env 鍛戒护鍖呰９ Python锛岀洿鎺ョ户鎵垮綋鍓?shell 杩愯鏃剁幆澧冦€?
+  # OhOS/HNP 下不要用外部 env 命令包裹 Python，直接继承当前 shell 运行时环境。
   _cffi=$("$PYTHON" -c "import _cffi_backend; print('OK')" 2>/dev/null || echo "FAIL")
   log "  cffi _cffi_backend import: $_cffi"
 }
@@ -875,7 +875,7 @@ verify_system_deps() {
 }
 
 bootstrap_native_wheels() {
-  # 閾?libpython 鐨勯缂?wheel锛沺hase 0 preload 鎴?WHEEL_DIR 鏈?wheel 鏃惰烦杩?pip 缂栬瘧
+  # 链 libpython 的预编 wheel；phase 0 preload 或 WHEEL_DIR 有 wheel 时跳过 pip 编译
   export_pip_build_env
   _find_wheel="${OHOS_FIND_WHEEL_SCRIPT:-$SCRIPT_DIR/find-ohos-wheel.sh}"
   if [ -n "${WHEEL_DIR:-}" ] && [ -d "$WHEEL_DIR" ] && [ -f "$_find_wheel" ]; then
@@ -897,7 +897,7 @@ bootstrap_native_wheels() {
 }
 
 export_pip_build_env() {
-  # pip/meson/rust 瀛愯繘绋嬪父鎷夸笉鍒?HiShell PATH锛屾樉寮忚ˉ鍏?
+  # pip/meson/rust 子进程常拿不到 HiShell PATH，显式补全
   for _bindir in \
     "$OHOS_HNP_BIN" \
     "${OHOS_LLVM_BIN:-}" \
@@ -948,7 +948,7 @@ export_pip_build_env() {
 }
 
 detect_wheel_platform_tag() {
-  # 鏈満 pip 鎺ュ彈鐨?platform 鍚庣紑锛屽 ohos_aarch64锛堥潪 harmonyos_aarch64锛?
+  # 本机 pip 接受的 platform 后缀，如 ohos_aarch64（非 harmonyos_aarch64）
   "$PYTHON" -c "
 import re, subprocess, sys
 text = subprocess.check_output(
@@ -1029,7 +1029,7 @@ setup_build_env() {
   else
     log "env.sh not loaded (WHEEL_BUILD_ROOT=${WHEEL_BUILD_ROOT:-unset})"
   fi
-  # env.sh 浼?activate ohos-wheel-build/.venv锛屽嬁璁╁畠瑕嗙洊 jiuwenswarm/.venv 鐨?PYTHON
+  # env.sh 会 activate ohos-wheel-build/.venv，勿让它覆盖 jiuwenswarm/.venv 的 PYTHON
   if [ -n "$_saved_python" ]; then
     export PYTHON="$_saved_python"
     log "USE_VENV=1 install target PYTHON=$PYTHON (libpython base OHOS_REAL_PYTHON=$OHOS_REAL_PYTHON)"
@@ -1119,14 +1119,14 @@ pip_install() {
   if [ -n "${WHEEL_DIR:-}" ] && [ -d "$WHEEL_DIR" ]; then
     _find_links="--find-links $WHEEL_DIR --prefer-binary"
   fi
-  # 榛樿璧版竻鍗庨暅鍍忥紝瑙勯伩 pypi.org DNS/鎱㈤€熶笅杞介棶棰橈紱鐜鍙橀噺鍙鐩?
+  # 默认走清华镜像，规避 pypi.org DNS/慢速下载问题；环境变量可覆盖
   : "${PIP_INDEX_URL:=https://pypi.tuna.tsinghua.edu.cn/simple}"
   : "${PIP_TRUSTED_HOST:=pypi.tuna.tsinghua.edu.cn}"
   _index_args="--index-url $PIP_INDEX_URL --trusted-host $PIP_TRUSTED_HOST"
 
-  # OhOS/HNP Python 渚濊禆鐖?shell 涓畬鏁寸殑杩愯鏃剁幆澧冦€?
-  # 涓嶄娇鐢ㄥ閮?`env ... $PYTHON` 鍖呰锛岄伩鍏?HiShell/HNP 涓嬪姩鎬佸姞杞界幆澧冨彂鐢熷彉鍖栵紝
-  # 瀵艰嚧 libpython3.12.so.1.0 / libintl.so.8 鏃犳硶瑙ｆ瀽銆?
+  # OhOS/HNP Python 依赖父 shell 中完整的运行时环境。
+  # 不使用外部 `env ... $PYTHON` 包装，避免 HiShell/HNP 下动态加载环境发生变化，
+  # 导致 libpython3.12.so.1.0 / libintl.so.8 无法解析。
   export RUSTC="${RUSTC:-}"
   export CARGO="${CARGO:-}"
   export MATURIN="${MATURIN:-}"
@@ -1165,8 +1165,8 @@ try_import() {
     _native_ld="${_native_ld:+${_native_ld}:}${_detected_ld}"
   fi
 
-  # 浣跨敤 POSIX shell 鐨勪复鏃跺彉閲忚祴鍊硷紝涓嶈皟鐢ㄥ閮?env 绋嬪簭銆?
-  # 杩欐牱鏃㈣兘涓哄綋鍓?import 瑕嗙洊 native lib 璺緞锛屽張涓嶄細鐮村潖 OhOS/HNP 杩愯鏃剁幆澧冦€?
+  # 使用 POSIX shell 的临时变量赋值，不调用外部 env 程序。
+  # 这样既能为当前 import 覆盖 native lib 路径，又不会破坏 OhOS/HNP 运行时环境。
   LD_LIBRARY_PATH="${_native_ld}" \
   OPENSSL_DIR="${OPENSSL_DIR:-}" \
   "$PYTHON" -c "
@@ -1180,7 +1180,7 @@ except Exception as e:
 }
 
 extract_fail_detail() {
-  # 浠?pip 鏃ュ織灏鹃儴鎻愬彇瀛愪緷璧?缂栬瘧澶辫触鍖呭悕
+  # 从 pip 日志尾部提取子依赖/编译失败包名
   tail -n 80 "$LOG" 2>/dev/null | sed -n \
     -e "s/.*Cannot import '\\([^']*\\)'.*/SUBDEP:\1 (pep517)/p" \
     -e 's/.*Could not build wheels for \([^, ]*\).*/SUBDEP:\1/p' \
@@ -1200,7 +1200,7 @@ extract_fail_detail() {
     | sed 's/[][]//g' | awk -F: '!seen[$0]++{printf "%s%s", (n++?",":""), $0}' RS= ORS=
 }
 
-log "渚濊禆閫愬寘瀹夎锛圥yPI 娓呭崟锛屽惈浼犻€掍緷璧栵級"
+log "依赖逐包安装（PyPI 清单，含传递依赖）"
 # Repair the loader environment before venv creation/reuse. The base HNP
 # Python must be able to start before any pip or PEP517 subprocess is spawned.
 ensure_native_lib_env
@@ -1243,7 +1243,7 @@ OK=0
 FAIL=0
 
 while IFS='	' read -r project category spec import_mod note || [ -n "${project:-}" ]; do
-  # UTF-8 BOM锛圵indows 缂栬緫 manifest 鏃跺父瑙侊級
+  # UTF-8 BOM（Windows 编辑 manifest 时常见）
   project=${project#$(printf '\357\273\277')}
   case ${project:-} in
     ''|project) continue ;;
@@ -1297,18 +1297,18 @@ while IFS='	' read -r project category spec import_mod note || [ -n "${project:-
   # example python-dotenv) must still be installed for AgentServer startup.
 
   if [ "$AUTO" != "1" ]; then
-    printf 'Enter 缁х画... '
+    printf 'Enter 继续... '
     read -r _ || true
   fi
 done <"$MANIFEST"
 
 log "========================================"
-log "瀹屾垚: total=$N install_ok=$OK install_fail=$FAIL"
+log "完成: total=$N install_ok=$OK install_fail=$FAIL"
 echo ""
-echo "姹囨€? $SUMMARY"
-echo "鏃ュ織: $LOG"
+echo "汇总: $SUMMARY"
+echo "日志: $LOG"
 echo ""
-echo "瀹夎澶辫触:"
+echo "安装失败:"
 echo "  grep INSTALL_FAIL $SUMMARY"
-echo "import 澶辫触:"
+echo "import 失败:"
 echo "  grep IMPORT_FAIL $SUMMARY"
