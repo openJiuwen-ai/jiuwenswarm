@@ -4,7 +4,7 @@ JiuwenSwarm configuration serves as the foundational setup for your interactions
 
 This document details each configuration option in the JiuwenSwarm frontend panel to help you get started quickly and fully leverage the system's capabilities.
 
-Developers adding keys, upgrade overwrite, and `config.user.yaml` layering: [Config layers and upgrades](ConfigLayersAndUpgrade.md).
+Developers adding keys, upgrade overwrite, and the user-click allowlist: [Config layers and upgrades](ConfigLayersAndUpgrade.md).
 
 ---
 

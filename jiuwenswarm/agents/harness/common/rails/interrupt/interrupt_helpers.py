@@ -342,49 +342,19 @@ def build_permission_rail(
     )
     try:
         def _persist_allow_rule(permissions: dict[str, Any]) -> bool:
-            """Persist merged `permissions` config back to config.yaml.
+            """Persist merged scenario lists to config.yaml.
 
             openjiuwen PermissionInterruptRail calls this when user selects "always allow".
 
-            Instead of replacing the entire ``permissions`` section with the
-            in-memory snapshot (which may contain stale entries that were
-            already deleted from config.yaml), we first re-read the current
-            on-disk permissions, then merge only the *approval_overrides*、
-            *file_guard*（及过渡期 *external_directory*）deltas from
-            ``permissions`` into it.
-            This prevents re-creating tool-level entries (e.g. ``bash: ask``)
-            that the user has already removed via the webui.
+            Only ``approval_overrides`` and ``file_guard.paths`` are written.
+            Tool-level knobs stay on disk as-is.
             """
             try:
-                from jiuwenswarm.common.config import _dump_yaml_round_trip, _load_yaml_round_trip
+                from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+                    persist_merged_allow_rule_snapshot,
+                )
 
-                yaml_path = get_config_file()
-                data = _load_yaml_round_trip(yaml_path)
-                if not isinstance(data, dict):
-                    data = {}
-
-                on_disk_perms = data.get("permissions")
-                if not isinstance(on_disk_perms, dict):
-                    on_disk_perms = {}
-
-                # Overlay path-related deltas + approval_overrides;
-                # keep on-disk tools/defaults/rules to avoid restoring
-                # entries the user already deleted via webui.
-                merged = dict(on_disk_perms)
-                overrides_new = permissions.get("approval_overrides")
-                if overrides_new is not None:
-                    merged["approval_overrides"] = overrides_new
-                # 路径信任写 file_guard.paths（agent-core §5.5.6）；过渡期仍接受旧 external_directory
-                fg_new = permissions.get("file_guard")
-                if fg_new is not None:
-                    merged["file_guard"] = fg_new
-                ext_dir_new = permissions.get("external_directory")
-                if ext_dir_new is not None:
-                    merged["external_directory"] = ext_dir_new
-
-                data["permissions"] = merged
-                _dump_yaml_round_trip(yaml_path, data)
-                return True
+                return persist_merged_allow_rule_snapshot(permissions)
             except Exception as exc:
                 logger.warning("[InterruptHelpers] persist_allow_rule failed: %s", exc)
                 return False

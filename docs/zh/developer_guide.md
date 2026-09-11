@@ -311,4 +311,4 @@ bash scripts/build-macos.sh
 
 ## 7. 配置分层
 
-用户数据根里的 `config.yaml` / `config.user.yaml` 如何升级覆盖、哪些键进 overlay、改配置该写哪条 API，见 [配置分层与升级](配置分层与升级.md)。
+用户数据根里的 `config.yaml` 如何升级覆盖、哪些键进白名单、改配置该写哪条 API，见 [配置分层与升级](配置分层与升级.md)。
