@@ -5738,8 +5738,16 @@ class AgentWebSocketServer:
         run_id = params.get("run_id") or params.get("workflow_run_id")
 
         from jiuwenswarm.agents.harness.team import get_team_manager
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+        from openjiuwen.core.runner import Runner
 
         tm = get_team_manager(channel_id)
+        active_teams = await Runner.list_active_teams()
+        team_runtime_running = any(
+            str(info.current_session_id or "") == session_id
+            and info.state == RuntimeState.RUNNING
+            for info in active_teams
+        )
         if not isinstance(run_id, str) or not run_id.strip():
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -5747,12 +5755,12 @@ class AgentWebSocketServer:
                 ok=False,
                 payload={"error": "run_id is required"},
             )
-        elif not tm.has_stream_task(session_id):
+        elif not team_runtime_running:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=channel_id,
                 ok=False,
-                payload={"error": "team is not running"},
+                payload={"error": "工作流控制不可用，发送一条消息唤醒团队后即可使用。"},
             )
         else:
             run_id = run_id.strip()
