@@ -106,6 +106,9 @@ render_gateway_files() {
 
     ensure_available_port "GATEWAY_CONFIG_HTTP_NODE_PORT"
     gen_gateway_file
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" != off ]]; then
+        link_mtls_render gateway "${CONFIG[GATEWAY_FILE]}"
+    fi
 }
 
 deploy_gateway() {

@@ -20,6 +20,7 @@ from jiuwenswarm.common.e2a.constants import (
 from jiuwenswarm.common.e2a.models import E2AEnvelope
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 from jiuwenswarm.gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
@@ -127,6 +128,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         *,
         timeout_s: float = AGENT_REQUEST_TIMEOUT_SECONDS,
         http_client: httpx.AsyncClient | None = None,
+        link_mtls_config: LinkMTLSConfig | None = None,
     ) -> None:
         self._timeout_s = float(timeout_s)
         self._http = http_client
@@ -142,6 +144,17 @@ class HttpSseAgentServerClient(AgentServerClient):
         self._stream_lock = asyncio.Lock()
         self._cancelled_request_ids: set[str] = set()
         self._inflight_stream_ids: set[str] = set()
+        self._link_mtls = link_mtls_config
+
+    def _link_config(self) -> LinkMTLSConfig:
+        if self._link_mtls is None:
+            self._link_mtls = LinkMTLSConfig.from_env()
+        return self._link_mtls
+
+    def _request_headers(self, headers: dict[str, str] | None = None) -> dict[str, str]:
+        merged = dict(headers or {})
+        merged.update(self._link_config().binding_headers())
+        return merged
 
     def set_or_update_server_config(
         self,
@@ -178,23 +191,30 @@ class HttpSseAgentServerClient(AgentServerClient):
 
     def _ensure_http(self) -> httpx.AsyncClient:
         if self._http is None:
+            link_mtls = self._link_config()
             self._http = httpx.AsyncClient(
                 timeout=httpx.Timeout(self._timeout_s, connect=_CONNECT_TIMEOUT_SECONDS),
                 limits=httpx.Limits(max_connections=20, max_keepalive_connections=10),
                 follow_redirects=False,
                 trust_env=False,
+                **link_mtls.client_kwargs(role="agentserver"),
             )
             self._owns_http = True
         return self._http
 
     def _resolve_api_root(self, base_url: str | None) -> str:
         if base_url:
+            # Enterprise routing may supply a per-Pod endpoint without calling
+            # connect() first.  Apply the same downgrade protection here so an
+            # enforce-mode request can never bypass HTTPS through base_url.
+            base_url = self._link_config().resolve_endpoint(base_url, role="agentserver")
             return normalize_agent_http_base(base_url)
         if not self._running or not self._api_root:
             raise RuntimeError("未连接 AgentServer HTTP，请先调用 connect(uri)")
         return self._api_root
 
     async def connect(self, uri: str) -> None:
+        uri = self._link_config().resolve_endpoint(uri, role="agentserver")
         if self._running:
             await self.disconnect()
         scheme = (urlsplit(uri).scheme or "").lower()
@@ -205,10 +225,14 @@ class HttpSseAgentServerClient(AgentServerClient):
             )
         self._base_url = uri.rstrip("/")
         self._api_root = normalize_agent_http_base(uri)
+        self._link_config().require_secure_url(uri, label="AgentServer URL")
         self._ensure_http()
         health_url = f"{self._api_root}/health"
         logger.info("[HttpSseAgentServerClient] 正在连接: %s", health_url)
-        response = await self._http.get(health_url, headers={"Accept": "application/json"})
+        response = await self._http.get(
+            health_url,
+            headers=self._request_headers({"Accept": "application/json"}),
+        )
         payload: dict[str, Any] = {}
         try:
             parsed = response.json()
@@ -273,7 +297,7 @@ class HttpSseAgentServerClient(AgentServerClient):
         response = await http.request(
             assembled.verb,
             assembled.url,
-            headers=assembled.headers,
+            headers=self._request_headers(assembled.headers),
             json=assembled.json_body,
             params=assembled.query,
         )
@@ -345,7 +369,7 @@ class HttpSseAgentServerClient(AgentServerClient):
             async with http.stream(
                 assembled.verb,
                 assembled.url,
-                headers=assembled.headers,
+                headers=self._request_headers(assembled.headers),
                 json=assembled.json_body,
                 params=assembled.query,
                 timeout=timeout,
@@ -409,7 +433,9 @@ class HttpSseAgentServerClient(AgentServerClient):
                 async with http.stream(
                     "GET",
                     url,
-                    headers={"X-Jiuwen-Push-Consumer": "gateway"},
+                    headers=self._request_headers(
+                        {"X-Jiuwen-Push-Consumer": "gateway"}
+                    ),
                     timeout=timeout,
                 ) as response:
                     response.raise_for_status()

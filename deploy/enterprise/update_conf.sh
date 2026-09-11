@@ -1,10 +1,10 @@
 #!/bin/bash
+set -euo pipefail
 PROJECT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
 SRC_FILE=${PROJECT_DIR}/jiuwenswarm/resources/config.yaml
-DEST_FILE=${PROJECT_DIR}/deploy/enterprise/templates/gateway-config.template.yaml
+DEST_FILE=${1:-${PROJECT_DIR}/deploy/enterprise/templates/gateway-config.template.yaml}
 
-rm -f "${DEST_FILE}"
 cp -f "${SRC_FILE}" "${DEST_FILE}"
 
 yq eval '.gateway.agent_client.type = "jiuwen"' -i "${DEST_FILE}"

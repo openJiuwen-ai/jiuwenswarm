@@ -83,6 +83,8 @@ cat <<EOF
 AGENT_RUNTIME_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-agent-runtime-${ARCH}:${VERSION}"
 
 MODE=product
+# 内部链路证书认证默认关闭，按需显式改为 enforce。
+JIUWENSWARM_LINK_MTLS_MODE=off
 #CLAW_CODE_PATH=""
 #RUNTIME_CODE_PATH=""
 #CORE_CODE_PATH=""

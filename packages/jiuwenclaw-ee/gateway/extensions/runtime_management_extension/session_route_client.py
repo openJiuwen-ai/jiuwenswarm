@@ -10,6 +10,7 @@ from dataclasses import dataclass
 import httpx
 
 from jiuwenswarm.common.local_env_config import read_env
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -25,6 +26,9 @@ class RouteResult:
     pod_sse_url: str
     pod_id: str
     request_id: str
+    mtls_deployment_id: str = ""
+    mtls_binding_id: str = ""
+    mtls_binding_epoch: int = 0
 
 
 class RouteError(Exception):
@@ -59,10 +63,26 @@ class RuntimeSessionRouteClient:
         base_url: str | None = None,
         timeout_seconds: float | None = None,
         http_client: httpx.AsyncClient | None = None,
+        link_mtls_config: LinkMTLSConfig | None = None,
     ) -> None:
-        root = (base_url or read_env("GATEWAY_RUNTIME_MANAGER_URL", "http://127.0.0.1:8091")).strip().rstrip("/")
+        root = (
+            (
+                base_url
+                or read_env("GATEWAY_RUNTIME_MANAGER_URL", "http://127.0.0.1:8091")
+            )
+            .strip()
+            .rstrip("/")
+        )
         if not root:
             root = "http://127.0.0.1:8091"
+        self._link_mtls = link_mtls_config or LinkMTLSConfig.from_env()
+        if (
+            self._link_mtls.profile is not None
+            and base_url is None
+            and not read_env("GATEWAY_RUNTIME_MANAGER_URL", "")
+        ):
+            root = "link://runtime"
+        root = self._link_mtls.resolve_endpoint(root, role="runtime")
         self._route_url = f"{root}/api/session/route"
         self._touch_url = f"{root}/api/session/touch"
         if http_client is not None:
@@ -82,6 +102,7 @@ class RuntimeSessionRouteClient:
                 timeout=httpx.Timeout(timeout, connect=min(5.0, timeout)),
                 follow_redirects=False,
                 trust_env=False,
+                **self._link_mtls.client_kwargs(role="runtime"),
             )
             self._owns_http = True
 
@@ -142,7 +163,16 @@ class RuntimeSessionRouteClient:
             pod_sse_url,
             request_id,
         )
-        return RouteResult(pod_sse_url=pod_sse_url, pod_id=pod_id, request_id=request_id)
+        result = RouteResult(
+            pod_sse_url=pod_sse_url,
+            pod_id=pod_id,
+            request_id=request_id,
+            mtls_deployment_id=str(rawdata.get("mtls_deployment_id") or "").strip(),
+            mtls_binding_id=str(rawdata.get("mtls_binding_id") or "").strip(),
+            mtls_binding_epoch=_positive_int(rawdata.get("mtls_binding_epoch")),
+        )
+        self._validate_route_binding(result)
+        return result
 
     async def touch(self, *, session_id: str, request_id: str) -> bool:
         """保活。返回 False 表示会话已过期，编排应重新 ``route``。"""
@@ -168,19 +198,47 @@ class RuntimeSessionRouteClient:
 
     async def _post(self, url: str, envelope: dict) -> dict:
         try:
-            response = await self._http.post(url, json=envelope)
+            response = await self._http.post(
+                url,
+                json=envelope,
+                headers=self._link_mtls.binding_headers(),
+            )
         except httpx.RequestError as exc:
             logger.warning("[SessionRoute] transport error: url=%s error=%s", url, exc)
-            raise RetryableRouteError(f"request failed: {exc}", code="TRANSPORT") from exc
+            raise RetryableRouteError(
+                f"request failed: {exc}", code="TRANSPORT"
+            ) from exc
         body = _json_object(response)
         if response.status_code >= 400 or body.get("ok") is False:
             raise _error_from_response(response, body)
         return body
 
+    def _validate_route_binding(self, result: RouteResult) -> None:
+        identity = self._link_mtls.identity
+        if not self._link_mtls.enforced or identity is None:
+            return
+        if (
+            result.mtls_deployment_id != identity.mtls_deployment_id
+            or result.mtls_binding_id != identity.mtls_binding_id
+            or result.mtls_binding_epoch != identity.mtls_binding_epoch
+        ):
+            raise FatalRouteError(
+                "runtime route response link binding mismatch",
+                code="LINK_BINDING_MISMATCH",
+            )
+
 
 def _rawdata(body: dict) -> dict:
     raw = body.get("rawdata")
     return raw if isinstance(raw, dict) else body
+
+
+def _positive_int(value: object) -> int:
+    try:
+        parsed = int(value or 0)
+    except (TypeError, ValueError):
+        return 0
+    return parsed if parsed > 0 else 0
 
 
 def _json_object(response: httpx.Response) -> dict:
@@ -213,4 +271,9 @@ def _error_from_response(response: httpx.Response, body: dict) -> RouteError:
         cls = RetryableRouteError
     else:
         cls = FatalRouteError
-    return cls(message, code=code, retry_after=retry_after_int, status_code=response.status_code)
+    return cls(
+        message,
+        code=code,
+        retry_after=retry_after_int,
+        status_code=response.status_code,
+    )

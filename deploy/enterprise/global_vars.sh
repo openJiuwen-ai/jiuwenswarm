@@ -102,6 +102,7 @@ declare -ga MODULES=()
 declare -A DEPLOY_VARS=(
     # for dev mode, mount code purpose
     ["MODE"]="product"
+    ["JIUWENSWARM_LINK_MTLS_MODE"]="off"
     ["IS_MOUNT_WEB_CODE"]="false"
     ["IS_MOUNT_MANAGER_WEB_CODE"]="false"
     ["CLAW_POD_CODE_PATH"]="/app/jiuwenswarm"

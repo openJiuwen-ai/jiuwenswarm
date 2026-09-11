@@ -300,7 +300,6 @@ async def test_reload_log_masking_rule_loads_gdb_without_jiuwenclaw_id(monkeypat
 
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
     monkeypatch.delenv("JIUWENCLAW_ID", raising=False)
-    monkeypatch.delenv("JIUWENSWARM_ID", raising=False)
     monkeypatch.setattr(engine_mod, "settings", Settings())
     LogMaskingEngine.reset_for_tests()
 

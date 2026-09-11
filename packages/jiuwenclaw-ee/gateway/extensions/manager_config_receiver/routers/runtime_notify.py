@@ -14,6 +14,7 @@ from typing import Any
 import httpx
 
 from jiuwenswarm.common.local_env_config import read_env
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
 
 logger = logging.getLogger(__name__)
 
@@ -24,6 +25,14 @@ _config_update_handle: asyncio.TimerHandle | None = None
 def trigger_runtime_config_update() -> None:
     """企业配置变更：防抖后请求 agent-runtime 强制刷新（日落老 Pod + 按新配置重建）。"""
     base = read_env("GATEWAY_RUNTIME_MANAGER_URL", "").strip()
+    if not base:
+        try:
+            link = LinkMTLSConfig.from_env()
+            if link.profile and "runtime" in link.profile.current().get("endpoints", {}):
+                base = "link://runtime"
+        except Exception:
+            logger.exception("[ManagerConfigReceiver] invalid runtime link profile")
+            return
     if not base:
         logger.debug(
             "[ManagerConfigReceiver] GATEWAY_RUNTIME_MANAGER_URL unset, skip runtime notify"
@@ -65,8 +74,13 @@ def _schedule_agentserver_refresh() -> None:
         )
 
 
-async def _request_agentserver_refresh() -> None:
+async def _request_agentserver_refresh(
+    link_mtls_config: LinkMTLSConfig | None = None,
+) -> None:
     base = read_env("GATEWAY_RUNTIME_MANAGER_URL", "").strip().rstrip("/")
+    link_mtls = link_mtls_config or LinkMTLSConfig.from_env()
+    if not base and link_mtls.profile:
+        base = "link://runtime"
     if not base:
         return
     try:
@@ -84,12 +98,19 @@ async def _request_agentserver_refresh() -> None:
         "rawdata": {},
     }
     try:
+        base = link_mtls.resolve_endpoint(base, role="runtime")
+        url = f"{base}/api/session/config_refresh"
         async with httpx.AsyncClient(
             timeout=httpx.Timeout(timeout, connect=min(5.0, timeout)),
             follow_redirects=False,
             trust_env=False,
+            **link_mtls.client_kwargs(role="runtime"),
         ) as client:
-            resp = await client.post(url, json=body)
+            resp = await client.post(
+                url,
+                json=body,
+                headers=link_mtls.binding_headers(),
+            )
         if resp.status_code != 200:
             logger.warning(
                 "[ManagerConfigReceiver] agentserver refresh failed status=%s body=%s",
