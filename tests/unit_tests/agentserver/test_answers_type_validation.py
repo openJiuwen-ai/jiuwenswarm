@@ -27,7 +27,9 @@ def _make_request(params: dict) -> AgentRequest:
     )
 
 
-@pytest.mark.parametrize("bad_answers", ["not-a-list", 123, True, 1.5])
+@pytest.mark.parametrize(
+    "bad_answers", ["not-a-list", 123, True, 1.5, {"问题1": "选项A"}]
+)
 def test_build_inputs_rejects_invalid_answers_type(
     monkeypatch: pytest.MonkeyPatch, bad_answers
 ) -> None:
@@ -49,7 +51,7 @@ def test_build_inputs_rejects_invalid_answers_type(
     "answers",
     [
         [{"selected_options": ["允许"], "custom_input": ""}],
-        {"问题1": "选项A"},
+        [],
         None,
     ],
 )
@@ -96,4 +98,4 @@ async def test_process_message_stream_returns_failed_chunk_for_invalid_answers(
     payload = chunks[0].payload
     assert payload["event_type"] == "chat.error"
     assert payload["code"] == "INVALID_ARGUMENT"
-    assert "list or dict" in payload["error"]
+    assert "must be a list" in payload["error"]

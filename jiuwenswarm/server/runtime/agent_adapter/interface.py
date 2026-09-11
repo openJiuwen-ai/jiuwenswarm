@@ -1218,9 +1218,9 @@ class JiuWenSwarm:
             final_query = query
         else:
             answers = params.get("answers")
-            if answers is not None and not isinstance(answers, (list, dict)):
+            if answers is not None and not isinstance(answers, list):
                 raise _InvalidAnswersTypeError(
-                    f"answers must be a list or dict, got {type(answers).__name__}"
+                    f"answers must be a list, got {type(answers).__name__}"
                 )
             if answers:
                 request_id = params.get("request_id", "")
