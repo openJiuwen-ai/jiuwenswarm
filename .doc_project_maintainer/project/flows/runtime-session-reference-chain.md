@@ -3,7 +3,7 @@ id: runtime-session-reference-chain
 name: Runtime Session Reference Chain
 status: current
 confidence: confirmed
-last_updated: 2026-09-10
+last_updated: 2026-09-11
 user_visible_surface: "Work Normal and Code Normal chat, Goal, and interaction control across Process CLI, Web, TUI, ACP, and IM channels."
 source_of_truth:
   - "RuntimeSessionCoordinator process-local Session records"
@@ -45,9 +45,11 @@ or AgentServer (Web / TUI / ACP / IM)
 
 `create_or_resume_session` first delegates durable creation/resume to `AgentManager` and then registers an in-memory generation. Product `session.create` and switch flow through `AgentRuntime` provisioning; their successful commit registers eligible single-Agent Sessions, while direct callers are adopted at the Runtime execution boundary. Every owned call registers an execution. Ordinary chat enters the per-Session work lane; Goal set/resume, Goal get/pause/clear, Goal attach, follow-up, steer, and matched interaction input execute directly because their concurrency contract belongs to the Goal SDK and active adapter. Early consumer close and external execution cancellation both wake and await the producer. Cancellation invokes existing semantic interruption, then cancels the matching Runtime execution and waits within the bound. Session cleanup closes the active generation before existing adapter-resource cleanup; Runtime close stops the Coordinator before shared Agent resources.
 
+`send_session_message` is the cross-Session entry rather than a separate wake primitive. It requires persisted source/target routing facts, a target channel, and exactly matching owners; malformed or cross-owner targets fail instead of receiving default routing. It restores an unloaded Work/Code Normal target through the existing AgentManager and Coordinator registration path, then returns an execution receipt without waiting for the target model. The target Session lane creates new work even when no execution is active. `SESSION_MESSAGE` work is FIFO; if any execution owns an unresolved interaction, new messages remain queued outside the lane until exact control delivery or cancellation clears that owner.
+
 ## Interaction Control
 
-An `ask_user` answer belongs to the interrupted execution and is not new Session work. The Coordinator stores the concrete `request_id` or `interaction_id` emitted by the event. `AgentRuntime` routes the later interrupt-resume payload to `RuntimeSessionCoordinator.deliver_control`, which claims only the matching execution, records the parent relationship, and executes outside the chat lane. The facade's `deliver_control_input` sends the answer through the existing adapter resume path without repeating normal-turn history, memory, or A2UI preprocessing; the answer stream owns the resumed output and final persistence. This rule is identical for chat and Goal and never falls back to the latest Session execution.
+An `ask_user` answer belongs to the interrupted execution and is not new Session work. The Coordinator stores the concrete `request_id` or `interaction_id` emitted by the event. `AgentRuntime` routes every interrupt-resume payload to `RuntimeSessionCoordinator.deliver_control`, which claims only the matching execution, records the parent relationship, and executes outside the chat lane. A stale answer fails instead of becoming a new chat turn. The facade's `deliver_control_input` sends the answer through the existing adapter resume path without repeating normal-turn history, memory, or A2UI preprocessing; the answer stream owns the resumed output and final persistence. This rule is identical for chat and Goal and never falls back to the latest Session execution.
 
 ## Goal Ownership
 

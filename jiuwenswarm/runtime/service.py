@@ -12,6 +12,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+import uuid
 from typing import TYPE_CHECKING, Any, TypeVar
 
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -37,6 +38,7 @@ from jiuwenswarm.runtime.session import (
     SessionPersistencePolicy,
     SessionWorkKind,
 )
+from jiuwenswarm.runtime.session.model import SessionExecutionSnapshot
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 if TYPE_CHECKING:
@@ -461,7 +463,97 @@ class AgentRuntime:
             work_mode=str(metadata.get("work_mode") or "").strip().lower(),
             project_id=str(metadata.get("project_id") or "").strip(),
             project_dir=str(metadata.get("project_dir") or "").strip(),
+            user_id=str(metadata.get("user_id") or "").strip(),
         )
+
+    async def send_session_message(
+        self,
+        *,
+        source_session_id: str,
+        target_session_id: str,
+        content: str,
+        request_id: str | None = None,
+    ) -> SessionExecutionSnapshot:
+        """Queue a new turn in a persisted single-Agent Session.
+
+        Delivery is asynchronous so two Sessions cannot deadlock by waiting on
+        each other's model execution.  A target paused for control keeps its
+        exact interaction owner; the new turn starts after that interaction is
+        answered or cancelled.
+        """
+        await self.start()
+        source_id = str(source_session_id or "").strip()
+        target_id = str(target_session_id or "").strip()
+        message = str(content or "").strip()
+        if not source_id or not target_id:
+            raise ValueError("source_session_id and target_session_id are required")
+        if not message:
+            raise ValueError("content is required")
+
+        source = await self.describe_session(session_id=source_id)
+        if source is None:
+            raise ValueError(f"source session does not exist: {source_id}")
+        target = await self.describe_session(session_id=target_id)
+        if target is None:
+            raise ValueError(f"target session does not exist: {target_id}")
+        if not target.channel_id:
+            raise ValueError(f"target session has no channel_id: {target_id}")
+        if not self._is_single_agent_session_mode(
+            target.mode,
+            work_mode=target.work_mode,
+        ):
+            raise ValueError(f"target session is not Work/Code Normal: {target_id}")
+        if source.user_id != target.user_id:
+            raise PermissionError("source and target sessions have different owners")
+        if not self._owns_session(target.session_id):
+            await self._agent_manager.create_session(
+                channel_id=target.channel_id,
+                session_id=target.session_id,
+            )
+            await self._register_session(
+                session_id=target.session_id,
+                channel_id=target.channel_id,
+            )
+
+        from jiuwenswarm.common.schema.agent import AgentRequest
+
+        message_request_id = str(request_id or "").strip() or uuid.uuid4().hex
+        params = {
+            "query": message,
+            "mode": target.mode,
+            "work_mode": target.work_mode,
+        }
+        if target.project_id:
+            params["project_id"] = target.project_id
+        if target.project_dir:
+            params["project_dir"] = target.project_dir
+        request = AgentRequest(
+            request_id=message_request_id,
+            channel_id=target.channel_id,
+            session_id=target.session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            params=params,
+            metadata={"source_session_id": source.session_id},
+            user_id=target.user_id,
+        )
+        return self._session_coordinator.submit_unary(
+            target.session_id,
+            message_request_id,
+            SessionWorkKind.SESSION_MESSAGE,
+            lambda: self._invoke_started(
+                request,
+                trigger_hook=True,
+                on_control_event=None,
+            ),
+            suspension_key=self._waiting_control_id,
+        )
+
+    def get_session_execution(
+        self,
+        execution_id: str,
+    ) -> SessionExecutionSnapshot | None:
+        """Return the bounded status record for queued Session work."""
+        return self._session_coordinator.get_execution(execution_id)
 
     async def prepare_session_fork(
         self,
@@ -759,7 +851,7 @@ class AgentRuntime:
             work_kind = self.session_work_kind(request)
             if work_kind is not None:
                 await self._ensure_session_registered(request)
-                if self._has_control_target(request):
+                if work_kind is SessionWorkKind.CONTROL_INPUT:
                     return await self._session_coordinator.deliver_control(
                         request.session_id or "default",
                         self._control_request_id(request),
@@ -1000,7 +1092,7 @@ class AgentRuntime:
         work_kind = self.session_work_kind(request, background=background)
         if work_kind is not None:
             await self._ensure_session_registered(request)
-            if self._has_control_target(request):
+            if work_kind is SessionWorkKind.CONTROL_INPUT:
                 events = await self._session_coordinator.deliver_control(
                     request.session_id or "default",
                     self._control_request_id(request),
@@ -1569,14 +1661,6 @@ class AgentRuntime:
     def _control_request_id(request: AgentRequest) -> str:
         params = request.params if isinstance(request.params, dict) else {}
         return str(params.get("request_id") or request.request_id or "")
-
-    def _has_control_target(self, request: AgentRequest) -> bool:
-        return self._is_interrupt_resume_request(
-            request
-        ) and self._session_coordinator.has_control_target(
-            request.session_id or "default",
-            self._control_request_id(request),
-        )
 
     @staticmethod
     def _waiting_control_id(value: object) -> str | None:
