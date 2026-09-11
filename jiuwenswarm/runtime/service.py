@@ -1363,6 +1363,28 @@ class AgentRuntime:
         """Commit Runtime-owned state after persistent Session deletion."""
         self._session_provisioner.commit_session_delete(result)
 
+    def _ensure_session_provisions_finalized(self) -> None:
+        for prepared in tuple(self._pending_session_provisions):
+            self._discard_finalized_session_provision(prepared)
+        if self._session_provision_prepares > 0 or self._pending_session_provisions:
+            raise RuntimeStateError(
+                "runtime has unfinished session provisions; "
+                "commit or abort them before close"
+            )
+
+    async def quiesce_session_executions(self) -> None:
+        """Stop Session-owned executions before dependent runtimes are closed."""
+        async with self._lifecycle_lock:
+            if self._closed:
+                return
+            self._ensure_session_provisions_finalized()
+            timed_out = await self._session_coordinator.close()
+            if timed_out:
+                raise RuntimeStateError(
+                    "runtime has session executions that did not stop: "
+                    + ", ".join(timed_out)
+                )
+
     async def close(self) -> None:
         """Release resources unless a Session provision is unfinished.
 
@@ -1374,16 +1396,7 @@ class AgentRuntime:
         async with self._lifecycle_lock:
             if self._closed:
                 return
-            for prepared in tuple(self._pending_session_provisions):
-                self._discard_finalized_session_provision(prepared)
-            if (
-                self._session_provision_prepares > 0
-                or self._pending_session_provisions
-            ):
-                raise RuntimeStateError(
-                    "runtime has unfinished session provisions; "
-                    "commit or abort them before close"
-                )
+            self._ensure_session_provisions_finalized()
             cleanup_errors: list[BaseException] = []
             try:
                 await self._session_coordinator.close()

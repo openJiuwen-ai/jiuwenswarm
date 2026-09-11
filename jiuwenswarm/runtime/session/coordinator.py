@@ -422,29 +422,36 @@ class RuntimeSessionCoordinator:
         record = self._sessions.get(session_id)
         return None if record is None else self._snapshot(record)
 
-    async def close(self) -> None:
+    async def close(self) -> tuple[str, ...]:
         async with self._lock:
             if not self._accepting:
-                return
+                return tuple(
+                    handle.execution_id for handle in self._registry.active()
+                )
             self._accepting = False
             records = tuple(self._sessions.values())
         errors: list[BaseException] = []
+        timed_out: list[str] = []
         for record in records:
             if record.state is RuntimeSessionState.CLOSED:
                 continue
             try:
-                await self.close_session(
+                result = await self.close_session(
                     record.session_id,
                     generation=record.generation,
                 )
+                timed_out.extend(result.timed_out)
             except BaseException as exc:
                 errors.append(exc)
         try:
-            await self._scheduler.close(wait_timeout=self._cancel_timeout)
+            timed_out.extend(
+                await self._scheduler.close(wait_timeout=self._cancel_timeout)
+            )
         except BaseException as exc:
             errors.append(exc)
         if errors:
             raise errors[0]
+        return tuple(dict.fromkeys(timed_out))
 
     def _require_open_session(self, session_id: str) -> _SessionRecord:
         if not self._accepting:

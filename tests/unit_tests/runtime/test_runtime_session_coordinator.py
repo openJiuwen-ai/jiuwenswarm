@@ -366,6 +366,37 @@ async def test_close_stops_new_work_and_cancels_active_execution() -> None:
         )
 
 
+@pytest.mark.asyncio
+async def test_close_reports_resistant_execution_until_it_finishes() -> None:
+    coordinator = RuntimeSessionCoordinator(cancel_timeout=0.01)
+    await _register(coordinator)
+    release = asyncio.Event()
+    started = asyncio.Event()
+
+    async def resistant() -> str:
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+        return "done"
+
+    running = asyncio.create_task(
+        coordinator.run_unary(
+            "session-a", "request", SessionWorkKind.CHAT_UNARY, resistant
+        )
+    )
+    await started.wait()
+
+    first = await coordinator.close()
+    assert len(first) == 1
+    assert await coordinator.close() == first
+
+    release.set()
+    assert await running == "done"
+    assert await coordinator.close() == ()
+
+
 def test_registry_retains_only_bounded_terminal_history() -> None:
     registry = SessionExecutionRegistry(terminal_capacity=1, terminal_ttl=60)
     first = SessionExecutionHandle(

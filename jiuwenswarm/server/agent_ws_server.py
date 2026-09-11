@@ -1665,29 +1665,31 @@ class AgentWebSocketServer:
             await self._server.wait_closed()
             self._server = None
 
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-            cancel_pending_tasks,
-        )
-
-        await cancel_pending_tasks()
-
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-            close_kv_cache_runtime,
-        )
-
-        await close_kv_cache_runtime()
-
         closing_runtime = self._runtime
         runtime_close_completed = False
         runtime_close_error: BaseException | None = None
         try:
+            await closing_runtime.quiesce_session_executions()
+
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                cancel_pending_tasks,
+            )
+
+            await cancel_pending_tasks()
+
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+                close_kv_cache_runtime,
+            )
+
+            await close_kv_cache_runtime()
+
             await closing_runtime.close()
             runtime_close_completed = True
         except BaseException as exc:  # preserve cancellation until host cleanup
             runtime_close_error = exc
             if isinstance(exc, Exception):
                 logger.warning(
-                    "[AgentWebSocketServer] runtime.close failed: %s",
+                    "[AgentWebSocketServer] runtime shutdown failed: %s",
                     exc,
                 )
         finally:
