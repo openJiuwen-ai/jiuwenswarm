@@ -22,7 +22,7 @@ import time
 from collections import Counter
 from collections.abc import Mapping
 from contextvars import ContextVar, Token
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, fields, is_dataclass, replace
 from pathlib import Path
 from shutil import which
 from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
@@ -223,6 +223,10 @@ from jiuwenswarm.agents.harness.common.rails.eternal_conversation import (
 from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
+)
+from jiuwenswarm.agents.harness.common.rails.no_progress_guard_rail import (
+    NoProgressGuardRail,
+    NoProgressGuardConfig,
 )
 from jiuwenswarm.common.context_window import parse_positive_int, resolve_context_window_tokens
 from jiuwenswarm.symphony.llm import (
@@ -498,7 +502,6 @@ logger = logging.getLogger(__name__)
 
 def _diag_auth_headers(cfg: Any) -> str:
     """Diagnostic snapshot of cfg.auth_headers (value prefix + length only).
-
     Prints each header value's first 15 chars + total length, so logs reveal
     whether a token was injected (e.g. ``Authorization[len=42]: Bearer ghp_abc``)
     or left empty/placeholder (``Authorization[len=8]: Bearer ``). The full
@@ -512,6 +515,23 @@ def _diag_auth_headers(cfg: Any) -> str:
         vs = str(v)
         parts.append(f"{k}[len={len(vs)}]: {vs[:15]}")
     return "{" + ", ".join(parts) + "}"
+
+
+_DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG: dict[str, Any] = {
+    "enabled": True,
+    "consecutive_threshold": 3,
+    "tool_args_consecutive_threshold": 5,
+    "reasoning_min_chars": 4,
+    "reasoning_preview_max_chars": 512,
+    "bailout_threshold": 3,
+    "tool_args_bailout_threshold": 2,
+}
+
+_DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD: dict[str, Any] = {
+    "enabled": False,
+    "max_consecutive_empty_answers": 3,
+    "min_answer_chars": 20,
+}
 
 _PERSISTENT_CHECKPOINTER_LOCK: asyncio.Lock | None = None
 _PERSISTENT_CHECKPOINTER_LOCK_LOOP: asyncio.AbstractEventLoop | None = None
@@ -1260,6 +1280,74 @@ def _resolve_session_memory_config(context_engine_cfg: dict[str, Any]) -> dict[s
     return None
 
 
+def _merge_context_engine_defaults(context_engine_cfg: dict[str, Any]) -> dict[str, Any]:
+    """Preserve loop compaction defaults when users override context config.
+    
+    Guard the reasoning_tool_loop_compact_config merge to prevent injecting
+    processors that don't exist in the pinned openjiuwen version.
+    """
+    merged = dict(context_engine_cfg)
+    if not bool(merged.get("enabled", True)):
+        return merged
+
+    raw_reasoning_cfg = merged.get("reasoning_tool_loop_compact_config")
+    if raw_reasoning_cfg is False:
+        merged["reasoning_tool_loop_compact_config"] = {"enabled": False}
+    elif isinstance(raw_reasoning_cfg, dict):
+        merged["reasoning_tool_loop_compact_config"] = {
+            **_DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG,
+            **raw_reasoning_cfg,
+        }
+    else:
+        merged["reasoning_tool_loop_compact_config"] = dict(
+            _DEFAULT_REASONING_TOOL_LOOP_COMPACT_CONFIG
+        )
+    
+    # If the processor doesn't exist, disable it to prevent ValueError in ContextProcessorRail
+    if not _processor_exists("ReasoningToolLoopCompactProcessor"):
+        merged["reasoning_tool_loop_compact_config"]["enabled"] = False
+    
+    return merged
+
+
+def _task_loop_no_progress_guard_config(react_cfg: dict[str, Any] | None) -> dict[str, Any]:
+    """Resolve task-loop no-progress guard config from react YAML."""
+    react_cfg = react_cfg if isinstance(react_cfg, dict) else {}
+    raw = react_cfg.get("task_loop_no_progress_guard")
+    if raw is False:
+        return {**_DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD, "enabled": False}
+    raw_cfg = raw if isinstance(raw, dict) else {}
+    merged = {**_DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD, **raw_cfg}
+    merged["enabled"] = bool(merged.get("enabled", True))
+    merged["max_consecutive_empty_answers"] = parse_int(
+        merged.get("max_consecutive_empty_answers"),
+        _DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD["max_consecutive_empty_answers"],
+    )
+    merged["min_answer_chars"] = parse_int(
+        merged.get("min_answer_chars"),
+        _DEFAULT_TASK_LOOP_NO_PROGRESS_GUARD["min_answer_chars"],
+    )
+    return merged
+
+
+def _deep_agent_config_supports(field_name: str) -> bool:
+    if not is_dataclass(DeepAgentConfig):
+        return hasattr(DeepAgentConfig, field_name)
+    return field_name in {field.name for field in fields(DeepAgentConfig)}
+
+
+def _processor_exists(processor_name: str) -> bool:
+    """Check if a ContextProcessorRail processor class exists in the installed openjiuwen.
+    
+    This guards against processors that exist in a newer openjiuwen but not in the pinned version.
+    """
+    try:
+        preset_processors = getattr(ContextProcessorRail, "_PRESET_PROCESSORS", {})
+        return processor_name in preset_processors
+    except Exception:
+        return False
+
+
 def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRail | None:
     """Build ContextProcessorRail with user config.
 
@@ -1271,7 +1359,11 @@ def _build_context_processor_rail(config: dict[str, Any]) -> ContextProcessorRai
     try:
         user_processors: List[Tuple[str, Any]] = []
         raw_context_engine_cfg = config.get("context_engine_config", {})
-        context_engine_cfg = raw_context_engine_cfg if isinstance(raw_context_engine_cfg, dict) else {}
+        context_engine_cfg = (
+            _merge_context_engine_defaults(raw_context_engine_cfg)
+            if isinstance(raw_context_engine_cfg, dict)
+            else _merge_context_engine_defaults({})
+        )
         session_memory_cfg = _resolve_session_memory_config(context_engine_cfg)
 
         offloader_cfg = context_engine_cfg.get("message_summary_offloader_config", {})
@@ -7170,6 +7262,36 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    def _build_no_progress_guard_rail(self) -> NoProgressGuardRail | None:
+        """Build the no-progress guard rail to stop hung agent loops.
+        
+        This guard tracks consecutive outer-loop iterations that produce no-tool
+        "answer" results with minimal content (the hung-agent pattern). On the
+        penultimate iteration, it injects a steering nudge. On the final iteration,
+        it aborts the outer loop via loop_coordinator.request_abort().
+        
+        Configured via `react.task_loop_no_progress_guard` (enabled: false by default,
+        benchmark-gated).
+        """
+        try:
+            react_cfg = (get_config() or {}).get("react", {})
+            guard_cfg = _task_loop_no_progress_guard_config(react_cfg)
+            if not guard_cfg.get("enabled", False):
+                logger.info("[JiuWenSwarmDeepAdapter] NoProgressGuardRail disabled by config")
+                return None
+
+            config = NoProgressGuardConfig(
+                enabled=guard_cfg["enabled"],
+                max_consecutive_empty_answers=guard_cfg["max_consecutive_empty_answers"],
+                min_answer_chars=guard_cfg["min_answer_chars"],
+            )
+            rail = NoProgressGuardRail(config, language=self._resolve_runtime_language())
+            logger.info("[JiuWenSwarmDeepAdapter] NoProgressGuardRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] NoProgressGuardRail create failed: %s", exc)
+            return None
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -7507,6 +7629,7 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
+            _RailBuildInfo("_no_progress_guard_rail", self._build_no_progress_guard_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo(
@@ -7680,33 +7803,41 @@ class JiuWenSwarmDeepAdapter:
             config,
             model_state=context_model_state,
         )
-        return DeepAgentConfig(
-            model=model,
-            card=agent_card,
-            tool_owner_id=self._tool_owner_id(),
-            system_prompt=build_agent_identity_prompt(
+        deep_agent_config_kwargs = {
+            "model": model,
+            "card": agent_card,
+            "tool_owner_id": self._tool_owner_id(),
+            "system_prompt": build_agent_identity_prompt(
                 language=self._resolve_prompt_language(),
             ),
-            context_engine_config=context_engine_config,
-            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
-            enable_task_loop=self._resolve_enable_task_loop(config, config_base),
-            enable_subagent_runtime=self._resolve_enable_subagent_runtime(config_base),
-            max_iterations=config.get("max_iterations", 15),
-            subagents=configured_subagents,
-            add_general_purpose_agent=should_add_general_agent,
-            tools=normalized_tool_cards,
-            workspace=workspace_obj,
-            skills=None,
-            backend=None,
-            sys_operation=self._sys_operation,
-            language=resolved_language,
-            prompt_mode=None,
-            rails=rails,
-            progressive_tool_enabled=get_progressive_tool_enabled(config_base),
-            vision_model_config=self._vision_model_config,
-            audio_model_config=self._audio_model_config,
-            enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
-            completion_timeout=resolve_task_loop_completion_timeout(config),
+            "context_engine_config": context_engine_config,
+            "kv_cache_affinity_config": _deep_agent_kv_cache_affinity_config(config_base, model),
+            "enable_task_loop": self._resolve_enable_task_loop(config, config_base),
+            "enable_subagent_runtime": self._resolve_enable_subagent_runtime(config_base),
+            "max_iterations": config.get("max_iterations", 15),
+            "subagents": configured_subagents,
+            "add_general_purpose_agent": should_add_general_agent,
+            "tools": normalized_tool_cards,
+            "workspace": workspace_obj,
+            "skills": None,
+            "backend": None,
+            "sys_operation": self._sys_operation,
+            "language": resolved_language,
+            "prompt_mode": None,
+            "rails": rails,
+            "progressive_tool_enabled": get_progressive_tool_enabled(config_base),
+            "vision_model_config": self._vision_model_config,
+            "audio_model_config": self._audio_model_config,
+            "enable_read_image_multimodal": self._resolve_enable_read_image_multimodal(config),
+            "completion_timeout": resolve_task_loop_completion_timeout(config),
+        }
+        if _deep_agent_config_supports("task_loop_no_progress_guard"):
+            deep_agent_config_kwargs["task_loop_no_progress_guard"] = (
+                _task_loop_no_progress_guard_config(config)
+            )
+
+        return DeepAgentConfig(
+            **deep_agent_config_kwargs
         )
 
     def _update_permission_rail(self, config_base: dict[str, Any] | None) -> None:
@@ -8424,6 +8555,7 @@ class JiuWenSwarmDeepAdapter:
             language=self._resolve_runtime_language(),
             auto_create_workspace=False
         )
+        common_kwargs["task_loop_no_progress_guard"] = _task_loop_no_progress_guard_config(config)
 
         context_model_state = _ContextEngineModelState(
             full_config=config_base,

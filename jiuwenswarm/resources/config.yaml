@@ -582,6 +582,12 @@ react:
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
   completion_timeout: null
   max_iterations: 100
+  # Stop unattended task-loop runs after repeated empty/near-empty no-tool answers.
+  # This guard is benchmark-gated: enable in the bench overlay config.
+  task_loop_no_progress_guard:
+    enabled: false
+    max_consecutive_empty_answers: 3
+    min_answer_chars: 20
   model_name: ${MODEL_NAME}
   skill_mode: all
   # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用

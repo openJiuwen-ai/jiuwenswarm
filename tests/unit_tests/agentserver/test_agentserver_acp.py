@@ -4206,6 +4206,53 @@ def test_build_context_processor_rail_prefers_summary_offloader_config(monkeypat
     assert isinstance(rail.processors[-1][1], SymphonyRetrievalCompactProcessorConfig)
 
 
+def test_build_context_processor_rail_does_not_add_reasoning_loop_when_context_disabled(monkeypatch):
+    monkeypatch.setattr(
+        interface_deep_module,
+        "ContextProcessorRail",
+        FakeContextProcessorRail,
+    )
+    adapter = DeepAdapterHarness()
+
+    rail = adapter.build_context_processor_rail_for_test(
+        {"context_engine_config": {"enabled": False}}
+    )
+
+    assert isinstance(rail, FakeContextProcessorRail)
+    assert rail.processors == [
+        ("SymphonyRetrievalCompactProcessor", SymphonyRetrievalCompactProcessorConfig())
+    ]
+
+
+def test_task_loop_no_progress_guard_config_defaults_and_overrides():
+    assert interface_deep_module._task_loop_no_progress_guard_config({}) == {
+        "enabled": False,
+        "max_consecutive_empty_answers": 3,
+        "min_answer_chars": 20,
+    }
+
+    assert interface_deep_module._task_loop_no_progress_guard_config(
+        {"task_loop_no_progress_guard": False}
+    ) == {
+        "enabled": False,
+        "max_consecutive_empty_answers": 3,
+        "min_answer_chars": 20,
+    }
+
+    assert interface_deep_module._task_loop_no_progress_guard_config(
+        {
+            "task_loop_no_progress_guard": {
+                "max_consecutive_empty_answers": "5",
+                "min_answer_chars": "120",
+            }
+        }
+    ) == {
+        "enabled": False,
+        "max_consecutive_empty_answers": 5,
+        "min_answer_chars": 120,
+    }
+
+
 def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
     monkeypatch.setattr(
         interface_deep_module,
@@ -4227,9 +4274,7 @@ def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
 
     assert isinstance(rail, FakeContextProcessorRail)
     assert rail.preset is True
-    assert rail.processors == [
-        ("SymphonyRetrievalCompactProcessor", SymphonyRetrievalCompactProcessorConfig())
-    ]
+    assert rail.processors is None
     assert rail.session_memory == {
         "trigger_tokens": 12000,
         "update_mode": "direct_replace",
