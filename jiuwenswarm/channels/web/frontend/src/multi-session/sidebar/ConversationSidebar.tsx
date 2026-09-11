@@ -6,6 +6,7 @@ import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
 import { DeleteDialog } from '../dialogs/Dialogs';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui';
 import {
   PROJECT_SESSION_PAGE_SIZE,
   useWorkspaceStore,
@@ -169,36 +170,35 @@ function getMenuIcon(item: SidebarMenuItem): React.ComponentType<React.SVGProps<
   return menuIconByAction[item.action];
 }
 
-function SidebarMenu({
+/** 领域模型 SidebarMenuItem 到通用 DropdownMenuItem 的映射；会话行与项目行两处菜单共用 */
+function SidebarDropdownItems({
   items,
   onAction,
-  disabledActions = [],
+  deleteDisabled = false,
 }: {
   items: SidebarMenuItem[];
   onAction: (action: SidebarMenuAction) => void;
-  disabledActions?: SidebarMenuAction[];
+  deleteDisabled?: boolean;
 }) {
   return (
-    <div className="conversation-list-item__menu" role="menu" data-testid="multi-session-conversation-menu">
+    <>
       {items.map((item) => {
         const MenuIcon = getMenuIcon(item);
         return (
-          <button
-          key={item.action}
-          type="button"
-          className={`conversation-list-item__menu-item${item.danger ? ' conversation-list-item__menu-item--danger' : ''}`}
-          disabled={disabledActions.includes(item.action)}
-          onClick={() => onAction(item.action)}
-          role="menuitem"
-          data-testid="multi-session-conversation-menu-item"
-          data-variant={item.action}
-        >
-          <MenuIcon aria-hidden />
-          <span>{item.label}</span>
-          </button>
+          <DropdownMenuItem
+            key={item.action}
+            icon={<MenuIcon aria-hidden />}
+            danger={item.danger}
+            disabled={deleteDisabled && item.action === 'delete'}
+            onSelect={() => onAction(item.action)}
+            data-testid="multi-session-conversation-menu-item"
+            data-variant={item.action}
+          >
+            {item.label}
+          </DropdownMenuItem>
         );
       })}
-    </div>
+    </>
   );
 }
 
@@ -229,7 +229,11 @@ function ConversationListItem({
   const itemRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
   const { tooltip: itemTooltip, handlers: itemTooltipHandlers } = useAdaptiveTooltip();
-  const { tooltip: truncationTooltip, handlers: truncationTooltipHandlers } = useAdaptiveTooltip({ anchorRef: itemRef, offsetY: 2, align: 'left' });
+  const { tooltip: truncationTooltip, handlers: truncationTooltipHandlers } = useAdaptiveTooltip({
+    anchorRef: itemRef,
+    offsetY: 2,
+    align: 'left',
+  });
   const title = getSessionTitle(session, t('multiSession.untitled'));
   const titleTooltipHandlers = {
     onMouseEnter: (event: React.MouseEvent<HTMLSpanElement>) => {
@@ -287,50 +291,61 @@ function ConversationListItem({
     );
   }
 
-  useEffect(() => {
-    if (!menuOpen) return;
-
-    const handlePointerDown = (event: MouseEvent) => {
-      if (!itemRef.current?.contains(event.target as Node)) {
-        setMenuOpen(false);
-      }
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        setMenuOpen(false);
-      }
-    };
-
-    document.addEventListener('mousedown', handlePointerDown);
-    document.addEventListener('keydown', handleKeyDown);
-    return () => {
-      document.removeEventListener('mousedown', handlePointerDown);
-      document.removeEventListener('keydown', handleKeyDown);
-    };
-  }, [menuOpen]);
-
   return (
-    <div ref={itemRef} className={`conversation-list-item conversation-sidebar__row-el${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${nested ? ' conversation-list-item--nested' : ''}`} data-testid="multi-session-conversation-list-item" data-variant={session.session_id}>
+    <div
+      ref={itemRef}
+      className={`conversation-list-item conversation-sidebar__row-el${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${nested ? ' conversation-list-item--nested' : ''}`}
+      data-testid="multi-session-conversation-list-item"
+      data-variant={session.session_id}
+    >
       <button type="button" className="conversation-list-item__main" onClick={onSelect} data-testid="multi-session-conversation-list-item-main">
-        <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title" data-tooltip="" {...titleTooltipHandlers}>{title}</span>
-        <span className="conversation-list-item__meta" data-testid="multi-session-conversation-list-item-status" data-variant={indicator}>{status}</span>
+        <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title" data-tooltip="" {...titleTooltipHandlers}>
+          {title}
+        </span>
+        <span className="conversation-list-item__meta" data-testid="multi-session-conversation-list-item-status" data-variant={indicator}>
+          {status}
+        </span>
       </button>
-      <button
-        type="button"
-        className="conversation-list-item__actions"
-        onClick={(event) => {
-          event.stopPropagation();
-          setMenuOpen((open) => !open);
+      <DropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          if (open) itemTooltipHandlers.onMouseLeave();
+          setMenuOpen(open);
         }}
-        aria-label={t('multiSession.moreActions')}
-        aria-haspopup="menu"
-        aria-expanded={menuOpen}
-        data-tooltip={t('multiSession.moreActions')}
-        data-testid="multi-session-conversation-list-item-more"
-        {...(menuOpen ? {} : itemTooltipHandlers)}
       >
-        <MoreIcon aria-hidden />
-      </button>
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="conversation-list-item__actions"
+            onClick={(event) => event.stopPropagation()}
+            aria-label={t('multiSession.moreActions')}
+            data-tooltip={t('multiSession.moreActions')}
+            data-testid="multi-session-conversation-list-item-more"
+            {...(menuOpen ? {} : itemTooltipHandlers)}
+          >
+            <MoreIcon aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="bottom" align="end" data-testid="multi-session-conversation-menu">
+          <SidebarDropdownItems
+            items={menuItems}
+            deleteDisabled={deleteDisabled}
+            onAction={(action) => {
+              switch (action) {
+                case 'pin':
+                  onPin();
+                  break;
+                case 'rename':
+                  onRename();
+                  break;
+                case 'delete':
+                  onDelete();
+                  break;
+              }
+            }}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
       <button
         type="button"
         className="conversation-list-item__pin-action"
@@ -345,31 +360,13 @@ function ConversationListItem({
       >
         {session.pinned ? <UnpinIcon aria-hidden /> : <PinIcon aria-hidden />}
       </button>
-      {menuOpen ? (
-        <SidebarMenu
-          items={menuItems}
-          disabledActions={deleteDisabled ? ['delete'] : []}
-          onAction={(action) => {
-            setMenuOpen(false);
-            switch (action) {
-              case 'pin':
-                onPin();
-                break;
-              case 'rename':
-                onRename();
-                break;
-              case 'delete':
-                onDelete();
-                break;
-            }
-          }}
-        />
-        ) : null}
       {itemTooltip}
       {truncationTooltip}
-      </div>
+    </div>
   );
-}function ProjectEntityRow({
+}
+
+function ProjectEntityRow({
   title,
   path,
   isExpanded,
@@ -401,7 +398,6 @@ function ConversationListItem({
   projectId?: string;
 }) {
   const { t } = useTranslation();
-  const rowRef = useRef<HTMLDivElement>(null);
   const mainRef = useRef<HTMLButtonElement>(null);
   const tooltipId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
@@ -410,22 +406,6 @@ function ConversationListItem({
   // 分别跟踪 hover 与 focus 状态：任一活跃即保持 tooltip，避免 mouseleave/blur 互相误清
   const hoverRef = useRef(false);
   const focusRef = useRef(false);
-
-  useEffect(() => {
-    if (!menuOpen) return;
-    const close = (event: MouseEvent) => {
-      if (!rowRef.current?.contains(event.target as Node)) setMenuOpen(false);
-    };
-    const closeOnEscape = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') setMenuOpen(false);
-    };
-    document.addEventListener('mousedown', close);
-    document.addEventListener('keydown', closeOnEscape);
-    return () => {
-      document.removeEventListener('mousedown', close);
-      document.removeEventListener('keydown', closeOnEscape);
-    };
-  }, [menuOpen]);
 
   const showTooltip = (source: 'hover' | 'focus') => {
     if (source === 'hover') hoverRef.current = true;
@@ -443,7 +423,11 @@ function ConversationListItem({
   };
 
   return (
-    <div ref={rowRef} className={`conversation-entity-row conversation-sidebar__row-el${menuOpen ? ' is-menu-open' : ''}`} data-testid="multi-session-project-row" data-variant={projectId}>
+    <div
+      className={`conversation-entity-row conversation-sidebar__row-el${menuOpen ? ' is-menu-open' : ''}`}
+      data-testid="multi-session-project-row"
+      data-variant={projectId}
+    >
       <button
         type="button"
         ref={mainRef}
@@ -472,14 +456,12 @@ function ConversationListItem({
           {isExpanded ? <FolderFoldIcon aria-hidden /> : <FolderIcon aria-hidden />}
         </span>
         <span className="conversation-entity-row__text">
-          <span className="conversation-entity-row__title" data-testid="multi-session-project-row-title">{title}</span>
+          <span className="conversation-entity-row__title" data-testid="multi-session-project-row-title">
+            {title}
+          </span>
         </span>
         {hasUnreadCronResult ? (
-          <span
-            className="conversation-list-item__status-dot"
-            aria-hidden="true"
-            data-testid="multi-session-project-row-cron-unread"
-          />
+          <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-project-row-cron-unread" />
         ) : null}
         {isExpanded ? <CollapseIcon className="conversation-entity-row__chevron" aria-hidden /> : <ArrowRightIcon className="conversation-entity-row__chevron" aria-hidden />}
         {isPinned ? <PinIcon className="conversation-entity-row__pin" aria-hidden /> : null}
@@ -498,50 +480,51 @@ function ConversationListItem({
       >
         <PlusIcon aria-hidden />
       </button>
-      {(
-        <button
-          type="button"
-          className="conversation-list-item__actions"
-          onClick={(event) => {
-            event.stopPropagation();
-            rowTooltipHandlers.onMouseLeave();
-            setMenuOpen((open) => !open);
-          }}
-          aria-label={t('multiSession.moreActions')}
-          aria-haspopup="menu"
-          aria-expanded={menuOpen}
-          data-tooltip={t('multiSession.moreActions')}
-          data-testid="multi-session-project-row-more"
-          {...(menuOpen ? {} : rowTooltipHandlers)}
-        >
-          <MoreIcon aria-hidden />
-        </button>
-      )}
-      {menuOpen ? (
-        <SidebarMenu
-          items={getProjectMenuItems(Boolean(isPinned), t, defaultProject)}
-          onAction={(action) => {
-            setMenuOpen(false);
-            switch (action) {
-              case 'pin':
-                onPin();
-                break;
-              case 'rename':
-                onRename();
-                break;
-              case 'delete':
-                onRemove();
-                break;
-              case 'archive-sessions':
-                onBatch('archive');
-                break;
-              case 'delete-archived-sessions':
-                onBatch('delete_archived');
-                break;
-            }
-          }}
-        />
-      ) : null}
+      <DropdownMenu
+        open={menuOpen}
+        onOpenChange={(open) => {
+          if (open) rowTooltipHandlers.onMouseLeave();
+          setMenuOpen(open);
+        }}
+      >
+        <DropdownMenuTrigger asChild>
+          <button
+            type="button"
+            className="conversation-list-item__actions"
+            onClick={(event) => event.stopPropagation()}
+            aria-label={t('multiSession.moreActions')}
+            data-tooltip={t('multiSession.moreActions')}
+            data-testid="multi-session-project-row-more"
+            {...(menuOpen ? {} : rowTooltipHandlers)}
+          >
+            <MoreIcon aria-hidden />
+          </button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent side="bottom" align="end" data-testid="multi-session-conversation-menu">
+          <SidebarDropdownItems
+            items={getProjectMenuItems(Boolean(isPinned), t, defaultProject)}
+            onAction={(action) => {
+              switch (action) {
+                case 'pin':
+                  onPin();
+                  break;
+                case 'rename':
+                  onRename();
+                  break;
+                case 'delete':
+                  onRemove();
+                  break;
+                case 'archive-sessions':
+                  onBatch('archive');
+                  break;
+                case 'delete-archived-sessions':
+                  onBatch('delete_archived');
+                  break;
+              }
+            }}
+          />
+        </DropdownMenuContent>
+      </DropdownMenu>
       {tooltipPos && path
         ? createPortal(
             <ProjectPathTooltip id={tooltipId} title={title} path={path} anchor={tooltipPos} mainRef={mainRef} />,
