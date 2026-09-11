@@ -88,10 +88,11 @@ def _build_model_descriptors(
         client_config = entry.get("model_client_config") or {}
         model_config = entry.get("model_config_obj") or {}
         alias = str(entry.get("alias") or "").strip()
+        alias_does_not_shadow_model = alias == model_name or alias not in model_names
         if (
             alias
             and alias_counts.get(alias) == 1
-            and (alias == model_name or alias not in model_names)
+            and alias_does_not_shadow_model
         ):
             selection_key = alias
         elif model_name_counts[model_name] > 1:

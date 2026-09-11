@@ -4,9 +4,13 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import Any
+
+
+logger = logging.getLogger(__name__)
 
 
 class AgentCatalogError(ValueError):
@@ -157,13 +161,16 @@ def _safe_service(scope: AgentCatalogScope):
             for candidate in candidates:
                 try:
                     resolved = candidate.resolve(strict=True)
-                    if not resolved.is_file() or not _is_relative_to(resolved, root):
-                        continue
-                    agent = _parse_agent_file(resolved, source)
-                    if agent is not None:
-                        agents.append(agent)
+                    if resolved.is_file() and _is_relative_to(resolved, root):
+                        agent = _parse_agent_file(resolved, source)
+                        if agent is not None:
+                            agents.append(agent)
                 except Exception:
-                    continue
+                    logger.warning(
+                        "Failed to parse agent file: %s",
+                        candidate,
+                        exc_info=True,
+                    )
             return agents
 
     return SafeAgentConfigService(scope.project_dir)
