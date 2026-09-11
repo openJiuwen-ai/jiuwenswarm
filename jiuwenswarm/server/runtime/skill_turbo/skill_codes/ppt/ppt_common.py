@@ -128,26 +128,26 @@ _CAT_N_PREFIX_RE = re.compile(r"^[ \t]*\d+[ \t]", re.MULTILINE)
 _OUTLINE_PAGE_HEADING_RE = re.compile(r"^### P(\d+):", re.MULTILINE)
 
 # ──────────────────────── 节点显示名映射 ────────────────────────
-# 将内部 plan_name（如 p0_pipeline_init）映射为界面上展示的中文名称。
-# 排序遵循 ppt_gen_root 节点 sub_plans 的执行顺序（对齐 4-Phase skill）。
-# 仅影响前端展示，不改变内部 plan_name 标识。
+# 将内部 plan_name（如 p0_pipeline_init）映射为界面展示名。
+# UI Stage 1–14 = ppt_gen_root.sub_plans 顺序；≠ pptx-craft 契约「阶段 1–4」。
+# 仅影响前端展示，不改变内部 plan_name / 执行顺序。
 NODE_DISPLAY_NAMES: dict[str, str] = {
-    "p0_pipeline_init": "Phase 1: 流水线初始化",
-    "p1_intent_classify": "Phase 1: 意图分类",
-    "p3_document_parse": "Phase 1/2: 文档解析",
-    "p2_requirement_collect": "Phase 1: 需求收集",
-    "p3_5_template_context": "Phase 2: 模板上下文预处理",
-    "p4_content_plan": "Phase 2: 内容策划",
-    "p5_outline_review": "Phase 2: 大纲审阅",
-    "p6_deep_research": "Phase 2: 深度研究",
-    "p7_style_prepare": "Phase 3: 风格准备",
-    "p6_5_image_prepare": "Phase 3: 图片准备",
-    "p8_ppt_page_gen": "Phase 4: 幻灯片生成",
-    "p8_0_5_template_seed": "Phase 4: 模板预铺",
-    "p8_0_6_designer_tasks": "Phase 4: Designer 任务",
-    "p9_ppt_export": "Phase 4: PPTX导出",
-    "p11_speaker_notes": "Phase 4: 演讲备注",
-    "p10_delivery": "Phase 4: 交付",
+    "p0_pipeline_init": "Stage 1: 流水线初始化",
+    "p1_intent_classify": "Stage 2: 意图分类",
+    "p3_document_parse": "Stage 3: 文档解析",
+    "p2_requirement_collect": "Stage 4: 需求收集",
+    "p3_5_template_context": "Stage 5: 模板上下文预处理",
+    "p4_content_plan": "Stage 6: 内容策划",
+    "p5_outline_review": "Stage 7: 大纲审阅",
+    "p6_deep_research": "Stage 8: 深度研究",
+    "p7_style_prepare": "Stage 9: 风格准备",
+    "p6_5_image_prepare": "Stage 10: 图片准备",
+    "p8_ppt_page_gen": "Stage 11: 幻灯片生成",
+    "p8_0_5_template_seed": "Stage 11: 模板预铺",
+    "p8_0_6_designer_tasks": "Stage 11: Designer 任务",
+    "p9_ppt_export": "Stage 12: PPTX导出",
+    "p11_speaker_notes": "Stage 13: 演讲备注",
+    "p10_delivery": "Stage 14: 交付",
     "ppt_gen_root": "PPT生成",
 }
 

@@ -150,6 +150,7 @@ class SlideDesignerWorker:
         last_raw = ""
         last_reason = ""
         html = ""
+        chart_activation_warning = False
         for attempt in range(max(self._policy.max_fill_attempts, 1)):
             rewrite_hint = ""
             if attempt > 0 and (last_raw or last_reason):
@@ -165,7 +166,15 @@ class SlideDesignerWorker:
                 break
 
         if not html:
-            if self._policy.allow_free_gen_fallback:
+            # 契约重试耗尽：仍交付 HTML，不进 missing（对齐 mount 软化，避免 P9 拒导）
+            if last_reason == "chart_scaffold_not_activated" and last_raw.strip():
+                logger.warning(
+                    "[SlideDesignerWorker] 图表 scaffold 未激活，重试耗尽仍交付 page=%d",
+                    ctx.page_num,
+                )
+                html = last_raw
+                chart_activation_warning = True
+            elif self._policy.allow_free_gen_fallback:
                 logger.warning(
                     "[SlideDesignerWorker] 填槽失败，降级 free_generate page=%d reason=%s",
                     ctx.page_num,
@@ -184,13 +193,21 @@ class SlideDesignerWorker:
                         path=path,
                     )
                 last_reason = fb_reason or last_reason
-            return SlideDesignerResult(
-                page_num=ctx.page_num,
-                ok=False,
-                html=last_raw,
-                fail_reason=last_reason or "fill_failed",
-                path=path,
-            )
+                return SlideDesignerResult(
+                    page_num=ctx.page_num,
+                    ok=False,
+                    html=last_raw,
+                    fail_reason=last_reason or "fill_failed",
+                    path=path,
+                )
+            else:
+                return SlideDesignerResult(
+                    page_num=ctx.page_num,
+                    ok=False,
+                    html=last_raw,
+                    fail_reason=last_reason or "fill_failed",
+                    path=path,
+                )
 
         ok = await self._host.write_file_for_worker(path, html)
         if not ok:
@@ -214,17 +231,18 @@ class SlideDesignerWorker:
                 path=path,
             )
 
-        if layout_warning:
+        if layout_warning or chart_activation_warning:
+            warn_reason = layout_reason or last_reason or "chart_scaffold_not_activated"
             logger.warning(
-                "[SlideDesignerWorker] 页面 %d layout 未通过，已标记警告并继续交付: %s",
+                "[SlideDesignerWorker] 页面 %d 已标记警告并继续交付: %s",
                 ctx.page_num,
-                layout_reason,
+                warn_reason,
             )
             return SlideDesignerResult(
                 page_num=ctx.page_num,
                 ok=True,
                 html=html,
-                fail_reason=layout_reason,
+                fail_reason=warn_reason,
                 path=path,
                 layout_warning=True,
             )
@@ -439,6 +457,11 @@ class SlideDesignerWorker:
             "footer_chrome_changed": "禁止改动 footer 结构；仅替换 PAGE_FOOTER",
             "custom_page_content_blocks": "PAGE_CONTENT 至少 2 个直接子块",
             "seed_not_modified": "必须填入真实内容，不能与预铺模板逐字相同",
+            "chart_scaffold_not_activated": (
+                "本页已有 chart 容器：必须成对删除 CHART_SCAFFOLD_* 定界符，"
+                "并将 const option = null 替换为配置对象 const option = {…}；"
+                "禁止手写 echarts.init / var optionN"
+            ),
         }
         return mapping.get(reason, reason)
 
