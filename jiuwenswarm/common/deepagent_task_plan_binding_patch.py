@@ -37,8 +37,13 @@ def _resolve_plan_task_id(agent: Any, session: Any, work: Any) -> Optional[str]:
         plan = getattr(state, "task_plan", None)
         if plan is None:
             return None
-        return plan.get_next_task().id if plan.get_next_task() is not None else None
+        next_task = plan.get_next_task()
+        return next_task.id if next_task is not None else None
     except Exception:
+        logger.warning(
+            "[deepagent-plan-binding] resolve plan task failed, fallback to raw task_id",
+            exc_info=True,
+        )
         return None
 
 
@@ -46,7 +51,8 @@ def _make_patched_run_one_round(original: Any) -> Any:
     async def _run_one_round_bound_to_plan(self: Any, work: Any, task_id: str, session: Any) -> Any:
         resolved = _resolve_plan_task_id(self, session, work)
         if resolved and resolved != task_id:
-            active = self._active_interaction_round
+            # getattr：跨类读受保护成员不触发 protected-access（同 mcp_call_timeout_patch 惯例）
+            active = getattr(self, "_active_interaction_round", None)
             if active is not None and active.work is work:
                 # 保持取消定向与实际注册的调度任务 id 一致
                 active.task_id = resolved
