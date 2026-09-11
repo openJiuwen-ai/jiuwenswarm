@@ -9,6 +9,7 @@ from jiuwenswarm.common.reasoning_config import (
     reasoning_config_for_level,
     resolve_sampling_override,
 )
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
 
 
 def core_has_context_window_field() -> bool:
@@ -147,6 +148,10 @@ def build_reasoning_model_request_kwargs(
     model_config_obj: Any,
     model_name: str,
 ) -> dict[str, Any]:
+    # This is the shared model-construction path used by AgentServer, Gateway
+    # validation, TUI validation, AgentOS, and team models.  Installing here
+    # also covers processes that never import app_agentserver.
+    apply_provider_compat_patches()
     effective_model_name = _resolve_model_name(model_name, model_config_obj)
     reasoning_client_config = dict(model_client_config or {})
     if effective_model_name:
