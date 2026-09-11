@@ -256,7 +256,7 @@ const SessionGraphNode = ({ data }: NodeProps) => {
 
   return (
     <div
-      className="px-2.5 py-1 rounded-md border-2 border-indigo-500/40 bg-indigo-500/5 shadow-sm min-w-[90px]"
+      className="px-2.5 py-1 rounded-md border-2 border-accent/40 bg-accent/5 shadow-sm min-w-[90px]"
       data-testid="team-area-swarmflow-graph-node"
       data-variant="sessionNode"
     >
