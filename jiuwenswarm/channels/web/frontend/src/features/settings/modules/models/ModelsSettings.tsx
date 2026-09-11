@@ -369,7 +369,7 @@ export function ModelsSettings() {
             </Button>
           ) : null}
           <Button
-            icon={<settingsActionIcons.refresh aria-hidden />}
+            icon={<settingsActionIcons.test aria-hidden />}
             aria-label={t('settingsPanel.models.testConnection')}
             title={t('settingsPanel.models.testConnection')}
             loading={validationState === 'testing'}
