@@ -67,6 +67,24 @@ export interface AgentManagementClient {
   uninstallDefinition(id: string): Promise<{ notice?: string }>;
 }
 
+type AgentSelectionIdentity = Pick<AgentCatalogItem, 'id' | 'runtimePackageName'>;
+
+/** Chat selection is keyed by the runtime package; keep old asset-id selections visible. */
+export function getAgentSelectionId(item: AgentSelectionIdentity): string {
+  return item.runtimePackageName || item.id;
+}
+
+/** Prefer the current runtime identity before falling back to legacy asset ids. */
+export function findAgentSelection<T extends AgentSelectionIdentity>(
+  items: readonly T[],
+  selectedId: string | null | undefined,
+): T | null {
+  if (!selectedId) return null;
+  return items.find((item) => item.runtimePackageName === selectedId)
+    ?? items.find((item) => item.id === selectedId)
+    ?? null;
+}
+
 export function buildDefinitionSelectionPayload(intent: AgentSelectionIntent): Record<string, string> {
   if (intent.kind === 'select') {
     return { agent_template_name: intent.id };

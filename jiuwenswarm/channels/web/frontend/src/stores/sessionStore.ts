@@ -556,10 +556,10 @@ interface SessionState {
   removeEnabledMcp: (sessionId: string, mcpName: string) => void;
   /** 本会话启用MCP：清空 */
   clearEnabledMcps: (sessionId: string) => void;
-  /** 用后端的会话级装备快照恢复插件/MCP选择。 */
+  /** 用后端的会话级装备快照恢复 Agent、插件和 MCP 选择。 */
   restoreSessionEquipment: (
     sessionId: string,
-    equipment: { plugin_names?: string[]; mcp?: string[] },
+    equipment: { agent_template_name?: string; plugin_names?: string[]; mcp?: string[] },
   ) => void;
   addTeamMember: (sessionId: string, member: TeamMember) => void;
   updateTeamMemberStatus: (sessionId: string, memberId: string, newStatus: string, timestamp?: number) => void;
@@ -1295,13 +1295,22 @@ export const useSessionStore = create<SessionState>((set, get) => ({
         .map((value) => value.trim())
         .filter(Boolean),
     ));
+    const agentTemplateName = typeof equipment.agent_template_name === 'string'
+      ? equipment.agent_template_name.trim()
+      : null;
     set((state) => {
       const runtime = state.runtimes[sessionId] ?? createEmptyRuntime(sessionId);
+      const agentSelectionIntent = agentTemplateName !== null && runtime.agentSelectionIntent.kind === 'keep'
+        ? agentTemplateName
+          ? { kind: 'select' as const, id: agentTemplateName }
+          : { kind: 'keep' as const }
+        : runtime.agentSelectionIntent;
       return {
         runtimes: {
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
+            agentSelectionIntent,
             enabledPlugins: normalize(equipment.plugin_names),
             enabledMcps: normalize(equipment.mcp),
             extensionsHydrated: true,

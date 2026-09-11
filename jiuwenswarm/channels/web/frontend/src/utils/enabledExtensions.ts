@@ -68,7 +68,7 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
  */
 export function restoreSessionEquipment(
   sessionId: string,
-  equipment: { plugin_names?: string[]; mcp?: string[] },
+  equipment: { agent_template_name?: string; plugin_names?: string[]; mcp?: string[] },
 ): void {
   useSessionStore.getState().restoreSessionEquipment(sessionId, equipment);
 }
