@@ -66,7 +66,10 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     reset_free_search_runtime_flags,
 )
-from jiuwenswarm.server.runtime.a2ui.integration import finalize_assistant_response_if_a2ui
+from jiuwenswarm.server.runtime.a2ui.integration import (
+    finalize_assistant_response_if_a2ui,
+    is_a2ui_channel,
+)
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
@@ -320,6 +323,9 @@ _A2UI_STREAM_PARTIAL_MARKERS = (
     "dataModelUpdate",
     "deleteSurface",
 )
+# 过短 token（如 data、begin、<a、delete、surface）在普通 HTML/JS/JSON 中
+# 高频出现，不得命中半标记判定。8 是过滤所有已知误词的最小安全长度。
+_A2UI_PARTIAL_MARKER_MIN_LEN = 8
 _A2UI_PENDING_RENDER_DELTA = "<a2ui-json>\n"
 
 
@@ -413,7 +419,7 @@ def _looks_like_partial_a2ui_marker(value: Any) -> bool:
         if match is None:
             continue
         token = match.group(0)
-        if len(token) < 2:
+        if len(token) < _A2UI_PARTIAL_MARKER_MIN_LEN:
             continue
         rest = candidate[len(token):].strip()
         if rest and not any(marker.startswith(token + rest) for marker in _A2UI_STREAM_PARTIAL_MARKERS):
@@ -468,7 +474,7 @@ def _a2ui_marker_start(value: Any) -> int | None:
         if match is None:
             continue
         token = match.group(0)
-        if len(token) < 2:
+        if len(token) < _A2UI_PARTIAL_MARKER_MIN_LEN:
             continue
         rest = candidate[len(token):].strip()
         if rest and not any(marker.startswith(token + rest) for marker in _A2UI_STREAM_PARTIAL_MARKERS):
@@ -3208,6 +3214,7 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
+        a2ui_probe_enabled = is_a2ui_channel(cid)
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
@@ -3284,7 +3291,7 @@ class JiuWenSwarm:
 
                             payload_content = str(data.payload.get("content", ""))
                             a2ui_split = None
-                            if et in {"chat.delta", "chat.final"} and payload_content:
+                            if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
                                 a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
                                 a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
                             if _should_defer_a2ui_processing_status(
@@ -3486,7 +3493,7 @@ class JiuWenSwarm:
 
                         payload_content = str(data.get("content", ""))
                         a2ui_split = None
-                        if et in {"chat.delta", "chat.final"} and payload_content:
+                        if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
                             a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
                             a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
                         if _should_defer_a2ui_processing_status(
