@@ -32,6 +32,7 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
 
+from jiuwenswarm.common.tool_display import build_tool_display_name
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_skip_invoke_task_update_sync,
@@ -54,6 +55,38 @@ SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
 def get_current_task_id() -> str | None:
     """Return current task id for stream payload correlation."""
     return _ACTIVE_TASK_ID.get()
+
+
+_SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
+
+
+def overlay_serial_todo_statuses(
+    items: list[dict[str, Any]],
+    *,
+    done_statuses: frozenset[str] | None = None,
+) -> list[dict[str, Any]]:
+    """Hide out-of-order completed/in_progress rows from a UI snapshot.
+
+    RelayClaw treats only the last visible row as live and hides pending.
+    Showing a later completed item while an earlier one is still open
+    looks like the list is out of order. Shared by TaskExecutionRail
+    (task.update) and StreamEventRail (todo.updated).
+    """
+    done = done_statuses if done_statuses is not None else _SERIAL_TODO_DONE_STATUSES
+    overlay: list[dict[str, Any]] = []
+    found_open = False
+    for item in items:
+        copied = dict(item)
+        status = str(copied.get("status", "pending")).lower()
+        if status in done:
+            if found_open and status == "completed":
+                copied["status"] = "pending"
+        elif found_open:
+            copied["status"] = "pending"
+        else:
+            found_open = True
+        overlay.append(copied)
+    return overlay
 
 
 # 图像产物扩展名白名单
@@ -1312,6 +1345,12 @@ class TaskExecutionRail(DeepAgentRail):
         # supervisor round task 不继承请求任务的 ContextVar，且本 rail 先于
         # StreamEventRail 执行（priority 大者先），workspace 须从副本直读
         self._skill_turbo_request_metadata: dict | None = None
+        # 并行工作工具同时 auto_advance 写 todo.json 时串行化，避免丢更新
+        self._todo_write_lock = asyncio.Lock()
+        # 后项已在磁盘标 completed/in_progress、但前面还有未完成项时
+        # 暂不发 task.start/complete，等前缀完成后按列表顺序补发。
+        self._todo_complete_deferred: set[str] = set()
+        self._todo_start_deferred: set[str] = set()
 
     def set_skill_turbo_request_metadata(self, metadata: dict | None) -> None:
         """注入当前请求 metadata 副本，供 before_tool_call 解析请求级工作区。"""
@@ -1411,10 +1450,15 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_map_before_tool = {}
         self._active_tasks = {}
         self._todo_started = set()
+        self._todo_complete_deferred = set()
+        self._todo_start_deferred = set()
         self._tool_start_times = {}
         _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
             await self._init_task_tracking(ctx.session)
+            # 跨请求时实例上的 deferred 已被清空；从磁盘快照重建，
+            # 否则前缀完成后无法补发后项的 task.start/task.complete。
+            self._rebuild_serial_todo_deferred()
             has_active_tasks = any(
                 t.get("status") in ("pending", "in_progress")
                 for t in self._todo_map.values()
@@ -1490,7 +1534,11 @@ class TaskExecutionRail(DeepAgentRail):
                 workspace_base=self._resolve_metadata_workspace_base(),
             )
 
-        self._bind_context_to_in_progress_task()
+        target_id = self._resolve_work_tool_todo_id(ctx)
+        if target_id:
+            self._set_active_task_binding(target_id)
+        else:
+            self._bind_context_to_in_progress_task()
         if tool_name == "skill_acceleration_exec":
             # Rail callbacks and the tool body may run in copied Contexts.
             # Export only display ownership; this does not affect tool
@@ -1508,31 +1556,61 @@ class TaskExecutionRail(DeepAgentRail):
             await self._sync_todo_and_emit_transitions(ctx)
             return
 
-        await self._auto_advance_pending_to_in_progress(ctx)
+        if ctx.session is not None and not self._todo_map:
+            try:
+                items = self._load_todo_from_json(ctx.session.get_session_id())
+            except Exception:
+                items = []
+            if items:
+                self._todo_map = self._build_map_from_todo_items(items)
+
+        target_id = self._resolve_work_tool_todo_id(ctx)
+        await self._auto_advance_pending_to_in_progress(ctx, task_id=target_id)
         # todo_create 可能已把首项写成 in_progress，但故意未发 task.start；
         # 首个工作工具再懒启动，避免「只建待办 + 回复用户」时前端任务栈吞掉正文。
-        await self._lazy_start_in_progress_todo_on_work_tool(ctx)
+        await self._lazy_start_in_progress_todo_on_work_tool(
+            ctx, task_id=target_id,
+        )
+        if target_id:
+            self._set_active_task_binding(target_id)
 
         if tool_name in self.ARTIFACT_DETECTION_TOOLS:
             await self._trigger_artifact_hooks(ctx)
             return
 
     async def _auto_advance_pending_to_in_progress(
-        self, ctx: AgentCallbackContext
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        task_id: str | None = None,
     ) -> None:
-        """Auto-advance the current pending task to in_progress when a work tool is called.
+        """Auto-advance a pending todo to in_progress when a work tool is called.
 
-        When the LLM calls a non-todo work tool and the bound active task is still
-        ``pending``, we automatically transition it to ``in_progress`` — no
-        ``todo_modify`` call needed.  This eliminates todo-only LLM rounds that
-        would otherwise be spent just flipping status from pending to in_progress.
+        When the LLM calls a non-todo work tool and the bound (or matched)
+        task is still ``pending``, we automatically transition it to
+        ``in_progress`` — no ``todo_modify`` call needed.  This eliminates
+        todo-only LLM rounds that would otherwise be spent just flipping
+        status from pending to in_progress.
+
+        Tools may run in parallel; todo status stays serial. A later
+        pending item is not opened while an earlier item is still incomplete
+        (RelayClaw only lets the last visible row spin).
         """
-        active_id = _ACTIVE_TASK_ID.get()
-        if not active_id:
-            return
-        raw_id = active_id.removeprefix("todo:")
+        raw_id = (task_id or "").strip()
+        if not raw_id:
+            active_id = _ACTIVE_TASK_ID.get()
+            if not active_id:
+                return
+            raw_id = active_id.removeprefix("todo:")
         task = self._todo_map.get(raw_id)
         if not task or task.get("status") not in self._BINDING_PENDING:
+            return
+        if self._has_earlier_incomplete(raw_id, self._todo_map):
+            logger.info(
+                "[TaskExecutionRail] auto_advance skipped (serial todo): "
+                "task_id=%s",
+                raw_id,
+            )
             return
 
         session = ctx.session
@@ -1546,37 +1624,38 @@ class TaskExecutionRail(DeepAgentRail):
         if todo_path is None or not todo_path.exists():
             return
 
-        try:
-            with open(todo_path, "r", encoding="utf-8") as f:
-                items = json.load(f)
-            if not isinstance(items, list):
+        async with self._todo_write_lock:
+            try:
+                with open(todo_path, "r", encoding="utf-8") as f:
+                    items = json.load(f)
+                if not isinstance(items, list):
+                    return
+            except (OSError, ValueError):
                 return
-        except (OSError, ValueError):
-            return
 
-        changed = False
-        for item in items:
-            if item.get("id") == raw_id and str(
-                item.get("status", "pending")
-            ).lower() in self._BINDING_PENDING:
-                item["status"] = "in_progress"
-                changed = True
-                break
+            changed = False
+            for item in items:
+                if item.get("id") == raw_id and str(
+                    item.get("status", "pending")
+                ).lower() in self._BINDING_PENDING:
+                    item["status"] = "in_progress"
+                    changed = True
+                    break
 
-        if not changed:
-            return
+            if not changed:
+                return
 
-        try:
-            with open(todo_path, "w", encoding="utf-8") as f:
-                json.dump(items, f, ensure_ascii=False, indent=2)
-        except OSError:
-            logger.warning(
-                "[TaskExecutionRail] auto_advance: failed to write "
-                "todo.json session_id=%s task_id=%s",
-                session_id,
-                raw_id,
-            )
-            return
+            try:
+                with open(todo_path, "w", encoding="utf-8") as f:
+                    json.dump(items, f, ensure_ascii=False, indent=2)
+            except OSError:
+                logger.warning(
+                    "[TaskExecutionRail] auto_advance: failed to write "
+                    "todo.json session_id=%s task_id=%s",
+                    session_id,
+                    raw_id,
+                )
+                return
 
         if raw_id not in self._todo_started:
             task["status"] = "in_progress"
@@ -1598,7 +1677,10 @@ class TaskExecutionRail(DeepAgentRail):
         )
 
     async def _lazy_start_in_progress_todo_on_work_tool(
-        self, ctx: AgentCallbackContext
+        self,
+        ctx: AgentCallbackContext,
+        *,
+        task_id: str | None = None,
     ) -> None:
         """Emit deferred ``task.start`` when work begins on an in_progress todo.
 
@@ -1606,11 +1688,18 @@ class TaskExecutionRail(DeepAgentRail):
         ``task.start`` (see ``_sync_todo_and_emit_transitions``). The first
         non-todo work tool must open the UI task segment so subsequent tool /
         progress events still attach correctly.
+
+        Matched later todos keep event binding but do not emit ``task.start``
+        while an earlier item is still incomplete.
         """
         session = ctx.session
         if session is None:
             return
-        self._bind_context_to_in_progress_task()
+        raw_id = (task_id or "").strip()
+        if raw_id:
+            self._set_active_task_binding(raw_id)
+        else:
+            self._bind_context_to_in_progress_task()
         active_id = _ACTIVE_TASK_ID.get()
         if not active_id or not active_id.startswith("todo:"):
             return
@@ -1619,6 +1708,13 @@ class TaskExecutionRail(DeepAgentRail):
         if not task or str(task.get("status", "")).lower() != "in_progress":
             return
         if raw_id in self._todo_started:
+            return
+        if self._has_earlier_incomplete(raw_id, self._todo_map):
+            logger.info(
+                "[TaskExecutionRail] lazy_start skipped (serial todo): "
+                "task_id=%s",
+                raw_id,
+            )
             return
         parent_request_id = self._extract_request_id(ctx)
         await self._emit_task_start_event(
@@ -1802,6 +1898,7 @@ class TaskExecutionRail(DeepAgentRail):
                 "content": item.get(
                     "content", item.get("activeForm", "")
                 ),
+                "activeForm": str(item.get("activeForm", "") or ""),
                 "status": normalized_status,
                 "index": index,
                 "total": total,
@@ -1819,6 +1916,76 @@ class TaskExecutionRail(DeepAgentRail):
             not in TaskExecutionRail._TODO_DONE_STATUSES
             for task in todo_map.values()
         )
+
+    @staticmethod
+    def _iter_todos_by_index(
+        todo_map: dict[str, dict[str, Any]],
+    ) -> list[tuple[str, dict[str, Any]]]:
+        return sorted(
+            todo_map.items(),
+            key=lambda item: (int(item[1].get("index", 0)), item[0]),
+        )
+
+    def _has_earlier_incomplete(
+        self,
+        task_id: str,
+        todo_map: dict[str, dict[str, Any]],
+    ) -> bool:
+        """True when a lower-index todo is still pending/in_progress."""
+        current = todo_map.get(task_id)
+        if not current:
+            return False
+        try:
+            current_index = int(current.get("index", 0))
+        except (TypeError, ValueError):
+            current_index = 0
+        for other_id, task in todo_map.items():
+            if other_id == task_id:
+                continue
+            try:
+                other_index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                other_index = 0
+            if (other_index, other_id) >= (current_index, task_id):
+                continue
+            if str(task.get("status", "")).lower() not in self._TODO_DONE_STATUSES:
+                return True
+        return False
+
+    def _overlay_serial_todo_statuses(
+        self,
+        items: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        """Hide out-of-order completed/in_progress rows from the UI snapshot."""
+        return overlay_serial_todo_statuses(
+            items, done_statuses=self._TODO_DONE_STATUSES
+        )
+
+    def _rebuild_serial_todo_deferred(self) -> None:
+        """Restore deferred start/complete from disk after a new invoke.
+
+        ``before_invoke`` clears in-memory deferred sets. Later items that
+        were already completed (or opened) while an earlier item is still
+        open must be re-queued so ``_flush_serial_todo_transitions`` can
+        emit ``task.start`` / ``task.complete`` in list order.
+        """
+        self._todo_complete_deferred = set()
+        self._todo_start_deferred = set()
+        for task_id, task in self._iter_todos_by_index(self._todo_map):
+            if not self._has_earlier_incomplete(task_id, self._todo_map):
+                continue
+            status = str(task.get("status", "")).lower()
+            if status == "completed":
+                self._todo_complete_deferred.add(task_id)
+            elif status == "in_progress":
+                self._todo_start_deferred.add(task_id)
+        if self._todo_start_deferred or self._todo_complete_deferred:
+            logger.info(
+                "[TaskExecutionRail] rebuilt serial deferred: "
+                "start=%s complete=%s",
+                sorted(self._todo_start_deferred),
+                sorted(self._todo_complete_deferred),
+            )
 
     # ------------------------------------------------------------------
     # State transition detection + event emission
@@ -1838,6 +2005,10 @@ class TaskExecutionRail(DeepAgentRail):
           without start/complete the stage is invisible until the frozen
           completed snapshot appears after the run finishes.
         Always emits task.update (full snapshot) at the end.
+
+        Later items that become in_progress/completed while an earlier item
+        is still open do not emit start/complete; task.update overlays them
+        as pending until the prefix is done.
 
         ``todo_create`` always marks the first item ``in_progress`` and tells
         the model to execute immediately. Emitting ``task.start`` at create
@@ -1868,10 +2039,11 @@ class TaskExecutionRail(DeepAgentRail):
         previous_map = self._todo_map_before_tool or self._todo_map
 
         completed_in_batch: list[str] = []
-        for task_id, current in current_map.items():
+        for task_id, current in self._iter_todos_by_index(current_map):
             prev = previous_map.get(task_id)
             prev_status = prev.get("status", "") if prev else ""
             curr_status = current.get("status", "")
+            blocked = self._has_earlier_incomplete(task_id, current_map)
 
             if (
                 curr_status == "in_progress"
@@ -1881,6 +2053,14 @@ class TaskExecutionRail(DeepAgentRail):
                     logger.info(
                         "[TaskExecutionRail] todo_create: defer task.start "
                         "for in_progress task_id=%s session_id=%s",
+                        task_id,
+                        session_id,
+                    )
+                elif blocked:
+                    self._todo_start_deferred.add(task_id)
+                    logger.info(
+                        "[TaskExecutionRail] serial todo: defer task.start "
+                        "task_id=%s session_id=%s",
                         task_id,
                         session_id,
                     )
@@ -1898,6 +2078,17 @@ class TaskExecutionRail(DeepAgentRail):
                 and prev_status != "completed"
             ):
                 completed_in_batch.append(task_id)
+                if blocked:
+                    self._todo_complete_deferred.add(task_id)
+                    logger.info(
+                        "[TaskExecutionRail] serial todo: defer "
+                        "task.start+task.complete: %s prev_status=%r "
+                        "session_id=%s",
+                        task_id,
+                        prev_status,
+                        session_id,
+                    )
+                    continue
                 # Include deferred todo_create in_progress (never emitted start):
                 # frontend still needs start+complete for a visible completed row.
                 if task_id not in self._todo_started:
@@ -1924,6 +2115,12 @@ class TaskExecutionRail(DeepAgentRail):
                     status="succeeded",
                     parent_request_id=parent_request_id,
                 )
+                self._todo_complete_deferred.discard(task_id)
+
+        if not defer_start_on_create:
+            await self._flush_serial_todo_transitions(
+                ctx.session, current_map, parent_request_id,
+            )
 
         self._todo_map = current_map
         self._todo_map_before_tool = {}
@@ -1941,6 +2138,54 @@ class TaskExecutionRail(DeepAgentRail):
         await self._emit_task_update_event(
             ctx.session, parent_request_id
         )
+
+    async def _flush_serial_todo_transitions(
+        self,
+        session: Session,
+        current_map: dict[str, dict[str, Any]],
+        parent_request_id: str,
+    ) -> None:
+        """Start/complete todos whose earlier prefix just became done."""
+        for task_id, current in self._iter_todos_by_index(current_map):
+            if self._has_earlier_incomplete(task_id, current_map):
+                continue
+            status = str(current.get("status", "")).lower()
+            if (
+                status == "in_progress"
+                and task_id in self._todo_start_deferred
+                and task_id not in self._todo_started
+            ):
+                await self._emit_task_start_event(
+                    session,
+                    task_id,
+                    current,
+                    parent_request_id,
+                    source="todo",
+                )
+                self._todo_started.add(task_id)
+                self._todo_start_deferred.discard(task_id)
+            elif (
+                status == "completed"
+                and task_id in self._todo_complete_deferred
+            ):
+                if task_id not in self._todo_started:
+                    await self._emit_task_start_event(
+                        session,
+                        task_id,
+                        current,
+                        parent_request_id,
+                        source="todo",
+                    )
+                    self._todo_started.add(task_id)
+                await self._emit_task_complete_event(
+                    session,
+                    task_id,
+                    current,
+                    status="succeeded",
+                    parent_request_id=parent_request_id,
+                )
+                self._todo_complete_deferred.discard(task_id)
+                self._todo_start_deferred.discard(task_id)
 
     async def _emit_task_start_event(
         self,
@@ -2087,6 +2332,7 @@ class TaskExecutionRail(DeepAgentRail):
                     continue
                 filtered.append(item)
             todo_items = filtered
+        todo_items = self._overlay_serial_todo_statuses(todo_items)
         todo_tasks = self._format_tasks_for_update(
             todo_items, source="todo"
         )
@@ -2148,18 +2394,27 @@ class TaskExecutionRail(DeepAgentRail):
     ) -> list[dict[str, Any]]:
         """Format todo items into task dicts for task.update payload."""
         formatted: list[dict[str, Any]] = []
-        for item in items:
+        for index, item in enumerate(items):
             task_id = str(
                 item.get("id", item.get("idx", ""))
             )
+            raw_index = item.get("index", item.get("idx"))
+            try:
+                task_index = int(raw_index) if raw_index is not None else index
+            except (TypeError, ValueError):
+                task_index = index
+            mapped = self._todo_map.get(task_id)
+            if mapped and raw_index is None:
+                try:
+                    task_index = int(mapped.get("index", index))
+                except (TypeError, ValueError):
+                    task_index = index
             task: dict[str, Any] = {
                 "task_id": task_id,
                 "task_content": item.get(
                     "content", item.get("activeForm", "")
                 ),
-                "task_index": item.get(
-                    "index", item.get("idx", 0)
-                ),
+                "task_index": task_index,
                 "source": source,
                 "status": item.get("status", "pending"),
             }
@@ -2200,6 +2455,103 @@ class TaskExecutionRail(DeepAgentRail):
         if pending:
             return pending[0][1]
         return None
+
+    @staticmethod
+    def _normalize_todo_match_text(value: Any) -> str:
+        return re.sub(r"\s+", "", str(value or "")).casefold()
+
+    def _parse_work_tool_args(self, ctx: AgentCallbackContext) -> dict[str, Any]:
+        args = getattr(ctx.inputs, "tool_args", None)
+        if args is None:
+            tool_call = getattr(ctx.inputs, "tool_call", None)
+            args = getattr(tool_call, "arguments", None) if tool_call else None
+        if isinstance(args, str):
+            try:
+                parsed = json.loads(args)
+            except (TypeError, ValueError):
+                return {}
+            return parsed if isinstance(parsed, dict) else {}
+        return args if isinstance(args, dict) else {}
+
+    def _work_tool_match_hints(
+        self, ctx: AgentCallbackContext
+    ) -> tuple[str, str, str]:
+        """Return (display_name, skill_name, tool_name) for todo matching."""
+        tool_call = getattr(ctx.inputs, "tool_call", None)
+        tool_name = str(
+            getattr(ctx.inputs, "tool_name", "")
+            or getattr(tool_call, "name", "")
+            or ""
+        )
+        args = self._parse_work_tool_args(ctx)
+        display_name = ""
+        if tool_call is not None:
+            display_name = str(getattr(tool_call, "display_name", "") or "").strip()
+        if not display_name:
+            display_name = build_tool_display_name(tool_name, args).strip()
+        skill_name = str(
+            args.get("skill_name") or args.get("skill") or ""
+        ).strip()
+        return display_name, skill_name, tool_name
+
+    def _score_todo_tool_match(
+        self,
+        task: dict[str, Any],
+        display_name: str,
+        skill_name: str,
+    ) -> int:
+        todo_text = self._normalize_todo_match_text(
+            f"{task.get('content', '')} {task.get('activeForm', '')}"
+        )
+        if not todo_text:
+            return 0
+        score = 0
+        content = self._normalize_todo_match_text(task.get("content", ""))
+        display = self._normalize_todo_match_text(display_name)
+        matched_content = False
+        if display and content:
+            matched_content = content in display or display in content
+        if matched_content:
+            score += 100
+        elif display and len(display) >= 4:
+            if display in todo_text or todo_text in display:
+                score += 80
+        skill = self._normalize_todo_match_text(skill_name)
+        if skill and len(skill) >= 3 and skill in todo_text:
+            score += 50
+        return score
+
+    def _resolve_work_tool_todo_id(
+        self, ctx: AgentCallbackContext
+    ) -> str | None:
+        """Match a work tool to a pending/in_progress todo.
+
+        Prefer display_name / skill_name overlap so parallel tools bind
+        events to the matching list item instead of the first in_progress
+        todo. Matching does not open extra in_progress rows; unmatched
+        tools keep the original first-active binding.
+        """
+        display_name, skill_name, _tool_name = self._work_tool_match_hints(ctx)
+        scored: list[tuple[int, int, int, str]] = []
+        for task_id, task in self._todo_map.items():
+            status = str(task.get("status", "")).lower()
+            if status in self._TODO_DONE_STATUSES:
+                continue
+            if status not in (self._BINDING_IN_PROGRESS | self._BINDING_PENDING):
+                continue
+            score = self._score_todo_tool_match(task, display_name, skill_name)
+            if score <= 0:
+                continue
+            pending_bonus = 1 if status in self._BINDING_PENDING else 0
+            try:
+                index = int(task.get("index", 0))
+            except (TypeError, ValueError):
+                index = 0
+            scored.append((score, pending_bonus, -index, str(task_id)))
+        if scored:
+            scored.sort(reverse=True)
+            return scored[0][3]
+        return self._pick_task_id_for_binding()
 
     def _pick_next_pending_after(
         self, completed_task_id: str
