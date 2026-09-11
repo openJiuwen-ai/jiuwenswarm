@@ -234,6 +234,12 @@ CREATE TABLE IF NOT EXISTS trajectory_blobs (
     blob_hash  TEXT PRIMARY KEY,
     content    BLOB NOT NULL,
     byte_size  INTEGER NOT NULL,
+    -- When this content was first referenced. A reader resuming from a
+    -- revision already holds everything first seen at or before it, so this
+    -- is what lets one response carry only what is new to that reader.
+    -- Unlike created_at it is never refreshed: it states first sight, not
+    -- last use.
+    first_change_seq INTEGER NOT NULL DEFAULT 0,
     created_at INTEGER NOT NULL
 );
 
@@ -275,6 +281,12 @@ _CURRENT_RAW_SIZE = "COALESCE(NULLIF(current.raw_size_bytes, 0), LENGTH(current.
 # compresses several-fold. Level 3 sits at the knee of the curve for this data:
 # measured against real payloads it reaches 3.7x for 0.65 ms per record, where
 # level 6 spends 1.35 ms to reach 4.1x. Decompression costs 0.07 ms either way.
+# SQLite's default bound-variable limit is 999; stay well inside it when
+# fetching the elements one page of records refers to.
+# The reference format Agent Core writes in place of a restated attribute.
+_SEQUENCE_REFERENCE_PREFIX = "@oj-seq"
+_SEQUENCE_REFERENCE_VERSION = "1"
+_SEQUENCE_FETCH_CHUNK = 400
 _PAYLOAD_COMPRESSION_LEVEL = 3
 # Every uncompressed payload is a JSON object, so its first byte distinguishes
 # it from a zlib stream without a version column or a migration.
@@ -746,10 +758,20 @@ class TrajectoryStore:
                         record.created_at,
                     )
         if blobs:
+            # The batch's own watermark. Stamping the highest committed change
+            # of this batch keeps first_change_seq at or above the revision of
+            # every record that referenced the content here, so a reader
+            # resuming from an earlier revision is never told it already has
+            # something it does not.
+            row = connection.execute(
+                "SELECT COALESCE(MAX(change_seq), 0) AS seq FROM trajectory_changes"
+            ).fetchone()
+            batch_change_seq = int(row["seq"]) if row is not None else 0
             connection.executemany(
                 """
-                INSERT INTO trajectory_blobs (blob_hash, content, byte_size, created_at)
-                VALUES (?, ?, ?, ?)
+                INSERT INTO trajectory_blobs (
+                    blob_hash, content, byte_size, first_change_seq, created_at
+                ) VALUES (?, ?, ?, ?, ?)
                 ON CONFLICT(blob_hash) DO UPDATE SET created_at = excluded.created_at
                 """,
                 [
@@ -757,6 +779,7 @@ class TrajectoryStore:
                         blob_hash,
                         sqlite3.Binary(_encode_payload(content)),
                         len(content),
+                        batch_change_seq,
                         created_at,
                     )
                     for blob_hash, (content, created_at) in blobs.items()
@@ -1745,6 +1768,99 @@ class AsyncTrajectoryReader:
             "max_projected_raw_bytes": byte_budget,
         }
 
+    async def resolve_sequences(
+        self,
+        session_id: str,
+        seq_hashes: Sequence[str],
+        *,
+        since_revision: int = 0,
+    ) -> dict[str, Any] | None:
+        """Resolve chains into their elements, and the content a reader lacks.
+
+        The walk is one recursive query over every requested chain at once,
+        and it deduplicates as it goes: several spans of one conversation
+        share a prefix, so that prefix is visited once however many of them
+        asked for it.
+
+        Args:
+            session_id: Session owning the chains.
+            seq_hashes: Chain heads to resolve.
+            since_revision: Revision the reader already holds. Content first
+                seen at or before it is assumed present and is not resent;
+                a reader that lost its cache asks for it by hash instead.
+
+        Returns:
+            ``sequences`` mapping each head to its element hashes in order,
+            and ``blobs`` mapping hash to content for what the reader lacks.
+        """
+        wanted = [h for h in dict.fromkeys(seq_hashes) if h]
+        if not wanted:
+            return {"sequences": {}, "blobs": {}}
+        connection = await self._connect(session_id)
+        if connection is None:
+            return None
+        try:
+            placeholders = ",".join("?" for _ in wanted)
+            async with connection.execute(
+                f"""
+                WITH RECURSIVE reachable(seq_hash, prev_hash, blob_hash, depth) AS (
+                    SELECT seq_hash, prev_hash, blob_hash, depth
+                    FROM trajectory_sequences
+                    WHERE seq_hash IN ({placeholders})
+                    UNION
+                    SELECT s.seq_hash, s.prev_hash, s.blob_hash, s.depth
+                    FROM trajectory_sequences AS s
+                    JOIN reachable AS r ON s.seq_hash = r.prev_hash
+                )
+                SELECT seq_hash, prev_hash, blob_hash, depth FROM reachable
+                """,
+                tuple(wanted),
+            ) as statement:
+                rows = await statement.fetchall()
+            nodes = {
+                str(row["seq_hash"]): (
+                    None if row["prev_hash"] is None else str(row["prev_hash"]),
+                    str(row["blob_hash"]),
+                )
+                for row in rows
+            }
+            sequences: dict[str, list[str]] = {}
+            needed: list[str] = []
+            for head in wanted:
+                elements: list[str] = []
+                cursor = head
+                # Walking in memory costs one dictionary lookup per element,
+                # and a chain that lost an ancestor simply stops early rather
+                # than looping.
+                while cursor is not None and cursor in nodes:
+                    previous, blob_hash = nodes[cursor]
+                    elements.append(blob_hash)
+                    cursor = previous
+                elements.reverse()
+                if elements:
+                    sequences[head] = elements
+                    needed.extend(elements)
+            blobs: dict[str, str] = {}
+            unique_needed = list(dict.fromkeys(needed))
+            for start in range(0, len(unique_needed), _SEQUENCE_FETCH_CHUNK):
+                chunk = unique_needed[start:start + _SEQUENCE_FETCH_CHUNK]
+                marks = ",".join("?" for _ in chunk)
+                async with connection.execute(
+                    f"""
+                    SELECT blob_hash, content, first_change_seq
+                    FROM trajectory_blobs
+                    WHERE blob_hash IN ({marks}) AND first_change_seq > ?
+                    """,
+                    (*chunk, max(0, int(since_revision))),
+                ) as statement:
+                    for row in await statement.fetchall():
+                        blobs[str(row["blob_hash"])] = _decode_payload(
+                            row["content"]
+                        ).decode("utf-8", "replace")
+        finally:
+            await connection.close()
+        return {"sequences": sequences, "blobs": blobs}
+
     async def get_stream_frames(
         self,
         session_id: str,
@@ -2234,12 +2350,64 @@ def _trace_summary_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     }
 
 
+def _parse_sequence_reference(value: object) -> tuple[str, int] | None:
+    """Return the chain a stored attribute names, or None for a plain value."""
+    if not isinstance(value, str) or not value.startswith(_SEQUENCE_REFERENCE_PREFIX):
+        return None
+    parts = value.split(":")
+    if len(parts) != 4 or parts[1] != _SEQUENCE_REFERENCE_VERSION:
+        return None
+    try:
+        depth = int(parts[3])
+    except ValueError:
+        return None
+    if not parts[2] or depth < 0:
+        return None
+    return parts[2], depth
+
+
+def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
+    """Return the chains one record refers to, keyed by attribute.
+
+    A reader compares these hashes against what it already holds: an equal
+    hash means the attribute did not change, so nothing about it needs to be
+    fetched, parsed or projected again.
+    """
+    references: dict[str, dict[str, Any]] = {}
+    if not isinstance(otlp, dict):
+        return references
+    for resource_span in otlp.get("resourceSpans") or ():
+        if not isinstance(resource_span, dict):
+            continue
+        for scope_span in resource_span.get("scopeSpans") or ():
+            if not isinstance(scope_span, dict):
+                continue
+            for span in scope_span.get("spans") or ():
+                if not isinstance(span, dict):
+                    continue
+                for attribute in span.get("attributes") or ():
+                    if not isinstance(attribute, dict):
+                        continue
+                    value = attribute.get("value")
+                    if not isinstance(value, dict):
+                        continue
+                    parsed = _parse_sequence_reference(value.get("stringValue"))
+                    if parsed is None:
+                        continue
+                    references[str(attribute.get("key") or "")] = {
+                        "hash": parsed[0],
+                        "depth": parsed[1],
+                    }
+    return references
+
+
 def _detail_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     raw_json = _decode_payload(row["raw_json"])
     try:
         otlp = _strict_otlp_payload(raw_json)
     except (RecursionError, TypeError, ValueError, OverflowError):
         otlp = None
+    references = _record_sequence_references(otlp)
     return {
         "ingest_seq": int(row["ingest_seq"]),
         "change_seq": int(row["ingest_seq"]),
@@ -2253,6 +2421,7 @@ def _detail_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
         "raw_size_bytes": int(row["raw_size_bytes"]),
         "otlp": otlp,
         "raw_valid": otlp is not None,
+        **({} if not references else {"sequences": references}),
     }
 
 

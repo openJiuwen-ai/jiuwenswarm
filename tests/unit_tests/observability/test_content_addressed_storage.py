@@ -170,3 +170,84 @@ def test_retention_keeps_content_that_is_still_being_restated(tmp_path: Path) ->
         store.close()
 
     assert counts == (1, 1)
+
+
+async def _resolve(database_path: Path, heads: list[str], *, since: int = 0):
+    from jiuwenswarm.observability.store import AsyncTrajectoryReader
+
+    reader = AsyncTrajectoryReader(database_path, session_scoped=False)
+    return await reader.resolve_sequences("session-1", heads, since_revision=since)
+
+
+def test_a_chain_resolves_into_its_elements_in_order(tmp_path: Path) -> None:
+    import asyncio
+
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    sequence = _sequence("gen_ai.input.messages", ["one", "two", "three"])
+    try:
+        store.write_records([_record("a" * 16, sequence)], ())
+    finally:
+        store.close()
+
+    resolved = asyncio.run(_resolve(database_path, [sequence.seq_hash]))
+
+    elements = resolved["sequences"][sequence.seq_hash]
+    assert [resolved["blobs"][element] for element in elements] == ["one", "two", "three"]
+
+
+def test_a_resumed_reader_is_not_sent_what_it_already_holds(tmp_path: Path) -> None:
+    """The reader's revision decides what crosses the wire, not the page size."""
+    import asyncio
+
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    try:
+        early = _sequence("gen_ai.input.messages", ["one", "two"])
+        store.write_records([_record("a" * 16, early)], ())
+        grown = _sequence("gen_ai.input.messages", ["one", "two", "three"])
+        store.write_records([_record("b" * 16, grown)], ())
+    finally:
+        store.close()
+
+    connection = sqlite3.connect(database_path)
+    try:
+        first_batch = int(
+            connection.execute(
+                "SELECT MIN(first_change_seq) FROM trajectory_blobs"
+            ).fetchone()[0]
+        )
+    finally:
+        connection.close()
+
+    cold = asyncio.run(_resolve(database_path, [grown.seq_hash]))
+    resumed = asyncio.run(_resolve(database_path, [grown.seq_hash], since=first_batch))
+
+    # The chain is stated in full either way; only its content is withheld.
+    assert cold["sequences"][grown.seq_hash] == resumed["sequences"][grown.seq_hash]
+    assert len(cold["blobs"]) == 3
+    assert set(resumed["blobs"]) == {grown.nodes[-1].blob_hash}
+    test_logger.info("resumed read carried %d of %d elements", len(resumed["blobs"]), 3)
+
+
+def test_sequences_shared_by_several_records_are_walked_once(tmp_path: Path) -> None:
+    """Spans sharing a prefix resolve together without repeating it."""
+    import asyncio
+
+    database_path = tmp_path / "trajectory.sqlite3"
+    store = TrajectoryStore(database_path)
+    store.initialize()
+    short = _sequence("gen_ai.input.messages", ["one", "two"])
+    long = _sequence("gen_ai.input.messages", ["one", "two", "three", "four"])
+    try:
+        store.write_records([_record("a" * 16, short), _record("b" * 16, long)], ())
+    finally:
+        store.close()
+
+    resolved = asyncio.run(_resolve(database_path, [short.seq_hash, long.seq_hash]))
+
+    assert resolved["sequences"][short.seq_hash] == resolved["sequences"][long.seq_hash][:2]
+    # Four distinct elements back two chains of two and four.
+    assert len(resolved["blobs"]) == 4

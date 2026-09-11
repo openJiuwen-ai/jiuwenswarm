@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -48,6 +48,10 @@ _MAX_SQLITE_INTEGER = (1 << 63) - 1
 # them: a reader returning after a disconnect closes the gap in few
 # round trips instead of many.
 _MAX_FRAME_PAGE = 2000
+# A chain hash is a sha256 in hex.
+_SEQUENCE_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_MAX_SEQUENCE_REQUEST = 200
+
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
 
@@ -261,12 +265,42 @@ class TrajectoryHttpService:
             )
         if result is None:
             return _error_response("subject not found", "NOT_FOUND", 404)
+        # One page states its records as references and resolves them once,
+        # so content several records share crosses the wire a single time and
+        # content the reader already holds does not cross it at all.
+        heads = sorted({
+            str(reference.get("hash") or "")
+            for record in result.get("records", ())
+            for reference in (record.get("sequences") or {}).values()
+            if reference.get("hash")
+        })
+        resolved: dict[str, Any] = {"sequences": {}, "blobs": {}}
+        if heads:
+            try:
+                found = await self._reader_for(settings).resolve_sequences(
+                    session_id,
+                    heads,
+                    since_revision=since_revision,
+                )
+            except Exception:
+                logger.exception(
+                    "Trajectory sequence resolution failed: session_id=%s",
+                    session_id,
+                )
+                return _error_response(
+                    "trajectory query failed",
+                    "TRAJECTORY_QUERY_FAILED",
+                    500,
+                )
+            if found is not None:
+                resolved = found
         return _json_response(
             {
                 "schema_version": 1,
                 "session_id": session_id,
                 "subject_id": normalized_subject_id,
                 **result,
+                **resolved,
             }
         )
 
@@ -322,6 +356,55 @@ class TrajectoryHttpService:
                 **result,
             }
         )
+
+    async def get_sequences(
+        self,
+        session_id: str,
+        seq_hashes: Sequence[str],
+        *,
+        since_revision: int = 0,
+    ) -> Response:
+        """Resolve chains by hash, for a reader whose cache lost them.
+
+        The page read already carries what a reader following along needs.
+        This is the path back for one that does not have it: a reload, a
+        second device, an entry expired from the browser's cache.
+        """
+        settings = self.settings
+        error = self._validate_access(session_id, settings)
+        if error is not None:
+            return error
+        requested = [str(value or "").strip() for value in seq_hashes]
+        requested = [value for value in requested if value]
+        if not requested:
+            return _error_response("at least one sequence hash is required", "BAD_REQUEST", 400)
+        if len(requested) > _MAX_SEQUENCE_REQUEST:
+            return _error_response(
+                f"at most {_MAX_SEQUENCE_REQUEST} sequences per request",
+                "BAD_REQUEST",
+                400,
+            )
+        if any(_SEQUENCE_HASH_PATTERN.fullmatch(value) is None for value in requested):
+            return _error_response("invalid sequence hash", "BAD_REQUEST", 400)
+        try:
+            resolved = await self._reader_for(settings).resolve_sequences(
+                session_id,
+                requested,
+                since_revision=max(0, int(since_revision)),
+            )
+        except Exception:
+            logger.exception(
+                "Trajectory sequence query failed: session_id=%s",
+                session_id,
+            )
+            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+        if resolved is None:
+            return _error_response("session not found", "NOT_FOUND", 404)
+        return _json_response({
+            "schema_version": 1,
+            "session_id": session_id,
+            **resolved,
+        })
 
     async def get_raw_record(
         self,
@@ -530,6 +613,28 @@ def attach_trajectory_routes(
             session_id,
             since_frame_seq=parsed_since,
             limit=parsed_limit,
+        )
+
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/sequences")
+    async def get_trajectory_sequences(
+        session_id: str,
+        request: Request,
+        hashes: str = Query(default=""),
+        since_revision: str = Query(default="0"),
+    ) -> Response:
+        """Resolve content-addressed chains a reader no longer holds."""
+        request.state.trajectory_route_handled = True
+        origin_error = _validate_http_origin(request)
+        if origin_error is not None:
+            return origin_error
+        parsed_since = _parse_integer_query(since_revision)
+        if parsed_since is None:
+            return _error_response("since_revision must be an integer", "BAD_REQUEST", 400)
+        requested = [value for value in hashes.split(",") if value]
+        return await service.get_sequences(
+            session_id,
+            requested,
+            since_revision=parsed_since,
         )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive")
