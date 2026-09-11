@@ -99,6 +99,21 @@ from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
+
+# AgentSSAS: 可选导入 AgentSSASSecurityRail
+_SSAS_AVAILABLE = True
+try:
+    from agent_ssas.core.framework.config.settings import AgentSSASConfig
+    from agent_ssas.backend_client.openjiuwen.factory import create_agent_ssas_rail
+    from agent_ssas.backend_client.openjiuwen.agent_ssas_security_rail import AgentSSASSecurityRail
+except ImportError as _ssas_import_exc:
+    _SSAS_AVAILABLE = False
+    AgentSSASSecurityRail = None  # type: ignore[assignment,misc]
+    # 模块级 logger 尚未定义,此处必须内联获取,确保 fail-open 不因日志而崩溃
+    logging.getLogger(__name__).warning(
+        "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not loaded: %s",
+        _ssas_import_exc,
+    )
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
 from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
@@ -1738,6 +1753,8 @@ class JiuWenSwarmDeepAdapter:
         self._personal_context_rail: PersonalContextRail | None = None
         self._personal_context_rail_lock = asyncio.Lock()
         self._security_rail: SecurityRail | None = None
+        # AgentSSAS: 安全态势感知 Rail
+        self._ssas_rail: "AgentSSASSecurityRail | None" = None
         self._memory_rail: MemoryRail | None = None
         self._external_memory_rail: Any = None
         self._external_memory_rail_registered: bool = False
@@ -7632,6 +7649,49 @@ class JiuWenSwarmDeepAdapter:
             security_prompt_rail = None
         return security_prompt_rail
 
+    @staticmethod
+    def _build_ssas_rail(config_base: dict[str, Any] | None = None) -> "AgentSSASSecurityRail | None":
+        """Build AgentSSASSecurityRail (AgentSSAS)."""
+        if not _SSAS_AVAILABLE:
+            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not available (agent-ssas not installed)")
+            return None
+        try:
+            config_base = config_base or get_config()
+            ssas_cfg = config_base.get("ssas", {}) if isinstance(config_base, dict) else {}
+            if ssas_cfg.get("enabled", False) is not True:
+                logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail disabled by config")
+                return None
+            ssas_config = AgentSSASConfig.from_dict(ssas_cfg)
+            # 同步创建 backend: INPROCESS 模式直接构造 + initialize
+            from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
+            from agent_ssas.core.framework.access_adapter.agent_remote_backend import AgentSSASRemoteBackend
+            from agent_ssas.core.framework.config.settings import AgentSSASMode
+            if ssas_config.mode == AgentSSASMode.HTTP:
+                backend = AgentSSASRemoteBackend(ssas_config)
+            else:
+                backend = AgentSSASBackend(ssas_config)
+                # initialize() 是 async, 在同步上下文中用事件循环驱动
+                import asyncio
+                try:
+                    loop = asyncio.get_event_loop()
+                    if loop.is_running():
+                        # 已在事件循环中, 创建 task 但不 await (fire-and-forget 初始化)
+                        asyncio.ensure_future(backend.initialize())
+                    else:
+                        loop.run_until_complete(backend.initialize())
+                except RuntimeError:
+                    # 没有事件循环, 创建新的
+                    asyncio.run(backend.initialize())
+            rail = AgentSSASSecurityRail(
+                backend=backend,
+                policy_name=ssas_config.decision_policy,
+            )
+            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s", ssas_config.mode, ssas_config.decision_policy)
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create failed: %s", exc)
+            return None
+
     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
     _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
@@ -8256,6 +8316,11 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
+            _RailBuildInfo(
+                "_ssas_rail",
+                self._build_ssas_rail,
+                {"config_base": config_base},
+            ),
             _RailBuildInfo(
                 "_model_anomaly_detection_rail",
                 self._build_model_anomaly_detection_rail,

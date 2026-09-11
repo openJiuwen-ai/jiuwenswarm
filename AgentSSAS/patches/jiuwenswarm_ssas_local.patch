@@ -1,0 +1,163 @@
+diff --git a/jiuwenswarm/resources/config.yaml b/jiuwenswarm/resources/config.yaml
+index fe3042a68..f9e050e4f 100644
+--- a/jiuwenswarm/resources/config.yaml
++++ b/jiuwenswarm/resources/config.yaml
+@@ -731,6 +731,41 @@ execution_guard:
+     # 未知/错误工具连续调用达到该次数时停止重试并中断
+     unknown_tool_threshold: 10
+ 
++# AgentSSAS 安全态势感知系统配置
++ssas:
++  # 总开关. 关闭后不注册 AgentSSASSecurityRail
++  enabled: true
++  # 运行模式: inprocess (进程内) / http (独立 HTTP 服务)
++  mode: inprocess
++  # HTTP 模式配置 (mode=http 时生效)
++  http_endpoint: "http://localhost:8443"
++  http_timeout: 5.0
++  http_token:
++  http_host: "0.0.0.0"
++  http_port: 8443
++  # 存储配置 (遵循 JIUWENSWARM_HOME 约定)
++  ssas_home:
++  storage_backend: sqlite
++  event_ttl_days: 30
++  alert_ttl_days: 90
++  # Rail 配置
++  rail_priority: 80
++  enable_exception_hooks: true
++  # 风险报告阈值: safe / low / medium / high / critical
++  risk_report_threshold: low
++  # auth 模式超时 (秒)
++  auth_timeout: 2.0
++  # AgentSSASSecurityRail 决策策略:
++  # - observe_only: 全部放行 (仅感知)
++  # - active_protection: 按风险等级处理 (critical->阻断, high/medium/low->告警)
++  # 策略定义在 AgentSSAS 的 decision_policies.yaml 中
++  decision_policy: observe_only
++  # 检测模块配置覆盖 (可覆盖 module.yaml 的 enabled 字段)
++  modules:
++    # test_detection 默认 disabled, 测试时设为 true 启用
++    test_detection:
++      enabled: false
++
+ channels:
+   web:
+     send_file_allowed: true
+diff --git a/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py b/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+index 961f35d92..e6958fbad 100644
+--- a/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
++++ b/jiuwenswarm/server/runtime/agent_adapter/interface_deep.py
+@@ -87,6 +87,21 @@ from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
+ from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
+ from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
+ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
++
++# AgentSSAS: 可选导入 AgentSSASSecurityRail
++_SSAS_AVAILABLE = True
++try:
++    from agent_ssas.core.framework.config.settings import AgentSSASConfig
++    from agent_ssas.backend_client.openjiuwen.factory import create_agent_ssas_rail
++    from agent_ssas.backend_client.openjiuwen.agent_ssas_security_rail import AgentSSASSecurityRail
++except ImportError as _ssas_import_exc:
++    _SSAS_AVAILABLE = False
++    AgentSSASSecurityRail = None  # type: ignore[assignment,misc]
++    # 模块级 logger 尚未定义,此处必须内联获取,确保 fail-open 不因日志而崩溃
++    logging.getLogger(__name__).warning(
++        "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not loaded: %s",
++        _ssas_import_exc,
++    )
+ from openjiuwen.harness.subagents.research_agent import build_research_agent_config
+ from openjiuwen.harness.tools import (
+     WebFetchWebpageTool,
+@@ -1247,6 +1262,8 @@ class JiuWenSwarmDeepAdapter:
+         self._personal_context_rail: PersonalContextRail | None = None
+         self._personal_context_rail_lock = asyncio.Lock()
+         self._security_rail: SecurityRail | None = None
++        # AgentSSAS: 安全态势感知 Rail
++        self._ssas_rail: "AgentSSASSecurityRail | None" = None
+         self._memory_rail: MemoryRail | None = None
+         self._external_memory_rail: Any = None
+         self._external_memory_rail_registered: bool = False
+@@ -5559,6 +5576,49 @@ class JiuWenSwarmDeepAdapter:
+             security_prompt_rail = None
+         return security_prompt_rail
+ 
++    @staticmethod
++    def _build_ssas_rail(config_base: dict[str, Any] | None = None) -> "AgentSSASSecurityRail | None":
++        """Build AgentSSASSecurityRail (AgentSSAS)."""
++        if not _SSAS_AVAILABLE:
++            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail not available (agent-ssas not installed)")
++            return None
++        try:
++            config_base = config_base or get_config()
++            ssas_cfg = config_base.get("ssas", {}) if isinstance(config_base, dict) else {}
++            if ssas_cfg.get("enabled", False) is not True:
++                logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail disabled by config")
++                return None
++            ssas_config = AgentSSASConfig.from_dict(ssas_cfg)
++            # 同步创建 backend: INPROCESS 模式直接构造 + initialize
++            from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
++            from agent_ssas.core.framework.access_adapter.agent_remote_backend import AgentSSASRemoteBackend
++            from agent_ssas.core.framework.config.settings import AgentSSASMode
++            if ssas_config.mode == AgentSSASMode.HTTP:
++                backend = AgentSSASRemoteBackend(ssas_config)
++            else:
++                backend = AgentSSASBackend(ssas_config)
++                # initialize() 是 async, 在同步上下文中用事件循环驱动
++                import asyncio
++                try:
++                    loop = asyncio.get_event_loop()
++                    if loop.is_running():
++                        # 已在事件循环中, 创建 task 但不 await (fire-and-forget 初始化)
++                        asyncio.ensure_future(backend.initialize())
++                    else:
++                        loop.run_until_complete(backend.initialize())
++                except RuntimeError:
++                    # 没有事件循环, 创建新的
++                    asyncio.run(backend.initialize())
++            rail = AgentSSASSecurityRail(
++                backend=backend,
++                policy_name=ssas_config.decision_policy,
++            )
++            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s", ssas_config.mode, ssas_config.decision_policy)
++            return rail
++        except Exception as exc:
++            logger.warning("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create failed: %s", exc)
++            return None
++
+     # 重索引延时（秒）：embedding 配置变更后，延后这段时间再跑一次全量重索引。
+     # 配合 _schedule_memory_reindex 的 debounce，连续改多次只在最后一次后跑一次。
+     _MEMORY_REINDEX_DELAY_SECONDS: float = 5.0
+@@ -6098,6 +6158,11 @@ class JiuWenSwarmDeepAdapter:
+             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
+             _RailBuildInfo("_task_planning_rail", self._build_task_planning_rail),
+             _RailBuildInfo("_security_rail", self._build_security_rail),
++            _RailBuildInfo(
++                "_ssas_rail",
++                self._build_ssas_rail,
++                {"config_base": config_base},
++            ),
+             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+             _RailBuildInfo(
+                 "_model_anomaly_detection_rail",
+diff --git a/pyproject.toml b/pyproject.toml
+index 31251d34a..1965ce024 100644
+--- a/pyproject.toml
++++ b/pyproject.toml
+@@ -56,6 +56,7 @@ dependencies = [
+     "tree-sitter-bash>=0.25.0,<0.26.0",
+     "playwright>=1.40,<2",
+     "uv>=0.4.0,<0.13",
++    "agent-ssas>=0.1.0,<0.2",
+ ]
+ 
+ [project.optional-dependencies]
+@@ -184,6 +185,7 @@ default-groups = ['dev']
+ [tool.uv.sources]
+ workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
+ openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "develop" }
++agent-ssas = { path = "../AgentSecurity/AgentSSAS", editable = true }
+ 
+ [dependency-groups]
+ # Testing (keep in sync with optional-dependencies.test)
