@@ -186,7 +186,17 @@ def _projection_record() -> dict[str, Any]:
 
 
 @pytest.fixture
-def a2a_receiver() -> Iterator[tuple[TestClient, dict[str, Any], _Secrets]]:
+def a2a_receiver(monkeypatch: pytest.MonkeyPatch) -> Iterator[tuple[TestClient, dict[str, Any], _Secrets]]:
+    from jiuwenswarm.gateway.a2a_manager.outbound.discovery import A2AOutboundDiscoveryService
+
+    async def resolve(host, _port):
+        return ["8.8.8.8" if host == "gateway.test" else host]
+
+    routers = import_manager_config_receiver_module("routers.template_routers")
+    monkeypatch.setattr(
+        routers, "A2AOutboundDiscoveryService",
+        lambda: A2AOutboundDiscoveryService(address_resolver=resolve),
+    )
     store = InMemoryPersistentBackend()
     repos = create_enterprise_record_repositories(store)
     set_enterprise_record_repositories(repos)
@@ -730,6 +740,7 @@ async def test_enterprise_dispatch_updates_shared_runtime_state() -> None:
         task="weather",
         mode="sync",
         source_session_id="session-1",
+        source_user_id="user-1",
     )
 
     assert result["status"] == A2AOutboundDispatchStatus.COMPLETED.value
@@ -762,6 +773,7 @@ async def test_enterprise_dispatch_records_unreachable_runtime_state() -> None:
         task="weather",
         mode="sync",
         source_session_id="session-1",
+        source_user_id="user-1",
     )
 
     assert result["status"] == A2AOutboundDispatchStatus.DISPATCH_FAILED.value
@@ -988,3 +1000,62 @@ async def test_enterprise_projection_fails_closed_for_invalid_resource_or_policy
     )
 
     assert await projection.resolve_effective_a2a_agent_ids("missing") == frozenset()
+
+
+@pytest.mark.parametrize("host", ["10.0.0.8", "8.8.8.8", "127.0.0.1", "169.254.169.254", "100.64.0.1"])
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("flags", [
+    (False, False, False), (True, True, False), (True, False, True),
+    (False, True, True), (True, True, True),
+])
+def test_credential_receiver_network_policy(a2a_receiver, host, scheme, flags):
+    _, _, secrets = a2a_receiver
+    app_module = import_manager_config_receiver_module("http.app")
+    policy = dict(zip(("allow_http", "allow_private_network", "allow_public_http"), flags))
+    payload = _outbound_payload()
+    payload["data"] = {"network_policy": policy}
+    allowed = (
+        (host == "8.8.8.8" or (host == "10.0.0.8" and flags[1]))
+        and (scheme == "https" or (flags[0] and (host != "8.8.8.8" or flags[2])))
+    )
+    with TestClient(app_module.create_app(), base_url=f"{scheme}://{host}") as client:
+        response = client.post("/api/v1/a2a-outbound-templates", json=payload)
+    assert response.status_code == (200 if allowed else 400)
+    assert bool(secrets.values) is allowed
+
+
+@pytest.mark.parametrize("location", ["header", "query", "cookie"])
+def test_api_key_scheme_survives_persistence_and_builds_auth(a2a_receiver, location):
+    from jiuwenswarm.gateway.a2a_manager.outbound.credentials import A2AOutboundCredentialStore
+    from jiuwenswarm.gateway.a2a_manager.outbound.models import sanitize_persisted_value
+
+    client, repos, _ = a2a_receiver
+    payload = _outbound_payload()
+    payload["agent_card"]["securitySchemes"] = {
+        "ingress": {"apiKeySecurityScheme": {
+            "location": location, "name": "X-API-Key", "api_key": "must-redact",
+        }},
+    }
+    payload["agent_card"]["securityRequirements"] = [{"schemes": {"ingress": []}}]
+    path = "/api/v1/a2a-outbound-templates"
+    assert client.post(path, json=payload).status_code == 200
+    stored = repos["a2a_outbound_template"]
+    row = client.portal.call(lambda: stored.get(template_id="a2a-weather"))
+    scheme = row["agent_card"]["securitySchemes"]["ingress"]["apiKeySecurityScheme"]
+    assert scheme == {"location": location, "name": "X-API-Key", "api_key": "******"}
+    card = sanitize_persisted_value(row["agent_card"])
+    assert card == row["agent_card"]
+    credential = A2AOutboundCredentialStore().get(row["credential_ref"])
+    assert credential == "secret"
+    headers, params, cookies = A2AOutboundDispatcher._credential_transport_options(card, credential)
+    assert {"header": headers, "query": params, "cookie": cookies}[location] == {
+        "X-API-Key": "secret",
+    }
+    # Replaying a complete Card repairs an already-redacted stored definition.
+    broken = {**card, "securitySchemes": {"ingress": {"apiKeySecurityScheme": "******"}}}
+    client.portal.call(lambda: stored.update(
+        {"template_id": "a2a-weather"}, {"agent_card": broken},
+    ))
+    assert client.post(path, json=payload).status_code == 200
+    restored = client.portal.call(lambda: stored.get(template_id="a2a-weather"))
+    assert restored["agent_card"] == card

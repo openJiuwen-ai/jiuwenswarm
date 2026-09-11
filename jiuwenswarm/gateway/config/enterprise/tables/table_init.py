@@ -13,6 +13,7 @@ from .a2a_models import (
     A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
     A2A_OUTBOUND_USER_STATE_TABLE_DEF,
 )
+from .a2a_migration import ensure_dispatch_user_column
 from .application_config_models import (
     LOG_MASKING_RULE_TABLE_DEF,
     LOGGING_CONFIG_TABLE_DEF,
@@ -68,4 +69,6 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
 async def init_all_tables(handler: DBHandler) -> None:
     """对已连接的 ``handler`` 依次 ``init_table``，幂等（表已存在则跳过创建逻辑）。"""
     for table_def in ALL_TABLE_DEFINITIONS:
+        if table_def is A2A_OUTBOUND_DISPATCH_TABLE_DEF:
+            await ensure_dispatch_user_column(handler.get_engine())
         await handler.init_table(table_def)

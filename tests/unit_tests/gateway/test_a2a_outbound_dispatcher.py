@@ -893,6 +893,7 @@ async def test_dispatch_query_is_scoped_to_originating_session() -> None:
         mode="async",
         source_session_id="s1",
         source_resource_id="resource-1",
+        source_user_id="user-1",
     )
 
     with pytest.raises(A2AOutboundError) as error:
@@ -904,17 +905,125 @@ async def test_dispatch_query_is_scoped_to_originating_session() -> None:
     repository.manager_owned = True
     with pytest.raises(A2AOutboundError) as error:
         await dispatcher.query_dispatch(
-            accepted["dispatch_id"], source_session_id="s1"
+            accepted["dispatch_id"], source_session_id="s1", source_user_id="user-1"
         )
     assert error.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
 
     with pytest.raises(A2AOutboundError) as error:
         await dispatcher.query_dispatch(
             accepted["dispatch_id"],
-            source_session_id="s1",
+            source_session_id="s1", source_user_id="user-1",
             source_resource_id="resource-2",
         )
     assert error.value.code is A2AOutboundErrorCode.DISPATCH_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_enterprise_dispatch_requires_user_and_hides_other_and_legacy_records():
+    client = _FakeClient([_task_event(TaskState.TASK_STATE_SUBMITTED)])
+    dispatcher, repository = await _dispatcher(client)
+    repository.manager_owned = True
+    with pytest.raises(A2AOutboundError) as error:
+        await dispatcher.dispatch(
+            agent_id="agent-1",
+            task="work",
+            mode="async",
+            source_session_id="s1",
+            source_resource_id="r1",
+        )
+    assert error.value.code is A2AOutboundErrorCode.USER_IDENTITY_REQUIRED
+    assert client.sent_requests == []
+    assert await repository.count_dispatches() == 0
+    accepted = await dispatcher.dispatch(
+        agent_id="agent-1",
+        task="work",
+        mode="async",
+        source_session_id="s1",
+        source_resource_id="r1",
+        source_user_id="alice",
+    )
+    record = await repository.get_dispatch(accepted["dispatch_id"])
+    assert record.source_user_id == "alice"
+    await repository.create_dispatch(
+        replace(record, dispatch_id="legacy", source_user_id=None)
+    )
+    await repository.transition_dispatch(
+        record.dispatch_id, A2AOutboundDispatchStatus.COMPLETED
+    )
+    for method in (dispatcher.query_dispatch, dispatcher.cancel_dispatch):
+        for dispatch_id, user in [(record.dispatch_id, "bob"), ("legacy", "alice")]:
+            with pytest.raises(A2AOutboundError) as error:
+                await method(
+                    dispatch_id,
+                    source_session_id="s1",
+                    source_resource_id="r1",
+                    source_user_id=user,
+                )
+            assert error.value.code is A2AOutboundErrorCode.DISPATCH_NOT_FOUND
+        with pytest.raises(A2AOutboundError) as error:
+            await method(
+                record.dispatch_id, source_session_id="s1", source_resource_id="r1"
+            )
+        assert error.value.code is A2AOutboundErrorCode.USER_IDENTITY_REQUIRED
+    own = await dispatcher.query_dispatch(
+        record.dispatch_id,
+        source_session_id="s1",
+        source_resource_id="r1",
+        source_user_id="alice",
+    )
+    assert own["dispatch_id"] == record.dispatch_id
+    assert client.get_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [A2A_TOOL_DISPATCH_TASK, A2A_TOOL_GET_DISPATCH])
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_enterprise_reverse_rpc_uses_context_user_not_tool_params(
+    monkeypatch, method, fallback
+):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    calls, replies = [], []
+
+    class Manager:
+        async def outbound_dispatch_task(self, **kwargs):
+            calls.append(kwargs)
+            return {}
+
+        outbound_get_dispatch = outbound_dispatch_task
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = Manager()
+    handler._active_a2a_outbound_tool_tasks = {}
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    chunk = SimpleNamespace(
+        channel_id="web",
+        payload={
+            "id": "rpc-user",
+            "method": method,
+            "params": {"resource_id": "r1", "user_id": "bob", "source_user_id": "bob"},
+        },
+    )
+    metadata = {"user_id": "alice", "routing": {"bot_id": "r1"}}
+    handler._stream_sessions = {"active": "s1"}
+    handler._stream_channels = {"active": "web"}
+    handler._stream_metadata = {"active": metadata}
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk, session_id="s1", request_metadata=None if fallback else metadata
+    )
+    assert calls[-1]["source_user_id"] == "alice"
+    metadata.pop("user_id")
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk, session_id="s1", request_metadata=None if fallback else metadata
+    )
+    assert len(calls) == 1
+    assert (
+        replies[-1].params["response"]["error"]["data"]["code"]
+        == "A2A_USER_IDENTITY_REQUIRED"
+    )
 
 
 class _Backend:
@@ -1894,7 +2003,7 @@ async def test_enterprise_cancel_call_binds_identity_via_active_calls(
         replies.append(message)
 
     handler.publish_user_messages = publish
-    metadata = {"routing": {"bot_id": "resource-1"}}
+    metadata = {"user_id": "user-1", "routing": {"bot_id": "resource-1"}}
     dispatch_chunk = SimpleNamespace(
         payload={
             "id": "rpc-dispatch",

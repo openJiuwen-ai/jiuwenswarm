@@ -475,10 +475,16 @@ class A2AOutboundRegistry:
             raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
         return item.to_record()
 
-    async def list_dispatches(self, *, limit: int = 200) -> dict[str, Any]:
+    async def list_dispatches(
+        self, *, limit: int = 200, source_user_id: str | None = None
+    ) -> dict[str, Any]:
         normalized_limit = max(1, min(int(limit), 200))
-        records = await self._repository.list_dispatches(limit=normalized_limit)
-        total = await self._repository.count_dispatches()
+        if getattr(self._repository, "manager_owned", False) and not source_user_id:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        records = await self._repository.list_dispatches(
+            limit=normalized_limit, source_user_id=source_user_id
+        )
+        total = await self._repository.count_dispatches(source_user_id=source_user_id)
         items = []
         for item in records:
             items.append(

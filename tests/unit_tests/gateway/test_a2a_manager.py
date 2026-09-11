@@ -976,12 +976,14 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
         task="work",
         mode="sync",
         source_session_id="session-1",
+        source_user_id="user-1",
         source_resource_id="resource-1",
     )
     assert dispatched["source_resource_id"] == "resource-1"
     queried = await manager.outbound_get_dispatch(
         dispatch_id="dispatch-1",
         source_session_id="session-1",
+        source_user_id="user-1",
         source_resource_id="resource-1",
     )
     assert queried["source_resource_id"] == "resource-1"
@@ -990,6 +992,7 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
         await manager.outbound_get_dispatch(
             dispatch_id="dispatch-1",
             source_session_id="session-1",
+            source_user_id="user-1",
             source_resource_id="",
         )
     assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
@@ -998,6 +1001,7 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
         await manager.outbound_dispatch_get(
             "dispatch-1",
             source_session_id="session-1",
+            source_user_id="user-1",
             source_resource_id=None,
         )
     assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
@@ -1008,6 +1012,7 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
             task="work",
             mode="sync",
             source_session_id="session-1",
+            source_user_id="user-1",
             source_resource_id="resource-1",
         )
     assert exc_info.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
@@ -1022,6 +1027,7 @@ async def test_enterprise_outbound_tools_enforce_resource_policy(
                 task="work",
                 mode="sync",
                 source_session_id="session-1",
+                source_user_id="user-1",
                 source_resource_id="resource-1",
             )
         assert exc_info.value.code is expected_code
