@@ -1208,6 +1208,33 @@ class AgentManager:
                         exc,
                     )
 
+    def mark_session_adapters_stale_for_config(
+        self,
+        config_base: dict[str, Any] | None,
+        env_overrides: dict[str, Any] | None = None,
+    ) -> None:
+        """Mark every cached agent's session adapters stale for lazy reload.
+
+        Used by permissions mutations so the next chat turn reloads the
+        session-scoped adapter from the latest config even if the background
+        parent ``reload_agents_config`` has not finished yet.
+        """
+        if not isinstance(config_base, dict):
+            return
+        for channel_agents in list(self.agents.values()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for agent in list(channel_agents.values()):
+                mark = getattr(agent, "_mark_session_adapters_stale_for_reload", None)
+                if callable(mark):
+                    try:
+                        mark(config_base, env_overrides)
+                    except Exception as exc:  # noqa: BLE001
+                        logger.debug(
+                            "[AgentManager] mark session adapters stale failed: %s",
+                            exc,
+                        )
+
     async def reload_agents_config(
         self,
         config,
