@@ -114,6 +114,12 @@ class HttpHubTransport:
         if response.status_code == 404:
             raise HubNotFoundError("SkillHub 资源不存在")
         if not response.is_success:
+            # 透传上游响应体前 300 字符，便于排查配置错误（如 401 认证失败时显示具体原因）。
+            detail = (response.text or "").strip()[:300]
+            if detail:
+                raise HubProtocolError(
+                    f"Team Skills Hub API 错误 HTTP {response.status_code}: {detail}"
+                )
             raise HubProtocolError(
                 f"Team Skills Hub API 错误 HTTP {response.status_code}"
             )
