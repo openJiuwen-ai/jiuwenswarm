@@ -13,6 +13,7 @@ import logging
 import os
 import re
 import stat
+import sys
 import tempfile
 import threading
 import time
@@ -73,6 +74,7 @@ from jiuwenswarm.common.local_env_config import (
     get_task_env_overlay,
     parse_default_headers,
 )
+from jiuwenswarm.common.platform import is_ohos_runtime
 from jiuwenswarm.common.utils import (
     JIUWENSWARM_SHARED_SKILLS_DIRS_ENV,
     get_shared_agent_skills_dirs,
@@ -620,6 +622,20 @@ def _build_deepresearch_child_env(
     env = build_child_env(executable)
     env["PYTHONUNBUFFERED"] = "1"
     env["PYTHONUTF8"] = "1"
+    # OHOS: the agentserver resolves ``jiuwenswarm`` via cwd / vendor-tree
+    # injection (the HNP bundle keeps it outside site-packages), while this
+    # child starts in script mode (sys.path[0] = the script dir) and the spawn
+    # allowlist never forwards PYTHONPATH - so ``import jiuwenswarm`` would
+    # fail with ModuleNotFoundError on device. Forward the live sys.path
+    # verbatim so the child resolves modules exactly like the agentserver
+    # process (vendor tree + HNP site-packages + cwd).
+    if is_ohos_runtime():
+        child_pythonpath = os.pathsep.join(p for p in sys.path if p)
+        if child_pythonpath:
+            inherited = env.get("PYTHONPATH", "")
+            env["PYTHONPATH"] = (
+                f"{child_pythonpath}{os.pathsep}{inherited}" if inherited else child_pythonpath
+            )
     return env
 
 

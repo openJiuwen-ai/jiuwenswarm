@@ -465,6 +465,7 @@ class JiuwenBoxRunner:
                 "TEMP", "TMP", "USERPROFILE", "LOCALAPPDATA", "APPDATA",
                 "HOME", "LANG", "LC_ALL", "LC_CTYPE",
                 "PYTHONIOENCODING",
+                "JIUWENSWARM_RUNTIME_PLATFORM", "JIUWENCLAW_RUNTIME_PLATFORM",
                 "JIUWENCLAW_DATA_DIR", "OFFICE_CLAW_DATA_DIR",
                 "JIUWENSWARM_DATA_DIR", "JIUWENSWARM_HOME",
                 "CLAW_PYTHON_HOME", "JIUWENCLAW_BASE_PYTHON",

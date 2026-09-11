@@ -22,6 +22,7 @@ from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRout
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.common.platform import is_ohos_runtime
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
 
@@ -176,6 +177,16 @@ class _CronToolsCronBackend(CronToolBackend):
         return list(rows or [])
 
     async def run_now(self, job_id: str) -> str:
+        # Relay/HarmonyOS starts an Agent-side scheduler for each tenant. On
+        # OHOS there is no Gateway websocket, so prefer triggering that
+        # scheduler directly so the unified cron tool's action=run works.
+        if is_ohos_runtime():
+            ensure_scheduler = getattr(self._cron_tools, "ensure_scheduler", None)
+            scheduler = await ensure_scheduler() if ensure_scheduler is not None else None
+            if scheduler is not None:
+                run_id = await scheduler.trigger_run_now(job_id)
+                return str(run_id or "")
+
         token = self._cron_tools.push_cron_route(CronToolRoute())
         try:
             run_result = await self._cron_tools.run_now(job_id)

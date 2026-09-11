@@ -25,6 +25,7 @@ from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, r
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
+from jiuwenswarm.common.platform import is_ohos_runtime, sandbox_supported
 from jiuwenswarm.common.utils import (
     get_agent_sessions_dir,
     get_config_file,
@@ -606,6 +607,17 @@ class AgentWebSocketServer:
           产品起不来, 也无从修复)。
         """
         try:
+            # OHOS (HNP) 运行时: 无 jiuwenbox 宿主能力, 直接跳过 auto-start,
+            # 与 sandbox_supported()=False 的平台判定保持一致。
+            if is_ohos_runtime() or not sandbox_supported():
+                logger.info(
+                    "[sandbox_lifecycle] skipping jiuwenbox auto-start: "
+                    "sandbox is unsupported on runtime platform %r",
+                    os.environ.get("JIUWENSWARM_RUNTIME_PLATFORM")
+                    or os.environ.get("JIUWENCLAW_RUNTIME_PLATFORM")
+                    or sys.platform,
+                )
+                return
             # 非 Linux/Windows 平台直接跳过 auto-start: jiuwenbox 依赖平台专属
             # 内核能力 (Linux: bwrap/Landlock/命名空间; Windows: win_setup 用户
             # 创建 + WFP + ACL), 其它平台 (macOS 等) 起不来; 即便 spawn 成功后续
