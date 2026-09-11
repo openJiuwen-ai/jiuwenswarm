@@ -110,12 +110,14 @@ class _ProductionSearchCallbacks:
     ) -> None:
         self.queue_rail = queue_rail
         self.permission_rail = permission_rail
+        self.contexts: list[AgentCallbackContext] = []
 
     async def execute(
         self,
         event: AgentCallbackEvent,
         ctx: AgentCallbackContext,
     ) -> None:
+        self.contexts.append(ctx)
         if event is AgentCallbackEvent.BEFORE_TOOL_CALL:
             await self.queue_rail.before_tool_call(ctx)
             await self.permission_rail.before_tool_call(ctx)
@@ -341,9 +343,16 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
 
     assert fetch_result[0][0] == "fetched"
     assert len(reviewer.requests) == 1
-    metadata = parent.extra["permission_reviewer_metadata_by_tool_call_id"][
+    fetch_context = next(
+        ctx
+        for ctx in reversed(callbacks.contexts)
+        if getattr(getattr(ctx.inputs, "tool_call", None), "id", None)
+        == "call-fetch"
+    )
+    metadata = fetch_context.extra["permission_reviewer_metadata_by_tool_call_id"][
         "call-fetch"
     ]
+    assert "permission_reviewer_metadata_by_tool_call_id" not in parent.extra
     assert metadata["decision_source"] == "deterministic_bounded_scope"
     assert metadata["host_route_source"] == "recent_search_result"
     assert metadata["reviewer_called"] is False
