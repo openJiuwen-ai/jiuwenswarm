@@ -35,6 +35,8 @@
   - [编码记忆](编码记忆.md)
   - [技能系统](技能.md)
   - [技能交响乐：技能检索、编排与分发](symphony-技能编排与分发.md)
+  - [专家图谱与专家团](专家图谱与专家团.md)
+  - [WorkBuddy 专家团动态调度技术调研](WorkBuddy专家团动态调度技术调研.md)
   - [Team Skills 团队技能](SwarmSkills.md)
   - [Skill 自演进](Skill自演进.md)
   - [智能体与工作区](智能体.md)
