@@ -834,6 +834,12 @@ class AgentOSRouterClient(AgentServerClient):
         AgentCreateFailed until process restart. Drop only FAILED here so
         chat can cold-start; leave READY if create succeeded and only
         instance WS warmup failed.
+
+        The whole warmup (create + instance WS) holds one task_count via
+        acquire=True so the disconnect cleanup / idle reaper cannot delete
+        the sandbox mid-warmup (create done but WS not yet established).
+        Released at warmup terminal state; afterwards protection is the
+        normal "connection online" semantics.
         """
         if self._closed:
             return
@@ -848,9 +854,15 @@ class AgentOSRouterClient(AgentServerClient):
                 user_id,
                 agent_type,
                 creator=self._create_agent,
-                acquire=False,
+                acquire=True,
             )
-            await self._get_ws_client(runtime)
+            try:
+                await self._get_ws_client(runtime)
+            finally:
+                # 预热终态（WS 就绪或失败）即释放：在途窗口 task_count>0
+                # 保护实例不被断开清理误删；释放后保护职责交还给
+                # “连接在线”语义（连接数>0 期间清理本就不触发）。
+                await self._agent_manager.release(runtime.key)
         except Exception:
             logger.warning(
                 "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
