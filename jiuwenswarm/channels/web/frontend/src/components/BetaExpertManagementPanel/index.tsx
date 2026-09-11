@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CheckCircle2, PackageCheck, Play, Search, Sparkles, Network, Users, Workflow } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Crown, PackageCheck, Play, Search, Sparkles, Network, Users, Workflow } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
 import { buildBetaExpertCallChain, normalizeBetaExpertCatalog, type BetaExpertCatalogItem } from '../../features/betaExpertCatalog';
@@ -108,6 +108,7 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
     const audiences = fallbackAudiences(selected);
     const deliverables = fallbackDeliverables(selected);
     const callChain = buildBetaExpertCallChain(selected);
+    const teamWorkers = selected.members.filter(member => member.role !== 'lead');
     return (
       <section ref={panelRef} className="beta-experts beta-experts--detail">
         <div className="beta-experts__detail-wrap">
@@ -162,7 +163,13 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
               <Workflow size={20} />
               <div>
                 <h2>完成方式</h2>
-                <p>{callChain.length > 0 ? `${callChain.length} 个步骤连续协作，一句话即可启动` : '根据任务自动规划并交付成品'}</p>
+                <p>
+                  {selected.type === 'team'
+                    ? `主理人理解需求，按需选择 ${Math.max(1, teamWorkers.length)} 位成员中的最小充分组合`
+                    : callChain.length > 0
+                      ? `${callChain.length} 个 Skill 由专家自动编排，一句话即可启动`
+                      : '根据任务自动规划并交付成品'}
+                </p>
               </div>
             </article>
           </div>
@@ -178,11 +185,31 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
             </div>
           </div>
 
-          {callChain.length > 0 && (
+          {selected.type === 'team' && selected.members.length > 0 && (
             <div className="beta-experts__section">
               <div className="beta-experts__section-heading">
-                <h2>{selected.type === 'team' ? '专家协作链' : 'Skill 调用链'}</h2>
-                <span>{selected.type === 'team' ? '按专家团工作流展示真实成员的协作顺序' : '名称原样读取自包内 SKILL.md，按专家编排顺序展示'}</span>
+                <h2>团队成员</h2>
+                <span>主理人会根据 Query 选择一位或多位成员，不要求全员依次执行</span>
+              </div>
+              <div className="beta-experts__member-pool">
+                {selected.members.map(member => (
+                  <div key={member.id}>
+                    <span>{member.role === 'lead' ? <Crown size={15} /> : <Users size={15} />}</span>
+                    <div>
+                      <strong>{member.name}</strong>
+                      <p>{member.description || (member.role === 'lead' ? '理解任务、选择成员并汇总交付' : '被选中时完成对应专业工作')}</p>
+                    </div>
+                  </div>
+                ))}
+              </div>
+            </div>
+          )}
+
+          {selected.type !== 'team' && callChain.length > 0 && (
+            <div className="beta-experts__section">
+              <div className="beta-experts__section-heading">
+                <h2>Skill 调用链</h2>
+                <span>名称原样读取自包内 SKILL.md，由专家在内部完成编排</span>
               </div>
               <div className="beta-experts__skill-chain">
                 {callChain.map((step, index) => (

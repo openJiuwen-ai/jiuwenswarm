@@ -3,7 +3,7 @@ import test from 'node:test';
 
 import {
   isExpertTeamCandidateInstalled,
-  layoutExpertGraph,
+  filterExpertGraph,
   normalizeExpertGraph,
   normalizeExpertTeamCandidates,
   normalizeExpertTeamMaterialization,
@@ -53,21 +53,30 @@ test('normalizeExpertGraph accepts snake case aliases and removes dangling edges
   assert.deepEqual(graph?.edges, []);
 });
 
-test('layoutExpertGraph places a directed chain from left to right', () => {
+test('filterExpertGraph applies confidence and keeps matching experts with their direct neighbors', () => {
   const graph = normalizeExpertGraph({
     graph: {
-      nodes: [{ id: 'a' }, { id: 'b' }, { id: 'c' }],
+      nodes: [
+        { id: 'a', name: '数据洞察', skills: ['spreadsheet'] },
+        { id: 'b', name: '营销策划' },
+        { id: 'c', name: '旅行手帐' },
+      ],
       edges: [
-        { source: 'a', target: 'b', type: 'can_feed' },
-        { source: 'b', target: 'c', type: 'can_feed' },
+        { source: 'a', target: 'b', type: 'can_feed', confidence: 0.92 },
+        { source: 'b', target: 'c', type: 'can_feed', confidence: 0.4 },
       ],
     },
   });
   assert.ok(graph);
-  const positioned = layoutExpertGraph(graph);
-  const byId = new Map(positioned.map(node => [node.id, node]));
-  assert.ok(byId.get('a').x < byId.get('b').x);
-  assert.ok(byId.get('b').x < byId.get('c').x);
+  const visible = filterExpertGraph(graph, 'spreadsheet', 0.5);
+  assert.deepEqual(
+    visible.nodes.map(node => node.id),
+    ['a', 'b'],
+  );
+  assert.deepEqual(
+    visible.edges.map(edge => `${edge.source}:${edge.target}`),
+    ['a:b'],
+  );
 });
 
 test('normalizeExpertTeamCandidates handles workflow objects and score bounds', () => {
@@ -87,6 +96,67 @@ test('normalizeExpertTeamCandidates handles workflow objects and score bounds', 
   assert.equal(candidates.length, 1);
   assert.equal(candidates[0].score, 100);
   assert.deepEqual(candidates[0].workflow, ['先分析数据', '营销策划专家 接收上一步交付并继续处理', 'data → campaign']);
+});
+
+test('normalizeExpertTeamCandidates prefers manager routing policy, member profiles, and route examples', () => {
+  const [candidate] = normalizeExpertTeamCandidates({
+    candidates: [
+      {
+        id: 'content-team',
+        memberIds: ['researcher', 'writer', 'designer'],
+        leaderId: 'researcher',
+        routingPolicy: {
+          mode: 'leader_selected',
+          minSelected: 1,
+          maxSelected: 2,
+          selection: 'minimal_sufficient',
+          allowSingleMember: true,
+          allowParallel: true,
+          allowSerial: false,
+        },
+        memberProfiles: [
+          { expertId: 'researcher', displayName: '研究员', role: 'lead', capabilities: ['调研'] },
+          { expertId: 'writer', displayName: '写作专家', capabilities: ['写作'] },
+        ],
+        routeExamples: [
+          {
+            id: 'research-write',
+            type: 'serial',
+            title: '研究后写作',
+            intent: '产出有依据的文章',
+            selectedMemberIds: ['researcher', 'writer'],
+            steps: ['先调研', '再写作'],
+            relationEdgeIds: ['researcher-writer'],
+          },
+        ],
+      },
+    ],
+  });
+
+  assert.deepEqual(candidate.routingPolicy, {
+    mode: 'leader_selected',
+    minSelected: 1,
+    maxSelected: 2,
+    selection: 'minimal_sufficient',
+    allowSingleMember: true,
+    allowParallel: true,
+    allowSerial: false,
+  });
+  assert.deepEqual(
+    candidate.memberProfiles.map(profile => profile.name),
+    ['研究员', '写作专家'],
+  );
+  assert.deepEqual(candidate.routeExamples[0], {
+    id: 'research-write',
+    type: 'serial',
+    title: '研究后写作',
+    intent: '产出有依据的文章',
+    query: '',
+    memberIds: ['researcher', 'writer'],
+    steps: ['先调研', '再写作'],
+    relationEdgeIds: ['researcher-writer'],
+    summary: '',
+  });
 });
 
 test('normalizers return empty values for unavailable RPC payloads', () => {

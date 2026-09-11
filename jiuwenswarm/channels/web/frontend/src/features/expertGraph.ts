@@ -49,6 +49,45 @@ export type ExpertTeamCandidate = {
   quickPrompts: string[];
   deliverables: string[];
   status: string;
+  routingPolicy: ExpertTeamRoutingPolicy;
+  memberProfiles: ExpertTeamMemberProfile[];
+  routeExamples: ExpertTeamRouteExample[];
+};
+
+export type ExpertTeamRoutingPolicy = {
+  mode: string;
+  minSelected: number;
+  maxSelected: number;
+  selection: string;
+  allowSingleMember: boolean;
+  allowParallel: boolean;
+  allowSerial: boolean;
+};
+
+export type ExpertTeamMemberProfile = {
+  id: string;
+  name: string;
+  role: string;
+  description: string;
+  capabilities: string[];
+  tags: string[];
+  skills: string[];
+  quickPrompts: string[];
+  deliverables: string[];
+  inputs: string[];
+  outputs: string[];
+};
+
+export type ExpertTeamRouteExample = {
+  id: string;
+  type: string;
+  title: string;
+  intent: string;
+  query: string;
+  memberIds: string[];
+  steps: string[];
+  relationEdgeIds: string[];
+  summary: string;
 };
 
 export type ExpertTeamMaterialization = {
@@ -60,11 +99,6 @@ export type ExpertTeamMaterialization = {
   graph: ExpertGraph | null;
   candidates: ExpertTeamCandidate[];
   hasFreshWorkspace: boolean;
-};
-
-export type ExpertGraphLayoutNode = ExpertGraphNode & {
-  x: number;
-  y: number;
 };
 
 type RawRecord = Record<string, unknown>;
@@ -90,6 +124,10 @@ function textList(value: unknown): string[] {
 function numberValue(value: unknown, fallback = 0): number {
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : fallback;
+}
+
+function booleanValue(value: unknown, fallback: boolean): boolean {
+  return typeof value === 'boolean' ? value : fallback;
 }
 
 function first(record: RawRecord, ...keys: string[]): unknown {
@@ -235,6 +273,91 @@ function normalizeScoreBreakdown(value: unknown): Record<string, number> {
   return result;
 }
 
+function normalizeMemberIds(value: unknown): string[] {
+  return asArray(value)
+    .map(item => {
+      if (typeof item === 'string') return item.trim();
+      const record = asRecord(item);
+      return text(first(record, 'id', 'expertId', 'expert_id', 'memberId', 'member_id'));
+    })
+    .filter(Boolean);
+}
+
+function normalizeMemberProfiles(value: unknown): ExpertTeamMemberProfile[] {
+  return asArray(value)
+    .map((item): ExpertTeamMemberProfile | null => {
+      const raw = asRecord(item);
+      const id = text(first(raw, 'id', 'expertId', 'expert_id', 'memberId', 'member_id'));
+      if (!id) return null;
+      const tags = normalizeSkills(raw.tags);
+      const skills = normalizeSkills(raw.skills);
+      return {
+        id,
+        name: text(first(raw, 'name', 'displayName', 'display_name')) || id,
+        role: text(raw.role) || 'member',
+        description: text(first(raw, 'description', 'summary', 'responsibility')),
+        capabilities: normalizeSkills(first(raw, 'capabilities', 'strengths'))
+          .concat(tags, skills)
+          .filter((item, index, all) => all.indexOf(item) === index),
+        tags,
+        skills,
+        quickPrompts: textList(first(raw, 'quickPrompts', 'quick_prompts')),
+        deliverables: textList(raw.deliverables),
+        inputs: normalizePorts(raw.inputs).map(port => port.label),
+        outputs: normalizePorts(raw.outputs).map(port => port.label),
+      };
+    })
+    .filter((item): item is ExpertTeamMemberProfile => item !== null);
+}
+
+function normalizeRouteExamples(value: unknown): ExpertTeamRouteExample[] {
+  return asArray(value)
+    .map((item): ExpertTeamRouteExample | null => {
+      if (typeof item === 'string') {
+        const query = item.trim();
+        return query ? { id: '', type: '', title: '', intent: '', query, memberIds: [], steps: [], relationEdgeIds: [], summary: '' } : null;
+      }
+      const raw = asRecord(item);
+      const title = text(raw.title);
+      const intent = text(raw.intent);
+      const query = text(first(raw, 'query', 'prompt', 'input'));
+      const memberIds = normalizeMemberIds(
+        first(raw, 'memberIds', 'member_ids', 'selectedMemberIds', 'selected_member_ids', 'selectedMembers', 'selected_members', 'experts', 'route'),
+      );
+      const summary = text(first(raw, 'summary', 'reason', 'description', 'routingReason', 'routing_reason'));
+      const steps = normalizeWorkflow(raw.steps);
+      const relationEdgeIds = textList(first(raw, 'relationEdgeIds', 'relation_edge_ids'));
+      if (!query && !title && !intent && memberIds.length === 0 && !summary && steps.length === 0) return null;
+      return {
+        id: text(raw.id),
+        type: text(raw.type),
+        title,
+        intent,
+        query,
+        memberIds,
+        steps,
+        relationEdgeIds,
+        summary,
+      };
+    })
+    .filter((item): item is ExpertTeamRouteExample => item !== null);
+}
+
+function normalizeRoutingPolicy(value: unknown, memberCount: number): ExpertTeamRoutingPolicy {
+  const raw = asRecord(value);
+  const maximum = Math.max(1, memberCount);
+  const maxSelected = Math.max(1, Math.min(maximum, numberValue(first(raw, 'maxSelected', 'max_selected'), maximum)));
+  return {
+    mode: text(raw.mode) || 'leader_selected',
+    minSelected: Math.max(1, Math.min(maxSelected, numberValue(first(raw, 'minSelected', 'min_selected'), 1))),
+    maxSelected,
+    selection: text(raw.selection) || 'minimal_sufficient',
+    allowSingleMember: booleanValue(first(raw, 'allowSingleMember', 'allow_single_member'), true),
+    allowParallel: booleanValue(first(raw, 'allowParallel', 'allow_parallel'), true),
+    allowSerial: booleanValue(first(raw, 'allowSerial', 'allow_serial'), true),
+  };
+}
+
 export function normalizeExpertTeamCandidates(payload: unknown): ExpertTeamCandidate[] {
   const outer = asRecord(payload);
   const rawCandidates = first(outer, 'candidates', 'teamCandidates', 'team_candidates');
@@ -243,11 +366,13 @@ export function normalizeExpertTeamCandidates(payload: unknown): ExpertTeamCandi
       const raw = asRecord(item);
       const id = text(raw.id);
       if (!id) return null;
+      const memberIds = normalizeMemberIds(first(raw, 'memberIds', 'member_ids', 'members'));
+      const memberProfiles = normalizeMemberProfiles(first(raw, 'memberProfiles', 'member_profiles'));
       return {
         id,
         name: text(raw.name) || id,
         description: text(raw.description),
-        memberIds: textList(first(raw, 'memberIds', 'member_ids', 'members')),
+        memberIds,
         leaderId: text(first(raw, 'leaderId', 'leader_id')),
         workflow: normalizeWorkflow(raw.workflow),
         score: Math.max(0, Math.min(100, numberValue(raw.score, 0))),
@@ -255,6 +380,9 @@ export function normalizeExpertTeamCandidates(payload: unknown): ExpertTeamCandi
         quickPrompts: textList(first(raw, 'quickPrompts', 'quick_prompts')),
         deliverables: textList(raw.deliverables),
         status: text(raw.status) || 'candidate',
+        routingPolicy: normalizeRoutingPolicy(first(raw, 'routingPolicy', 'routing_policy'), Math.max(memberIds.length, memberProfiles.length)),
+        memberProfiles,
+        routeExamples: normalizeRouteExamples(first(raw, 'routeExamples', 'route_examples')),
       };
     })
     .filter((item): item is ExpertTeamCandidate => item !== null);
@@ -281,59 +409,33 @@ export function isExpertTeamCandidateInstalled(candidate: ExpertTeamCandidate): 
   return candidate.status.toLowerCase() === 'installed';
 }
 
-export function layoutExpertGraph(graph: ExpertGraph, width = 920, height = 420): ExpertGraphLayoutNode[] {
-  if (graph.nodes.length === 0) return [];
+export function filterExpertGraph(graph: ExpertGraph, query: string, minConfidence: number): ExpertGraph {
+  const normalizedQuery = query.trim().toLowerCase();
+  const confidence = Math.max(0, Math.min(1, minConfidence));
+  const confidenceEdges = graph.edges.filter(edge => edge.confidence >= confidence);
+  if (!normalizedQuery) return { ...graph, edges: confidenceEdges };
 
-  const nodeIds = new Set(graph.nodes.map(node => node.id));
-  const directedTypes = new Set(['can_feed', 'needs_adapter', 'can_delegate']);
-  const directedEdges = graph.edges.filter(edge => directedTypes.has(edge.type) && nodeIds.has(edge.source) && nodeIds.has(edge.target));
-  const incoming = new Map(graph.nodes.map(node => [node.id, 0]));
-  const outgoing = new Map(graph.nodes.map(node => [node.id, [] as string[]]));
-  directedEdges.forEach(edge => {
-    incoming.set(edge.target, (incoming.get(edge.target) || 0) + 1);
-    outgoing.get(edge.source)?.push(edge.target);
-  });
-
-  const layer = new Map<string, number>();
-  const queue = graph.nodes.filter(node => (incoming.get(node.id) || 0) === 0).map(node => node.id);
-  queue.forEach(id => layer.set(id, 0));
-  for (let index = 0; index < queue.length; index += 1) {
-    const id = queue[index];
-    const nextLayer = (layer.get(id) || 0) + 1;
-    for (const target of outgoing.get(id) || []) {
-      layer.set(target, Math.max(layer.get(target) || 0, nextLayer));
-      incoming.set(target, (incoming.get(target) || 0) - 1);
-      if ((incoming.get(target) || 0) === 0) queue.push(target);
+  const matchingIds = new Set(
+    graph.nodes
+      .filter(node =>
+        [node.name, node.description, node.type, node.source, node.status, ...node.tags, ...node.skills].join(' ').toLowerCase().includes(normalizedQuery),
+      )
+      .map(node => node.id),
+  );
+  const visibleIds = new Set(matchingIds);
+  const edges = confidenceEdges.filter(edge => {
+    const matches = matchingIds.has(edge.source) || matchingIds.has(edge.target);
+    if (matches) {
+      visibleIds.add(edge.source);
+      visibleIds.add(edge.target);
     }
-  }
-
-  const fallbackLayer = Math.max(0, ...layer.values());
-  graph.nodes.forEach(node => {
-    if (!layer.has(node.id)) layer.set(node.id, fallbackLayer);
+    return matches;
   });
-
-  const groups = new Map<number, ExpertGraphNode[]>();
-  graph.nodes.forEach(node => {
-    const value = layer.get(node.id) || 0;
-    groups.set(value, [...(groups.get(value) || []), node]);
-  });
-  const layers = [...groups.keys()].sort((a, b) => a - b);
-  const horizontalPadding = 100;
-  const verticalPadding = 58;
-  const usableWidth = Math.max(1, width - horizontalPadding * 2);
-  const maxLayerSize = Math.max(1, ...[...groups.values()].map(group => group.length));
-  const effectiveHeight = Math.max(height, verticalPadding * 2 + (maxLayerSize - 1) * 78);
-  const usableHeight = Math.max(1, effectiveHeight - verticalPadding * 2);
-
-  return layers.flatMap((layerValue, layerIndex) => {
-    const group = (groups.get(layerValue) || []).sort((a, b) => a.name.localeCompare(b.name));
-    const x = layers.length === 1 ? width / 2 : horizontalPadding + (usableWidth * layerIndex) / (layers.length - 1);
-    return group.map((node, index) => ({
-      ...node,
-      x,
-      y: verticalPadding + (usableHeight * (index + 1)) / (group.length + 1),
-    }));
-  });
+  return {
+    ...graph,
+    nodes: graph.nodes.filter(node => visibleIds.has(node.id)),
+    edges,
+  };
 }
 
 export function memberName(memberId: string, graph: ExpertGraph): string {

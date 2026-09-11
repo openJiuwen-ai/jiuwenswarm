@@ -436,6 +436,47 @@
   color: var(--color-text-placeholder);
 }
 
+.beta-experts__member-pool {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+  gap: 12px;
+}
+
+.beta-experts__member-pool > div {
+  display: flex;
+  min-height: 88px;
+  align-items: flex-start;
+  gap: 11px;
+  padding: 14px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 13px;
+  background: var(--color-surface-elevated);
+}
+
+.beta-experts__member-pool > div > span {
+  display: grid;
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  place-items: center;
+  border-radius: 9px;
+  color: var(--color-action-primary);
+  background: var(--color-action-primary-subtle);
+}
+
+.beta-experts__member-pool strong {
+  display: block;
+  color: var(--color-text-primary);
+  font-size: 13px;
+}
+
+.beta-experts__member-pool p {
+  margin-top: 6px;
+  color: var(--color-text-secondary);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
 .beta-experts__prompts {
   display: grid;
   gap: 9px;
@@ -665,7 +706,8 @@
 
 .beta-expert-graph__visual-layout {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 270px;
+  grid-template-columns: 280px minmax(0, 1fr) 280px;
+  min-height: 540px;
   overflow: hidden;
   border: 1px solid var(--color-border-default);
   border-radius: 18px;
@@ -673,96 +715,217 @@
   box-shadow: var(--effect-shadow-sm);
 }
 
-.beta-expert-graph__canvas-wrap {
+.beta-expert-graph__graph-controls {
+  display: flex;
   min-width: 0;
-  padding: 10px 12px 12px;
-  background: var(--color-surface-page);
+  flex-direction: column;
+  gap: 14px;
+  padding: 16px;
+  border-right: 1px solid var(--color-border-default);
+  background: var(--color-surface-elevated);
 }
 
-.beta-expert-graph__canvas {
-  display: block;
-  width: 100%;
-  min-height: 390px;
+.beta-expert-graph__graph-counts {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
 }
 
-.beta-expert-graph__canvas marker path {
-  fill: var(--color-border-strong);
+.beta-expert-graph__graph-counts > div {
+  display: grid;
+  gap: 2px;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-surface-card);
 }
 
-.beta-expert-graph__edge {
-  cursor: pointer;
-  outline: none;
+.beta-expert-graph__graph-counts strong {
+  color: var(--color-text-primary);
+  font-size: 17px;
 }
 
-.beta-expert-graph__edge line:not(.beta-expert-graph__edge-hit) {
-  stroke: var(--color-border-strong);
-  stroke-width: 1.6;
-}
-
-.beta-expert-graph__edge--needs_adapter line:not(.beta-expert-graph__edge-hit),
-.beta-expert-graph__edge--complements line:not(.beta-expert-graph__edge-hit) {
-  stroke-dasharray: 7 5;
-}
-
-.beta-expert-graph__edge--can_feed line:not(.beta-expert-graph__edge-hit),
-.beta-expert-graph__edge.is-active line:not(.beta-expert-graph__edge-hit) {
-  stroke: var(--color-action-primary);
-  stroke-width: 2.2;
-}
-
-.beta-expert-graph__edge-hit {
-  stroke: transparent;
-  stroke-width: 14;
-}
-
-.beta-expert-graph__node {
-  cursor: pointer;
-  outline: none;
-}
-
-.beta-expert-graph__node rect {
-  fill: var(--color-surface-card);
-  stroke: var(--color-border-default);
-  stroke-width: 1.5;
-}
-
-.beta-expert-graph__node circle {
-  fill: var(--color-action-primary-subtle);
-}
-
-.beta-expert-graph__node-mark {
-  fill: var(--color-action-primary);
-  font-size: 11px;
-  font-weight: 700;
-}
-
-.beta-expert-graph__node-name {
-  fill: var(--color-text-primary);
-  font-size: 12px;
-  font-weight: 650;
-}
-
-.beta-expert-graph__node-meta {
-  fill: var(--color-text-tertiary);
+.beta-expert-graph__graph-counts span {
+  color: var(--color-text-secondary);
   font-size: 10px;
 }
 
-.beta-expert-graph__node.is-active rect,
-.beta-expert-graph__node:focus rect {
-  stroke: var(--color-action-primary);
-  stroke-width: 2.2;
+.beta-expert-graph__graph-search {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 9px;
+  color: var(--color-text-tertiary);
+  background: var(--color-surface-card);
 }
 
-.beta-expert-graph__node.is-reference rect {
-  stroke-dasharray: 5 4;
+.beta-expert-graph__graph-search:focus-within {
+  border-color: var(--color-action-primary);
+}
+
+.beta-expert-graph__graph-search input {
+  width: 100%;
+  min-width: 0;
+  border: 0;
+  outline: 0;
+  color: var(--color-text-primary);
+  background: transparent;
+  font-size: 11px;
+}
+
+.beta-expert-graph__confidence-filter {
+  display: grid;
+  gap: 8px;
+  padding: 10px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-surface-card);
+}
+
+.beta-expert-graph__confidence-filter > span {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  color: var(--color-text-primary);
+  font-size: 10px;
+}
+
+.beta-expert-graph__confidence-filter em {
+  color: var(--color-action-primary);
+  font-style: normal;
+}
+
+.beta-expert-graph__confidence-filter input {
+  width: 100%;
+  accent-color: var(--color-action-primary);
+}
+
+.beta-expert-graph__node-list {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  gap: 4px;
+  overflow-y: auto;
+}
+
+.beta-expert-graph__node-list button {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 8px 9px;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  color: var(--color-text-secondary);
+  background: transparent;
+  font-size: 11px;
+  text-align: left;
+}
+
+.beta-expert-graph__node-list button:hover,
+.beta-expert-graph__node-list button.is-active {
+  border-color: var(--color-border-default);
+  color: var(--color-text-primary);
+  background: var(--color-action-primary-subtle);
+}
+
+.beta-expert-graph__node-list button.is-active {
+  border-color: var(--color-action-primary);
+}
+
+.beta-expert-graph__node-list button span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.beta-expert-graph__node-list button em {
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+  font-style: normal;
+}
+
+.beta-expert-graph__node-list > p {
+  padding: 20px 8px;
+  color: var(--color-text-tertiary);
+  font-size: 11px;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.beta-expert-graph__canvas-wrap {
+  position: relative;
+  min-width: 0;
+  min-height: 540px;
+  overflow: hidden;
+  background: var(--color-surface-page);
+}
+
+.relationship-graph__canvas {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 540px;
+  outline: none;
+  color: var(--color-text-primary);
+  background: var(--color-surface-page);
+  cursor: grab;
+  touch-action: none;
+}
+
+.relationship-graph__canvas:focus-visible {
+  box-shadow: inset 0 0 0 2px var(--color-action-primary);
+}
+
+.beta-expert-graph__canvas-tools {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: flex;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: 9px;
+  background: var(--color-surface-card);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+.beta-expert-graph__canvas-tools button {
+  display: grid;
+  width: 34px;
+  height: 34px;
+  place-items: center;
+  border: 0;
+  border-right: 1px solid var(--color-border-default);
+  color: var(--color-text-secondary);
+  background: transparent;
+}
+
+.beta-expert-graph__canvas-tools button:last-child {
+  border-right: 0;
+}
+
+.beta-expert-graph__canvas-tools button:hover {
+  color: var(--color-action-primary);
+  background: var(--color-action-primary-subtle);
 }
 
 .beta-expert-graph__legend {
+  position: absolute;
+  bottom: 12px;
+  left: 14px;
   display: flex;
   flex-wrap: wrap;
   gap: 13px;
-  padding: 0 8px 4px;
+  padding: 6px 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 8px;
   color: var(--color-text-secondary);
+  background: var(--color-surface-card);
   font-size: 11px;
 }
 
@@ -789,6 +952,8 @@
 
 .beta-expert-graph__node-detail {
   min-width: 0;
+  max-height: 540px;
+  overflow-y: auto;
   padding: 20px;
   border-left: 1px solid var(--color-border-default);
   background: var(--color-surface-elevated);
@@ -1000,19 +1165,61 @@
   line-height: 1.6;
 }
 
-.beta-expert-graph__member-chain {
+.beta-expert-graph__dispatch-summary {
+  display: grid;
+  gap: 8px;
+  margin-top: 14px;
+  padding: 11px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 10px;
+  background: var(--color-surface-elevated);
+}
+
+.beta-expert-graph__dispatch-summary > div {
   display: flex;
-  flex-wrap: wrap;
   align-items: center;
   gap: 7px;
-  margin-top: 14px;
+  color: var(--color-action-primary);
+  font-size: 11px;
 }
 
-.beta-expert-graph__member {
-  display: contents;
+.beta-expert-graph__dispatch-summary span {
+  color: var(--color-text-secondary);
 }
 
-.beta-expert-graph__member span {
+.beta-expert-graph__dispatch-summary strong {
+  color: var(--color-text-primary);
+}
+
+.beta-expert-graph__dispatch-summary small {
+  margin-left: auto;
+  color: var(--color-text-tertiary);
+  font-size: 9px;
+}
+
+.beta-expert-graph__member-pool,
+.beta-expert-graph__route-examples {
+  display: grid;
+  gap: 8px;
+  margin: 14px 0 0;
+}
+
+.beta-expert-graph__member-pool > strong,
+.beta-expert-graph__route-examples > strong {
+  color: var(--color-text-primary);
+  font-size: 11px;
+}
+
+.beta-expert-graph__member-pool > div {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.beta-expert-graph__member-pool > div > span {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
   padding: 6px 8px;
   border: 1px solid var(--color-border-default);
   border-radius: 8px;
@@ -1022,40 +1229,44 @@
   font-weight: 600;
 }
 
-.beta-expert-graph__member svg {
+.beta-expert-graph__member-pool em {
   color: var(--color-text-tertiary);
-}
-
-.beta-expert-graph__workflow {
-  display: grid;
-  gap: 7px;
-  margin: 14px 0 0;
-  padding: 12px;
-  border-radius: 10px;
-  background: var(--color-surface-elevated);
-  list-style: none;
-}
-
-.beta-expert-graph__workflow li {
-  display: flex;
-  align-items: flex-start;
-  gap: 8px;
-  color: var(--color-text-secondary);
-  font-size: 11px;
-  line-height: 1.5;
-}
-
-.beta-expert-graph__workflow li > span {
-  display: grid;
-  width: 18px;
-  height: 18px;
-  flex: 0 0 auto;
-  place-items: center;
-  border-radius: 6px;
-  color: var(--color-action-primary);
-  background: var(--color-action-primary-subtle);
   font-size: 9px;
-  font-weight: 700;
+  font-style: normal;
+  font-weight: 400;
+}
+
+.beta-expert-graph__route-examples > div {
+  padding: 9px 10px;
+  border-left: 3px solid var(--color-action-primary);
+  border-radius: 7px;
+  background: var(--color-action-primary-subtle);
+}
+
+.beta-expert-graph__route-examples span,
+.beta-expert-graph__route-examples p,
+.beta-expert-graph__route-examples small {
+  display: block;
+  margin: 0;
+}
+
+.beta-expert-graph__route-examples span {
+  color: var(--color-text-primary);
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.beta-expert-graph__route-examples p {
+  margin-top: 4px;
+  color: var(--color-action-primary);
+  font-size: 10px;
+}
+
+.beta-expert-graph__route-examples small {
+  margin-top: 3px;
+  color: var(--color-text-secondary);
+  font-size: 9px;
+  line-height: 1.5;
 }
 
 .beta-expert-graph__candidate-foot {
@@ -1157,9 +1368,11 @@
 
 @media (max-width: 1050px) {
   .beta-expert-graph__visual-layout {
-    grid-template-columns: 1fr;
+    grid-template-columns: 250px minmax(0, 1fr);
   }
   .beta-expert-graph__node-detail {
+    grid-column: 1 / -1;
+    max-height: none;
     border-top: 1px solid var(--color-border-default);
     border-left: 0;
   }
@@ -1177,11 +1390,13 @@
   .beta-expert-graph__candidate-grid {
     grid-template-columns: 1fr;
   }
-  .beta-expert-graph__canvas {
-    min-width: 720px;
+  .beta-expert-graph__visual-layout {
+    grid-template-columns: 1fr;
   }
-  .beta-expert-graph__canvas-wrap {
-    overflow: auto;
+  .beta-expert-graph__graph-controls {
+    max-height: 300px;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-default);
   }
   .beta-expert-graph__section-title {
     align-items: flex-start;
