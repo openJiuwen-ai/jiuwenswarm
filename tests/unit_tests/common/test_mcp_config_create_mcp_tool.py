@@ -655,3 +655,14 @@ class TestCreateMcpToolDefaultType:
         })
         result = create_mcp_tool(cfg)
         assert result.client_type == "stdio"
+
+
+class TestStdioServerParameters:
+    def test_cwd_and_env_optional(self):
+        from jiuwenswarm.common.mcp_config import _stdio_server_parameters
+
+        params = _stdio_server_parameters({"command": "python", "args": ["echo_mcp.py"]})
+        assert params.command == "python"
+        assert params.args == ["echo_mcp.py"]
+        assert params.cwd is None
+        assert params.env is None

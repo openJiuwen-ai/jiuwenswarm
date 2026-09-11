@@ -1681,11 +1681,15 @@ def validate_office_claw_mcp_config(
 def _stdio_server_parameters(params: Mapping[str, Any]):
     from mcp import StdioServerParameters
 
+    raw_cwd = params.get("cwd")
+    cwd = str(raw_cwd).strip() if isinstance(raw_cwd, str) and str(raw_cwd).strip() else None
+    raw_env = params.get("env")
+    env = dict(raw_env) if isinstance(raw_env, dict) and raw_env else None
     return StdioServerParameters(
         command=str(params["command"]),
-        args=list(params["args"]),
-        env=dict(params.get("env") or {}),
-        cwd=str(params["cwd"]),
+        args=list(params.get("args") or []),
+        env=env,
+        cwd=cwd,
         encoding_error_handler="strict",
     )
 
