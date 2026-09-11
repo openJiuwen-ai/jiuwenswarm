@@ -1203,26 +1203,6 @@ def prepare_workspace(
     builtin_rules_dest = config_dest_dir / "builtin_rules.yaml"
     pkg_rules = builtin_rules_src if builtin_rules_src.is_file() else None
 
-    memory_config = load_workspace_memory_config(config_yaml_dest)
-    legacy_memory_enabled = is_legacy_workspace_memory_enabled(memory_config)
-
-    if legacy_dirs_exist and not overwrite:
-        _migrate_legacy_workspace(workspace_dir, preferred_language, memory_enabled=legacy_memory_enabled)
-    elif overwrite:
-        try:
-            if old_home.exists():
-                # init/overwrite rebuilds the workspace but must NOT drop the
-                # user's cron jobs — agent/home is their canonical location.
-                _clean_home_keep_cron(old_home, context="workspace init")
-            if old_skills.exists():
-                shutil.rmtree(old_skills)
-                logger.info(f"Removed old skills: {old_skills}")
-            if old_memory.exists() and legacy_memory_enabled:
-                shutil.rmtree(old_memory)
-                logger.info(f"Removed old memory: {old_memory}")
-        except OSError as e:
-            logger.warning(f"Failed to remove some old directories: {e}")
-
     def _file_mtime(dest: Path) -> tuple[bool, float | None]:
         if dest.is_file():
             return True, dest.stat().st_mtime
@@ -1251,6 +1231,26 @@ def prepare_workspace(
 
     _record_copy(config_yaml_dest, yaml_existed, yaml_mtime)
     _record_copy(builtin_rules_dest, rules_existed, rules_mtime)
+
+    memory_config = load_workspace_memory_config(config_yaml_dest)
+    legacy_memory_enabled = is_legacy_workspace_memory_enabled(memory_config)
+
+    if legacy_dirs_exist and not overwrite:
+        _migrate_legacy_workspace(workspace_dir, preferred_language, memory_enabled=legacy_memory_enabled)
+    elif overwrite:
+        try:
+            if old_home.exists():
+                # init/overwrite rebuilds the workspace but must NOT drop the
+                # user's cron jobs — agent/home is their canonical location.
+                _clean_home_keep_cron(old_home, context="workspace init")
+            if old_skills.exists():
+                shutil.rmtree(old_skills)
+                logger.info(f"Removed old skills: {old_skills}")
+            if old_memory.exists() and legacy_memory_enabled:
+                shutil.rmtree(old_memory)
+                logger.info(f"Removed old memory: {old_memory}")
+        except OSError as e:
+            logger.warning(f"Failed to remove some old directories: {e}")
 
     resolved_lang = _resolve_preferred_language(config_yaml_dest, preferred_language)
 
