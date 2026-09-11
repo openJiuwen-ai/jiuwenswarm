@@ -101,7 +101,13 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { CodeBranchSelector } from '../../features/code-mode/CodeBranchSelector';
 import { generateUuidV4 } from '../../utils/uuid';
 import { buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/mySkills';
-import { createAgentManagementClient, getAgentAvatarUrl, type AgentCatalogItem } from '../../features/agentManagement';
+import {
+  createAgentManagementClient,
+  findAgentSelection,
+  getAgentAvatarUrl,
+  getAgentSelectionId,
+  type AgentCatalogItem,
+} from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 
@@ -709,7 +715,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return intent?.kind === 'select' ? intent.id : null;
   });
   const setAgentSelectionIntent = useSessionStore((s) => s.setAgentSelectionIntent);
-  const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId) ?? null;
+  const selectedAgent = findAgentSelection(agentOptions, selectedAgentId);
   const installedAgentOptions = useMemo(
     () => agentOptions.filter((item) => item.installed && item.connectionState === 'connected' && item.enabled !== false),
     [agentOptions],
@@ -729,7 +735,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     void agentManagementClient.listCatalog()
       .then((items) => {
         if (cancelled) return;
-        const selectedItem = selectedAgentId ? items.find((item) => item.id === selectedAgentId) : null;
+        const selectedItem = findAgentSelection(items, selectedAgentId);
         if (selectedItem?.enabled === false || selectedItem?.connectionState !== 'connected') {
           setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
         }
@@ -3043,7 +3049,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     ) : (
                       filteredAgentOptions.map((item) => {
                         const avatarUrl = getAgentAvatarUrl(item);
-                        const isSelected = selectedAgentId === item.id;
+                        const isSelected = selectedAgent === item;
                         return (
                           <button
                             key={item.id}
@@ -3056,7 +3062,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             onClick={() => {
                               if (!activeSessionId) return;
                               useSessionStore.getState().setMode(activeSessionId, 'agent');
-                              setAgentSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
+                              setAgentSelectionIntent(activeSessionId, {
+                                kind: 'select',
+                                id: getAgentSelectionId(item),
+                              });
                               setAttachMenuOpen(false);
                             }}
                           >

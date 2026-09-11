@@ -11,6 +11,8 @@ import {
 import {
   buildDefinitionSelectionPayload,
   buildDefinitionSelectionPayloadForMode,
+  findAgentSelection,
+  getAgentSelectionId,
 } from '../node_modules/.cache/agent-management/port.js';
 import { isAgentUploadFilename } from '../node_modules/.cache/agent-management/upload.js';
 import {
@@ -78,6 +80,26 @@ test('keeps Hub asset identity separate from the expert runtime package name', (
   assert.equal(item.runtimePackageName, 'sales-data-analyst');
   assert.equal(item.source, 'hub');
   assert.equal(item.version, '1.2.0');
+});
+
+test('uses the runtime package name for new Agent selections while matching legacy asset ids', () => {
+  const item = {
+    id: '8b52a9c0-hub-asset',
+    runtimePackageName: 'sales-data-analyst',
+  };
+
+  assert.equal(getAgentSelectionId(item), 'sales-data-analyst');
+  assert.equal(findAgentSelection([item], 'sales-data-analyst'), item);
+  assert.equal(findAgentSelection([item], '8b52a9c0-hub-asset'), item);
+  assert.equal(findAgentSelection([item], 'another-agent'), null);
+  assert.equal(getAgentSelectionId({ id: 'legacy-only-agent', runtimePackageName: '' }), 'legacy-only-agent');
+});
+
+test('prefers an exact runtime identity over a legacy id collision', () => {
+  const runtimeMatch = { id: 'legacy-agent', runtimePackageName: 'shared-name' };
+  const legacyMatch = { id: 'shared-name', runtimePackageName: 'other-agent' };
+
+  assert.equal(findAgentSelection([legacyMatch, runtimeMatch], 'shared-name'), runtimeMatch);
 });
 
 test('projects detail capabilities without leaking raw package fields', () => {

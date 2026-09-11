@@ -2399,5 +2399,6 @@ body.workspace-resize-active iframe {
   color: var(--color-text-primary);
   font-size: 12px;
   line-height: 18px;
+  overflow-wrap: anywhere;
   pointer-events: none;
 }

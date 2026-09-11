@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import fs from 'node:fs/promises';
 import test from 'node:test';
 import React from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
@@ -54,4 +55,11 @@ test('expert catalog renders inside the standard page shell and toolbar', async 
   assert.match(markup, /class="page-toolbar"[^>]*data-testid="page-toolbar"/);
   assert.match(markup, /class="chat-picker-panel__tabs"[^>]*data-testid="agent-management-primary-tabs"/);
   assert.match(markup, /data-testid="agent-management-search"[^>]*class="relative flex-shrink-0"/);
+});
+
+test('adaptive tooltips can wrap unbroken long descriptions', async () => {
+  const css = await fs.readFile(new URL('../src/index.css', import.meta.url), 'utf8');
+  const rule = css.match(/\.adaptive-tooltip\s*\{([\s\S]*?)\}/)?.[1] ?? '';
+
+  assert.match(rule, /overflow-wrap:\s*anywhere/);
 });

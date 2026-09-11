@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import clsx from 'clsx';
-import { createAgentManagementClient } from '../../features/agentManagement';
+import { createAgentManagementClient, findAgentSelection } from '../../features/agentManagement';
 import { ensureAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 
 interface AgentAvatarProps {
@@ -24,7 +24,7 @@ export function AgentAvatar({
   const catalogRevision = useAgentCatalogStore((state) => state.revision);
   const [imageFailed, setImageFailed] = useState(false);
   const normalizedId = agentId?.trim() || '';
-  const item = catalog?.find((candidate) => candidate.id === normalizedId);
+  const item = findAgentSelection(catalog ?? [], normalizedId);
   const avatarUrl = item?.avatarUrl ?? null;
   const displayName = item?.displayName?.trim() || normalizedId;
   const initial = displayName.slice(0, 1).toUpperCase() || '?';
