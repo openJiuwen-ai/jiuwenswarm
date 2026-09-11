@@ -1028,8 +1028,11 @@ def _route_examples(
             intent = f"先由{source.name}完成前置工作，再交给{target.name}产出结果"
         else:
             steps = [
-                _route_step(source, index=1),
-                _route_step(target, index=2),
+                # Parallel branches are intermediate contributions.  The
+                # leader owns their synthesis; declaring both as the sole
+                # final artifact would create contradictory task contracts.
+                _route_step(source, index=1, include_final_output=False),
+                _route_step(target, index=2, include_final_output=False),
             ]
             route_type = "parallel"
             title = f"{source.name} + {target.name}"

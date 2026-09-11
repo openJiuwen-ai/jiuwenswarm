@@ -9,6 +9,10 @@ from typing import Any, Mapping
 
 import yaml
 
+from jiuwenswarm.server.runtime.expert.metadata_safety import (
+    is_safe_prompt_identifier,
+)
+
 
 @dataclass(frozen=True, slots=True)
 class SkillContractInspection:
@@ -74,6 +78,8 @@ def inspect_skill_contracts(
 
         runtime_name = skill_dir.name
         display_name = runtime_name
+        if not is_safe_prompt_identifier(runtime_name):
+            errors.append(f"Skill runtime id is not prompt-safe: {runtime_name!r}")
         try:
             text = skill_md.read_text(encoding="utf-8")
             if not text.startswith("---"):
@@ -95,6 +101,10 @@ def inspect_skill_contracts(
             errors.append(
                 "Skill frontmatter name does not match its beta3 runtime id: "
                 f"{display_name!r} != {runtime_name!r}"
+            )
+        elif not is_safe_prompt_identifier(display_name):
+            errors.append(
+                f"Skill frontmatter name is not prompt-safe: {display_name!r}"
             )
 
     return SkillContractInspection(tuple(names), tuple(errors))

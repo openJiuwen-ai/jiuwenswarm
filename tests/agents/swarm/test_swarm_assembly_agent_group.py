@@ -79,6 +79,41 @@ def _stamp_scheduled_contract(
         "dispatchContract": dispatch_contract,
         "materializerVersion": materializer_version,
     }
+    if (
+        dispatch_contract == EXPERT_TEAM_DISPATCH_CONTRACT
+        and materializer_version == EXPERT_TEAM_MATERIALIZER_VERSION
+    ):
+        roster = [
+            member_id for member_id in manifest["agents"] if member_id != "leader"
+        ]
+        manifest["metadata"].update(
+            {
+                "memberExpertIds": roster,
+                "routingPolicy": {
+                    "mode": "leader_selected",
+                    "selection": "minimal_sufficient",
+                    "minSelected": 1,
+                    "maxSelected": len(roster),
+                    "allowSingleMember": True,
+                    "allowSerial": True,
+                    "allowParallel": True,
+                    "graphRole": "discovery_and_routing_evidence",
+                },
+                "memberProfiles": [
+                    {
+                        "id": member_id,
+                        "name": member_id,
+                        "description": "",
+                        "tags": [],
+                        "skills": [],
+                        "quickPrompts": [],
+                        "deliverables": [],
+                    }
+                    for member_id in roster
+                ],
+                "routeExamples": [],
+            }
+        )
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     for member_id in manifest["agents"]:
         if member_id == "leader":
@@ -203,6 +238,7 @@ def test_v2_graph_materialized_group_remains_scheduled_compatible(
     manifest_path = graph_group / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
     manifest["name"] = graph_group.name
+    manifest["instruction"] = "旧版固定路由契约：member1 -> member2"
     manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
     _stamp_scheduled_contract(
         graph_group,
@@ -215,6 +251,54 @@ def test_v2_graph_materialized_group_remains_scheduled_compatible(
 
     assert spec.dispatch_mode == "scheduled"
     assert spec.team_mode == "predefined"
+    assert "旧版固定路由契约：member1 -> member2" in spec.leader.prompt
+    assert (
+        "旧版固定路由契约：member1 -> member2"
+        in {member.member_name: member.prompt for member in spec.predefined_members}[
+            "member1"
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("memberExpertIds", ["member1"]),
+        ("routingPolicy", {"mode": "fixed"}),
+        ("memberProfiles", []),
+        ("routeExamples", "not-a-list"),
+        (
+            "routeExamples",
+            [
+                {
+                    "id": "bad-route",
+                    "type": "single",
+                    "selectedMemberIds": ["member1"],
+                    "steps": [{"expertId": "member1", "dependsOn": ["member2"]}],
+                }
+            ],
+        ),
+        ("generatedBy", "external-generator"),
+    ],
+)
+def test_v3_dynamic_contract_rejects_tampered_required_metadata(
+    group_cache: Path,
+    field: str,
+    bad_value: object,
+) -> None:
+    graph_group = group_cache / f"tampered-{field}"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(graph_group)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["metadata"][field] = bad_value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="调度契约.*不完整"):
+        _enrich(_make_team_spec(), graph_group.name)
 
 
 def test_legacy_generated_by_only_group_stays_autonomous(
