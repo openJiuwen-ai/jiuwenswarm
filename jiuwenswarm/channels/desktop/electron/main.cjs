@@ -903,7 +903,7 @@ function evictIdleBrowserViews(preserveSessionId) {
   // 该会话再次打开时 ensureBrowserView 会还原页面（cookie/登录态随 partition 保留）。
   while (browserViews.size >= MAX_BROWSER_SESSION_VIEWS) {
     const candidates = [...browserViews.entries()]
-      .filter(([sid, entry]) => sid !== preserveSessionId && sid !== activePaneSessionId && !entry.view.isVisible())
+      .filter(([sid, entry]) => sid !== preserveSessionId && sid !== activePaneSessionId && !entry.visible)
       .sort(([, a], [, b]) => a.lastActive - b.lastActive);
     if (candidates.length === 0) return;
     const [victimId, victim] = candidates[0];
@@ -942,7 +942,7 @@ async function ensureBrowserView(sessionId) {
   });
   mainWindow.contentView.addChildView(view);
   view.setVisible(false);
-  const entry = { sessionId: key, view, targetId: '', crashCount: 0, lastActive: Date.now() };
+  const entry = { sessionId: key, view, targetId: '', crashCount: 0, lastActive: Date.now(), visible: false };
   browserViews.set(key, entry);
 
   for (const eventName of ['did-start-loading', 'did-stop-loading', 'did-navigate', 'did-navigate-in-page', 'page-title-updated']) {
@@ -1021,7 +1021,7 @@ function applyBrowserBounds(entry, bounds) {
   const width = Math.max(0, Math.min(Math.round((Number(bounds?.width) || 0) * zoomFactor), contentBounds.width - x));
   const height = Math.max(0, Math.min(Math.round((Number(bounds?.height) || 0) * zoomFactor), contentBounds.height - y));
   entry.view.setBounds({ x, y, width, height });
-  if (entry.view.isVisible()) entry.view.setVisible(true);
+  if (entry.visible) entry.view.setVisible(true);
   return { x, y, width, height };
 }
 
@@ -1029,22 +1029,29 @@ function setBrowserPaneVisible(sessionId, visible) {
   const key = normalizeBrowserSessionId(sessionId);
   if (!visible) {
     const entry = browserViews.get(key);
-    if (entry) entry.view.setVisible(false);
+    if (entry) {
+      entry.visible = false;
+      entry.view.setVisible(false);
+    }
     if (activePaneSessionId === key) activePaneSessionId = '';
     return false;
   }
   activePaneSessionId = key;
   // 同屏只允许一个会话的视图：激活前先隐藏其它会话视图。
   for (const [sid, entry] of browserViews) {
-    if (sid !== key) entry.view.setVisible(false);
+    if (sid !== key) {
+      entry.visible = false;
+      entry.view.setVisible(false);
+    }
   }
   // 视图可能尚未创建（首次切到 browser 页签）：创建完成后兜底应用边界与可见性。
   void ensureBrowserView(key)
     .then(entry => {
       if (!entry || activePaneSessionId !== key) return;
+      entry.visible = true;
       entry.view.setVisible(true);
       if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds);
-      if (entry.view.isVisible()) entry.view.webContents.focus();
+      if (entry.visible) entry.view.webContents.focus();
       emitBrowserState(entry);
     })
     .catch(error => console.warn('[electron] sideview activation failed', { sessionId: key, error }));
@@ -1334,7 +1341,7 @@ function registerIpcHandlers() {
     if (!entry) return currentBrowserState({ sessionId: normalizeBrowserSessionId(sessionId) });
     await entry.view.webContents.loadURL(normalizeBrowserTarget(url));
     // 地址栏发起导航后把焦点交给页面，免去手动点击才能交互。
-    if (entry.view.isVisible()) entry.view.webContents.focus();
+    if (entry.visible) entry.view.webContents.focus();
     return currentBrowserState(entry);
   });
   registerHandler('browser:go-back', sessionId => {

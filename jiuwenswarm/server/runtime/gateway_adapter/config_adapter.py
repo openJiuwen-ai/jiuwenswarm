@@ -195,7 +195,7 @@ class ConfigAdapter(GatewayAdapter):
                 ok=True,
                 payload={
                     "chrome_path": _resolve_browser_path(browser) if isinstance(browser, dict) else "",
-                    "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else True,
+                    "headless": browser.get("headless") if isinstance(browser.get("headless"), bool) else False,
                 },
                 metadata=request.metadata,
             )
@@ -205,9 +205,9 @@ class ConfigAdapter(GatewayAdapter):
             return build_error_response(request, "chrome_path must be string", code="BAD_REQUEST")
         chrome_path = chrome_path.strip()
 
-        headless = params.get("headless", True)
+        headless = params.get("headless", False)
         if not isinstance(headless, bool):
-            headless = True
+            headless = False
         update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
         metadata = dict(request.metadata or {})
         metadata["config_changed"] = True

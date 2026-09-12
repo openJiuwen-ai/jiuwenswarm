@@ -211,6 +211,7 @@ from jiuwenswarm.agents.harness.team.a2x.a2x_registry_runtime import (
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
 from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (  # noqa: E402
     SessionMessagingRouteRail,
@@ -629,6 +630,16 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
     return query.strip() if isinstance(query, str) else ""
 
 logger = logging.getLogger(__name__)
+
+# SDK TaskTool creates ephemeral subagents (browser_agent included) without
+# emitting roster events, so Web clients never learn the browser agent exists
+# and the desktop browser tab never appears. The patch is idempotent and only
+# wraps the narrow dispatch seam; apply it before the first request runs.
+from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (  # noqa: E402
+    apply_task_tool_event_patch,
+)
+
+apply_task_tool_event_patch()
 
 
 def _diag_auth_headers(cfg: Any) -> str:
@@ -4193,19 +4204,19 @@ class JiuWenSwarmDeepAdapter:
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
-        """Read browser.headless from config (default True = headless)."""
+        """Read browser.headless from config (default False = visible browser)."""
         try:
             if config_base is None:
                 config_base = get_config()
             if not isinstance(config_base, dict):
-                return True
+                return False
             browser_cfg = config_base.get("browser", {})
             if not isinstance(browser_cfg, dict):
-                return True
-            headless = browser_cfg.get("headless", True)
-            return bool(headless) if isinstance(headless, bool) else True
+                return False
+            headless = browser_cfg.get("headless", False)
+            return bool(headless) if isinstance(headless, bool) else False
         except Exception:
-            return True
+            return False
 
     @staticmethod
     def _sync_mcp_credentials_environment() -> bool:
@@ -4598,6 +4609,18 @@ class JiuWenSwarmDeepAdapter:
                 ),
             )
             self._prepare_browser_runtime_security(browser_spec)
+            # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入 browser
+            # subagent 的 MCP env（与 swarm.browser_agent 同一契约；放在安全加固
+            # 之后，注入的 env 落在最终 guarded settings 之上。resolver 不可用时
+            # 返回原 settings，回退 openjiuwen 默认行为）。
+            _electron_session_id = str(getattr(self, "_parent_session_id", "") or "").strip()
+            if (
+                _electron_session_id
+                and (browser_spec.factory_kwargs or {}).get("settings") is not None
+            ):
+                browser_spec.factory_kwargs["settings"] = apply_session_sideview_target(
+                    browser_spec.factory_kwargs["settings"], _electron_session_id
+                )
             subagents.append(browser_spec)
         elif (
             isinstance(subagents_cfg, dict)

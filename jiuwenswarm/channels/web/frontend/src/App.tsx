@@ -980,7 +980,9 @@ function AppContent({
 
   const isElectron = Boolean(window.jiuwenDesktop?.isElectron);
   const toolPanelHasContent = useMemo(() => {
-    if (isElectron) return true;
+    // Electron 下工具面板始终可达（内置浏览器页签等桌面能力），但新建会话首页
+    // 没有任何会话内容，悬浮收起条不应出现（tool-panel-collapsed 首页闪现 bug）。
+    if (isElectron) return sessionId !== NEW_CONVERSATION_ID;
     const hasMessages = messages.length > 0;
     const hasCodeEnvironment = sessionProject?.work_mode === 'code' && sessionId !== NEW_CONVERSATION_ID;
     switch (mode) {
