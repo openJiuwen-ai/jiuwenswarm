@@ -83,8 +83,10 @@ def _validate_routing(value: Any, location: str, errors: list[str]) -> None:
     if not isinstance(strategy, str) or not strategy.strip():
         errors.append(f"{location}.strategy must be a non-empty string")
     retries = value.get("num_retries")
-    if retries is not None and (not isinstance(retries, int) or isinstance(retries, bool) or retries < 0):
-        errors.append(f"{location}.num_retries must be a non-negative integer")
+    if retries is not None:
+        invalid_type = not isinstance(retries, int) or isinstance(retries, bool)
+        if invalid_type or retries < 0:
+            errors.append(f"{location}.num_retries must be a non-negative integer")
     strategy_kwargs = value.get("strategy_kwargs")
     if strategy_kwargs is not None and not isinstance(strategy_kwargs, dict):
         errors.append(f"{location}.strategy_kwargs must be an object")

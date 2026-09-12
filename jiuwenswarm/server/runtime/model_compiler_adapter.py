@@ -27,7 +27,8 @@ def compile_model_selection(resolved: ResolvedSelection) -> tuple[Any, Any]:
             tpm=r.tpm, rpm=r.rpm, timeout=r.timeout) for r in resolved.routes]
         core = CoreGroup(model_group_id=resolved.model_group_id, routes=routes,
             request_config=resolved.request_config, routing=resolved.routing)
-    return compile_core(core)
+    compiled = compile_core(core)
+    return compiled.model_client_config, compiled.model_request_config
 
 
 def build_model_from_selection(resolved: ResolvedSelection) -> Any:

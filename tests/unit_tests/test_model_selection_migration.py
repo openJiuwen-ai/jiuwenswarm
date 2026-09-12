@@ -128,7 +128,10 @@ def test_compiler_adapter_matches_final_core_dto(monkeypatch):
     routing_module = ModuleType("openjiuwen.core.foundation.llm.routing")
     compiler_module = ModuleType("openjiuwen.core.foundation.llm.routing.compiler")
     schema_module = ModuleType("openjiuwen.core.foundation.llm.routing.schema")
-    compiler_module.compile_model_selection = lambda selection: compiled.append(selection) or ("client", "request")
+    class FakeCompiled:
+        model_client_config = "client"
+        model_request_config = "request"
+    compiler_module.compile_model_selection = lambda selection: compiled.append(selection) or FakeCompiled()
     schema_module.ResolvedModel = CoreModel
     schema_module.ResolvedModelGroup = CoreGroup
     schema_module.ResolvedRoute = CoreRoute
@@ -139,7 +142,9 @@ def test_compiler_adapter_matches_final_core_dto(monkeypatch):
     from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
 
     resolved = ModelSelectionResolver(ModelCatalog(_config())).resolve(None)
-    assert compile_model_selection(resolved) == ("client", "request")
+    client_cfg, request_cfg = compile_model_selection(resolved)
+    assert client_cfg == "client"
+    assert request_cfg == "request"
     core_group = compiled[0]
     assert core_group.model_group_id == "mgp_a"
     assert [route.route_id for route in core_group.routes] == ["primary", "backup"]
