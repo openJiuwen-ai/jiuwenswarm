@@ -20,12 +20,16 @@ SKILL_TURBO_APPROVAL_DESCRIPTION = (
     "确认后执行过程中不再逐个询问。"
 )
 
+# 维护约定：本清单必须覆盖 turbo 节点实际可用的工具类别（含网络组）。
+# 该清单仅用于审批卡展示，无行为耦合；新增 turbo 工具类别时需同步此表。
 SKILL_TURBO_APPROVAL_TOOLS: list[tuple[str, str]] = [
     ("bash", "执行 shell 命令（依赖安装、PPT 导出等）"),
     ("read_file", "读取文件内容"),
     ("write_file", "写入文件"),
     ("list_dir", "列出目录"),
     ("glob", "搜索文件"),
+    ("web_search", "联网搜索（快速调研、深度研究）"),
+    ("fetch_webpage", "抓取网页内容（研究引用来源）"),
     ("image_ocr", "图片文字识别"),
     ("visual_question_answering", "图片视觉理解"),
     ("generate_image", "生成图片"),
