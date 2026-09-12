@@ -153,11 +153,11 @@ def test_a2ui_stream_probe_detects_split_protocol_marker():
     )
 
     probe = ""
-    probe = _extend_a2ui_stream_probe(probe, "好的，开始整理。\n\nbeg")
+    probe = _extend_a2ui_stream_probe(probe, "好的，开始整理。\n\nbeginRend")
 
     assert _stream_probe_has_a2ui_marker(probe) is True
 
-    probe = _extend_a2ui_stream_probe(probe, "inRend")
+    probe = _extend_a2ui_stream_probe(probe, "ering")
 
     assert _stream_probe_has_a2ui_marker(probe) is True
 
@@ -202,21 +202,30 @@ def test_split_a2ui_stream_content_keeps_prefix_streamable():
 
 
 def test_split_a2ui_stream_content_handles_partial_marker():
-    """A partial marker should suppress only the marker line."""
+    """A partial marker long enough to be distinctive should suppress only the marker line."""
     from jiuwenswarm.server.runtime.agent_adapter.interface import _split_a2ui_stream_content
 
-    split = _split_a2ui_stream_content("", "现在为你展示结果。\n\nbeg")
+    split = _split_a2ui_stream_content("", "现在为你展示结果。\n\nbeginRend")
 
-    assert split == ("现在为你展示结果。\n\n", "beg")
+    assert split == ("现在为你展示结果。\n\n", "beginRend")
 
 
-def test_split_a2ui_stream_content_suppresses_two_character_tag_prefix():
-    """A tokenizer chunk containing only '<a' must not leak into visible text."""
+def test_split_a2ui_stream_content_ignores_short_tag_prefix():
+    """A short '<a' fragment must not trigger A2UI suppression (false-positive guard)."""
     from jiuwenswarm.server.runtime.agent_adapter.interface import _split_a2ui_stream_content
 
     split = _split_a2ui_stream_content("", "现在为你展示结果。\n\n<a")
 
-    assert split == ("现在为你展示结果。\n\n", "<a")
+    assert split is None
+
+
+def test_split_a2ui_stream_content_suppresses_long_tag_prefix():
+    """A distinctive '<a2ui-js' prefix should trigger suppression."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import _split_a2ui_stream_content
+
+    split = _split_a2ui_stream_content("", "现在为你展示结果。\n\n<a2ui-js")
+
+    assert split == ("现在为你展示结果。\n\n", "<a2ui-js")
 
 
 def test_a2ui_pending_render_delta_stays_open():
@@ -378,3 +387,66 @@ async def test_finalize_assistant_response_if_a2ui_bypasses_non_web_channel(monk
     )
 
     assert result == content
+
+
+def test_partial_marker_ignores_short_data_token():
+    """'data' alone must not trigger A2UI suppression (ECharts false-positive)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("some content\ndata") is False
+
+
+def test_partial_marker_ignores_data_with_array():
+    """'data: [1,2,3]' must not trigger A2UI suppression."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("chart.setOption({\ndata: [1, 2, 3]\n})") is False
+
+
+def test_partial_marker_ignores_aside_tag():
+    """'<aside>' must not trigger A2UI suppression (HTML false-positive)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("content\n<aside>") is False
+
+
+def test_partial_marker_ignores_beginning_word():
+    """'beginning' must not trigger A2UI suppression."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("in the beginning") is False
+
+
+def test_partial_marker_ignores_delete_token():
+    """'delete' alone must not trigger A2UI suppression."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("code\n\ndelete") is False
+
+
+def test_partial_marker_ignores_surface_token():
+    """'surface' alone must not trigger A2UI suppression."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("render\nsurface") is False
+
+
+def test_partial_marker_triggers_on_long_dataModel_prefix():
+    """'dataModel' is long enough to be distinctive and should trigger."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface import (
+        _looks_like_partial_a2ui_marker,
+    )
+
+    assert _looks_like_partial_a2ui_marker("content\ndataModel") is True
