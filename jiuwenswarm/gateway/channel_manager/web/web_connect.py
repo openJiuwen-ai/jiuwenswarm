@@ -90,6 +90,12 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
+        # RSI pushes contain the complete node/progress payload.  Reducing
+        # them to {session_id, content} would make the evolution tree appear
+        # empty in the browser.
+        "rsi.training.status.changed",
+        "rsi.training.progress",
+        "rsi.training.tree.delta",
     }
 )
 

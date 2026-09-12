@@ -152,7 +152,9 @@ export const pluginPackagesApi = {
   // 拿到，不是浏览器 File 对象）。截图里的 session_id 用户明确要求先不带（2026-08-20 口头确认），
   // 等后端那边定下来要不要这个字段再加回。响应结构未知，暂按 void 处理，等后端 ready 联调时
   // 再按实际返回值调整。
-  importLocal: (params: { path: string }) => webRequest<void>('plugin_packages.import_local', params),
+  // 响应结构以后端 extension_package_manager.import_plugin_package 为准：{'id': package_id}。
+  importLocal: (params: { path: string }) =>
+    webRequest<{ id: string }>('plugin_packages.import_local', params),
   // v2 §1.6.3：失败且带 pending_connectors → 包成 PluginInstallPendingError，让调用方走连接
   // 续跑；不带 pending_connectors 的纯硬失败原样上抛。
   install: async (id: string): Promise<void> => {

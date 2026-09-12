@@ -1613,41 +1613,6 @@ class JiuWenSwarm:
             and not cls._is_team_plan_confirm_answer(params)
         )
 
-    def _make_retry_without_a2ui_call(
-            self,
-            *,
-            adapter: AgentAdapter,
-            request: AgentRequest,
-    ):
-        async def retry_without_a2ui_call(query: str) -> str | None:
-            if getattr(adapter, "_instance", None) is None:
-                return None
-            try:
-                modified_request = AgentRequest(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    session_id=request.session_id,
-                    chat_id=request.chat_id,
-                    req_method=request.req_method,
-                    params={**request.params, "query": query},
-                    is_stream=False,
-                    timestamp=request.timestamp,
-                    metadata={**(request.metadata or {}), "skip_a2ui": True},
-                )
-                retry_inputs, _, _ = self._build_inputs(modified_request)
-                retry_inputs["_invoke_turn_id"] = request.request_id
-                result = await adapter.process_message_impl(modified_request, retry_inputs)
-                if result.ok and result.payload.get("content"):
-                    return str(result.payload["content"])
-            except Exception as exc:
-                logger.warning(
-                    "Retry without A2UI failed: request_id=%s error=%s",
-                    request.request_id,
-                    exc,
-                )
-            return None
-
-        return retry_without_a2ui_call
 
     @staticmethod
     def _build_interactive_input_from_answers(
@@ -4339,6 +4304,27 @@ class JiuWenSwarm:
         if method is None:
             return
         await method(operation, config_path)
+
+    async def apply_rsi_harness_install(
+        self,
+        operation: str,
+        *,
+        config_path: str,
+        installation_id: str,
+    ) -> dict[str, Any]:
+        """Apply an RSI-published Harness through the adapter-owned LoadRecord."""
+
+        adapter = self._adapter
+        if adapter is None:
+            return {"status": "SKIPPED", "resources": []}
+        method = getattr(adapter, "apply_rsi_harness_install", None)
+        if method is None:
+            return {"status": "SKIPPED", "resources": []}
+        return await method(
+            operation,
+            config_path=config_path,
+            installation_id=installation_id,
+        )
 
     async def _unload_live_equipment(self, kind: str, package_id: str) -> None:
         """Unload a catalog package from live session adapters before delete.

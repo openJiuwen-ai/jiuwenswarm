@@ -224,7 +224,7 @@ async def test_auto_answer_reenters_native_projection_after_cwd_changes(native, 
     }
     result = await native.rail.before_tool_call(invocation.ctx)
     assert result is None
-    assert collected == [[(str(native.root.parent), "read")]]
+    assert collected == [[(native.root.parent.as_posix(), "read")]]
     assert bool(persisted) is permanent
     assert inv.normalize_invocation_tool_args(name, pending.tool_args) == frozen_args
     assert NATIVE_PATH_ACCESS.get() is None
@@ -271,9 +271,10 @@ async def test_tool_deny_and_exact_external_path_survive_projection(native):
     policy = OpenJiuwenPolicyEvaluator(base, permission_config_getter=lambda: native.permissions)
     result = await policy.evaluate(frozen)
     assert result.level == "ask"
-    assert result.external_paths == (str(native.root.parent),)
+    expected_external_path = native.root.parent.as_posix()
+    assert result.external_paths == (expected_external_path,)
     assert base._collect_file_guard_persist_accesses("glob", frozen.tool_args, base._engine.config) == [
-        (str(native.root.parent), "read"),
+        (expected_external_path, "read"),
     ]
     denied = deepcopy(native.permissions)
     denied["tools"] = {"glob": "deny"}

@@ -4,6 +4,8 @@
   "version": "0.1.0",
   "type": "module",
   "scripts": {
+    "test:rsi-presentation": "esbuild src/features/rsi/rsiPresentation.ts --bundle --platform=node --format=esm --outfile=node_modules/.cache/rsi-presentation/rsiPresentation.mjs && node --test tests/rsiPresentation.test.mjs",
+    "test:rsi-stage-tree": "esbuild src/features/rsi/rsiStore.ts --bundle --platform=node --format=esm --packages=external --outfile=node_modules/.cache/rsi-stage/rsiStore.mjs --define:import.meta.env.DEV=false && node --test tests/rsiStageTree.test.mjs",
     "predev": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "prebuild": "cd ../../../.. && node ./jiuwenswarm/scripts/generate-agent-folders.js",
     "dev": "vite",

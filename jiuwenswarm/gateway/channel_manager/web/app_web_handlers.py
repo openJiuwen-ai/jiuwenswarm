@@ -68,6 +68,7 @@ from jiuwenswarm.common.config import (
     update_symphony_in_config,
     update_permissions_enabled_in_config,
     update_setup_guide_enabled_in_config,
+    update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -207,9 +208,7 @@ class _ConfigChangeSet:
             scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
-            if key_text == "skill_retrieval_index_recommendation_shown":
-                scopes.add("web_ui")
-            elif key_text in {"models.defaults"} or key_text.startswith("models."):
+            if key_text in {"models.defaults"} or key_text.startswith("models."):
                 scopes.add("model")
             elif key_text in {"modes.team", "agents", "team"}:
                 scopes.add("team")
@@ -1124,6 +1123,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "rsi_enabled",
     "trajectory_ui_enabled",
     "task_full_duplex_enabled",
     "proactive_recommendation_enabled",
@@ -1205,12 +1205,6 @@ _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
 _SYMPHONY_CONFIG_KEYS = tuple(_SYMPHONY_CONFIG_SPECS.keys())
 _SKILL_RETRIEVAL_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "skill_retrieval_enabled": (("enabled",), "bool", False),
-    "skill_retrieval_index_enabled": (("index", "enabled"), "bool", False),
-    "skill_retrieval_index_recommendation_shown": (
-        ("index", "recommendation_shown"),
-        "bool",
-        False,
-    ),
     "skill_retrieval_max_results": (("discovery", "max_results"), "int", 10),
     "skill_retrieval_max_output_chars": (
         ("discovery", "max_output_chars"),
@@ -2987,6 +2981,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["setup_guide_enabled"] = (
                 "true" if setup_guide_cfg.get("enabled", True) else "false"
             )
+            rsi_cfg = raw.get("rsi") or {}
+            payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
             for key, val in payload.items():
                 from jiuwenswarm.extensions.registry import ExtensionRegistry
                 if (("api_key" in key.lower() or "token" in key.lower())
@@ -3038,6 +3034,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("rsi_enabled", "true")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -3269,6 +3266,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_permissions_enabled_in_config(parsed)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "rsi_enabled":
+                    update_rsi_enabled_in_config(parsed)
                 elif param_key == "enable_free_models":
                     update_enable_free_models_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
@@ -7329,12 +7328,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
 
+        request_params = dict(params if isinstance(params, dict) else {})
+        if str(req_method.value).startswith("rsi."):
+            request_params["session_id"] = session_id
+            if req_method is ReqMethod.RSI_ARTIFACT_DOWNLOAD and user_id:
+                request_params["_download_user_id"] = user_id
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
-            params=params if isinstance(params, dict) else {},
+            params=request_params,
             session_id=session_id,
             user_id=user_id,
             req_method=req_method,
@@ -7354,6 +7359,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_harness("harness.activate", _HarnessReq.HARNESS_PACKAGES_ACTIVATE)
     _register_harness("harness.deactivate", _HarnessReq.HARNESS_PACKAGES_DEACTIVATE)
     _register_harness("harness.delete", _HarnessReq.HARNESS_PACKAGES_DELETE)
+
+    # RSI 优化平台 18 个 web method（web 契约 v0.3 §4）：经 E2A 转发到 AgentServer。
+    # 与 harness.* 同构（仅注册 + proxy_unary_request，不承载业务）。
+    _RSI_METHODS = [
+        ("rsi.dataset.validate", _HarnessReq.RSI_DATASET_VALIDATE),
+        ("rsi.task.create", _HarnessReq.RSI_TASK_CREATE),
+        ("rsi.task.list", _HarnessReq.RSI_TASK_LIST),
+        ("rsi.task.get", _HarnessReq.RSI_TASK_GET),
+        ("rsi.task.delete", _HarnessReq.RSI_TASK_DELETE),
+        ("rsi.training.start", _HarnessReq.RSI_TRAINING_START),
+        ("rsi.training.pause", _HarnessReq.RSI_TRAINING_PAUSE),
+        ("rsi.training.resume", _HarnessReq.RSI_TRAINING_RESUME),
+        ("rsi.training.terminate", _HarnessReq.RSI_TRAINING_TERMINATE),
+        ("rsi.report.get", _HarnessReq.RSI_REPORT_GET),
+        ("rsi.usage.get", _HarnessReq.RSI_USAGE_GET),
+        ("rsi.artifact.download", _HarnessReq.RSI_ARTIFACT_DOWNLOAD),
+        ("rsi.artifact.files.list", _HarnessReq.RSI_ARTIFACT_FILES_LIST),
+        ("rsi.artifact.files.get", _HarnessReq.RSI_ARTIFACT_FILES_GET),
+        ("rsi.tree.get", _HarnessReq.RSI_TREE_GET),
+        ("rsi.harness.install", _HarnessReq.RSI_HARNESS_INSTALL),
+        ("rsi.harness.versions.list", _HarnessReq.RSI_HARNESS_VERSIONS_LIST),
+        ("rsi.harness.rollback", _HarnessReq.RSI_HARNESS_ROLLBACK),
+    ]
+    for _method_name, _req_method in _RSI_METHODS:
+        _register_harness(_method_name, _req_method)
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""

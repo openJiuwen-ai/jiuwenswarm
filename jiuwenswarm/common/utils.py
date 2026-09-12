@@ -724,6 +724,7 @@ def _install_default_builtin_skills(
     - swarmskill-creator: Swarm技能创建助手（由 skill-creator 路由选中）
     - skill-omni-creation: 链接/网页/视频技能创建助手（由 skill-creator 路由选中）
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
+    - rsi-program-dataset-creator: 程序演进任务设计与评测编排
     - agent-creator: Agent 模板包创建助手
     - plugin-creator: 插件能力扩展包创建助手
     - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
@@ -746,6 +747,7 @@ def _install_default_builtin_skills(
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
+        "rsi-program-dataset-creator",
         "agent-creator",
         "plugin-creator",
         "baoyu-image-gen",
@@ -820,6 +822,7 @@ def ensure_default_builtin_skills() -> None:
         "swarmskill-creator",
         "skill-omni-creation",
         "huawei-cloud-maas-setup",
+        "rsi-program-dataset-creator",
         "agent-creator",
         "plugin-creator",
         "baoyu-image-gen",
@@ -2224,7 +2227,7 @@ def get_cron_jobs_path() -> Path:
 def get_heartbeat_jobs_path() -> Path:
     """Canonical path for heartbeat_jobs.json (new thread-automation heartbeat jobs).
 
-    与 ``get_cron_jobs_path`` 同目录(``agent/home``),禁止在业务代码中硬编码该路径。
+    保留在 ``agent/home``，不随 cron 迁移到 gateway；禁止在业务代码中硬编码该路径。
     """
     return get_agent_home_dir() / "heartbeat_jobs.json"
 

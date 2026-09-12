@@ -5,6 +5,7 @@ import { useTranslation } from 'react-i18next';
 import { Button, Switch } from '../../../../components/ui';
 import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
+import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
 import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
 import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
 import {
@@ -496,6 +497,31 @@ export function ExternalCliSettingsItem({ disabled }: SettingsCustomItemProps) {
       onConfigPatch={source.patchLocal}
       onSave={(updates) => source.save(updates, 'external-cli-agents') as Promise<ExternalCliConfigSaveResult | void>}
     />
+  );
+}
+
+export function RSISetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const rsi = normalizeRSIEnabled(source.values.rsi_enabled);
+  async function updateRSI(next: boolean): Promise<void> {
+    await source.save({ rsi_enabled: next }, 'rsi-enabled');
+    setRSIFeatureEnabled(next);
+  }
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.fields.rsi_enabled.title')}
+      description={t('settingsPanel.fields.rsi_enabled.description')}
+    >
+      <Switch
+        aria-label={t('settingsPanel.fields.rsi_enabled.title')}
+        checked={rsi}
+        disabled={disabled || !isConnected || source.savingKeys.has('rsi_enabled')}
+        onChange={(next) => void updateRSI(next).catch(() => undefined)}
+      />
+    </SettingRow>
   );
 }
 

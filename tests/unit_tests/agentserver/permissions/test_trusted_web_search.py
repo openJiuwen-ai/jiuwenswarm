@@ -6,7 +6,6 @@ from __future__ import annotations
 
 # TEST ONLY: URL fixtures use RFC-reserved ``.invalid`` names and no test
 # performs external network I/O.
-
 import json
 import re
 from pathlib import Path
@@ -22,15 +21,8 @@ from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackEvent,
 )
 from openjiuwen.harness.tools import WebFreeSearchTool
+from openjiuwen.harness.tools.web.free_search import _FreeSearchRequest
 
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
-    ToolInvocationKeyV1,
-)
-from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
-    SessionTrustedSearchUrls,
-    bind_trusted_search_producer,
-    clear_trusted_search_producer,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     RootDecisionContext,
     RootIntentTurn,
@@ -45,6 +37,14 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     RootPermissionQueueRail,
     bind_root_permission_request,
     reset_root_permission_request,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
+    ToolInvocationKeyV1,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
+    SessionTrustedSearchUrls,
+    bind_trusted_search_producer,
+    clear_trusted_search_producer,
 )
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
@@ -110,12 +110,16 @@ class _ProductionSearchCallbacks:
     ) -> None:
         self.queue_rail = queue_rail
         self.permission_rail = permission_rail
+        self.tool_contexts: dict[str, AgentCallbackContext] = {}
 
     async def execute(
         self,
         event: AgentCallbackEvent,
         ctx: AgentCallbackContext,
     ) -> None:
+        tool_call_id = str(getattr(ctx.inputs.tool_call, "id", "") or "")
+        if tool_call_id:
+            self.tool_contexts[tool_call_id] = ctx
         if event is AgentCallbackEvent.BEFORE_TOOL_CALL:
             await self.queue_rail.before_tool_call(ctx)
             await self.permission_rail.before_tool_call(ctx)
@@ -129,10 +133,11 @@ class _ProductionSearchCallbacks:
 async def test_real_fetch_callbacks_isolate_smart_and_manual_execution(monkeypatch, tmp_path):
     import requests
     from openjiuwen.core.runner import Runner
-    from jiuwenswarm.agents.harness.common.tools import web_fetch_tools as fetch
+
     from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
         PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
     )
+    from jiuwenswarm.agents.harness.common.tools import web_fetch_tools as fetch
 
     url = "https://news.invalid/story"
     ledger = SessionTrustedSearchUrls("session-1")
@@ -202,13 +207,15 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
     expected_timeout: int,
 ) -> None:
     url = "https://release-notes.invalid/v1"
-    calls: list[tuple[str, int, int]] = []
+    proxy_url = "http://proxy.invalid:8080"
+    allowed_domains = ("release-notes.invalid", "docs.invalid")
+    enabled_engines = ("Bing", "duckduckgo")
+    calls: list[_FreeSearchRequest] = []
 
     async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
+        request: _FreeSearchRequest,
     ) -> tuple[str, list[dict[str, str]]]:
-        del session
-        calls.append((query, max_results, timeout_seconds))
+        calls.append(request)
         return (
             "duckduckgo",
             [
@@ -218,8 +225,18 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
         )
 
     monkeypatch.setattr(WebFreeSearchTool, "_search_free", staticmethod(fake_search))
-    upstream = WebFreeSearchTool(agent_id="agent-1")
-    trusted = TrustedWebFreeSearchTool(agent_id="agent-1")
+    upstream = WebFreeSearchTool(
+        agent_id="agent-1",
+        proxy_url=proxy_url,
+        allowed_domains=allowed_domains,
+        enabled_engines=enabled_engines,
+    )
+    trusted = TrustedWebFreeSearchTool(
+        agent_id="agent-1",
+        proxy_url=proxy_url,
+        allowed_domains=allowed_domains,
+        enabled_engines=enabled_engines,
+    )
     expected = await upstream.invoke(inputs)
 
     ledger = SessionTrustedSearchUrls("session-1")
@@ -227,10 +244,17 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
     actual = await trusted.invoke(inputs)
 
     assert actual == expected
-    assert calls == [
-        ("release", expected_max_results, expected_timeout),
-        ("release", expected_max_results, expected_timeout),
-    ]
+    assert [
+        (request.query, request.max_results, request.timeout_seconds)
+        for request in calls
+    ] == [("release", expected_max_results, expected_timeout)] * 2
+    assert all(request.session is not None for request in calls)
+    assert [
+        (request.proxy_url, request.allowed_domains, request.enabled_engines)
+        for request in calls
+    ] == [
+        (proxy_url, allowed_domains, frozenset({"bing", "duckduckgo"})),
+    ] * 2
     assert trusted.card.model_dump() == upstream.card.model_dump()
     assert ledger.contains(root_session_id="session-1", url=url)
     assert ledger.contains(root_session_id="session-1", url="https://docs.invalid/v1")
@@ -262,13 +286,8 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
     manager = AbilityManager()
     tool = TrustedWebFreeSearchTool(agent_id="agent-1")
 
-    async def fake_search(
-        session: object,
-        query: str,
-        max_results: int,
-        timeout_seconds: int,
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: object) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [
             {"title": "Result", "url": url, "snippet": "Summary"}
         ]
@@ -341,7 +360,10 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
 
     assert fetch_result[0][0] == "fetched"
     assert len(reviewer.requests) == 1
-    metadata = parent.extra["permission_reviewer_metadata_by_tool_call_id"][
+    assert "permission_reviewer_metadata_by_tool_call_id" not in parent.extra
+    metadata = callbacks.tool_contexts["call-fetch"].extra[
+        "permission_reviewer_metadata_by_tool_call_id"
+    ][
         "call-fetch"
     ]
     assert metadata["decision_source"] == "deterministic_bounded_scope"
@@ -355,10 +377,8 @@ async def test_adapter_matches_upstream_without_recording_unsuccessful_results(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: object) -> tuple[str, list[dict[str, str]]]:
+        del request
         if outcome == "failure":
             raise RuntimeError("search unavailable")
         return "duckduckgo", []
@@ -403,10 +423,8 @@ async def test_adapter_keeps_provenance_when_rendering_fails_after_rows(
 ) -> None:
     url = "https://release-notes.invalid/v1"
 
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: object) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [{"url": url}]
 
     monkeypatch.setattr(WebFreeSearchTool, "_search_free", staticmethod(fake_search))

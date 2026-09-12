@@ -1395,7 +1395,6 @@ class SkillManager:
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             build_discovery_settings,
             is_skill_retrieval_enabled,
-            is_skill_retrieval_index_enabled,
             resolve_skill_retrieval_strategy,
             skill_retrieval_artifact_root,
             skill_sources_from_manager,
@@ -1415,9 +1414,7 @@ class SkillManager:
         )
         config = get_config() or {}
         configured_enabled = is_skill_retrieval_enabled(config)
-        configured_index_enabled = is_skill_retrieval_index_enabled(config)
         enabled = configured_enabled
-        index_enabled = configured_index_enabled
         artifact_root = skill_retrieval_artifact_root()
         settings = build_discovery_settings(config)
         flat_directory = SkillFS(
@@ -1429,7 +1426,7 @@ class SkillManager:
         snapshot = flat_directory.prompt_snapshot()
         candidate_scale = "small" if snapshot.all_candidates_included else "large"
         directory = flat_directory
-        if enabled and index_enabled and candidate_scale == "large":
+        if enabled and candidate_scale == "large":
             directory = SkillFS(
                 lambda: visible_documents,
                 settings=replace(settings, use_existing_index=True),
@@ -1458,7 +1455,6 @@ class SkillManager:
                 session_profile.get("pinned_index_revision") or ""
             )
             enabled = configured_enabled and bool(session_profile.get("enabled"))
-            index_enabled = bool(session_profile.get("index_enabled"))
             if session_profile.get("candidate_scale") in {"small", "large"}:
                 candidate_scale = str(session_profile["candidate_scale"])
             estimated_candidate_tokens = max(
@@ -1527,18 +1523,11 @@ class SkillManager:
                     index_state=public_index_state,
                 )
             )
-        index_recommended = (
-            enabled and candidate_scale == "large" and not index_enabled
-        )
-        build_supported = (
-            configured_enabled
-            and configured_index_enabled
-            and candidate_scale == "large"
-        )
+        build_supported = configured_enabled and candidate_scale == "large"
         logs = build.get("logs") if isinstance(build.get("logs"), list) else []
         return {
             "enabled": enabled,
-            "index_enabled": index_enabled,
+            "index_enabled": enabled,
             "mode": self._skill_retrieval_mode(),
             "candidate_scale": candidate_scale,
             "estimated_candidate_tokens": estimated_candidate_tokens,
@@ -1546,8 +1535,8 @@ class SkillManager:
             "effective_strategy": effective_strategy,
             "layout": layout,
             "index_state": public_index_state,
-            "index_required": index_recommended,
-            "index_recommended": index_recommended,
+            "index_required": False,
+            "index_recommended": False,
             "build_supported": build_supported,
             "build_status": str(build.get("status") or "idle"),
             "build_stage": str(build.get("stage") or ""),
@@ -1577,7 +1566,6 @@ class SkillManager:
         from jiuwenswarm.common.config import get_config
         from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
             is_skill_retrieval_enabled,
-            is_skill_retrieval_index_enabled,
         )
 
         config = get_config() or {}
@@ -1588,14 +1576,6 @@ class SkillManager:
                 "effective_strategy": "legacy",
                 "build_status": status["build_status"],
                 "detail": "Enable Skill retrieval before building its taxonomy.",
-            }
-        if not is_skill_retrieval_index_enabled(config):
-            return {
-                "success": False,
-                "error_code": "skill_index_disabled",
-                "effective_strategy": status["effective_strategy"],
-                "build_status": status["build_status"],
-                "detail": "Enable the Skill taxonomy switch before building it.",
             }
         if status["candidate_scale"] == "small":
             return {
@@ -6872,6 +6852,14 @@ class SkillManager:
                 continue
         return False
 
+    @staticmethod
+    def _path_is_in_process_temp(path: Path) -> bool:
+        """判断路径是否位于当前进程的标准临时目录内。"""
+        try:
+            return SkillManager._path_is_within_root(path, Path(tempfile.gettempdir()))
+        except (OSError, ValueError, RuntimeError):
+            return False
+
     def _assert_import_local_source_safe(self, raw_path: str) -> None:
         """拒绝符号链接、URL 协议与落在基础黑名单根下的本地导入源。
 
@@ -6905,7 +6893,15 @@ class SkillManager:
             resolved = expanded.resolve()
         except (OSError, ValueError, RuntimeError) as exc:
             raise ValueError(f"path 无效: {exc}") from exc
+        # macOS 的进程临时目录位于 /private/var 下；放行该目录避免正常的
+        # 上传/解压暂存文件被 /var 基础黑名单误判。显式运维黑名单仍优先。
+        allow_process_temp = (
+            not os.getenv(_IMPORT_LOCAL_FORBIDDEN_DIRS_ENV)
+            and self._path_is_in_process_temp(resolved)
+        )
         for root in self._get_import_local_forbidden_roots():
+            if allow_process_temp and root == Path("/var"):
+                continue
             if self._path_is_within_root(resolved, root):
                 raise ValueError(f"path 位于禁止导入的目录: {raw}")
         if resolved.is_dir():

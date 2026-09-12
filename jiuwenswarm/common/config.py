@@ -887,6 +887,19 @@ def update_task_full_duplex_in_config(enabled: bool) -> None:
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（Web RSI 实验入口开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_updater_in_config(updates: dict[str, Any]) -> None:
     """只更新 updater 段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

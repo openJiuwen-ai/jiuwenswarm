@@ -3,6 +3,7 @@ import type { SettingsModuleDefinition } from '../../registry/types';
 import {
   ExternalCliSettingsItem,
   ProactiveLimitsSetting,
+  RSISetting,
   TaskFullDuplexSetting,
   TrajectoryUiSetting,
 } from './ExperimentalSettings';
@@ -31,6 +32,11 @@ export const experimentalModule: SettingsModuleDefinition = {
       id: 'external-cli-agents',
       titleKey: 'settingsPanel.experimental.externalCliAgents',
       items: [{ id: 'external-cli-agents', component: 'custom', render: ExternalCliSettingsItem }],
+    },
+    {
+      id: 'rsi',
+      titleKey: 'settingsPanel.experimental.rsi',
+      items: [{ id: 'rsi-enabled', component: 'custom', render: RSISetting }],
     },
     {
       id: 'trajectory-ui',

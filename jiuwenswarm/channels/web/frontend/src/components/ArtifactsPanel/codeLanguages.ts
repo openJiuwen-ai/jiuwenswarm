@@ -10,6 +10,7 @@ const cpp = async (): Promise<Extension> => (await import('@codemirror/lang-cpp'
 
 const LANGUAGE_LOADERS = {
   bash: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
+  bib: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/stex')).stex),
   c: cpp,
   cc: cpp,
   cjs: () => javascript(),
@@ -33,7 +34,9 @@ const LANGUAGE_LOADERS = {
   rs: async () => (await import('@codemirror/lang-rust')).rust(),
   sh: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/shell')).shell),
   sql: async () => (await import('@codemirror/lang-sql')).sql(),
+  sty: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/stex')).stex),
   swift: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/swift')).swift),
+  tex: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/stex')).stex),
   toml: async () => StreamLanguage.define((await import('@codemirror/legacy-modes/mode/toml')).toml),
   ts: () => javascript(true),
   tsx: () => javascript(true, true),

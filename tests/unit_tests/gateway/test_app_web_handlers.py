@@ -512,6 +512,55 @@ async def test_session_list_forwards_via_e2a_proxy(
 
 
 @pytest.mark.asyncio
+async def test_rsi_download_forwards_container_identity_in_params() -> None:
+    channel = FakeWebChannel()
+    agent_client = _CapturingSessionListAgentClient()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=agent_client)
+    )
+
+    await channel.methods["rsi.artifact.download"](
+        object(),
+        "req-rsi-download",
+        {"task_id": "rsi-task-1"},
+        "sess-rsi-1",
+        "user-rsi-1",
+    )
+
+    assert len(agent_client.envelopes) == 1
+    env = agent_client.envelopes[0]
+    assert env.method == "rsi.artifact.download"
+    assert env.user_id == "user-rsi-1"
+    assert env.params == {
+        "task_id": "rsi-task-1",
+        "session_id": "sess-rsi-1",
+        "_download_user_id": "user-rsi-1",
+    }
+
+
+@pytest.mark.asyncio
+async def test_rsi_commands_forward_session_id_for_async_push_routing() -> None:
+    channel = FakeWebChannel()
+    agent_client = _CapturingSessionListAgentClient()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=agent_client)
+    )
+
+    await channel.methods["rsi.task.create"](
+        object(),
+        "req-rsi-create",
+        {"scenario": "HARNESS", "name": "mock", "model_refs": {"optimizer": "m"}},
+        "sess-rsi-create",
+        "user-rsi-1",
+    )
+
+    assert len(agent_client.envelopes) == 1
+    env = agent_client.envelopes[0]
+    assert env.method == "rsi.task.create"
+    assert env.params["session_id"] == "sess-rsi-create"
+
+
+@pytest.mark.asyncio
 async def test_session_list_keeps_single_user_shared_directory_fallback(monkeypatch) -> None:
     """A local AgentServer restart must not hide legacy sessions from Web."""
     channel = FakeWebChannel()
@@ -2652,7 +2701,8 @@ def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
     assert flat["skill_retrieval_enabled"] == "true"
-    assert flat["skill_retrieval_index_enabled"] == "true"
+    assert "skill_retrieval_index_enabled" not in flat
+    assert "skill_retrieval_index_recommendation_shown" not in flat
     assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
 
@@ -2695,9 +2745,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
     )
 
     assert recorded_symphony == [{"enabled": True}]
-    assert recorded_skill_retrieval == [
-        {"enabled": False, "index": {"enabled": True}}
-    ]
+    assert recorded_skill_retrieval == [{"enabled": False}]
     assert channel.responses[-1] == {
         "id": "req-3",
         "ok": True,
@@ -2705,7 +2753,6 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
             "updated": [
                 "symphony_enabled",
                 "skill_retrieval_enabled",
-                "skill_retrieval_index_enabled",
             ],
             "applied_without_restart": True,
         },
@@ -3482,3 +3529,81 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     assert "_persisted" not in items[1]
     assert items[1]["base64Data"] == small_b64
     assert 1 not in uploaded
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "true"),
+        ({"rsi": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_rsi_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-rsi",
+        {},
+        "sess-get-rsi",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["rsi_enabled"] == expected
+
+
+@pytest.mark.asyncio
+async def test_config_save_all_persists_rsi_switch(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    reload_options_seen: list[dict] = []
+
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config_raw",
+        lambda: {"rsi": {"enabled": True}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_config",
+        lambda: {"rsi": {"enabled": False}},
+    )
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_rsi_enabled_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+
+    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
+        del updated_keys, env_updates, config_payload
+        reload_options_seen.append(dict(reload_options))
+        return True
+
+    _register_web_handlers(
+        WebHandlersBindParams(
+            channel=channel,
+            on_config_saved=on_config_saved,
+        )
+    )
+
+    await channel.methods["config.save_all"](
+        object(),
+        "req-set-rsi",
+        {"config": {"rsi_enabled": False}},
+        "sess-set-rsi",
+    )
+
+    assert persisted == [False]
+    assert reload_options_seen == [{
+        "target_channel_id": "web",
+        "reload_scopes": ["agent_runtime"],
+    }]
+    assert channel.responses[-1]["payload"] == {
+        "updated": ["rsi_enabled"],
+        "applied_without_restart": True,
+        "models_count": None,
+    }

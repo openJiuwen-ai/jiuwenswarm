@@ -1113,6 +1113,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'rsi_enabled',
     'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
@@ -1260,6 +1261,14 @@ test('Agent configuration entry points are disabled while the backend is connect
   assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected\}/g)?.length, 2);
   assert.equal(agentSettings.match(/disabled=\{disabled \|\| !isConnected \|\| busy\}/g)?.length, 3);
   assert.match(agentSettings, /<FormDialog[\s\S]*confirmDisabled=\{!isConnected\}/);
+});
+
+test('external CLI auto-save feedback is rendered once after dependency installation', () => {
+  const experimentalSettings = source('src/features/settings/modules/experimental/ExperimentalSettings.tsx');
+  assert.equal(
+    (experimentalSettings.match(/settings-experimental-cli__install-running--success/g) ?? []).length,
+    1,
+  );
 });
 
 test('media capability configuration and hot-apply state use exact fields', () => {

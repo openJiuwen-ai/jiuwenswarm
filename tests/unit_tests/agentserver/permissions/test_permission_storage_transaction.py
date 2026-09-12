@@ -15,7 +15,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions import permissions_pers
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
     compose_host_effective_permissions,
 )
-from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
+from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 from openjiuwen.harness.security.models import PermissionLevel
 
 

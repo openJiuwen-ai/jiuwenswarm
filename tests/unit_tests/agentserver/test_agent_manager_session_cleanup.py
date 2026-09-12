@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_manager import AgentManager
+from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_cache_key
 
 
 class _SessionRuntimeAgent:
@@ -123,7 +123,7 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    cache_key = _make_agent_cache_key("code", "normal", "/tmp/shared-project")
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(

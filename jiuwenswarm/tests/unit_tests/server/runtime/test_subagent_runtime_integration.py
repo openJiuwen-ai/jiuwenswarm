@@ -298,6 +298,27 @@ class TestSubagentStreamMapping:
         assert not request_id.endswith(":None")
 
     @staticmethod
+    def test_subagent_activity_prefers_explicit_activity_identity() -> None:
+        projection = {
+            "subagent_id": "sub-a",
+            "task_id": "turn-1",
+            "activity_id": "activity-42",
+            "kind": "tool_call",
+            "summary": "search market data",
+            "at_ms": 1787019579060,
+        }
+
+        with patch.object(interface_deep_module, "append_history_record") as append_history:
+            JiuWenSwarmDeepAdapter.persist_subagent_activity({
+                **projection,
+                "parent_session_id": "parent-sess-activity",
+            })
+
+        assert append_history.call_args.kwargs["request_id"] == (
+            "sub-a:activity:turn-1:activity-42"
+        )
+
+    @staticmethod
     def test_subagent_transcript_persists_parent_session_scope() -> None:
         projection = {
             "parent_session_id": "parent-sess-final",

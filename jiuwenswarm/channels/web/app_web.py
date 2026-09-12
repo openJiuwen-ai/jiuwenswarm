@@ -752,7 +752,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             self.send_response(resp.status, resp.reason)
             # 登录成功: 拦截 body 写 cookie
-            wrote_cookies = False
             if is_login and resp.status == 200:
                 try:
                     payload = json.loads(resp_body.decode("utf-8"))
@@ -760,10 +759,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     refresh_token = payload.get("refresh_token") or (payload.get("data") or {}).get("refresh_token")
                     if access_token:
                         self._set_auth_cookie(access_token)
-                        wrote_cookies = True
                     if refresh_token:
                         self._set_auth_cookie(refresh_token, self._AUTH_REFRESH_COOKIE_NAME, self._AUTH_REFRESH_MAX_AGE)
-                        wrote_cookies = True
                 except Exception:  # noqa: BLE001
                     pass
             # 转发响应头, 但 Set-Cookie 由我们接管

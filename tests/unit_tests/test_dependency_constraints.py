@@ -16,7 +16,8 @@ OTEL_REQUIREMENTS = {
 
 
 def test_opentelemetry_dependencies_exclude_protobuf4_only_proto_versions():
-    pyproject = tomllib.loads((PROJECT_ROOT / "pyproject.toml").read_text())
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as stream:
+        pyproject = tomllib.load(stream)
     requirements = {
         Requirement(raw).name: Requirement(raw)
         for raw in pyproject["project"]["dependencies"]
@@ -31,3 +32,39 @@ def test_opentelemetry_dependencies_exclude_protobuf4_only_proto_versions():
             f"{name} must exclude OpenTelemetry 1.27.0 and older because "
             "opentelemetry-proto<1.28 requires protobuf<5"
         )
+
+
+def test_sdk_dependency_and_lock_use_the_same_immutable_revision():
+    with (PROJECT_ROOT / "pyproject.toml").open("rb") as stream:
+        pyproject = tomllib.load(stream)
+    with (PROJECT_ROOT / "uv.lock").open("rb") as stream:
+        lock = tomllib.load(stream)
+
+    sdk_source = pyproject["tool"]["uv"]["sources"]["openjiuwen"]
+    revision = sdk_source["rev"]
+    assert len(revision) == 40 and all(char in "0123456789abcdef" for char in revision)
+    git_url = sdk_source["git"]
+    dependency_groups = [pyproject["project"]["dependencies"]]
+    dependency_groups.extend(pyproject["project"]["optional-dependencies"].values())
+    sdk_urls = [
+        requirement.url
+        for group in dependency_groups
+        for raw in group
+        if (requirement := Requirement(raw)).name == "openjiuwen" and requirement.url
+    ]
+    assert sdk_urls and set(sdk_urls) == {f"git+{git_url}@{revision}"}
+
+    locked_sdk = [package for package in lock["package"] if package["name"] == "openjiuwen"]
+    assert len(locked_sdk) == 1
+    assert locked_sdk[0]["source"] == {"git": f"{git_url}?rev={revision}#{revision}"}
+
+    project = next(
+        package for package in lock["package"]
+        if package["name"] == pyproject["project"]["name"]
+    )
+    sdk_metadata = [
+        requirement for requirement in project["metadata"]["requires-dist"]
+        if requirement["name"] == "openjiuwen"
+    ]
+    assert sdk_metadata
+    assert all(requirement.get("git") == f"{git_url}?rev={revision}" for requirement in sdk_metadata)

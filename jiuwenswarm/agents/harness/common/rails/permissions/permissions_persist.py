@@ -159,9 +159,9 @@ def persist_exact_permission_allow_rule(
     """Validate current layers and persist only this approval's User increment."""
     from copy import deepcopy
 
-    from openjiuwen.harness.security.file_guard import build_file_guard_checker
+    from openjiuwen.harness.security.permission_engine.fileguard.file_guard import build_file_guard_checker
     from openjiuwen.harness.security.models import PermissionLevel
-    from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
+    from openjiuwen.harness.security.permission_engine.toolguard.tool_policy import evaluate_tiered_policy
 
     from jiuwenswarm.common.utils import get_workspace_dir
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (

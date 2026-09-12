@@ -25,8 +25,12 @@ import sys
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
+
+if TYPE_CHECKING:
+    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel
+    from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 
 # Include entry-module import/configuration work in later startup phase logs.
@@ -1361,6 +1365,9 @@ class GatewayServer(BaseWebChannel):
                 except Exception as e:  # pragma: no cover
                     logger.warning(
                         "%s on_disconnect hook error: %s",
+                        getattr(hook, "__name__", type(hook).__name__),
+                        e,
+                        exc_info=True,
                     )
 
     async def _handle_raw_message(self, ws: Any, raw: str, request_path: str, route: RouteConfig) -> None:

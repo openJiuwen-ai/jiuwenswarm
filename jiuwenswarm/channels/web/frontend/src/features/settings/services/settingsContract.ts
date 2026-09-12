@@ -69,7 +69,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
-  yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
@@ -123,6 +122,7 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
+  yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),

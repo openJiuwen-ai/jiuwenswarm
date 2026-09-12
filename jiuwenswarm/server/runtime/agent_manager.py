@@ -36,6 +36,8 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueueError,
 )
+from jiuwenswarm.agents.harness.common.rsi.errors import RsiHarnessInstallConflict
+
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_adapter.interface import JiuWenSwarm
 
@@ -1416,6 +1418,104 @@ class AgentManager:
                         cache_key,
                         exc,
                     )
+
+    async def broadcast_rsi_harness_change(
+        self,
+        *,
+        old_installation: dict[str, Any] | None,
+        new_installation: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        """Hot-load an RSI Harness on agent/code facades only.
+
+        This path intentionally calls the dedicated facade API, which owns
+        ``DeepAgent.load_plugin`` LoadRecords and session fan-out.  It never
+        touches the legacy ``harness-packages.json`` broadcast.
+        """
+
+        # ``new_installation=None`` is used only by the installer while
+        # restoring the pre-install state after an active-pointer write
+        # failure.  In that case the ``old_installation`` argument is the
+        # version currently loaded in live agents and must be deactivated.
+        operation = "activate"
+        target_installation = new_installation
+        if target_installation is None:
+            if old_installation is None:
+                return {"attempted": 0, "succeeded": 0, "failed": []}
+            operation = "deactivate"
+            target_installation = old_installation
+        installation_id = str(target_installation.get("installation_id") or "").strip()
+        runtime_path = str(target_installation.get("runtime_path") or "").strip()
+        if not installation_id or not runtime_path:
+            raise ValueError("RSI Harness installation record is incomplete")
+        target_modes = {"agent", "code"}
+        attempted = 0
+        succeeded = 0
+        failed: list[dict[str, str]] = []
+        applied: list[Any] = []
+
+        for channel_key, channel_agents in list(self.agents.items()):
+            if not isinstance(channel_agents, dict):
+                continue
+            for cache_key, agent in list(channel_agents.items()):
+                mode = str(cache_key).split(":", 1)[0]
+                if mode not in target_modes:
+                    continue
+                attempted += 1
+                try:
+                    ensure = getattr(agent, "ensure_instance", None)
+                    if callable(ensure):
+                        await ensure()
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        raise RuntimeError("agent facade does not support RSI Harness installation")
+                    await apply(
+                        operation,
+                        config_path=runtime_path,
+                        installation_id=installation_id,
+                    )
+                    succeeded += 1
+                    applied.append(agent)
+                except Exception as exc:  # noqa: BLE001 - rollback below
+                    failed.append(
+                        {
+                            "channel": str(channel_key),
+                            "agent": str(cache_key),
+                            "error": str(exc),
+                        }
+                    )
+                    break
+            if failed:
+                break
+
+        if failed:
+            rollback_failures: list[str] = []
+            for agent in reversed(applied):
+                try:
+                    apply = getattr(agent, "apply_rsi_harness_install", None)
+                    if not callable(apply):
+                        continue
+                    if old_installation:
+                        await apply(
+                            "activate",
+                            config_path=str(old_installation.get("runtime_path") or ""),
+                            installation_id=str(old_installation.get("installation_id") or ""),
+                        )
+                    else:
+                        await apply(
+                            "deactivate",
+                            config_path=runtime_path,
+                            installation_id=installation_id,
+                        )
+                except Exception as exc:  # noqa: BLE001 - expose rollback conflict
+                    rollback_failures.append(str(exc))
+            if rollback_failures:
+                raise RsiHarnessInstallConflict(
+                    "RSI Harness 广播失败且回滚失败: " + "; ".join(rollback_failures)
+                )
+            raise RsiHarnessInstallConflict(
+                "RSI Harness 广播失败: " + "; ".join(item["error"] for item in failed)
+            )
+        return {"attempted": attempted, "succeeded": succeeded, "failed": failed}
 
     async def reload_agents_config(
         self,
