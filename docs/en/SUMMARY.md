@@ -13,6 +13,7 @@
 - [Agent Team Human in the Team (HITT)](AgentTeamHumanInTheTeam.md)
 - [Multi-Instance](MultiInstance.md)
 - [Auto Harness Feature Overview](AutoHarness.md)
+- [Experiment Integrity and Artifact Lineage](ExperimentIntegrity.md)
 - [User guide](../README_EN.md)
   - [Conversation](Conversation.md)
   - [Channels](Channels.md)
