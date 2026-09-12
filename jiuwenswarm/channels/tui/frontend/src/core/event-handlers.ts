@@ -51,6 +51,7 @@ export interface PendingQuestionItem {
   multiSelect?: boolean;
   planPath?: string;
   planSlug?: string;
+  cardId?: string;
 }
 
 export interface PendingQuestionOption {
@@ -64,6 +65,22 @@ export interface PendingQuestionOption {
 export interface UserAnswer {
   selected_options: string[];
   custom_input?: string;
+  card_id?: string;
+}
+
+export function bindPermissionCardAnswer(
+  answers: UserAnswer[],
+  questions: PendingQuestionItem[],
+): UserAnswer[] {
+  if (answers.length !== 1 || questions.length !== 1) return [];
+  const answer = answers[0];
+  const cardId = questions[0]?.cardId;
+  if (!answer || !cardId) return [];
+  return [{
+    selected_options: answer.selected_options,
+    ...(answer.custom_input === undefined ? {} : { custom_input: answer.custom_input }),
+    card_id: cardId,
+  }];
 }
 
 /**
@@ -471,29 +488,34 @@ function normalizePendingQuestion(payload: Record<string, unknown>): PendingQues
   const rawQuestions = Array.isArray(payload.questions) ? payload.questions : [];
   const normalized = rawQuestions
     .filter((item): item is Record<string, unknown> => Boolean(item && typeof item === "object"))
-    .map((item) => ({
-      header: typeof item.header === "string" ? item.header : "Question",
-      question: typeof item.question === "string" ? item.question : "",
-      planPath: typeof item.plan_path === "string" ? item.plan_path : undefined,
-      planSlug: typeof item.plan_slug === "string" ? item.plan_slug : undefined,
-      options: Array.isArray(item.options)
-        ? item.options
-            .filter((option): option is Record<string, unknown> =>
-              Boolean(option && typeof option === "object"),
-            )
-            .map((option) => ({
-              label: typeof option.label === "string" ? option.label : "",
-              description: typeof option.description === "string" ? option.description : undefined,
-              value: typeof option.value === "string" ? option.value : undefined,
-              preview:
-                typeof option.preview === "string" && option.preview.trim()
-                  ? option.preview
-                  : undefined,
-            }))
-            .filter((option) => option.label.length > 0)
-        : [],
-      multiSelect: item.multi_select === true,
-    }))
+    .map((item) => {
+      const cardId = boundedCardId(item.card_id);
+      return {
+        header: typeof item.header === "string" ? item.header : "Question",
+        question: typeof item.question === "string" ? item.question : "",
+        planPath: typeof item.plan_path === "string" ? item.plan_path : undefined,
+        planSlug: typeof item.plan_slug === "string" ? item.plan_slug : undefined,
+        cardId,
+        options: Array.isArray(item.options)
+          ? item.options
+              .filter((option): option is Record<string, unknown> =>
+                Boolean(option && typeof option === "object"),
+              )
+              .map((option) => ({
+                label: typeof option.label === "string" ? option.label : "",
+                description:
+                  typeof option.description === "string" ? option.description : undefined,
+                value: typeof option.value === "string" ? option.value : undefined,
+                preview:
+                  typeof option.preview === "string" && option.preview.trim()
+                    ? option.preview
+                    : undefined,
+              }))
+              .filter((option) => option.label.length > 0)
+          : [],
+        multiSelect: item.multi_select === true,
+      };
+    })
     .filter((item) => item.question.length > 0);
 
   if (normalized.length > 0) {
@@ -518,6 +540,12 @@ function normalizePendingQuestion(payload: Record<string, unknown>): PendingQues
       multiSelect: false,
     },
   ];
+}
+
+function boundedCardId(value: unknown): string | undefined {
+  if (typeof value !== "string") return undefined;
+  const normalized = value.trim();
+  return normalized && normalized.length <= 128 ? normalized : undefined;
 }
 
 function handleDelta(

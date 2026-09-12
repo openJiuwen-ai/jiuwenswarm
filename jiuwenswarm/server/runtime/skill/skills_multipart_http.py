@@ -101,9 +101,10 @@ def handle_skills_upload_temp_http(
         if not isinstance(file_field, dict) or not isinstance(file_field.get("content"), (bytes, bytearray)):
             raise SkillRpcError(ERROR_SKILL_INVALID_PACKAGE, "缺少 file 字段")
         filename = file_field.get("filename")
+        if not isinstance(filename, str):
+            raise SkillRpcError(ERROR_SKILL_UNSAFE_PATH, "文件路径非法或指向保留目录")
         if (
-            not isinstance(filename, str)
-            or filename in {"", ".", ".."}
+            filename in {"", ".", ".."}
             or any(char in filename for char in '/\\:\x00')
             or PureWindowsPath(filename).is_reserved()
         ):

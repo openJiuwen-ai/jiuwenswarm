@@ -14,7 +14,9 @@ from openjiuwen.harness.schema.task import TodoItem, TodoStatus
 from openjiuwen.core.single_agent.interrupt.state import INTERRUPTION_KEY
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueue
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import RootPermissionDispatch
 
 
 def _build_cancel_request(session_id: str = "tui_sess_1") -> AgentRequest:
@@ -62,6 +64,11 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
     adapter = object.__new__(JiuWenSwarmDeepAdapter)
     adapter._is_session_scoped_adapter = True  # pylint: disable=protected-access
     adapter._parent_session_id = None  # pylint: disable=protected-access
+    adapter._enable_auto_permission = False  # pylint: disable=protected-access
+    adapter._root_permission_queue = state.pop(
+        "_root_permission_queue", RootPermissionQueue()
+    )
+    adapter._permission_dispatch = RootPermissionDispatch(adapter._root_permission_queue)
     for name, value in state.items():
         setattr(adapter, name, value)
     return adapter
@@ -551,6 +558,7 @@ def test_reset_runtime_cron_context_resets_shell_session(
         )
     )
     reset_shell_mock.assert_called_once_with(shell_token)
+
 def test_bind_runtime_cron_context_fills_locked_session_project_metadata(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

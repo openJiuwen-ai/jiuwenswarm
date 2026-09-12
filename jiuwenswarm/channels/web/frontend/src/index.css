@@ -242,13 +242,8 @@ body.workspace-resize-active iframe {
   }
 }
 
-/* ===========================================
-   Focus visible styles
-   =========================================== */
-
 :focus-visible {
   outline: none;
-  box-shadow: var(--effect-focus-ring);
 }
 
 /* ===========================================
@@ -416,6 +411,39 @@ body.workspace-resize-active iframe {
     background: var(--effect-content-background);
   }
 
+  /* Anchored dropdown menu (select, more-actions, etc.) */
+  .dropdown-menu {
+    position: absolute;
+    right: 0;
+    top: 100%;
+    margin-top: 0.25rem;
+    z-index: 50;
+    border-radius: 6px;
+    border: 1px solid var(--color-border-default);
+    background: var(--color-surface-panel);
+    box-shadow: 0 2px 12px 0 rgba(0, 0, 0, 0.16);
+    white-space: nowrap;
+    padding-block: 8px;
+  }
+
+  .dropdown-menu-item {
+    display: flex;
+    align-items: center;
+    width: 100%;
+    padding-inline: 16px;
+    line-height: 32px;
+    font-size: 14px;
+    text-align: left;
+    background: none;
+    border: none;
+    cursor: pointer;
+    transition: background-color var(--duration-fast) var(--ease-out);
+  }
+
+  .dropdown-menu-item:hover {
+    background: var(--color-action-secondary);
+  }
+
   /* Cards */
   .card {
     background: var(--color-surface-card);
@@ -431,18 +459,6 @@ body.workspace-resize-active iframe {
     align-content: start;
     gap: 16px;
     grid-template-columns: repeat(auto-fill, minmax(360px, 1fr));
-  }
-
-  /* 共享页面卡片（skill / agent / connector 各内容页卡片统一的宽度约束），
-     目前只收宽度，边框/圆角/阴影等公共外观后续逐步扩展 */
-  .page-card {
-    min-width: 360px;
-  }
-
-  @media (min-width: 1600px) {
-    .page-card {
-      max-width: 456px;
-    }
   }
 
   /* 页面通栏容器：flex 列，自身不限宽也不加横向 padding——
@@ -488,6 +504,7 @@ body.workspace-resize-active iframe {
   .detail-body {
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
+    padding-top: 25px;
   }
 
   /* 统一返回按钮（agent/skill/connector detail）。
@@ -507,6 +524,7 @@ body.workspace-resize-active iframe {
     width: min(1400px, calc(100% - 96px));
     margin-right: auto;
     margin-left: auto;
+    margin-bottom: 10px;
     flex-shrink: 0;
   }
 
@@ -724,6 +742,21 @@ body.workspace-resize-active iframe {
 
   .chat-bubble.streaming {
     animation: chatStreamPulse 1.5s ease-in-out infinite;
+  }
+
+  .chat-bubble.assistant.chat-bubble--tool-result {
+    border: 1px solid var(--color-action-primary);
+    border-left-width: 4px;
+    border-radius: 12px;
+    padding: 12px 16px;
+    background: var(--color-action-primary-subtle);
+  }
+
+  .chat-bubble__result-label {
+    margin-bottom: 8px;
+    color: var(--color-action-primary);
+    font-size: 12px;
+    font-weight: 600;
   }
 
   .chat-bubble.assistant.streaming {
@@ -1839,7 +1872,8 @@ body.workspace-resize-active iframe {
    */
   .timeline-collapse:not(.is-open) {
     position: absolute;
-    width: 1px;
+    /* Preserve the timeline width so hidden text does not wrap at every character. */
+    width: 100%;
     height: 0;
     margin: 0;
     padding: 0;

@@ -10,7 +10,7 @@ from weakref import WeakSet
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import mcp_toolkits, search_tools
-from jiuwenswarm.agents.harness.common.tools.search_tools import mcp_paid_search
+from jiuwenswarm.agents.harness.common.tools.trusted_search_tool_adapter import mcp_paid_search
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
@@ -193,64 +193,6 @@ async def test_mcp_no_keys_does_not_dispatch(monkeypatch):
     runner.assert_not_called()
 
 
-def test_release_mcp_exports_preserve_tool_identity():
-    assert mcp_toolkits.mcp_free_search is search_tools.mcp_free_search
-    assert mcp_toolkits.mcp_paid_search is search_tools.mcp_paid_search
-
-
-@pytest.mark.asyncio
-async def test_release_free_search_result_contract(monkeypatch):
-    search = MagicMock(return_value=(
-        "duckduckgo", [{"title": "Result", "url": "https://example.invalid/a", "snippet": "Summary"}],
-    ))
-    monkeypatch.setattr(search_tools, "_search_free_sync", search)
-
-    result = await search_tools.mcp_free_search.invoke({
-        "query": " test ", "max_results": 99, "timeout_seconds": 1,
-    })
-
-    search.assert_called_once_with("test", 20, 5)
-    assert result == (
-        "Free search results (DuckDuckGo) for: test\n"
-        "1. Result\n   URL: https://example.invalid/a\n   Snippet: Summary"
-    )
-
-
-@pytest.mark.asyncio
-async def test_release_paid_search_returns_text_error_without_keys(monkeypatch):
-    runner = MagicMock(side_effect=AssertionError("No configured provider"))
-    for name in ("bocha", "perplexity", "serper", "jina"):
-        monkeypatch.setattr(search_tools, f"_{name}_search_sync", runner)
-    mcp_toolkits.refresh_mcp_paid_search_tools()
-
-    result = await mcp_paid_search.invoke({"query": "test"})
-
-    assert result == "[ERROR]: no paid search API keys configured."
-    runner.assert_not_called()
-
-
-@pytest.mark.asyncio
-async def test_mcp_fallback_skips_provider_disabled_during_previous_attempt(monkeypatch):
-    for provider in ("BOCHA", "SERPER", "JINA"):
-        monkeypatch.setenv(f"{provider}_API_KEY", "test-key")
-
-    def fail_first_provider(**kwargs):
-        monkeypatch.setenv("SERPER_API_KEY", "")
-        raise RuntimeError("First provider unavailable")
-
-    disabled = MagicMock(side_effect=AssertionError("Disabled provider was dispatched"))
-    available = MagicMock(return_value={"answer": "answer", "urls": []})
-    monkeypatch.setattr(search_tools, "_bocha_search_sync", fail_first_provider)
-    monkeypatch.setattr(search_tools, "_serper_search_sync", disabled)
-    monkeypatch.setattr(search_tools, "_jina_search_sync", available)
-
-    used, answer, _ = await search_tools.run_paid_search_structured("test")
-
-    assert (used, answer) == ("jina", "answer")
-    disabled.assert_not_called()
-    available.assert_called_once()
-
-
 @pytest.mark.asyncio
 async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_disable(monkeypatch):
     from openjiuwen.core.single_agent.ability_manager import AbilityManager
@@ -275,34 +217,39 @@ async def test_existing_mcp_agent_refreshes_model_tools_on_enable_change_and_dis
 @pytest.mark.asyncio
 @pytest.mark.parametrize("scopes", [None, set(), {"search"}, {"search", "model"}])
 async def test_search_reload_updates_active_sessions_before_lazy_full_reload(scopes):
-    root = object.__new__(JiuWenSwarmDeepAdapter)
-    root._is_session_scoped_adapter = False
+    root = JiuWenSwarmDeepAdapter()
     calls = MagicMock()
     root._session_adapters = {
-        "first": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_first),
-        "second": SimpleNamespace(refresh_paid_search_tool_for_runtime=calls.refresh_second),
+        "first": root._new_session_scoped_adapter("first"),
+        "second": root._new_session_scoped_adapter("second"),
     }
+    root._session_adapters["first"].refresh_paid_search_tool_for_runtime = calls.refresh_first
+    root._session_adapters["second"].refresh_paid_search_tool_for_runtime = calls.refresh_second
     root._mark_session_adapters_stale_for_reload = calls.mark_stale
     await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
     assert calls.mock_calls == [
         call.refresh_first(),
         call.refresh_second(),
-        call.mark_stale({}, {}, scopes),
+        call.mark_stale({}, {}, scopes, permission_notification=False),
     ]
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("scopes", [{"model"}, {"multimodal"}])
-async def test_unrelated_reload_does_not_refresh_session_paid_search(scopes):
-    root = object.__new__(JiuWenSwarmDeepAdapter)
-    root._is_session_scoped_adapter = False
+@pytest.mark.parametrize("scopes", [{"model"}, {"multimodal"}, {"permissions"}])
+@pytest.mark.parametrize("mode", ["manual", "auto"])
+async def test_unrelated_reload_does_not_refresh_session_paid_search(scopes, mode):
+    root = JiuWenSwarmDeepAdapter()
+    config = {"permissions": {"enabled": True, "mode": mode}}
     refresh = MagicMock()
     root._session_adapters = {
-        "session": SimpleNamespace(refresh_paid_search_tool_for_runtime=refresh),
+        "session": root._new_session_scoped_adapter("session"),
     }
+    root._session_adapters["session"].refresh_paid_search_tool_for_runtime = refresh
     root._mark_session_adapters_stale_for_reload = MagicMock()
 
-    await root._fan_out_reload_to_session_adapters({}, {}, None, scopes)
+    await root._fan_out_reload_to_session_adapters(config, {}, None, scopes)
 
     refresh.assert_not_called()
-    root._mark_session_adapters_stale_for_reload.assert_called_once_with({}, {}, scopes)
+    root._mark_session_adapters_stale_for_reload.assert_called_once_with(
+        config, {}, scopes, permission_notification=False,
+    )

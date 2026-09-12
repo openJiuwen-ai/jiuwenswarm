@@ -10,6 +10,7 @@ import queue
 import re
 import shutil
 import threading
+import time
 from pathlib import Path
 from typing import Any
 from datetime import datetime, timezone
@@ -89,6 +90,19 @@ _EPHEMERAL_PROBE_SESSION_PREFIXES = ("health_check_", "heartbeat_")
 _DELIVERY_KIND_SERVER_PUSH = "server_push"
 # user_id 白名单: 仅允许字母数字及 _-, 拒绝路径遍历字符
 _SAFE_USER_ID_RE = re.compile(r"^[a-zA-Z0-9_-]+$")
+
+
+def _atomic_replace(src: Path, dst: Path, max_attempts: int = 100) -> None:
+    """Replace atomically, retrying transient Windows sharing violations."""
+    attempts = max(1, max_attempts)
+    for attempt in range(attempts):
+        try:
+            os.replace(src, dst)
+            return
+        except PermissionError:
+            if attempt == attempts - 1:
+                raise
+            time.sleep(min(0.001 * (attempt + 1), 0.01))
 
 # 匹配所有小写 XML 块:
 # 如 <system-reminder>、<file-content>、<command-name> 等系统/工具注入内容
@@ -543,7 +557,7 @@ def _write_metadata_sync(
         tmp = fpath.with_name(f"{fpath.name}.{os.getpid()}.tmp")
         try:
             tmp.write_text(payload, encoding="utf-8")
-            os.replace(tmp, fpath)
+            _atomic_replace(tmp, fpath)
         except Exception:
             tmp.unlink(missing_ok=True)
             raise

@@ -82,12 +82,18 @@ def _rgb(hexstr):
 
 # ---------------------------------------------------------------- 基础工具
 
-def _set_font(run, theme, east=None, latin=None, size=None, bold=None,
-              italic=None, color=None, mono=False):
+def _set_font(run, theme, **options):
+    east = options.get("east")
+    latin = options.get("latin")
+    size = options.get("size")
+    bold = options.get("bold")
+    italic = options.get("italic")
+    color = options.get("color")
+    mono = options.get("mono", False)
     east = east or (theme["mono"] if mono else theme["east_body"])
     latin = latin or (theme["mono"] if mono else theme["latin"])
     run.font.name = latin
-    rpr = run._element.get_or_add_rPr()
+    rpr = run._element.get_or_add_rPr()  # pylint: disable=protected-access
     rfonts = rpr.find(qn("w:rFonts"))
     if rfonts is None:
         rfonts = rpr.makeelement(qn("w:rFonts"), {})
@@ -122,7 +128,7 @@ def _shade(element_pr, fill):
 
 
 def _para_bottom_border(p, color, sz="8"):
-    ppr = p._element.get_or_add_pPr()
+    ppr = p._element.get_or_add_pPr()  # pylint: disable=protected-access
     pbdr = ppr.makeelement(qn("w:pBdr"), {})
     bottom = ppr.makeelement(qn("w:bottom"), {})
     bottom.set(qn("w:val"), "single")
@@ -164,8 +170,11 @@ def parse_inline(text):
     return runs or [{"text": text}]
 
 
-def add_runs(p, spec, theme, size=11, color=None, bold=None):
+def add_runs(p, spec, theme, **options):
     """向段落写入行内 run 列表（支持 bold/italic/code/strike/link）。"""
+    size = options.get("size", 11)
+    color = options.get("color")
+    bold = options.get("bold")
     runs = spec if isinstance(spec, list) else parse_inline(spec)
     for r in runs:
         text = r.get("text", "")
@@ -199,7 +208,7 @@ def add_hyperlink(p, url, text, theme, size=11):
         '<w:rPr><w:color w:val="0563C1"/><w:u w:val="single"/></w:rPr>'
         "<w:t>%s</w:t></w:r>" % escape(text))
     hyperlink.append(new_run)
-    p._p.append(hyperlink)
+    p._p.append(hyperlink)  # pylint: disable=protected-access
 
 
 # ---------------------------------------------------------------- 域（field）
@@ -207,7 +216,7 @@ def add_hyperlink(p, url, text, theme, size=11):
 def _field_run(p, instr, theme, size=10):
     run = p.add_run()
     _set_font(run, theme, size=size)
-    r = run._element
+    r = run._element  # pylint: disable=protected-access
     fld1 = r.makeelement(qn("w:fldChar"), {})
     fld1.set(qn("w:fldCharType"), "begin")
     instr_el = r.makeelement(qn("w:instrText"), {})
@@ -226,7 +235,7 @@ def add_toc(doc, theme, levels="1-3"):
     p = doc.add_paragraph()
     run = p.add_run()
     _set_font(run, theme, size=10.5, color="808080")
-    r = run._element
+    r = run._element  # pylint: disable=protected-access
     fld1 = r.makeelement(qn("w:fldChar"), {})
     fld1.set(qn("w:fldCharType"), "begin")
     instr = r.makeelement(qn("w:instrText"), {})
@@ -301,7 +310,7 @@ def add_watermark(doc, text, color="C0C0C0", opacity=0.45):
             "</v:shape></w:pict></w:r>"
             % (i, 49 + i, color, opacity, escape(text))
         )
-        p._p.append(parse_xml(xml))
+        p._p.append(parse_xml(xml))  # pylint: disable=protected-access
 
 
 # ---------------------------------------------------------------- 块渲染器
@@ -316,19 +325,19 @@ def render_heading(doc, block, theme):
     p.paragraph_format.space_after = Pt({1: 8, 2: 5, 3: 4, 4: 3}[level])
     p.paragraph_format.keep_with_next = True
     add_runs(p, block.get("text", ""), theme,
-             size=sizes[level], bold=True, color=colors[level])
+             size=sizes.get(level), bold=True, color=colors.get(level))
     for run in p.runs:  # 标题整体用标题字体
-        _set_font(run, theme, east=theme["east_head"],
-                  latin=theme["latin"], size=sizes[level],
-                  bold=True, color=colors[level])
+        _set_font(run, theme, east=theme.get("east_head"),
+                  latin=theme.get("latin"), size=sizes.get(level),
+                  bold=True, color=colors.get(level))
     if level == 1:
         _para_bottom_border(p, theme["h1_border"], sz="8")
     # 映射到 Word 内置 Heading 样式（供 TOC / 导航窗格识别）
     p.style = doc.styles["Heading %d" % level]
     for run in p.runs:
-        _set_font(run, theme, east=theme["east_head"],
-                  latin=theme["latin"], size=sizes[level],
-                  bold=True, color=colors[level])
+        _set_font(run, theme, east=theme.get("east_head"),
+                  latin=theme.get("latin"), size=sizes.get(level),
+                  bold=True, color=colors.get(level))
     return p
 
 
@@ -445,7 +454,7 @@ def render_table(doc, block, theme):
                        block.get("align", "center"))
         for c in range(ncols):  # 表头底纹/边框
             tc = table.rows[0].cells[c]
-            tcpr = tc._element.get_or_add_tcPr()
+            tcpr = tc._element.get_or_add_tcPr()  # pylint: disable=protected-access
             if not minimal:
                 _shade(tcpr, theme["header_bg"])
             else:
@@ -479,7 +488,7 @@ def render_table(doc, block, theme):
             for tr in range(header_rows, len(table.rows)):
                 if (tr - header_rows) % 2 == 1:  # 数据行第 2、4… 行着色
                     for c in range(ncols):
-                        _shade(table.rows[tr].cells[c]._element.get_or_add_tcPr(),
+                        _shade(table.rows[tr].cells[c]._element.get_or_add_tcPr(),  # pylint: disable=protected-access
                                theme["zebra_bg"])
 
     widths = block.get("widths")
@@ -531,7 +540,7 @@ def render_code(doc, block, theme):
         pf.right_indent = Pt(14)
         run = p.add_run(line if line else " ")
         _set_font(run, theme, east=theme["mono"], size=9.5, color="333333", mono=True)
-        _shade(p._element.get_or_add_pPr(), theme["code_bg"])
+        _shade(p._element.get_or_add_pPr(), theme["code_bg"])  # pylint: disable=protected-access
     return None
 
 
@@ -544,7 +553,7 @@ def render_quote(doc, block, theme):
     pf.space_after = Pt(6)
     pf.line_spacing = 1.35
     add_runs(p, block.get("text", ""), theme, size=10.5, color=theme["quote_color"])
-    ppr = p._element.get_or_add_pPr()
+    ppr = p._element.get_or_add_pPr()  # pylint: disable=protected-access
     pbdr = ppr.makeelement(qn("w:pBdr"), {})
     left = ppr.makeelement(qn("w:left"), {})
     left.set(qn("w:val"), "single")

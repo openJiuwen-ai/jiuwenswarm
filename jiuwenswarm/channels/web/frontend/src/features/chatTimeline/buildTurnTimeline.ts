@@ -345,6 +345,12 @@ export function buildRenderItems(items: TimelineItem[], isTeamMode: boolean, isP
       laterAssistantInTurn = false;
       continue;
     }
+    // 用户可见的全双工发言与 Core Agent 完整结果始终独立显示。
+    // 它们不替代普通助手回答，不参与「最后一条助手消息」的折叠判定。
+    if (renderItem.message.keepExpanded || renderItem.message.presentation === 'tool_result') {
+      renderItem.hideMeta = false;
+      continue;
+    }
     // Goal 完成卡片是该目标的结论卡，不是「中间文字」：自己永不折进「已完成」，
     // 也不能顶掉它上面那条真正的收尾回答（否则完成卡一到，最后一条回答就被折走）。
     if (isGoalCompletedContent(renderItem.message.content)) {

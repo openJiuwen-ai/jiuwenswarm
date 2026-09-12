@@ -113,9 +113,10 @@ def parse_markdown(md_text, base_dir=None):
             flush_para(para_buf)
             level = len(m.group(1))
             text = _strip_inline(m.group(2))
+            can_be_subtitle = not first_h1_done and title and not subtitle
             if level == 1 and not first_h1_done and not title:
                 title, first_h1_done = text, True
-            elif level == 2 and not first_h1_done and title and not subtitle:
+            elif level == 2 and can_be_subtitle:
                 # 无 frontmatter 时，二级标题首个视作副标题
                 subtitle, first_h1_done = text, True
             else:
@@ -141,8 +142,9 @@ def parse_markdown(md_text, base_dir=None):
             continue
 
         # 表格
-        if _TABLE_ROW_RE.match(line) and i + 1 < n and \
-                _TABLE_SEP_RE.match(lines[i + 1]) and "-" in lines[i + 1]:
+        next_line = lines[i + 1] if i + 1 < n else ""
+        if _TABLE_ROW_RE.match(line) and _TABLE_SEP_RE.match(next_line) \
+                and "-" in next_line:
             flush_para(para_buf)
             header = _split_row(line)
             i += 2

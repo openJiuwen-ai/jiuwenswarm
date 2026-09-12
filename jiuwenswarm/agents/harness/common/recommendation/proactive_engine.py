@@ -24,6 +24,7 @@ from __future__ import annotations
 import logging
 import re
 import time
+import uuid
 
 from typing import Any
 
@@ -196,15 +197,13 @@ class ProactiveEngine:
         Returns:
             True if a recommendation was actually pushed to the channel,
             False if the tick was skipped for any reason (daily limit reached,
-            empty situation, no model, no decision, cooldown, no delivery
+            empty situation, no model, no decision, no delivery
             target). Callers (CronScheduler / manual trigger) should use this
             to report an accurate status instead of assuming "sent".
         """
         from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
             _today_recommend_count,
             _increment_daily_count,
-            _is_cooled_down,
-            _mark_recommended,
             _get_all_skills,
             _analyze_and_decide,
             _trigger_main_agent,
@@ -265,15 +264,49 @@ class ProactiveEngine:
 
         report_text = report.render_for_llm()
 
-        # ── Step 2: LLM analysis + decision ────────────────────
+        # ── Step 1.5: Consume feedback buffer → update gradients ──
         state = load_recommendation_state()
+        if state.feedback_buffer and self._proactive_agent is not None:
+            try:
+                from jiuwenswarm.agents.harness.common.recommendation.feedback_collector import (
+                    consume_feedback_buffer,
+                )
+                from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+                    update_gradients,
+                )
+
+                feedbacks = consume_feedback_buffer(state)
+                if feedbacks:
+                    updated = await update_gradients(
+                        feedbacks, state.strategy_gradients, self._proactive_agent,
+                    )
+                    # 留最新 20 条：截断方向反映"保留最近反馈学到的梯度"。revise 挪位
+                    # （apply_operations）+ 留最新配合 → 被新反馈更新/新增的规则优先保留，
+                    # 早期未被触及的规则优先淘汰（LRU 语义）。容量 20 与喂 LLM 的决策层
+                    # 10 + 话术层 10 = 20 一致，存储满载时喂 LLM 也能取满。
+                    state.strategy_gradients = updated[-20:]  # Limit to 20 gradients
+                    state.touch()
+                    save_recommendation_state(state)
+                    logger.info("[ProactiveEngine] updated %d gradients from %d feedbacks",
+                                len(updated), len(feedbacks))
+            except Exception as exc:
+                logger.warning("[ProactiveEngine] gradient update failed: %s", exc, exc_info=True)
+
+        # ── Step 2: LLM analysis + decision ────────────────────
         if self._proactive_agent is None:
             logger.debug("[ProactiveEngine] no proactive agent available, skipping tick")
             self._last_tick_at = time.time()
             return False
 
+        # Build decision rules from gradients (gradient attribution)
+        from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+            render_decision_rules,
+        )
+        decision_rules_text = render_decision_rules(state.strategy_gradients)
+
         result = await _analyze_and_decide(
-            report_text, state, available_skills, self._proactive_agent,
+            report_text, available_skills, self._proactive_agent,
+            decision_rules_text=decision_rules_text,
         )
 
         # ── Step 3: Check if we have a recommendation ───────────
@@ -283,11 +316,14 @@ class ProactiveEngine:
             self._last_tick_at = time.time()
             return False
 
-        # ── Step 4: Cooldown check ─────────────────────────────
-        if not _is_cooled_down(decision.target, state):
-            logger.debug("[ProactiveEngine] '%s' still in cooldown, skipping", decision.target)
-            self._last_tick_at = time.time()
-            return False
+        # ── Step 4: (removed) Cooldown check ──────────────────
+        # 原来用 cooldown_records 做字面精确去重（同 target 24h 不推），但这对三类推荐
+        # 语义都是错配：skill 同名不同事可再推（误杀）、task 未闭环该再提醒（误杀）、
+        # exploration 字面不同换皮又挡不住（漏放）。去重改由决策 LLM 承担——历史推荐
+        # 记录（type/target/reason）已喂进决策 prompt 当硬约束，LLM 决策时即跳过已推。
+        # 假送达连推（bug A）已由 _push_chunks 识别 chat.error 不调 on_delivered 堵住，
+        # 并发由 _proactive_push_inflight 去重，总量由 max_recommend_per_day 限。cooldown
+        # 不再有独立价值，移除 gate；cooldown_records 字段保留但不再作 gate、不再写入。
 
         # ── Step 5: Pick delivery target ───────────────────────
         # 两种触发（cron 自然到点 / Cron 面板"立即执行"）统一：都用"最活跃会话"。
@@ -317,30 +353,62 @@ class ProactiveEngine:
             self._last_tick_at = time.time()
             return False
 
-        def _on_delivered() -> None:
-            """后台送达后才执行的状态更新（Step 7）。"""
+        # Build style rules from gradients (gradient attribution)
+        from jiuwenswarm.agents.harness.common.recommendation.gradient_updater import (
+            render_style_rules,
+        )
+        style_rules_section = render_style_rules(state.strategy_gradients)
+
+        # Generate unique recommendation ID BEFORE triggering (so frontend can use it for feedback)
+        # rec_id 加 uuid 后缀避免碰撞：纯毫秒时间戳在并发（cron 到点 + 手动"立即执行"
+        # 同毫秒触发）或测试快速执行时可能重复，而 feedback_collector 按 rec_id 去重，
+        # 重复 rec_id 会让第二条推荐的反馈被丢弃。
+        rec_id = f"rec_{int(time.time() * 1000)}_{uuid.uuid4().hex[:8]}"
+
+        def _on_delivered(generated_message: str = "") -> None:
+            """后台送达后才执行的状态更新（Step 7）。
+
+            重新 load 最新 state 再持久化——本回调在后台 task 真正跑完时才执行，
+            距 tick 时载入的 ``state`` 快照可能已隔了一段时间。期间用户可能已发
+            chat.send 触发隐式反馈写入 feedback_buffer（见 _try_record_implicit_feedback），
+            或别的路径改过 state。若直接复用旧快照 save，会把中间的反馈/状态覆盖丢失。
+            重新 load 拿到最新持久化态再 add_recommendation，与 buffer 消费各自独立
+            load/save 的粒度一致。
+            """
+            from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
+                load_recommendation_state,
+            )
+            fresh_state = load_recommendation_state()
             _increment_daily_count()
-            _mark_recommended(decision.target, state)
-            state.add_recommendation({
+
+            fresh_state.add_recommendation({
+                "id": rec_id,
                 "type": decision.type,
                 "target": decision.target,
                 "reason": decision.reason,
                 "urgency": decision.urgency,
                 "tick_at": time.time(),
                 "session_id": target_session.session_id,
+                "content": generated_message,  # LLM-generated recommendation text
             })
-            state.touch()
-            save_recommendation_state(state)
-            logger.info("[ProactiveEngine] delivered '%s' (type=%s, urgency=%.2f, session=%s)",
-                         decision.target, decision.type, decision.urgency,
+            fresh_state.touch()
+            save_recommendation_state(fresh_state)
+            logger.info("[ProactiveEngine] delivered '%s' (id=%s, type=%s, urgency=%.2f, session=%s)",
+                         decision.target, rec_id, decision.type, decision.urgency,
                          target_session.session_id[:20])
 
-        triggered = await _trigger_main_agent(
+        from jiuwenswarm.server.runtime.proactive_adapter import ProactiveTriggerRequest
+        trigger_request = ProactiveTriggerRequest(
             session_id=target_session.session_id,
-            channel_id=target_channel,
             decision=decision,
-            trigger_callback=self._trigger_main_agent_callback,
+            channel_id=target_channel,
             on_delivered=_on_delivered,
+            rec_id=rec_id,
+            style_rules_section=style_rules_section,
+        )
+        triggered = await _trigger_main_agent(
+            self._trigger_main_agent_callback,
+            trigger_request,
         )
         if not triggered:
             logger.info("[ProactiveEngine] not triggered (session busy, duplicate inflight, "
@@ -357,22 +425,15 @@ class ProactiveEngine:
 
     @staticmethod
     def run_maintenance() -> None:
-        """Prune stale data from daily counts and cooldown records.
+        """Prune stale daily counts.
 
-        This should be called periodically (e.g., by Cron) to keep the
-        recommendation state clean.
+        cooldown_records 已完全移除（字段/函数/常量），不再有读写，
+        recommendation.json 不再有该键。daily_counts 仍由 tick 写（每日额度计数），
+        需 prune 清掉老日期 key。
         """
         from jiuwenswarm.agents.harness.common.recommendation.proactive_actions import (
             _prune_daily_counts,
-            _prune_cooldown_records,
-        )
-        from jiuwenswarm.agents.harness.common.recommendation.profile_extractor import (
-            load_recommendation_state,
-            save_recommendation_state,
         )
 
         _prune_daily_counts()
-        state = load_recommendation_state()
-        _prune_cooldown_records(state)
-        save_recommendation_state(state)
         logger.debug("[ProactiveEngine] maintenance completed")

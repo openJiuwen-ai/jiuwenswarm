@@ -23,11 +23,12 @@ docx_pro.py - 专业 Word 文档操作命令行工具（docx-pro 技能主入口
 """
 import io
 import json
+import logging
 import os
 import re
 import sys
 
-sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+sys.path.append(os.path.dirname(os.path.abspath(__file__)))
 
 from docx import Document                    # noqa: E402
 from docx.shared import Pt, Cm               # noqa: E402
@@ -38,6 +39,8 @@ import renderer                               # noqa: E402
 import docx_replace                           # noqa: E402
 from md_parser import parse_markdown          # noqa: E402
 from md_export import docx_to_markdown        # noqa: E402
+
+logger = logging.getLogger("docx_pro")
 
 
 def _ensure_utf8_console():
@@ -51,8 +54,8 @@ def _ensure_utf8_console():
             enc = stream.encoding or "utf-8"
             setattr(sys, name, io.TextIOWrapper(
                 stream.buffer, encoding=enc, errors="replace"))
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug("控制台编码设置失败: %s", exc)
 
 
 # ---------------------------------------------------------------- create
@@ -73,7 +76,7 @@ def cmd_create(args):
     if not outline.get("title"):
         outline["title"] = os.path.splitext(os.path.basename(args.out))[0]
     if os.path.abspath(args.out) == os.path.abspath(args.json):
-        print("[错误] 输出文件不得覆盖输入的 JSON 文件")
+        logger.error("[错误] 输出文件不得覆盖输入的 JSON 文件")
         return 2
     # 图片相对路径：相对于大纲 JSON 所在目录解析
     base_dir = os.path.dirname(os.path.abspath(args.json)) if args.json != "-" \
@@ -83,9 +86,9 @@ def cmd_create(args):
                 and not os.path.isabs(block["path"]):
             block["path"] = os.path.join(base_dir, block["path"])
     renderer.render_outline(outline, args.out)
-    print("[OK] 已生成: %s（主题: %s，块数: %d）"
-          % (args.out, outline.get("theme", renderer.DEFAULT_THEME),
-             len(outline.get("sections", []))))
+    logger.info("[OK] 已生成: %s（主题: %s，块数: %d）",
+                args.out, outline.get("theme", renderer.DEFAULT_THEME),
+                len(outline.get("sections", [])))
     return 0
 
 
@@ -110,8 +113,8 @@ def cmd_from_md(args):
     if not outline.get("title"):
         outline["title"] = os.path.splitext(os.path.basename(args.out))[0]
     renderer.render_outline(outline, args.out)
-    print("[OK] Markdown 已转换为: %s（主题: %s，块数: %d）"
-          % (args.out, outline.get("theme"), len(outline.get("sections", []))))
+    logger.info("[OK] Markdown 已转换为: %s（主题: %s，块数: %d）",
+                args.out, outline.get("theme"), len(outline.get("sections", [])))
     return 0
 
 
@@ -129,7 +132,7 @@ def cmd_to_md(args):
     extra = ""
     if images_dir:
         extra = "，图片目录: %s" % images_dir
-    print("[OK] docx 已转换为: %s%s" % (args.out, extra))
+    logger.info("[OK] docx 已转换为: %s%s", args.out, extra)
     return 0
 
 
@@ -171,7 +174,7 @@ def _load_replace_pairs(args):
 def cmd_replace(args):
     pairs = _load_replace_pairs(args)
     if os.path.abspath(args.out) == os.path.abspath(args.docx):
-        print("[错误] 输出文件不得覆盖输入文件")
+        logger.error("[错误] 输出文件不得覆盖输入文件")
         return 2
 
     report = docx_replace.replace_in_docx(
@@ -179,36 +182,36 @@ def cmd_replace(args):
 
     verb = "预览" if args.dry_run else "替换完成"
     total = report["total_found"]
-    print("[%s] %s：共 %d 处命中%s" % (
-        "OK" if total else "警告", verb, total,
-        "" if not args.dry_run else "（未写出文件）"))
+    logger.info("[%s] %s：共 %d 处命中%s",
+                "OK" if total else "警告", verb, total,
+                "" if not args.dry_run else "（未写出文件）")
     for old, new, per_part in report["pairs"]:
         parts_desc = "，".join(
             "%s: %d" % (p, st["found"]) for p, st in sorted(per_part.items())
             if st["found"])
         cross = sum(st["cross_run"] for st in per_part.values())
         cross_note = "（含跨 run %d 处）" % cross if cross else ""
-        print("  「%s」→「%s」：%d 处%s%s"
-              % (old, new, sum(st["found"] for st in per_part.values()),
-                 cross_note, ("  [%s]" % parts_desc) if parts_desc else ""))
+        logger.info("  「%s」→「%s」：%d 处%s%s",
+                    old, new, sum(st["found"] for st in per_part.values()),
+                    cross_note, ("  [%s]" % parts_desc) if parts_desc else "")
     if args.dry_run:
         return 0 if total else 1
 
     v = report
     changed = "、".join(v.get("changed_entries", []))
     n_entries = len(v.get("parts_scanned", []))
-    print("  已写出: %s" % args.out)
-    print("  变化部件: %s；其余 zip 条目字节级一致: %s"
-          % (changed or "（无）", v.get("other_entries_byte_identical")))
+    logger.info("  已写出: %s", args.out)
+    logger.info("  变化部件: %s；其余 zip 条目字节级一致: %s",
+                changed or "（无）", v.get("other_entries_byte_identical"))
     if v.get("opens_ok") is True:
-        print("  复检: 段落 %d/%d，表格 %d/%d，新文件可正常打开"
-              % (v["paragraphs"][0], v["paragraphs"][1],
-                 v["tables"][0], v["tables"][1]))
+        logger.info("  复检: 段落 %d/%d，表格 %d/%d，新文件可正常打开",
+                    v["paragraphs"][0], v["paragraphs"][1],
+                    v["tables"][0], v["tables"][1])
     residual = {k: c for k, c in v.get("residual", {}).items() if c}
     if residual:
-        print("  [提示] 残留 %s（若新文本本身包含旧文本属正常）" % residual)
+        logger.info("  [提示] 残留 %s（若新文本本身包含旧文本属正常）", residual)
     if not v.get("entry_list_identical", True) or v.get("unexpected_changes"):
-        print("[警告] 校验异常：%s" % v.get("unexpected_changes"))
+        logger.warning("[警告] 校验异常：%s", v.get("unexpected_changes"))
         return 1
     return 0 if total else 1
 
@@ -254,18 +257,18 @@ def _doc_info(path):
 def cmd_inspect(args):
     info = _doc_info(args.docx)
     if args.json:
-        print(json.dumps(info, ensure_ascii=False, indent=2))
+        logger.info(json.dumps(info, ensure_ascii=False, indent=2))
         return 0
-    print("文件: %s" % info["file"])
-    print("页面: %s（边距 %s）" % (info["page"], info["margins"]))
-    print("非空段落数: %d | 表格: %d | 内联图片: %d"
-          % (info["paragraphs_nonempty"], info["tables"]["count"], info["images"]))
+    logger.info("文件: %s", info["file"])
+    logger.info("页面: %s（边距 %s）", info["page"], info["margins"])
+    logger.info("非空段落数: %d | 表格: %d | 内联图片: %d",
+                info["paragraphs_nonempty"], info["tables"]["count"], info["images"])
     if info["headings"]:
-        print("标题树:")
+        logger.info("标题树:")
         for h in info["headings"]:
-            print("  %s%s  %s" % ("    " * (h["level"] - 1), "#" * h["level"], h["text"]))
+            logger.info("  %s%s  %s", "    " * (h["level"] - 1), "#" * h["level"], h["text"])
     for i, s in enumerate(info["tables"]["shapes"][:10], 1):
-        print("表格%d: %d 行 x %d 列" % (i, s["rows"], s["cols"]))
+        logger.info("表格%d: %d 行 x %d 列", i, s["rows"], s["cols"])
     return 0
 
 
@@ -277,7 +280,7 @@ def cmd_toc(args):
     # 构造目录标题段与目录域段
     toc_title = doc.add_paragraph()
     trun = toc_title.add_run("目  录")
-    renderer._set_font(trun, theme, east=theme["east_head"], size=16, bold=True,
+    renderer._set_font(trun, theme, east=theme["east_head"], size=16, bold=True,  # pylint: disable=protected-access
                        color=theme["h1_color"])
     toc_title.alignment = WD_ALIGN_PARAGRAPH.CENTER
     toc_title.paragraph_format.space_before = Pt(6)
@@ -285,7 +288,7 @@ def cmd_toc(args):
 
     toc_p = doc.add_paragraph()
     run = toc_p.add_run()
-    r = run._element
+    r = run._element  # pylint: disable=protected-access
     fld1 = r.makeelement(qn("w:fldChar"), {})
     fld1.set(qn("w:fldCharType"), "begin")
     instr = r.makeelement(qn("w:instrText"), {})
@@ -304,12 +307,12 @@ def cmd_toc(args):
     body = doc.element.body
     sect_pr = body.find(qn("w:sectPr"))
     anchor = sect_pr if sect_pr is not None else list(body)[-1]
-    for el in (toc_title._p, toc_p._p):
+    for el in (toc_title._p, toc_p._p):  # pylint: disable=protected-access
         body.remove(el)
         anchor.addprevious(el)
     doc.save(args.out)
-    print("[OK] 已插入目录域: %s（标题层级: %s，Word 中按 F9 更新）"
-          % (args.out, args.levels))
+    logger.info("[OK] 已插入目录域: %s（标题层级: %s，Word 中按 F9 更新）",
+                args.out, args.levels)
     return 0
 
 
@@ -319,7 +322,7 @@ def cmd_watermark(args):
     doc = Document(args.docx)
     renderer.add_watermark(doc, args.text, color=args.color, opacity=args.opacity)
     doc.save(args.out)
-    print("[OK] 已添加水印 \u201c%s\u201d: %s" % (args.text, args.out))
+    logger.info("[OK] 已添加水印 \u201c%s\u201d: %s", args.text, args.out)
     return 0
 
 
@@ -399,21 +402,22 @@ def build_parser():
 
 
 def main(argv=None):
+    logging.basicConfig(level=logging.INFO, format='%(message)s')
     _ensure_utf8_console()
     ap = build_parser()
     args = ap.parse_args(argv)
     for path_attr in ("json", "md", "docx", "map"):
         path = getattr(args, path_attr, None)
         if path and path != "-" and not os.path.exists(path):
-            print("[错误] 文件不存在: %s" % path)
+            logger.error("[错误] 文件不存在: %s", path)
             return 2
     try:
         return args.func(args)
     except FileNotFoundError as e:
-        print("[错误] %s" % e)
+        logger.error("[错误] %s", e)
         return 2
     except ValueError as e:
-        print("[错误] %s" % e)
+        logger.error("[错误] %s", e)
         return 2
 
 

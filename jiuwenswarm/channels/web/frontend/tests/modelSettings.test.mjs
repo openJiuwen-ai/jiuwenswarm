@@ -20,6 +20,7 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -426,12 +427,11 @@ test('default and deletion operations preserve identity, group semantics, and re
   const target = { model_name: 'same', alias: 'second', is_default: false };
   const other = { model_name: 'other', alias: 'third', is_default: true };
   const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
-  const free = { model_name: 'free', alias: 'free', is_free: true };
-  const models = [primary, target, other, agentOs, free];
+  const models = [primary, target, other, agentOs];
 
   assert.deepEqual(getEditableModels(models), [primary, target, other]);
-  const displayGroups = getModelDisplayGroups([primary, other, target, agentOs, free]);
-  assert.equal(displayGroups.length, 4);
+  const displayGroups = getModelDisplayGroups([primary, other, target, agentOs]);
+  assert.equal(displayGroups.length, 3);
   assert.deepEqual(
     displayGroups[0].items.map(({ model, index }) => [model.alias, index]),
     [
@@ -441,7 +441,7 @@ test('default and deletion operations preserve identity, group semantics, and re
   );
   assert.deepEqual(
     displayGroups.slice(1).map((group) => group.items[0].model.alias),
-    ['third', 'backup', 'free'],
+    ['third', 'backup'],
   );
   const promoted = promotePrimaryModel(models, target);
   assert.equal(promoted.length, models.length);
@@ -452,7 +452,23 @@ test('default and deletion operations preserve identity, group semantics, and re
   assert.equal(groupDefault.length, models.length);
   assert.equal(groupDefault[0].alias, 'second');
   assert.equal(groupDefault.filter((model) => model.model_name === 'same' && model.is_default).length, 1);
-  assert.throws(() => removeEditableModel([primary, agentOs, free], primary), /LAST_EDITABLE_MODEL/);
+  assert.throws(() => removeEditableModel([primary, agentOs], primary), /LAST_EDITABLE_MODEL/);
+});
+
+test('adding a model replaces only the placeholder primary model', () => {
+  const placeholder = { model_name: 'your-model-name', alias: 'placeholder', is_default: true };
+  const existing = { model_name: 'existing', alias: 'existing', is_default: true };
+  const added = { model_name: 'new-model', alias: 'new', is_default: false };
+  const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
+
+  const replaced = addEditableModel([placeholder, existing, agentOs], added);
+  assert.deepEqual(replaced.map((model) => model.alias), ['new', 'existing', 'backup']);
+  assert.equal(replaced[0].is_default, true);
+  assert.equal(replaced.includes(placeholder), false);
+
+  const appended = addEditableModel([existing, agentOs], added);
+  assert.deepEqual(appended, [existing, agentOs, added]);
+  assert.equal(appended[0], existing);
 });
 
 test('model Settings sources use the required RPCs without hardcoded vendor options or unsupported tiers', () => {
@@ -492,7 +508,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.doesNotMatch(dialog, /accountMode/);
   assert.doesNotMatch(page, /Promise\.all\(\[loadModels\(\), loadCatalog\(\)\]\)/);
   assert.doesNotMatch(page, /resolveModelPreset|flattenVendorCatalog/);
-  assert.match(operations, /model\.is_free !== true && model\.is_agentos !== true/);
+  assert.match(operations, /model\.is_agentos !== true/);
   assert.doesNotMatch(page, /config\.save_all/);
   assert.match(dialog, /'vendors\.fetch_models'/);
   assert.match(dialog, /'config\.validate_model'/);

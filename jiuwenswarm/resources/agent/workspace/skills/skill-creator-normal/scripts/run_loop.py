@@ -10,6 +10,7 @@ overfitting.
 import argparse
 import json
 import logging
+import os
 import random
 import sys
 import tempfile
@@ -431,10 +432,16 @@ def main() -> None:
     # Set up live report path
     if args.report != "none":
         if args.report == "auto":
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            live_report_path = Path(tempfile.gettempdir()) / (
-                f"skill_description_report_{skill_path.name}_{timestamp}.html"
+            # Let mkstemp name it. A skill-plus-timestamp name collides between
+            # runs started in the same second, and in the shared temp directory
+            # the loser cannot overwrite the winner's file. Nothing needs to
+            # predict this path.
+            handle, report_name = tempfile.mkstemp(
+                prefix=f"skill_description_report_{skill_path.name}_",
+                suffix=".html",
             )
+            os.close(handle)
+            live_report_path = Path(report_name)
         else:
             live_report_path = Path(args.report)
         # Open the report immediately so the user can watch

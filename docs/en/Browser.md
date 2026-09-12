@@ -1,5 +1,9 @@
 # Browser tools
 
+> **Note:** This page documents the **server-side managed browser** (the agent's Chrome driver).
+> For the **browser extension** that puts JiuwenSwarm beside any page you read, see
+> [Browser Extension](browser-extension/BrowserExtension.md).
+
 ## 1. Overview
 
 JiuwenSwarm browser tools drive a real Chrome instance for navigation, form

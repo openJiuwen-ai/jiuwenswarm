@@ -1,0 +1,164 @@
+<idea-plugin>
+    <id>com.jiuwenswarm.ide-plugin</id>
+    <name>JiuwenSwarm — AI Code Agent</name>
+    <vendor email="dev@openjiuwen.com" url="https://github.com/openjiuwen">OpenJiuwen</vendor>
+
+    <description><![CDATA[
+        <p>
+          Bring the full power of <b>JiuwenSwarm</b> — an autonomous multi-agent AI orchestration
+          system — directly into your JetBrains IDE.
+        </p>
+
+        <h2>What is JiuwenSwarm?</h2>
+        <p>
+          JiuwenSwarm is a locally-running AI engine that coordinates a swarm of specialized agents
+          to handle complex software engineering tasks end-to-end: reading and editing files,
+          running shell commands, searching codebases, calling external tools, and reasoning across
+          multiple steps — all without leaving your IDE.
+        </p>
+
+        <h2>Core Features</h2>
+        <ul>
+          <li>
+            <b>Streaming Chat Panel</b> — conversational interface with real-time token streaming,
+            markdown rendering, and code block highlighting. Each response arrives word-by-word so
+            you never wait for the full answer.
+          </li>
+          <li>
+            <b>Tool Call Cards</b> — every agent action (file read/write, bash command, web search,
+            MCP tool) is displayed inline as a collapsible card with live status, inputs, and
+            outputs — full transparency into what the swarm is doing.
+          </li>
+          <li>
+            <b>Session Management</b> — create, switch between, and resume named sessions. Each
+            session preserves its full conversation history and agent context so you can pick up
+            exactly where you left off.
+          </li>
+          <li>
+            <b>Send Selection</b> — select any code in the editor and send it to JiuwenSwarm with
+            <b>Ctrl+Shift+E</b> (Win/Linux) / <b>⌘⇧E</b> (Mac) for instant review, explanation,
+            or refactoring.
+          </li>
+          <li>
+            <b>New Session shortcut</b> — open a fresh chat at any time with
+            <b>Ctrl+Shift+J</b> / <b>⌘⇧J</b>.
+          </li>
+          <li>
+            <b>Connection Status Widget</b> — status-bar indicator shows live WebSocket connection
+            state (connected / reconnecting / disconnected). Click to reconnect.
+          </li>
+          <li>
+            <b>Multi-model Support</b> — JiuwenSwarm supports Claude (Anthropic), GPT-4o (OpenAI),
+            Gemini, and other providers. Switch models in the JiuwenSwarm settings without
+            changing your IDE plugin configuration.
+          </li>
+          <li>
+            <b>Skills &amp; MCP</b> — invoke built-in slash-command skills (/commit, /review,
+            /init, …) and any MCP server tools registered with your JiuwenSwarm instance.
+          </li>
+        </ul>
+
+        <h2>Requirements</h2>
+        <p>
+          JiuwenSwarm must be running locally before the plugin connects. By default the plugin
+          connects to <code>ws://localhost:19000</code>. The host and port are configurable under
+          <b>Settings → Tools → JiuwenSwarm</b>.
+        </p>
+        <p>
+          JCEF (Chromium Embedded Framework) must be enabled in your IDE. If you see a message
+          asking you to enable JCEF, go to <b>Help → Find Action → Registry</b> and enable
+          <code>ide.browser.jcef.enabled</code>, then restart.
+        </p>
+
+        <h2>Getting Started</h2>
+        <ol>
+          <li>Start your local JiuwenSwarm server (<code>jiuwenswarm start</code>).</li>
+          <li>Open the <b>JiuwenSwarm</b> tool window from the right sidebar.</li>
+          <li>A session is created automatically on first connect.</li>
+          <li>Type a message or select code and press <b>Ctrl+Shift+E</b> to begin.</li>
+        </ol>
+
+        <h2>Feedback &amp; Source</h2>
+        <p>
+          JiuwenSwarm is open-source. Report issues and contribute at
+          <a href="https://github.com/openjiuwen">github.com/openjiuwen</a>.
+        </p>
+    ]]></description>
+
+    <depends>com.intellij.modules.platform</depends>
+    <depends>org.jetbrains.plugins.terminal</depends>
+
+    <extensions defaultExtensionNs="com.intellij">
+
+        <!-- Application-level singleton: WsClient + SessionManager -->
+        <applicationService
+            serviceImplementation="com.jiuwenswarm.plugin.JiuwenSwarmService"/>
+
+        <!-- Tool window (chat panel) -->
+        <toolWindow
+            id="JiuwenSwarm"
+            secondary="false"
+            icon="/icons/jiuwenswarm.svg"
+            anchor="right"
+            factoryClass="com.jiuwenswarm.plugin.ui.ChatToolWindowFactory"/>
+
+        <!-- Tool window (swarm map) — auto-opens on first team.member.spawned event -->
+        <toolWindow
+            id="JiuwenSwarm Swarm"
+            secondary="true"
+            icon="/icons/jiuwenswarm.svg"
+            anchor="bottom"
+            factoryClass="com.jiuwenswarm.plugin.ui.SwarmMapToolWindowFactory"/>
+
+        <!-- Application-level settings storage -->
+        <applicationService
+            serviceInterface="com.jiuwenswarm.plugin.settings.JiuwenSwarmSettings"
+            serviceImplementation="com.jiuwenswarm.plugin.settings.JiuwenSwarmSettings"/>
+
+        <!-- Application-level configurable (Settings panel) -->
+        <applicationConfigurable
+            parentId="tools"
+            instance="com.jiuwenswarm.plugin.settings.SettingsConfigurable"
+            id="com.jiuwenswarm.settings"
+            displayName="JiuwenSwarm"/>
+
+        <!-- Status bar widget -->
+        <statusBarWidgetFactory
+            id="JiuwenSwarmStatusWidget"
+            implementation="com.jiuwenswarm.plugin.ui.StatusBarWidgetFactory"
+            order="last"/>
+
+        <!-- Notification group for diff-apply confirmations -->
+        <notificationGroup
+            id="JiuwenSwarm"
+            displayType="BALLOON"
+            isLogByDefault="true"/>
+
+        <!-- Alt+Enter quick-fix: "Fix with JiuwenSwarm" on errors/warnings -->
+        <intentionAction>
+            <className>com.jiuwenswarm.plugin.ui.FixWithAiIntention</className>
+            <category>JiuwenSwarm</category>
+        </intentionAction>
+
+    </extensions>
+
+    <actions>
+        <action id="JiuwenSwarm.NewSession"
+                class="com.jiuwenswarm.plugin.ui.NewSessionAction"
+                text="New JiuwenSwarm Session"
+                description="Start a new JiuwenSwarm chat session"
+                icon="AllIcons.General.Add">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift J"/>
+            <add-to-group group-id="ToolsMenu" anchor="last"/>
+        </action>
+
+        <action id="JiuwenSwarm.SendSelection"
+                class="com.jiuwenswarm.plugin.ui.SendSelectionAction"
+                text="Send Selection to JiuwenSwarm"
+                description="Send the current editor selection to JiuwenSwarm chat">
+            <keyboard-shortcut keymap="$default" first-keystroke="ctrl shift E"/>
+            <add-to-group group-id="EditorPopupMenu" anchor="last"/>
+        </action>
+    </actions>
+
+</idea-plugin>

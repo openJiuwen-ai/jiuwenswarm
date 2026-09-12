@@ -228,7 +228,7 @@ function ConversationListItem({
   const deleteDisabled =
     runtime?.isProcessing === true ||
     session.is_processing === true ||
-    Boolean(runtime?.pendingQuestion);
+    Boolean(runtime?.pendingQuestions[0]);
 
   let status: React.ReactNode;
   if (indicator === 'waiting') {

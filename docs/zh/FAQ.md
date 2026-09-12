@@ -62,7 +62,7 @@ pip uninstall jiuwenswarm
 
 ### Q: 支持哪些模型提供商？
 
-JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、InferenceAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
+JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、AscendAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
 
 ### Q: 模型配置测试失败怎么办？
 

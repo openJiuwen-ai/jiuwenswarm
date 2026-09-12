@@ -49,7 +49,7 @@ Each model type supports the following parameters:
 | `api_base`       | `api_base`                  | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`        | `api_key`                   | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`          | `model_name`                | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
+| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
 
 > 💡 **Field Mapping**: The frontend panel uses `model` / `model_provider` as display field names; when saved to `config.yaml` they are mapped to backend fields `model_name` / `client_provider`. Both refer to the same thing, only the naming in the config file differs.
 
@@ -220,9 +220,9 @@ Two additional related configuration groups:
 
 ## 5. Self-Evolution Configuration
 
-Self-evolution controls the automatic improvement of JiuwenSwarm's Skills.
+Self-evolution controls Skill experience review and saving, as well as automatic Skill-creation suggestions.
 
-![Self-Evolution Configuration Example](../assets/images/config_self_evolve.png)
+![Turn on automatic evolution and retention of local skills](../assets/images/skill演进_开关.png)
 
 ### Configuration
 
@@ -230,10 +230,20 @@ Common self-evolution settings are listed below:
 
 | Setting | Config key | Default | Purpose |
 | --- | --- | --- | --- |
-| **Enable Skills Self-Evolution** | `react.evolution.skill_evolution` | `false` | Controls automatic Skill creation and evolution together. When off, the related Rails, tools, prompts, watchers, and `/evolve` commands are unavailable |
-| **Minimum Reviewer Feedback confidence** | `react.evolution.review_feedback_min_confidence` | `0.7` | Process only Reviewer Feedback attributions that meet this confidence threshold |
+| **Automatic evolution and retention of local skills** | `react.evolution.skill_evolution` | `false` | Controls automatic Skill-creation suggestions and Skill evolution together. When off, the related Rails, tools, prompts, watchers, and `/evolve` commands are unavailable |
+| **Minimum Reviewer Feedback confidence** | `react.evolution.review_feedback_min_confidence` | `0.7` | Processes only Reviewer Feedback attributions that meet this confidence threshold |
+
+**What happens when enabled:**
+
+- A Single Agent currently runs a self-check every five eligible non-follow-up task iterations by default. A Team Leader runs a self-check whenever a team task is confirmed complete.
+- Errors and user corrections are review evidence; they do not necessarily create experience.
+- Validated proposals from a Single Agent or Team Leader require user approval or are saved automatically according to `auto_save`.
+- The Skill page shows saved experience and its change details.
+- `/evolve <skill_name> [user_intent]` starts an immediate evolution review for the named Skill.
 
 > 💡 **Note**: `react.evolution.auto_save` remains an advanced YAML-only approval setting and is not shown in the frontend. With `auto_save=false`, Reviewer Feedback-driven Team Skill updates require approval. Explicit use of the general `skill-creator` or `swarmskill-creator` capability is independent from this automatic self-evolution switch.
+
+> ⚠️ **Upgrade note**: An upgrade synchronizes the configuration structure with the new template, but it does not translate values from legacy `enabled`, `auto_scan`, `skill_create`, or related environment variables into `skill_evolution`. If those capabilities were previously enabled, check this switch again after upgrading.
 
 > 📖 For details on the self-evolution mechanism, see [Skill Self-Evolution](SkillSelfEvolution.md).
 
@@ -251,26 +261,24 @@ Context compression manages dialogue history retention strategies.
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
 
-This section also provides a **Compute Affinity (KV Release)** toggle (`react.kv_cache_affinity_config.enable_kv_cache_release`, default `false`).
-
 When enabled, the system will:
 
 1. Monitor message count and token usage
 2. Archive low-priority content when thresholds are reached
 3. Preserve lightweight indexes to free space for ongoing tasks
 
-### Compute Affinity (KV Release)
+### KV Cache Compute Affinity
 
-**Compute Affinity (KV Release)** is an advanced optimization feature of context compression for managing GPU memory usage.
+KV Cache compute affinity manages Session cache through the unified `agent_hint` protocol.
 
-- **Field**: `react.kv_cache_affinity_config.enable_kv_cache_release`
+- **Field**: `kv_cache_affinity_config.enable_kv_cache_affinity`
 - **Default**: `false` (disabled)
-- **Purpose**: When enabled, the system dynamically releases KV Cache (key-value cache) that is no longer needed during conversations, saving GPU memory and allowing longer dialogue contexts.
+- **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
 
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results
 - As conversation rounds increase, KV Cache continues to grow, consuming significant GPU memory
-- With KV Release enabled, the system intelligently determines and releases cache data from historical conversations that are no longer needed
+- Suspended Sessions can offload cache, resumed Sessions can prefetch it, and permanently released Sessions evict it.
 
 **Applicable Scenarios**:
 - Long-running conversations requiring extensive history retention
@@ -310,15 +318,16 @@ permissions:
     "*": "allow"           # Allow all actions by default
   tools:
     bash: ask              # Require confirmation for command execution
+    powershell: ask
     mcp_exec_command: ask
     write_file: ask
   rules:
     - id: shell_allow_ls
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "ls *"
       severity: LOW        # normal mode: LOW/MEDIUM → allow
     - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rm *"
       severity: HIGH       # normal mode: HIGH/CRITICAL → ask
 ```

@@ -24,6 +24,7 @@ from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package
 EXPECTED_BUILTIN_MCPS = {
     "amap",
     "baidu-map",
+    "canva",
     "ctrip-wendao",
     "dingtalk",
     "feishu",
@@ -80,13 +81,13 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
-    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.5"
+    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.4"
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
     assert {package.name for package in pkg_dirs} == EXPECTED_BUILTIN_MCPS
     packages = [load_mcp_package(package) for package in pkg_dirs]
     assert {package.package_id for package in packages} == EXPECTED_BUILTIN_MCPS
     assert Counter(package.integration_type for package in packages) == {
-        "stdio-mcp": 5,
+        "stdio-mcp": 6,
         "remote-mcp": 5,
         "cli": 5,
         "skill-only": 2,
@@ -94,14 +95,14 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     assert Counter(package.credentials_type for package in packages) == {
         "token": 12,
         "cli-oauth": 4,
-        "none": 1,
+        "none": 2,
     }
-    assert sum(package.icon_file is not None for package in packages) == 17
+    assert sum(package.icon_file is not None for package in packages) == 18
     assert sum(
         len(list(skill_dir.rglob("SKILL.md")))
         for package in packages
         for skill_dir in package.skill_dirs
-    ) == 71
+    ) == 72
     assert not any(
         path.name in {"index.json", "connector-meta.json"}
         for path in mcp_builtins.rglob("*")
@@ -221,22 +222,3 @@ def test_gitcode_init_works_without_bare_pip_on_path(
         "install",
         f"gitcode-cli=={manifest.min_version}",
     ]
-
-
-@pytest.mark.parametrize("previous_version", ["v0.2.2", "v0.2.3", "v0.2.4"])
-def test_upgrade_removes_retired_canva_builtin(
-    temp_workspace: Path, previous_version: str
-) -> None:
-    """Updating an existing workspace removes Canva from the built-in marketplace."""
-    prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-    builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
-    (builtins / ".mcp_builtins_version").write_text(f"{previous_version}\n", encoding="utf-8")
-    retired = builtins / "canva"
-    retired.mkdir(exist_ok=True)
-    (retired / "manifest.json").write_text("{}", encoding="utf-8")
-
-    prepare_workspace(overwrite=False, preferred_language="zh", workspace_dir=temp_workspace)
-
-    assert not retired.exists()
-    from jiuwenswarm.server.runtime.mcp import registry
-    assert {item["name"] for item in registry.list_marketplace_mcps("builtin")} == EXPECTED_BUILTIN_MCPS

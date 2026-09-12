@@ -13,54 +13,24 @@ from websockets.legacy.client import connect as websocket_connect
 from websockets.legacy.server import serve as websocket_serve
 
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
-from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
+from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server
 
 
-@pytest.fixture(autouse=True)
-def _disable_persistent_checkpointer(monkeypatch) -> None:
-    """Keep 0.2.6 stream tests independent from persistent runtime setup."""
-    async def no_checkpointer_setup() -> None:
-        return None
+class _SessionRuntimeStub:
+    """Implement the Session ownership surface used by the stream host."""
 
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep."
-        "ensure_persistent_checkpointer",
-        no_checkpointer_setup,
-    )
+    def __init__(self) -> None:
+        self._session_ids: set[str] = set()
 
+    def owns_session(self, session_id: str) -> bool:
+        return session_id in self._session_ids
 
-def _server_for_stream(runtime):
-    """Adapt a focused stream fake to the 0.2.6 AgentServer path."""
-    class RuntimeAgent:
-        """Expose the legacy Agent stream interface used by 0.2.6."""
-
-        def process_message_stream(self, request):
-            """Delegate to the focused async stream fake."""
-            return runtime.stream(
-                request,
-                trigger_hook=False,
-                on_control_event=None,
-            )
-
-    server = agent_ws_server.AgentWebSocketServer.__new__(
-        agent_ws_server.AgentWebSocketServer
-    )
-    server._session_stream_tasks = {}
-    server._is_readonly_goal_get_request = lambda request: True
-    server._is_stateless_method_request = lambda request: True
-
-    async def no_heartbeat_start() -> None:
-        return None
-
-    async def get_agent(channel_id):
+    async def register_session(self, *, session_id: str, channel_id: str) -> None:
         del channel_id
-        return RuntimeAgent()
-
-    server._try_start_heartbeat_runtime = no_heartbeat_start
-    server._get_stateless_agent = get_agent
-    return server
+        self._session_ids.add(session_id)
 
 
 @pytest.mark.asyncio
@@ -130,7 +100,7 @@ async def test_cancelled_stream_owner_cleans_keepalive_and_registry() -> None:
     runtime_started = asyncio.Event()
     manager = object()
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Remain pending until cancellation reaches the stream owner."""
 
         agent_manager = manager
@@ -147,13 +117,19 @@ async def test_cancelled_stream_owner_cleans_keepalive_and_registry() -> None:
             runtime_started.set()
             await asyncio.Event().wait()
             if request is None:
-                yield AgentResponseChunk(
+                yield RuntimeEvent(
                     request_id="unreachable",
                     channel_id="web",
+                    session_id=None,
                     payload=None,
                 )
 
-    server = _server_for_stream(IdleRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = IdleRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-owner-cancelled",
         channel_id="web",
@@ -193,7 +169,7 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
             send_attempted.set()
             raise WebSocketConnectionClosed(None, None)
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish after the keepalive observes the closed connection."""
 
         agent_manager = manager
@@ -209,9 +185,10 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
             del trigger_hook, on_control_event
             await send_attempted.wait()
             if request is None:
-                yield AgentResponseChunk(
+                yield RuntimeEvent(
                     request_id="unreachable",
                     channel_id="web",
+                    session_id=None,
                     payload=None,
                 )
 
@@ -220,7 +197,12 @@ async def test_closed_connection_cleans_keepalive_and_registry(monkeypatch) -> N
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
-    server = _server_for_stream(IdleRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = IdleRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-connection-closed",
         channel_id="web",
@@ -264,7 +246,7 @@ async def test_stream_close_error_still_cleans_keepalive_and_registry() -> None:
             """Expose the cleanup failure under test."""
             raise RuntimeError("stream close failed")
 
-    class CloseFailingRuntime:  # pylint: disable=too-few-public-methods
+    class CloseFailingRuntime(_SessionRuntimeStub):
         """Return a stream whose cleanup fails."""
 
         agent_manager = manager
@@ -280,7 +262,12 @@ async def test_stream_close_error_still_cleans_keepalive_and_registry() -> None:
             del request, trigger_hook, on_control_event
             return CloseFailingStream()
 
-    server = _server_for_stream(CloseFailingRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager  # pylint: disable=protected-access
+    server._runtime = CloseFailingRuntime()  # pylint: disable=protected-access
+    server._session_stream_tasks = {}  # pylint: disable=protected-access
     request = AgentRequest(
         request_id="stream-close-error-cleanup",
         channel_id="web",
@@ -307,7 +294,7 @@ async def test_stream_keepalive_roundtrips_over_live_websocket(monkeypatch) -> N
     stream_finished = asyncio.Event()
     hold_connection_open = asyncio.Event()
 
-    class LiveRuntime:
+    class LiveRuntime(_SessionRuntimeStub):
         """Yield one terminal event after the client observes a keepalive."""
 
         agent_manager = object()
@@ -322,14 +309,20 @@ async def test_stream_keepalive_roundtrips_over_live_websocket(monkeypatch) -> N
             """Hold the stream idle, then yield its terminal event."""
             del trigger_hook, on_control_event
             await release_runtime.wait()
-            yield AgentResponseChunk(
+            yield RuntimeEvent(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
+                session_id=request.session_id,
                 payload={"event_type": "chat.final", "content": "done"},
                 is_complete=True,
             )
 
-    server = _server_for_stream(LiveRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = LiveRuntime.agent_manager
+    server._runtime = LiveRuntime()  # pylint: disable=protected-access
+    server._session_stream_tasks = {}  # pylint: disable=protected-access
     request = AgentRequest(
         request_id="stream-keepalive-live-socket",
         channel_id="web",
@@ -443,7 +436,7 @@ async def test_stream_keepalive_shutdown_does_not_depend_on_task_cancellation(
             """Delegate an unmodified asyncio API."""
             return getattr(real_asyncio, name)
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """End only after the keepalive owner enters its idle wait."""
 
         agent_manager = manager
@@ -459,14 +452,20 @@ async def test_stream_keepalive_shutdown_does_not_depend_on_task_cancellation(
             del trigger_hook, on_control_event
             await wait_started.wait()
             if request is None:
-                yield AgentResponseChunk(
+                yield RuntimeEvent(
                     request_id="unreachable",
                     channel_id="web",
+                    session_id=None,
                     payload=None,
                 )
 
     monkeypatch.setattr(agent_ws_server, "asyncio", AsyncioProxy())
-    server = _server_for_stream(IdleRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = IdleRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-stop",
         channel_id="web",
@@ -516,7 +515,7 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
             finally:
                 send_finished.set()
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish after the keepalive send has become stuck."""
 
         agent_manager = manager
@@ -532,9 +531,10 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
             del trigger_hook, on_control_event
             await send_started.wait()
             if request is None:
-                yield AgentResponseChunk(
+                yield RuntimeEvent(
                     request_id="unreachable",
                     channel_id="web",
+                    session_id=None,
                     payload=None,
                 )
 
@@ -548,7 +548,12 @@ async def test_stream_keepalive_cleanup_is_bounded_when_cancellation_is_ignored(
         "_STREAM_KEEPALIVE_STOP_TIMEOUT_SECONDS",
         0.01,
     )
-    server = _server_for_stream(IdleRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = IdleRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-bounded-stop",
         channel_id="web",
@@ -592,7 +597,7 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
             if json.loads(payload).get("sequence") == -1:
                 keepalive_sent.set()
 
-    class SlowRuntime:
+    class SlowRuntime(_SessionRuntimeStub):
         """Remain idle long enough for a keepalive, then terminate."""
 
         agent_manager = manager
@@ -607,9 +612,10 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
             """Yield one terminal event after explicit release."""
             del trigger_hook, on_control_event
             await release_stream.wait()
-            yield AgentResponseChunk(
+            yield RuntimeEvent(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
+                session_id=request.session_id,
                 payload={"event_type": "chat.final", "content": "done"},
                 is_complete=True,
             )
@@ -619,7 +625,12 @@ async def test_stream_keepalive_is_sent_only_before_terminal_chunk(
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.01,
     )
-    server = _server_for_stream(SlowRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = SlowRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-terminal",
         channel_id="web",
@@ -696,7 +707,7 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
             del exc_type, exc, traceback
             self._lock.release()
 
-    class ActiveRuntime:
+    class ActiveRuntime(_SessionRuntimeStub):
         """Produce real activity after the keepalive is already lock-queued."""
 
         agent_manager = manager
@@ -711,14 +722,16 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
             """Yield one active chunk and one terminal chunk."""
             del trigger_hook, on_control_event
             await first_waiter.wait()
-            yield AgentResponseChunk(
+            yield RuntimeEvent(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
+                session_id=request.session_id,
                 payload={"event_type": "chat.delta", "content": "active"},
             )
-            yield AgentResponseChunk(
+            yield RuntimeEvent(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
+                session_id=request.session_id,
                 payload={"event_type": "chat.final", "content": "done"},
                 is_complete=True,
             )
@@ -728,7 +741,12 @@ async def test_stream_keepalive_rechecks_activity_after_waiting_for_send_lock(
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
-    server = _server_for_stream(ActiveRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = ActiveRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-send-lock-activity",
         channel_id="web",
@@ -773,7 +791,7 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
             """Release the synthetic lock context."""
             del exc_type, exc, traceback
 
-    class IdleRuntime:
+    class IdleRuntime(_SessionRuntimeStub):
         """Finish while the keepalive is queued for the send lock."""
 
         agent_manager = manager
@@ -795,9 +813,10 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
 
             asyncio.create_task(release_after_stream_cleanup_starts())
             if request is None:
-                yield AgentResponseChunk(
+                yield RuntimeEvent(
                     request_id="unreachable",
                     channel_id="web",
+                    session_id=None,
                     payload=None,
                 )
 
@@ -806,7 +825,12 @@ async def test_stream_keepalive_rechecks_stop_after_waiting_for_send_lock(
         "_STREAM_KEEPALIVE_INTERVAL_SECONDS",
         0.001,
     )
-    server = _server_for_stream(IdleRuntime())
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = IdleRuntime()
+    server._session_stream_tasks = {}
     request = AgentRequest(
         request_id="stream-keepalive-send-lock-stop",
         channel_id="web",

@@ -4,13 +4,13 @@
 
 from __future__ import annotations
 
-import logging
 import asyncio
 import base64
-import hmac
 import hashlib
+import hmac
 import inspect
 import json
+import logging
 import os
 import re
 import ssl
@@ -22,15 +22,26 @@ from urllib.parse import urlparse
 
 import aiohttp
 
-from jiuwenswarm.gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
-from jiuwenswarm.gateway.routing.keys import XiaoyiDeliveryTarget
-from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
-from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push import XiaoYiPushService, PushConfig
+from jiuwenswarm.gateway.channel_manager.base import (
+    BaseChannel,
+    ChannelMetadata,
+    RobotMessageRouter,
+)
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.formatter import (
     get_status_state_for_event,
     get_status_text_for_event,
     should_send_as_status_update,
+)
+from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push import (
+    PushConfig,
+    XiaoYiPushService,
+)
+from jiuwenswarm.gateway.routing.keys import XiaoyiDeliveryTarget
+from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
+from jiuwenswarm.runtime.host_services import (
+    install_runtime_xiaoyi_channel_provider,
+    restore_runtime_xiaoyi_channel_provider,
 )
 
 logger = logging.getLogger(__name__)
@@ -60,11 +71,70 @@ FILE_TYPE_TO_MIME_TYPE: dict[str, str] = {
 
 # 全局 XiaoyiChannel 实例字典（供手机端工具调用使用）
 _xiaoyi_channel_instances: dict[str, "XiaoyiChannel"] = {}
+_xiaoyi_channel_owners: dict[str, list["XiaoyiChannel"]] = {}
+_runtime_xiaoyi_provider_installed = False
+_runtime_xiaoyi_provider_previous: Callable[[str], Any] | None = None
 
 
 def get_xiaoyi_channel(channel_id: str = "xiaoyi") -> Optional["XiaoyiChannel"]:
     """获取指定 channel_id 的 XiaoyiChannel 实例（供手机端工具调用使用）."""
     return _xiaoyi_channel_instances.get(channel_id)
+
+
+def _register_xiaoyi_channel(channel: "XiaoyiChannel") -> None:
+    """Expose one started channel and install the Runtime provider on demand."""
+    global _runtime_xiaoyi_provider_installed
+    global _runtime_xiaoyi_provider_previous
+
+    channel_id = channel.channel_id
+    owners = _xiaoyi_channel_owners.setdefault(channel_id, [])
+    if channel in owners:
+        return
+    owners.append(channel)
+    _xiaoyi_channel_instances[channel_id] = channel
+    if _runtime_xiaoyi_provider_installed:
+        return
+    try:
+        _runtime_xiaoyi_provider_previous = (
+            install_runtime_xiaoyi_channel_provider(get_xiaoyi_channel)
+        )
+        _runtime_xiaoyi_provider_installed = True
+    except Exception:
+        owners.remove(channel)
+        if owners:
+            _xiaoyi_channel_instances[channel_id] = owners[-1]
+        else:
+            _xiaoyi_channel_owners.pop(channel_id, None)
+            _xiaoyi_channel_instances.pop(channel_id, None)
+        raise
+
+
+def _unregister_xiaoyi_channel(channel: "XiaoyiChannel") -> None:
+    """Remove one owner without disturbing channels stopped out of order."""
+    global _runtime_xiaoyi_provider_installed
+    global _runtime_xiaoyi_provider_previous
+
+    channel_id = channel.channel_id
+    owners = _xiaoyi_channel_owners.get(channel_id)
+    if owners is not None:
+        for index in range(len(owners) - 1, -1, -1):
+            if owners[index] is channel:
+                owners.pop(index)
+                break
+        if owners:
+            _xiaoyi_channel_instances[channel_id] = owners[-1]
+        else:
+            _xiaoyi_channel_owners.pop(channel_id, None)
+            _xiaoyi_channel_instances.pop(channel_id, None)
+
+    if _xiaoyi_channel_owners or not _runtime_xiaoyi_provider_installed:
+        return
+    restore_runtime_xiaoyi_channel_provider(
+        get_xiaoyi_channel,
+        _runtime_xiaoyi_provider_previous,
+    )
+    _runtime_xiaoyi_provider_installed = False
+    _runtime_xiaoyi_provider_previous = None
 
 
 @dataclass
@@ -325,9 +395,9 @@ class XiaoyiChannel(BaseChannel):
                 logger.error("XiaoyiChannel 未配置 ak/sk/agent_id")
                 return
 
-        self._running = True
         # 注册全局实例（供 tools 使用）
-        _xiaoyi_channel_instances[self.channel_id] = self
+        _register_xiaoyi_channel(self)
+        self._running = True
         logger.info("XiaoyiChannel 已注册为全局实例")
 
         # Start dual channel connections
@@ -344,7 +414,7 @@ class XiaoyiChannel(BaseChannel):
     async def stop(self) -> None:
         self._running = False
         # 注销全局实例
-        _xiaoyi_channel_instances.pop(self.channel_id, None)
+        _unregister_xiaoyi_channel(self)
         logger.info("XiaoyiChannel 已注销")
         # Cancel all heartbeat tasks
         for url_key in list(self._heartbeat_tasks.keys()):

@@ -4,15 +4,12 @@ import { useTranslation } from 'react-i18next';
 import { TeamMemberAvatar } from '../../components/TeamMemberAvatar';
 import './ModelSetupGuide.css';
 
-export type ModelSetupGuideStep = 0 | 1 | 2;
+export type ModelSetupGuideStep = 1 | 2;
 
 interface ModelSetupGuideProps {
   step: ModelSetupGuideStep;
-  manual?: boolean;
   onAcknowledge: () => void;
   onSkip: () => void;
-  onQuickSetup: () => void;
-  onManualSetup: () => void;
 }
 
 interface SpotlightRect {
@@ -70,17 +67,13 @@ export function ModelSetupGuide({
   step,
   onAcknowledge,
   onSkip,
-  onQuickSetup,
-  onManualSetup,
 }: ModelSetupGuideProps) {
   const { t } = useTranslation();
   const [spotlight, setSpotlight] = useState<SpotlightRect | null>(null);
   const acknowledgementRef = useRef<HTMLButtonElement>(null);
   const hasSpotlightTarget = spotlight !== null;
-  const isWelcomeStep = step === 0;
 
   useLayoutEffect(() => {
-    if (isWelcomeStep) return;
     const selector = TARGET_SELECTORS[step];
     let resizeObserver: ResizeObserver | null = null;
     let observedTarget: Element | null = null;
@@ -118,7 +111,7 @@ export function ModelSetupGuide({
   }, [step]);
 
   useLayoutEffect(() => {
-    if (isWelcomeStep || step !== 2 || !hasSpotlightTarget) return;
+    if (step !== 2 || !hasSpotlightTarget) return;
 
     const target = document.querySelector(TARGET_SELECTORS[step]);
     if (!target) return;
@@ -135,7 +128,6 @@ export function ModelSetupGuide({
   }, [hasSpotlightTarget, step]);
 
   useEffect(() => {
-    if (isWelcomeStep) return;
     const target = document.querySelector<HTMLElement>(TARGET_SELECTORS[step]);
     if (!target) return;
 
@@ -189,100 +181,6 @@ export function ModelSetupGuide({
       width,
     };
   }, [spotlight, step]);
-
-  // Welcome step: centered card with config choices, no spotlight
-  if (isWelcomeStep) {
-    return createPortal(
-      <div className="model-setup-guide model-setup-guide--welcome" aria-live="polite" data-testid="model-setup-guide-welcome">
-        <div className="model-setup-guide__mask" style={{ inset: 0 }} data-testid="model-setup-guide-welcome-mask" />
-        <section className="model-setup-guide__welcome-card" aria-labelledby="model-setup-guide-title-0" data-testid="model-setup-guide-welcome-card">
-          <div className="model-setup-guide__welcome-header" data-testid="model-setup-guide-welcome-header">
-            <TeamMemberAvatar member="team_leader" className="model-setup-guide__avatar" alt="" data-testid="model-setup-guide-welcome-avatar" />
-            <div className="model-setup-guide__copy" data-testid="model-setup-guide-welcome-copy">
-              <h2 id="model-setup-guide-title-0" className="model-setup-guide__title" data-testid="model-setup-guide-welcome-title">
-                {t('modelSetupGuide.steps.0.title')}
-              </h2>
-              <p className="model-setup-guide__description" data-testid="model-setup-guide-welcome-description">
-                {t('modelSetupGuide.steps.0.description')}
-              </p>
-            </div>
-          </div>
-          <div className="model-setup-guide__choices" data-testid="model-setup-guide-welcome-choices">
-            <div className="model-setup-guide__quick-setup-card" data-testid="model-setup-guide-welcome-quick-setup-card">
-              <button
-                type="button"
-                className="model-setup-guide__choice model-setup-guide__choice--primary"
-                onClick={onQuickSetup}
-                data-testid="model-setup-guide-welcome-quick-setup-button"
-              >
-                <span className="model-setup-guide__choice-title">
-                  {t('modelSetupGuide.quickSetup.title')}
-                </span>
-                <span className="model-setup-guide__choice-desc">
-                  {t('modelSetupGuide.quickSetup.description')}
-                </span>
-              </button>
-              <div className="model-setup-guide__quick-setup-footer" data-testid="model-setup-guide-welcome-quick-setup-footer">
-                <p className="model-setup-guide__agreement" data-testid="model-setup-guide-welcome-agreement">
-                  {t('modelSetupGuide.quickSetup.agreementPrefix')}
-                  <a
-                    href="https://www.huaweicloud.com/declaration/modelartsstudio.html"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="model-setup-guide__agreement-link"
-                    data-testid="model-setup-guide-welcome-agreement-link"
-                    data-variant="maas"
-                  >
-                    {t('modelSetupGuide.quickSetup.agreementMaas')}
-                  </a>
-                  {t('modelSetupGuide.quickSetup.agreementAnd')}
-                  <a
-                    href="https://www.huaweicloud.com/declaration/sa_cua_computing.html"
-                    target="_blank"
-                    rel="noreferrer"
-                    className="model-setup-guide__agreement-link"
-                    data-testid="model-setup-guide-welcome-agreement-link"
-                    data-variant="cloud"
-                  >
-                    {t('modelSetupGuide.quickSetup.agreementCloud')}
-                  </a>
-                  {t('modelSetupGuide.quickSetup.agreementSuffix')}
-                </p>
-                <p className="model-setup-guide__billing-note" data-testid="model-setup-guide-welcome-billing-note">
-                  {t('modelSetupGuide.quickSetup.billingNote')}
-                </p>
-              </div>
-            </div>
-            <button
-              type="button"
-              className="model-setup-guide__choice"
-              onClick={onManualSetup}
-              data-testid="model-setup-guide-welcome-manual-setup-button"
-            >
-              <span className="model-setup-guide__choice-title">
-                {t('modelSetupGuide.manualSetup.title')}
-              </span>
-              <span className="model-setup-guide__choice-desc">
-                {t('modelSetupGuide.manualSetup.description')}
-              </span>
-            </button>
-          </div>
-          <button
-            type="button"
-            className="model-setup-guide__skip"
-            onClick={onSkip}
-            aria-label={t('modelSetupGuide.skip')}
-            title={t('modelSetupGuide.skip')}
-            data-testid="model-setup-guide-skip"
-            data-variant="welcome"
-          >
-            {t('modelSetupGuide.skip')}
-          </button>
-        </section>
-      </div>,
-      document.body
-    );
-  }
 
   if (!spotlight || !calloutStyle) return null;
 

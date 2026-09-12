@@ -2,7 +2,7 @@
 
 """Shared Cron parsing and calculation for the Heartbeat domain."""
 
-from jiuwenswarm.gateway.cron.cron_expr import next_cron_datetime, validate_cron_expression
+from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime, validate_cron_expression
 
 
 __all__ = ["next_cron_datetime", "validate_cron_expression"]

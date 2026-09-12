@@ -116,6 +116,38 @@ class ToolResultErrorDetector:
     _REPR_SUCCESS_FALSE = re.compile(r"^success\s*=\s*False\b", re.IGNORECASE)
     _REPR_SUCCESS_TRUE = re.compile(r"^success\s*=\s*True\b", re.IGNORECASE)
 
+    # 裸字符串失败标记：部分工具无法通过结构化 success 字段表达失败，只能在
+    # 没有产出结构化结果的路径上返回纯文本。只有当某个前缀是失败结果独有、
+    # 成功输出绝不会以其开头时才能加入（契约见
+    # tests/unit_tests/agentserver/rails/test_tool_result_error_detector.py）。
+    #
+    # ``[ERROR]:`` 是项目内工具失败的通用约定（见
+    # jiuwenswarm/agents/harness/common/tools/ 下的 search / image / audio /
+    # video / pdf / web_fetch 等模块）。这些工具成功时本就返回纯文本 —— 结果
+    # 列表、转写、模型回答 —— 失败时没有结构化字段可用，只能靠该前缀表达。
+    #
+    # 功能特定的标记不应写死在这个通用探测器里 —— 类文档已声明它可被其他模块
+    # 直接复用，而各调用方对误判/漏判的容忍度并不相同，一个错误的前缀会同时
+    # 影响所有调用方。功能模块改用 register_plain_error_prefix 注册自己的
+    # 标记，无需改动本文件。
+    _PLAIN_ERROR_PREFIXES = ("[ERROR]:",)
+    _extra_plain_error_prefixes: set[str] = set()
+
+    @classmethod
+    def register_plain_error_prefix(cls, prefix: str) -> None:
+        """为"失败即裸字符串"的工具注册一个专属前缀，无需改动本文件。
+
+        前缀必须是失败结果独有的标记，成功输出绝不会以其开头，否则会把成功
+        结果误判为失败。匹配大小写不敏感。
+        """
+        marker = prefix.strip().upper()
+        if marker:
+            cls._extra_plain_error_prefixes.add(marker)
+
+    @classmethod
+    def _plain_error_prefixes(cls) -> tuple[str, ...]:
+        return cls._PLAIN_ERROR_PREFIXES + tuple(cls._extra_plain_error_prefixes)
+
     @staticmethod
     def has_error(value: Any) -> bool:
         """结构化字段明确指示错误时返回 True，否则返回 False。"""
@@ -192,6 +224,10 @@ class ToolResultErrorDetector:
                 return {"success": False}
             if ToolResultErrorDetector._REPR_SUCCESS_TRUE.match(text):
                 return {"success": True}
+            upper = text.upper()
+            for prefix in ToolResultErrorDetector._plain_error_prefixes():
+                if upper.startswith(prefix):
+                    return {"success": False, "error": text}
         return None
 
     @staticmethod

@@ -8,29 +8,37 @@ from typing import Any, Optional
 
 from openjiuwen.harness.tools.cron import CronToolBackend, CronToolContext, create_cron_tools
 
-from jiuwenswarm.gateway.cron import CronTargetChannel
-from jiuwenswarm.gateway.cron.dingtalk_routing import (
+from jiuwenswarm.runtime.cron import CronTargetChannel
+from jiuwenswarm.runtime.cron.dingtalk_routing import (
     build_dingtalk_cron_session_id_from_context,
     dingtalk_chat_type_from_metadata,
 )
-from jiuwenswarm.gateway.cron.models import (
+from jiuwenswarm.runtime.cron.models import (
     CRON_JOB_DEFAULT_MODE,
     coerce_cron_job_mode,
     is_valid_target_channel_id,
     normalize_target_channel_id,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
-from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
+from jiuwenswarm.runtime.host_services import send_runtime_wake
 
 
 class _CronToolsCronBackend(CronToolBackend):
     """Adapt AgentServer CronTools to the DeepAgents CronToolBackend interface."""
 
-    def __init__(self, cron_tools: CronTools, message_handler: MessageHandler | None = None) -> None:
+    def __init__(
+        self,
+        cron_tools: CronTools,
+        message_handler: Any | None = None,
+    ) -> None:
         self._cron_tools = cron_tools
-        self._message_handler = message_handler
+        self._wake_handler = (
+            getattr(message_handler, "publish_user_messages", None)
+            if message_handler is not None
+            else None
+        )
         # build_tools() 注入的稳定请求上下文。openjiuwen wrapper 只给
         # create/update 传 context，其余 cron 操作（list/get/delete/toggle/
         # preview/run_now）拿不到调用级 context，统一回退到该稳定上下文，
@@ -137,7 +145,7 @@ class _CronToolsCronBackend(CronToolBackend):
             inherited = str(meta.get("model") or "").strip()
             if not inherited:
                 return payload
-            from jiuwenswarm.gateway.cron.models import validate_cron_model
+            from jiuwenswarm.runtime.cron.models import validate_cron_model
 
             canonical = validate_cron_model(inherited)
             if canonical:
@@ -257,9 +265,6 @@ class _CronToolsCronBackend(CronToolBackend):
             raise ValueError("text is required")
         if context is None or not (context.channel_id or "").strip():
             raise ValueError("wake requires an active session context")
-        if self._message_handler is None:
-            raise RuntimeError("cron wake is unavailable before message handler startup")
-
         msg = Message(
             id=f"cron-wake-{int(time.time() * 1000)}",
             type="req",
@@ -275,7 +280,10 @@ class _CronToolsCronBackend(CronToolBackend):
             req_method=ReqMethod.CHAT_SEND,
             metadata=deepcopy(context.metadata) if isinstance(context.metadata, dict) else None,
         )
-        await self._message_handler.publish_user_messages(msg)
+        if self._wake_handler is not None:
+            await self._wake_handler(msg)
+        elif not await send_runtime_wake(msg):
+            raise RuntimeError("cron wake is unavailable without a resident host")
         return {"queued": True}
 
     async def ensure_scheduler_started(self) -> None:
@@ -351,7 +359,7 @@ def _extract_legacy_params(
             at_raw = str(schedule.get("at") or "").strip()
             if at_raw:
                 try:
-                    from jiuwenswarm.gateway.cron.cron_expr import iso_to_seven_field_cron
+                    from jiuwenswarm.runtime.cron.cron_expr import iso_to_seven_field_cron
                     cron_expr = iso_to_seven_field_cron(at_raw, timezone=timezone)
                     logger.info(
                         "[CronRuntimeBridge] _extract_legacy_params: converted kind=at '%s' to cron_expr='%s'",
@@ -637,6 +645,33 @@ def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
     return tools
 
 
+class _NoCreateCronBackend:
+    """Backend view that forbids creating new cron jobs.
+
+    用于 cron 执行会话的工具集：统一 ``cron`` 工具的 ``add`` 动作与
+    ``cron_create_job`` 都汇聚到 ``create_job``，在这里统一拒绝，防止
+    cron 运行中再派生出新 cron；其余管理操作照常委托内层 backend。
+    """
+
+    def __init__(self, inner: CronToolBackend) -> None:
+        self._inner = inner
+
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        _ = (params, context)
+        raise ValueError(
+            "Creating new cron jobs from a cron session is not allowed; "
+            "manage existing jobs (list/get/update/delete) instead"
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class CronRuntimeBridge:
     """Resolve the host cron backend for DeepAgents while keeping gateway diffs minimal."""
 
@@ -654,13 +689,7 @@ class CronRuntimeBridge:
         if self._resolved_backend is not None:
             return self._resolved_backend
 
-        message_handler = None
-        try:
-            message_handler = MessageHandler.get_instance()
-        except RuntimeError:
-            message_handler = None
-
-        backend: CronToolBackend = _CronToolsCronBackend(CronTools(), message_handler=message_handler)
+        backend: CronToolBackend = _CronToolsCronBackend(CronTools())
         self._resolved_backend = backend
         logger.info("[CronRuntimeBridge] CronTools backend initialized successfully")
         return backend
@@ -683,8 +712,21 @@ class CronRuntimeBridge:
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
 
-    def build_tools(self, *, context: Any, agent_id: Optional[str], language: str = "cn") -> list[Any]:
-        """Build cron tools."""
+    def build_tools(
+        self,
+        *,
+        context: Any,
+        agent_id: Optional[str],
+        language: str = "cn",
+        allow_create: bool = True,
+    ) -> list[Any]:
+        """Build cron tools.
+
+        Args:
+            allow_create: False 时下掉创建类工具（``cron_create_job``），并让
+                统一 ``cron`` 工具的 ``add`` 动作直接报错。用于 cron 执行会话，
+                禁止 cron 再派生新 cron；list/get/update/delete 等管理能力保留。
+        """
         backend = self.get_backend()
         if backend is None:
             logger.warning("[CronRuntimeBridge] cron backend is not ready, skip builtin cron tools")
@@ -698,10 +740,11 @@ class CronRuntimeBridge:
         if isinstance(backend, _CronToolsCronBackend):
             backend.bind_context(context)
 
-        logger.info("[CronRuntimeBridge] Building cron tools for context: %s", 
+        logger.info("[CronRuntimeBridge] Building cron tools for context: %s",
                     getattr(context, 'tool_scope', 'unknown'))
+        effective_backend = backend if allow_create else _NoCreateCronBackend(backend)
         tools = create_cron_tools(
-            backend,
+            effective_backend,
             context=context,
             target_channels=[channel.value for channel in CronTargetChannel],
             default_target_channel=None,
@@ -709,10 +752,18 @@ class CronRuntimeBridge:
             language=language,
         )
         tools = list(tools or [])
+        if not allow_create:
+            # 创建类工具下掉：cron 会话内不暴露 cron_create_job。
+            tools = [
+                tool
+                for tool in tools
+                if getattr(getattr(tool, "card", None), "name", "") != "cron_create_job"
+            ]
         # 修正 openjiuwen 工具描述中的 dow 编号语义（1=SUN→0=SUN，与 croniter 一致），
         # 见模块顶部 _CRON_DOW_SEMANTIC_FIXES 说明。
         tools = _patch_cron_tool_cards(tools)
-        logger.info("[CronRuntimeBridge] Built %d cron tools: %s", 
-                    len(tools), 
+        logger.info("[CronRuntimeBridge] Built %d cron tools (create_enabled=%s): %s",
+                    len(tools),
+                    allow_create,
                     [tool.card.name if hasattr(tool, 'card') else str(tool) for tool in tools])
         return tools

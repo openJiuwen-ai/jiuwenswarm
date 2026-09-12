@@ -77,6 +77,22 @@ def test_normalize_cron_job_mode_rejects_unknown() -> None:
         normalize_cron_job_mode("unknown-mode")
 
 
+def test_cron_job_from_dict_rejects_unknown_mode() -> None:
+    raw = CronJob(
+        id="unknown-mode-job",
+        name="unknown",
+        enabled=True,
+        cron_expr="0 9 * * *",
+        timezone="Asia/Shanghai",
+        description="task",
+        targets="tui",
+        mode="future.mode",
+    ).to_dict()
+
+    with pytest.raises(ValueError, match="Invalid cron job mode"):
+        CronJob.from_dict(raw)
+
+
 @pytest.mark.parametrize(
     "mode",
     ["team", "team.plan", "team.plan.normal", "team.plan.code", "code.team", "TEAM"],
@@ -443,6 +459,37 @@ class TestCronJobLazyMigration:
 
         assert jobs[0].work_mode == "code"
         assert _read_cron_jobs(store_path)[0]["work_mode"] == "code"
+
+    @pytest.mark.asyncio
+    async def test_unknown_runtime_mode_is_ignored_on_restore(self, tmp_path):
+        store_path = tmp_path / "cron_jobs.json"
+        _write_cron_jobs(
+            store_path,
+            [
+                _make_legacy_job(
+                    "valid",
+                    mode="team",
+                    work_mode="work",
+                    targets="web",
+                ),
+                _make_legacy_job(
+                    "unknown",
+                    mode="future.mode",
+                    work_mode="work",
+                    targets="web",
+                ),
+            ],
+        )
+
+        with patch(f"{CronJobStore.__module__}.logger.warning") as warning_mock:
+            jobs = await CronJobStore(path=store_path).list_jobs()
+
+        assert [job.id for job in jobs] == ["valid"]
+        warning_mock.assert_called_once()
+        message, *args = warning_mock.call_args.args
+        warning_text = message % tuple(args)
+        assert "Ignoring invalid cron job id=unknown" in warning_text
+        assert "Invalid cron job mode" in warning_text
 
     @pytest.mark.asyncio
     async def test_mixed_legacy_and_valid_jobs(self, tmp_path):

@@ -273,7 +273,7 @@ After filling in the configuration, click the "Test" button to verify model avai
 
 - **Auto hot-reload after save**: After saving, the system will hot-reload the configuration; most configuration items take effect immediately, while a few changes may trigger a process restart
 - **Required fields**: The four fields above are basic configuration required for normal operation
-- **Model Providers**: `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter`, `OpenAIAccount`
+- **Model Providers**: `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter`, `OpenAIAccount`
 
 ## Start Conversation
 

@@ -19,11 +19,11 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
 
 
 @pytest.mark.asyncio
-async def test_runtime_config_accepts_load_aware_browser_prompt_rail(
+async def test_runtime_config_updates_browser_prompt_and_permission_rails(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
 ) -> None:
-    """The browser prompt rail no longer exposes per-channel configuration."""
+    """Per-request setup supports current browser and permission rail APIs."""
     adapter = JiuwenSwarmCodeAdapter()
     adapter._instance = SimpleNamespace(
         ability_manager=SimpleNamespace(add=MagicMock()),
@@ -34,6 +34,7 @@ async def test_runtime_config_accepts_load_aware_browser_prompt_rail(
     adapter._runtime_prompt_rail = None
     adapter._subagent_rail = BrowserTaskPromptRail()
     adapter._project_memory_rail = None
+    adapter._permission_rail = MagicMock()
 
     update_rails = AsyncMock()
     monkeypatch.setattr(adapter, "_seed_runtime_cwd", MagicMock())
@@ -61,3 +62,6 @@ async def test_runtime_config_accepts_load_aware_browser_prompt_rail(
     )
 
     update_rails.assert_awaited_once_with("code")
+    adapter._permission_rail.set_trusted_dirs.assert_called_once_with(
+        [str(tmp_path.resolve())]
+    )

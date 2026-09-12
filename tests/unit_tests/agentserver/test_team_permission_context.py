@@ -14,7 +14,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
 )
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
-from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
+)
 
 
 @pytest.fixture
@@ -23,20 +25,26 @@ def anyio_backend() -> str:
 
 
 def _make_adapter() -> JiuWenSwarmDeepAdapter:
-    """Build a bare adapter whose team branch can run without a real agent."""
-    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    """Initialize the Team owner while stubbing unrelated model execution."""
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter.mark_as_session_scoped("sess-team-acp")
+    adapter._session_instance_mode = "team"
     adapter._instance = object()
-    adapter._is_session_scoped_adapter = True
+    adapter._agent_name = "main_agent"
     adapter._config_cache = {}
     adapter._project_dir = "/tmp/project"
     adapter._workspace_dir = "/tmp/workspace"
+    adapter._sys_operation = None
+    adapter._sys_operation_card = None
     adapter._runtime_prompt_rail = None
     adapter._has_valid_model_config = lambda _model: True
     adapter._resolve_model_for_request = lambda _request: None
     adapter._apply_model_to_react_agent = lambda _model, **_kwargs: None
     adapter._native_image_input_enabled = lambda _config, _model: False
     adapter._build_image_tool_fallback_notice = lambda *_args, **_kwargs: None
-    adapter._prepare_multimodal_image_inputs = staticmethod(lambda _request, inputs: inputs)
+    adapter._prepare_multimodal_image_inputs = staticmethod(
+        lambda _request, inputs: inputs
+    )
     adapter._prepare_react_image_tool_prompt = staticmethod(
         lambda _request, inputs, **_kwargs: inputs
     )
@@ -57,7 +65,9 @@ def _team_request() -> AgentRequest:
 
 
 async def _drain(adapter: JiuWenSwarmDeepAdapter, request: AgentRequest) -> None:
-    async for _chunk in adapter.process_message_stream_impl(request, {"query": "分析这个仓库"}):
+    async for _chunk in adapter.process_message_stream_impl(
+        request, {"query": "分析这个仓库"}
+    ):
         pass
 
 

@@ -9,6 +9,7 @@ from openjiuwen.harness.subagent_runtime import (
     SUBAGENT_ACTIVITY_EVENT_TYPE,
     SUBAGENT_UPDATED_EVENT_TYPE,
 )
+from openjiuwen.harness.tools.subagent.subagent_tools import build_subagent_tools
 
 from jiuwenswarm.agents.harness.common.rails.browser_task_prompt_rail import (
     BrowserTaskPromptRail,
@@ -43,6 +44,21 @@ class TestSubagentRuntimeConfig:
             ),
         )
         assert disabled_rail.enable_subagent_runtime is False
+
+
+def test_sdk_runtime_tool_set_is_exact_and_unique() -> None:
+    tools = build_subagent_tools(SimpleNamespace())
+    names = [tool.card.name for tool in tools]
+
+    assert names == [
+        "subagent_spawn",
+        "subagent_wait",
+        "subagent_list",
+        "subagent_send_input",
+        "subagent_close",
+        "subagent_resume",
+    ]
+    assert len(names) == len(set(names))
 
 
 def _map_subagent_updated_chunk(chunk_type: str, payload: dict) -> dict | None:
@@ -280,6 +296,27 @@ class TestSubagentStreamMapping:
         request_id = append_history.call_args.kwargs["request_id"]
         assert request_id.startswith("sub-a:activity:turn-1:")
         assert not request_id.endswith(":None")
+
+    @staticmethod
+    def test_subagent_activity_prefers_explicit_activity_identity() -> None:
+        projection = {
+            "subagent_id": "sub-a",
+            "task_id": "turn-1",
+            "activity_id": "activity-42",
+            "kind": "tool_call",
+            "summary": "search market data",
+            "at_ms": 1787019579060,
+        }
+
+        with patch.object(interface_deep_module, "append_history_record") as append_history:
+            JiuWenSwarmDeepAdapter.persist_subagent_activity({
+                **projection,
+                "parent_session_id": "parent-sess-activity",
+            })
+
+        assert append_history.call_args.kwargs["request_id"] == (
+            "sub-a:activity:turn-1:activity-42"
+        )
 
     @staticmethod
     def test_subagent_transcript_persists_parent_session_scope() -> None:

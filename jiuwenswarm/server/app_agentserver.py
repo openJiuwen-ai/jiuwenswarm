@@ -171,6 +171,11 @@ from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
 
 install_shell_tool_safety_hooks()
 
+# Normalize known provider compatibility gaps before any runtime Model is built.
+from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
+
+apply_provider_compat_patches()
+
 # 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
 # 仅当 channels.xiaoyi.mode == xiaoyi_claw 时才打补丁（该网关以 SSE-only 方式返回非流式响应）。
 from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
@@ -345,7 +350,10 @@ async def _run(host: str, port: int) -> None:
     # Distributed teammate can receive bootstrap before any team-mode request arrives.
     # Keep a lightweight daemon alive so remote member bootstrap is consumed proactively.
     teammate_bootstrap_task = asyncio.create_task(
-        run_teammate_bootstrap_daemon(stop_event=stop_event)
+        run_teammate_bootstrap_daemon(
+            stop_event=stop_event,
+            agent_manager=server.get_agent_manager(),
+        )
     )
 
     def _on_signal() -> None:

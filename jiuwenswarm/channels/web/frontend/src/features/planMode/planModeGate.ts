@@ -5,7 +5,7 @@
  * 「计划」chip 的关闭按钮 / `/plan` 斜杠命令）。历史实现里每个入口各自判断
  * 「现在能不能切」，而且都只看 `isProcessing` 一个信号——但 `ask_user` 弹出、
  * 等待用户回答时 `isProcessing` 会变回 `false`（`chat.ask_user_question` 事件只
- * 置 `pendingQuestion`，不置 `isProcessing`），于是这些闸门在「会话其实还没结束」
+ * 入队 `pendingQuestions`，不置 `isProcessing`），于是这些闸门在「会话其实还没结束」
  * 时全部放行，`/plan` 和 chip 关闭按钮都能绕过置灰限制关掉计划模式。
  *
  * 这里把「会话是否忙」的口径和「计划开关能否切换」的判断收敛到一处：
@@ -45,7 +45,7 @@ export interface PlanToggleDecision {
  * 三个信号取或：
  *   - `isProcessing`：这一轮对话 / 计划正在生成或执行；
  *   - `isPaused`：这一轮被暂停（回合尚未结束）；
- *   - `pendingQuestion`：`ask_user` 弹出、正在等用户回答——此时 `isProcessing`
+ *   - `pendingQuestions` 非空：仍在等用户回答——此时 `isProcessing`
  *     可能已是 false，但会话显然没结束，必须一并算「忙」。
  *
  * 这是唯一口径：以后要调整「会话忙」的判定只改这里。
@@ -54,7 +54,11 @@ export function isSessionBusyForPlanToggle(sessionId: string | null | undefined)
   if (!sessionId) return false;
   const runtime = useChatStore.getState().runtimes[sessionId];
   if (!runtime) return false;
-  return Boolean(runtime.isProcessing) || Boolean(runtime.isPaused) || Boolean(runtime.pendingQuestion);
+  return (
+    Boolean(runtime.isProcessing) ||
+    Boolean(runtime.isPaused) ||
+    runtime.pendingQuestions.length > 0
+  );
 }
 
 /** 该会话是否还有未完成目标（active / paused / blocked 都算，只有 completed 不算）。 */

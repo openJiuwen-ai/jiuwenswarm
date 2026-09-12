@@ -21,6 +21,7 @@ from jiuwenswarm.gateway.cron.models import (
     CronRunState,
     CronTargetChannel,
     is_team_cron_mode,
+    normalize_cron_job_mode,
     resolve_cron_job_timeout_seconds,
 )
 from jiuwenswarm.gateway.cron.store import CronJobStore
@@ -28,7 +29,7 @@ from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
-from jiuwenswarm.gateway.cron.cron_expr import next_cron_datetime
+from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -347,16 +348,49 @@ class CronSchedulerService:
         """
         target_session_id = (state.exec_session_id or "").strip() or f"cron_{state.job_id}"
         job = self._jobs.get(state.job_id)
+        channel_id = str(state.exec_channel_id or "").strip() or "__cron__"
+        mode = str(
+            state.exec_mode
+            or getattr(job, "mode", "")
+            or CRON_JOB_DEFAULT_MODE
+        ).strip() or CRON_JOB_DEFAULT_MODE
+        work_mode = str(
+            state.exec_work_mode
+            or getattr(job, "work_mode", "")
+            or DEFAULT_WEB_WORK_MODE
+        ).strip() or DEFAULT_WEB_WORK_MODE
+        user_id = str(
+            state.exec_user_id
+            or getattr(job, "user_id", "")
+            or ""
+        ).strip()
+        project_id = str(
+            state.exec_project_id
+            or getattr(job, "project_id", "")
+            or ""
+        ).strip()
+        project_dir = str(state.exec_project_dir or "").strip()
+        cancel_params: dict[str, Any] = {
+            "intent": "cancel",
+            "mode": mode,
+            "work_mode": work_mode,
+            "session_id": target_session_id,
+            "cron": {"job_id": state.job_id, "run_id": state.run_id},
+        }
+        if project_id:
+            cancel_params["project_id"] = project_id
+        if project_dir:
+            cancel_params["project_dir"] = project_dir
         try:
             interrupt_env = e2a_from_agent_fields(
                 request_id=f"cron-cancel-{state.run_id}",
-                channel_id="__cron__",
+                channel_id=channel_id,
                 session_id=target_session_id,
                 req_method=ReqMethod.CHAT_CANCEL,
-                params={"cron": {"job_id": state.job_id, "run_id": state.run_id}},
+                params=cancel_params,
                 is_stream=False,
                 timestamp=self._now_fn(),
-                user_id=str(getattr(job, "user_id", "") or "").strip() or None,
+                user_id=user_id or None,
             )
             await self._agent_client.send_request(interrupt_env)
             logger.info(
@@ -600,8 +634,12 @@ class CronSchedulerService:
             session_id=job.session_id,
             chat_type=job.chat_type,
             timezone=job.timezone,
+            exec_mode=normalize_cron_job_mode(job.mode),
             exec_channel_id=channel_id,
             exec_session_id=exec_session_id,
+            exec_user_id=str(job.user_id or "").strip() or None,
+            exec_work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
+            exec_project_id=job.project_id or None,
         )
         # 普通 cron 原先先把本地构造的 ``cron_<timestamp>_<job>`` 返回给 Web，
         # 再在 wake 阶段向 AgentServer 创建真正的 session。两个 ID 不同，前端会
@@ -610,7 +648,7 @@ class CronSchedulerService:
         # proactive.tick has its own wake handler and sends PROACTIVE_TICK to a
         # stable session (``cron_<job_id>``).  It never consumes a normal cron
         # chat session, so allocating one here would leave an orphan session.
-        mode = str(job.mode or CRON_JOB_DEFAULT_MODE).strip() or CRON_JOB_DEFAULT_MODE
+        mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
         if mode != "proactive.tick" and not is_team_cron_mode(mode):
             state.exec_session_id = await self._allocate_single_agent_session(
                 job,
@@ -627,7 +665,7 @@ class CronSchedulerService:
 
     def _make_execution_context(self, job: CronJob) -> tuple[str, str]:
         ts = format(int(time.time() * 1000), "x")
-        mode = str(job.mode or CRON_JOB_DEFAULT_MODE).strip() or CRON_JOB_DEFAULT_MODE
+        mode = normalize_cron_job_mode(job.mode)
         if is_team_cron_mode(mode):
             return _resolve_cron_execution_context(
                 job,
@@ -675,6 +713,30 @@ class CronSchedulerService:
 
     def _schedule_event(self, at_dt: datetime, kind: str, job_id: str, run_id: str) -> None:
         at_ts = float(at_dt.timestamp())
+        # 幂等去重（仅 wake，同 run_id 维度）：若堆里已有相同 run_id + wake 的 event，
+        # 不重复排入。
+        # 背景：proactive.tick 每次 completed 后（854行）都调 _compute_next_run 算下一次
+        # wake 并 _schedule_event。相邻几次 tick（cron 到点 + 用户多次 run_now）算出的
+        # next_run_id 相同（下一个 cron 到点不变），重复排入会让堆里累积多个同 run_id
+        # wake，到点时被主循环逐个消费 → 同一 run_id triggering 多次 → 连推多张卡片
+        # （2026-08-31 实测 9 次同 run_id 推 6 张；2026-09-01 插桩确证堆里累积 6 个同
+        # run_id wake）。
+        #
+        # 用 run_id 维度而非 job 维度：trigger_run_now（597行）每次的 run_id = 触发时刻
+        # （每次不同），不会被去重 → 用户点"立即执行"正常执行，不误杀。只有 completed
+        # 重排的 next_run_id（短时间内多次 tick 都相同，= 下一个 cron 到点）才会命中
+        # 去重 → 堵住累积。无需时间魔法数字，靠 run_id 语义自然区分。
+        # 只对 wake 去重：push/push_update 是补发场景，可能需重复（如 push_update 补
+        # 最终结果），不去重。
+        if kind == "wake":
+            for _, _, e in self._events:
+                if e.kind == "wake" and e.run_id == run_id:
+                    logger.info(
+                        "[Cron] _schedule_event skip duplicate wake: job=%s run_id=%s "
+                        "already in heap (at=%.3f)",
+                        job_id, run_id, e.at_ts,
+                    )
+                    return
         self._seq += 1
         ev = _Event(at_ts=at_ts, seq=self._seq, kind=kind, job_id=job_id, run_id=run_id)
         heapq.heappush(self._events, (ev.at_ts, ev.seq, ev))
@@ -798,6 +860,8 @@ class CronSchedulerService:
                     session_id=job.session_id,
                     chat_type=job.chat_type,
                     timezone=job.timezone,
+                    exec_mode=normalize_cron_job_mode(job.mode),
+                    exec_user_id=str(job.user_id or "").strip() or None,
                 )
                 self._runs[ev.run_id] = state
                 state.status = "running"
@@ -993,6 +1057,7 @@ class CronSchedulerService:
                 session_id=job.session_id,
                 chat_type=job.chat_type,
                 timezone=job.timezone,
+                exec_user_id=str(job.user_id or "").strip() or None,
             )
             self._runs[run_id] = state
 
@@ -1013,16 +1078,32 @@ class CronSchedulerService:
         if run_id in self._run_tasks and not self._run_tasks[run_id].done():
             return
 
+        try:
+            mode = normalize_cron_job_mode(job.mode)
+        except ValueError as exc:
+            state.status = "failed"
+            state.error = str(exc)
+            state.result_text = f"[cron] 任务执行失败: {exc}"
+            state.finished_at = self._now_fn()
+            logger.warning(
+                "[Cron] refusing unsupported mode: job_id=%s run_id=%s mode=%r",
+                job.id,
+                run_id,
+                job.mode,
+            )
+            return
+        state.exec_mode = mode
+        state.exec_user_id = str(job.user_id or "").strip() or None
+
         async def _run_agent() -> None:
             state.status = "running"
             state.started_at = self._now_fn()
             ok = False
-            mode = CRON_JOB_DEFAULT_MODE
+            mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
             channel_id = ""
             exec_session_id = ""
             envelope = None
             try:
-                mode = str(job.mode or CRON_JOB_DEFAULT_MODE).strip() or CRON_JOB_DEFAULT_MODE
                 if state.exec_channel_id and state.exec_session_id:
                     channel_id = state.exec_channel_id
                     exec_session_id = state.exec_session_id
@@ -1034,6 +1115,11 @@ class CronSchedulerService:
                 # 目录分离后 Gateway 反查会得到空值或错误归属；改为只传 project_id，
                 # 由目标 AgentServer 在其注入目录内按 project_id 解析 project_dir
                 # （resolve_session_project_binding 规则2：仅传 project_id → 自动补齐）。
+                # 取消路径仍保存 Runtime agent cache 所需的 work_mode；project_dir
+                # 由 AgentServer 依据 project_id/session 解析，Gateway 不跨目录反查。
+                state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE
+                state.exec_project_id = job.project_id or None
+                state.exec_project_dir = None
                 if not is_team_cron_mode(mode) and not state.execution_session_allocated:
                     exec_session_id = await self._allocate_single_agent_session(
                         job,
@@ -1091,6 +1177,7 @@ class CronSchedulerService:
                         envelope=envelope,
                         exec_session_id=exec_session_id,
                         cron_meta=cron_meta,
+                        mode=mode,
                         timeout_seconds=timeout_seconds,
                     )
                 else:
@@ -1239,16 +1326,23 @@ class CronSchedulerService:
             or getattr(envelope, "channel_id", None)
             or ""
         ).strip()
+        envelope_params = getattr(envelope, "params", None)
+        execution_params = envelope_params if isinstance(envelope_params, dict) else {}
+        cancel_params: dict[str, Any] = {
+            "intent": "cancel",
+            "mode": mode,
+            "session_id": exec_session_id,
+        }
+        for key in ("work_mode", "project_id", "project_dir"):
+            value = execution_params.get(key)
+            if value is not None and str(value).strip():
+                cancel_params[key] = value
         cancel_msg = Message(
             id=f"cron-cancel-{getattr(envelope, 'request_id', '')}",
             type="req",
             channel_id=channel_id,
             session_id=exec_session_id,
-            params={
-                "intent": "cancel",
-                "mode": mode,
-                "session_id": exec_session_id,
-            },
+            params=cancel_params,
             req_method=ReqMethod.CHAT_CANCEL,
             timestamp=self._now_fn(),
             ok=True,
@@ -1377,6 +1471,7 @@ class CronSchedulerService:
         envelope: Any,
         exec_session_id: str,
         cron_meta: dict[str, Any],
+        mode: str,
         timeout_seconds: float,
     ) -> tuple[str, bool]:
         """Run a team-mode cron job via streaming so SwarmFlow events reach the TUI."""
@@ -1466,6 +1561,7 @@ class CronSchedulerService:
                 await self._cancel_cron_team_agent_session(
                     envelope=envelope,
                     exec_session_id=exec_session_id,
+                    mode=mode,
                 )
             return text, ok
         except asyncio.TimeoutError:
@@ -1481,6 +1577,7 @@ class CronSchedulerService:
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
+                mode=mode,
             )
             timeout_min = max(1, int(timeout_seconds // 60))
             return _resolve_cron_team_timeout_result(
@@ -1502,6 +1599,7 @@ class CronSchedulerService:
             await self._cancel_cron_team_agent_session(
                 envelope=envelope,
                 exec_session_id=exec_session_id,
+                mode=mode,
             )
             raise
 
@@ -1531,6 +1629,7 @@ class CronSchedulerService:
                 session_id=job.session_id,
                 chat_type=job.chat_type,
                 timezone=job.timezone,
+                exec_user_id=str(job.user_id or "").strip() or None,
             )
             self._runs[run_id] = state
 

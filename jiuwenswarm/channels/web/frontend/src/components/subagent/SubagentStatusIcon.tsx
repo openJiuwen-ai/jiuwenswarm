@@ -25,7 +25,7 @@ export function SubagentStatusIcon({
     return <LoadingIcon className={`${className} shrink-0 text-muted animate-spin`} aria-label={label} role="img" />;
   }
   if (tone === 'waiting') {
-    return <WaitingIcon className={`${className} shrink-0 text-chat-accent`} aria-label={label} role="img" />;
+    return <WaitingIcon className={`${className} shrink-0 text-text-muted`} aria-label={label} role="img" />;
   }
   if (tone === 'danger') {
     return <CircleAlert className={`${className} shrink-0 text-danger`} aria-label={label} role="img" />;
@@ -33,5 +33,5 @@ export function SubagentStatusIcon({
   if (tone === 'success') {
     return <SuccessIcon className={`${className} shrink-0 text-ok`} aria-label={label} role="img" />;
   }
-  return <WaitingIcon className={`${className} shrink-0 text-chat-accent`} aria-label={label} role="img" />;
+  return <WaitingIcon className={`${className} shrink-0 text-text-muted`} aria-label={label} role="img" />;
 }

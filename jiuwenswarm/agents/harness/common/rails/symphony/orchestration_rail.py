@@ -26,6 +26,7 @@ from jiuwenswarm.symphony.llm import (
 _ConfigBaseProvider = dict[str, Any] | Callable[[], dict[str, Any] | None] | None
 _SHORTLIST_EXTRA_KEY = "symphony_candidate_skill_ids"
 _GRAPH_BUILD_TIMEOUT_EXTRA_KEY = "symphony_graph_build_timeout"
+_GRAPH_BUILD_TIMEOUT_STATE_KEY = "symphony_graph_build_timeout_state"
 _REQUEST_LLM_TOKEN_ATTR = "_symphony_request_llm_config_token"
 _GRAPH_TOOL_NAMES = frozenset(
     {
@@ -84,6 +85,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self.system_prompt_builder = None
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        self._ensure_graph_timeout_state(ctx)
         self._remove_graph_tools_after_timeout(ctx)
         self._sync_orchestration_guidance(ctx)
 
@@ -232,6 +234,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         inputs.tool_result = payload
         # Reuse the existing invocation marker that removes both graph tools.
         ctx.extra[_GRAPH_BUILD_TIMEOUT_EXTRA_KEY] = True
+        state = self._graph_timeout_state(ctx)
+        if state is not None:
+            state[_GRAPH_BUILD_TIMEOUT_EXTRA_KEY] = True
         ctx.request_force_finish(
             {"output": payload["content"], "result_type": "answer"}
         )
@@ -257,12 +262,35 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if isinstance(ctx.inputs, ToolCallInputs):
             ctx.inputs.tool_result = payload
         ctx.extra[_GRAPH_BUILD_TIMEOUT_EXTRA_KEY] = True
+        state = self._graph_timeout_state(ctx)
+        if state is not None:
+            state[_GRAPH_BUILD_TIMEOUT_EXTRA_KEY] = True
         ctx.request_force_finish(
             {"output": payload["content"], "result_type": "answer"}
         )
 
+    @staticmethod
+    def _graph_timeout_state(ctx: AgentCallbackContext) -> dict[str, Any] | None:
+        extra = getattr(ctx, "extra", None)
+        if not isinstance(extra, dict):
+            return None
+        state = extra.get(_GRAPH_BUILD_TIMEOUT_STATE_KEY)
+        return state if isinstance(state, dict) else None
+
+    @classmethod
+    def _ensure_graph_timeout_state(cls, ctx: AgentCallbackContext) -> None:
+        extra = getattr(ctx, "extra", None)
+        if not isinstance(extra, dict):
+            return
+        if not isinstance(extra.get(_GRAPH_BUILD_TIMEOUT_STATE_KEY), dict):
+            extra[_GRAPH_BUILD_TIMEOUT_STATE_KEY] = {}
+
     def _remove_graph_tools_after_timeout(self, ctx: AgentCallbackContext) -> None:
-        if not ctx.extra.get(_GRAPH_BUILD_TIMEOUT_EXTRA_KEY):
+        state = self._graph_timeout_state(ctx)
+        timed_out = bool(ctx.extra.get(_GRAPH_BUILD_TIMEOUT_EXTRA_KEY)) or bool(
+            state and state.get(_GRAPH_BUILD_TIMEOUT_EXTRA_KEY)
+        )
+        if not timed_out:
             return
         if not isinstance(ctx.inputs, ModelCallInputs):
             return
@@ -274,6 +302,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             for tool in tools
             if self._model_tool_name(tool) not in _GRAPH_TOOL_NAMES
         ]
+        ctx.extra.pop(_GRAPH_BUILD_TIMEOUT_EXTRA_KEY, None)
+        if state is not None:
+            state.pop(_GRAPH_BUILD_TIMEOUT_EXTRA_KEY, None)
 
     def _manual_graph_build_content(self) -> str:
         language = getattr(self.system_prompt_builder, "language", "cn") or "cn"

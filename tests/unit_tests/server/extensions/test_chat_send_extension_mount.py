@@ -17,6 +17,7 @@ from jiuwenswarm.gateway.channel_manager.tui.tui_connect import (
     CLI_FORWARD_REQ_METHODS,
 )
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
+from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
@@ -456,9 +457,14 @@ class TestPackageCatalogReqMethodRouting:
         for method in _CATALOG_METHODS:
             req = AgentRequest(request_id="r", channel_id="c", req_method=method)
             assert AgentWebSocketServer._is_stateless_method_request(req) is True
-        assert AgentWebSocketServer._is_stateless_method_request(
-            AgentRequest(request_id="r", channel_id="c", req_method=ReqMethod.CHAT_SEND)
-        ) is False
+            assert AgentRuntime._is_stateless_method_request(req) is True
+        chat_request = AgentRequest(
+            request_id="r",
+            channel_id="c",
+            req_method=ReqMethod.CHAT_SEND,
+        )
+        assert AgentWebSocketServer._is_stateless_method_request(chat_request) is False
+        assert AgentRuntime._is_stateless_method_request(chat_request) is False
         for _, value in _LIFECYCLE_METHODS:
             assert value in app_web_handlers._FORWARD_REQ_METHODS
             assert value in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS

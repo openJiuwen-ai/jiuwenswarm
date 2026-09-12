@@ -38,6 +38,8 @@ export interface FileDownloadItem {
   download_token: string;
   /** 工作区绝对/相对路径；用于去重身份（优先于 downloadUrl 中的 exp token） */
   path?: string;
+  /** send_file 侧探测：是否为可一键保存的 Skill 包（含 SKILL.md 的 zip/.skill） */
+  is_skill_package?: boolean;
 }
 
 export interface ContextCompressionRuntime {
@@ -63,6 +65,10 @@ export interface Message {
   role: MessageRole;
   content: string;
   timestamp: string;
+  /** Full answer delivered by a delegated agent, distinct from spoken replies. */
+  presentation?: 'tool_result';
+  /** User-facing conversation output that must remain outside collapsed work. */
+  keepExpanded?: boolean;
   /**
    * 流式收尾 / chat.final 完成时刻。不参与时间线排序（排序仍用 timestamp，避免与 goal 卡抢序），
    * 仅作为「任务用时」终点，避免 live 一直停在首包 delta 时间、刷新后变成 final 落盘时间。
@@ -89,6 +95,8 @@ export interface Message {
   proactiveType?: 'skill_recommend' | 'task_reminder' | 'need_exploration';
   /** Web 单 Agent 回复产生时显式选中的专家；历史恢复不能依赖当前选择状态。 */
   agentTemplateName?: string;
+  proactiveRecId?: string;  // 推荐唯一ID，用于反馈关联
+  proactiveTarget?: string;  // 推荐目标（skill名/待办/探索方向），点赞请求带回后端兜底
   /**
    * 这条用户消息是否曾经用于设置/修改持续目标（"设为目标"徽章）。发送那一刻本地回显消息
    * 直接置 true；历史消息刷新后重新加载时，优先读后端 history 字段

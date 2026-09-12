@@ -15,6 +15,7 @@ from jiuwenswarm.symphony.evolution.models import (
     OVERLAY_SCHEMA_VERSION,
     OUTCOME_NEEDS_INPUT,
     OUTCOME_FAILURE,
+    OUTCOME_SUCCESS,
     PLAN_OUTCOME,
     edge_key,
     normalize_edges,
@@ -239,6 +240,14 @@ def record_plan_outcome(
         append_event(graph_dir, event)
         if rebuild_overlay:
             rebuild_dynamic_overlay(graph_dir)
+
+    # Trigger pack distillation after the transaction commits
+    if rebuild_overlay and normalized_outcome in {OUTCOME_SUCCESS, OUTCOME_FAILURE}:
+        try:
+            _try_distill_skill_packs(graph_dir)
+        except Exception:  # noqa: BLE001
+            pass  # Distillation failure should not block main flow
+
     return event
 
 
@@ -344,3 +353,146 @@ def _top_overlay_edges(overlay: dict[str, Any] | None) -> list[dict[str, Any]]:
             str(item.get("edge_key") or ""),
         ),
     )[:10]
+
+
+def _try_distill_skill_packs(graph_dir: Path) -> list[dict[str, Any]]:
+    """Distill skill packs from evolution events.
+
+    Returns list of distilled pack dicts (empty if none or disabled).
+    """
+    import asyncio
+
+    from jiuwenswarm.symphony.config import load_symphony_config
+    from jiuwenswarm.symphony.evolution.pack_adapter import events_to_evidence
+    from jiuwenswarm.symphony.evolution.pack_store import write_packs
+
+    try:
+        from openjiuwen.symphony.flow.distill import (
+            distill_group,
+            group_by_structure,
+            qualified_edges,
+        )
+        from openjiuwen.symphony.flow.narrative import distill_texts
+    except ImportError:
+        return []
+
+    config = load_symphony_config()
+    if not config.evolution.enabled or not config.evolution.flow.enabled:
+        return []
+
+    flow_config = config.evolution.flow
+
+    # Convert events to RecipeEvidence
+    evidence = events_to_evidence(graph_dir)
+    if not evidence:
+        return []
+
+    # Find qualified edges
+    qualified, stats = qualified_edges(
+        evidence,
+        min_edge_support=flow_config.min_edge_support,
+        min_edge_success_rate=flow_config.min_edge_success_rate,
+    )
+
+    if not qualified:
+        return []
+
+    # Group by structure
+    groups = group_by_structure(evidence, qualified)
+    if not groups:
+        return []
+
+    # Build LLM client for narrative distillation
+    llm_client = None
+    try:
+        from jiuwenswarm.symphony.llm import LLMConfig, create_llm_client
+        llm_client = create_llm_client(LLMConfig.from_default_model())
+    except Exception:  # noqa: BLE001
+        pass
+
+    # Distill each group
+    packs = []
+    for signature, group in groups.items():
+        result = distill_group(
+            group,
+            stats,
+            min_successes_candidate=flow_config.min_successes_candidate,
+            min_successes_verified=flow_config.min_successes_verified,
+            min_pack_success_rate_verified=flow_config.min_pack_success_rate_verified,
+        )
+
+        # Only persist packs with active status (candidate or verified grade)
+        if result.status == "active":
+            # Generate narrative texts (task description + execution process)
+            texts = _run_narrative_distill(
+                asyncio,
+                distill_texts,
+                group.records,
+                result.skill_pack,
+                llm_client,
+            )
+
+            pack_dict = {
+                "pack_id": result.recipe_id,
+                "member_ids": result.member_ids,
+                "skill_pack": result.skill_pack,
+                "quality": result.quality,
+                "status": result.status,
+                "grade": result.grade,
+                "group_traces": result.group_traces,
+                "task_description": texts.get("applicability", {}).get("task_description", ""),
+                "execution_narrative": texts.get("execution_narrative", ""),
+            }
+            packs.append(pack_dict)
+
+    # Persist packs
+    if packs:
+        write_packs(graph_dir, packs)
+
+    return packs
+
+
+def _run_narrative_distill(
+    asyncio_module: Any,
+    distill_texts: Any,
+    records: list[Any],
+    skill_pack: dict[str, Any],
+    llm_client: Any,
+) -> dict[str, Any]:
+    """Run async distill_texts, falling back to template on failure."""
+    if llm_client is None:
+        return _template_narrative(records, skill_pack)
+    try:
+        # Create a new event loop for async execution
+        # This avoids issues when called from sync context where loop may already be running
+        loop = asyncio_module.new_event_loop()
+        try:
+            return loop.run_until_complete(
+                distill_texts(
+                    records,
+                    skill_pack=skill_pack,
+                    max_examples=5,
+                    llm_client=llm_client,
+                )
+            )
+        finally:
+            loop.close()
+    except Exception:  # noqa: BLE001
+        return _template_narrative(records, skill_pack)
+
+
+def _template_narrative(records: list[Any], skill_pack: dict[str, Any]) -> dict[str, Any]:
+    """Template-based narrative fallback when LLM is unavailable."""
+    from openjiuwen.symphony.flow.distill import topological_order
+
+    order = topological_order(skill_pack)
+    success_count = sum(1 for r in records if r.outcome == "success")
+    task_description = f"基于 {len(order)} 个能力协作完成的任务（{' → '.join(order)}）"
+    execution_narrative = (
+        f"该组合共执行 {len(records)} 次，成功 {success_count} 次。"
+        f"执行过程：{'；'.join(f'由能力 {cid} 接力执行' for cid in order)}。"
+    )
+    return {
+        "applicability": {"task_description": task_description},
+        "execution_narrative": execution_narrative,
+    }

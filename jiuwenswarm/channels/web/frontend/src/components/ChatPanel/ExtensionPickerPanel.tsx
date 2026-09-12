@@ -238,7 +238,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         panelRef={panelRef}
         className="chat-extension-picker"
         direction={direction}
-        testId="chat-extension-picker-panel"
+        testId="chat-panel-extension-picker-panel"
         rowHeight={LIST_ROW_HEIGHT}
         itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
@@ -251,6 +251,8 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 aria-selected={tab === key}
                 onClick={() => setTab(key)}
                 className={clsx(tab === key && 'is-active')}
+                data-testid="chat-panel-extension-picker-tab"
+                data-variant={key}
               >
                 {t(key === 'plugin' ? 'connectorMarket.tabs.plugin' : 'connectorMarket.tabs.mcp')}
               </button>
@@ -266,98 +268,86 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('chat.extensionSearchPlaceholder')}
-                data-testid="chat-extension-search"
+                data-testid="chat-panel-extension-picker-search-input"
               />
             </div>
           </div>
         }
         footer={{ label: t('chat.extensionMore'), onClick: handleManageClick }}
       >
-        {loading && <div className="chat-skill-select__state">{t('skills.detailLoading')}</div>}
+        {loading && <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="loading">{t('skills.detailLoading')}</div>}
 
         {!loading && tab === 'plugin' && filteredPlugins.length === 0 && (
-          <div className="chat-skill-select__state">{t('chat.extensionEmpty')}</div>
+          <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="no-plugin">
+            {t('chat.extensionEmpty')}
+          </div>
         )}
-        {!loading &&
-          tab === 'plugin' &&
-          filteredPlugins.map((pkg) => {
-            const { marketplaceId, sessionPluginName } = resolvePluginPickerIdentifiers(pkg);
-            const label = localizedText(pkg.displayName, i18n.language);
-            const desc = localizedText(pkg.displayDescription, i18n.language);
-            const avatar = getSkillAvatar(label);
-            const installed = installedMap[marketplaceId];
-            const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
-            const isEnabled = enabledPlugins.includes(sessionPluginName);
-            const isConnectingThis =
-              connectingPluginIdRef.current === marketplaceId &&
-              (pluginInstallFlow.active || pluginReconnectFlow.active);
-            const busy = pluginBusyId === marketplaceId || isConnectingThis;
-            return (
-              <div
-                key={marketplaceId}
-                className="chat-skill-select__item chat-extension-picker__item"
-                data-testid="chat-panel-extension-picker-item"
-                data-variant={marketplaceId}
-              >
-                <div className={`chat-skill-select__avatar ${avatar.color}`}>{avatar.firstChar}</div>
-                <ItemDescCell text={desc} handlers={tooltipHandlers}>
-                  <div className="chat-skill-select__item-name">{label}</div>
-                </ItemDescCell>
-                {busy ? (
-                  <Loader2 className="chat-extension-picker__spinner" size={16} />
-                ) : installed && linked ? (
-                  <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName)} />
-                ) : installed ? (
-                  <ConnectButton
-                    label={t('chat.extensionConnect')}
-                    handlers={tooltipHandlers}
-                    onClick={() => void handleReconnectPlugin(marketplaceId)}
-                  />
-                ) : (
-                  <ConnectButton
-                    label={t('chat.extensionConnect')}
-                    handlers={tooltipHandlers}
-                    onClick={() => void handleConnectPlugin(marketplaceId)}
-                  />
-                )}
+        {!loading && tab === 'plugin' && filteredPlugins.map((pkg) => {
+          const { marketplaceId, sessionPluginName } = resolvePluginPickerIdentifiers(pkg);
+          const label = localizedText(pkg.displayName, i18n.language);
+          const desc = localizedText(pkg.displayDescription, i18n.language);
+          const avatar = getSkillAvatar(label);
+          const installed = installedMap[marketplaceId];
+          const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
+          const isEnabled = enabledPlugins.includes(sessionPluginName);
+          const isConnectingThis = connectingPluginIdRef.current === marketplaceId && (pluginInstallFlow.active || pluginReconnectFlow.active);
+          const busy = pluginBusyId === marketplaceId || isConnectingThis;
+          return (
+            <div
+              key={marketplaceId}
+              className="chat-skill-select__item chat-extension-picker__item"
+              data-testid="chat-panel-extension-picker-item"
+              data-variant={marketplaceId}
+            >
+              <div className="chat-skill-select__avatar" style={avatar.style}>
+                {avatar.firstChar}
               </div>
-            );
-          })}
+              <ItemDescCell text={desc} handlers={tooltipHandlers}>
+                <div className="chat-skill-select__item-name">{label}</div>
+              </ItemDescCell>
+              {busy ? (
+                <Loader2 className="chat-extension-picker__spinner" size={16} />
+              ) : installed && linked ? (
+                <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName)} />
+              ) : installed ? (
+                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleReconnectPlugin(marketplaceId)} />
+              ) : (
+                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleConnectPlugin(marketplaceId)} />
+              )}
+            </div>
+          );
+        })}
 
         {!loading && tab === 'mcp' && filteredMcps.length === 0 && (
-          <div className="chat-skill-select__state">{t('chat.extensionEmpty')}</div>
+          <div className="chat-skill-select__state" data-testid="chat-panel-extension-picker-state" data-variant="no-mcp">
+            {t('chat.extensionEmpty')}
+          </div>
         )}
-        {!loading &&
-          tab === 'mcp' &&
-          filteredMcps.map((connector) => {
-            const avatar = getSkillAvatar(connector.displayName);
-            const linked = connector.connectionState === 'connected';
-            const isEnabled = enabledMcps.includes(connector.name);
-            const busy = Boolean(busyMap[connector.name]);
-            return (
-              <div key={connector.name} className="chat-skill-select__item chat-extension-picker__item">
-                <EntityAvatar
-                  iconUrl={connector.icon ?? undefined}
-                  avatar={avatar}
-                  className="chat-skill-select__avatar"
-                />
-                <ItemDescCell text={connector.description ?? undefined} handlers={tooltipHandlers}>
-                  <div className="chat-skill-select__item-name">{connector.displayName}</div>
-                </ItemDescCell>
-                {busy ? (
-                  <Loader2 className="chat-extension-picker__spinner" size={16} />
-                ) : linked ? (
-                  <Switch checked={isEnabled} onChange={() => handleToggleMcp(connector.name)} />
-                ) : (
-                  <ConnectButton
-                    label={t('chat.extensionConnect')}
-                    handlers={tooltipHandlers}
-                    onClick={() => void handleConnectMcp(connector.name)}
-                  />
-                )}
-              </div>
-            );
-          })}
+        {!loading && tab === 'mcp' && filteredMcps.map((connector) => {
+          const avatar = getSkillAvatar(connector.displayName);
+          const linked = connector.connectionState === 'connected';
+          const isEnabled = enabledMcps.includes(connector.name);
+          const busy = Boolean(busyMap[connector.name]);
+          return (
+            <div key={connector.name} className="chat-skill-select__item chat-extension-picker__item" data-testid="chat-panel-extension-picker-item" data-variant={connector.name}>
+              <EntityAvatar
+                iconUrl={connector.icon ?? undefined}
+                avatar={avatar}
+                className="chat-skill-select__avatar"
+              />
+              <ItemDescCell text={connector.description ?? undefined} handlers={tooltipHandlers}>
+                <div className="chat-skill-select__item-name">{connector.displayName}</div>
+              </ItemDescCell>
+              {busy ? (
+                <Loader2 className="chat-extension-picker__spinner" size={16} />
+              ) : linked ? (
+                <Switch checked={isEnabled} onChange={() => handleToggleMcp(connector.name)} />
+              ) : (
+                <ConnectButton label={t('chat.extensionConnect')} handlers={tooltipHandlers} onClick={() => void handleConnectMcp(connector.name)} />
+              )}
+            </div>
+          );
+        })}
       </PickerPanel>
 
       {tokenTarget && (
@@ -395,31 +385,19 @@ type TooltipHandlers = {
   onBlur: () => void;
 };
 
-function ItemDescCell({
-  text,
-  handlers,
-  children,
-}: {
-  text?: string;
-  children: React.ReactNode;
-  handlers: TooltipHandlers;
-}) {
+function ItemDescCell({ text, handlers, children }: { text?: string; children: React.ReactNode; handlers: TooltipHandlers }) {
   return (
-    <div className="chat-skill-select__item-main" data-tooltip={text} {...handlers}>
+    <div
+      className="chat-skill-select__item-main"
+      data-tooltip={text}
+      {...handlers}
+    >
       {children}
     </div>
   );
 }
 
-function ConnectButton({
-  label,
-  handlers,
-  onClick,
-}: {
-  label: string;
-  onClick: () => void;
-  handlers: TooltipHandlers;
-}) {
+function ConnectButton({ label, handlers, onClick }: { label: string; onClick: () => void; handlers: TooltipHandlers }) {
   return (
     <button
       type="button"

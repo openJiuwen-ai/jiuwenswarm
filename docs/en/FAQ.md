@@ -65,7 +65,7 @@ pip uninstall jiuwenswarm
 
 ### Q: Which model providers are supported?
 
-JiuwenSwarm supports multiple model platforms: Huawei Cloud MaaS, OpenAI, DeepSeek, DashScope, SiliconFlow, InferenceAffinity, OpenRouter and other OpenAI-compatible APIs, as well as local model deployment.
+JiuwenSwarm supports multiple model platforms: Huawei Cloud MaaS, OpenAI, DeepSeek, DashScope, SiliconFlow, AscendAffinity, OpenRouter and other OpenAI-compatible APIs, as well as local model deployment.
 
 ### Q: Model configuration test failed — what to check?
 

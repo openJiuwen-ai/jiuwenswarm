@@ -47,9 +47,7 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
-from openjiuwen.harness.tools import (
-    WebFetchWebpageTool, WebFreeSearchTool, WebPaidSearchTool, is_paid_search_enabled,
-)
+from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -66,6 +64,12 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
     STATUSLINE_SETUP_AGENT_TYPE,
     build_statusline_setup_agent_config,
+)
+from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
+    TrustedWebFreeSearchTool,
+)
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    apply_permission_trusted_dirs,
 )
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
@@ -770,7 +774,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             language=self._resolve_runtime_language(),
             context_engine_config=context_engine_config,
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(
-                config, model
+                config_base, model
             ),
             enable_read_image_multimodal=(
                 self._resolve_enable_read_image_multimodal(config)
@@ -1109,6 +1113,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 exc,
             )
 
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Code mode excludes multimodal tools, including during scoped reloads.
+
+        Keep the inherited snapshot refresh and session fan-out behavior without
+        allowing the deep adapter's reload path to register these capabilities.
+        """
+
     async def reload_agent_config(
         self,
         config_base: dict[str, Any] | None = None,
@@ -1364,7 +1375,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if getattr(tool, "card", None) is not None
         }
         with self._code_spec_config_scope(config_base):
-            self._sync_multimodal_tools_for_runtime()
             self._sync_paid_search_tool_for_runtime()
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)
@@ -1975,9 +1985,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     max_iterations=parse_int(
                         browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
                         DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
-                    )
+                    ),
                 )
-                browser_spec.factory_kwargs = {"auto_create_workspace": False}
+                self._prepare_browser_runtime_security(browser_spec)
+                browser_spec.factory_kwargs["auto_create_workspace"] = False
                 subagents.append(browser_spec)
 
         # ── 自定义 agent 不加入 deep_config.subagents ──
@@ -2048,6 +2059,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        self._last_mode = mode
+        await self._sync_personal_context_rail(mode)
 
     def _build_code_agent_rail(self) -> CodeAgentRail | None:
         """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""
@@ -2170,13 +2184,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             )
             if self._eternal_conversation_enabled and self._context_processor_rail is not None:
                 self.shutdown_context_session_memory(self._context_processor_rail)
-        # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
-        # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
+        # PermissionInterruptRail: session 任务目录是 workspace；project_dir 并入 trusted_dirs。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。
         permission_rail = getattr(self, "_permission_rail", None)
         if permission_rail is not None:
             try:
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                apply_permission_trusted_dirs(
+                    permission_rail,
+                    trusted_dirs=runtime_config.trusted_dirs,
+                    project_dir=runtime_config.project_dir or self._project_dir,
+                )
             except Exception:
                 logger.debug(
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
@@ -2307,7 +2324,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_web_free_search_tool(self, agent_id: str) -> Any:
         """构建 web_free_search 工具."""
-        return WebFreeSearchTool(
+        return TrustedWebFreeSearchTool(
             language=self._resolve_runtime_language(), agent_id=agent_id
         )
 

@@ -53,6 +53,13 @@ symphony:
 
   evolution:
     enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    flow:
+      enabled: false            # true = 任务结束后蒸馏 skill pack
+      min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
+      min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
+      min_successes_candidate: 2  # 至少成功几次产出 candidate pack
+      min_successes_verified: 3   # 至少成功几次产出 verified pack
+      min_pack_success_rate_verified: 0.8
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
@@ -63,7 +70,7 @@ symphony:
     min_edge_confidence: 0.5
 
   skill_retrieval:
-    enabled: true
+    enabled: false
     artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
     discovery:
       # Strictly below the fixed 1% context threshold, a new session receives
@@ -254,8 +261,6 @@ proactive_recommendation:
 endpoint_profile_overrides:
 
 models:
-  # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
-  enable_free_models: true
   defaults:
     - model_client_config:
         api_base: ${API_BASE}
@@ -278,7 +283,6 @@ models:
         verify_ssl: true
         custom_headers: {}
       model_config_obj:
-        temperature: 0.95
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -303,8 +307,7 @@ models:
         endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
         timeout: 1800
         verify_ssl: true
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -315,8 +318,7 @@ models:
         endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -327,8 +329,7 @@ models:
         endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -340,8 +341,7 @@ models:
         endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。
@@ -533,6 +533,9 @@ trajectory_ui:
   poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
+experimental:
+  task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
+
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置
 # ============================================================
@@ -572,9 +575,16 @@ debug_trace:
     redact_prompts: false           # 脱敏 prompt/completion（密钥字段始终打码）
     redact_completions: false
 
+# Application 级 KV-Cache 算力亲和开关；所有 Agent/Team/RSI 运行模式共享。
+kv_cache_affinity_config:
+  enable_kv_cache_affinity: false
+
 react:
   agent_name: main_agent
   enable_task_loop: true
+  # read_file 图片输入策略：null=自动探测，false=纯文本，true=启用多模态。
+  # 必须在模板中显式声明，否则配置迁移会将用户或 Benchmark 写入的值当作废弃字段删除。
+  enable_read_image_multimodal: null
   # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
   completion_timeout: null
   max_iterations: 100
@@ -605,9 +615,6 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
-  kv_cache_affinity_config:
-    enable_kv_cache_release: false
-    enable_kv_cache_affinity: false
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
@@ -758,6 +765,9 @@ gateway:
     agent_key_fields:
       - user_id
       - agent_type
+    # Web/TUI 连接建立后后台预热内置 jiuwenswarm 沙箱并打通 instance WS，
+    # 避免首条 chat 卡在 create + 冷启动 502 重试。失败不影响连接。
+    connect_warmup_enabled: true
     registry:
       # Agent OS 注册中心地址（空=本地 stub，不发 HTTP）。一体机默认 http://127.0.0.1:8000
       endpoint:
@@ -786,6 +796,10 @@ heartbeat:
     default_max_runs: 12
     default_concurrency_policy: skip
     default_session_deleted_policy: disable
+    # 单次心跳任务的最长执行时间；超时后取消并记录 failed。
+    execution_timeout_seconds: 300
+    # 用户请求抢占心跳时，等待精确取消和清理完成的最长时间。
+    user_preemption_timeout_seconds: 10
 
 health_check:
   # 业务探活间隔（秒），默认 3600
@@ -1017,14 +1031,17 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  # manual keeps the existing approval flow; auto enables Smart Approval.
+  mode: manual
 
   defaults:
     "*": "allow"
 
   tools:
-    bash: ask
-    mcp_exec_command: ask
-    create_terminal: ask
+    bash: allow
+    powershell: allow
+    mcp_exec_command: allow
+    create_terminal: allow
     write: allow
     write_file: allow
     edit_file: allow
@@ -1070,87 +1087,168 @@ permissions:
 
   rules:
     - id: shell_allow_dir
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "dir *"
       severity: LOW
     - id: shell_allow_ls
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "ls *"
       severity: LOW
     - id: shell_allow_pwd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "pwd *"
       severity: LOW
     - id: shell_allow_cd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cd *"
       severity: LOW
     - id: shell_allow_echo
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "echo *"
       severity: LOW
     - id: shell_allow_cat
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cat *"
       severity: LOW
     - id: shell_allow_type
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "type *"
       severity: LOW
     - id: shell_allow_head
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "head *"
       severity: LOW
     - id: shell_allow_tail
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "tail *"
       severity: LOW
     - id: shell_allow_git_status
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git status *"
       severity: LOW
     - id: shell_allow_git_log
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git log *"
       severity: LOW
     - id: shell_allow_git_diff
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git diff *"
       severity: LOW
     - id: shell_allow_git_branch
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "git branch *"
       severity: LOW
+    # PowerShell cmdlet / alias counterparts of cd, pwd, ls/dir, cat/type, echo, head/tail
+    - id: shell_allow_set_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Set-Location *"
+      severity: LOW
+    - id: shell_allow_push_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Push-Location *"
+      severity: LOW
+    - id: shell_allow_pop_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Pop-Location *"
+      severity: LOW
+    - id: shell_allow_sl
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "sl *"
+      severity: LOW
+    - id: shell_allow_chdir
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "chdir *"
+      severity: LOW
+    - id: shell_allow_get_location
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Location *"
+      severity: LOW
+    - id: shell_allow_gl
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gl *"
+      severity: LOW
+    - id: shell_allow_get_childitem
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-ChildItem *"
+      severity: LOW
+    - id: shell_allow_gci
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gci *"
+      severity: LOW
+    - id: shell_allow_get_item
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Item *"
+      severity: LOW
+    - id: shell_allow_gi
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gi *"
+      severity: LOW
+    - id: shell_allow_get_content
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Get-Content *"
+      severity: LOW
+    - id: shell_allow_gc
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "gc *"
+      severity: LOW
+    - id: shell_allow_write_output
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Write-Output *"
+      severity: LOW
+    - id: shell_allow_write_host
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Write-Host *"
+      severity: LOW
+    - id: shell_allow_select_object
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: 're:(?i)^Select-Object\b'
+      severity: LOW
     - id: shell_ask_rm
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rm *"
       severity: HIGH
     - id: shell_ask_del
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "del *"
       severity: HIGH
     - id: shell_ask_rd
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "rd *"
       severity: HIGH
+    - id: shell_ask_remove_item
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "Remove-Item *"
+      severity: HIGH
+    - id: shell_ask_ri
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "ri *"
+      severity: HIGH
+    - id: shell_ask_rmdir
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "rmdir *"
+      severity: HIGH
+    - id: shell_ask_erase
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
+      pattern: "erase *"
+      severity: HIGH
     - id: shell_ask_mv
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "mv *"
       severity: HIGH
     - id: shell_ask_cp
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "cp *"
       severity: HIGH
     - id: shell_ask_chmod
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "chmod *"
       severity: HIGH
     - id: shell_ask_chown
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "chown *"
       severity: HIGH
     - id: shell_ask_sensitive_file_reads
-      tools: [bash, mcp_exec_command, create_terminal]
+      tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: 're:(?i)(^|[\s;&|()])((cat|type|less|more|head|tail|grep|find|Get-Content|Select-String)\b[^;&|]*(id_rsa|id_ed25519|\.pem\b|\.pfx\b|\.key\b|\.kube/config|\.aws/(credentials|config)|\.npmrc\b|\.env(\.[A-Za-z0-9_-]+)?\b|authorized_keys|\.ssh/))'
       severity: HIGH
     # path_ask_* 已迁到 file_guard.paths（match: glob）；Pipeline A 不再重复匹配。
@@ -1160,8 +1258,8 @@ permissions:
   owner_scopes: {}
   deny_guidance_message: ""
 
-  # Native 路径层（agent-core FileGuard）：defaults + workspace 绑定运行时 workspace_root
-  # trusted_dirs（TUI 项目 cwd / /add-dir）由引擎运行时编译，不必写进 YAML。
+  # Native 路径层（agent-core FileGuard）。P1 起包内 sensitive_paths 在 file_guard.enabled
+  # 时注入（.ssh / .env / 私钥为 deny，家目录凭证为 ask）；下面 glob 可与目录重复，更严者胜。
   file_guard:
     enabled: true
     defaults:

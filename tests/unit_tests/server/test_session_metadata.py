@@ -2422,6 +2422,34 @@ class TestIdentityPreservation:
         assert data["workflow_runs"] == {"wf_1": {}}
 
     @staticmethod
+    def test_atomic_replace_retries_transient_permission_error(
+        sessions_dir,
+        monkeypatch,
+    ):
+        """Windows readers can briefly block replace; the atomic write must retry."""
+        import jiuwenswarm.server.runtime.session.session_metadata as sm
+
+        src = sessions_dir / "metadata.tmp"
+        dst = sessions_dir / "metadata.json"
+        src.write_text('{"session_id": "retry"}', encoding="utf-8")
+        real_replace = sm.os.replace
+        attempts = 0
+
+        def flaky_replace(source, target):
+            nonlocal attempts
+            attempts += 1
+            if attempts < 3:
+                raise PermissionError("simulated sharing violation")
+            return real_replace(source, target)
+
+        monkeypatch.setattr(sm.os, "replace", flaky_replace)
+
+        sm._atomic_replace(src, dst)
+
+        assert attempts == 3
+        assert json.loads(dst.read_text(encoding="utf-8"))["session_id"] == "retry"
+
+    @staticmethod
     def test_write_is_atomic_no_empty_window(sessions_dir):
         """A concurrent reader must never observe an empty file mid-write (atomic replace)."""
         import jiuwenswarm.server.runtime.session.session_metadata as sm
@@ -2440,7 +2468,11 @@ class TestIdentityPreservation:
             while not stop.is_set():
                 try:
                     raw = fpath.read_text(encoding="utf-8")
-                except (FileNotFoundError, PermissionError):
+                except PermissionError:
+                    # Windows can briefly deny a reader while an atomic replace
+                    # is committing. This is not an empty/truncated file window.
+                    continue
+                except FileNotFoundError:
                     empties.append("missing")
                     continue
                 if not raw.strip():

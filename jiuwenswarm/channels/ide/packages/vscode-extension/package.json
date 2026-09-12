@@ -1,0 +1,191 @@
+{
+  "name": "jiuwenswarm",
+  "displayName": "JiuwenSwarm — AI Code Agent",
+  "description": "Autonomous multi-agent AI coding assistant. Locally-running swarm of specialized agents handles code edits, shell commands, web search, and MCP tools — with streaming chat, full tool-call transparency, session history, and checkpoint rewind.",
+  "version": "0.1.0",
+  "publisher": "openjiuwen",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openjiuwen/jiuwenswarm-ide"
+  },
+  "keywords": [
+    "ai",
+    "assistant",
+    "chat",
+    "agent",
+    "llm",
+    "autonomous",
+    "multi-agent",
+    "code",
+    "productivity"
+  ],
+  "engines": {
+    "vscode": "^1.85.0"
+  },
+  "categories": [
+    "AI",
+    "Chat",
+    "Other"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "jiuwenswarm.openChat",
+        "title": "JiuwenSwarm: Open Chat"
+      },
+      {
+        "command": "jiuwenswarm.newSession",
+        "title": "JiuwenSwarm: New Session"
+      },
+      {
+        "command": "jiuwenswarm.sendSelection",
+        "title": "JiuwenSwarm: Send Selection to Chat"
+      },
+      {
+        "command": "jiuwenswarm.reconnect",
+        "title": "JiuwenSwarm: Reconnect"
+      },
+      {
+        "command": "jiuwenswarm.fixDiagnostic",
+        "title": "JiuwenSwarm: Fix Diagnostic"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "jiuwenswarm.openChat",
+        "key": "ctrl+shift+j",
+        "mac": "cmd+shift+j"
+      },
+      {
+        "command": "jiuwenswarm.sendSelection",
+        "key": "ctrl+shift+e",
+        "mac": "cmd+shift+e",
+        "when": "editorHasSelection"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "jiuwenswarm.sendSelection",
+          "when": "editorHasSelection",
+          "group": "jiuwenswarm"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "JiuwenSwarm",
+      "properties": {
+        "jiuwenswarm.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "JiuwenSwarm server hostname"
+        },
+        "jiuwenswarm.port": {
+          "type": "number",
+          "default": 19000,
+          "description": "JiuwenSwarm WebSocket port"
+        },
+        "jiuwenswarm.defaultMode": {
+          "type": "string",
+          "default": "code.plan",
+          "enum": [
+            "code.plan",
+            "code.normal",
+            "code.team"
+          ],
+          "enumItemLabels": [
+            "Plan & Execute",
+            "Execute",
+            "Team Coding"
+          ],
+          "description": "Default coding mode: Plan & Execute / Execute / Team Coding"
+        },
+        "jiuwenswarm.channelId": {
+          "type": "string",
+          "default": "ide",
+          "description": "Channel ID reported to JiuwenSwarm"
+        },
+        "jiuwenswarm.autoConnect": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically connect on startup"
+        },
+        "jiuwenswarm.approveEdits": {
+          "type": "boolean",
+          "default": false,
+          "description": "Show approval prompt before applying agent file edits"
+        },
+        "jiuwenswarm.runCommandsInTerminal": {
+          "type": "boolean",
+          "default": true,
+          "description": "Run bash/run_command tool calls in an IDE terminal so you can see live output"
+        },
+        "jiuwenswarm.useDiffViewer": {
+          "type": "boolean",
+          "default": true,
+          "description": "Show VS Code's built-in diff viewer before applying agent file edits"
+        },
+        "jiuwenswarm.keepAlive.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Send periodic WebSocket ping frames to keep the connection alive and detect dropped links early"
+        },
+        "jiuwenswarm.keepAlive.interval": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 300,
+          "description": "Seconds between keep-alive ping frames (5–300)"
+        },
+        "jiuwenswarm.loadHistoryOnSwitch": {
+          "type": "boolean",
+          "default": true,
+          "description": "Load and display message history when switching to an existing session"
+        },
+        "jiuwenswarm.rewindEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Snapshot files before agent edits so the checkpoint / rewind feature can restore them"
+        },
+        "jiuwenswarm.projectTree.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Inject the project directory tree into each chat message for richer agent context"
+        },
+        "jiuwenswarm.projectTree.maxFiles": {
+          "type": "number",
+          "default": 200,
+          "minimum": 10,
+          "maximum": 2000,
+          "description": "Maximum number of files listed in the injected project tree (10–2000)"
+        },
+        "jiuwenswarm.gitEnabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Enable Git Commit / Push quick actions in the chat panel (requires a git repository)"
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "package": "vsce package",
+    "lint": "eslint src"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.85.0",
+    "@types/ws": "^8.5.10",
+    "@vscode/vsce": "^3.9.2",
+    "esbuild": "^0.21.0",
+    "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "ws": "^8.17.0"
+  }
+}

@@ -79,6 +79,16 @@ class BaseExtension(ABC):
             min_jiuwenswarm_version=data.get("min_jiuwenswarm_version", ""),
             dependencies=data.get("dependencies", {}),
             config_schema=data.get("config_schema"),
+            package_type=str(data.get("package_type", "extension")),
+            permissions=tuple(
+                str(item) for item in data.get("permissions", [])
+                if str(item).strip()
+            ),
+            frontend=tuple(
+                dict(item)
+                for item in data.get("frontend", [])
+                if isinstance(item, dict)
+            ),
         )
 
     def _get_extension_dir(self) -> Optional[Path]:

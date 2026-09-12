@@ -38,6 +38,7 @@ import {
   detectPhaseLoops,
   sortPhasesByExecution,
   computeLoopStatus,
+  computeSessionStatus,
   findActiveIterationIndex,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
@@ -141,7 +142,7 @@ const RunGraphNode = ({ data }: NodeProps) => {
         : null);
 
   return (
-    <div className={`px-3 py-2 rounded-lg border-2 bg-card shadow-md min-w-[140px] ${statusBorder(run.status)}`}>
+    <div className={`px-3 py-2 rounded-lg border-2 bg-card shadow-md min-w-[140px] ${statusBorder(run.status)}`} data-testid="team-area-swarmflow-graph-node" data-variant="runNode">
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1.5">
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0 mt-0.5" />
@@ -208,7 +209,7 @@ const PhaseGraphNode = ({ data }: NodeProps) => {
   const total = phase.agent_count ?? phase.agents?.length ?? 0;
 
   return (
-    <div className={`px-2.5 py-1.5 rounded-md border bg-card shadow-sm min-w-[110px] ${statusBorder(phase.status)}`}>
+    <div className={`px-2.5 py-1.5 rounded-md border bg-card shadow-sm min-w-[110px] ${statusBorder(phase.status)}`} data-testid="team-area-swarmflow-graph-node" data-variant="phaseNode">
       <Handle type="target" position={Position.Left} className="!bg-border" />
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1.5">
@@ -229,6 +230,8 @@ const AgentGraphNode = ({ data }: NodeProps) => {
     <div
       className={`px-2.5 py-1 rounded-md border bg-card shadow-sm min-w-[90px] ${statusBorder(agent.status)} ${interactive ? 'cursor-pointer' : ''} ${agent.status === 'waiting_for_human' ? 'ring-1 ring-amber-500/40' : ''}`}
       title={interactive ? '点击查看详情' : undefined}
+      data-testid="team-area-swarmflow-graph-node"
+      data-variant="agentNode"
     >
       <Handle type="target" position={Position.Left} className="!bg-border" />
       {agent.node_type !== 'human' && agent.node_type !== 'human_session' && (
@@ -248,7 +251,7 @@ const LoopGraphNode = ({ data }: NodeProps) => {
   const loopStatus = computeLoopStatus(loop.members);
 
   return (
-    <div className="px-2.5 py-1.5 rounded-md border-2 border-purple-500/40 bg-purple-500/5 shadow-sm min-w-[100px]">
+    <div className="px-2.5 py-1.5 rounded-md border-2 border-purple-500/40 bg-purple-500/5 shadow-sm min-w-[100px]" data-testid="team-area-swarmflow-graph-node" data-variant="loopNode">
       <Handle type="target" position={Position.Left} className="!bg-border" />
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1">
@@ -273,7 +276,7 @@ const SessionGraphNode = ({ data }: NodeProps) => {
   const members = data.members as WorkflowAgent[];
 
   return (
-    <div className="px-2.5 py-1 rounded-md border-2 border-indigo-500/40 bg-indigo-500/5 shadow-sm min-w-[90px]">
+    <div className="px-2.5 py-1 rounded-md border-2 border-indigo-500/40 bg-indigo-500/5 shadow-sm min-w-[90px]" data-testid="team-area-swarmflow-graph-node" data-variant="sessionNode">
       <Handle type="target" position={Position.Left} className="!bg-border" />
       <Handle type="source" position={Position.Right} className="!bg-border" />
       <div className="flex items-start gap-1">
@@ -424,11 +427,15 @@ function addPhaseChildren(
       drawnSessions.add(session.label);
       const representative = session.members[0];
       if (!representative) continue;
+      // 代表节点状态按 members 聚合：Turn0 完成不代表整张卡完成。
+      const status = computeSessionStatus(session.members);
+      const nodeAgent =
+        status === representative.status ? representative : { ...representative, status };
       const nodeId = `${phaseId}:${representative.id}`;
       nodes.push({
         id: nodeId,
         type: 'sessionNode',
-        data: { agent: representative, members: session.members, run, sessionId },
+        data: { agent: nodeAgent, members: session.members, run, sessionId },
         position: { x: 0, y: 0 },
       });
       edges.push({
@@ -436,7 +443,7 @@ function addPhaseChildren(
         source: phaseId,
         target: nodeId,
         type: 'default',
-        animated: representative.status === 'running',
+        animated: status === 'running',
       });
       continue;
     }
@@ -667,7 +674,7 @@ export function SwarmflowGraphView({
           agent_name: agent.name,
         },
       };
-      useChatStore.getState().setPendingQuestion(sessionId, payload);
+      useChatStore.getState().enqueuePendingQuestion(sessionId, payload);
       return;
     }
 
@@ -680,7 +687,7 @@ export function SwarmflowGraphView({
   }, [sessionId]);
 
   return (
-    <div className="w-full h-full min-h-[400px] relative">
+    <div className="w-full h-full min-h-[400px] relative" data-testid="team-area-swarmflow-graph-view">
       <ReactFlowComponent
         nodes={nodes}
         edges={edges}

@@ -24,10 +24,12 @@ from openjiuwen.agent_teams.paths import (
 )
 from openjiuwen.agent_teams.runtime import RunActionKind
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
-from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.common.logging import server_logger, team_logger
+from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
@@ -142,9 +144,46 @@ def _new_team_event_queue() -> asyncio.Queue:
 
 def get_background_task_controller(session_id: str) -> BackgroundTaskController:
     """Return the session's BackgroundTaskController (owned by TeamManager)."""
-    from jiuwenswarm.agents.harness.team import get_team_manager
+    return get_team_manager(None).get_background_task_controller(session_id)
 
-    return get_team_manager().get_background_task_controller(session_id)
+
+def classify_swarmflow_control_miss(
+    channel_id: str, session_id: str, run_id: str,
+) -> dict | None:
+    """Classify a swarmflow control miss into the run's authoritative state.
+
+    The controller registry only answers "no live handle" — it cannot tell a
+    naturally-terminal run (user clicking a stale running/paused card) from
+    one lost to a process restart. Recover the authoritative ``status`` from
+    the workflow handler's in-memory states, then the session-metadata disk
+    snapshot, and return ``{"error", "status"}`` for the caller's ok=False
+    payload. Returns ``None`` when no state is found anywhere (true not-found).
+    """
+    run_state = None
+    try:
+        wf_handler = get_team_manager(channel_id).get_workflow_handler(session_id)
+        if wf_handler is not None:
+            run_state = wf_handler.get_run_states().get(run_id)
+        if run_state is None:
+            restored = restore_workflow_runs(session_id)
+            if restored:
+                run_state = restored.get(run_id)
+    except Exception as exc:
+        # best-effort enrichment：分类失败不得阻断控制 RPC，按 not found 返回
+        team_logger.warning(
+            "[swarmflow] control miss classification failed "
+            "session_id=%s run_id=%s: %s",
+            session_id, run_id, exc,
+        )
+        return None
+    if run_state is None:
+        return None
+    error = (
+        f"workflow already {run_state.status}"
+        if run_state.is_terminal
+        else f"workflow is {run_state.status} but no live control handle"
+    )
+    return {"error": error, "status": run_state.status}
 
 
 def _safe_team_path_segment(value: str, fallback: str = "_") -> str:
@@ -952,6 +991,24 @@ def _resolve_user_turn(
 _ADVISORY_MARK = ("[swarmflow-advisory]", "[/swarmflow-advisory]")
 
 
+def _should_inject_swarmflow_advisory(
+    swarmflow_config: dict[str, Any], query: Any, runs: dict[str, WorkflowRunState],
+) -> bool:
+    """Whether the leader's turn gets the paused-run advisory prefix.
+
+    Only swarmflow-enabled sessions, only a plain-text query (A2UI /
+    InteractiveInput keep their own payload), only when there is something to
+    list, and only when the text is addressed to the team — a member-addressed
+    message is delivered by the message system, never seen by the leader.
+    """
+    return bool(
+        swarmflow_config.get("enable_swarmflow")
+        and isinstance(query, str)
+        and runs
+        and not _is_member_addressed(query)
+    )
+
+
 def _advisory_runs(team_manager: Any, session_id: str) -> dict[str, WorkflowRunState]:
     """Runs the advisory should list: live handler states, else the snapshot.
 
@@ -1643,6 +1700,9 @@ async def _announce_team_roster(
         fresh: list[dict[str, Any]] = []
         for member in members:
             candidate_id = str(member.get("member_id") or "").strip()
+            member_status = str(member.get("status") or "").strip().lower()
+            if member_status == MemberStatus.SHUTDOWN.value:
+                continue
             if not candidate_id or candidate_id in announced_members:
                 continue
             fresh.append(member)
@@ -2428,7 +2488,9 @@ async def _process_team_message_stream(
         team_spec = await team_manager.get_swarm_enriched_team_spec(
             session_id=session_id,
             mode=resolved_mode,
-            project_dir=request_metadata.get("project_dir"),
+            project_dir=(
+                inputs.get("project_dir") or request_metadata.get("project_dir")
+            ),
             trusted_dirs=_request_trusted_dirs(request),
             request_id=rid,
             user_id=str(getattr(request, "user_id", "") or "").strip() or None,
@@ -2611,7 +2673,7 @@ async def _process_team_message_stream(
                 # team-wide 纯文本；member/A2UI/InteractiveInput 保持原路径。
                 # args 由 agent-core 从 journal 自动恢复，提示只含 resume_id+script_path。
                 runs = _advisory_runs(team_manager, session_id)
-                if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+                if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
                     turn = _inject_swarmflow_context(
                         turn.with_text(query), runs, cold_start=False,
                         controller=get_background_task_controller(session_id),
@@ -2822,7 +2884,7 @@ async def _process_team_message_stream(
             # 冷启动恢复裁决：可恢复 run 清单以文本前缀注入 leader 上下文——非终态
             # 都可能被恢复，故比 follow-up 更宽；同样只动路由到 leader 的纯文本。
             runs = _advisory_runs(team_manager, session_id)
-            if swarmflow_config.get("enable_swarmflow") and isinstance(query, str) and runs and not _is_member_addressed(query):
+            if _should_inject_swarmflow_advisory(swarmflow_config, query, runs):
                 turn = _inject_swarmflow_context(
                     turn.with_text(query), runs, cold_start=True,
                     controller=get_background_task_controller(session_id),
@@ -3083,10 +3145,18 @@ async def _consume_stream_with_query(
             _safe_query_preview(initial_query),
         )
         runner_entered_at = time.monotonic()
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+            get_kv_cache_runtime,
+        )
+
+        team_session = create_agent_team_session(
+            session_id=session_id,
+            kv_cache_runtime=get_kv_cache_runtime(),
+        )
         async for chunk in Runner.run_agent_team_streaming(
             agent_team=team_spec,
             inputs={"query": initial_query},
-            session=session_id,
+            session=team_session,
             envs=envs,
             stream_logger=lg,
             background_task_controller=get_background_task_controller(session_id),
@@ -3746,9 +3816,12 @@ async def _consume_workflow_events(
     并检测 ``waiting_for_human`` agent 生成 ``chat.ask_user_question`` 事件。
     """
     is_tui = _resolve_channel_id(channel_id) == "tui"
-    seen_phase: dict[str, str] = {}
-    seen_agent: dict[str, str] = {}
-    spawned_members: set[str] = set()
+    # Phase/agent dedup lives on the handler (session-scoped): this loop is
+    # cancelled on team pause, and a resume relaunch replays the cached
+    # prefix — a fresh per-loop table would re-emit the replay as new tasks.
+    seen_phase = workflow_handler.seen_phase
+    seen_agent = workflow_handler.seen_agent
+    spawned_members = workflow_handler.spawned_members
     seen_human_waiting: set[str] = set()
     try:
         logger.info(
@@ -3940,10 +4013,10 @@ async def _watch_team_evolution_and_push(
     if not _team_evolution_host_events_enabled(rail):
         return
 
-    from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
+    from jiuwenswarm.runtime.host_services import RuntimeHostPushTransport
 
     push_context = EvolutionPushContext(
-        transport=WebSocketGatewayPushTransport(),
+        transport=RuntimeHostPushTransport(),
         channel_id=channel_id,
         session_id=session_id,
     )

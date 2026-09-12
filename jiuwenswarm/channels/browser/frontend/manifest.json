@@ -1,0 +1,99 @@
+
+{
+  "manifest_version": 3,
+  "name": "JiuwenSwarm",
+  "version": "0.1.0",
+  "description": "AI research assistant — understands any page you are reading. Powered by your JiuwenSwarm server.",
+
+  "icons": {
+    "16":  "icons/icon-16.png",
+    "32":  "icons/icon-32.png",
+    "48":  "icons/icon-48.png",
+    "128": "icons/icon-128.png"
+  },
+
+  "background": {
+    "service_worker": "background/index.js",
+    "type": "module"
+  },
+
+  "content_scripts": [
+    {
+      "matches": ["<all_urls>"],
+      "js": ["content/index.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ],
+
+  "side_panel": {
+    "default_path": "sidepanel/sidepanel.html"
+  },
+
+  "action": {
+    "default_popup": "popup/popup.html",
+    "default_icon": {
+      "16": "icons/icon-16.png",
+      "32": "icons/icon-32.png",
+      "48": "icons/icon-48.png"
+    },
+    "default_title": "JiuwenSwarm"
+  },
+
+  "options_ui": {
+    "page": "options/options.html",
+    "open_in_tab": true
+  },
+
+  "permissions": [
+    "sidePanel",
+    "storage",
+    "contextMenus",
+    "activeTab",
+    "tabs",
+    "scripting",
+    "downloads"
+  ],
+
+  "host_permissions": [
+    "http://*/*",
+    "https://*/*",
+    "ws://127.0.0.1:*/*",
+    "ws://localhost:*/*"
+  ],
+
+  "content_security_policy": {
+    "extension_pages": "script-src 'self'; object-src 'none';"
+  },
+
+  "web_accessible_resources": [
+    {
+      "resources": ["webview/chat.html", "icons/*"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+
+  "commands": {
+    "toggle-panel": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+J",
+        "mac": "MacCtrl+Shift+J"
+      },
+      "description": "Open or close the JiuwenSwarm side panel"
+    },
+    "pin-page": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+P",
+        "mac": "MacCtrl+Shift+P"
+      },
+      "description": "Pin current page to the active research session"
+    },
+    "ask-selection": {
+      "suggested_key": {
+        "default": "Ctrl+Shift+A",
+        "mac": "MacCtrl+Shift+A"
+      },
+      "description": "Ask JiuwenSwarm about the selected text"
+    }
+  }
+}

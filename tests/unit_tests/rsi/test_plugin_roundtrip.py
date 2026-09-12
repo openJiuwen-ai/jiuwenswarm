@@ -22,9 +22,6 @@ from jiuwenswarm.server.runtime import extension_package_manager as catalog
 
 pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
 
-_PRESETS = Path(__file__).resolve().parents[3] / "jiuwenswarm/resources/agent/workspace/plugins/plugin_packages"
-
-
 def _agent():
     return DeepAgent(AgentCard(name="plugin-roundtrip")).configure(
         DeepAgentConfig(enable_task_loop=False, rails=[SkillUseRail(skills_dir=[], include_tools=False)])
@@ -33,8 +30,8 @@ def _agent():
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("name", ["coding-guard", "content-creation", "office-document-toolkit"])
-async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name):
-    material = RsiTaskMaterializer(tmp_path / "tasks").materialize_harness_refs("probe", _PRESETS / name)
+async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name, rsi_harness_packages):
+    material = RsiTaskMaterializer(tmp_path / "tasks").materialize_harness_refs("probe", rsi_harness_packages / name)
     agent = _agent()
     record = await agent.load_plugin(material["package_path"])
     assert record.refs
@@ -43,10 +40,10 @@ async def test_preset_plugin_private_copy_loads_real_resources(tmp_path, name):
 
 
 @pytest.mark.asyncio
-async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp_path, monkeypatch):
+async def test_optimized_plugin_can_be_installed_and_restored_in_fresh_agent(tmp_path, monkeypatch, rsi_harness_packages):
     tasks_root = tmp_path / "rsi" / "tasks"
     monkeypatch.setattr("jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path)
-    material = RsiTaskMaterializer(tasks_root).materialize_harness_refs("probe", _PRESETS / "coding-guard")
+    material = RsiTaskMaterializer(tasks_root).materialize_harness_refs("probe", rsi_harness_packages / "coding-guard")
     run = tasks_root / "probe" / "run"
     work = MemberWorktreeCoordinator.prepare_integration_worktree("solver", material["package_path"], str(run / "wt"))
     action = MemberOptimizationAction(

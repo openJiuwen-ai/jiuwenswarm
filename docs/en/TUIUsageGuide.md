@@ -24,10 +24,10 @@ Top-level commands from `createBuiltinCommands()` in `jiuwenswarm/channels/tui/f
 | `/config` | `/settings`, `/setting` | View / set backend config | `/config`, `/config get`, `/config set key value` | All |
 | `/context` | - | Context window and token usage | `/context` | All |
 | `/diff` | - | Interactive turn diffs + uncommitted working tree | `/diff` | All |
-| `/evolve` | - | Trigger skill evolution | `/evolve myskill fix error handling` | `agent.plan` / `team` (see below) |
-| `/evolve_list` | - | List evolution entries for a skill | `/evolve_list myskill --sort score` | `agent.plan` / `team` |
-| `/evolve_rebuild` | - | Rebuild SKILL.md from archive and evolution records | `/evolve_rebuild myskill strengthen errors` | `agent.plan` / `team` |
-| `/evolve_simplify` | - | Organize / merge evolution notes for a skill | `/evolve_simplify myskill merge duplicates` | `agent.plan` / `team` |
+| `/evolve` | - | Start a Skill evolution review | `/evolve myskill fix error handling` | Agent / Team |
+| `/evolve_list` | - | List evolution entries for a Skill | `/evolve_list myskill` | Agent / Team |
+| `/evolve_rebuild` | - | Rebuild SKILL.md from archive and evolution records | `/evolve_rebuild myskill strengthen errors` | Agent / Team |
+| `/evolve_simplify` | - | Organize / merge evolution notes for a Skill | `/evolve_simplify myskill merge duplicates` | Agent / Team |
 | `/init` | - | Initialize `JIUWENSWARM.md` / `JIUWENSWARM.local.md` in **Code mode** | `/init` | **`code.*` only** |
 | `/mcp` | - | Manage MCP servers | `/mcp list`, `/mcp add ...` | All |
 | `/mode` | - | Switch or view mode | `/mode`, `/mode code`, `/mode team` | All |

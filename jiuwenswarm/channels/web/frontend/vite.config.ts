@@ -1228,8 +1228,12 @@ export default defineConfig({
     include: ['exceljs', 'jszip', 'saxes', 'ssf'],
   },
   resolve: {
+    dedupe: ['react', 'react-dom'],
     alias: {
       '@': path.resolve(__dirname, './src'),
+      'lucide-react': path.resolve(__dirname, './node_modules/lucide-react'),
+      react: path.resolve(__dirname, './node_modules/react'),
+      'react-dom': path.resolve(__dirname, './node_modules/react-dom'),
     },
   },
   server: {

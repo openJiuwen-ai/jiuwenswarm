@@ -114,6 +114,17 @@ async def test_outer_symphony_timeout_terminates_without_retry(
     )
     orchestration_rail.init(agent)
     invoke_ctx = AgentCallbackContext(agent=agent, extra={})
+    # The real ReAct loop runs BEFORE_MODEL_CALL before executing tools.  This
+    # seeds a mutable invocation-local state object that survives the SDK's
+    # per-tool ``extra`` copy and carries the timeout marker back to the next
+    # model call.
+    await orchestration_rail.before_model_call(
+        AgentCallbackContext(
+            agent=agent,
+            inputs=ModelCallInputs(tools=[SimpleNamespace(name=tool_name)]),
+            extra=invoke_ctx.extra,
+        )
+    )
     tool_call = ToolCall(
         id=f"{tool_name}-call",
         type="function",

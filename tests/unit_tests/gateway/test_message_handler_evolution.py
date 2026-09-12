@@ -1,13 +1,14 @@
 """MessageHandler unit tests."""
 
 import asyncio
+import json
 from collections.abc import AsyncIterator
 from types import SimpleNamespace
 
 import pytest
 
 from jiuwenswarm.common.schema import Message
-from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.schema.message import EventType, ReqMethod
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 
 
@@ -419,6 +420,25 @@ async def test_regular_stream_chunks_do_not_read_evolution_auto_save_config(
         )
 
     assert calls == 0
+
+
+@pytest.mark.asyncio
+async def test_terminal_stream_sentinel_is_not_published() -> None:
+    handler = _TestMessageHandler.create()
+
+    published = await handler.publish_stream_chunk(
+        SimpleNamespace(
+            channel_id="team",
+            request_id="terminal-sentinel",
+            payload={"is_complete": True},
+            is_complete=True,
+            metadata={"route": "stream"},
+        ),
+        session_id="sess-1",
+    )
+
+    assert published is False
+    assert await handler.consume_robot_messages(timeout=0) is None
 
 
 @pytest.mark.asyncio
@@ -1098,3 +1118,242 @@ async def test_forward_loop_supplement_forwards_new_input_to_interrupt() -> None
         assert follow_up_request.params["supplement_input"] == "再执行一次"
     finally:
         await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_malformed_evolution_answer_does_not_stop_forward_loop() -> None:
+    handler = _TestMessageHandler.create()
+    await handler.start_forwarding()
+    try:
+        malformed = _answer_message({"source": [], "answers": []})
+        follow_up = _answer_message({"source": "ordinary", "answers": []})
+        follow_up.id = "answer-2"
+
+        await handler.publish_user_messages(malformed)
+        await handler.publish_user_messages(follow_up)
+
+        deadline = asyncio.get_running_loop().time() + 2.0
+        while (
+            len(_FakeAgentClient.sent_requests) < 2
+            and asyncio.get_running_loop().time() < deadline
+        ):
+            await asyncio.sleep(0.01)
+
+        assert len(_FakeAgentClient.sent_requests) == 2
+        assert handler._forward_task is not None
+        assert not handler._forward_task.done()
+    finally:
+        await handler.stop_forwarding()
+
+
+@pytest.mark.asyncio
+async def test_stale_wake_handler_cannot_enqueue_after_stop() -> None:
+    handler = _TestMessageHandler.create()
+    await handler.start_forwarding()
+    wake_handler = handler._runtime_wake_handler
+    assert wake_handler is not None
+
+    await handler.stop_forwarding()
+
+    with pytest.raises(RuntimeError, match="not forwarding"):
+        await wake_handler(_chat_send_message({"query": "late wake"}))
+    assert handler.user_messages_size == 0
+
+
+@pytest.mark.parametrize("source_event", ["runtime.error", "chat.error"])
+def test_error_protocols_are_mapped_to_terminal_chat_error_for_stream_and_unary(
+    source_event: str,
+) -> None:
+    source_payload = {"event_type": source_event, "error": "boom"}
+    stream_message = MessageHandler._chunk_to_message(
+        SimpleNamespace(
+            request_id="stream-error",
+            channel_id="web",
+            payload=source_payload,
+            is_complete=False,
+            metadata=None,
+            agent_ref=None,
+        ),
+        "sess-1",
+    )
+    unary_message = MessageHandler._response_to_message(
+        SimpleNamespace(
+            request_id="unary-error",
+            channel_id="web",
+            payload=source_payload,
+            ok=False,
+            metadata=None,
+            agent_ref=None,
+        ),
+        "sess-1",
+    )
+
+    for message in (stream_message, unary_message):
+        assert message.type == "event"
+        assert message.event_type == EventType.CHAT_ERROR
+        assert message.ok is False
+        assert message.payload == {
+            "event_type": "chat.error",
+            "error": "boom",
+            "is_complete": True,
+        }
+
+    from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
+        A2AChannel,
+    )
+    from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
+    from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
+
+    web_channel = WebChannel.__new__(WebChannel)
+    web_frame = web_channel._serialize_frame(stream_message)
+    tui_frame = json.loads(TuiChannel._serialize_frame(object(), stream_message))
+    assert web_frame["event"] == "chat.error"
+    assert tui_frame["event"] == "chat.error"
+    assert A2AChannel.is_terminal_message(stream_message) is True
+    assert A2AChannel.message_to_text(stream_message) == "boom"
+
+
+def test_source_less_terminal_stream_error_uses_legacy_chat_error_protocol() -> None:
+    message = MessageHandler._chunk_to_message(
+        SimpleNamespace(
+            request_id="stream-error",
+            channel_id="web",
+            payload={"error": "boom"},
+            is_complete=True,
+            metadata=None,
+            agent_ref=None,
+        ),
+        "sess-1",
+    )
+
+    assert message.type == "event"
+    assert message.event_type == EventType.CHAT_ERROR
+    assert message.ok is False
+    assert message.payload == {
+        "event_type": "chat.error",
+        "error": "boom",
+        "is_complete": True,
+    }
+
+
+def test_source_less_failed_unary_without_chat_context_remains_response() -> None:
+    message = MessageHandler._response_to_message(
+        SimpleNamespace(
+            request_id="rpc-error",
+            channel_id="tui",
+            payload={"error": "boom", "code": "BAD_REQUEST"},
+            ok=False,
+            metadata=None,
+            agent_ref=None,
+        ),
+        "sess-1",
+    )
+
+    assert message.type == "res"
+    assert message.ok is False
+    assert message.payload == {"error": "boom", "code": "BAD_REQUEST"}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("request_method", "request_params", "expected_type"),
+    [
+        (ReqMethod.PERMISSIONS_RULES_CREATE, {}, "res"),
+        (ReqMethod.CHAT_SEND, {}, "event"),
+        (ReqMethod.CHAT_RESUME, {}, "event"),
+        (ReqMethod.CHAT_CANCEL, {"intent": "resume"}, "event"),
+        (ReqMethod.CHAT_CANCEL, {"intent": "cancel"}, "res"),
+        (ReqMethod.CHAT_ANSWER, {}, "event"),
+        (ReqMethod.CHAT_SWARMFLOW_REPLY, {}, "event"),
+    ],
+)
+async def test_non_stream_request_scopes_legacy_error_to_chat_methods(
+    monkeypatch: pytest.MonkeyPatch,
+    request_method: ReqMethod,
+    request_params: dict[str, object],
+    expected_type: str,
+) -> None:
+    handler = _TestMessageHandler.create()
+
+    async def _failed_response(_env: object) -> SimpleNamespace:
+        return SimpleNamespace(
+            request_id="unary-error",
+            channel_id="tui",
+            payload={"error": "boom", "code": "BAD_REQUEST"},
+            ok=False,
+            metadata=None,
+            agent_ref=None,
+        )
+
+    monkeypatch.setattr(handler, "_send_non_stream_agent_request", _failed_response)
+    msg = Message(
+        id="unary-error",
+        type="req",
+        channel_id="tui",
+        session_id="sess-1",
+        params=request_params,
+        timestamp=0,
+        ok=True,
+        req_method=request_method,
+        is_stream=False,
+    )
+
+    await handler._process_non_stream_request(
+        msg,
+        SimpleNamespace(
+            method=request_method.value,
+            request_id=msg.id,
+        ),
+    )
+    out = await handler.consume_robot_messages(timeout=0)
+
+    assert out is not None
+    assert out.type == expected_type
+    assert out.ok is False
+    if expected_type == "event":
+        assert out.event_type == EventType.CHAT_ERROR
+        assert out.payload == {
+            "event_type": "chat.error",
+            "error": "boom",
+            "code": "BAD_REQUEST",
+            "is_complete": True,
+        }
+    else:
+        assert out.payload == {"error": "boom", "code": "BAD_REQUEST"}
+        from jiuwenswarm.gateway.channel_manager.tui.tui_channel import TuiChannel
+
+        assert json.loads(TuiChannel._serialize_frame(object(), out)) == {
+            "type": "res",
+            "id": "unary-error",
+            "ok": False,
+            "payload": {"error": "boom", "code": "BAD_REQUEST"},
+            "error": "boom",
+            "code": "BAD_REQUEST",
+        }
+
+
+def test_message_handler_builds_explicit_gateway_cron_scheduler(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    handler = _TestMessageHandler.create()
+    captured: dict[str, object] = {}
+
+    class _Scheduler:
+        def __init__(self, **kwargs: object) -> None:
+            captured.update(kwargs)
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.cron.scheduler.CronSchedulerService",
+        _Scheduler,
+    )
+    store = object()
+    client = object()
+
+    scheduler = handler.create_cron_scheduler(store, client)
+
+    assert isinstance(scheduler, _Scheduler)
+    assert captured == {
+        "store": store,
+        "agent_client": client,
+        "message_handler": handler,
+    }

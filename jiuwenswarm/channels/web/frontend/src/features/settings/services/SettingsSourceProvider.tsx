@@ -74,13 +74,13 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
 
   if (loading)
     return (
-      <div className="settings-page__loading">
+      <div className="settings-page__loading" data-testid="settings-source-loading" data-variant="config">
         <Loading aria-label={t('common.loading')} />
       </div>
     );
   if (error)
     return (
-      <div className="settings-page__error" role="alert">
+      <div className="settings-page__error" role="alert" data-testid="settings-source-error" data-variant="config">
         {error}
       </div>
     );
@@ -89,18 +89,12 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
 
 type BrowserSettingsState = {
   chrome_path: string;
-  browser_type: 'auto' | 'chrome' | 'msedge';
   headless: boolean;
 };
-
-function normalizeBrowserType(value: unknown): BrowserSettingsState['browser_type'] {
-  return value === 'chrome' || value === 'msedge' ? value : 'auto';
-}
 
 function normalizeBrowserState(value: Record<string, unknown> | undefined): BrowserSettingsState {
   return {
     chrome_path: typeof value?.chrome_path === 'string' ? value.chrome_path : '',
-    browser_type: normalizeBrowserType(value?.browser_type),
     headless: value?.headless === undefined ? true : value.headless === true,
   };
 }
@@ -176,13 +170,13 @@ function BrowserSourceProvider({ children }: { children: ReactNode }) {
 
   if (loading)
     return (
-      <div className="settings-page__loading">
+      <div className="settings-page__loading" data-testid="settings-source-loading" data-variant="browser">
         <Loading aria-label={t('common.loading')} />
       </div>
     );
   if (error)
     return (
-      <div className="settings-page__error" role="alert">
+      <div className="settings-page__error" role="alert" data-testid="settings-source-error" data-variant="browser">
         {error}
       </div>
     );

@@ -29,9 +29,7 @@ _JSONL_HISTORY_FILENAME = "history.jsonl"
 _LEGACY_HISTORY_ENV = "JIUWENSWARM_USE_LEGACY_HISTORY_JSON"
 _PROBE_OK_TOKENS = {"HEALTH_CHECK_OK", "HEARTBEAT_OK"}
 SESSION_REQUEST_COMPLETED_EVENT = "chat.request_completed"
-_VALID_SESSION_ID = re.compile(
-    r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$"
-)
+_VALID_SESSION_ID = re.compile(r"^[A-Za-z0-9_](?:[A-Za-z0-9_.-]{0,78}[A-Za-z0-9_])?$")
 # Gateway may inline @path as <file-content>...</file-content> before chat.send.
 # History should keep the short @path form so jsonl rows stay one physical line
 # and refresh UI does not load megabytes of file body.
@@ -103,6 +101,11 @@ def resolve_subagent_history_path(
     return resolved / _JSONL_HISTORY_FILENAME, None
 
 
+_TOOL_RESULT_TERMINAL_FIELDS = frozenset(
+    {"result", "error", "status", "success", "is_error"}
+)
+
+
 def _is_ephemeral_heartbeat_session(session_id: str) -> bool:
     """Heartbeat sessions are one-shot and should not pollute history.json(l)."""
     return (session_id or "").startswith(("health_check_", "heartbeat_"))
@@ -121,6 +124,8 @@ def _has_persistable_assistant_payload(
 
     et = str(event_type or "").strip()
     payload = extra if isinstance(extra, dict) else {}
+    if et == "chat.tool_result":
+        return _is_structurally_valid_tool_result(payload)
     if content:
         return True
     if str(payload.get("reasoning_content") or "").strip():
@@ -136,9 +141,9 @@ def _has_persistable_assistant_payload(
         return bool(payload["usage"])
     if et == "chat.file" and payload.get("files"):
         return True
-    if et == "chat.tool_call" and (payload.get("tool_call") or payload.get("tool_calls")):
-        return True
-    if et == "chat.tool_result" and (payload.get("tool_result") or payload.get("tool_call_id")):
+    if et == "chat.tool_call" and (
+        payload.get("tool_call") or payload.get("tool_calls")
+    ):
         return True
     if payload.get("error") or payload.get("files"):
         return True
@@ -153,6 +158,40 @@ def _has_persistable_assistant_payload(
     return bool(payload)
 
 
+def _is_structurally_valid_tool_result(payload: dict[str, Any]) -> bool:
+    """Accept only exact-id tool results carrying a terminal result field."""
+
+    missing = object()
+    nested = payload.get("tool_result", missing)
+    if nested is not missing and not isinstance(nested, dict):
+        return False
+    nested_payload = nested if isinstance(nested, dict) else {}
+
+    def _candidate_id(candidate: dict[str, Any]) -> tuple[str | None, bool]:
+        raw_id = candidate.get("tool_call_id", missing)
+        if raw_id is missing:
+            return None, True
+        if not isinstance(raw_id, str) or not raw_id.strip():
+            return None, False
+        return raw_id.strip(), True
+
+    flat_id, flat_valid = _candidate_id(payload)
+    nested_id, nested_valid = _candidate_id(nested_payload)
+    if not flat_valid or not nested_valid:
+        return False
+    if flat_id is not None and nested_id is not None and flat_id != nested_id:
+        return False
+
+    def _is_complete(candidate: dict[str, Any], tool_call_id: str | None) -> bool:
+        return tool_call_id is not None and any(
+            field in candidate for field in _TOOL_RESULT_TERMINAL_FIELDS
+        )
+
+    if nested is not missing:
+        return _is_complete(nested_payload, nested_id)
+    return _is_complete(payload, flat_id)
+
+
 def _serialize_value_with_flag(obj: Any) -> tuple[Any, bool]:
     """将对象转换为 JSON 可序列化的格式，并返回是否发生降级处理."""
     if obj is None or isinstance(obj, (str, int, float, bool)):
@@ -162,7 +201,11 @@ def _serialize_value_with_flag(obj: Any) -> tuple[Any, bool]:
     if isinstance(obj, datetime.date):
         return obj.isoformat(), True
     if callable(obj):
-        name = getattr(obj, "__qualname__", None) or getattr(obj, "__name__", None) or type(obj).__name__
+        name = (
+            getattr(obj, "__qualname__", None)
+            or getattr(obj, "__name__", None)
+            or type(obj).__name__
+        )
         return f"<callable:{name}>", True
     if isinstance(obj, dict):
         changed = False
@@ -199,12 +242,15 @@ def _session_dir(session_id: str, *, create: bool = True) -> Path:
 
 
 def resolve_session_dir(
-    session_id: str, *, create: bool = False, sessions_root: Path | None = None,
+    session_id: str,
+    *,
+    create: bool = False,
+    sessions_root: Path | None = None,
 ) -> tuple[Path | None, str | None]:
     """安全解析 session 目录路径（防路径遍历）。
 
     采用严格白名单判据：session id 只能包含 ASCII 字母、数字、点、横线和下划线，
-    长度不超过 80；首尾允许下划线，以兼容 ``__cron__`` 等内部会话 ID，
+    长度不超过 96；首尾允许下划线，以兼容 ``__cron__`` 等内部会话 ID，
     但点和横线仍只允许出现在中间。不合法输入直接拒绝，根本不拼路径。
 
     再用 ``resolve()`` + ``relative_to`` 做纵深防御，兜底白名单逻辑被绕过的极端情况。
@@ -331,7 +377,9 @@ def _read_history_jsonl(path: Path) -> list[dict[str, Any]]:
             try:
                 item = json.loads(line)
             except Exception as exc:  # noqa: BLE001
-                logger.warning("读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc)
+                logger.warning(
+                    "读取 history.jsonl 第 %d 行失败，已跳过: %s", lineno, exc
+                )
                 continue
             if isinstance(item, dict):
                 content = item.get("content")
@@ -431,14 +479,19 @@ def write_history_records(
     return path
 
 
-_TEAM_RELEVANT_EVENT_TYPES = frozenset({
-    "team.message",
-    "team.member",
-    "team.task",
-    "team.event",
-    "chat.tool_call", "chat.tracer_agent",
-    "chat.final", "chat.tool_result", "chat.file",
-})
+_TEAM_RELEVANT_EVENT_TYPES = frozenset(
+    {
+        "team.message",
+        "team.member",
+        "team.task",
+        "team.event",
+        "chat.tool_call",
+        "chat.tracer_agent",
+        "chat.final",
+        "chat.tool_result",
+        "chat.file",
+    }
+)
 
 
 def _is_team_relevant(item: dict[str, Any]) -> bool:
@@ -481,7 +534,11 @@ def read_team_history_records(session_id: str) -> list[dict[str, Any]]:
                 fpath.stat().st_size,
             )
 
-    return [item for item in all_records if isinstance(item, dict) and _is_team_relevant(item)]
+    return [
+        item
+        for item in all_records
+        if isinstance(item, dict) and _is_team_relevant(item)
+    ]
 
 
 def _read_history_by_path(path: Path) -> list[dict[str, Any]]:
@@ -522,7 +579,13 @@ def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
 
     # chat.* teammate outputs: 已在 _is_team_relevant 中按 role/mode 过滤。
     # 实时投递只发给该 member 的 private 席位，历史同样只对该 member 可见。
-    if et in {"chat.final", "chat.tool_call", "chat.tool_result", "chat.file", "chat.tracer_agent"}:
+    if et in {
+        "chat.final",
+        "chat.tool_call",
+        "chat.tool_result",
+        "chat.file",
+        "chat.tracer_agent",
+    }:
         src_member = str(item.get("member_name", "") or "").strip()
         return bool(src_member) and src_member == member_name
 
@@ -531,7 +594,9 @@ def _is_member_relevant(item: dict[str, Any], member_name: str) -> bool:
     return False
 
 
-def read_member_history_records(session_id: str, member_name: str) -> list[dict[str, Any]]:
+def read_member_history_records(
+    session_id: str, member_name: str
+) -> list[dict[str, Any]]:
     """读取 team 历史记录，仅返回与指定 member 相关的记录。
 
     与实时 fan_out 投递语义一致：
@@ -563,7 +628,9 @@ def read_session_history_records(session_id: str) -> list[dict[str, Any]]:
             time.sleep(0.2 * attempt)
             all_records = _read_history_by_path(fpath)
             if all_records:
-                logger.info("read_session_history_records: recovered on retry %d", attempt)
+                logger.info(
+                    "read_session_history_records: recovered on retry %d", attempt
+                )
                 break
         if not all_records:
             logger.warning(
@@ -679,7 +746,11 @@ def append_history_record(
     """向指定 session 的当前激活历史文件异步追加一条记录."""
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
-        logger.debug("skip heartbeat session history: session_id=%s event_type=%s", sid, event_type)
+        logger.debug(
+            "skip heartbeat session history: session_id=%s event_type=%s",
+            sid,
+            event_type,
+        )
         return
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
@@ -732,6 +803,7 @@ def append_history_record(
             set_session_delivery_context,
             update_session_metadata,
         )
+
         update_session_metadata(
             session_id=sid,
             channel_id=cid,

@@ -53,6 +53,10 @@ class RouterConfig:
     # pop_if_idle safety check as the idle reaper (READY + task_count==0 +
     # last_active_at beyond this window). <= 0 disables disconnect cleanup.
     disconnect_cleanup_timeout_seconds: float = 60.0
+    # Web/TUI connect warmup: create the builtin jiuwenswarm sandbox and open
+    # the instance WS in the background so the first chat is not blocked on
+    # create + cold-start 502 retries. Failure never drops the connection.
+    connect_warmup_enabled: bool = True
     ssh: YuanrongSshSettings = YuanrongSshSettings()
     ssh_channel: SshChannelEndpoint | None = None
     auth_service_url: str = ""
@@ -113,6 +117,16 @@ def _read_float_env(name: str) -> float | None:
     if not text:
         return None
     return float(text)
+
+
+def _read_bool(section: dict[str, Any], key: str, default: bool) -> bool:
+    """Read a bool; missing / blank keeps *default*; explicit false/0/no/off disables."""
+    raw = section.get(key)
+    if raw is None or (isinstance(raw, str) and not str(raw).strip()):
+        return default
+    if isinstance(raw, bool):
+        return raw
+    return str(raw).strip().lower() in ("1", "true", "yes", "on")
 
 
 def load_router_config(config: dict[str, Any]) -> RouterConfig:
@@ -185,6 +199,7 @@ def load_router_config(config: dict[str, Any]) -> RouterConfig:
             agentos, "sandbox_idle_check_interval_seconds", 30.0
         ),
         disconnect_cleanup_timeout_seconds=disconnect_cleanup_timeout_seconds,
+        connect_warmup_enabled=_read_bool(agentos, "connect_warmup_enabled", True),
         ssh=load_yuanrong_ssh_settings(agentos.get("ssh")),
         ssh_channel=load_ssh_channel_endpoint(config),
         auth_service_url=auth_service_url,

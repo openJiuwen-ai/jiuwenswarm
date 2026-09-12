@@ -62,25 +62,33 @@ def setup_permission_context(request: Any) -> contextvars.Token | None:
     """从 request.metadata 构造 PermissionContext 并设置 ContextVar。
 
     metadata 无 avatar_mode 时：
+    - 如果存在 principal_user_id，仍需设置上下文（用于 workspace authority）
     - 如果 enable_memory=False，仍需设置上下文（用于禁用记忆）
     - 否则返回 None（原有行为不受影响）
     """
     meta = getattr(request, "metadata", None) or {}
     avatar_mode = bool(meta.get("avatar_mode", False))
+    channel_id = getattr(request, "channel_id", "") or ""
+    principal_user_id = str(meta.get("principal_user_id", "")).strip()
+    triggering_user_id = str(meta.get("triggering_user_id", "")).strip()
     if not avatar_mode:
-        if meta.get("enable_memory") is False:
+        if principal_user_id or meta.get("enable_memory") is False:
             perm_ctx = PermissionContext(
-                channel_id=getattr(request, "channel_id", "") or "",
-                enable_memory=False,
+                channel_id=channel_id,
+                group_digital_avatar=bool(meta.get("group_digital_avatar")),
+                principal_user_id=principal_user_id,
+                triggering_user_id=triggering_user_id,
+                enable_memory=meta.get("enable_memory", True),
+                avatar_principal_name=str(meta.get("avatar_principal_name", "")),
                 avatar_mode=False,
             )
             return TOOL_PERMISSION_CONTEXT.set(perm_ctx)
         return None
     perm_ctx = PermissionContext(
-        channel_id=getattr(request, "channel_id", "") or "",
+        channel_id=channel_id,
         group_digital_avatar=bool(meta.get("group_digital_avatar")),
-        principal_user_id=str(meta.get("principal_user_id", "")),
-        triggering_user_id=str(meta.get("triggering_user_id", "")),
+        principal_user_id=principal_user_id,
+        triggering_user_id=triggering_user_id,
         enable_memory=meta.get("enable_memory", True),
         avatar_principal_name=str(meta.get("avatar_principal_name", "")),
         avatar_mode=avatar_mode,
@@ -93,11 +101,28 @@ def cleanup_permission_context(token: contextvars.Token | None) -> None:
         TOOL_PERMISSION_CONTEXT.reset(token)
 
 
+def current_permission_owner_scope() -> str:
+    """Return a trusted request owner token for workspace provenance, if present."""
+
+    perm_ctx = TOOL_PERMISSION_CONTEXT.get()
+    if perm_ctx is None:
+        return ""
+    channel_id = str(perm_ctx.channel_id or "").strip()
+    principal_user_id = str(perm_ctx.principal_user_id or "").strip()
+    if not principal_user_id:
+        return ""
+    return f"principal:{channel_id or 'default'}:{principal_user_id}"
+
+
 async def check_avatar_permission(
     tool_name: str,
     tool_args: dict,
     channel_id: str,
     session_id: str | None,
+    *,
+    permission_config: dict,
+    use_installed_permissions: bool = False,
+    installed_engine: Any = None,
 ) -> str:
     """单工具 owner_scopes 权限检查。返回 "allow" 或 "deny"（ASK 自动降级为 DENY）。
 
@@ -110,9 +135,16 @@ async def check_avatar_permission(
     Returns:
         "allow" 或 "deny"
     """
-    from openjiuwen.harness.security.core import PermissionEngine as OJPermissionEngine
-    from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
-    from jiuwenswarm.common.config import get_config
+    from openjiuwen.harness.security import PermissionEngine as OJPermissionEngine
+    from openjiuwen.harness.security import PermissionLevel as OJPermissionLevel
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        load_global_permissions,
+        load_session_permissions,
+        load_user_permissions,
+    )
     from jiuwenswarm.common.utils import get_workspace_dir
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
@@ -120,11 +152,22 @@ async def check_avatar_permission(
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    perm_cfg = get_config().get("permissions") if isinstance(get_config(), dict) else {}
-    if not isinstance(perm_cfg, dict):
-        perm_cfg = {}
-    engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
-    owner_scopes = perm_cfg.get("owner_scopes")
+    if use_installed_permissions:
+        # Keep owner scopes and path evaluation on the same installed epoch.
+        global_perms = permission_config
+        engine = installed_engine
+        if not callable(getattr(engine, "evaluate_global_policy_directly", None)):
+            return "deny"
+    else:
+        global_perms = load_global_permissions()
+        perm_cfg = compose_host_effective_permissions(
+            global_permissions=global_perms,
+            user_permissions=load_user_permissions(),
+            session_permissions=load_session_permissions(session_id),
+            session_id=session_id,
+        )
+        engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
+    owner_scopes = global_perms.get("owner_scopes")
     logger.info(
         "[check_avatar_permission] tool=%s channel=%s user=%s owner_scopes_type=%s owner_scopes_keys=%s",
         tool_name, perm_ctx.channel_id, perm_ctx.principal_user_id,
@@ -152,6 +195,8 @@ async def check_avatar_permission(
         global_level_value = global_level.value if global_level is not None else None
     except Exception as exc:
         logger.warning("[check_avatar_permission] evaluate_global_policy_directly failed: %s", exc)
+        if use_installed_permissions:
+            return "deny"
         global_level_value = None
 
     if level is None:
@@ -207,24 +252,27 @@ def _resolve_owner_scope_level(
 
 
 def _match_args(pattern: str, tool_args: dict[str, Any]) -> bool:
-    """简化的参数模式匹配（复用 openjiuwen harness patterns）。"""
+    """简化的参数模式匹配（复用 openjiuwen permission_engine matchers）。"""
     try:
-        from openjiuwen.harness.security.patterns import (
-            match_command,
-            match_path,
-            match_wildcard as match_pattern,
-            match_url,
+        from openjiuwen.harness.security.permission_engine.toolguard.pattern_matchers import (
+            CommandMatcher,
+            PathMatcher,
+            PatternMatcher,
+            URLMatcher,
         )
+        command_matcher = CommandMatcher()
+        path_matcher = PathMatcher()
+        url_matcher = URLMatcher()
         for key, value in tool_args.items():
             if not isinstance(value, str):
                 continue
-            if key in ("command", "cmd") and match_command(pattern, value):
+            if key in ("command", "cmd") and command_matcher.match_command(pattern, value):
                 return True
-            if key == "url" and match_url(pattern, value):
+            if key == "url" and url_matcher.match_url(pattern, value):
                 return True
-            if key in {"path", "file_path"} and match_path(pattern, value):
+            if key in {"path", "file_path"} and path_matcher.match_path(pattern, value):
                 return True
-            if match_pattern(pattern, value):
+            if PatternMatcher.match(pattern, value):
                 return True
         return False
     except Exception:

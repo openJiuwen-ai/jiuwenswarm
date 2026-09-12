@@ -7,6 +7,7 @@ import { Form, FormDialog, useForm } from '../../../../components/form';
 import { setA2UIFeatureEnabled } from '../../../../features/a2ui/featureConfig';
 import { normalizeRSIEnabled, setRSIFeatureEnabled } from '../../../../features/rsi/featureConfig';
 import { setTrajectoryUiEnabled } from '../../../../features/trajectory/featureConfig';
+import { setTaskFullDuplexEnabled } from '../../../../features/taskFullDuplex/featureFlag';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   ExternalCliAgentsSection,
@@ -42,14 +43,12 @@ const CLI_DEFAULTS: Record<string, string> = Object.fromEntries(
 const NOTICE_AUTO_DISMISS_MS = 8000;
 
 /**
- * Module-scope registry of deferred-choice replays whose async save is still
- * running. Module scope (not a per-component ref) so remounting the Settings
- * page while a replay is in flight cannot fire a duplicate save for the same
- * agent: the marker lives until that save settles. Pending choices themselves
- * are only consumed after a save succeeds, so an interrupted or failed replay
- * is picked up again the next time this component mounts.
+ * Module-scope registry of claimed deferred-choice replays. Module scope (not
+ * a per-component ref) prevents Settings remounts from replaying the same
+ * choice. A successful claim remains until its pending choice is consumed;
+ * failed saves release it immediately so they can be retried.
  */
-const externalCliReplayInFlight = new Set<ExternalCliAgentKind>();
+const externalCliReplayClaims = new Set<ExternalCliAgentKind>();
 
 function ProactiveLimitsDialog({
   values,
@@ -97,12 +96,14 @@ function ProactiveLimitsDialog({
         submitting={closeBlocked}
         confirmLabel={t('common.confirm')}
         cancelLabel={t('common.cancel')}
+        testIdPrefix="settings-proactive-limits-dialog"
         onConfirm={() => void submit()}
         onCancel={requestClose}
       >
         <Form
           form={form}
           optionalText={t('common.optional')}
+          testIdPrefix="settings-proactive-limits-dialog"
           rules={{ daily: [{ validator }], rounds: [{ validator }] }}
           items={[
             {
@@ -130,7 +131,7 @@ function ProactiveLimitsDialog({
           ]}
         />
         {saveError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-proactive-limits-dialog-error">
             {saveError}
           </div>
         ) : null}
@@ -188,6 +189,7 @@ function ExternalCliSettings({
   const [draftValues, setDraftValues] = useState(restoredDraftValues);
   const [saving, setSaving] = useState(false);
   const [saveError, setSaveError] = useState('');
+  const replaySaveRef = useRef(onSave);
   // Latest CLI detect results, held at the App layer (via services) so they
   // survive unmounting the Settings page; the save flow pre-validates them to
   // surface a localized error instead of the backend's raw English message.
@@ -221,6 +223,10 @@ function ExternalCliSettings({
   useUnsavedChanges('external-cli', changed);
 
   useEffect(() => {
+    replaySaveRef.current = onSave;
+  }, [onSave]);
+
+  useEffect(() => {
     if (!changed) {
       setSavedValues(sourceValues);
       setDraftValues(restoredDraftValues);
@@ -240,6 +246,9 @@ function ExternalCliSettings({
   // When a dependency install finishes, replay the user's deferred choices:
   // save on success, drop on failure (user retries manually as before).
   useEffect(() => {
+    for (const agent of EXTERNAL_CLI_AGENT_KINDS) {
+      if (!pendingChoices[agent]) externalCliReplayClaims.delete(agent);
+    }
     const replays = EXTERNAL_CLI_AGENT_KINDS.filter((agent) => {
       const pending = pendingChoices[agent];
       if (!pending) return false;
@@ -247,16 +256,14 @@ function ExternalCliSettings({
       return status === 'succeeded' || status === 'failed';
     });
     if (!replays.length) return;
-    // Guard against StrictMode double-invoke and against remounting the page
-    // while a replay save is still running: the in-flight marker is module
-    // scoped. Entries are only consumed (deleted from pendingChoices) after
-    // their save succeeds, so an interrupted or failed replay is picked up
-    // again the next time this component mounts.
-    const fresh = replays.filter((agent) => !externalCliReplayInFlight.has(agent));
+    // Keep successful claims until React has applied the pending-choice removal.
+    // Releasing them as soon as the request settles leaves a render window in
+    // which a stale succeeded status can replay the same choice again.
+    const fresh = replays.filter((agent) => !externalCliReplayClaims.has(agent));
     const consumed: Record<string, ExternalCliPendingChoice> = {};
     for (const agent of fresh) {
       consumed[agent] = pendingChoices[agent]!;
-      externalCliReplayInFlight.add(agent);
+      externalCliReplayClaims.add(agent);
     }
     if (!fresh.length) return;
     // Failed installs are not retried: consume their entries immediately.
@@ -293,7 +300,7 @@ function ExternalCliSettings({
               });
             };
             try {
-              await onSave({
+              await replaySaveRef.current({
                 [externalCliKey(agent, 'enabled')]: pending.enabled,
                 [externalCliKey(agent, 'use_builtin')]: pending.useBuiltin,
                 [externalCliKey(agent, 'cli_path')]: pending.cliPath,
@@ -316,13 +323,12 @@ function ExternalCliSettings({
                 [externalCliKey(agent, 'use_builtin')]: pending.useBuiltin,
                 [externalCliKey(agent, 'cli_path')]: pending.cliPath,
               });
-              setAutoSavedAgents((current) => [...current, agent]);
+              setAutoSavedAgents((current) => (current.includes(agent) ? current : [...current, agent]));
             } catch (error) {
+              externalCliReplayClaims.delete(agent);
               setSaveError(
                 error instanceof Error ? error.message : t('settingsPanel.feedback.saveFailed'),
               );
-            } finally {
-              externalCliReplayInFlight.delete(agent);
             }
           }),
         );
@@ -330,7 +336,7 @@ function ExternalCliSettings({
         setSaving(false);
       }
     })();
-  }, [externalCliInstallStatuses, onConfigPatch, onSave, pendingChoices, setPendingChoices, t]);
+  }, [externalCliInstallStatuses, onConfigPatch, pendingChoices, setPendingChoices, t]);
 
   const submit = async () => {
     if (installBusy) {
@@ -422,18 +428,18 @@ function ExternalCliSettings({
   if (config.external_cli_agents_supported !== undefined && !parseConfigBoolean(config.external_cli_agents_supported))
     return null;
   return (
-    <div className="settings-experimental-cli">
+    <div className="settings-experimental-cli" data-testid="settings-experimental-cli">
       <span className="settings-experimental-cli__scope">
         {t('settingsPanel.experimental.externalCliAgentsDescription')}
       </span>
       {installBusy ? (
-        <div className="settings-experimental-cli__install-running" role="status">
+        <div className="settings-experimental-cli__install-running" role="status" data-testid="settings-experimental-cli-install-status" data-variant="running">
           <span>
             {t('config.externalCli.installInProgress', {
               agents: installAgentNames || t('config.externalCli.claudeCodex'),
             })}
           </span>
-          <Button onClick={onOpenExternalCliInstallDialog}>{t('config.externalCli.installViewProgress')}</Button>
+          <Button onClick={onOpenExternalCliInstallDialog} data-testid="settings-experimental-cli-install-view-progress-btn">{t('config.externalCli.installViewProgress')}</Button>
         </div>
       ) : null}
       {autoSavedAgents.length ? (
@@ -446,7 +452,7 @@ function ExternalCliSettings({
         </div>
       ) : null}
       {saveError ? (
-        <div className="settings-page__error" role="alert">
+        <div className="settings-page__error" role="alert" data-testid="settings-experimental-cli-error">
           {saveError}
         </div>
       ) : null}
@@ -463,17 +469,18 @@ function ExternalCliSettings({
         t={t}
         disabled={disabled}
       />
-      <div className="settings-experimental-cli__actions">
+      <div className="settings-experimental-cli__actions" data-testid="settings-experimental-cli-actions">
         <Button
           disabled={disabled || !changed}
           onClick={() => {
             setDraftValues(savedValues);
             setSaveError('');
           }}
+          data-testid="settings-experimental-cli-cancel-btn"
         >
           {t('common.cancel')}
         </Button>
-        <Button variant="primary" disabled={disabled || !changed} onClick={() => void submit()}>
+        <Button variant="primary" disabled={disabled || !changed} onClick={() => void submit()} data-testid="settings-experimental-cli-save-btn">
           {t('common.save')}
         </Button>
       </div>
@@ -538,6 +545,7 @@ export function A2UISetting({ disabled }: SettingsCustomItemProps) {
         checked={a2ui}
         disabled={disabled || !isConnected || source.savingKeys.has('a2ui_enabled')}
         onChange={(next) => void updateA2UI(next).catch(() => undefined)}
+        data-testid="settings-a2ui-switch"
       />
     </SettingRow>
   );
@@ -569,6 +577,32 @@ export function TrajectoryUiSetting({ disabled }: SettingsCustomItemProps) {
   );
 }
 
+export function TaskFullDuplexSetting({ disabled }: SettingsCustomItemProps) {
+  const { t } = useTranslation();
+  const { isConnected } = useSettingsServices();
+  const source = useSettingsSource();
+  const enabled = parseConfigBoolean(source.values.task_full_duplex_enabled);
+
+  async function updateTaskFullDuplex(next: boolean): Promise<void> {
+    await source.save({ task_full_duplex_enabled: next }, 'task-full-duplex-enabled');
+    setTaskFullDuplexEnabled(next);
+  }
+
+  return (
+    <SettingRow
+      title={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+      description={t('settingsPanel.fields.task_full_duplex_enabled.description')}
+    >
+      <Switch
+        aria-label={t('settingsPanel.fields.task_full_duplex_enabled.title')}
+        checked={enabled}
+        disabled={disabled || !isConnected || source.savingKeys.has('task_full_duplex_enabled')}
+        onChange={(next) => void updateTaskFullDuplex(next).catch(() => undefined)}
+      />
+    </SettingRow>
+  );
+}
+
 export function ProactiveLimitsSetting({ disabled }: SettingsCustomItemProps) {
   const { t } = useTranslation();
   const { isConnected } = useSettingsServices();
@@ -589,7 +623,7 @@ export function ProactiveLimitsSetting({ disabled }: SettingsCustomItemProps) {
           },
         )}
       >
-        <Button disabled={disabled || !isConnected} onClick={() => setLimitsOpen(true)}>
+        <Button disabled={disabled || !isConnected} onClick={() => setLimitsOpen(true)} data-testid="settings-proactive-limits-modify-btn">
           {t('common.modify')}
         </Button>
       </SettingRow>

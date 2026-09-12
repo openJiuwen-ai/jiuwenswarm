@@ -501,6 +501,10 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
   const workingTreeIdentity =
     source === 'working_tree' ? `${diffWatch.summary?.repo.branch ?? ''}:${diffWatch.summary?.repo.head ?? ''}` : '';
   const stats = reviewDocument?.stats ?? EMPTY_STATS;
+  const repoIsParentOfProject = Boolean(diffWatch.summary?.repo.repo_is_parent_of_project);
+  const repoRoot = diffWatch.summary?.repo.repo_root ?? null;
+  const filesTruncated = source === 'working_tree' && Boolean(diffWatch.summary?.current?.files_truncated);
+  const filesLimit = diffWatch.summary?.current?.files_limit ?? 0;
 
   useEffect(() => {
     if (source !== 'working_tree' || !workingTreeIdentity) return;
@@ -561,6 +565,11 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
         {sourceError ? (
           <div className="code-review__notice" data-testid="code-mode-review-notice">
             {sourceError}，当前保留上次成功加载的内容。
+          </div>
+        ) : null}
+        {filesTruncated ? (
+          <div className="code-review__notice" role="status" data-testid="code-mode-review-files-truncated-notice">
+            实际变更 {stats.files_changed} 个文件，预览仅显示前 {filesLimit || 50} 个。
           </div>
         ) : null}
         <div className="code-review__body" data-testid="code-mode-review-body">
@@ -779,6 +788,11 @@ export function CodeReviewPanel({ project, sessionId, target = null, diffWatch, 
           ) : null}
         </div>
       </div>
+      {repoIsParentOfProject ? (
+        <div className="code-review__notice" role="status" data-testid="code-mode-review-repo-parent-notice">
+          当前 Git 仓库位于项目目录的上级（{repoRoot}），“分支”变更会统计项目目录之外的文件。
+        </div>
+      ) : null}
       {renderReviewBody()}
       <footer className="code-review__footer" data-testid="code-mode-review-footer">
         {source === 'last_turn'

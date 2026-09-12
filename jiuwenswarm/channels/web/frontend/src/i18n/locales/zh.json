@@ -43,7 +43,18 @@
     "more": "更多",
     "settings": "设置",
     "logs": "日志",
-    "update": "更新"
+    "update": "更新",
+    "personalContext": "个人\n上下文"
+  },
+  "applicationPlugins": {
+    "title": "应用插件",
+    "description": "管理提供独立页面和运行时能力的应用插件。",
+    "backToExtensions": "返回扩展",
+    "refresh": "刷新",
+    "enabled": "已启用",
+    "disabled": "已禁用",
+    "empty": "尚未发现应用插件",
+    "noSettings": "此插件未提供设置页面。"
   },
   "settingsPanel": {
     "title": "设置",
@@ -53,6 +64,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
+      "personalContext": "个人上下文",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -95,7 +107,6 @@
       }
     },
     "models": {
-      "freeModels": "免费模型",
       "primaryModels": "对话模型",
       "empty": "尚未配置模型",
       "emptyDescription": "添加模型后，可在这里测试连接并管理主模型。",
@@ -237,6 +248,8 @@
       "video": "视频理解",
       "videoDescription": "启用后可理解视频内容；关闭后保留已有模型配置。",
       "videoConfigTitle": "配置视频理解模型",
+      "videoGenConfigTitle": "配置视频生成模型",
+      "visualGenConfigTitle": "配置图像生成模型",
       "toggleCapability": "切换{{name}}能力",
       "saveAndEnable": "保存并启用",
       "savedRestartRequired": "配置已保存，重启后生效。",
@@ -258,11 +271,14 @@
       "chromePathPlaceholder": "例如 /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
+      "taskAsr": "ASR 模型配置",
+      "taskFullDuplex": "任务对话全双工",
       "externalCliAgents": "三方 Agent",
       "externalCliAgentsDescription": "仅用于集群模式。",
       "a2ui": "A2UI 界面生成",
       "rsi": "RSI 递归自我改进",
       "trajectoryUi": "轨迹界面",
+      "kvCacheAffinity": "算力亲和",
       "proactive": "主动推荐",
       "proactiveLimits": "推荐频率限制",
       "proactiveLimitsDescription": "每天最多 {{daily}} 条，每次检查 {{rounds}} 轮对话。",
@@ -291,9 +307,20 @@
       "embed_api_base": { "title": "API 地址" },
       "embed_api_key": { "title": "API 密钥" },
       "embed_model": { "title": "模型名称" },
-      "enable_free_models": {
-        "title": "启用免费模型",
-        "description": "开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。免费模型来源于 Opencode Zen 网关（https://opencode.ai/zen），由 models.dev 目录（https://models.opencode.ai/api.json）与 Zen 实时模型列表取交集得到（判定标准：输入价格为 0）。"
+      "asr_api_base": {
+        "title": "ASR API 地址",
+        "description": "填写 OpenAI 兼容 Base URL 或完整的 /audio/transcriptions 地址。",
+        "placeholder": "例如：https://api.example.com/v1"
+      },
+      "asr_api_key": {
+        "title": "ASR API 密钥",
+        "description": "用于通用语音转写；JoyAI 使用独立配置。",
+        "placeholder": "例如：sk-..."
+      },
+      "asr_model": {
+        "title": "ASR 模型",
+        "description": "用于通用语音转写的模型名称。",
+        "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
       "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
@@ -316,6 +343,18 @@
       "video_api_key": { "title": "API 密钥" },
       "video_model": { "title": "模型名称" },
       "video_provider": { "title": "模型提供商" },
+      "video_gen_provider": { "title": "模型提供商" },
+      "video_gen_protocol": { "title": "协议" },
+      "video_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
+      "video_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
+      "video_gen_model": { "title": "模型名称", "placeholder": "例如 bytedance/seedance-2.0-fast" },
+      "video_gen_enabled": { "title": "视频生成", "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。" },
+      "visual_gen_provider": { "title": "模型提供商" },
+      "visual_gen_protocol": { "title": "协议" },
+      "visual_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
+      "visual_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
+      "visual_gen_model": { "title": "模型名称", "placeholder": "例如 google/gemini-3.1-flash-image" },
+      "visual_gen_enabled": { "title": "图像生成", "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。" },
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "rsi_enabled": {
@@ -323,6 +362,14 @@
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
       "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
+      "task_full_duplex_enabled": {
+        "title": "启用任务对话全双工入口",
+        "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
+      },
+      "kv_cache_affinity_enabled": {
+        "title": "启用算力亲和",
+        "description": "仅支持使用 Ascend vLLM 推理服务部署的模型，不支持通过第三方 API Key 接入的模型。"
+      },
       "external_cli_agent_claude_enabled": {
         "title": "启用 Claude",
         "description": "允许 Team Leader 拉起 Claude Agent。"
@@ -331,7 +378,9 @@
         "title": "Claude 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_claude_cli_path": { "title": "Claude CLI 路径" },
+      "external_cli_agent_claude_cli_path": {
+        "title": "Claude CLI 路径"
+      },
       "external_cli_agent_codex_enabled": {
         "title": "启用 Codex",
         "description": "允许 Team Leader 拉起 Codex Agent；首次启用可能需要安装依赖。"
@@ -340,7 +389,9 @@
         "title": "Codex 使用内置 CLI",
         "description": "不指定本机 CLI 路径，由 SDK 使用默认查找方式。"
       },
-      "external_cli_agent_codex_cli_path": { "title": "Codex CLI 路径" },
+      "external_cli_agent_codex_cli_path": {
+        "title": "Codex CLI 路径"
+      },
       "proactive_recommendation_enabled": {
         "title": "启用主动推荐",
         "description": "允许系统在满足条件时主动发送推荐。"
@@ -614,7 +665,10 @@
     "modeAgentTeam": "集群模式",
     "modeAutoHarness": "自优化模式",
     "modeAutoHarnessDesc": "自动分析并优化目标仓库",
-    "recording": "正在录音...（松开按钮自动发送）",
+    "recording": "正在录音...（再次点击麦克风结束）",
+    "transcribing": "正在转写语音...",
+    "startRecording": "语音输入",
+    "stopRecording": "结束录音并转写",
     "waitingTasks": "等待任务",
     "messageQueue": "消息队列",
     "waitingTasksCount": "等待任务 ({{count}})",
@@ -638,10 +692,12 @@
     "holdToSpeak": "按住说话",
     "send": "发送 (Enter)",
     "stop": "停止",
+    "taskFullDuplexStart": "共享整个屏幕并开始全双工对话",
+    "taskFullDuplexStarting": "正在启动全双工对话",
+    "taskFullDuplexStop": "停止全双工对话和屏幕共享",
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
       "configured": "已配置模型",
-      "free": "免费模型",
       "addModel": "添加自定义模型",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型"
@@ -690,6 +746,25 @@
     "extensionManageMcps": "管理我的连接器",
     "extensionMore": "更多",
     "recentTasks": "进度",
+    "applicationTasks": {
+      "cancelling": "正在停止",
+      "cancelled": "已取消",
+      "controls": {
+        "drag": "拖动到另一项以调整顺序",
+        "next": "设为下一项",
+        "stop": "停止此任务",
+        "more": "任务操作",
+        "up": "上移",
+        "down": "下移",
+        "preempt": "停止当前任务并执行此项",
+        "close": "关闭",
+        "failed": "任务操作失败"
+      },
+      "queued": "排队中",
+      "running": "执行中",
+      "completed": "已完成",
+      "failed": "失败"
+    },
     "contextCompressionCommandRunning": "正在压缩上下文",
     "teamPause": "暂停",
     "teamPauseHint": "团队暂停后，直接发送下一条消息即可继续",
@@ -1067,10 +1142,6 @@
     "skip": "跳过",
     "open": "配置指引",
     "steps": {
-      "0": {
-        "title": "欢迎使用 jiuwenswarm",
-        "description": "你已获得免费体验额度！选择下方方式开始配置你的模型服务。"
-      },
       "1": {
         "title": "配置你的首个模型",
         "description": "模型配置位于「设置」中的「模型」页面。"
@@ -1079,26 +1150,6 @@
         "title": "完成模型配置",
         "description": "点击「添加模型」，选择模型提供商，按提示完成配置后保存。"
       }
-    },
-    "quickSetup": {
-      "title": "一键配置华为云 MaaS",
-      "description": "自动引导你完成华为云购买和 API 配置",
-      "steps": {
-        "openConsole": "打开华为云 MaaS 控制台",
-        "updateAuth": "自动更新服务授权权限",
-        "createApiKey": "创建 API Key（用于 JiuwenSwarm 调用模型）",
-        "enableModels": "开通预置模型服务（按调用量计费）"
-      },
-      "agreementPrefix": "点击「一键配置」即表示您同意",
-      "agreementMaas": "《MaaS 模型即服务声明》",
-      "agreementAnd": "和",
-      "agreementCloud": "《华为云用户协议》",
-      "agreementSuffix": "。",
-      "billingNote": "模型开通本身不产生费用，实际调用按用量计费。"
-    },
-    "manualSetup": {
-      "title": "手动配置",
-      "description": "已有 API Key，手动填入配置"
     }
   },
   "config": {
@@ -1515,6 +1566,282 @@
       "readLogs": "读取日志失败",
       "readDebugConfig": "读取 WS 调试配置失败",
       "updateDebugConfig": "更新 WS 调试配置失败"
+    }
+  },
+  "personalContext": {
+    "intro": {
+      "title": "个人上下文，让知识自动交织成网",
+      "subtitle": "把零散的本地文档与网络来源，一键转化为清晰可视的结构化知识大脑。",
+      "stepsTitle": "操作步骤",
+      "step1Title": "第一步：授权渠道，添加多元内容",
+      "step1Desc": "一键授权知识来源渠道，导入本地文件、粘贴网页链接或整合多源文本。",
+      "step2Title": "第二步：自动构建图谱",
+      "step2Desc": "平台将自动完成实体抽取与关系关联，请静候图谱呈现。",
+      "start": "去完成",
+      "featuresTitle": "功能特点",
+      "feature1Title": "结构化提炼·Markdown呈现",
+      "feature1Desc": "自动抽取跨源内容中的核心实体与脉络，精简整理为标准的 Markdown 文档，便于阅读",
+      "feature2Title": "双向关联·一键无缝跳转",
+      "feature2Desc": "智能识别不同节点间的内容互引用，自动建立关联链条，点击即可在相关节点与原文间自由穿梭。",
+      "feature3Title": "任务联动·唤醒图谱上下文",
+      "feature3Desc": "在执行复杂的 AI 任务或对话时，支持直接挂载与调取图谱知识，让输出更精准、上下文更丰富。"
+    },
+    "chat": {
+      "toggleLabel": "个人上下文"
+    },
+    "settings": {
+      "subtitle": "选择个人上下文采用哪种方式采集、整理和生成。",
+      "masterEnable": "启用个人上下文",
+      "masterEnableHint": "总开关，控制个人上下文采集与 agent 加载上下文。",
+      "enable": "采集个人上下文内容",
+      "enableHint": "支持自动周期性采集上下文内容并自动构建图谱。",
+      "strategyProfile": "上下文采集模式",
+      "strategy_agent": "智能体处理",
+      "strategy_balanced": "大模型处理",
+      "strategy_rules": "规则处理",
+      "model": "上下文整理模型",
+      "modelPlaceholder": "请选择整理模型",
+      "modelRequiredFirst": "请先选择整理模型",
+      "title": "上下文",
+      "modelHint": "选择已在 JiuwenSwarm 中配置的模型。"
+    },
+    "authorization": {
+      "title": "内容采集授权",
+      "subtitle": "管理上下文采集服务所需的内容源。",
+      "provider": "名称",
+      "state": "状态",
+      "action": "操作",
+      "authorize": "授权",
+      "goAuthorize": "去授权",
+      "reauthorize": "重新授权",
+      "cancelAuth": "取消授权",
+      "authorizing": "授权中…",
+      "stateNotAuthorized": "未授权",
+      "stateAuthorizationRequired": "待授权",
+      "stateAuthorizing": "授权中",
+      "stateAuthorized": "已授权",
+      "stateAuthorizationFailed": "授权失败",
+      "githubHint": "GitHub 使用个人访问令牌（PAT）。授权后即可在「上下文内容」添加 GitHub 采集。",
+      "githubTokenLabel": "GitHub 令牌",
+      "githubTokenPlaceholder": "ghp_xxxxxxxxxxxx",
+      "githubTokenHint": "令牌仅保存在本地浏览器，创建采集服务时用于认证。",
+      "githubTokenRequired": "请输入 GitHub 令牌",
+      "gitcodeHint": "GitCode 使用个人访问令牌（PAT）。授权后即可在「上下文内容」添加 GitCode 采集。",
+      "gitcodeTokenLabel": "GitCode 令牌",
+      "gitcodeTokenPlaceholder": "请输入 GitCode 个人访问令牌",
+      "gitcodeTokenHint": "令牌仅保存在本地浏览器，创建采集服务时用于认证。",
+      "gitcodeTokenRequired": "请输入 GitCode 令牌",
+      "feishuHint": "飞书使用 OAuth 设备授权流程。点击授权后按提示在浏览器完成登录。",
+      "feishuVerifyHint": "请在打开的页面完成飞书授权，授权完成后状态将自动更新。"
+    },
+    "info": {
+      "tabGraph": "上下文图谱",
+      "tabServices": "上下文内容",
+      "refresh": "刷新",
+      "updatedTime": "更新时间",
+      "searchPlaceholder": "搜索你的知识 挖掘其中的关联...",
+      "zoomIn": "放大",
+      "zoomOut": "缩小",
+      "fitView": "适配视图",
+      "fetchProgress": "采集进度",
+      "fetchProgressTasks": "采集任务",
+      "noGraph": "暂无上下文图，请先开启并采集",
+      "collecting": "正在采集中，稍候将自动刷新…",
+      "fetchingDisabled": "未开启采集，请在设置页开启「启用个人上下文」",
+      "serviceDisabled": "采集服务已关闭，请在「上下文内容」页开启对应服务的自动采集",
+      "noServices": "暂无采集服务，请在「上下文内容」页添加采集来源",
+      "nodesCount": "节点",
+      "edgesCount": "连线",
+      "notReady": "上下文未就绪",
+      "ready": "上下文已就绪",
+      "publishFailed": "上下文发布失败",
+      "sourceBadge": "来源",
+      "sourceProvider": "采集来源",
+      "sourceType": "来源类型",
+      "sourceLocator": "原始链接",
+      "sourceFirstSeen": "采集时间",
+      "graphTitle": "你的专属上下文",
+      "graphSubtitle": "把零散的本地文档、网络来源等碎片信息，一键转化为清晰可视的结构化个人上下文",
+      "tabNodes": "上下文节点",
+      "tabEdges": "连线",
+      "addKnowledge": "来源管理",
+      "resultUnit": "项结果",
+      "guideDesc": "开启个人上下文，添加内容来源，系统将自动构建知识图谱。",
+      "guideAction": "去完成"
+    },
+    "services": {
+      "addContent": "上下文采集",
+      "colName": "内容名称",
+      "colProvider": "内容来源",
+      "colState": "当前状态",
+      "colLastRun": "最近一次采集时间",
+      "colAuto": "自动采集",
+      "autoOn": "开",
+      "autoOff": "关",
+      "autoOnHint": "开启自动采集",
+      "autoOffHint": "关闭自动采集",
+      "colInterval": "采集频率",
+      "colActions": "操作",
+      "stateCollecting": "正在采集",
+      "stateCompleted": "采集完成",
+      "stateFailed": "采集失败",
+      "stateWaiting": "等待采集",
+      "stateStopped": "已停止",
+      "stateStopping": "正在停止",
+      "lastRunUnavailable": "后端未返回采集时间",
+      "intervalHour": "每 {{n}} 小时",
+      "intervalDay": "每 {{n}} 天",
+      "actionRunNow": "立即采集",
+      "actionEdit": "编辑",
+      "actionDelete": "删除",
+      "actionRetry": "重试",
+      "actionStop": "停止采集",
+      "deleteConfirm": "确认删除该采集服务？",
+      "cancel": "取消",
+      "empty": "暂无采集内容，点击右上角「添加内容」创建",
+      "noContentInCategory": "暂无内容",
+      "runSubmitted": "已提交采集请求",
+      "startedAt": "开始",
+      "finishedAt": "结束",
+      "backToGraph": "返回图谱",
+      "addKnowledge": "添加上下文",
+      "collectAll": "全部开始采集",
+      "statSources": "来源",
+      "statKnowledge": "上下文节点数",
+      "statCollecting": "正在采集",
+      "knowledgeSource": "上下文来源",
+      "lastRun": "上次采集"
+    },
+    "addContent": {
+      "title": "添加内容",
+      "editTitle": "编辑采集任务",
+      "nameLabel": "采集内容名称",
+      "namePlaceholder": "如 my-task，字母数字开头，仅 . _ -",
+      "nameRequired": "请填写采集内容名称",
+      "nameFormatError": "名称须以字母或数字开头，仅可包含字母、数字、. _ -（不支持空格和中文）",
+      "providerLabel": "内容采集来源",
+      "autoCollectLabel": "自动采集",
+      "autoCollectHint": "开启后按频率自动采集",
+      "timeRangeLabel": "采集时间",
+    "timeRangeWeek": "最近一周",
+    "timeRangeMonth": "最近一个月",
+    "timeRangeQuarter": "最近三个月",
+    "timeRangeCustom": "自定义",
+    "dateRangeTitle": "选择日期范围",
+    "dateRangePlaceholder": "请选择日期范围",
+    "dateRangeRequired": "请选择自定义时间范围",
+    "addUrl": "+ 添加",
+    "frequencyLabel": "自动采集频率",
+      "frequencyHour": "每 {{n}} 小时",
+      "frequencyDay": "每 {{n}} 天",
+      "frequencyEvery": "每",
+      "unitHour": "小时",
+      "unitDay": "天",
+      "maxItemsLabel": "单次最多采集条数",
+      "maxItemsPlaceholder": "留空使用默认",
+      "advancedConfig": "高级配置",
+      "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
+      "previousStep": "上一步",
+    "submit": "添加",
+      "save": "保存",
+      "notConfigured": "尚未配置个人上下文，请先在设置页开启",
+      "providerUnauthorized": "未授权，请先去设置页授权",
+      "createTimeout": "创建请求超时，请稍后确认任务是否已创建，再决定是否重试",
+      "goAuthorize": "去授权",
+      "feishuPlaceholder": "飞书采集下一步单独详细开发",
+      "localFiles": {
+        "rootDirLabel": "本地文件夹路径",
+        "rootDirPlaceholder": "D:/my-notes",
+        "rootDirHint": "须为绝对路径"
+      },
+      "zhihu": {
+        "columnUrlLabel": "知乎专栏地址",
+        "columnUrlPlaceholder": "https://www.zhihu.com/column/c_xxxxxxxxxx",
+        "columnUrlHint": "仅支持 https 知乎专栏地址，路径须为 /column/<专栏id>"
+      },
+      "toutiao": {
+        "profileUrlLabel": "头条主页地址",
+        "profileUrlPlaceholder": "https://www.toutiao.com/c/user/token/<id>",
+        "profileUrlHint": "仅支持 https 头条主页地址，路径须为 /c/user/token/<id>"
+      },
+      "edge": {
+        "profileLabel": "浏览器用户配置",
+        "profileDefault": "默认（Default）",
+        "profilePlaceholder": "Default",
+        "profileHint": "可选，默认 Default",
+        "bookmarksPathLabel": "书签文件路径",
+        "bookmarksPathPlaceholder": "留空使用 Edge 默认 Bookmarks 路径",
+        "foldersLabel": "需采集的书签文件夹",
+        "foldersPlaceholder": "如 收藏栏/技术，多个用逗号分隔",
+        "foldersHint": "可选，留空采集全部"
+      },
+      "github": {
+        "repoUrlLabel": "GitHub 仓库链接",
+        "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
+        "repoUrlHint": "或 git@github.com:<owner>/<repo>",
+        "sourceInvalid": "请填写正确的 GitHub 仓库链接，并至少选择一项采集内容",
+        "resourcesLabel": "要采集的内容",
+        "readme": "README",
+        "issues": "议题（Issue）",
+        "pullRequests": "拉取请求（Pull Request）",
+        "commits": "提交（Commit）",
+        "code": "代码（Code）",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "tokenFromAuth": "令牌已从设置页授权获取"
+      },
+      "gitcode": {
+        "repoUrlLabel": "GitCode 仓库链接",
+        "repoUrlPlaceholder": "https://gitcode.com/<owner>/<repo>",
+        "repoUrlHint": "或 git@gitcode.com:<owner>/<repo>",
+        "sourceInvalid": "请填写正确的 GitCode 仓库链接，并至少选择一项采集内容",
+        "resourcesLabel": "要采集的内容",
+        "readme": "README",
+        "issues": "议题（Issue）",
+        "pullRequests": "拉取请求（Pull Request）",
+        "commits": "提交（Commit）",
+        "code": "代码（Code）",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "tokenFromAuth": "令牌已从设置页授权获取"
+      },
+      "feishu": {
+        "modeLabel": "飞书内容类型",
+        "mode_account": "账号内容",
+        "mode_wiki_space": "Wiki 空间",
+        "modeHint": "账号内容：采集云文档/任务/日程；知识空间：采集指定知识空间节点",
+        "resourcesLabel": "要采集的账号内容",
+        "resourcesHint": "账号模式下至少选择一项",
+        "resourcesRequired": "请至少选择一项采集内容",
+        "wikiSpaceIdLabel": "Wiki 空间名称",
+        "wikiSpaceIdPlaceholder": "选择要获取内容的飞书 Wiki 空间",
+        "wikiSpaceIdHint": "在飞书知识空间 URL 中获取",
+        "wikiSpaceIdRequired": "请选择飞书 Wiki 空间",
+        "docs": "文档",
+        "tasks": "任务",
+        "calendar": "日历",
+        "calendarTimeLabel": "日历时间段",
+        "calendarTimePlaceholder": "请选择",
+        "docPathLabel": "指定文档（可选）",
+        "docPathPlaceholder": "请输入路径或选择文件",
+        "authorizeAfterCreate": "创建后需在设置页授权飞书账号："
+      }
+    },
+    "provider": {
+      "localFiles": "本地文件夹",
+      "github": "GitHub",
+      "gitcode": "GitCode",
+      "feishu": "飞书文档",
+      "browserBookmarks": "Edge 收藏夹",
+      "zhihuReader": "知乎专栏",
+      "toutiaoReader": "今日头条"
+    },
+    "state": {
+      "CREATED": "已创建",
+      "CONFIGURED": "已配置",
+      "STARTING": "启动中",
+      "RUNNING": "运行中",
+      "STOPPING": "停止中",
+      "STOPPED": "已停止",
+      "FAILED": "失败"
     }
   },
   "skills": {
@@ -2579,6 +2906,7 @@
   },
   "speech": {
     "recognitionUnsupported": "浏览器不支持语音识别",
+    "recordingUnsupported": "浏览器不支持麦克风录音",
     "synthesisUnsupported": "浏览器不支持语音合成",
     "errors": {
       "noSpeech": "未检测到语音",
@@ -2777,10 +3105,22 @@
       "cancel": "取消",
       "confirm": "确定"
     },
-    "runtime": { "processing": "处理中" },
-    "deleteDialog": { "title": "删除", "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。" },
-    "notFound": { "title": "对话不存在或已删除", "newConversation": "新建对话" },
-    "errors": { "delete": "删除对话失败", "create": "创建对话失败", "send": "发送消息失败" }
+    "runtime": {
+      "processing": "处理中"
+    },
+    "deleteDialog": {
+      "title": "删除",
+      "description": "确定删除“<name>{{title}}</name>”吗？此操作不可撤销。"
+    },
+    "notFound": {
+      "title": "对话不存在或已删除",
+      "newConversation": "新建对话"
+    },
+    "errors": {
+      "delete": "删除对话失败",
+      "create": "创建对话失败",
+      "send": "发送消息失败"
+    }
   },
   "subagent": {
     "title": "子智能体",
@@ -2879,6 +3219,7 @@
     "subtitle": "创建并管理插件、连接器",
     "tabs": {
       "plugin": "插件",
+      "applicationPlugins": "应用插件",
       "mcp": "连接器",
       "pluginMarket": "插件广场",
       "mcpMarket": "连接器广场",
@@ -2893,6 +3234,8 @@
       "content-creation": "内容创作",
       "security": "安全过滤",
       "communication": "通话沟通",
+      "Engineering": "工程开发",
+      "Design": "设计创意",
       "other": "其他"
     },
     "search": {
@@ -3148,8 +3491,15 @@
       "titleEdit": "编辑心跳任务",
       "back": "返回"
     },
-    "concurrencyPolicy": { "skip": "跳过（skip）", "queue": "排队（queue）", "replace": "替换（replace）" },
-    "sessionDeletedPolicy": { "disable": "停用任务", "completed": "标记为已完成" },
+    "concurrencyPolicy": {
+      "skip": "跳过（skip）",
+      "queue": "排队（queue）",
+      "replace": "替换（replace）"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "停用任务",
+      "completed": "标记为已完成"
+    },
     "panel": {
       "title": "心跳任务",
       "loading": "加载中…",
@@ -3434,6 +3784,12 @@
     "layoutGraph": "流程图",
     "pauseResumeHint": "暂停/恢复",
     "stopHint": "停止",
+    "controlAlreadyCompleted": "工作流已完成",
+    "controlAlreadyStopped": "工作流已停止",
+    "controlAlreadyFailed": "工作流已失败",
+    "controlAlreadyPaused": "工作流已暂停",
+    "controlUnavailable": "工作流正在运行，控制暂不可用",
+    "controlNotFound": "未找到工作流运行",
     "controlsDisabledHint": "团队未在运行，工作流暂不可直接操作；请在主会话发送消息以恢复或停止",
     "sessionBudget": "会话预算（团队共享，不随运行重置）",
     "runBudget": "本次运行预算（META.workflow_token_limit）",

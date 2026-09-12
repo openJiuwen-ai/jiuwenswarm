@@ -249,10 +249,10 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
   }
 
   return (
-    <div className="relative h-full overflow-y-auto bg-card px-8 py-6">
+    <div className="relative h-full overflow-y-auto bg-card px-8 py-6" data-testid="connector-market-register-mcp-page">
       {/* 返回样式跟详情页（McpDetailPage.tsx/PluginDetailPage.tsx）保持一致：ChevronLeft
           纯尖角图标 + 黑色文字，用户明确要求这个页面也照这个样式改。 */}
-      <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70">
+      <button type="button" onClick={onBack} className="mb-4 flex items-center gap-1 text-[14px] leading-[22px] text-text hover:opacity-70" data-testid="connector-market-register-mcp-back">
         <ChevronLeft size={16} />
         {t('connectorMarket.common.back')}
       </button>
@@ -262,7 +262,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
           小于 1024px 可用宽度时跟手拉伸（随浏览器变宽），超过后封顶在 1024px 且居中，不会贴着左边
           也不会无限撑开——mx-auto 这次别再漏掉了。 */}
       <div className="mx-auto w-full max-w-5xl">
-        <h1 className="mb-6 text-[18px] font-semibold leading-7 text-text">
+        <h1 className="mb-6 text-[18px] font-semibold leading-7 text-text" data-testid="connector-market-register-mcp-title" data-variant={editName ? 'edit' : 'create'}>
           {t(editName ? 'connectorMarket.registerMcp.editTitle' : 'connectorMarket.registerMcp.title')}
         </h1>
 
@@ -284,6 +284,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover disabled:cursor-not-allowed disabled:bg-bg-muted disabled:text-text-muted ${
               fieldErrors.name ? 'border-danger' : 'border-border'
             }`}
+            data-testid="connector-market-register-mcp-name"
           />
         </Field>
 
@@ -297,6 +298,9 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
                 key={opt.key}
                 type="button"
                 onClick={() => setType(opt.key)}
+                aria-pressed={type === opt.key}
+                data-testid="connector-market-register-mcp-type"
+                data-variant={opt.key}
                 className={`rounded-lg px-4 py-1.5 text-[13px] ${type === opt.key ? 'bg-[color:var(--color-chat-accent)] text-white' : 'bg-bg-muted text-text-muted'}`}
               >
                 {opt.label}
@@ -322,6 +326,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
                 className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
                   fieldErrors.command ? 'border-danger' : 'border-border'
                 }`}
+                data-testid="connector-market-register-mcp-command"
               />
             </Field>
             <KeyValueField label={t('connectorMarket.registerMcp.args')} single rows={args} onChange={setArgs} placeholderKey={t('connectorMarket.registerMcp.pleaseInput')} />
@@ -351,6 +356,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
                 className={`h-9 w-full rounded-lg border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover ${
                   fieldErrors.url ? 'border-danger' : 'border-border'
                 }`}
+                data-testid="connector-market-register-mcp-url"
               />
             </Field>
             <Field label={t('connectorMarket.registerMcp.bearerTokenEnvKey')}>
@@ -359,6 +365,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
                 onChange={(event) => setBearerEnvKey(event.target.value)}
                 placeholder="MCP_BEARER_TOKEN"
                 className="h-9 w-full rounded-lg border border-border bg-card px-3 text-[13px] text-text outline-none placeholder:text-[color:var(--color-text-placeholder)] focus:border-border-hover"
+                data-testid="connector-market-register-mcp-bearer-key"
               />
             </Field>
             <KeyValueField label={t('connectorMarket.registerMcp.headers')} rows={httpHeaders} onChange={setHttpHeaders} placeholderKey={t('connectorMarket.registerMcp.key')} placeholderValue={t('connectorMarket.registerMcp.value')} />
@@ -381,11 +388,12 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             placeholder={JSON_EXAMPLE}
             rows={10}
             className="w-full resize-none rounded-lg border border-border bg-bg-muted px-3 py-2 font-mono text-[12px] leading-5 text-text-muted outline-none focus:border-border-hover"
+            data-testid="connector-market-register-mcp-json"
           />
         </div>
 
         <div className="flex justify-end gap-2 border-t border-border pt-4">
-          <button type="button" onClick={onBack} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover">
+          <button type="button" onClick={onBack} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-register-mcp-cancel">
             {t('connectorMarket.common.cancel')}
           </button>
           <button
@@ -393,6 +401,7 @@ export function RegisterMcpPage({ onBack, onRegistered, editName }: RegisterMcpP
             onClick={handleSubmit}
             disabled={creating}
             className="flex items-center gap-1.5 rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse disabled:opacity-60"
+            data-testid="connector-market-register-mcp-confirm"
           >
             {creating && <Loader2 size={13} className="animate-spin" />}
             {creating

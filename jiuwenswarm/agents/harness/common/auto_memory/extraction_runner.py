@@ -20,7 +20,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 if TYPE_CHECKING:
-    from openjiuwen.core.context_engine.engine import ContextEngine
+    from openjiuwen.core.context_engine.context_engine import ContextEngine
     from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import AgentAdapter
     from jiuwenswarm.common.schema.agent import AgentRequest
 

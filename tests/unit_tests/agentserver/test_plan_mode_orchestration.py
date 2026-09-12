@@ -14,12 +14,13 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -52,7 +53,7 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
 
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -68,7 +69,7 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
     assert mode == "code"
     assert sub_mode == "plan"
     assert resolved_agent is agent
-    manager.get_agent.assert_awaited_once()
+    manager.get_agent_for_request.assert_awaited_once()
     manager.wait_for_session_prewarm.assert_awaited_once_with(session_id)
 
 
@@ -76,7 +77,12 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
 async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> None:
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -101,11 +107,11 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
 
     assert (mode, sub_mode, resolved_agent) == ("code", "normal", agent)
     assert request.params["mode"] == "code.normal"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="code",
-        project_dir="/tmp/code-project",
         sub_mode="normal",
+        admit_request=ANY,
     )
 
 
@@ -114,7 +120,12 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
     """Heartbeat CHAT_SEND without mode continues in the original session mode."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -158,11 +169,11 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
     assert (mode, sub_mode, resolved) == ("code", "normal", agent)
     assert request.params["mode"] == "code.normal"
     assert request.params["work_mode"] == "code"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="code",
-        project_dir=None,
         sub_mode="normal",
+        admit_request=ANY,
     )
 
 
@@ -171,7 +182,12 @@ async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session(
     """A mode-less Heartbeat must re-enter the Session's Team runtime."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -208,11 +224,11 @@ async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session(
     assert (mode, sub_mode, resolved) == ("team", None, agent)
     assert request.params["mode"] == "team.work.normal"
     assert request.params["work_mode"] == "work"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="team",
-        project_dir=None,
         sub_mode=None,
+        admit_request=ANY,
     )
     assert sync_metadata.call_args.kwargs["explicit_mode_provided"] is False
 
@@ -222,7 +238,12 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
     """A legacy work session must not inherit TUI's code default on resume."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -259,11 +280,11 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
     assert (mode, sub_mode, resolved) == ("agent", None, agent)
     assert request.params["mode"] == "agent"
     assert request.params["work_mode"] == "work"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="tui",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="agent",
-        project_dir=None,
         sub_mode=None,
+        admit_request=ANY,
     )
 
 
@@ -271,7 +292,13 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
 async def test_prepare_chat_uses_locked_persist_session_metadata() -> None:
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
+
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -309,7 +336,12 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
     """
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -334,11 +366,11 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
         "member_name": "reviewer",
         "project_dir": "/tmp/locked-project",
     }
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="team",
-        project_dir="/tmp/locked-project",
         sub_mode=None,
+        admit_request=ANY,
     )
     manager.wait_for_session_prewarm.assert_awaited_once_with("sess_team_project")
 
@@ -598,6 +630,41 @@ async def test_plan_mode_exited_push_uses_the_session_profile_mode() -> None:
     assert pushed["payload"]["mode"] == "agent"
 
 
+def _install_internal_heartbeat_runtime(server, agent) -> None:
+    manager = object()
+
+    class Runtime:
+        agent_manager = manager
+
+        def stream(
+            self,
+            request,
+            *,
+            trigger_hook,
+            background,
+            on_agent_ready,
+        ):
+            assert trigger_hook is False
+            assert background is True
+            assert on_agent_ready is not None
+
+            async def _events():
+                on_agent_ready(agent)
+                async for chunk in agent.process_message_stream(request):
+                    yield RuntimeEvent.from_agent_message(
+                        chunk,
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        session_id=request.session_id,
+                        default_agent_ref=request.agent_ref,
+                    )
+
+            return _events()
+
+    server._agent_manager = manager
+    server._runtime = Runtime()
+
+
 @pytest.mark.asyncio
 async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
     automation = {
@@ -629,10 +696,8 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
     agent.process_message_stream.return_value = response_stream()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._heartbeat_runtime = SimpleNamespace(retain_agent=MagicMock())
-    server._prepare_code_mode_chat_turn = AsyncMock(return_value=("agent", None, agent))
-    server._ensure_code_mode_state = AsyncMock(return_value=False)
-    server._check_post_process_plan_exit = AsyncMock()
-    server.send_push = AsyncMock()
+    _install_internal_heartbeat_runtime(server, agent)
+    server.send_push = AsyncMock(return_value=True)
     request = AgentRequest(
         request_id="run-1",
         channel_id="web",
@@ -642,11 +707,7 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
         metadata={"automation": automation},
     )
 
-    with patch(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
-        AsyncMock(),
-    ):
-        await server.execute_internal_heartbeat(request)
+    await server.execute_internal_heartbeat(request)
 
     pushes = [call.args[0] for call in server.send_push.await_args_list]
     assert pushes[0]["payload"] == {
@@ -665,6 +726,7 @@ async def test_internal_heartbeat_pushes_visible_prompt_before_stream() -> None:
         "is_processing": False,
         "is_complete": True,
     }
+    server._heartbeat_runtime.retain_agent.assert_called_once_with("sess-1", agent)
 
 
 @pytest.mark.asyncio
@@ -693,10 +755,8 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
     agent.process_message_stream.return_value = response_stream()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._heartbeat_runtime = SimpleNamespace(retain_agent=MagicMock())
-    server._prepare_code_mode_chat_turn = AsyncMock(return_value=("agent", None, agent))
-    server._ensure_code_mode_state = AsyncMock(return_value=False)
-    server._check_post_process_plan_exit = AsyncMock()
-    server.send_push = AsyncMock()
+    _install_internal_heartbeat_runtime(server, agent)
+    server.send_push = AsyncMock(return_value=True)
     request = AgentRequest(
         request_id="run-cancelled",
         channel_id="web",
@@ -706,10 +766,7 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
         metadata={"automation": automation},
     )
 
-    with patch(
-        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.ensure_persistent_checkpointer",
-        AsyncMock(),
-    ), pytest.raises(asyncio.CancelledError):
+    with pytest.raises(asyncio.CancelledError):
         await server.execute_internal_heartbeat(request)
 
     pushes = [call.args[0] for call in server.send_push.await_args_list]
@@ -720,6 +777,7 @@ async def test_internal_heartbeat_cancel_closes_processing_status() -> None:
         "is_complete": True,
     }
     assert pushes[-1]["metadata"] == {"automation": automation}
+    server._heartbeat_runtime.retain_agent.assert_called_once_with("sess-1", agent)
 
 
 @pytest.mark.asyncio
@@ -740,7 +798,7 @@ async def test_prepare_chat_turn_skips_approval_for_interrupt_resume() -> None:
 
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -762,7 +820,7 @@ async def test_prepare_chat_turn_skips_approval_for_interrupt_resume() -> None:
 
     assert mode == "code"
     assert sub_mode == "plan"
-    manager.get_agent.assert_awaited_once()
+    manager.get_agent_for_request.assert_awaited_once()
     manager.wait_for_session_prewarm.assert_awaited_once_with(session_id)
 
 

@@ -1255,7 +1255,7 @@ async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path, monkeypatch):
+async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     stale_dir = tmp_path / "missing-worktree"
@@ -1309,6 +1309,88 @@ async def test_runtime_prompt_uses_runtime_cwd_over_stale_trusted_dir(tmp_path, 
 
     items = await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     assert [item.id for item in items if item.id.endswith(".trusted_dirs_policy")] == []
+
+
+@pytest.mark.asyncio
+async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
+    tmp_path, monkeypatch
+):
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    project_dir = tmp_path / "project"
+    current_dir = tmp_path / "task"
+    agent_data_dir = tmp_path / "agent-data"
+    project_dir.mkdir()
+    current_dir.mkdir()
+    agent_data_dir.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: agent_data_dir,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path / "jiuwenswarm-data",
+    )
+
+    runtime_rail = RuntimePromptRail(language="cn", channel="tui")
+    runtime_rail.init(agent)
+    runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "项目目录是当前项目的根目录与项目上下文边界" in prompt
+    assert f"当前项目目录是：`{project_dir}`" in prompt
+    assert (
+        f"当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{current_dir}`" in prompt
+    )
+    assert (
+        "用户任务中的相对路径必须相对于当前工作目录路径去解析" in prompt
+    )
+
+
+@pytest.mark.asyncio
+async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match(
+    tmp_path, monkeypatch
+):
+    builder = SystemPromptBuilder(language="en")
+    agent = _FakeAgent(builder)
+    project_dir = tmp_path / "project"
+    agent_data_dir = tmp_path / "agent-data"
+    project_dir.mkdir()
+    agent_data_dir.mkdir()
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_agent_workspace_dir",
+        lambda: agent_data_dir,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail.get_user_workspace_dir",
+        lambda: tmp_path / "jiuwenswarm-data",
+    )
+
+    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail.init(agent)
+    runtime_rail.set_runtime_paths(cwd=str(project_dir), project_dir=str(project_dir))
+    ctx = AgentCallbackContext(
+        agent=agent,
+        inputs=None,
+        session=_FakeSession(),
+        extra={},
+    )
+
+    await runtime_rail.before_model_call(ctx)
+
+    prompt = builder.build()
+    assert "## Project Directory" in prompt
+    assert "## Project and Working Directories" not in prompt
+    assert f"the current project directory is: `{project_dir}`" in prompt
+    assert "Resolve relative paths in user tasks against the current project directory" in prompt
 
 
 @pytest.mark.asyncio
@@ -1528,9 +1610,8 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     rendered = agent.prompt_attachment_manager.render(
         await agent.prompt_attachment_manager.list_by_filter(session_id="sess1")
     )
-    assert "## 已安装 Skill" not in rendered
-    assert "## 已安装 Skill" in builder.build()
-    assert "当前没有可用 Skill" in builder.build()
+    assert "## 已安装 Skill" in rendered
+    assert "当前没有可用 Skill" in rendered
     assert "## Skill 发现" not in rendered
 
     class _AttachmentContext:
@@ -1546,7 +1627,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
 
     history = _AttachmentContext()
     manager = agent.prompt_attachment_manager
-    assert await manager.sync_to_context(history, "sess1") is None
+    assert await manager.sync_to_context(history, "sess1") is not None
 
     # before_invoke runs before the model tool list exists. It must not clear
     # and then re-add the same large snapshot on every user turn.
@@ -1560,7 +1641,7 @@ async def test_skill_retrieval_prompt_renders_directory_guidance(
     )
     await rail.before_model_call(ctx)
     assert await manager.sync_to_context(history, "sess1") is None
-    assert len(history.messages) == 0
+    assert len(history.messages) == 1
 
     missing_index_ctx = AgentCallbackContext(
         agent=agent,
@@ -1883,6 +1964,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",
@@ -1925,6 +2007,7 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),
         patch.object(adapter, "_browser_runtime_enabled", return_value=True),
+        patch.object(adapter, "_prepare_browser_runtime_security"),
         patch(
             "jiuwenswarm.server.runtime.agent_adapter.interface_deep.build_research_agent_config",
             return_value="research_spec",

@@ -110,7 +110,7 @@ class _PartAnalysis(object):
             self.concat.append(self.inner[i])
             pos += len(self.inner[i])
             prev_end = m.end()
-        self.C = "".join(self.concat)
+        self.concat_text = "".join(self.concat)
         self._starts = [s[0] for s in self.segments]
 
     def locate(self, pos):
@@ -155,7 +155,7 @@ def replace_in_xml(xml_text, old, new, case_sensitive=True, count_only=False):
     count_only=True 时只统计，不构造新 XML。
     """
     pa = _PartAnalysis(xml_text)
-    occ = _find_occurrences(pa.C, old, case_sensitive)
+    occ = _find_occurrences(pa.concat_text, old, case_sensitive)
     stats = {"found": len(occ), "spans": 0, "cross_run": 0}
     if not occ or count_only:
         return (None, stats)
@@ -199,8 +199,8 @@ def replace_in_xml(xml_text, old, new, case_sensitive=True, count_only=False):
         text = new_inner[idx]
         open_tag = m.group(0)[: m.start(2) - m.start()]
         # 前导/尾随空白且缺少 xml:space 时补上，防止 Word 丢空格
-        if text and (text[0].isspace() or text[-1].isspace()) \
-                and "xml:space" not in open_tag:
+        needs_space_preserve = text and (text[0].isspace() or text[-1].isspace())
+        if needs_space_preserve and "xml:space" not in open_tag:
             open_tag = open_tag[:-1] + ' xml:space="preserve">'
         replacement = open_tag + _escape(text) + "</w:t>"
         out = out[: m.start()] + replacement + out[m.end():]
@@ -218,13 +218,17 @@ def _target_parts(names, scope):
     return parts
 
 
-def replace_in_docx(src, dst, pairs, scope="all", case_sensitive=True,
-                    dry_run=False, verify=True):
+def replace_in_docx(src, dst, pairs, **options):
     """对整个 docx 执行（可能多对的）保真替换。
 
     pairs: [(old, new), ...] —— 按顺序链式执行（前一对的结果是后一对的输入）
+    options: scope/case_sensitive/dry_run/verify 等可选参数
     返回报告 dict；dry_run=True 时不写出文件。
     """
+    scope = options.get("scope", "all")
+    case_sensitive = options.get("case_sensitive", True)
+    dry_run = options.get("dry_run", False)
+    verify = options.get("verify", True)
     if not pairs:
         raise ValueError("pairs 为空")
     with zipfile.ZipFile(src) as z:
@@ -271,14 +275,19 @@ def replace_in_docx(src, dst, pairs, scope="all", case_sensitive=True,
     report["parts_changed"] = sorted(modified.keys())
 
     if verify:
-        report.update(_verify(src, dst, modified, pairs, targets,
-                              case_sensitive))
+        report.update(_verify(src, dst, modified, {
+            "pairs": pairs, "targets": targets,
+            "case_sensitive": case_sensitive}))
     return report
 
 
-def _verify(src, dst, modified, pairs, targets, case_sensitive):
+def _verify(src, dst, modified, replace_ctx):
     """替换后验证：条目一致性 / 字节级差异 / 残留计数 / 可打开性"""
     import os
+
+    pairs = replace_ctx["pairs"]
+    targets = replace_ctx["targets"]
+    case_sensitive = replace_ctx["case_sensitive"]
 
     v = {}
     with zipfile.ZipFile(src) as z1, zipfile.ZipFile(dst) as z2:

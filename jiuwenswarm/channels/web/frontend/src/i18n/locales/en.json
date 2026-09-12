@@ -43,7 +43,18 @@
     "more": "More",
     "settings": "Settings",
     "logs": "Logs",
-    "update": "Updates"
+    "update": "Updates",
+    "personalContext": "Personal\nContext"
+  },
+  "applicationPlugins": {
+    "title": "Application plugins",
+    "description": "Manage application plugins with dedicated pages and runtime capabilities.",
+    "backToExtensions": "Back to extensions",
+    "refresh": "Refresh",
+    "enabled": "Enabled",
+    "disabled": "Disabled",
+    "empty": "No application plugins were found",
+    "noSettings": "This plugin does not provide a settings page."
   },
   "settingsPanel": {
     "title": "Settings",
@@ -53,6 +64,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
+      "personalContext": "Personal Context",
       "experimental": "Experimental"
     },
     "feedback": {
@@ -95,7 +107,6 @@
       }
     },
     "models": {
-      "freeModels": "Free models",
       "primaryModels": "Chat models",
       "empty": "No models configured",
       "emptyDescription": "Add a model to test its connection and manage the primary model here.",
@@ -237,6 +248,8 @@
       "video": "Video understanding",
       "videoDescription": "Enable video understanding; disabling it keeps the saved model configuration.",
       "videoConfigTitle": "Configure video understanding model",
+      "videoGenConfigTitle": "Configure video generation model",
+      "visualGenConfigTitle": "Configure visual generation model",
       "toggleCapability": "Toggle {{name}} capability",
       "saveAndEnable": "Save and enable",
       "savedRestartRequired": "Saved; takes effect after restart.",
@@ -258,11 +271,14 @@
       "chromePathPlaceholder": "For example, /Applications/Google Chrome.app/Contents/MacOS/Google Chrome"
     },
     "experimental": {
+      "taskAsr": "ASR model configuration",
+      "taskFullDuplex": "Task chat full duplex",
       "externalCliAgents": "Third-Party Agents",
       "externalCliAgentsDescription": "For Team mode only.",
       "a2ui": "A2UI generation",
       "rsi": "RSI · Recursive self-improvement",
       "trajectoryUi": "Trajectory UI",
+      "kvCacheAffinity": "Compute affinity",
       "proactive": "Proactive recommendations",
       "proactiveLimits": "Recommendation limits",
       "proactiveLimitsDescription": "Up to {{daily}} per day and {{rounds}} conversation rounds per check.",
@@ -291,9 +307,20 @@
       "embed_api_base": { "title": "API URL" },
       "embed_api_key": { "title": "API key" },
       "embed_model": { "title": "Model name" },
-      "enable_free_models": {
-        "title": "Enable free models",
-        "description": "When enabled, available free models are fetched live. Note that free models may have limitations such as rate limits or restricted context window size. Free models are sourced from the Opencode Zen gateway (https://opencode.ai/zen), obtained by intersecting the models.dev catalog (https://models.opencode.ai/api.json) with the Zen live model list (criterion: input price is 0)."
+      "asr_api_base": {
+        "title": "ASR API URL",
+        "description": "Enter an OpenAI-compatible base URL or the full /audio/transcriptions URL.",
+        "placeholder": "e.g. https://api.example.com/v1"
+      },
+      "asr_api_key": {
+        "title": "ASR API key",
+        "description": "Used for general speech transcription; JoyAI has separate settings.",
+        "placeholder": "e.g. sk-..."
+      },
+      "asr_model": {
+        "title": "ASR model",
+        "description": "Model used for general speech transcription.",
+        "placeholder": "e.g. FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": {
         "title": "Automatic evolution and retention of local skills",
@@ -325,6 +352,24 @@
       "video_api_key": { "title": "API key" },
       "video_model": { "title": "Model name" },
       "video_provider": { "title": "Model provider" },
+      "video_gen_provider": { "title": "Model provider" },
+      "video_gen_protocol": { "title": "Protocol" },
+      "video_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
+      "video_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
+      "video_gen_model": { "title": "Model name", "placeholder": "e.g. bytedance/seedance-2.0-fast" },
+      "video_gen_enabled": {
+        "title": "Video generation",
+        "description": "Enable video generation tools (text-to-video); disabling it keeps the saved model configuration."
+      },
+      "visual_gen_provider": { "title": "Model provider" },
+      "visual_gen_protocol": { "title": "Protocol" },
+      "visual_gen_api_base": { "title": "API URL", "placeholder": "e.g. https://openrouter.ai/api/v1" },
+      "visual_gen_api_key": { "title": "API key", "placeholder": "e.g. sk-..." },
+      "visual_gen_model": { "title": "Model name", "placeholder": "e.g. google/gemini-3.1-flash-image" },
+      "visual_gen_enabled": {
+        "title": "Visual generation",
+        "description": "Enable image generation tools (text-to-image); disabling it keeps the saved model configuration."
+      },
       "permissions_mode": {
         "title": "Global permission mode",
         "description": "Choose the shared guardrail mode for ordinary Agents and Teams."
@@ -335,6 +380,14 @@
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
       "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
+      "task_full_duplex_enabled": {
+        "title": "Enable Full-duplex in task chat",
+        "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
+      },
+      "kv_cache_affinity_enabled": {
+        "title": "Enable compute affinity",
+        "description": "Supported only for models deployed with Ascend vLLM inference services, not models accessed through third-party API keys."
+      },
       "external_cli_agent_claude_enabled": {
         "title": "Enable Claude",
         "description": "Allow a Team Leader to spawn a Claude Agent."
@@ -343,7 +396,9 @@
         "title": "Use built-in Claude CLI",
         "description": "Do not specify a local CLI path; let the SDK use its default lookup."
       },
-      "external_cli_agent_claude_cli_path": { "title": "Claude CLI path" },
+      "external_cli_agent_claude_cli_path": {
+        "title": "Claude CLI path"
+      },
       "external_cli_agent_codex_enabled": {
         "title": "Enable Codex",
         "description": "Allow a Team Leader to spawn a Codex Agent; first use may install dependencies."
@@ -352,7 +407,9 @@
         "title": "Use built-in Codex CLI",
         "description": "Do not specify a local CLI path; let the SDK use its default lookup."
       },
-      "external_cli_agent_codex_cli_path": { "title": "Codex CLI path" },
+      "external_cli_agent_codex_cli_path": {
+        "title": "Codex CLI path"
+      },
       "proactive_recommendation_enabled": {
         "title": "Enable proactive recommendations",
         "description": "Allow recommendations to be sent when their conditions are met."
@@ -626,7 +683,10 @@
     "modeAgentTeam": "Cluster Mode",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
-    "recording": "Recording... (release to send)",
+    "recording": "Recording... (click the microphone again to finish)",
+    "transcribing": "Transcribing speech...",
+    "startRecording": "Voice input",
+    "stopRecording": "Stop recording and transcribe",
     "messageQueue": "Message queue",
     "waitingTasks": "Waiting tasks",
     "waitingTasksCount": "Waiting tasks ({{count}})",
@@ -650,10 +710,12 @@
     "holdToSpeak": "Hold to speak",
     "send": "Send (Enter)",
     "stop": "Stop",
+    "taskFullDuplexStart": "Share the entire screen and start a Full-duplex conversation",
+    "taskFullDuplexStarting": "Starting Full-duplex conversation",
+    "taskFullDuplexStop": "Stop Full-duplex conversation and screen sharing",
     "modelSelector": {
       "tooltip": "Switch the model used for chat",
       "configured": "Configured Models",
-      "free": "Free Models",
       "addModel": "Add Custom Model",
       "empty": "No models available. Add a model in Settings first.",
       "placeholder": "Select Model"
@@ -702,6 +764,25 @@
     "extensionManageMcps": "Manage My Connectors",
     "extensionMore": "More",
     "recentTasks": "Progress",
+    "applicationTasks": {
+      "cancelling": "Stopping",
+      "cancelled": "Cancelled",
+      "controls": {
+        "drag": "Drag onto another task to reorder",
+        "next": "Run next",
+        "stop": "Stop this task",
+        "more": "Task actions",
+        "up": "Move up",
+        "down": "Move down",
+        "preempt": "Stop current task and run this",
+        "close": "Close",
+        "failed": "Task operation failed"
+      },
+      "queued": "Queued",
+      "running": "Running",
+      "completed": "Completed",
+      "failed": "Failed"
+    },
     "contextCompressionCommandRunning": "Compressing context",
     "teamPause": "Pause",
     "teamPauseHint": "After pausing a team, send the next message to continue",
@@ -1079,10 +1160,6 @@
     "skip": "Skip",
     "open": "Setup guide",
     "steps": {
-      "0": {
-        "title": "Welcome to jiuwenswarm",
-        "description": "You have free credits! Choose a way to configure your model service below."
-      },
       "1": {
         "title": "Configure your first model",
         "description": "Model configuration is on the Models page in Settings."
@@ -1091,26 +1168,6 @@
         "title": "Complete model configuration",
         "description": "Select Add model, choose a model provider, complete the required fields, then select Save."
       }
-    },
-    "quickSetup": {
-      "title": "Auto-setup Huawei Cloud MaaS",
-      "description": "Guided Huawei Cloud purchase and API configuration",
-      "steps": {
-        "openConsole": "Open Huawei Cloud MaaS console",
-        "updateAuth": "Update service authorization automatically",
-        "createApiKey": "Create an API key for JiuwenSwarm model calls",
-        "enableModels": "Enable preset models (pay-as-you-go)"
-      },
-      "agreementPrefix": "By clicking \"Auto-setup\" you agree to the ",
-      "agreementMaas": "MaaS Model-as-a-Service Statement",
-      "agreementAnd": " and the ",
-      "agreementCloud": "Huawei Cloud User Agreement",
-      "agreementSuffix": ".",
-      "billingNote": "Enabling models is free; you only pay for actual usage."
-    },
-    "manualSetup": {
-      "title": "Manual setup",
-      "description": "Already have an API key, configure manually"
     }
   },
   "config": {
@@ -1529,6 +1586,283 @@
       "updateDebugConfig": "Failed to update WS debug config"
     }
   },
+  "personalContext": {
+    "intro": {
+      "title": "Personal Context — weaving knowledge into a network",
+      "subtitle": "Turn scattered local documents and web sources into a clear, visual, structured knowledge brain in one click.",
+      "stepsTitle": "How it works",
+      "step1Title": "Step 1: Authorize channels, add diverse content",
+      "step1Desc": "Authorize knowledge source channels in one click — import local files, paste web links, or consolidate multi-source text.",
+      "step2Title": "Step 2: Auto-build the graph",
+      "step2Desc": "The platform will automatically extract entities and link relations — please wait for the graph to appear.",
+      "start": "Go set up",
+      "featuresTitle": "Features",
+      "feature1Title": "Structured distillation · Markdown view",
+      "feature1Desc": "Automatically extract core entities and threads across sources, distilled into standard Markdown documents for easy reading.",
+      "feature2Title": "Bidirectional links · seamless navigation",
+      "feature2Desc": "Smart detection of cross-references between nodes builds link chains automatically — click to travel freely between related nodes and original text.",
+      "feature3Title": "Task integration · awaken graph context",
+      "feature3Desc": "When running complex AI tasks or conversations, directly mount and retrieve graph knowledge for more accurate output and richer context."
+    },
+    "chat": {
+      "toggleLabel": "Personal Context"
+    },
+    "settings": {
+      "title": "Context",
+      "subtitle": "Choose how personal context is collected, organized, and generated.",
+      "masterEnable": "Enable Personal Context",
+      "masterEnableHint": "Master switch controlling personal context collection and agent context loading.",
+      "enable": "Collect Personal Context",
+      "enableHint": "Periodic context harvesting & graph building.",
+      "strategyProfile": "Context strategy",
+      "strategy_agent": "Agent",
+      "strategy_balanced": "LLM",
+      "strategy_rules": "Rules",
+      "model": "Context Organize Model",
+      "modelPlaceholder": "Please select an organize model",
+      "modelRequiredFirst": "Please select an organize model first",
+      "modelHint": "Select a model configured in JiuwenSwarm."
+    },
+    "authorization": {
+      "title": "Content source authorization",
+      "subtitle": "Manage content sources required by context collection services.",
+      "provider": "Name",
+      "state": "State",
+      "action": "Action",
+      "authorize": "Authorize",
+      "goAuthorize": "Go authorize",
+      "reauthorize": "Re-authorize",
+      "cancelAuth": "Revoke",
+      "authorizing": "Authorizing…",
+      "stateNotAuthorized": "Not authorized",
+      "stateAuthorizationRequired": "Authorization required",
+      "stateAuthorizing": "Authorizing",
+      "stateAuthorized": "Authorized",
+      "stateAuthorizationFailed": "Authorization failed",
+      "githubHint": "GitHub uses a personal access token (PAT). After authorizing you can add GitHub fetch in \"Context content\".",
+      "githubTokenLabel": "GitHub token",
+      "githubTokenPlaceholder": "ghp_xxxxxxxxxxxx",
+      "githubTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
+      "githubTokenRequired": "Please enter a GitHub token",
+      "gitcodeHint": "GitCode uses a personal access token (PAT). After authorizing you can add GitCode fetch in \"Context content\".",
+      "gitcodeTokenLabel": "GitCode token",
+      "gitcodeTokenPlaceholder": "Enter a GitCode personal access token",
+      "gitcodeTokenHint": "Token is stored locally in the browser and used to authenticate the fetch service.",
+      "gitcodeTokenRequired": "Please enter a GitCode token",
+      "feishuHint": "Feishu uses an OAuth device flow. After authorizing, complete the login in your browser as prompted.",
+      "feishuVerifyHint": "Complete the Feishu authorization in the opened page; the state will update automatically."
+    },
+    "info": {
+      "tabGraph": "Context graph",
+      "tabServices": "Context content",
+      "refresh": "Refresh",
+      "updatedTime": "Updated",
+      "searchPlaceholder": "Search your knowledge, uncover connections...",
+      "zoomIn": "Zoom in",
+      "zoomOut": "Zoom out",
+      "fitView": "Fit view",
+      "fetchProgress": "Fetch progress",
+      "fetchProgressTasks": "Fetch tasks",
+      "noGraph": "No context graph yet. Enable and fetch first.",
+      "collecting": "Fetching, will refresh automatically…",
+      "fetchingDisabled": "Collection is off. Enable \"Enable personal context\" in Context Settings.",
+      "serviceDisabled": "Fetch service is off. Turn it on in the \"Context content\" tab.",
+      "noServices": "No fetch services. Add a source in the \"Context content\" tab.",
+      "nodesCount": "nodes",
+      "edgesCount": "edges",
+      "notReady": "Context not ready",
+      "ready": "Context ready",
+      "publishFailed": "Context publish failed",
+      "sourceBadge": "Source",
+      "sourceProvider": "Provider",
+      "sourceType": "Source type",
+      "sourceLocator": "Original link",
+      "sourceFirstSeen": "Collected",
+      "graphTitle": "Your personal context",
+      "graphSubtitle": "Turn scattered fragments from local documents, web sources, and more into a clear, visual, structured personal context",
+      "tabNodes": "Context Nodes",
+      "tabEdges": "Edges",
+      "addKnowledge": "Source Management",
+      "resultUnit": " results",
+      "guideDesc": "Enable personal context, add content sources, and the system will automatically build a knowledge graph.",
+      "guideAction": "Get Started"
+    },
+    "services": {
+      "addContent": "Context Collection",
+      "colName": "Name",
+      "colProvider": "Source",
+      "colState": "State",
+      "colLastRun": "Last fetch",
+      "colAuto": "Auto",
+      "autoOn": "On",
+      "autoOff": "Off",
+      "autoOnHint": "Enable auto-fetch scheduling",
+      "autoOffHint": "Disable auto-fetch scheduling",
+      "colInterval": "Interval",
+      "colActions": "Actions",
+      "stateCollecting": "Fetching",
+      "stateCompleted": "Completed",
+      "stateFailed": "Failed",
+      "stateWaiting": "Waiting",
+      "stateStopped": "Stopped",
+      "stateStopping": "Stopping",
+      "lastRunUnavailable": "Backend did not return fetch time",
+      "intervalHour": "Every {{n}} hour(s)",
+      "intervalDay": "Every {{n}} day(s)",
+      "actionRunNow": "Fetch now",
+      "actionEdit": "Edit",
+      "actionDelete": "Delete",
+      "actionRetry": "Retry",
+      "actionStop": "Stop",
+      "deleteConfirm": "Delete this fetch service?",
+      "cancel": "Cancel",
+      "empty": "No content yet. Click \"Add content\" at the top right to create one.",
+      "noContentInCategory": "No content",
+      "runSubmitted": "Fetch request submitted",
+      "startedAt": "Started",
+      "finishedAt": "Finished",
+      "backToGraph": "Back to Graph",
+      "addKnowledge": "Add Context",
+      "collectAll": "Collect All",
+      "statSources": "Sources",
+      "statKnowledge": "Context Nodes",
+      "statCollecting": "Collecting",
+      "knowledgeSource": "Context Source",
+      "lastRun": "Last Run"
+    },
+    "addContent": {
+      "title": "Add content",
+      "editTitle": "Edit collection task",
+      "nameLabel": "Content name",
+      "namePlaceholder": "e.g. my-task: letter/digit start, . _ - only",
+      "nameRequired": "Enter a name for this fetch task",
+      "nameFormatError": "Name must start with a letter or digit and contain only letters, digits, . _ - (no spaces or Chinese characters)",
+      "providerLabel": "Content source",
+      "autoCollectLabel": "Auto fetch",
+      "autoCollectHint": "Fetch automatically at the chosen frequency",
+      "timeRangeLabel": "Time Range",
+    "timeRangeWeek": "Last Week",
+    "timeRangeMonth": "Last Month",
+    "timeRangeQuarter": "Last Quarter",
+    "timeRangeCustom": "Custom",
+    "dateRangeTitle": "Select Date Range",
+    "dateRangePlaceholder": "Select a date range",
+    "dateRangeRequired": "Select a custom date range",
+    "addUrl": "+ Add",
+    "frequencyLabel": "Auto fetch frequency",
+      "frequencyHour": "Every {{n}} hour(s)",
+      "frequencyDay": "Every {{n}} day(s)",
+      "frequencyEvery": "Every",
+      "unitHour": "hour(s)",
+      "unitDay": "day(s)",
+      "maxItemsLabel": "Max items per run",
+      "maxItemsPlaceholder": "Leave empty for default",
+      "advancedConfig": "Advanced Settings",
+      "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
+      "previousStep": "Previous",
+    "submit": "Add",
+      "save": "Save",
+      "notConfigured": "Personal context is not configured. Enable it in Settings first.",
+      "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
+      "createTimeout": "The create request timed out. Confirm whether the task was created before retrying.",
+      "goAuthorize": "Go authorize",
+      "feishuPlaceholder": "Feishu fetch will be developed separately later",
+      "localFiles": {
+        "rootDirLabel": "Local folder path",
+        "rootDirPlaceholder": "D:/my-notes",
+        "rootDirHint": "Must be absolute",
+        "rootDirRequired": "Please enter the local folder path"
+      },
+      "zhihu": {
+        "columnUrlLabel": "Zhihu column URL",
+        "columnUrlPlaceholder": "https://www.zhihu.com/column/c_xxxxxxxxxx",
+        "columnUrlHint": "Only https Zhihu column URLs; path must be /column/<id>"
+      },
+      "toutiao": {
+        "profileUrlLabel": "Toutiao profile URL",
+        "profileUrlPlaceholder": "https://www.toutiao.com/c/user/token/<id>",
+        "profileUrlHint": "Only https Toutiao profile URLs; path must be /c/user/token/<id>"
+      },
+      "edge": {
+        "profileLabel": "Browser profile",
+        "profileDefault": "Default",
+        "profilePlaceholder": "Default",
+        "profileHint": "Optional, defaults to Default",
+        "bookmarksPathLabel": "Bookmarks file path",
+        "bookmarksPathPlaceholder": "Leave empty to use Edge default Bookmarks path",
+        "foldersLabel": "Bookmark folders to fetch",
+        "foldersPlaceholder": "e.g. Bookmarks bar/Tech, comma-separated",
+        "foldersHint": "Optional, leave empty to fetch all"
+      },
+      "github": {
+        "repoUrlLabel": "GitHub repository URL",
+        "repoUrlPlaceholder": "https://github.com/<owner>/<repo>",
+        "repoUrlHint": "or git@github.com:<owner>/<repo>",
+        "sourceInvalid": "Enter a valid GitHub repository URL and select at least one content type",
+        "resourcesLabel": "Account Content to Collect",
+        "readme": "README",
+        "issues": "Issues",
+        "pullRequests": "Pull Requests",
+        "commits": "Commits",
+        "code": "Code",
+        "resourcesRequired": "Select at least one content type",
+        "tokenFromAuth": "Token obtained from Settings authorization"
+      },
+      "gitcode": {
+        "repoUrlLabel": "GitCode repository URL",
+        "repoUrlPlaceholder": "https://gitcode.com/<owner>/<repo>",
+        "repoUrlHint": "or git@gitcode.com:<owner>/<repo>",
+        "sourceInvalid": "Enter a valid GitCode repository URL and select at least one content type",
+        "resourcesLabel": "Account Content to Collect",
+        "readme": "README",
+        "issues": "Issues",
+        "pullRequests": "Pull Requests",
+        "commits": "Commits",
+        "code": "Code",
+        "resourcesRequired": "Select at least one content type",
+        "tokenFromAuth": "Token obtained from Settings authorization"
+      },
+      "feishu": {
+        "modeLabel": "Feishu Content Type",
+        "mode_account": "Account content",
+        "mode_wiki_space": "Wiki Space",
+        "modeHint": "Account: fetch docs/tasks/calendar; Wiki space: fetch nodes of a specified space",
+        "resourcesLabel": "Content to fetch",
+        "resourcesHint": "Select at least one under account mode",
+        "resourcesRequired": "Select at least one content type",
+        "wikiSpaceIdLabel": "Wiki Space Name",
+        "wikiSpaceIdPlaceholder": "Select Feishu Wiki Space",
+        "wikiSpaceIdHint": "Find it in the Feishu wiki space URL",
+        "wikiSpaceIdRequired": "Please select a Feishu wiki space",
+        "docs": "Documents",
+        "tasks": "Tasks",
+        "calendar": "Calendar",
+        "calendarTimeLabel": "Calendar Time Range",
+        "calendarTimePlaceholder": "Select",
+        "docPathLabel": "Specify Document (Optional)",
+        "docPathPlaceholder": "Enter path or select file",
+        "authorizeAfterCreate": "Authorize Feishu account in settings after creation:"
+      }
+    },
+    "provider": {
+      "localFiles": "Local files",
+      "github": "GitHub",
+      "gitcode": "GitCode",
+      "feishu": "Feishu Docs",
+      "browserBookmarks": "Edge bookmarks",
+      "zhihuReader": "Zhihu",
+      "toutiaoReader": "Toutiao"
+    },
+    "state": {
+      "CREATED": "Created",
+      "CONFIGURED": "Configured",
+      "STARTING": "Starting",
+      "RUNNING": "Running",
+      "STOPPING": "Stopping",
+      "STOPPED": "Stopped",
+      "FAILED": "Failed"
+    }
+  },
   "skills": {
     "title": "Skills",
     "subtitle": "Manage and install skills available to the agent.",
@@ -1685,6 +2019,7 @@
     "uploadSkillModal": {
       "title": "Upload Skill",
       "pathLabel": "Local Skill Path",
+      "pathPlaceholder": "Enter skill file/directory path",
       "notice": "Only .zip archives are supported. The .zip must contain a SKILL.md file with skill name (name) and description (description) declared in its YAML frontmatter.",
       "dropHint": "Click or drag a .zip file here",
       "confirm": "Import",
@@ -2590,6 +2925,7 @@
   },
   "speech": {
     "recognitionUnsupported": "Speech recognition is not supported by this browser",
+    "recordingUnsupported": "Microphone recording is not supported by this browser",
     "synthesisUnsupported": "Speech synthesis is not supported by this browser",
     "errors": {
       "noSpeech": "No speech detected",
@@ -2788,12 +3124,17 @@
       "cancel": "Cancel",
       "confirm": "Confirm"
     },
-    "runtime": { "processing": "Processing" },
+    "runtime": {
+      "processing": "Processing"
+    },
     "deleteDialog": {
       "title": "Delete",
       "description": "Delete “<name>{{title}}</name>”? This action cannot be undone."
     },
-    "notFound": { "title": "Conversation not found or deleted", "newConversation": "New conversation" },
+    "notFound": {
+      "title": "Conversation not found or deleted",
+      "newConversation": "New conversation"
+    },
     "errors": {
       "delete": "Failed to delete conversation",
       "create": "Failed to create conversation",
@@ -2897,6 +3238,7 @@
     "subtitle": "Create and manage plugins and connectors",
     "tabs": {
       "plugin": "Plugins",
+      "applicationPlugins": "App plugins",
       "mcp": "Connector",
       "pluginMarket": "Plugin Marketplace",
       "mcpMarket": "Connector Marketplace",
@@ -2911,6 +3253,8 @@
       "content-creation": "Content Creation",
       "security": "Security",
       "communication": "Communication",
+      "Engineering": "Engineering",
+      "Design": "Design",
       "other": "Other"
     },
     "search": {
@@ -3166,8 +3510,15 @@
       "titleEdit": "Edit heartbeat job",
       "back": "Back"
     },
-    "concurrencyPolicy": { "skip": "Skip", "queue": "Queue", "replace": "Replace" },
-    "sessionDeletedPolicy": { "disable": "Disable job", "completed": "Mark completed" },
+    "concurrencyPolicy": {
+      "skip": "Skip",
+      "queue": "Queue",
+      "replace": "Replace"
+    },
+    "sessionDeletedPolicy": {
+      "disable": "Disable job",
+      "completed": "Mark completed"
+    },
     "panel": {
       "title": "Heartbeat Jobs",
       "loading": "Loading…",
@@ -3452,6 +3803,12 @@
     "layoutGraph": "Flow Graph",
     "pauseResumeHint": "Pause / Resume",
     "stopHint": "Stop",
+    "controlAlreadyCompleted": "Workflow already completed",
+    "controlAlreadyStopped": "Workflow already stopped",
+    "controlAlreadyFailed": "Workflow already failed",
+    "controlAlreadyPaused": "Workflow already paused",
+    "controlUnavailable": "Workflow is running; control unavailable",
+    "controlNotFound": "Workflow run not found",
     "controlsDisabledHint": "Team is not running, so this workflow can't be controlled here. Send a message in the main session to resume or stop it.",
     "sessionBudget": "Session budget (team-wide, never resets)",
     "runBudget": "Run budget (META.workflow_token_limit)",

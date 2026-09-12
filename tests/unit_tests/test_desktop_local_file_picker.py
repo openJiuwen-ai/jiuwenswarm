@@ -1,4 +1,5 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -77,6 +78,12 @@ def test_attachment_open_file_types_excludes_blacklist():
 def test_select_local_files_uses_allowed_file_types(monkeypatch, tmp_path: Path):
     from jiuwenswarm.channels.web import file_picker
 
+    monkeypatch.setattr(
+        desktop_app.webview,
+        "FileDialog",
+        SimpleNamespace(OPEN="open"),
+        raising=False,
+    )
     runtime = _runtime()
     doc = tmp_path / "a.md"
     doc.write_text("# hi", encoding="utf-8")

@@ -34,7 +34,7 @@ export function SettingsChannelsPanel({
           <span>
             {t('channels.fetchFailed')}: {controller.channelsError}
           </span>
-          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()}>
+          <Button variant="quiet" size="sm" onClick={() => void controller.loadChannels()} data-testid="settings-channels-panel-retry-btn">
             {t('channels.retry')}
           </Button>
         </div>

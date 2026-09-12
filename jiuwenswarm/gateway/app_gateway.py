@@ -25,8 +25,12 @@ import sys
 import time
 import uuid as uuid_module
 from dataclasses import dataclass, field
-from typing import Any, Awaitable, Callable
+from typing import TYPE_CHECKING, Any, Awaitable, Callable
 from urllib.parse import parse_qs, urlparse
+
+if TYPE_CHECKING:
+    from jiuwenswarm.gateway.channel_manager.im_platforms.feishu.feishu_connect import FeishuChannel
+    from jiuwenswarm.gateway.routing.session_sharing import RoutingTarget
 
 
 # Include entry-module import/configuration work in later startup phase logs.
@@ -84,6 +88,9 @@ from jiuwenswarm.common.utils import (
 )
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import ReqMethod, Message, Mode
+from jiuwenswarm.server.runtime.attachments.media_attachments import (
+    normalize_chat_media_attachments,
+)
 _mark_startup_import_phase("gateway_core_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"
@@ -108,6 +115,17 @@ logger = logging.getLogger("jiuwenswarm.gateway")
 # Keep gateway idle-finalize fallback aligned with ACP channel default.
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
+
+
+def _agent_prewarm_enabled() -> bool:
+    """Return whether background session prewarming is switched on.
+
+    Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
+    must not emit agent.prewarm.sync requests or related log noise.
+    """
+    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+    return prewarm_enabled_by_env()
 
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
@@ -1347,6 +1365,9 @@ class GatewayServer(BaseWebChannel):
                 except Exception as e:  # pragma: no cover
                     logger.warning(
                         "%s on_disconnect hook error: %s",
+                        getattr(hook, "__name__", type(hook).__name__),
+                        e,
+                        exc_info=True,
                     )
 
     async def _handle_raw_message(self, ws: Any, raw: str, request_path: str, route: RouteConfig) -> None:
@@ -1850,6 +1871,8 @@ async def _run(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
+        if not _agent_prewarm_enabled():
+            return
         try:
             prewarm_channels = {
                 channel
@@ -1882,6 +1905,8 @@ async def _run(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
+        if not _agent_prewarm_enabled():
+            return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
             previous.cancel()
@@ -2079,6 +2104,12 @@ async def _run(
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
         )
+    )
+
+    extension_registry.bind_application_plugins(
+        web_channel,
+        agent_client=client,
+        media_attachment_normalizer=normalize_chat_media_attachments,
     )
     log_startup_stage("web_handlers_registered")
 
@@ -2973,9 +3004,13 @@ async def _run(
 
     channel_manager.set_config_callback(_apply_channel_config)
 
-    prewarm_sync_task = asyncio.create_task(
-        _periodic_agent_prewarm_sync(),
-        name="agent-prewarm-periodic-sync",
+    prewarm_sync_task = (
+        asyncio.create_task(
+            _periodic_agent_prewarm_sync(),
+            name="agent-prewarm-periodic-sync",
+        )
+        if _agent_prewarm_enabled()
+        else None
     )
 
     # ---------- Opencode Zen 免费模型预热 ----------
@@ -3213,11 +3248,12 @@ async def _run(
                 await prewarm_sync_debounce_task
             except asyncio.CancelledError:
                 pass
-        prewarm_sync_task.cancel()
-        try:
-            await prewarm_sync_task
-        except asyncio.CancelledError:
-            pass
+        if prewarm_sync_task is not None:
+            prewarm_sync_task.cancel()
+            try:
+                await prewarm_sync_task
+            except asyncio.CancelledError:
+                pass
         if zen_free_models_task is not None:
             zen_free_models_task.cancel()
             try:

@@ -7,10 +7,13 @@ docx -> Markdown 导出器。
     md = docx_to_markdown("in.docx", images_dir="images")  # 可选导出图片
     open("out.md", "w", encoding="utf-8").write(md)
 """
+import logging
 import os
 import re
 
 from docx import Document
+
+logger = logging.getLogger("md_export")
 from docx.table import Table
 from docx.text.paragraph import Paragraph
 from docx.oxml.ns import qn
@@ -18,7 +21,7 @@ from docx.oxml.ns import qn
 
 def _iter_block_items(parent):
     """按文档顺序迭代段落与表格。"""
-    body = parent.element.body if hasattr(parent, "element") else parent._tc
+    body = parent.element.body if hasattr(parent, "element") else parent._tc  # pylint: disable=protected-access
     for child in body.iterchildren():
         if child.tag == qn("w:p"):
             yield Paragraph(child, parent)
@@ -33,12 +36,14 @@ def _is_mono(run):
 
 def _has_field(p):
     """段落是否包含域（如 TOC/PAGE）。"""
-    return p._p.findall(".//" + qn("w:fldChar")) or \
-        p._p.findall(".//" + qn("w:instrText"))
+    # pylint: disable=protected-access
+    return p._p.findall(f".//{qn('w:fldChar')}") or \
+        p._p.findall(f".//{qn('w:instrText')}")
 
 
 def _is_quote(p):
     """引用块判定：pPr/pBdr 中存在 left 边框。"""
+    # pylint: disable=protected-access
     ppr = p._p.pPr
     if ppr is None:
         return False
@@ -50,6 +55,7 @@ def _is_quote(p):
 
 def _is_code_para(p):
     """代码行判定：段落有底纹且全部 run 为等宽字体。"""
+    # pylint: disable=protected-access
     ppr = p._p.pPr
     if ppr is None or ppr.find(qn("w:shd")) is None:
         return False
@@ -89,7 +95,7 @@ def _para_markdown(p):
     m = re.match(r"^Heading (\d)$", style_name)
     if m:
         level = min(6, int(m.group(1)))
-        return "#"*level + " " + p.text.strip()
+        return "#" * level + " " + p.text.strip()
     if style_name.startswith("Heading"):
         return "## " + p.text.strip()
 
@@ -114,6 +120,7 @@ def _para_markdown(p):
         return marker + text
 
     # 编号列表（Word 原生 numPr）
+    # pylint: disable=protected-access
     ppr = p._p.pPr
     if ppr is not None and ppr.find(qn("w:numPr")) is not None:
         return "1. " + "".join(_run_markdown(r) for r in p.runs).strip()
@@ -163,7 +170,8 @@ def _export_images(doc, images_dir):
                 f.write(blob)
             mapping[rel_id] = os.path.join(
                 os.path.basename(images_dir), fname).replace("\\", "/")
-        except Exception:
+        except Exception as exc:
+            logger.debug("导出图片失败: %s", exc)
             continue
     return mapping
 
@@ -189,7 +197,7 @@ def docx_to_markdown(path, images_dir=None):
     prev_code = False
     for block in _iter_block_items(doc):
         if isinstance(block, Paragraph):
-            if block._p.findall(".//" + qn("a:blip")):
+            if block._p.findall(f".//{qn('a:blip')}"):  # pylint: disable=protected-access
                 try:
                     out.append("![](%s)" % next(img_iter))
                 except StopIteration:

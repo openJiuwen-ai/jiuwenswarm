@@ -115,4 +115,3 @@ export function ArtifactList({
     </div>
   );
 }
-

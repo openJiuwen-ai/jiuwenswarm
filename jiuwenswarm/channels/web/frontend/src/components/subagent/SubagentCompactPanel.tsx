@@ -16,18 +16,18 @@ export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: strin
   if (!runtime || subagents.length === 0) return null;
 
   return (
-    <section className="subagent-compact-panel" aria-label={t('subagent.title')}>
+    <section className="subagent-compact-panel" aria-label={t('subagent.title')} data-testid="subagent-compact-panel">
       <div className="subagent-compact-panel__header">
         <div className="flex min-w-0 items-center gap-2">
           <TeamMembersIcon className="h-4 w-4 shrink-0 text-text-muted" aria-hidden="true" />
-          <h2 className="truncate text-sm font-semibold text-text">{t('subagent.compactTitle', { count: subagents.length })}</h2>
+          <h2 className="truncate text-sm font-semibold text-text" data-testid="subagent-compact-title">{t('subagent.compactTitle', { count: subagents.length })}</h2>
         </div>
-        <button type="button" className="subagent-icon-button" onClick={onExpand} aria-label={t('subagent.expand')} title={t('subagent.expand')}>
+        <button type="button" className="subagent-icon-button" onClick={onExpand} aria-label={t('subagent.expand')} title={t('subagent.expand')} data-testid="subagent-compact-expand-button">
           <CollapseIcon className="h-4 w-4" aria-hidden="true" />
         </button>
       </div>
 
-      <div className="subagent-compact-panel__list">
+      <div className="subagent-compact-panel__list" data-testid="subagent-compact-list">
         {subagents.map(subagent => {
           const statusLabel = t(getSubagentStatusLabelKey(subagent.status, subagent.closed_reason, subagent.turn_outcome));
           return (
@@ -40,12 +40,14 @@ export function SubagentCompactPanel({ sessionId, onExpand }: { sessionId: strin
                 onExpand();
               }}
               aria-label={t('subagent.selectWithStatus', { name: subagent.display_name, status: statusLabel })}
+              data-testid="subagent-compact-row"
+              data-variant={subagent.subagent_id}
             >
               <TeamMemberAvatar member={subagent.subagent_id} alt={subagent.display_name} className="h-6 w-6 rounded-lg" imageClassName="rounded-lg" />
               <span className="subagent-compact-row__copy">
-                <span className="subagent-compact-row__name truncate text-sm font-semibold text-text">{subagent.display_name}</span>
+                <span className="subagent-compact-row__name truncate text-sm font-semibold text-text" data-testid="subagent-compact-row-name">{subagent.display_name}</span>
                 {(subagent.role || subagent.task_description) ? (
-                  <span className="subagent-compact-row__role truncate text-sm text-text-muted"> | {subagent.role || subagent.task_description}</span>
+                  <span className="subagent-compact-row__role truncate text-sm text-text-muted" data-testid="subagent-compact-row-role"> | {subagent.role || subagent.task_description}</span>
                 ) : null}
               </span>
               <SubagentStatusIcon status={subagent.status} closedReason={subagent.closed_reason} turnOutcome={subagent.turn_outcome} />

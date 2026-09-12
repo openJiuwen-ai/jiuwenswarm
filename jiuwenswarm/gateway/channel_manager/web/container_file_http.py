@@ -24,6 +24,7 @@ logger = logging.getLogger(__name__)
 FILE_API_PREFIX = "/file-api"
 MAX_UPLOAD_COUNT = 20
 _STREAM_CHUNK = 65536
+_VERIFIED_ASSET_TOKEN_KIND = "verified_asset_v1"
 
 
 class RawFileQuery(BaseModel):
@@ -102,7 +103,12 @@ def _status_for_transfer_code(code: str) -> int:
         return 400
     if normalized in {"UNAUTHORIZED", "AUTH_REQUIRED"}:
         return 401
-    if normalized in {"FORBIDDEN", "FORBIDDEN_EXTENSION", "FORBIDDEN_PATH"}:
+    if normalized in {
+        "FORBIDDEN",
+        "FORBIDDEN_EXTENSION",
+        "FORBIDDEN_PATH",
+        "USER_MISMATCH",
+    }:
         return 403
     if normalized in {"NOT_FOUND", "INSTANCE_NOT_FOUND", "FILE_NOT_FOUND"}:
         return 404
@@ -121,34 +127,86 @@ def _error_json(*, error: str, code: str | None = None, status_code: int | None 
     return JSONResponse(status_code=status, content=payload)
 
 
-def _auth_headers_from_request(request: Request) -> dict[str, str]:
-    from jiuwenswarm.extensions.agentos.auth.common import (
-        extract_token_from_path_and_headers,
-        headers_to_dict,
-    )
-    from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
-        build_auth_headers_from_mapping,
-        build_auth_headers_from_token,
+def _request_remote(request: Request) -> str:
+    client = getattr(request, "client", None)
+    host = str(getattr(client, "host", "") or "").strip()
+    port = getattr(client, "port", None)
+    if host and port:
+        return f"{host}:{port}"
+    return host
+
+
+class FileApiUserMismatch(Exception):
+    """Request ``user_id`` does not match the IAM identity bound to the token."""
+
+
+def _header_user_id(request: Request) -> str:
+    return str(
+        request.headers.get("x-user-id") or request.headers.get("X-User-Id") or ""
+    ).strip()
+
+
+def _token_identities(request: Request) -> frozenset[str]:
+    """IAM identities bound after ``authenticate_http`` succeeds."""
+    ids: set[str] = set()
+    uid = str(getattr(request.state, "agentos_user_id", "") or "").strip()
+    if uid:
+        ids.add(uid)
+    username = str(getattr(request.state, "agentos_username", "") or "").strip()
+    if username:
+        ids.add(username)
+    return frozenset(ids)
+
+
+def _claimed_user_ids(request: Request, explicit: str | None = None) -> list[str]:
+    claimed: list[str] = []
+    for raw in (
+        explicit,
+        request.query_params.get("user_id"),
+        _header_user_id(request),
+    ):
+        value = str(raw or "").strip()
+        if value and value not in claimed:
+            claimed.append(value)
+    return claimed
+
+
+def _user_mismatch_response() -> JSONResponse:
+    return _error_json(
+        error="user_id 与 token 不匹配",
+        code="USER_MISMATCH",
+        status_code=403,
     )
 
-    header_map = headers_to_dict(request.headers)
-    mapped = build_auth_headers_from_mapping(header_map)
-    if mapped:
-        return mapped
-    path = request.url.path
-    if request.url.query:
-        path = f"{path}?{request.url.query}"
-    return build_auth_headers_from_token(
-        extract_token_from_path_and_headers(path, header_map),
-    )
+
+def _user_id_mismatch_against_token(
+    request: Request, explicit: str | None = None
+) -> JSONResponse | None:
+    """Reject when any claimed ``user_id`` is not the token's user_id or username.
+
+    Skipped when auth is off (no IAM identity on the request). An omitted
+    ``user_id`` is allowed: routing then uses the IAM-bound identity.
+    """
+    identities = _token_identities(request)
+    if not identities:
+        return None
+    for claimed in _claimed_user_ids(request, explicit):
+        if claimed not in identities:
+            return _user_mismatch_response()
+    return None
 
 
 def _resolve_user_id(request: Request, explicit: str | None = None) -> str:
+    denied = _user_id_mismatch_against_token(request, explicit)
+    if denied is not None:
+        raise FileApiUserMismatch()
+    bound = str(getattr(request.state, "agentos_user_id", "") or "").strip()
+    if bound:
+        return bound
     if explicit and str(explicit).strip():
         uid = str(explicit).strip()
     else:
-        header_uid = request.headers.get("x-user-id") or request.headers.get("X-User-Id")
-        uid = str(header_uid or "").strip()
+        uid = _header_user_id(request)
     if uid:
         request.state.agentos_user_id = uid
     return uid
@@ -317,6 +375,17 @@ def _decode_text(raw: bytes, encoding: str) -> tuple[str, str]:
     raise OSError("Unable to decode file with any known encoding")
 
 
+def _decode_download_token_payload(token: str) -> dict[str, Any] | None:
+    """Decode routing hints only; authorization remains in AgentServer."""
+    try:
+        encoded = token.split(".", 1)[0]
+        padding = "=" * (-len(encoded) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(encoded + padding))
+    except Exception:  # noqa: BLE001
+        return None
+    return payload if isinstance(payload, dict) else None
+
+
 def _decode_download_token_location(token: str) -> tuple[str, str] | None:
     """Read the routing fields from a signed AgentServer download token.
 
@@ -327,13 +396,8 @@ def _decode_download_token_location(token: str) -> tuple[str, str] | None:
     runtime.  The token is deliberately never treated as an AgentOS bearer
     credential.
     """
-    try:
-        encoded = token.split(".", 1)[0]
-        padding = "=" * (-len(encoded) % 4)
-        payload = json.loads(base64.urlsafe_b64decode(encoded + padding))
-    except Exception:  # noqa: BLE001
-        return None
-    if not isinstance(payload, dict):
+    payload = _decode_download_token_payload(token)
+    if payload is None:
         return None
     path = payload.get("path")
     session_id = payload.get("sid")
@@ -342,12 +406,66 @@ def _decode_download_token_location(token: str) -> tuple[str, str] | None:
     return path.strip(), session_id.strip()
 
 
+def _parse_single_byte_range(
+    range_header: str,
+    file_size: int,
+) -> tuple[int, int] | None:
+    """Parse one HTTP byte range without accepting multipart ranges."""
+    if file_size <= 0 or not range_header.startswith("bytes=") or "," in range_header:
+        return None
+    value = range_header[6:]
+    if "-" not in value:
+        return None
+    start_text, end_text = value.split("-", 1)
+    if not start_text:
+        if not end_text.isdecimal() or int(end_text) <= 0:
+            return None
+        return max(0, file_size - int(end_text)), file_size - 1
+    if not start_text.isdecimal() or (end_text and not end_text.isdecimal()):
+        return None
+    start = int(start_text)
+    if start >= file_size:
+        return None
+    end = min(int(end_text), file_size - 1) if end_text else file_size - 1
+    return (start, end) if end >= start else None
+
+
+def _decode_verified_chunk(
+    payload: Mapping[str, Any],
+    *,
+    expected_offset: int,
+    expected_limit: int,
+) -> tuple[bytes, int, str, str, bool] | None:
+    """Validate one E2A chunk envelope before exposing it over HTTP."""
+    try:
+        data = base64.b64decode(str(payload.get("data_base64") or ""), validate=True)
+        offset = int(payload.get("offset"))
+        chunk_size = int(payload.get("chunk_size"))
+        total_size = int(payload.get("size"))
+    except (TypeError, ValueError):
+        return None
+    if offset != expected_offset:
+        return None
+    if chunk_size != len(data):
+        return None
+    if len(data) > expected_limit:
+        return None
+    if total_size < 0:
+        return None
+    if offset < 0:
+        return None
+    if offset + len(data) > total_size:
+        return None
+    name = str(payload.get("name") or "download").rsplit("/", 1)[-1]
+    mime_type = str(payload.get("mime_type") or "application/octet-stream")
+    return data, total_size, name or "download", mime_type, bool(payload.get("eof"))
+
+
 def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
     """Mount ``/file-api`` when channel has an AgentOSRouterClient backend."""
     from jiuwenswarm.extensions.agentos.agentos_router.router_client import (
         AgentOSFileTransferError,
         AgentOSRouterClient,
-        build_auth_headers_from_mapping,
     )
     from jiuwenswarm.extensions.agentos.auth.common import headers_to_dict
 
@@ -357,11 +475,27 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
 
     prefix = FILE_API_PREFIX
 
+    @app.exception_handler(FileApiUserMismatch)
+    async def _file_api_user_mismatch(
+        _request: Request, _exc: FileApiUserMismatch
+    ) -> JSONResponse:
+        return _user_mismatch_response()
+
     @app.middleware("http")
     async def _file_api_access_log(request: Request, call_next):  # type: ignore[no-untyped-def]
         if not str(request.url.path or "").startswith(prefix):
             return await call_next(request)
         started = time.monotonic()
+        denied = await _authenticate_file_api(request)
+        if denied is not None:
+            status = int(getattr(denied, "status_code", 401) or 401)
+            _log_file_api_done(
+                request,
+                status=status,
+                latency_ms=max(0, int((time.monotonic() - started) * 1000)),
+                error="user_mismatch" if status == 403 else "unauthorized",
+            )
+            return denied
         try:
             response = await call_next(request)
         except Exception as exc:
@@ -378,6 +512,37 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
             latency_ms=max(0, int((time.monotonic() - started) * 1000)),
         )
         return response
+
+    async def _authenticate_file_api(request: Request) -> JSONResponse | None:
+        path = str(request.url.path or "")
+        full_path = f"{path}?{request.url.query}" if request.url.query else path
+        result = await client.authenticate_http(
+            path=full_path,
+            headers=headers_to_dict(request.headers),
+            remote=_request_remote(request),
+            channel="file-api",
+            allow_query_token=path != f"{prefix}/download",
+        )
+        if not result.success:
+            error_code = ""
+            if isinstance(result.extensions, dict):
+                error_code = str(result.extensions.get("error_code") or "")
+            return _error_json(
+                error=result.error or "unauthorized",
+                code=error_code or "UNAUTHORIZED",
+                status_code=401,
+            )
+        if client.auth_enabled:
+            iam_uid = str(result.user_id or "").strip()
+            if iam_uid:
+                request.state.agentos_user_id = iam_uid
+            username = ""
+            if isinstance(result.extensions, dict):
+                username = str(result.extensions.get("username") or "").strip()
+            if username:
+                request.state.agentos_username = username
+            return _user_id_mismatch_against_token(request)
+        return None
 
     async def _list_container_dir(
         request: Request,
@@ -405,7 +570,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 max_depth=int(params.max_depth),
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -444,7 +608,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         path = params.path.strip()
         agent_type = params.agent_type if isinstance(params.agent_type, str) else None
 
-        auth = _auth_headers_from_request(request)
         want_json = str(params.response_format or "").strip().lower() == "json"
 
         async def _one_chunk(off: int, lim: int):
@@ -455,7 +618,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 limit=lim,
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=auth,
             )
 
         try:
@@ -521,17 +683,140 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         hence it must translate that token to the container-file router call.
         """
         token = str(request.query_params.get("token") or "").strip()
-        location = _decode_download_token_location(token)
-        if location is None:
+        token_payload = _decode_download_token_payload(token)
+        if token_payload is None:
             return _error_json(error="invalid_download_token", code="BAD_REQUEST", status_code=400)
         uid = _resolve_user_id(request, request.query_params.get("user_id"))
         if not uid:
             return _error_json(error="user_id is required", code="BAD_REQUEST", status_code=400)
 
+        if token_payload.get("kind") == _VERIFIED_ASSET_TOKEN_KIND:
+            from jiuwenswarm.common.schema.message import ReqMethod
+            from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+            from jiuwenswarm.server.runtime.gateway_adapter.workspace_file_adapter import (
+                _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
+            )
+
+            session_id_value = token_payload.get("sid")
+            if not isinstance(session_id_value, str):
+                return _error_json(
+                    error="invalid_download_token",
+                    code="BAD_REQUEST",
+                    status_code=400,
+                )
+            agent_client = getattr(channel, "agent_client", None)
+
+            async def _verified_chunk(
+                offset: int,
+                limit: int,
+            ) -> tuple[bytes, int, str, str, bool] | JSONResponse:
+                ok, result = await fetch_agent_unary(
+                    agent_client=agent_client,
+                    req_method=ReqMethod.FILE_DOWNLOAD_VERIFIED_CHUNK,
+                    params={"token": token, "offset": offset, "limit": limit},
+                    session_id=session_id_value,
+                    user_id=uid,
+                    channel_id=channel.channel_id,
+                    label="file.download_verified_chunk",
+                )
+                if not ok:
+                    return _error_json(
+                        error=str(result.get("error") or "verified download failed"),
+                        code=str(result.get("code") or "BAD_REQUEST"),
+                    )
+                decoded = _decode_verified_chunk(
+                    result,
+                    expected_offset=offset,
+                    expected_limit=limit,
+                )
+                if decoded is None:
+                    return _error_json(
+                        error="invalid verified download response",
+                        code="INTERNAL_ERROR",
+                        status_code=502,
+                    )
+                return decoded
+
+            first_result = await _verified_chunk(0, 1)
+            if isinstance(first_result, JSONResponse):
+                return first_result
+            _, total_size, file_name, mime_type, _ = first_result
+            range_header = str(request.headers.get("Range") or "").strip()
+            byte_range = (
+                _parse_single_byte_range(range_header, total_size)
+                if range_header
+                else None
+            )
+            if range_header and byte_range is None:
+                return Response(
+                    status_code=416,
+                    headers={
+                        "Content-Range": f"bytes */{total_size}",
+                        "Content-Length": "0",
+                        "Accept-Ranges": "bytes",
+                        "Cache-Control": "no-store",
+                    },
+                )
+
+            start, end = byte_range or (0, max(total_size - 1, 0))
+            content_length = 0 if total_size == 0 else end - start + 1
+            inline = str(request.query_params.get("inline") or "").strip().lower() in {
+                "1",
+                "true",
+            }
+            disposition = "inline" if inline else "attachment"
+            headers = {
+                "Cache-Control": "no-store",
+                "Accept-Ranges": "bytes",
+                "Content-Length": str(content_length),
+                "Content-Disposition": (
+                    f"{disposition}; filename*=UTF-8''{quote(file_name, safe='')}"
+                ),
+            }
+            status_code = 206 if byte_range is not None else 200
+            if byte_range is not None:
+                headers["Content-Range"] = f"bytes {start}-{end}/{total_size}"
+            if request.method == "HEAD" or total_size == 0:
+                return Response(
+                    status_code=status_code,
+                    media_type=mime_type,
+                    headers=headers,
+                )
+
+            async def _stream_verified_download():
+                offset = start
+                while offset <= end:
+                    limit = min(
+                        _VERIFIED_DOWNLOAD_CHUNK_MAX_BYTES,
+                        end - offset + 1,
+                    )
+                    result = await _verified_chunk(offset, limit)
+                    if isinstance(result, JSONResponse):
+                        raise RuntimeError("verified download authorization expired")
+                    data, size, name, content_type, _ = result
+                    if size != total_size:
+                        raise RuntimeError("verified download asset changed")
+                    if name != file_name:
+                        raise RuntimeError("verified download asset changed")
+                    if content_type != mime_type:
+                        raise RuntimeError("verified download asset changed")
+                    if not data:
+                        raise RuntimeError("verified download asset changed")
+                    yield data
+                    offset += len(data)
+
+            return StreamingResponse(
+                _stream_verified_download(),
+                status_code=status_code,
+                media_type=mime_type,
+                headers=headers,
+            )
+
+        location = _decode_download_token_location(token)
+        if location is None:
+            return _error_json(error="invalid_download_token", code="BAD_REQUEST", status_code=400)
+
         file_path, session_id = location
-        # Do not use _auth_headers_from_request here: when no Authorization
-        # header is present it would promote the *file* token to Bearer auth.
-        auth = build_auth_headers_from_mapping(headers_to_dict(request.headers))
         try:
             first = await client.download_container_file(
                 user_id=uid,
@@ -539,7 +824,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 offset=0,
                 limit=_STREAM_CHUNK,
                 session_id=session_id,
-                auth_headers=auth,
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -571,7 +855,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     offset=offset,
                     limit=_STREAM_CHUNK,
                     session_id=session_id,
-                    auth_headers=auth,
                 )
                 if chunk.data:
                     yield chunk.data
@@ -594,7 +877,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
         path = params.path.strip()
         agent_type = params.agent_type if isinstance(params.agent_type, str) else None
 
-        auth = _auth_headers_from_request(request)
         try:
             parts: list[bytes] = []
             off = 0
@@ -606,7 +888,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     limit=_STREAM_CHUNK,
                     agent_type=agent_type,
                     session_id=sid,
-                    auth_headers=auth,
                 )
                 parts.append(chunk.data)
                 if chunk.eof:
@@ -668,7 +949,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 status_code=400,
             )
 
-        auth = _auth_headers_from_request(request)
         ok_files: list[dict[str, Any]] = []
         errors: list[dict[str, str]] = []
 
@@ -683,7 +963,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                     content=content,
                     agent_type=form.agent_type if isinstance(form.agent_type, str) else None,
                     session_id=sid,
-                    auth_headers=auth,
                 )
                 out_path = str(result.get("path") or "")
                 mime, _ = mimetypes.guess_type(filename)
@@ -740,7 +1019,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 content=content.encode("utf-8"),
                 agent_type=agent_type if isinstance(agent_type, str) else None,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)
@@ -773,7 +1051,6 @@ def attach_container_file_routes(app: FastAPI, channel: WebChannel) -> None:
                 recursive=bool(params.recursive),
                 agent_type=agent_type,
                 session_id=sid,
-                auth_headers=_auth_headers_from_request(request),
             )
         except AgentOSFileTransferError as exc:
             return _error_json(error=str(exc), code=exc.code)

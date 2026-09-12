@@ -241,7 +241,7 @@ export function ModelProviderSelect({
   };
 
   return (
-    <div className="settings-model-provider-select" ref={rootRef}>
+    <div className="settings-model-provider-select" ref={rootRef} data-testid="settings-model-provider-select">
       <button
         ref={buttonRef}
         id={id}
@@ -253,6 +253,7 @@ export function ModelProviderSelect({
         aria-invalid={invalid || undefined}
         title={selectedApiAddress || undefined}
         disabled={disabled}
+        data-testid="settings-model-provider-select-trigger"
         onClick={() => setOpen((current) => !current)}
         onKeyDown={(event) => {
           if (event.key === 'ArrowDown' || event.key === 'Enter' || event.key === ' ') {
@@ -261,7 +262,7 @@ export function ModelProviderSelect({
           }
         }}
       >
-        <span className="settings-model-provider-select__value">
+        <span className="settings-model-provider-select__value" data-testid="settings-model-provider-select-value">
           {selectedLogo ? <img src={selectedLogo} alt="" aria-hidden /> : null}
           <span>{selectedLabel}</span>
         </span>
@@ -275,6 +276,7 @@ export function ModelProviderSelect({
               className="settings-model-provider-select__menu"
               role="listbox"
               aria-label={t('settingsPanel.models.selectVendor')}
+              data-testid="settings-model-provider-select-menu"
               style={position}
               onKeyDown={handleMenuKeyDown}
             >
@@ -286,18 +288,19 @@ export function ModelProviderSelect({
                   value={query}
                   placeholder={t('settingsPanel.models.searchVendor')}
                   aria-label={t('settingsPanel.models.searchVendor')}
+                  data-testid="settings-model-provider-select-search"
                   onChange={(event) => setQuery(event.target.value)}
                 />
               </div>
               {options.length === 0 ? (
-                <p className="settings-model-provider-select__empty">{t('settingsPanel.models.noVendorResults')}</p>
+                <p className="settings-model-provider-select__empty" data-testid="settings-model-provider-select-empty">{t('settingsPanel.models.noVendorResults')}</p>
               ) : (
                 GROUPS.map((group) => {
                   const groupOptions = options.filter((option) => option.plan === group);
                   if (groupOptions.length === 0) return null;
                   return (
-                    <div className="settings-model-provider-select__group" role="group" key={group}>
-                      <div className="settings-model-provider-select__group-label">
+                    <div className="settings-model-provider-select__group" role="group" key={group} data-testid="settings-model-provider-select-group" data-variant={group}>
+                      <div className="settings-model-provider-select__group-label" data-testid="settings-model-provider-select-group-label" data-variant={group}>
                         {t(`settingsPanel.models.vendorGroups.${group}`)}
                       </div>
                       {groupOptions.map((option) => {
@@ -326,6 +329,8 @@ export function ModelProviderSelect({
                             data-active={activeIndex === index || undefined}
                             title={apiAddress || undefined}
                             key={option.value}
+                            data-testid="settings-model-provider-select-option"
+                            data-variant={option.value}
                             onMouseEnter={() => setActiveIndex(index)}
                             onMouseDown={(event) => event.preventDefault()}
                             onClick={() => selectOption(option)}

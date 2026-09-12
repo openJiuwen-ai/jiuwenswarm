@@ -1083,6 +1083,8 @@ function parseHistoryTimelineEntry(
     const agentTemplateName = isProactiveRecommendation
       ? undefined
       : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
+    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
+    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -1098,12 +1100,21 @@ function parseHistoryTimelineEntry(
         role: 'assistant',
         content,
         timestamp: at,
+        ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
+          ? { presentation: 'tool_result' as const }
+          : {}),
+        // Full-duplex chat.final records are spoken replies, including earlier acknowledgements.
+        // Infer from the persisted channel so existing conversations also retain their replies.
+        ...(record.channel_id === 'video_duplex' || payload.channel_id === 'video_duplex'
+          ? { keepExpanded: true }
+          : {}),
         ...(completedAt ? { completedAt } : {}),
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
           : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
+        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
         ...((extractAutomation(payload) ?? extractAutomation(record))

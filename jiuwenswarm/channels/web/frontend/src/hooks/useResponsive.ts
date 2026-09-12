@@ -188,5 +188,3 @@ export function useWelcomeBubblePosition({ panelRef, bubbleRef, active }: Welcom
     };
   }, [panelRef, bubbleRef, active]);
 }
-
-

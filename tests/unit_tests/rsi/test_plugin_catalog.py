@@ -13,17 +13,17 @@ from jiuwenswarm.agents.harness.common.rsi.harness_activation import (
 )
 from jiuwenswarm.agents.harness.common.rsi.plugin_catalog import register_harness_plugin
 from jiuwenswarm.server.runtime import extension_package_manager as catalog
-from tests.unit_tests.rsi.test_plugin_roundtrip import _PRESETS, _agent
+from tests.unit_tests.rsi.test_plugin_roundtrip import _agent
 
 pytestmark = pytest.mark.usefixtures("rsi_catalog_workspace")
 
-def _package(tmp_path, *, legacy=False):
+def _package(tmp_path, rsi_harness_packages, *, legacy=False):
     source = tmp_path / "published"
-    shutil.copytree(_PRESETS / "coding-guard", source)
+    shutil.copytree(rsi_harness_packages / "coding-guard", source)
     manifest = source / "manifest.json"
     payload = json.loads(manifest.read_text(encoding="utf-8"))
     skill = source / "skills" / "verification"
-    skill.mkdir(parents=True)
+    skill.mkdir(parents=True, exist_ok=True)
     (skill / "SKILL.md").write_text(
         "---\nname: verification\ndescription: Verify changes before delivery.\n---\nRun relevant checks.\n",
         encoding="utf-8",
@@ -47,8 +47,8 @@ def _package(tmp_path, *, legacy=False):
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize("legacy", [False, True])
-async def test_catalog_copy_preserves_all_four_capabilities_and_survives_source_removal(tmp_path, legacy):
-    source = _package(tmp_path, legacy=legacy)
+async def test_catalog_copy_preserves_all_four_capabilities_and_survives_source_removal(tmp_path, legacy, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages, legacy=legacy)
     original_hash = hash_harness_package(source)
     package_id = f"rsi-harness-{original_hash[:16]}"
     register_harness_plugin(source, package_id)
@@ -74,8 +74,8 @@ async def test_catalog_copy_preserves_all_four_capabilities_and_survives_source_
         await agent.unload_extension(record)
 
 
-def test_catalog_registration_does_not_overwrite_edited_version(tmp_path):
-    source = _package(tmp_path)
+def test_catalog_registration_does_not_overwrite_edited_version(tmp_path, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages)
     package_id = "rsi-harness-aabbcc"
     register_harness_plugin(source, package_id)
     installed = catalog.resolve_plugin_dir(package_id)
@@ -87,8 +87,8 @@ def test_catalog_registration_does_not_overwrite_edited_version(tmp_path):
     assert catalog.is_plugin_allowed(package_id)
 
 
-def test_versioned_registration_preserves_original_plugin_and_other_versions(tmp_path):
-    source = _package(tmp_path)
+def test_versioned_registration_preserves_original_plugin_and_other_versions(tmp_path, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages)
     catalog.import_plugin_package({"path": str(source)})
     catalog.install_plugin_package({"id": "coding-guard"})
     original = hash_harness_package(catalog.resolve_plugin_dir("coding-guard"))
@@ -100,8 +100,8 @@ def test_versioned_registration_preserves_original_plugin_and_other_versions(tmp
     assert catalog.show_plugin_package("rsi-harness-second") is None
 
 
-def test_registration_undo_preserves_preexisting_import(tmp_path):
-    source = _package(tmp_path)
+def test_registration_undo_preserves_preexisting_import(tmp_path, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages)
     package_id = "rsi-harness-aabbcc"
     register_harness_plugin(source, package_id)
     catalog.upsert_plugin_marketplace_entry(package_id, installed=False, source="local")
@@ -112,8 +112,8 @@ def test_registration_undo_preserves_preexisting_import(tmp_path):
     assert catalog.resolve_plugin_dir(package_id).is_dir()
 
 
-def test_install_failure_removes_only_new_catalog_copy(tmp_path, monkeypatch):
-    source = _package(tmp_path)
+def test_install_failure_removes_only_new_catalog_copy(tmp_path, monkeypatch, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages)
     register_harness_plugin(source, "rsi-harness-previous")
     def fail_install(params):
         raise OSError("registry unavailable")
@@ -124,8 +124,8 @@ def test_install_failure_removes_only_new_catalog_copy(tmp_path, monkeypatch):
     assert catalog.is_plugin_allowed("rsi-harness-previous")
 
 
-def test_import_failure_does_not_leave_an_unregistered_directory(tmp_path, monkeypatch, rsi_catalog_workspace):
-    source = _package(tmp_path)
+def test_import_failure_does_not_leave_an_unregistered_directory(tmp_path, monkeypatch, rsi_catalog_workspace, rsi_harness_packages):
+    source = _package(tmp_path, rsi_harness_packages)
     def fail_registry(*args, **kwargs):
         raise OSError("registry write failed")
     monkeypatch.setattr(catalog, "upsert_plugin_marketplace_entry", fail_registry)

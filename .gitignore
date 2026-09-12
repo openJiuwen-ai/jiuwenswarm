@@ -97,8 +97,6 @@ reasonix.toml
 
 # Build-time Node runtime cache used by packaging scripts.
 vendor/node/
-# oh-my-codex runtime artifacts (never tracked)
-.omx/
 /AGENTS.local.md
 report/index.html
 /tmp/

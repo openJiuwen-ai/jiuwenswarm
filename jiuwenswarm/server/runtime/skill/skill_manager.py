@@ -2405,7 +2405,8 @@ class SkillManager:
             source: teamskillshub | clawhub | skillnet；缺省按 teamskillshub
             identifier: hub asset_id / clawhub slug / skillnet url
             force: bool
-            owner_handle / display_name: clawhub 可选
+            owner_handle: clawhub 可选
+            display_name: teamskillshub / clawhub 可选（市场展示名，写入 local_skills）
             url: skillnet 可选；缺省用 identifier
         """
         params = params or {}
@@ -2420,22 +2421,18 @@ class SkillManager:
 
         force = bool(params.get("force", False))
         if source in {"teamskillshub", "swarmskillshub"}:
-            return await self.handle_skills_team_skills_hub_install(
-                {
-                    "asset_id": identifier,
-                    "force": force,
-                    **(
-                        {"version": params["version"]}
-                        if params.get("version") is not None
-                        else {}
-                    ),
-                    **(
-                        {"market_url": params["market_url"]}
-                        if params.get("market_url") is not None
-                        else {}
-                    ),
-                }
-            )
+            hub_payload: dict[str, Any] = {
+                "asset_id": identifier,
+                "force": force,
+            }
+            if params.get("version") is not None:
+                hub_payload["version"] = params["version"]
+            if params.get("market_url") is not None:
+                hub_payload["market_url"] = params["market_url"]
+            display_name = str(params.get("display_name") or "").strip()
+            if display_name:
+                hub_payload["display_name"] = display_name
+            return await self.handle_skills_team_skills_hub_install(hub_payload)
         if source == "clawhub":
             payload: dict[str, Any] = {
                 "slug": identifier,
@@ -3310,9 +3307,9 @@ class SkillManager:
         缺凭证时仍 POST、不带鉴权头：SkillHub 按空 user_id 走 Redis 下载量 TopK。
         无效 Bearer 同样由 SkillHub 视为匿名冷启动，不再 401。
 
-        Hub 推荐本身不带 plugin_type；若传入 plugin_type/skill_type，则在 enrich
-        后按 plugins 元数据过滤（对齐 SkillHub 市场 list + order_by=recommend）。
-        enrich 时 plugins 查不到的项（下架/不可见）会丢掉；HTTP 失败则保留原项。
+        SkillHub 已完成可见性过滤与卡片 hydrate；转发层只透传鉴权/请求字段并映射展示字段。
+        plugin_type / skill_type 规范化后写入 POST body（空则不传）。
+        enrich 已废弃：保留入参以免旧调用方报错，但不再 GET /plugins。
         """
         top_k_raw = params.get("top_k", params.get("limit", 10))
         try:
@@ -3330,20 +3327,8 @@ class SkillManager:
         timestamp = params.get("timestamp")
         plugin_type_raw = str(params.get("plugin_type") or params.get("skill_type") or "").strip()
         plugin_types = self._parse_hub_plugin_types(plugin_type_raw)
-        enrich_raw = params.get("enrich", True)
-        if isinstance(enrich_raw, bool):
-            enrich = enrich_raw
-        else:
-            enrich = str(enrich_raw).strip().lower() not in {"0", "false", "no", "off"}
-        # 按类型过滤依赖 plugins 元数据，必须 enrich。
-        if plugin_types:
-            enrich = True
+        plugin_type = ",".join(plugin_types)
         base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
-
-        # 有类型过滤时多拉一些再筛，避免 top_k 滤完不够。
-        fetch_k = top_k
-        if plugin_types:
-            fetch_k = min(500, max(top_k * 5, top_k))
 
         auth = self._resolve_teamskills_hub_auth_with_env(params)
         headers: dict[str, str] = {"Content-Type": "application/json"}
@@ -3357,9 +3342,11 @@ class SkillManager:
         body: dict[str, Any] = {
             "user_id": user_id,
             "request_id": request_id,
-            "top_k": fetch_k,
+            "top_k": top_k,
             "category_id": category_id,
         }
+        if plugin_type:
+            body["plugin_type"] = plugin_type
         if timestamp is not None:
             body["timestamp"] = timestamp
 
@@ -3376,40 +3363,9 @@ class SkillManager:
             for item in raw_items:
                 if not isinstance(item, dict):
                     continue
-                asset_id = str(item.get("asset_id", "")).strip()
-                if not asset_id:
-                    continue
-                try:
-                    score = float(item.get("score", 0.0))
-                except Exception:
-                    score = 0.0
-                skills.append(
-                    {
-                        "asset_id": asset_id,
-                        "score": score,
-                        "name": asset_id,
-                        "display_name": asset_id,
-                        "summary": "",
-                        "version": "",
-                        "updated_at": 0,
-                        "plugin_type": "",
-                        "tags": [],
-                    }
-                )
-
-            # Hub cold-start may ignore top_k and return the full snapshot; cap before enrich
-            # so we do not N+1 storm /plugins for hundreds of ids.
-            skills = skills[:fetch_k]
-
-            if enrich and skills:
-                skills = await self._enrich_swarmskills_recommend_skills(skills, base_url=base_url)
-                if plugin_types:
-                    allowed = set(plugin_types)
-                    skills = [
-                        s
-                        for s in skills
-                        if self._normalize_hub_plugin_type(str(s.get("plugin_type") or "")) in allowed
-                    ]
+                mapped = self._map_swarmskills_recommend_item(item)
+                if mapped is not None:
+                    skills.append(mapped)
             skills = skills[:top_k]
 
             hub_user_id = "" if not isinstance(data, dict) else str(data.get("user_id") or "")
@@ -3419,7 +3375,7 @@ class SkillManager:
                 "user_id": hub_user_id,
                 "source": str((data or {}).get("source") or ""),
                 "category_id": str((data or {}).get("category_id") or category_id),
-                "plugin_type": ",".join(plugin_types) if plugin_types else "",
+                "plugin_type": plugin_type,
                 "count": len(skills),
                 "skills": skills,
                 "items": skills,
@@ -3441,6 +3397,8 @@ class SkillManager:
         force = bool(params.get("force", False))
         version = params.get("version")
         version_str = str(version).strip() if version is not None else ""
+        # 市场展示名（可选）；与 ClawHub 一致，仅新安装时写入 local_skills
+        requested_display_name = str(params.get("display_name") or "").strip()
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
         if existing is not None:
@@ -3552,11 +3510,14 @@ class SkillManager:
                     product_version=product_version,
                 )
 
+                resolved_display_name = requested_display_name or skill_name
+
                 if use_custom_output:
                     return {
                         "success": True,
                         "skill": {
                             "name": skill_name,
+                            "display_name": resolved_display_name,
                             "source": "teamskillshub",
                             "asset_id": asset_id,
                             "path": str(dest),
@@ -3578,6 +3539,7 @@ class SkillManager:
                 self._add_local_skill(
                     {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "origin": f"teamskillshub:{asset_id}",
                         "source": "teamskillshub",
                         "installed_at": installed_at,
@@ -3586,6 +3548,7 @@ class SkillManager:
                 self._add_installed_plugin(
                     {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "marketplace": "teamskillshub",
                         "commit": "",
                         "source": "teamskillshub",
@@ -3597,6 +3560,7 @@ class SkillManager:
                     "success": True,
                     "skill": {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "source": "teamskillshub",
                         "asset_id": asset_id,
                         "path": str(dest),
@@ -7085,52 +7049,54 @@ class SkillManager:
                 out.append(normalized)
         return out
 
-    async def _enrich_swarmskills_recommend_skills(
-        self,
-        skills: list[dict[str, Any]],
-        *,
-        base_url: str,
-    ) -> list[dict[str, Any]]:
-        """用 /api/v1/plugins?asset_id= 补齐推荐结果的展示字段。
+    @classmethod
+    def _map_swarmskills_recommend_item(cls, item: dict[str, Any]) -> dict[str, Any] | None:
+        """Map SkillHub RecommendItemOut (PluginListItem + score) to the RPC card subset."""
+        asset_id = str(item.get("asset_id") or "").strip()
+        if not asset_id:
+            return None
+        name = str(item.get("name") or "").strip() or asset_id
+        display_name = str(item.get("display_name") or "").strip() or name
+        short_desc = str(item.get("short_desc") or "").strip()
+        latest_version = str(item.get("latest_version") or "").strip()
+        publisher_name = str(item.get("publisher_name") or "").strip()
+        plugin_type = cls._normalize_hub_plugin_type(str(item.get("plugin_type") or ""))
+        try:
+            score = float(item.get("score", 0.0))
+        except Exception:
+            score = 0.0
+        try:
+            updated_at = int(item.get("update_time") or 0)
+        except Exception:
+            updated_at = 0
 
-        plugins 列表默认排除 OFFLINE：查不到则视为下架/不可见并丢掉。
-        HTTP 失败时保留原项，避免瞬时故障把整页推荐滤空。
-        """
-
-        async def _one(item: dict[str, Any]) -> dict[str, Any] | None:
-            asset_id = str(item.get("asset_id") or "").strip()
-            if not asset_id:
-                return None
+        def _count(key: str) -> int:
             try:
-                data = await self._team_skills_hub_http_get_data(
-                    "/api/v1/plugins",
-                    params={"asset_id": asset_id, "page": 1, "page_size": 1},
-                    timeout=_TEAM_SKILLS_HUB_MARKET_TIMEOUT,
-                    base_url=base_url,
-                )
-                rows = data.get("items", []) if isinstance(data, dict) else []
-                row = rows[0] if rows and isinstance(rows[0], dict) else None
-                if not row:
-                    logger.info("推荐结果不可见，已过滤 asset_id=%s", asset_id)
-                    return None
-                name = str(row.get("name", "")).strip() or asset_id
-                plugin_type = self._normalize_hub_plugin_type(str(row.get("plugin_type") or ""))
-                return {
-                    **item,
-                    "name": name,
-                    "display_name": str(row.get("display_name", "")).strip() or name,
-                    "summary": str(row.get("short_desc", "")).strip(),
-                    "version": str(row.get("latest_version", "")).strip(),
-                    "updated_at": int(row.get("update_time") or 0),
-                    "plugin_type": plugin_type,
-                    "tags": self._coerce_str_list(row.get("tags")),
-                }
-            except Exception as exc:
-                logger.warning("推荐结果补齐失败 asset_id=%s: %s", asset_id, exc)
-                return item
+                return int(item.get(key) or 0)
+            except Exception:
+                return 0
 
-        enriched = await asyncio.gather(*[_one(s) for s in skills])
-        return [item for item in enriched if item is not None]
+        return {
+            "asset_id": asset_id,
+            "name": name,
+            "display_name": display_name,
+            "summary": short_desc,
+            "short_desc": short_desc,
+            "version": latest_version,
+            "latest_version": latest_version,
+            "updated_at": updated_at,
+            "plugin_type": plugin_type,
+            "tags": cls._coerce_str_list(item.get("tags")),
+            "score": score,
+            "publisher_name": publisher_name,
+            "author": publisher_name,
+            "install_count": _count("install_count"),
+            "like_count": _count("like_count"),
+            "view_count": _count("view_count"),
+            "icon_uri": str(item.get("icon_uri") or "").strip(),
+            "category_id": str(item.get("category_id") or "").strip(),
+            "category_name": str(item.get("category_name") or "").strip(),
+        }
 
     @staticmethod
     def _safe_extract_zip_members_into(zf: zipfile.ZipFile, dest_root: Path) -> None:

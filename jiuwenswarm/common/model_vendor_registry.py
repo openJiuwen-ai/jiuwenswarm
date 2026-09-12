@@ -18,7 +18,7 @@ one-(vendor,plan) ⇒ one-base_url mapping.
 ``client_provider`` values align strictly with the ``ProviderType`` enum in
 ``openjiuwen.core.foundation.llm.schema.config`` (OpenAI / DashScope /
 DeepSeek / OpenRouter / Anthropic / OpenAIAccount / SiliconFlow /
-InferenceAffinity / AscendAffinity / IntelliRouter). Chinese vendors without a
+AscendAffinity / IntelliRouter). Chinese vendors without a
 native enum entry borrow ``OpenAI`` (their endpoints are OpenAI-compatible) and
 are distinguished by ``api_base``; ``icon_key`` matches
 ``ModelProviderIcon.PROVIDER_SPECS`` keys for correct frontend icon display.

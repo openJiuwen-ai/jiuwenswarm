@@ -184,7 +184,7 @@ async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(mo
 
 
 @pytest.mark.asyncio
-async def test_vendors_fetch_models_falls_back_when_no_alibaba_models_match(monkeypatch):
+async def test_vendors_fetch_models_falls_back_when_all_alibaba_models_are_namespaced(monkeypatch):
     channel = FakeWebChannel()
     _register_web_handlers(WebHandlersBindParams(channel=channel))
     monkeypatch.setattr(
@@ -793,7 +793,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     )
 
     assert saved_configs == [
-        {"chrome_path": "C:\\Chrome\\chrome.exe", "browser_type": "auto", "headless": False}
+        {"chrome_path": "C:\\Chrome\\chrome.exe", "headless": False}
     ]
     assert lifecycle_calls == [
         ("reload", agent_client),
@@ -811,7 +811,6 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
         "ok": True,
         "payload": {
             "chrome_path": "C:\\Chrome\\chrome.exe",
-            "browser_type": "auto",
             "headless": False,
         },
         "error": None,
@@ -1352,6 +1351,35 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
+@pytest.mark.asyncio
+async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"experimental": {"task_full_duplex_enabled": False}}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_task_full_duplex_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-duplex-get", {}, "session")
+    assert channel.responses[-1]["payload"]["task_full_duplex_enabled"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-duplex-set",
+        {"task_full_duplex_enabled": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
+    assert change_set.reload_scopes == {"web_ui"}
+
+
 def test_media_capability_config_uses_multimodal_hot_reload_scope():
     for env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS:
         change_set = app_web_handlers._ConfigChangeSet({env_key: "true"}, [])
@@ -1367,6 +1395,44 @@ def test_media_capability_provider_identity_has_exact_env_contract():
         assert f"{prefix}_ENDPOINT_PROFILE" in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
         assert f"{prefix}_VENDOR_KEY" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
         assert f"{prefix}_PLAN" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+
+
+def test_task_chat_uses_general_asr_config_independent_from_joyai():
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
+    assert not any(value.startswith("VOICE_ASR_") for value in app_web_handlers._ASR_ENV_KEYS)
+    assert not any(value.startswith("JOYAI_") for value in app_web_handlers._ASR_ENV_KEYS)
+    for env_key in app_web_handlers._ASR_ENV_KEYS:
+        change_set = app_web_handlers._ConfigChangeSet({env_key: "value"}, [])
+        assert change_set.reload_scopes == {"web_ui"}
+
+
+@pytest.mark.asyncio
+async def test_task_asr_rpc_returns_transcript(monkeypatch):
+    channel = FakeWebChannel()
+
+    async def fake_transcribe(params):
+        assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        return "transcribed speech"
+
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["task.asr.transcribe"](
+        object(),
+        "req-task-asr",
+        {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"},
+        "session",
+    )
+
+    assert channel.responses[-1] == {
+        "id": "req-task-asr",
+        "ok": True,
+        "payload": {"text": "transcribed speech"},
+        "error": None,
+        "code": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1962,6 +2028,10 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
     )
     monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_external_cli_agents_in_config",
         lambda agents, publish_url=None: updates.append((agents, publish_url)),
     )
@@ -2191,6 +2261,14 @@ def test_optional_dependency_install_times_out_after_one_hour(
             10.0 + app_web_handlers._OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
         ],
     )
+    calling_thread = threading.current_thread()
+    real_monotonic = time.monotonic
+
+    def fake_monotonic() -> float:
+        if threading.current_thread() is calling_thread:
+            return next(monotonic_values)
+        return real_monotonic()
+
     monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
     monkeypatch.setattr(
         app_web_handlers,
@@ -2206,7 +2284,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch.setattr(
         app_web_handlers.time,
         "monotonic",
-        lambda: next(monotonic_values),
+        fake_monotonic,
     )
 
     with pytest.raises(
@@ -2720,6 +2798,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.fetch.delete_service",
         "personal_context.fetch.patch_service",
         "personal_context.fetch.start_service",
+        "personal_context.fetch.stop_run",
         "personal_context.fetch.stop_service",
         "personal_context.fetch.run_all",
         "personal_context.fetch.run_one",
@@ -2745,7 +2824,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
 
     assert forwarded == methods
     assert no_local == methods
-    assert len(methods) == 24
+    assert len(methods) == 25
 
 
 # =====================================================================

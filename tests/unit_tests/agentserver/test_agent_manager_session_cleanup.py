@@ -4,7 +4,7 @@ import asyncio
 
 import pytest
 
-from jiuwenswarm.server.runtime.agent_manager import AgentManager
+from jiuwenswarm.server.runtime.agent_manager import AgentManager, _make_agent_cache_key
 
 
 class _SessionRuntimeAgent:
@@ -123,7 +123,7 @@ async def test_concurrent_get_agent_creates_one_cached_root() -> None:
 async def test_same_key_creation_waits_for_old_root_cleanup() -> None:
     manager = _SlowCreateAgentManager()
     old_agent = _BlockingRootCleanupAgent()
-    cache_key = "code:normal:/tmp/shared-project"
+    cache_key = _make_agent_cache_key("code", "normal", "/tmp/shared-project")
     manager.agents["tui"] = {cache_key: old_agent}
 
     cleanup_task = asyncio.create_task(
@@ -306,3 +306,48 @@ async def test_cleanup_session_runtime_rejects_retained_session_state() -> None:
             channel_id="tui",
             session_id="tui_busy_session",
         )
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_uses_existing_agent_adapter() -> None:
+    calls: list[tuple[str, str]] = []
+
+    class Adapter:
+        async def release_subagent_runtime_for_session(
+            self,
+            session_id: str,
+            *,
+            reason: str,
+        ) -> None:
+            calls.append((session_id, reason))
+
+        async def apply_sandbox_runtime_patch(self) -> None:
+            return None
+
+    class Agent:
+        def __init__(self) -> None:
+            self._adapter = Adapter()
+
+    manager = AgentManager()
+    manager.agents["web"] = {"agent::": Agent()}
+
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="delete-session",
+        reason="session_deleted",
+    )
+
+    assert released is True
+    assert calls == [("delete-session", "session_deleted")]
+
+
+@pytest.mark.asyncio
+async def test_release_subagent_runtime_is_noop_without_existing_adapter() -> None:
+    manager = AgentManager()
+
+    released = await manager.release_subagent_runtime_for_session(
+        channel_id="web",
+        session_id="missing-session",
+    )
+
+    assert released is False

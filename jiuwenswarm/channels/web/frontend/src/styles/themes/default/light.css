@@ -20,6 +20,8 @@
   --color-surface-panel-strong-rgb: 255, 255, 255;
   --color-surface-panel-hover: #ffffff;
   --color-surface-panel-hover-rgb: 255, 255, 255;
+  --color-skill-card-action-surface: #f4f4f5;
+  --color-skill-card-action-hover-surface: #e4e4e7;
   --color-surface-chrome: rgba(255, 255, 255, 0.95);
   --color-surface-shell: #f3f3f3;
   --color-surface-transparent: transparent;
@@ -36,6 +38,7 @@
   --color-text-weak-rgb: 89, 89, 89;
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
+  --color-text-meta-rgb: 128, 128, 128;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
@@ -46,6 +49,7 @@
   /* Borders */
   --color-border-default: #e4e4e7;
   --color-border-default-rgb: 228, 228, 231;
+  --color-border-card: #e6e6e6;
   --color-border-strong: #d4d4d8;
   --color-border-hover: #a1a1aa;
   --color-border-accent: rgba(37, 99, 235, 0.5);
@@ -256,7 +260,7 @@
   --color-task-card-surface: #fafafa;
   --color-task-progress: #67c57e;
   --color-task-progress-track: #e0e0e0;
-  --color-task-column-label: #595959;
+  --color-task-column-label: #8c8c8c;
   --color-team-overflow-surface: #edf1ff;
   --color-member-card-badge-surface: #e1e8fd;
   --color-team-detail-surface: #f8fafc;

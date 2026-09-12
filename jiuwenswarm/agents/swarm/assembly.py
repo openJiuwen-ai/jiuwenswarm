@@ -52,6 +52,7 @@ from jiuwenswarm.common.mcp_config import (
     build_enabled_mcp_server_configs,
     preflight_mcp_server_reachable,
 )
+from jiuwenswarm.common.mode_matrix import is_code_profile_mode, is_team_mode
 from jiuwenswarm.common.utils import get_agent_skills_dir
 
 logger = logging.getLogger(__name__)
@@ -353,7 +354,10 @@ def enrich_team_spec_for_swarm(
         mode=mode,
         project_dir=project_dir,
         trusted_dirs=trusted_dirs,
-        disable_teammate_worktree=str(channel_id or "").strip().lower() == "web",
+        disable_teammate_worktree=(
+            str(channel_id or "").strip().lower() == "web"
+            and not (is_team_mode(mode) and is_code_profile_mode(mode))
+        ),
         team_id=spec.team_name,
         team_ws_root=team_ws_root,
         task_workspace_root=task_workspace_root,

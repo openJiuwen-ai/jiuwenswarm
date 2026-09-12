@@ -15,6 +15,9 @@ class ExtensionMetadata:
     min_jiuwenswarm_version: str  # 最小兼容版本
     dependencies: dict[str, str]  # 扩展依赖 {"extension_id": ">=1.0.0"}
     config_schema: dict | None   # 配置模式 (JSON Schema)
+    package_type: str = "extension"
+    permissions: tuple[str, ...] = ()
+    frontend: tuple[dict[str, Any], ...] = ()
 
 
 @dataclass

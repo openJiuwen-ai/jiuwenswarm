@@ -22,10 +22,10 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
     'const fetchSkillVersions = useCallback',
   );
 
-  assert.match(marketplaceSource, /["']skills\.swarmskillshub\.recommend["']/);
+  assert.match(marketplaceSource, /['"]skills\.swarmskillshub\.recommend['"]/);
   assert.match(marketplaceSource, /top_k: 50/);
   assert.match(marketplaceSource, /category_id: category/);
-  assert.match(installationSource, /["']skills\.teamskillshub\.install["']/);
+  assert.match(installationSource, /['"]skills\.teamskillshub\.install['"]/);
   assert.doesNotMatch(marketplaceSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   assert.doesNotMatch(installationSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
 });

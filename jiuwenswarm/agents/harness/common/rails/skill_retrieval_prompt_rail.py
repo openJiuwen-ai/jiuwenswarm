@@ -7,6 +7,7 @@ from typing import Any
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
+from openjiuwen.harness.prompts.prompt_attachment_manager import PromptAttachmentKind
 from openjiuwen.harness.prompts.sections import SectionName
 from openjiuwen.harness.rails import SkillUseRail
 from openjiuwen.harness.rails.base import DeepAgentRail
@@ -29,6 +30,7 @@ from jiuwenswarm.agents.harness.common.tools.skill_retrieval_toolkits import (
 
 _LEGACY_LIST_SKILL_TOOL_NAMES = frozenset({"list_skill", "list_skills"})
 _SKILL_INDEX_TOOL_NAME = "skill_index"
+_RUNTIME_SKILL_ATTACHMENT_SECTION = "skills.runtime_changes"
 _SYMPHONY_RUNTIME_TOOL_NAMES = frozenset(
     {
         "skill_index",
@@ -52,6 +54,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
     priority = SkillUseRail.priority - 1
     SECTION_NAME = "skill_retrieval"
     CANDIDATE_SECTION_NAME = "skill_retrieval.session_candidates"
+    ATTACHMENT_SOURCE = "jiuwenswarm.skill_retrieval_prompt_rail"
     # Keep the inventory-dependent appendix after the reusable system/tool
     # prefix. Its content is frozen once in ``init``.
     CANDIDATE_SECTION_PRIORITY = 10_000
@@ -142,22 +145,18 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self._frozen_prompt_snapshot = None
         self._agent = None
 
-    async def before_invoke(self, ctx: AgentCallbackContext) -> None:
-        """Hide the legacy entry before progressive tools freeze their catalog."""
-        get_ability = getattr(getattr(self._agent, "ability_manager", None), "get", None)
-        if (
-            self._session_enabled
-            and callable(get_ability)
-            and get_ability(_SKILL_INDEX_TOOL_NAME) is not None
-        ):
-            self._hide_legacy_list_skill()
-
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        """Synchronize the prompt once the model tool list has been populated."""
+        """Synchronize only after the model tool list has been populated.
+
+        ``before_invoke`` intentionally stays inherited as a no-op: its inputs
+        do not yet contain tools, so treating that temporary absence as a
+        disabled index would append remove/add deltas on every user turn.
+        """
+
         await self._sync_prompt_attachment(ctx)
 
     async def _sync_prompt_attachment(self, ctx: AgentCallbackContext) -> None:
-        """Keep the frozen inventory at the end of the system prompt."""
+        """Keep discovery guidance out of the cache-stable system prefix."""
         agent = getattr(ctx, "agent", None)
         if agent is not None:
             self._agent = agent
@@ -183,6 +182,7 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         self._hide_legacy_list_skill()
         self._filter_legacy_list_skill_from_model_inputs(ctx)
         self._hide_native_skills_section()
+        await self._clear_runtime_skill_attachment(ctx)
         try:
             snapshot = self._prompt_snapshot()
         except Exception:
@@ -192,9 +192,29 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             )
             snapshot = self._empty_prompt_snapshot()
         candidate_appendix = self._build_candidate_appendix(language, snapshot)
-        await self._clear_prompt_attachments(ctx)
+        manager = self.attachment_manager
+        if manager is None:
+            self._add_prompt_builder_section(language, candidate_appendix)
+            return
+
         self.system_prompt_builder.remove_section(self.SECTION_NAME)
-        self._add_prompt_builder_section(language, candidate_appendix)
+        self.system_prompt_builder.remove_section(self.CANDIDATE_SECTION_NAME)
+        writer = manager.bind_context(ctx)
+        try:
+            await writer.add_section(
+                section=self.CANDIDATE_SECTION_NAME,
+                content=candidate_appendix,
+                kind=PromptAttachmentKind.SKILL,
+                source=self.ATTACHMENT_SOURCE,
+                priority=self.CANDIDATE_SECTION_PRIORITY,
+                content_kind="text/markdown",
+            )
+        except ValueError as exc:
+            logger.warning(
+                "[SkillRetrievalPromptRail] attachment write failed: %s", exc
+            )
+            await self._clear_prompt_attachments(ctx)
+            self._add_prompt_builder_section(language, candidate_appendix)
 
     def _add_prompt_builder_section(
         self,
@@ -293,6 +313,17 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             return
         if isinstance(result, str):
             inputs.tool_result = f"{result}\n\n{reminder}" if result else reminder
+
+    async def _clear_runtime_skill_attachment(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        manager = self.attachment_manager
+        if manager is None:
+            return
+        writer = manager.bind_context(ctx)
+        if writer.session_id:
+            await writer.clear_section(_RUNTIME_SKILL_ATTACHMENT_SECTION)
 
     def _hide_legacy_list_skill(self) -> None:
         ability_manager = getattr(self._agent, "ability_manager", None)
@@ -421,23 +452,12 @@ class SkillRetrievalPromptRail(DeepAgentRail):
         english = str(language).lower().startswith("en")
         complete = snapshot.all_candidates_included
         lines = ["## Installed Skills" if english else "## 已安装 Skill"]
-        lines.extend([
-            "",
-            (
-                "Each Skill is an installed package with SKILL.md instructions and optional supporting files. "
-                "Browse or search as needed for the task. Use descriptions for initial selection; "
-                "read instructions when details are needed or before execution. Stop discovery when you have enough information."
-            ) if english else (
-                "每个 Skill 是已安装的技能包，包含 SKILL.md 使用说明及可选的辅助文件。"
-                "按任务需要自行导航或搜索，用描述初筛；需要细节或实际执行前再读说明，信息足够即可停止发现。"
-            ),
-        ])
 
         if snapshot.branches:
             lines.extend(
                 [
                     "",
-                    "Categories (virtual groups):" if english else "分类（虚拟目录）：",
+                    "Categories:" if english else "分类：",
                     *_render_prompt_branches(snapshot.branches),
                 ]
             )

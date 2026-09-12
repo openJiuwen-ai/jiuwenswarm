@@ -20,7 +20,7 @@ from jiuwenswarm.agents.harness.team.config_loader import (
 # Load this sibling before TeamManager.  ``from package import name`` tries to
 # resolve ``name`` from this partially initialized package; importlib loads the
 # concrete submodule directly instead.
-import_module(f"{__name__}.kv_cache_hooks")
+import_module(f"{__name__}.kv_cache_team_delete_guard")
 from jiuwenswarm.agents.harness.team.team_manager import (
     cancel_all_team_stream_tasks_across_managers,
     TeamManager,

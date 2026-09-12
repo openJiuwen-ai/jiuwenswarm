@@ -211,13 +211,17 @@ In the **My Skills** list, each entry shows:
 
 In the list, use **View skill experience** to browse evolution entries for that skill, one record at a time.
 
+![Open Skill experience from the Skill list](../assets/images/skill演进_技能经验入口.png)
+
 **Each entry typically includes:**
 - **Type**: the content category, such as usage instructions, examples, or troubleshooting
 - **Improvement target**: the Skill area the experience improves, such as the description, body, or scripts
 - **Created at**: when the experience record was generated
 - **Experience content**: the concrete improvement guidance
 
-> **How to see data:** When a skill already has saved evolution experience, **View skill experience** becomes available in the skill list. If there is no data yet, that skill has no saved evolution records. Records can be generated manually with `/evolve <skill_name> [user_query]`, or automatically in failure/correction scenarios after enabling **Auto-detect evolution signals** under **Self-Evolution Configuration**. See [Configuration](Configuration.md) and [Skill self-evolution](SkillSelfEvolution.md).
+![Inspect and edit Skill experience](../assets/images/skill演进_技能经验.png)
+
+> **How to see data:** When a skill already has saved evolution experience, **View skill experience** becomes available in the skill list. If there is no data yet, that skill has no saved evolution records. After enabling **Skill self-evolution**, use `/evolve <skill_name> [user_intent]` to start a review immediately. The system also judges whether failures, corrections, and other task evidence justify suggesting evolution. Experience is saved only after the review and approval workflow is complete. See [Configuration](Configuration.md) and [Skill self-evolution](SkillSelfEvolution.md).
 
 > **Why it helps:** Skill experience reflects self-evolution and improvements from real use, so you can judge ongoing usefulness and maintainers get actionable input.
 

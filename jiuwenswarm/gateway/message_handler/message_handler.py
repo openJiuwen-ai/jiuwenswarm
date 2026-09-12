@@ -16,6 +16,11 @@ from enum import Enum
 from pathlib import Path
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Dict, Literal
+
+from jiuwenswarm.runtime.host_services import (
+    install_runtime_wake_handler,
+    restore_runtime_wake_handler,
+)
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
@@ -291,6 +296,8 @@ class MessageHandler(ABC):
             return
         self._singleton_initialized = True
         self.agent_client = agent_client
+        self._runtime_wake_handler = None
+        self._previous_runtime_wake_handler = None
         self._user_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._robot_messages: asyncio.Queue["Message"] = asyncio.Queue()
         self._running = False
@@ -1228,6 +1235,13 @@ class MessageHandler(ABC):
             cancel_params["team"] = msg.params["team"]
         if isinstance(msg.params, dict) and msg.params.get("trusted_dirs"):
             cancel_params["trusted_dirs"] = msg.params["trusted_dirs"]
+        # Preserve the same Runtime agent identity used by the original request.
+        # This is required for code/work composition and project-scoped caches.
+        if isinstance(msg.params, dict):
+            for key in ("work_mode", "project_dir"):
+                value = msg.params.get(key)
+                if value is not None and str(value).strip():
+                    cancel_params[key] = value
         cancel_metadata = dict(msg.metadata or {})
         cancel_metadata.pop(E2A_INTERNAL_CANCEL_SOURCE_KEY, None)
         cancel_source_value = (
@@ -2423,6 +2437,12 @@ class MessageHandler(ABC):
         """将消息放入 user_messages 队列（异步）."""
         await self._user_messages.put(msg)
 
+    async def _publish_runtime_wake(self, msg: "Message") -> None:
+        """Accept Runtime wakeups only while the forwarding host is live."""
+        if not self._running:
+            raise RuntimeError("runtime wake host is not forwarding")
+        await self.publish_user_messages(msg)
+
     def publish_user_messages_nowait(self, msg: "Message") -> None:
         """将消息放入 user_messages 队列（同步）."""
         self._user_messages.put_nowait(msg)
@@ -2922,12 +2942,56 @@ class MessageHandler(ABC):
         return merged
 
     @staticmethod
+    def _normalize_agent_error_event(
+        payload: dict[str, Any],
+        *,
+        legacy_failed: bool,
+    ) -> str | None:
+        """Normalize Runtime and legacy Agent errors for Channel delivery."""
+        source_event = payload.get("event_type")
+        runtime_error = source_event in ("runtime.error", "chat.error")
+        legacy_error = (
+            legacy_failed
+            and source_event in (None, "")
+            and "error" in payload
+        )
+        if runtime_error or legacy_error:
+            payload["event_type"] = "chat.error"
+            payload["is_complete"] = True
+            return "chat.error"
+        return source_event if isinstance(source_event, str) else None
+
+    @staticmethod
+    def _uses_legacy_chat_error_protocol(
+        request_method: Any,
+        request_params: dict[str, Any] | None = None,
+    ) -> bool:
+        """Whether a source-less unary failure belongs to the chat event flow."""
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        method = getattr(request_method, "value", request_method)
+        if method in {
+            ReqMethod.CHAT_SEND.value,
+            ReqMethod.CHAT_RESUME.value,
+            ReqMethod.CHAT_ANSWER.value,
+            ReqMethod.CHAT_SWARMFLOW_REPLY.value,
+        }:
+            return True
+        return (
+            method == ReqMethod.CHAT_CANCEL.value
+            and isinstance(request_params, dict)
+            and request_params.get("intent") == "resume"
+        )
+
+    @staticmethod
     def _response_to_message(
         resp: "AgentResponse",
         session_id: str | None,
         *,
         request_metadata: dict[str, Any] | None = None,
         app_id: str | None = None,
+        request_method: Any = None,
+        request_params: dict[str, Any] | None = None,
     ) -> "Message":
         from jiuwenswarm.common.schema.message import Message, EventType
 
@@ -2950,7 +3014,16 @@ class MessageHandler(ABC):
                 channel_id=resp.channel_id,
             )
             payload = normalize_legacy_health_check_relay_payload(payload)
-            event_type_str = payload.get("event_type")
+            event_type_str = MessageHandler._normalize_agent_error_event(
+                payload,
+                legacy_failed=(
+                    not bool(resp.ok)
+                    and MessageHandler._uses_legacy_chat_error_protocol(
+                        request_method,
+                        request_params,
+                    )
+                ),
+            )
             if isinstance(event_type_str, str):
                 try:
                     event_type = EventType(event_type_str)
@@ -2962,7 +3035,7 @@ class MessageHandler(ABC):
                         session_id=session_id,
                         params={},
                         timestamp=time.time(),
-                        ok=True,
+                        ok=event_type != EventType.CHAT_ERROR,
                         payload=payload,
                         event_type=event_type,
                         metadata=metadata,
@@ -3140,6 +3213,22 @@ class MessageHandler(ABC):
 
     def set_cron_controller(self, controller: Any) -> None:
         self._cron_controller = controller
+
+    def create_cron_scheduler(
+        self,
+        store: Any,
+        agent_client: Any | None = None,
+    ) -> Any:
+        """Build the Gateway-owned scheduler for an explicitly injected host."""
+        from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
+
+        return CronSchedulerService(
+            store=store,
+            agent_client=(
+                self.agent_client if agent_client is None else agent_client
+            ),
+            message_handler=self,
+        )
 
     async def _handle_cron_push_payload(
         self,
@@ -3365,7 +3454,10 @@ class MessageHandler(ABC):
                 channel_id=chunk.channel_id,
             )
             payload = normalize_legacy_health_check_relay_payload(payload)
-            event_type_str = payload.get("event_type")
+            event_type_str = MessageHandler._normalize_agent_error_event(
+                payload,
+                legacy_failed=bool(getattr(chunk, "is_complete", False)),
+            )
             if isinstance(event_type_str, str):
                 try:
                     event_type = EventType(event_type_str)
@@ -3379,7 +3471,7 @@ class MessageHandler(ABC):
             session_id=session_id,
             params={},
             timestamp=time.time(),
-            ok=True,
+            ok=event_type != EventType.CHAT_ERROR,
             payload=payload,
             event_type=event_type,
             metadata=merged_metadata,
@@ -3850,6 +3942,8 @@ class MessageHandler(ABC):
                 session_id=msg.session_id,
                 request_metadata=msg.metadata,
                 app_id=msg.app_id or "",
+                request_method=msg.req_method,
+                request_params=msg.params if isinstance(msg.params, dict) else None,
             )
             await self.publish_robot_messages(out)
             logger.info(
@@ -3896,6 +3990,7 @@ class MessageHandler(ABC):
         from jiuwenswarm.common.schema.message import ReqMethod
 
         while self._running:
+            msg = None
             try:
                 msg = await self.consume_user_messages(timeout=None)
                 if msg is None:
@@ -4405,6 +4500,25 @@ class MessageHandler(ABC):
                     )
             except asyncio.CancelledError:
                 break
+            except Exception as exc:  # noqa: BLE001
+                # One malformed channel message must not terminate the single
+                # forwarding loop shared by TUI/Web/IM/A2A.
+                logger.exception(
+                    "[MessageHandler] forward loop message failed: id=%s channel_id=%s error=%s",
+                    getattr(msg, "id", None),
+                    getattr(msg, "channel_id", None),
+                    exc,
+                )
+                if msg is not None:
+                    try:
+                        await self.publish_robot_messages(
+                            self._build_error_out_message(msg, exc)
+                        )
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "[MessageHandler] failed to publish forward-loop error: id=%s",
+                            getattr(msg, "id", None),
+                        )
 
     async def process_stream(
         self,
@@ -4919,12 +5033,28 @@ class MessageHandler(ABC):
         if self._forward_task is not None:
             return
         self._running = True
+        self._runtime_wake_handler = self._publish_runtime_wake
+        self._previous_runtime_wake_handler = install_runtime_wake_handler(
+            self._runtime_wake_handler
+        )
         self._forward_task = asyncio.create_task(self._forward_loop())
         logger.info("[MessageHandler] 转发循环已启动 (_user_messages -> AgentServer -> _robot_messages)")
 
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
+
+        # Detach before awaiting cancellation.  A wake handler already fetched
+        # by another task also checks _running and cannot enqueue into a queue
+        # with no consumer during the shutdown window.
+        runtime_wake_handler = getattr(self, "_runtime_wake_handler", None)
+        if runtime_wake_handler is not None:
+            restore_runtime_wake_handler(
+                runtime_wake_handler,
+                getattr(self, "_previous_runtime_wake_handler", None),
+            )
+            self._runtime_wake_handler = None
+            self._previous_runtime_wake_handler = None
 
         # 取消所有流式任务
         for rid, task in list(self._stream_tasks.items()):

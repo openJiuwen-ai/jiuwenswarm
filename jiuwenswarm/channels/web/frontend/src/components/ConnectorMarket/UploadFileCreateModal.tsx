@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, UploadCloud, Info, FileArchive, Loader2 } from 'lucide-react';
 import {
@@ -138,17 +139,19 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
       })
     : null;
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog">
+  // createPortal 到 document.body：统一所有连接器市场弹窗的挂载方式，避免 `fixed inset-0` 遮罩
+  // 被 index.css 里 `.detail-body > * / .page-scroll > *` 的限宽规则压窄（bug 2026091001-001）。
+  return createPortal(
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog" data-testid="connector-market-upload-modal">
       <div className="relative w-[520px] rounded-2xl bg-card p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
           <h2 className="text-[16px] font-semibold leading-6 text-text">{t('connectorMarket.create.withUpload')}</h2>
-          <button type="button" onClick={onCancel} className="text-text-muted hover:text-text">
+          <button type="button" onClick={onCancel} className="text-text-muted hover:text-text" data-testid="connector-market-upload-modal-close">
             <X size={18} />
           </button>
         </div>
 
-        <div className="mb-4 flex gap-2 rounded-lg bg-accent-subtle px-3 py-2.5 text-[12px] leading-[18px] text-text">
+        <div className="mb-4 flex gap-2 rounded-lg bg-accent-subtle px-3 py-2.5 text-[12px] leading-[18px] text-text" data-testid="connector-market-upload-modal-hint">
           <Info size={14} className="mt-0.5 shrink-0 text-[color:var(--color-chat-accent)]" />
           <span>{t('connectorMarket.upload.hint')}</span>
         </div>
@@ -173,6 +176,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
             // 只负责吃掉浏览器原生 drop 事件，避免触发系统默认的"在新标签页打开文件"行为。
           }}
           onClick={handleBrowse}
+          data-testid="connector-market-upload-dropzone"
           className={`${DROP_ZONE_CLASS} flex h-40 flex-col items-center justify-center gap-2 rounded-xl border border-dashed bg-bg text-text-muted transition-colors ${
             filePick ? 'cursor-default' : 'cursor-pointer'
           } ${
@@ -184,7 +188,7 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
           }`}
         >
           {filePick ? (
-            <div className="flex w-full items-center gap-2.5 px-5">
+            <div className="flex w-full items-center gap-2.5 px-5" data-testid="connector-market-upload-selected-file">
               <FileArchive size={22} className="shrink-0 text-text-muted" />
               <div className="min-w-0 flex-1">
                 <p className="truncate text-[13px] text-text" title={filePick.filename}>{filePick.filename}</p>
@@ -197,12 +201,13 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
                   handleRemove();
                 }}
                 className="shrink-0 text-text-muted hover:text-text"
+                data-testid="connector-market-upload-remove-file"
               >
                 <X size={16} />
               </button>
             </div>
           ) : browsing ? (
-            <Loader2 size={22} className="animate-spin" />
+            <Loader2 size={22} className="animate-spin" data-testid="connector-market-upload-browsing" />
           ) : (
             <div className="flex h-full w-full flex-col items-center justify-center gap-2">
               <UploadCloud size={22} />
@@ -210,15 +215,15 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
             </div>
           )}
         </div>
-        {invalid && <p className="mt-1.5 text-[11px] text-danger">{t('connectorMarket.upload.invalidType')}</p>}
+        {invalid && <p className="mt-1.5 text-[11px] text-danger" data-testid="connector-market-upload-invalid">{t('connectorMarket.upload.invalidType')}</p>}
         {displayError ? (
-          <p className="mt-1.5 text-[11px] text-danger" role="alert">
+          <p className="mt-1.5 text-[11px] text-danger" role="alert" data-testid="connector-market-upload-error">
             {displayError}
           </p>
         ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
-          <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover">
+          <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-upload-cancel">
             {t('connectorMarket.common.cancel')}
           </button>
           <button
@@ -226,11 +231,13 @@ export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFile
             onClick={handleConfirm}
             disabled={!filePick || submitting}
             className="rounded-lg bg-text px-4 py-1.5 text-[13px] text-text-inverse disabled:opacity-60"
+            data-testid="connector-market-upload-confirm"
           >
             {t('connectorMarket.common.confirm')}
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

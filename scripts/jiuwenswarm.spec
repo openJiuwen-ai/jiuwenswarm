@@ -232,7 +232,9 @@ symphony_submodules = collect_submodules("jiuwenswarm.symphony")
 # TeamManager imports this lifecycle hook while its parent package is being
 # initialized.  Keep it explicit because PyInstaller cannot reliably infer
 # this package-attribute import from the frozen entry point.
-team_kv_cache_hiddenimports = ["jiuwenswarm.agents.harness.team.kv_cache_hooks"]
+team_kv_cache_hiddenimports = [
+    "jiuwenswarm.agents.harness.team.kv_cache_team_delete_guard",
+]
 dispatch_submodules = collect_tree_python_modules(symphony_root, DISPATCH_PACKAGE_ROOTS)
 http2_submodules = [
     *collect_submodules("h2"),
@@ -242,7 +244,6 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 hiddenimports = webview_hiddenimports + http2_submodules + [
-    "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
     # Keep them explicit so the installed executable can diagnose a broken
@@ -273,6 +274,7 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
     "webview",
     "jiuwenswarm.channels.web.app_web",  # 静态文件服务
     "jiuwenswarm.channels.web.desktop_app",  # 桌面入口
+    "matplotlib",  # 论文 reporting 阶段生成结果图
 ] + openjiuwen_submodules + symphony_submodules + team_kv_cache_hiddenimports + dispatch_submodules
 
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）

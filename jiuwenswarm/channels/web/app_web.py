@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hmac
 import http.client
 import json
 import logging
@@ -27,7 +28,7 @@ from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any, Mapping
-from urllib.parse import ParseResult, quote, unquote, urlparse
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlencode, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
@@ -276,6 +277,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     # 仅一体机场景为 True; 普通部署为 False。前端据此决定是否显示登出按钮。
     remote_mode = False
     ws_disable_compress = False
+
+    # --- 桌面对话页面限制: 启动 token + HttpOnly Cookie ---
+    # 仅保护 SPA 文档入口; 静态资源/API/WS 保持原有访问规则。
+    # 桌面窗口首次导航经 ?dt=<token> 换取 HttpOnly Cookie。
+    # 源码 web 模式不设置该值, 行为与之前完全一致。
+    desktop_token = ""
+    # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
+    desktop_cookie_name = "__wsdt"
+    _DESKTOP_TOKEN_QUERY_PARAM = "dt"
 
     # --- /auth-api cookie-based auth bridge ---
     # access_token 实测 TTL 15min(900s), refresh_token 实测 7d(604800s)。
@@ -742,7 +752,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             self.send_response(resp.status, resp.reason)
             # 登录成功: 拦截 body 写 cookie
-            wrote_cookies = False
             if is_login and resp.status == 200:
                 try:
                     payload = json.loads(resp_body.decode("utf-8"))
@@ -750,10 +759,8 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     refresh_token = payload.get("refresh_token") or (payload.get("data") or {}).get("refresh_token")
                     if access_token:
                         self._set_auth_cookie(access_token)
-                        wrote_cookies = True
                     if refresh_token:
                         self._set_auth_cookie(refresh_token, self._AUTH_REFRESH_COOKIE_NAME, self._AUTH_REFRESH_MAX_AGE)
-                        wrote_cookies = True
                 except Exception:  # noqa: BLE001
                     pass
             # 转发响应头, 但 Set-Cookie 由我们接管
@@ -1015,6 +1022,81 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 upstream.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _send_desktop_forbidden(self) -> None:
+        """桌面锁定: 拒绝未认证请求的 403 提示页。"""
+        body = (
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>禁止访问</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0f172a;"
+            "color:#e2e8f0;display:flex;align-items:center;justify-content:center;"
+            "height:100vh;margin:0\">"
+            "<div style=\"text-align:center\">"
+            "<h1 style=\"font-size:22px;font-weight:600\">禁止访问</h1>"
+            "<p style=\"color:#94a3b8;margin-top:12px\">"
+            "此服务仅限桌面端访问，请使用桌面应用打开。</p>"
+            "</div></body></html>"
+        ).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _check_desktop_access(self) -> bool:
+        """桌面锁定校验。返回 True 表示请求已被响应(403/302), 调用方应终止处理。
+
+        - 源码 web 模式 (desktop_token 为空) 恒返回 False, 不做任何校验;
+        - 首次导航携带匹配的 ?dt=<token>: 下发 HttpOnly Cookie 并 302 到
+          去掉 dt 的干净 URL (token 不留在地址栏/前端路由里);
+        - 仅在返回 SPA 文档时调用; 无有效 Cookie 的页面访问返回 403。
+        """
+        if not self.desktop_token:
+            return False
+
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        values = query.get(self._DESKTOP_TOKEN_QUERY_PARAM, [])
+        if values:
+            provided = str(values[0])
+            # bytes 比较: compare_digest 的 str 形式要求 ASCII-only,
+            # 恶意非 ASCII 输入会抛 TypeError 导致连接崩溃。
+            if provided and hmac.compare_digest(
+                provided.encode("utf-8"), self.desktop_token.encode("utf-8")
+            ):
+                remaining = {
+                    key: val
+                    for key, val in query.items()
+                    if key != self._DESKTOP_TOKEN_QUERY_PARAM
+                }
+                location = parsed.path or "/"
+                if remaining:
+                    location += "?" + urlencode(remaining, doseq=True)
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{self.desktop_cookie_name}="
+                    f"{quote(self.desktop_token, safe='')}; "
+                    "Path=/; HttpOnly; SameSite=Lax",
+                )
+                self.end_headers()
+            else:
+                self._send_desktop_forbidden()
+            return True
+
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        if cookie_token and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        ):
+            return False
+
+        self._send_desktop_forbidden()
+        return True
 
     def _dispatch_proxy(self) -> bool:
         if self._is_auth_api_route():
@@ -1402,11 +1484,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(500, {"error": "download_module_unavailable"})
             return
 
-        payload = validate_file_download_token(token)
+        # Delivered artifacts remain valid even when legacy tokens contain exp.
+        # Signature verification is still mandatory; scoped image tokens below
+        # retain their original lifetime and session constraints.
+        payload = validate_file_download_token(token, check_expiry=False)
         # Skill 正文图片 token intentionally does not carry an absolute path.
         # In the legacy shared-directory layout it must therefore be resolved
         # through the skill manifest before entering the generic file bridge.
         if payload is not None and str(payload.get("purpose") or "") == PURPOSE_SKILL_CONTENT_IMAGE:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
             request_sid = extract_request_session_id(query=query, headers=self.headers)
             error = validate_skill_content_image_payload(
                 payload, request_session_id=request_sid
@@ -1436,12 +1524,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             self._serve_verified_local_download(str(file_path), inline=True)
             return
+        verified_download_name: str | None = None
         if payload is not None:
             # 本进程 secret 能校验并不意味着 token 的路径位于 Gateway 宿主机。
             # AgentOS 的部署与用户 AgentServer 可能共用下载密钥；此时 token
             # 仍可被 Gateway 验证，但 ``path`` 是用户容器内路径，必须先按 token
             # 携带的 bridge 地址代理给目标 AgentServer，不能在这里误判 404。
             file_path = str(payload.get("path") or "")
+            if payload.get("kind") == "verified_asset_v1":
+                verified_download_name = str(payload.get("name") or "")
             has_target_bridge = bool(
                 str(payload.get("download_http_base") or "").strip()
             )
@@ -1459,7 +1550,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     raw_inline = raw_inline[0] if raw_inline else ""
                 inline = str(raw_inline or "").strip().lower() in {"1", "true"}
                 _SpaStaticHandler._serve_verified_local_download(
-                    self, file_path, inline=inline
+                    self,
+                    file_path,
+                    inline=inline,
+                    download_name=verified_download_name,
                 )
                 return
 
@@ -1479,18 +1573,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         # the same secret, but it must never fall back to the Gateway directory.
         if payload is not None and os.path.isfile(file_path):
             _SpaStaticHandler._serve_verified_local_download(
-                self, file_path, inline=inline
+                self,
+                file_path,
+                inline=inline,
+                download_name=verified_download_name,
             )
             return
 
         self.logger.warning("[file-api/download] 目标 AgentServer 不可达: token=%s...", token[:8])
         self._write_json(503, {"error": "agent_server_unavailable"})
 
-    def _serve_verified_local_download(self, file_path: str, *, inline: bool) -> None:
+    def _serve_verified_local_download(
+        self,
+        file_path: str,
+        *,
+        inline: bool,
+        download_name: str | None = None,
+    ) -> None:
         """Stream a token-verified legacy single-user file with Range support."""
         try:
             file_size = os.path.getsize(file_path)
-            file_name = os.path.basename(file_path)
+            file_name = os.path.basename(str(download_name or "").replace("\\", "/"))
+            if not file_name:
+                file_name = os.path.basename(file_path)
             mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
             byte_range = None
             range_header = self.headers.get("Range")
@@ -1609,8 +1714,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         Gateway），由 AgentServer 校验 upload token 并落盘注入目录。
         AgentServer 不可达 → 503 可重试错误（方案 §8 禁止本地 fallback）。
         """
-        from urllib.parse import parse_qs
-
         query = parse_qs(parsed.query)
         token = (query.get("token") or [""])[0]
         if not token:
@@ -1895,10 +1998,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.info("%s - %s", self.address_string(), format % args)
+        self.logger.info("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
 
     def log_error(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.error("%s - %s", self.address_string(), format % args)
+        self.logger.error("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
+
+    def _redact_desktop_token(self, message: str) -> str:
+        message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        if self.desktop_token:
+            message = message.replace(quote(self.desktop_token, safe=""), "[REDACTED]")
+            message = message.replace(self.desktop_token, "[REDACTED]")
+        return message
 
     def send_head(self):
         parsed = urlparse(self.path)
@@ -1908,6 +2018,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         base_dir = Path(self.directory or os.getcwd()).resolve()
         target = (base_dir / rel_path).resolve()
         in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+        # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
+        # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
+        spa_index = (base_dir / "index.html").resolve()
+        serves_spa = not (in_base and target.exists()) or target == spa_index
+        if in_base and target.is_dir():
+            serves_spa = (target / "index.html").resolve() == spa_index
+        if serves_spa and self._check_desktop_access():
+            return None
 
         if in_base and target.exists():
             return super().send_head()
@@ -2066,6 +2185,13 @@ def main() -> None:
         help="Disable websocket compression for easier ws req/res/event debug logging.",
     )
     parser.add_argument(
+        "--desktop-token",
+        default=None,
+        metavar="TOKEN",
+        help="Desktop lock token: enable desktop-only access control "
+        "(default: JIUWENSWARM_DESKTOP_TOKEN env, empty = disabled).",
+    )
+    parser.add_argument(
         "--name",
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
@@ -2109,6 +2235,15 @@ def main() -> None:
     _ConfiguredHandler.iam_target = iam_target
     _ConfiguredHandler.remote_mode = remote_mode
     _ConfiguredHandler.ws_disable_compress = args.ws_disable_compress
+    # 桌面锁定: 桌面端经 JIUWENSWARM_DESKTOP_TOKEN env 注入一次性 token;
+    # 源码 web 模式为空 = 不启用, 浏览器访问行为与之前完全一致。
+    desktop_token = (
+        args.desktop_token
+        if args.desktop_token is not None
+        else os.getenv("JIUWENSWARM_DESKTOP_TOKEN", "")
+    ).strip()
+    _ConfiguredHandler.desktop_token = desktop_token
+    _ConfiguredHandler.desktop_cookie_name = f"__wsdt{args.port}"
     _ConfiguredHandler.project_root = project_root
     _ConfiguredHandler.workspace_root = workspace_root
     _ConfiguredHandler.agent_teams_root = agent_teams_root
@@ -2143,6 +2278,10 @@ def main() -> None:
         logger.info("[jiuwenswarm-web] /auth-api -> %s", iam_target)
         logger.info("[jiuwenswarm-web] all-in-one (remote) mode: %s", remote_mode)
         logger.info("[jiuwenswarm-web] ws disable compress: %s", args.ws_disable_compress)
+        logger.info(
+            "[jiuwenswarm-web] desktop lock: %s",
+            "enabled" if desktop_token else "disabled",
+        )
         logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
 
         _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
