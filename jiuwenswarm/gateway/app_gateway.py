@@ -2035,6 +2035,16 @@ async def _run_with_telemetry(
         outbound_repository=a2a_outbound_repository,
     )
     message_handler.set_a2a_outbound_tool_manager(a2a_manager)
+    # Full topology: a real Gateway manager answers A2A outbound RPCs — disable
+    # the AgentServer's local fallback so it defers to this handler.
+    try:
+        from jiuwenswarm.server.runtime.a2a_outbound_local_rpc import (
+            mark_gateway_manager_present,
+        )
+
+        mark_gateway_manager_present()
+    except Exception:
+        logger.debug("[App] gateway A2A manager flag not set", exc_info=True)
 
     _register_web_handlers(
         WebHandlersBindParams(
