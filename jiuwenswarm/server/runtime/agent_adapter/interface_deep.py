@@ -4307,6 +4307,16 @@ class JiuWenSwarmDeepAdapter:
         runtime_enabled: bool | None = None,
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
+        runtime_on = runtime_enabled if runtime_enabled is not None else self._browser_runtime_enabled()
+        if runtime_on:
+            # FrontendOnly 等外部启动的后端：env 未经 Electron spawn 注入时，
+            # 经发现文件绑定到本机存活的 Electron 壳（三种运行形态效果收敛）。
+            # 必须先于下方 electron env 检测执行，使 Electron 分支正确生效。
+            from jiuwenswarm.agents.harness.common.electron_sideview import (
+                apply_electron_discovery_browser_env,
+            )
+
+            apply_electron_discovery_browser_env()
         headless = self._resolve_headless_from_config(config_base)
         electron_target_id = (os.getenv("PLAYWRIGHT_MCP_TARGET_ID") or "").strip()
         electron_target_resolver = (os.getenv("PLAYWRIGHT_MCP_TARGET_RESOLVER") or "").strip()

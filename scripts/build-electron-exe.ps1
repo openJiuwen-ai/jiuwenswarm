@@ -216,27 +216,24 @@ $AppPackageJsonObject = @{
 # 内置 MCP 运行时：@playwright/mcp 及其依赖装进 resources/app/node_modules，
 # wrapper 与其同级（require.resolve 命中），打包版浏览器 Agent 不依赖用户
 # 机器的 Node.js/npx，也无需首启联网下载。版本从 main.cjs 的固定 pin 解析，
-# 避免两处漂移。FrontendOnly 不拉后端，无需该运行时。
-if (-not $FrontendOnly) {
-    $McpPackageMatch = Select-String -Path (Join-Path $DesktopDir "main.cjs") -Pattern "PLAYWRIGHT_MCP_PACKAGE = '([^']+)'"
-    if (-not $McpPackageMatch) { throw "PLAYWRIGHT_MCP_PACKAGE not found in main.cjs" }
-    $McpPackageSpec = $McpPackageMatch.Matches[0].Groups[1].Value
-    $McpParts = $McpPackageSpec -split '@'
-    $McpPackageName = "@$($McpParts[1])"
-    $McpPackageVersion = $McpParts[2]
-    if ([string]::IsNullOrWhiteSpace($McpPackageVersion)) { throw "Failed to parse MCP package version from: $McpPackageSpec" }
-    $AppPackageJsonObject.dependencies = @{ $McpPackageName = $McpPackageVersion }
-}
+# 避免两处漂移。FrontendOnly 同样需要：外部后端经发现文件绑定 Electron 壳
+# 后，会以本 exe 的 Node 模式运行 wrapper（与完整包同一契约）。
+$McpPackageMatch = Select-String -Path (Join-Path $DesktopDir "main.cjs") -Pattern "PLAYWRIGHT_MCP_PACKAGE = '([^']+)'"
+if (-not $McpPackageMatch) { throw "PLAYWRIGHT_MCP_PACKAGE not found in main.cjs" }
+$McpPackageSpec = $McpPackageMatch.Matches[0].Groups[1].Value
+$McpParts = $McpPackageSpec -split '@'
+$McpPackageName = "@$($McpParts[1])"
+$McpPackageVersion = $McpParts[2]
+if ([string]::IsNullOrWhiteSpace($McpPackageVersion)) { throw "Failed to parse MCP package version from: $McpPackageSpec" }
+$AppPackageJsonObject.dependencies = @{ $McpPackageName = $McpPackageVersion }
 $AppPackageJson = $AppPackageJsonObject | ConvertTo-Json -Depth 5
 Set-Content -Path (Join-Path $AppDir "package.json") -Value $AppPackageJson -Encoding UTF8
 
-if (-not $FrontendOnly) {
-    Write-Host "  Installing bundled MCP runtime ($McpPackageName@$McpPackageVersion)..." -ForegroundColor Gray
-    Push-Location $AppDir
-    npm install --omit=dev --no-audit --no-fund
-    if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
-    Pop-Location
-}
+Write-Host "  Installing bundled MCP runtime ($McpPackageName@$McpPackageVersion)..." -ForegroundColor Gray
+Push-Location $AppDir
+npm install --omit=dev --no-audit --no-fund
+if ($LASTEXITCODE -ne 0) { Pop-Location; exit $LASTEXITCODE }
+Pop-Location
 
 # Test build: write .test marker file so main.cjs can enable debug features
 if ($Test) {

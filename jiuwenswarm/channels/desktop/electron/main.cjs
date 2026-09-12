@@ -660,6 +660,7 @@ function forceStopServices() {
 
 function requestShutdown(exitCode = 0) {
   requestedExitCode = Math.max(requestedExitCode, exitCode);
+  stopBrowserEndpointsPublisher();
   app.quit();
 }
 
@@ -1056,6 +1057,78 @@ function setBrowserPaneVisible(sessionId, visible) {
     })
     .catch(error => console.warn('[electron] sideview activation failed', { sessionId: key, error }));
   return true;
+}
+
+// ─── 浏览器端点发现文件（跨进程交接）──────────────────────────────────────
+// Electron 的 CDP 端口与 target resolver 端口每次启动随机分配，且只在
+// spawnService 里注入给亲自拉起的后端。FrontendOnly 场景后端由外部启动，
+// 因此把端点心跳写入 ~/.jiuwenswarm/runtime_state/ 下的发现文件；后端在
+// env 缺失时读取该文件即可绑定到本机存活的 Electron 壳，让
+// npm run dev / 仅前端包 / 完整包 三种形态的内置浏览器效果收敛。
+const BROWSER_ENDPOINTS_FILE_NAME = 'electron-browser-endpoints.json';
+const BROWSER_ENDPOINTS_HEARTBEAT_MS = 10_000;
+let browserEndpointsTimer = null;
+
+function browserEndpointsFilePath() {
+  return path.join(app.getPath('home'), '.jiuwenswarm', 'runtime_state', BROWSER_ENDPOINTS_FILE_NAME);
+}
+
+function buildBrowserEndpointsPayload() {
+  const cdpEndpoint = `http://${BACKEND_HOST}:${cdpPort}`;
+  const targetResolver = `http://${BACKEND_HOST}:${browserTargetResolver.port}`;
+  const envJson = {
+    PLAYWRIGHT_MCP_CDP_ENDPOINT: cdpEndpoint,
+    PLAYWRIGHT_MCP_TARGET_RESOLVER: targetResolver,
+    // 打包版 wrapper 以本应用 exe 的 Node 模式运行；该开关需经
+    // PLAYWRIGHT_MCP_ENV_JSON 白名单转发进 MCP 子进程。
+    ...(app.isPackaged ? { ELECTRON_RUN_AS_NODE: '1' } : {}),
+  };
+  return {
+    pid: process.pid,
+    app_type: isFrontendOnly ? 'frontend-only' : (app.isPackaged ? 'packaged' : 'dev'),
+    cdp_endpoint: cdpEndpoint,
+    target_resolver: targetResolver,
+    // 与 spawnService 的 target wrapper 契约一致（main.cjs spawnService 分支）。
+    mcp_command: app.isPackaged ? process.execPath : 'npx',
+    mcp_args: app.isPackaged
+      ? [TARGET_MCP_WRAPPER_PATH]
+      : ['-y', '--package', PLAYWRIGHT_MCP_PACKAGE, 'node', TARGET_MCP_WRAPPER_PATH],
+    env_json: envJson,
+    written_at: Date.now(),
+  };
+}
+
+function writeBrowserEndpointsFile() {
+  const target = browserEndpointsFilePath();
+  const tmp = `${target}.tmp-${process.pid}`;
+  try {
+    fsSync.mkdirSync(path.dirname(target), { recursive: true });
+    fsSync.writeFileSync(tmp, JSON.stringify(buildBrowserEndpointsPayload()));
+    fsSync.renameSync(tmp, target);
+  } catch (error) {
+    try { fsSync.rmSync(tmp, { force: true }); } catch { /* best effort */ }
+    console.warn('[electron] failed to publish browser endpoints file', error);
+  }
+}
+
+function startBrowserEndpointsPublisher() {
+  writeBrowserEndpointsFile();
+  if (browserEndpointsTimer) clearInterval(browserEndpointsTimer);
+  browserEndpointsTimer = setInterval(writeBrowserEndpointsFile, BROWSER_ENDPOINTS_HEARTBEAT_MS);
+  browserEndpointsTimer.unref();
+}
+
+function stopBrowserEndpointsPublisher() {
+  if (browserEndpointsTimer) {
+    clearInterval(browserEndpointsTimer);
+    browserEndpointsTimer = null;
+  }
+  // 仅删除自己写的文件；另一只 Electron（last-writer-wins）的文件保留。
+  const target = browserEndpointsFilePath();
+  try {
+    const raw = fsSync.readFileSync(target, 'utf8');
+    if (JSON.parse(raw).pid === process.pid) fsSync.rmSync(target, { force: true });
+  } catch { /* missing or not ours: leave it */ }
 }
 
 function startBrowserTargetResolver() {
@@ -1474,6 +1547,8 @@ async function createMainWindow() {
     console.log('[electron] browser target resolver ready', {
       endpoint: `http://${BACKEND_HOST}:${browserTargetResolver.port}`,
     });
+    // 发布发现文件（dev / 完整包 / FrontendOnly 一致）：外部后端据此绑定壳内浏览器。
+    startBrowserEndpointsPublisher();
   } else {
     console.log('[electron] CDP port not configured; browser sideview disabled (packaged mode)');
   }
@@ -1555,4 +1630,5 @@ app.on('before-quit', event => {
   });
 });
 app.on('window-all-closed', () => app.quit());
+app.on('will-quit', () => stopBrowserEndpointsPublisher());
 process.once('exit', forceStopServices);
