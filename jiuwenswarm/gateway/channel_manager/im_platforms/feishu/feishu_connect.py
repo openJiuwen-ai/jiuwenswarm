@@ -84,6 +84,7 @@ try:
         CreateMessageRequestBody,
         CreateMessageReactionRequest,
         CreateMessageReactionRequestBody,
+        DeleteMessageReactionRequest,
         Emoji,
         P2ImMessageReceiveV1,
     )
@@ -201,6 +202,8 @@ class FeishuChannel(BaseChannel):
         self._pending_message_lock = asyncio.Lock()
         self._pending_group_progress_tasks: dict[str, asyncio.Task[None]] = {}
         self._sent_group_progress_requests: set[str] = set()
+        # typing emoji 反应追踪：request_id -> (message_id, reaction_id)
+        self._typing_reactions: dict[str, tuple[str, str]] = {}
         self._stopping = False
         # 按 request_id 聚合 chat.delta，避免同一任务被拆分成多条消息发送到飞书。
         self._stream_text_buffers: dict[str, str] = {}
@@ -652,13 +655,16 @@ class FeishuChannel(BaseChannel):
         ws_client._disconnect = types.MethodType(_safe_disconnect, ws_client)
         ws_client._disconnect_patched = True
 
-    def _add_reaction_sync(self, message_id: str, emoji_type: str) -> None:
+    def _add_reaction_sync(self, message_id: str, emoji_type: str) -> str | None:
         """
         添加消息反应的同步方法（在线程池中运行）。
 
         Args:
             message_id: 消息ID
             emoji_type: 表情类型
+
+        Returns:
+            str | None: 成功时返回 reaction_id，失败时返回 None
         """
         try:
             request = (
@@ -678,12 +684,20 @@ class FeishuChannel(BaseChannel):
                 logger.warning(
                     f"添加消息反应失败: 错误码={response.code}, 消息={response.msg}"
                 )
+                return None
             else:
-                logger.debug("已为消息 %s 添加 %s 表情", message_id, emoji_type)
+                reaction_id = ""
+                try:
+                    reaction_id = response.data.reaction_id or ""
+                except Exception:
+                    pass
+                logger.debug("已为消息 %s 添加 %s 表情, reaction_id=%s", message_id, emoji_type, reaction_id)
+                return reaction_id or None
         except Exception as e:
             logger.warning(f"添加消息反应时发生异常: {e}")
+            return None
 
-    async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> None:
+    async def _add_reaction(self, message_id: str, emoji_type: str = "THUMBSUP") -> str | None:
         """
         为消息添加反应表情符号（非阻塞）。
 
@@ -698,12 +712,92 @@ class FeishuChannel(BaseChannel):
         Args:
             message_id: 消息ID
             emoji_type: 表情类型
+
+        Returns:
+            str | None: 成功时返回 reaction_id，失败时返回 None
         """
         if not self._api_client or not Emoji:
-            return
+            return None
 
         loop = asyncio.get_running_loop()
-        await loop.run_in_executor(None, self._add_reaction_sync, message_id, emoji_type)
+        return await loop.run_in_executor(None, self._add_reaction_sync, message_id, emoji_type)
+
+    def _remove_reaction_sync(self, message_id: str, reaction_id: str) -> bool:
+        """
+        移除消息反应的同步方法（在线程池中运行）。
+
+        Args:
+            message_id: 消息ID
+            reaction_id: 反应ID
+
+        Returns:
+            bool: 是否成功移除
+        """
+        try:
+            request = (
+                DeleteMessageReactionRequest.builder()
+                .message_id(message_id)
+                .reaction_id(reaction_id)
+                .build()
+            )
+            response = self._api_client.im.v1.message_reaction.delete(request)
+            if not response.success():
+                logger.warning(
+                    f"移除消息反应失败: 错误码={response.code}, 消息={response.msg}"
+                )
+                return False
+            else:
+                logger.debug("已为消息 %s 移除反应 %s", message_id, reaction_id)
+                return True
+        except Exception as e:
+            logger.warning(f"移除消息反应时发生异常: {e}")
+            return False
+
+    async def _remove_typing_reaction(self, request_id: str) -> None:
+        """
+        移除 typing emoji 反应（非阻塞）。
+
+        当 agent 最终回复生成完毕后调用，移除之前添加的 typing emoji，
+        只保留最终回复卡片。
+
+        Args:
+            request_id: 请求ID（格式为 channel_id:message_id）
+        """
+        if not request_id:
+            return
+        entry = self._typing_reactions.pop(request_id, None)
+        if not entry:
+            return
+        message_id, reaction_id = entry
+        if not self._api_client or not message_id or not reaction_id:
+            return
+        try:
+            loop = asyncio.get_running_loop()
+            await loop.run_in_executor(None, self._remove_reaction_sync, message_id, reaction_id)
+        except Exception as e:
+            logger.warning(f"移除 typing 反应时发生异常: {e}")
+
+    async def _add_typing_reaction_for_message(self, message_id: str) -> None:
+        """
+        为用户消息添加 typing emoji 反应，并记录映射关系。
+
+        使用 "OnIt"（处理中）表情作为即时确认，在 agent 实际开始生成回复前
+        提供 200-500ms 内的视觉反馈。当最终回复生成完毕后，
+        _clear_group_progress_state 会调度 _remove_typing_reaction 移除该 emoji。
+
+        Args:
+            message_id: 飞书消息ID
+        """
+        if not message_id:
+            return
+        reaction_id = await self._add_reaction(message_id, "OnIt")
+        if reaction_id:
+            request_id = f"{self.channel_id}:{message_id}"
+            self._typing_reactions[request_id] = (message_id, reaction_id)
+            logger.debug(
+                "已为消息 %s 添加 typing 反应, request_id=%s, reaction_id=%s",
+                message_id, request_id, reaction_id,
+            )
 
     def _get_target_user_open_id(self) -> str:
         """返回当前数字分身对应的用户 open_id。"""
@@ -1051,11 +1145,18 @@ class FeishuChannel(BaseChannel):
         return self._GROUP_PROGRESS_HINT_TEXTS[0]
 
     def _clear_group_progress_state(self, request_id: str) -> None:
-        """清理指定请求的延迟提示任务和已发送标记。"""
+        """清理指定请求的延迟提示任务和已发送标记，并调度移除 typing 反应。"""
         pending_task = self._pending_group_progress_tasks.pop(request_id, None)
         if pending_task and not pending_task.done():
             pending_task.cancel()
         self._sent_group_progress_requests.discard(request_id)
+        # 移除 typing emoji 反应（非阻塞，在后台执行）
+        if request_id in self._typing_reactions:
+            try:
+                asyncio.create_task(self._remove_typing_reaction(request_id))
+            except RuntimeError:
+                # 没有运行中的事件循环，直接同步清理映射
+                self._typing_reactions.pop(request_id, None)
 
     def _should_skip_group_progress_scheduling(self, request_id: str, metadata: dict[str, Any]) -> bool:
         """判断是否应该跳过群内处理提示的调度。"""
@@ -2670,9 +2771,11 @@ class FeishuChannel(BaseChannel):
             if sender.sender_type == "bot":
                 return
 
-            # 群聊数字分身模式下不自动点赞
-            if not self.config.group_digital_avatar:
-                asyncio.create_task(self._add_reaction(message.message_id, "THUMBSUP"))
+            # 即时确认：在用户消息上添加 typing emoji 反应
+            # 提供 200-500ms 内的视觉反馈，agent 回复生成完毕后自动移除
+            asyncio.create_task(self._add_typing_reaction_for_message(
+                message.message_id
+            ))
 
             # 解析消息内容（支持文件类型）
             try:
