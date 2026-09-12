@@ -820,6 +820,10 @@ class RuntimeManagementAgentClient(AgentServerClient):
                     ws_use_tls=False,
                     ws_ping_interval=float(os.getenv("GATEWAY_CLAW_WS_PING_INTERVAL", "20.0")),
                     ws_ping_timeout=float(os.getenv("GATEWAY_CLAW_WS_PING_TIMEOUT", "20.0")),
+                    # 单帧上限放宽为 64 MiB：skill 列表等大 JSON 下行超过
+                    # websockets 默认 1 MiB 会触发 1009 断连，在飞请求被 fail，
+                    # 前端表现为 chat.error。可经 GATEWAY_CLAW_WS_MAX_SIZE 覆盖。
+                    ws_max_size=int(os.getenv("GATEWAY_CLAW_WS_MAX_SIZE", str(64 * 2**20))),
                     **_ch_kwargs,
                 )
 

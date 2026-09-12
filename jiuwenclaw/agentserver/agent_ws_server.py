@@ -158,11 +158,16 @@ class AgentWebSocketServer:
         *,
         ping_interval: float | None = 30.0,
         ping_timeout: float | None = 300.0,
+        max_size: int = 64 * 2**20,
     ) -> None:
         self._host = host
         self._port = port
         self._ping_interval = ping_interval
         self._ping_timeout = ping_timeout
+        # 单帧最大字节数（解压后）。websockets 默认 1 MiB，上行大请求（如带大
+        # payload 的技能查询）超过该值时服务端会回 1009 断连；本链路为
+        # Pod 内网可信链路，与 gateway 侧对齐放宽为 64 MiB。
+        self._max_size = max_size
         self._server: Any = None
         # link-auth: AgentServer 身份密钥（Ed25519）。它是被 gateway 按需拉起的临时实例，
         # 故每进程启动时临时生成、不落库；connection.ack 反向签名用自身私钥。
@@ -207,6 +212,7 @@ class AgentWebSocketServer:
         port: int = 18000,
         ping_interval: float | None = 30.0,
         ping_timeout: float | None = 300.0,
+        max_size: int = 64 * 2**20,
     ) -> "AgentWebSocketServer":
         """返回多例实例。
 
@@ -219,6 +225,7 @@ class AgentWebSocketServer:
             port=port,
             ping_interval=ping_interval,
             ping_timeout=ping_timeout,
+            max_size=max_size,
         )
         return cls._instance
 
@@ -261,6 +268,7 @@ class AgentWebSocketServer:
                 process_request=self._process_request,
                 ping_interval=self._ping_interval,
                 ping_timeout=self._ping_timeout,
+                max_size=self._max_size,
             )
         except ImportError:
             import websockets
@@ -271,6 +279,7 @@ class AgentWebSocketServer:
                 process_request=self._process_request,
                 ping_interval=self._ping_interval,
                 ping_timeout=self._ping_timeout,
+                max_size=self._max_size,
             )
         logger.info(
             "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
