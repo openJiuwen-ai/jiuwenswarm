@@ -77,7 +77,6 @@ DESIGN_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 - 不要调用任何 Shell 运行 QA 脚本或合并模板
 - 不要修改计划文件以外的任何文件
 - 不要发送消息或文件、创建定时任务、安装卸载技能
-- 不要用 switch_mode 退出计划模式
 
 ### 工作流
 
@@ -131,7 +130,6 @@ effects.
 - Do not call any Shell to run QA scripts or merge templates
 - Do not modify any file other than the plan file
 - Do not send messages or files, create scheduled tasks, install/uninstall skills
-- Do not use switch_mode to leave plan mode
 
 ### Workflow
 

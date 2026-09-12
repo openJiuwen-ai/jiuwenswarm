@@ -733,7 +733,6 @@ modes:
     #   ConfirmInterruptRail, ContextProcessorRail
     rails:
       - SkillUseRail
-      - WorktreeRail
 
     # 动态 Tools — 列表中出现的 = 启用
     # send_file_to_user 由运行时 _update_session_tools 注册，不在此配置
@@ -742,8 +741,6 @@ modes:
       - web_free_search
       - web_fetch_webpage
       - web_paid_search
-      - user_todos
-      - skill_toolkit
 
     embedding_config:
       model_name: null

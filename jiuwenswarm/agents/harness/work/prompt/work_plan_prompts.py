@@ -75,7 +75,6 @@ WORK_ENTER_PLAN_MODE_INSTRUCTIONS_CN = """
 - 不要发送消息或文件、创建定时任务、安装卸载技能
 - 不要调用任何会改变外部系统状态的工具
 - 不要用任何 Shell 执行写操作（mkdir、touch、rm、mv、cp 等）
-- 不要用 switch_mode 退出计划模式
 
 ### 工作流
 
@@ -126,7 +125,6 @@ effects.
 - Do not send messages or files, create scheduled tasks, install/uninstall skills
 - Do not call any tool that changes external system state
 - Do not use any Shell for writes (mkdir, touch, rm, mv, cp, ...)
-- Do not use switch_mode to leave plan mode
 
 ### Workflow
 

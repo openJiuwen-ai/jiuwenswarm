@@ -356,6 +356,10 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "bash",
     "write_file",
     "edit_file",
+    # 委派子 agent 做只读调研。与 office WORK_PLAN_ALLOWED_TOOLS 及 team 路径
+    # code_rails.build_code_agent_mode 对齐；无子 agent 时 AgentModeRail 不会注册
+    # task_tool，放进白名单不会凭空多出工具。
+    "task_tool",
 ]
 
 
@@ -525,7 +529,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raise RuntimeError("sys_operation is not available, maybe task is not running")
         self._sys_operation = sys_operation
 
-        configured_subagents, _should_add_general = self._build_configured_subagents(model, config, config_base)
+        configured_subagents, should_add_general = self._build_configured_subagents(model, config, config_base)
         configured_subagents = configured_subagents or []
 
         workspace = Workspace(
@@ -562,6 +566,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
             auto_create_workspace=False,
             completion_timeout=config.get("completion_timeout", 3600.0),
+            add_general_purpose_agent=should_add_general,
         )
 
         # 装配生命周期点位：实例重建前的扩展状态重置（专家旧 LoadRecord
@@ -663,7 +668,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._build_xiaoyi_default_tool_visibility_rail,
             ),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
-            _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
             _RailBuildInfo(
                 "_permission_rail",
@@ -765,6 +769,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
           显式告知 LLM 已退出 plan 模式，可以开始编辑文件。
         """
         try:
+            if self._static_prompt_profile == "design":
+                from jiuwenswarm.agents.harness.design.rails.design_agent_mode_rail import (
+                    DesignAgentModeRail,
+                )
+                return DesignAgentModeRail(language=self._resolve_output_language())
+
             from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
                 CodeAgentModeRail,
             )
@@ -776,7 +786,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 exit_plan_notification=_EXIT_PLAN_MODE_NOTIFICATION,
             )
         except Exception as exc:
-            logger.warning("[JiuwenSwarmCodeAdapter] CodeAgentModeRail create failed: %s", exc)
+            logger.warning("[JiuwenSwarmCodeAdapter] agent mode rail create failed: %s", exc)
             return None
 
     @staticmethod
@@ -988,7 +998,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
     ) -> tuple[list[Any] | None, bool]:
         """Build config-gated code_agent and browser_agent subagents for code mode.
 
-        code_agent / browser_agent 按配置启用。
+        code_agent / browser_agent 按配置启用；general_agent 与 office 模式对齐，
+        按 ``subagents.general_agent.enabled`` 决定是否返回 ``should_add_general``，
+        由 ``create_deep_agent(add_general_purpose_agent=...)`` 注入通用子 agent，
+        使 SubagentRail 默认挂载 task_tool（与非 plan 模式默认工具列表一致）。
         """
         react_cfg = config if isinstance(config, dict) else {}
         subagents_cfg = react_cfg.get("subagents")
@@ -996,9 +1009,15 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
         subagents: list[Any] = []
+        should_add_general = False
         self._sync_browser_runtime_environment(config_base)
 
         if isinstance(subagents_cfg, dict):
+            # general_agent — 与 office 对齐：按配置启用通用子 agent
+            general_agent_cfg = subagents_cfg.get("general_agent")
+            if self._is_subagent_enabled(general_agent_cfg):
+                should_add_general = True
+
             # code_agent subagent — 按配置启用
             code_agent_cfg = subagents_cfg.get("code_agent")
             if self._is_subagent_enabled(code_agent_cfg):
@@ -1050,7 +1069,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # 不走 SubagentRail 的 task_tool 路径。
         # （agent 模式仍由 interface_deep.py 的 _load_custom_subagents 管理）
 
-        return subagents or None, False
+        return subagents or None, should_add_general
 
     # ─── Rail 生命周期(mode切换) ───────────────────
 

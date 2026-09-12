@@ -509,3 +509,18 @@ def test_work_plan_whitelist_excludes_side_effect_tools():
     assert "task_tool" in allowed
     for forbidden in ("send_file_to_user", "cron_create", "switch_mode"):
         assert forbidden not in allowed
+
+
+def test_code_plan_whitelist_includes_task_tool():
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        _CODE_PLAN_ALLOWED_TOOLS,
+    )
+
+    allowed = set(_CODE_PLAN_ALLOWED_TOOLS)
+
+    assert {"ask_user", "read_file", "write_file", "exit_plan_mode"} <= allowed
+    # 与 office WORK_PLAN_ALLOWED_TOOLS 及 team 路径 code_rails.build_code_agent_mode
+    # 对齐：配了子 agent 时要能用 task_tool 做只读调研。
+    assert "task_tool" in allowed
+    for forbidden in ("send_file_to_user", "cron_create", "switch_mode"):
+        assert forbidden not in allowed
