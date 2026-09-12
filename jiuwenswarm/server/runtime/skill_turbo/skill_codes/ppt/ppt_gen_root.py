@@ -113,13 +113,13 @@ class PPTGenRootNode(PlanNode):
             ImagePrepareNode(),
             PPTPageGenNode(),
             PPTExportNode(),
-            # Stage 8: 演讲备注（仅 need_speaker_notes=True 时执行，best-effort 不阻塞交付）
+            # Stage 13: 演讲备注（仅 need_speaker_notes=True 时执行，best-effort 不阻塞交付）
             self._speaker_notes,
             self._delivery,
         ]
         super().__init__(
             plan_name="ppt_gen_root",
-            instruction="PPT生成任务流根节点，串联P0-P10全流程（含Stage 8演讲备注）",
+            instruction="PPT生成任务流根节点，串联P0-P10全流程（含Stage 13演讲备注）",
             # P3 固定保留在任务列表；无附件时运行时 skip 并标记 completed。
             sub_plans=[
                 self._p0,
