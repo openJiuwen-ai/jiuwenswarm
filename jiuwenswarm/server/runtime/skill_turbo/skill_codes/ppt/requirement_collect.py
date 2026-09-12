@@ -44,6 +44,22 @@ _EXPLICIT_NO_SEARCH_RE = re.compile(
     r"(不要搜索|不搜索|无需搜索|禁止搜索|不用搜索|无需联网|不要联网)"
 )
 
+# ── 图片意图确定性词表（代码域，不进 prompt）── 对齐 SKILL.md §1.2.E
+# 禁图词最高优先：用户明确不要图 → forbidden
+_FORBIDDEN_IMAGE_RE = re.compile(
+    r"不要(?:任何)?图|禁用图|不(?:要|得)出现.*(?:图|照片)|无图版"
+)
+# 配图意图提示词：用户原文出现这些词 → desired（即使 LLM 采样判 false 也翻正）
+_IMAGE_INTENT_HINT_RE = re.compile(
+    r"画面|配图|插图|插画|背景图|封面图|海报|视觉|意象|组合画面|"
+    r"image|illustration|background|imagery",
+    re.IGNORECASE,
+)
+# 内容约束抽取：如"不出现人像""背景必须是森林"
+_IMAGE_CONSTRAINT_RE = re.compile(
+    r"(不(?:出现|要|得有)[^，。、；\n]{0,20}|必须(?:是|有|包含)[^，。、；\n]{0,20})"
+)
+
 _STYLE_LABEL_TO_ID: dict[str, str] = {
     "商务经典": "business-classic",
     "华为": "business-classic",
@@ -179,7 +195,12 @@ research_depth 规则（与 search_mode、page_count 联动；L1/L2/L3 含义见
 - page_count 在 8~15 → L2
 - 其余（含 auto 且页数 ≤7）→ L1
 
-need_imagegen 规则：用户 query 明确要求 AI 生图/生成配图 → true，否则 → false
+need_imagegen 规则（对齐 skill SKILL.md §1.2.E 图片意图归一：本地图片之外是否需要 ai 兜底来源）：
+- 用户提出配图要求 → true：明确要求 AI 生图/生成配图/插图/插画；或描述了希望出现的
+  具体画面/场景/元素（如"画面包含X、Y、Z""X组合画面""要配风电场景图"）；
+  或对画面内容有具体约束（如"不出现人像""背景必须是森林"）
+- 仅泛泛的主题词或风格词（如"科技风""简约大气"），未提出任何配图要求 → false
+- 用户未提配图要求时不得因生图工具存在而置 true
 
 必须只输出单行 JSON，四个字段均必填且取值必须在枚举内；禁止 markdown 围栏、禁止前后附加说明：
 {"search_mode":"auto","source_type":"topic","research_depth":"L2","need_imagegen":false}"""
@@ -815,6 +836,35 @@ def _parse_derive_params_response(raw: str) -> dict[str, str]:
         "research_depth": research_depth,
         "need_imagegen": need_imagegen,
     }
+
+
+def _extract_image_constraints(user_text: str) -> list[str]:
+    """从用户原文抽取图片内容约束（如"不出现人像""背景必须是森林"）。"""
+    if not user_text:
+        return []
+    constraints: list[str] = []
+    for m in _IMAGE_CONSTRAINT_RE.finditer(user_text):
+        s = m.group(1).strip()
+        if s and s not in constraints:
+            constraints.append(s)
+    return constraints
+
+
+def _resolve_image_mode(
+    user_text: str, llm_need_imagegen: bool
+) -> tuple[str, str]:
+    """意图归一：forbidden_keyword > llm > keyword_fallback。
+
+    返回 (mode, decision_source)。mode ∈ {desired, forbidden, none}。
+    对齐 SKILL.md §1.2.E：用户提出配图要求 → desired；禁图 → forbidden；无诉求 → none。
+    """
+    if _FORBIDDEN_IMAGE_RE.search(user_text):
+        return "forbidden", "forbidden_keyword"
+    if llm_need_imagegen:
+        return "desired", "llm"
+    if _IMAGE_INTENT_HINT_RE.search(user_text):
+        return "desired", "keyword_fallback"
+    return "none", "llm"
 
 
 def _extract_reference_urls(text: str) -> list[str]:
@@ -1666,41 +1716,41 @@ class P24DeriveParamsNode(PlanNode):
         derived = await _derive_params_via_llm(self, inputs)
         inputs.update(derived)
 
-        # 写 imagegen_status.json（供 P6.5 读取）
-        need_imagegen = derived.get("need_imagegen", False)
+        # 写 image_requirements.json（意图信号；对齐 SKILL.md §1.2.E）
+        # 能力信号 imagegen_status.json 归 P6.5（has_tool 探测），不在 P2 写
+        user_text = _collect_user_text(inputs)
         output_dir = str(inputs.get("output_dir", "")).strip()
-        if need_imagegen and output_dir:
+        image_mode, decision_source = _resolve_image_mode(
+            user_text, derived.get("need_imagegen", False)
+        )
+        if decision_source == "keyword_fallback":
+            logger.info(
+                "[P2.4] need_imagegen 由关键词兜底翻正"
+                "（LLM 采样判定与原文视觉诉求冲突）"
+            )
+        if output_dir:
             try:
                 content = json.dumps(
-                    {"supported": True},
+                    {
+                        "mode": image_mode,
+                        "decision_source": decision_source,
+                        "constraints": _extract_image_constraints(user_text),
+                    },
                     ensure_ascii=False,
                 )
                 await PptCommon.write_file(
-                    self, f"{output_dir}/imagegen_status.json",
-                    content, label="imagegen_status",
+                    self, f"{output_dir}/image_requirements.json",
+                    content, label="image_requirements",
                     error_type=RequirementCollectError,
                 )
-                logger.info("[P2.4] imagegen_status.json 已写入 (supported=true)")
+                logger.info(
+                    "[P2.4] image_requirements.json 已写入 (mode=%s, source=%s)",
+                    image_mode, decision_source,
+                )
             except Exception as e:
                 if isinstance(e, AbortError):
                     raise
-                logger.warning("[P2.4] 写 imagegen_status.json 失败: %s", e)
-        elif not need_imagegen and output_dir:
-            try:
-                content = json.dumps(
-                    {"supported": False},
-                    ensure_ascii=False,
-                )
-                await PptCommon.write_file(
-                    self, f"{output_dir}/imagegen_status.json",
-                    content, label="imagegen_status",
-                    error_type=RequirementCollectError,
-                )
-                logger.info("[P2.4] imagegen_status.json 已写入 (supported=false)")
-            except Exception as e:
-                if isinstance(e, AbortError):
-                    raise
-                logger.warning("[P2.4] 写 imagegen_status.json 失败: %s", e)
+                logger.warning("[P2.4] 写 image_requirements.json 失败: %s", e)
 
         return inputs
 
@@ -1795,7 +1845,7 @@ class RequirementCollectNode(PlanNode):
     def _ensure_image_vars(self, ctx: dict[str, Any]) -> None:
         """图片变量兜底：image_paths 空数组 + image_sources 默认 local。
 
-        ai 源由 P6.5 读取 imagegen_status.json 动态启用，不在此处判断。
+        ai 源由 P6.5 读取 image_requirements.json（意图）+ has_tool 探测（能力）双信号启用，不在此处判断。
         """
         ctx.setdefault("image_paths", [])
         ctx.setdefault("image_sources", ["local"])
