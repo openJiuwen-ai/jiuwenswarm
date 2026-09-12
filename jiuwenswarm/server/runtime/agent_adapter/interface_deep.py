@@ -11192,7 +11192,9 @@ class JiuWenSwarmDeepAdapter:
         工具与 SysOperationRail），经 ``invoke_subagent_with_trace`` 阻塞执行。
         fallback 子代理临时禁用权限审批 rail（spawn 结束后恢复共享实例状态），
         避免工具调用中断等待审批导致输出为空。
-        抛异常表示子代理执行失败；返回字符串表示已跑完（是否达成节点契约由 handler 判定）。
+        抛异常表示子代理执行失败——含以未解决的 HITL interrupt 结束的场景
+        （interrupt result 无 output，归入失败显式报错而非吞成空输出）；
+        返回字符串表示已跑完（是否达成节点契约由 handler 判定）。
         """
         from jiuwenswarm.server.runtime.debug_trace import invoke_subagent_with_trace
 
@@ -11217,6 +11219,12 @@ class JiuWenSwarmDeepAdapter:
 
         output = ""
         if isinstance(result, dict):
+            if result.get("result_type") == "interrupt":
+                raise RuntimeError(
+                    "[spawn_fallback] fallback subagent ended with unresolved "
+                    f"HITL interrupt (interrupt_ids={result.get('interrupt_ids')}); "
+                    "no output produced"
+                )
             output = result.get("output", "") or ""
         return str(output)
 
@@ -11236,10 +11244,6 @@ class JiuWenSwarmDeepAdapter:
             else []
         )
         rail_names = [rail.__class__.__name__ for rail in configured or []]
-
-        def _disabled_permission_snapshot() -> dict:
-            """临时权限审批快照：返回禁用状态，避免工具调用被审批 rail 中断。"""
-            return {"enabled": False}
 
         def _make_restore(
             rail: Any,
@@ -11262,6 +11266,19 @@ class JiuWenSwarmDeepAdapter:
 
             return _restore
 
+        def _make_disabled_snapshot(config: dict) -> Callable[[], dict]:
+            """构造「原配置 + enabled=False」的权限快照回调。
+
+            resolve_interrupt 刷新时以此覆盖引擎配置；返回残缺 dict 会把
+            tools/file_guard 二次清空（同 update_config 整体替换语义），
+            故必须携带完整挂起配置。
+            """
+
+            def _snapshot() -> dict:
+                return dict(config)
+
+            return _snapshot
+
         restore_steps: list[Callable[[], None]] = []
         for rail in configured or []:
             cls_name = rail.__class__.__name__
@@ -11273,13 +11290,16 @@ class JiuWenSwarmDeepAdapter:
                 continue
             try:
                 saved_config = dict(getattr(rail, "_static_config", None) or {})
+                suspended_config = dict(saved_config)
+                suspended_config["enabled"] = False
                 host = getattr(rail, "_host", None)
                 saved_snapshot = (
                     host.get_permissions_snapshot if host is not None else None
                 )
-                rail.update_config({"enabled": False})
+
+                rail.update_config(suspended_config)
                 if host is not None:
-                    host.get_permissions_snapshot = _disabled_permission_snapshot
+                    host.get_permissions_snapshot = _make_disabled_snapshot(suspended_config)
                 restore_steps.append(_make_restore(rail, saved_config, host, saved_snapshot))
             except Exception:
                 logger.warning(
