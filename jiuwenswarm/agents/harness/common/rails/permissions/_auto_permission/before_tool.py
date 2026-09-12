@@ -98,6 +98,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     optional_root_permission_queue,
+    consume_permission_wrapper_resume,
     root_nonpermission_resume_from_context,
     root_permission_resume_from_context,
     tool_invocation_key_from_context,
@@ -194,6 +195,7 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
         context_extra = getattr(invocation.ctx, "extra", None)
         if invocation.ctx is not None and invocation.tool_name == "mcp_fetch_webpage":
             setattr(invocation.ctx, PUBLIC_HTTPS_FETCH_CONTEXT_ATTR, True)
@@ -591,6 +593,11 @@ class AutoPermissionBeforeToolMixin:
                 build_rejected_permission_response("user_rejected"),
                 decision_source="manual_approval",
             )
+
+        if wrapper_resume:
+            # Core re-enters this exact dispatcher to reach the pending inner
+            # call. Static guards above still apply; the inner runs all rails.
+            return runtime_result(None, decision_source="permission_wrapper_resume")
 
         override_result: PermissionHandlingResult = (
             await self._consume_reviewer_override(
