@@ -66,7 +66,6 @@ class TelegramChannel(BaseChannel):
         self._running = False
         self._loop: asyncio.AbstractEventLoop | None = None
         self._on_message_cb: Callable[[Message], Any] | None = None
-        self._chat_sessions: dict[int, str] = {}  # chat_id -> session_id 映射
 
     @property
     def channel_id(self) -> str:
@@ -356,11 +355,8 @@ class TelegramChannel(BaseChannel):
             except Exception as e:
                 logger.debug("Failed to set reaction: %s", e)
 
-            # 生成或获取 session_id
-            session_id = self._chat_sessions.get(chat_id)
-            if not session_id:
-                session_id = f"telegram_{chat_id}"
-                self._chat_sessions[chat_id] = session_id
+            # session_id 可由 chat_id 确定性生成，无需缓存历史 chat 映射
+            session_id = f"telegram_{chat_id}"
 
             # 创建 Message 对象
             user_message = Message(
