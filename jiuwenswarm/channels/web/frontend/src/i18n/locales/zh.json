@@ -880,6 +880,9 @@
   "persistSession": {
     "textRequired": "请在 /persist 后输入任务内容"
   },
+  "crossSession": {
+    "messageBadge": "来自会话：{{title}}"
+  },
   "goal": {
     "formSubmit": "确定",
     "formCancel": "取消",

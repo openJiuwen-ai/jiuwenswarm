@@ -1280,7 +1280,22 @@ async def test_agentserver_executes_claimed_message_in_target_runtime(
         record.message_id
     )
     assert "input_mode" not in request.params
-    assert pushed[0]["session_id"] == "target-1"
+    assert [push["payload"]["event_type"] for push in pushed] == [
+        "chat.processing_status",
+        "chat.final",
+        "chat.processing_status",
+    ]
+    for push in pushed:
+        payload = push["payload"]
+        assert push["session_id"] == "target-1"
+        assert payload["request_id"] == "execution-1"
+        assert payload["turn_request_id"] == "execution-1"
+        assert payload["message_origin"] == "cross_session_agent"
+        assert payload["session_message_id"] == record.message_id
+        assert payload["cross_session"]["source_session_id"] == "source-1"
+        assert payload["cross_session"]["content"] == "check"
+    assert pushed[0]["payload"]["is_processing"] is True
+    assert pushed[-1]["payload"]["is_processing"] is False
 
 
 @pytest.mark.asyncio
@@ -1345,7 +1360,9 @@ async def test_agentserver_persists_question_correlation_before_push(
     result = await server.execute_internal_session_message(record)
 
     assert result.status == "waiting_user"
-    assert ordering[0] == (
+    assert ordering[0][0] == "push"
+    assert ordering[0][1]["payload"]["event_type"] == "chat.processing_status"
+    assert ordering[1] == (
         "persist",
         record.message_id,
         {
@@ -1353,7 +1370,10 @@ async def test_agentserver_persists_question_correlation_before_push(
             "interrupt_source": "ask_user_interrupt",
         },
     )
-    assert ordering[1][0] == "push"
+    assert ordering[2][0] == "push"
+    assert ordering[2][1]["payload"]["event_type"] == "chat.ask_user_question"
+    assert ordering[2][1]["payload"]["request_id"] == "tool-call-1"
+    assert ordering[2][1]["payload"]["turn_request_id"] == "execution-1"
 
 
 @pytest.mark.asyncio

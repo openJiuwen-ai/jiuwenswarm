@@ -890,6 +890,10 @@ class WebChannel(BaseWsChannel):
             }
             for _key in (
                 "role", "member_name", "member_action", "source_channel", "user_id", "display_name",
+                # 后台跨会话轮必须保留请求边界和来源。前端据此创建独立 turn，
+                # 不能把它的流式输出复用到上一轮用户消息上。
+                "request_id", "turn_request_id", "final_mode", "segment_id",
+                "message_origin", "session_message_id", "cross_session",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
@@ -903,6 +907,8 @@ class WebChannel(BaseWsChannel):
                 _val = msg.payload.get(_key)
                 if _val is not None:
                     payload[_key] = _val
+            if cls._should_backfill_request_id(event_name) and "request_id" not in payload and msg.id:
+                payload["request_id"] = msg.id
             if event_name in {"chat.delta", "chat.final", "chat.reasoning"}:
                 agent_template_name = msg.payload.get("agent_template_name")
                 if agent_template_name is not None:

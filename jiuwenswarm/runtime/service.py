@@ -1498,7 +1498,6 @@ class AgentRuntime:
     ) -> None:
         """Resolve stale mailbox waits while this user still owns admission."""
 
-        from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
         if request.req_method not in (ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME):

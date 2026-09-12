@@ -270,12 +270,8 @@ class SessionMessagingToolkit:
         service = self._service
         if service is None and runtime is not None:
             service = getattr(runtime, "session_message_service", None)
-        if (
-            service is None
-            or route is None
-            or not route.session_id
-            or not route.request_id
-        ):
+        route_ready = route is not None and route.session_id and route.request_id
+        if service is None or not route_ready:
             raise SessionMessagingError(
                 "HOST_CAPABILITY_UNAVAILABLE",
                 "cross-Session messaging requires a resident AgentServer",

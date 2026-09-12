@@ -20,6 +20,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmD
 from jiuwenswarm.server.runtime.agent_adapter.interface import (
     JiuWenSwarm,
     _history_user_extra,
+    _with_cross_session_history_metadata,
     _with_heartbeat_history_metadata,
 )
 
@@ -130,6 +131,30 @@ def test_heartbeat_assistant_history_uses_web_compatible_marker_shape() -> None:
     assert extra == {
         "source": "agent-output",
         "metadata": {"automation": params["automation"]},
+    }
+
+
+def test_cross_session_assistant_history_keeps_turn_identity() -> None:
+    extra = _with_cross_session_history_metadata(
+        {"final_mode": "patch_segment"},
+        {
+            "_jiuwenswarm_cross_session": {
+                "message_id": "sm-1",
+                "source_session_id": "source-1",
+                "source_title": "Source",
+            }
+        },
+    )
+
+    assert extra == {
+        "final_mode": "patch_segment",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-1",
+        "cross_session": {
+            "message_id": "sm-1",
+            "source_session_id": "source-1",
+            "source_title": "Source",
+        },
     }
 
 

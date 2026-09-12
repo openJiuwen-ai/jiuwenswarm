@@ -256,7 +256,7 @@ class SessionMessageService:
         eligible.sort(
             key=lambda value: float(value.get("last_message_at") or 0), reverse=True
         )
-        page = eligible[offset : offset + limit]
+        page = eligible[offset:offset + limit]
         session_ids = [str(row["session_id"]) for row in page]
         pending_counts = await self._store_call(
             self._store.pending_counts, session_ids
@@ -680,11 +680,9 @@ class SessionMessageService:
 
     def _ensure_worker(self, target_session_id: str) -> None:
         task = self._workers.get(target_session_id)
-        if (
-            self._stopping
-            or target_session_id in self._blocked_targets
-            or (task is not None and not task.done())
-        ):
+        worker_busy = task is not None and not task.done()
+        target_blocked = target_session_id in self._blocked_targets
+        if self._stopping or target_blocked or worker_busy:
             return
         worker = asyncio.create_task(
             self._consume_target(target_session_id),

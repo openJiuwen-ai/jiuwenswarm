@@ -898,6 +898,9 @@
   "persistSession": {
     "textRequired": "Enter a task after /persist"
   },
+  "crossSession": {
+    "messageBadge": "From session: {{title}}"
+  },
   "goal": {
     "formSubmit": "Confirm",
     "formCancel": "Cancel",

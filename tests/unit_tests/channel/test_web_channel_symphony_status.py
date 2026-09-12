@@ -94,6 +94,47 @@ def test_web_channel_exposes_heartbeat_marker_without_routing_metadata():
     assert "ws_id" not in frame["payload"]["metadata"]
 
 
+def test_web_channel_preserves_cross_session_stream_identity():
+    cross_session = {
+        "message_id": "sm-1",
+        "source_session_id": "source-1",
+        "source_title": "Source",
+        "content": "check",
+    }
+    msg = Message(
+        id="execution-1",
+        type="event",
+        channel_id="web",
+        session_id="target-1",
+        params={},
+        timestamp=1.0,
+        ok=True,
+        payload={
+            "event_type": "chat.final",
+            "content": "done",
+            "turn_request_id": "execution-1",
+            "final_mode": "patch_segment",
+            "message_origin": "cross_session_agent",
+            "session_message_id": "sm-1",
+            "cross_session": cross_session,
+        },
+        event_type=EventType.CHAT_FINAL,
+    )
+
+    payload = WebChannel._build_event_payload(msg, "chat.final")
+
+    assert payload == {
+        "session_id": "target-1",
+        "request_id": "execution-1",
+        "turn_request_id": "execution-1",
+        "content": "done",
+        "final_mode": "patch_segment",
+        "message_origin": "cross_session_agent",
+        "session_message_id": "sm-1",
+        "cross_session": cross_session,
+    }
+
+
 def test_web_channel_preserves_goal_structured_payloads():
     goal = {
         "goal_id": "goal-1",

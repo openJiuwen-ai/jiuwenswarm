@@ -11,7 +11,7 @@ import uuid
 from contextlib import closing
 from dataclasses import asdict, dataclass
 from pathlib import Path
-from typing import Any
+from typing import Any, Iterable
 
 
 ACTIVE_SESSION_MESSAGE_STATUSES = frozenset(
@@ -146,12 +146,11 @@ class SessionMessageStore:
                         ON session_messages(chain_id, sequence);
                     """
                 )
-                columns = {
-                    str(row[1])
-                    for row in conn.execute(
-                        "PRAGMA table_info(session_messages)"
-                    ).fetchall()
-                }
+                columns = set()
+                for row in conn.execute(
+                    "PRAGMA table_info(session_messages)"
+                ).fetchall():
+                    columns.add(str(row[1]))
                 for name in ("interrupt_request_id", "interrupt_source"):
                     if name not in columns:
                         conn.execute(
@@ -199,6 +198,17 @@ class SessionMessageStore:
             retry_of=str(row["retry_of"]),
         )
 
+    @classmethod
+    def _rows_to_records(
+        cls, rows: Iterable[sqlite3.Row]
+    ) -> list[SessionMessageRecord]:
+        records: list[SessionMessageRecord] = []
+        for row in rows:
+            record = cls._row_to_record(row)
+            if record is not None:
+                records.append(record)
+        return records
+
     def enqueue(
         self,
         *,
@@ -231,13 +241,19 @@ class SessionMessageStore:
             ).fetchone()
             if existing_row is not None:
                 existing = self._row_to_record(existing_row)
-                assert existing is not None
-                if (
-                    existing.owner_scope_id != owner_scope_id
-                    or existing.source_session_id != source_session_id
-                    or existing.target_session_id != target_session_id
-                    or existing.content != content
-                ):
+                if existing is None:
+                    raise SessionMessageStoreError(
+                        "idempotent message row could not be decoded"
+                    )
+                same_request = (
+                    existing.owner_scope_id == owner_scope_id
+                    and existing.source_session_id == source_session_id
+                )
+                same_delivery = (
+                    existing.target_session_id == target_session_id
+                    and existing.content == content
+                )
+                if not (same_request and same_delivery):
                     raise SessionMessageIdempotencyConflict(
                         "idempotency key was reused with different arguments"
                     )
@@ -299,7 +315,10 @@ class SessionMessageStore:
                 "SELECT * FROM session_messages WHERE message_id = ?", (message_id,)
             ).fetchone()
         record = self._row_to_record(row)
-        assert record is not None
+        if record is None:
+            raise SessionMessageStoreError(
+                "committed message row could not be decoded"
+            )
         return record, True
 
     def get(self, message_id: str) -> SessionMessageRecord | None:
@@ -438,9 +457,7 @@ class SessionMessageStore:
                 """,
                 tuple(message_ids),
             ).fetchall()
-        return [
-            record for row in updated_rows if (record := self._row_to_record(row))
-        ]
+        return self._rows_to_records(updated_rows)
 
     def claim(
         self,
@@ -699,9 +716,7 @@ class SessionMessageStore:
                 """,
                 tuple(message_ids),
             ).fetchall()
-        return [
-            record for row in updated_rows if (record := self._row_to_record(row))
-        ]
+        return self._rows_to_records(updated_rows)
 
     def pending_counts(self, target_session_ids: list[str]) -> dict[str, int]:
         self.ensure_schema()
@@ -770,4 +785,4 @@ class SessionMessageStore:
                 """,
                 (owner_scope_id, session_id, session_id, limit, offset),
             ).fetchall()
-        return [record for row in rows if (record := self._row_to_record(row))]
+        return self._rows_to_records(rows)

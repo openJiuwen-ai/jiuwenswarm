@@ -77,6 +77,9 @@ import {
   heartbeatAssistantMessageId,
   heartbeatErrorMessageId,
   refreshHeartbeatListAtRunStart,
+  extractCrossSessionMessage,
+  crossSessionUserMessageId,
+  crossSessionAssistantMessageId,
 } from '../utils';
 import {
   findOverlappingFileExecutionEvent,
@@ -112,6 +115,37 @@ const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 
 function streamDeltaBatchKey(sessionId: string, streamId: string): string {
   return `${sessionId}\u0000${streamId}`;
+}
+
+function ensureCrossSessionUserTurn(
+  sessionId: string,
+  crossSession: NonNullable<Message['crossSession']>,
+  prompt: string,
+  timestamp: string
+): void {
+  const chatStore = useChatStore.getState();
+  const userMsgId = crossSessionUserMessageId(crossSession.messageId);
+  const existing = chatStore
+    .getRuntime(sessionId)
+    ?.messages.find(
+      (message) =>
+        message.id === userMsgId ||
+        message.crossSession?.messageId === crossSession.messageId
+    );
+  if (existing) {
+    if (prompt && existing.content !== prompt) {
+      chatStore.updateMessage(sessionId, existing.id, { content: prompt });
+    }
+    return;
+  }
+  chatStore.stopStreaming(sessionId);
+  chatStore.addMessage(sessionId, {
+    id: userMsgId,
+    role: 'user',
+    content: prompt,
+    timestamp,
+    crossSession,
+  });
 }
 
 function isCompletedResumeResult(interruptResult: unknown): boolean {
@@ -2404,6 +2438,42 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           typeof payload.content === 'string' ? payload.content : ''
         );
 
+        // 跨会话后台轮使用 request_id 固定到自己的 assistant 气泡，不复用当前
+        // session 的 currentStreamId；否则会把新回复追加/覆盖到上一轮回复。
+        const crossSession = extractCrossSessionMessage(payload);
+        if (crossSession && content) {
+          ensureCrossSessionUserTurn(
+            sessionId,
+            crossSession,
+            crossSession.content || '',
+            normalizeEventTimestampIso(payload.timestamp)
+          );
+          const assistantMsgId = crossSessionAssistantMessageId(
+            payload.turn_request_id ?? payload.request_id,
+            crossSession.messageId
+          );
+          const chatStore = useChatStore.getState();
+          const existing = chatStore
+            .getRuntime(sessionId)
+            ?.messages.find((message) => message.id === assistantMsgId);
+          if (existing) {
+            chatStore.updateMessage(sessionId, assistantMsgId, {
+              content: (existing.content || '') + content,
+            });
+          } else {
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: normalizeEventTimestampIso(payload.timestamp),
+              isStreaming: true,
+              crossSession,
+              ...(agentTemplateName ? { agentTemplateName } : {}),
+            });
+          }
+          return;
+        }
+
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
           const memberId = getTeamPayloadMemberName(payload);
           if (memberId) {
@@ -2686,6 +2756,51 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
         const content = normalizeFinalContent(payload);
         finishContextCompressionTurn(sessionId);
+
+        // 与 delta 使用同一稳定 ID，只收尾本次跨会话后台请求。这里不能执行普通
+        // final 的 turn collapse/segment rewrite，否则可能重写目标会话已有回复。
+        const crossSession = extractCrossSessionMessage(payload);
+        if (crossSession) {
+          ensureCrossSessionUserTurn(
+            sessionId,
+            crossSession,
+            crossSession.content || '',
+            normalizeEventTimestampIso(payload.timestamp)
+          );
+          const assistantMsgId = crossSessionAssistantMessageId(
+            payload.turn_request_id ?? payload.request_id,
+            crossSession.messageId
+          );
+          const chatStore = useChatStore.getState();
+          const existing = chatStore
+            .getRuntime(sessionId)
+            ?.messages.find((message) => message.id === assistantMsgId);
+          const completedAt = normalizeEventTimestampIso(payload.timestamp);
+          if (existing) {
+            chatStore.updateMessage(sessionId, assistantMsgId, {
+              ...(content.trim() ? { content } : {}),
+              isStreaming: false,
+              completedAt,
+              crossSession,
+            });
+          } else if (content.trim()) {
+            chatStore.addMessage(sessionId, {
+              id: assistantMsgId,
+              role: 'assistant',
+              content,
+              timestamp: completedAt,
+              completedAt,
+              isStreaming: false,
+              crossSession,
+            });
+          }
+          if (!chatStore.getRuntime(sessionId)?.isLoadingHistory) {
+            chatStore.setExecutionError(sessionId, null);
+            chatStore.setProcessing(sessionId, false);
+            chatStore.setThinking(sessionId, false);
+          }
+          return;
+        }
 
         // team 模式下，过滤成员输出，只保留外层 leader 回复。
         if (isHiddenTeamTeammateMessagePayload(currentMode ?? 'agent', payload)) {
@@ -3587,6 +3702,23 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 加载历史消息时忽略处理状态更新
         if (useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) return;
         const isProcessingNow = Boolean(payload.is_processing);
+
+        // 服务器在跨会话执行前先推送带原始问题的 processing=true。把它显式
+        // 追加为一个新 user turn，并关闭可能残留的旧 stream 游标；历史消息本身
+        // 不做替换。稳定 message_id 让重复推送/重连不会生成重复气泡。
+        const crossSession = extractCrossSessionMessage(payload);
+        if (crossSession && isProcessingNow) {
+          const prompt =
+            typeof payload.content === 'string' && payload.content.trim()
+              ? payload.content
+              : crossSession.content || '';
+          ensureCrossSessionUserTurn(
+            sessionId,
+            crossSession,
+            prompt,
+            normalizeEventTimestampIso(payload.timestamp)
+          );
+        }
 
         // §8 步骤1：Heartbeat 自动触发开始时（processing_status=true 带 metadata.automation），
         // 用 payload.content upsert 本轮 user 消息（id=heartbeat-user-<run_id>）。
