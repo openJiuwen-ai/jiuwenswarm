@@ -68,16 +68,18 @@ def _load_or_create_secret() -> str:
             existing = secret_file.read_text(encoding="utf-8").strip()
             if existing and len(existing) >= 32:
                 return existing
-    except Exception:
-        logger.debug("[WebFileDownload] 读取密钥文件失败，将重新生成")
+    except (OSError, UnicodeDecodeError):
+        logger.debug("[WebFileDownload] 读取密钥文件失败，将重新生成", exc_info=True)
 
     new_secret = secrets.token_hex(32)
     try:
         secret_file.parent.mkdir(parents=True, exist_ok=True)
         secret_file.write_text(new_secret, encoding="utf-8")
         os.chmod(secret_file, 0o600)
-    except Exception:
-        logger.warning("[WebFileDownload] 写入密钥文件失败，使用内存密钥（重启后失效）")
+    except OSError:
+        logger.warning(
+            "[WebFileDownload] 写入密钥文件失败，使用内存密钥（重启后失效）", exc_info=True
+        )
 
     return new_secret
 
@@ -229,7 +231,8 @@ class WebFileDownloadManager:
                 ):
                     return None
             return payload
-        except Exception:
+        except (ValueError, TypeError):
+            # Malformed token (bad base64 / JSON / types) — invalid by definition.
             logger.debug("[WebFileDownload] 令牌解析异常", exc_info=True)
             return None
 
