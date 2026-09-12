@@ -387,13 +387,9 @@ class SubagentPermissionRail(ConfirmInterruptRail):
 
         # dev-stable：agent-core 引擎无 Skill overlay 钩子，手工合成后以临时引擎裁决。
         effective_config = self._adjudicate_config(session_id, agent_scope_id)
-        template_trusted = []
-        if self._engine is not None:
-            template_trusted = list(getattr(self._engine, "trusted_dirs", None) or [])
         adjudication_engine = WorkspaceUntrustedPolicyEngine(
             config=effective_config,
             workspace_root=self._workspace_root,
-            trusted_dirs=template_trusted,
         )
         result = await adjudication_engine.check_permission(
             TOOL_NAME_ALIASES.get(tool_name, tool_name),
