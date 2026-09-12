@@ -4,7 +4,7 @@
 
 检测类型:
   - generic_repeat:      相同工具+参数重复 (WARNING≥10)
-  - unknown_tool_repeat: 错误工具连续调用 (CRITICAL≥10)
+  - unknown_tool_repeat: 同一工具连续报错 (CRITICAL≥10)；名字是历史遗留，与工具是否存在无关
   - global_breaker:      工具无进展兜底中断 (CRITICAL≥30)
   - ping_pong:           两工具交替循环，尾部无进展轮次 (WARNING≥10, CRITICAL≥20)
 """
@@ -32,13 +32,32 @@ class CircuitBreakerConfig:
     critical_threshold: int = 20
     global_breaker_threshold: int = 30
     unknown_tool_threshold: int = 10
+    #: Identical tool + identical arguments + identical result, repeated. This
+    #: had no critical level at any count: the signature was WARNING-only, and a
+    #: warning is a log line the model never sees. It is also the cheapest loop
+    #: to be certain about -- a deterministic failure repeating byte for byte
+    #: needs no sample size, so the threshold is low on purpose.
+    #:
+    #: Two stages, because a low threshold that aborts outright would also cut
+    #: legitimate polling -- checking the same unfinished build three times is
+    #: identical tool, arguments and result, and is not a fault. So the third
+    #: identical result tells the model, and only the fifth ends the run.
+    #:
+    #: Either stage is disabled by setting it to ``0`` or below. Without that,
+    #: an operator trying to turn the rule off by zeroing a threshold gets the
+    #: clamp below instead, which would make it *more* aggressive.
+    identical_repeat_threshold: int = 3
+    identical_repeat_abort_threshold: int = 5
 
     @property
     def history_size(self) -> int:
+        # Every detector's window has to fit, or a raised threshold silently
+        # becomes a rule that can never fire.
         return max(
             4 * self.critical_threshold,
             2 * self.global_breaker_threshold,
             2 * self.unknown_tool_threshold,
+            2 * self.identical_repeat_abort_threshold,
         )
 
 _invoke_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
@@ -51,22 +70,40 @@ _invoke_sid: contextvars.ContextVar[str | None] = contextvars.ContextVar(
 _MESSAGES: dict[str, dict[str, str]] = {
     "cn": {
         "global_circuit_breaker": "全局断路器: {tool_name} 连续 {count} 次无进展",
-        "unknown_tool_repeat": "未知工具 {tool_name} 连续调用 {count} 次，停止重试",
+        "unknown_tool_repeat": "工具 {tool_name} 连续 {count} 次调用均以错误结束，停止重试",
         "ping_pong_critical": "Ping-Pong 循环: {count} 轮交替无进展，阻断",
         "ping_pong_warning": "Ping-Pong 警告: {count} 轮交替无进展",
         "generic_repeat": "工具 {tool_name} 已重复调用 {count} 次，请检查是否有效",
+        "identical_repeat": (
+            "工具 {tool_name} 已用完全相同的参数调用 {count} 次并返回完全相同的结果。"
+            "重试不会改变结果——请换一种方式，或说明为何无法继续。"
+        ),
+        "identical_repeat_abort": (
+            "工具 {tool_name} 已用完全相同的参数调用 {count} 次并返回完全相同的结果。"
+            "重试不会改变结果，本次执行中止。"
+        ),
     },
     "en": {
         "global_circuit_breaker": (
             "Circuit breaker: {tool_name} made no progress for {count} consecutive calls"
         ),
         "unknown_tool_repeat": (
-            "Unknown tool {tool_name} called {count} times in a row, stopping retries"
+            "Tool {tool_name} failed on {count} consecutive calls, stopping retries"
         ),
         "ping_pong_critical": (
             "Ping-pong loop: {count} alternating calls with no progress, blocked"
         ),
         "ping_pong_warning": "Ping-pong warning: {count} alternating calls with no progress",
+        "identical_repeat": (
+            "Tool {tool_name} was called {count} times with identical arguments and "
+            "returned an identical result every time. Retrying will not change it -- "
+            "try a different approach, or say why you cannot proceed."
+        ),
+        "identical_repeat_abort": (
+            "Tool {tool_name} was called {count} times with identical arguments and "
+            "returned an identical result every time. Retrying cannot change it. "
+            "Aborting this run."
+        ),
         "generic_repeat": (
             "Tool {tool_name} has been repeated {count} times, please verify it is effective"
         ),
@@ -74,6 +111,13 @@ _MESSAGES: dict[str, dict[str, str]] = {
 }
 
 _DEFAULT_LANGUAGE = "cn"
+
+#: How many calls to *other* tools may sit between two identical repeats before
+#: the streak is treated as broken. Counted per gap, not across the whole walk.
+#: Without a bound, an identical pair from far back in a long session could be
+#: stitched onto a recent one; without any skipping at all, a single interleaved
+#: `read_file` hid the incident's pattern completely.
+_MAX_INTERLEAVED_SKIPS = 6
 
 # 按工具排除不影响执行语义的顶层 metadata 键（不参与 args_hash）。
 _METADATA_ONLY_TOP_LEVEL: dict[str, frozenset[str]] = {
@@ -429,12 +473,34 @@ class CircuitBreakerRail(DeepAgentRail):
             if result.stuck and result.level == "critical":
                 message = self._format_message(result)
                 logger.error("[CircuitBreaker] %s", message)
+                # `error`, not `answer`. Cutting a stuck run is a failure, and
+                # reporting it as an answer is how a run that never worked ends
+                # up looking like one that did -- the caller sees a normal
+                # response and no signal that anything was aborted.
                 ctx.request_force_finish({
                     "output": message,
-                    "result_type": "answer",
+                    "result_type": "error",
                 })
             elif result.stuck and result.level == "warning":
-                logger.warning("[CircuitBreaker] %s", self._format_message(result))
+                # Log only, deliberately -- do NOT push this to the model.
+                #
+                # An earlier version of this rail called `ctx.push_steering` here,
+                # reasoning that a warning only the log can see cannot change the
+                # next turn. Replaying the 2026-08-02 incident says the opposite.
+                # `push_steering` resolves to `_admit_user_message(..., prefix=
+                # "[STEERING] ")`, so the warning arrives as a message appended
+                # *after* the failing tool result. Measured on the model that
+                # suffered the incident, appending anything there takes the
+                # failure out of the position the model answers: it recovers 10/10
+                # when the tool result is the last thing in context, and repeats
+                # the failing call 8 times in 20 when a steering message follows
+                # it. The content did not matter -- a neutral note about the
+                # repository did it as reliably as an instruction to stop.
+                #
+                # So the warning stage informs operators, and the abort at
+                # `identical_repeat_abort_threshold` is what actually stops a run.
+                message = self._format_message(result)
+                logger.warning("[CircuitBreaker] %s", message)
 
     # ------------------------------------------------------------------
     # _detect: 四种检测器按优先级依次检查
@@ -475,6 +541,26 @@ class CircuitBreakerRail(DeepAgentRail):
             return DetectionResult(stuck=True, level="warning",
                 detector="ping_pong", count=ping_pong.no_progress_rounds,
                 msg_key="ping_pong_warning", tool_name=tool_name)
+
+        warn_at = max(2, cfg.identical_repeat_threshold)
+        abort_at = max(warn_at + 1, cfg.identical_repeat_abort_threshold)
+
+        # The abort only counts *failing* repeats; the warning counts any. See
+        # `_count_recent_identical` for why polling must not be cut.
+        if cfg.identical_repeat_abort_threshold > 0:
+            failing = self._count_recent_identical(
+                history, tool_name, args_hash, failing_only=True)
+            if failing >= abort_at:
+                return DetectionResult(stuck=True, level="critical",
+                    detector="identical_repeat", count=failing,
+                    msg_key="identical_repeat_abort", tool_name=tool_name)
+
+        if cfg.identical_repeat_threshold > 0:
+            identical = self._count_recent_identical(history, tool_name, args_hash)
+            if identical >= warn_at:
+                return DetectionResult(stuck=True, level="warning",
+                    detector="identical_repeat", count=identical,
+                    msg_key="identical_repeat", tool_name=tool_name)
 
         recent = self._count_recent_same(history, tool_name, args_hash)
         if recent >= cfg.warning_threshold:
@@ -638,6 +724,64 @@ class CircuitBreakerRail(DeepAgentRail):
             1 for r in history
             if r.tool_name == tool_name and r.args_hash == args_hash
         )
+
+    def _count_recent_identical(
+        self,
+        history: list[ToolCallRecord],
+        tool_name: str,
+        args_hash: str,
+        *,
+        failing_only: bool = False,
+    ) -> int:
+        """Trailing calls identical in tool, arguments *and* result.
+
+        Stricter than ``_count_recent_same``, which ignores the outcome. A tool
+        that returns something new each time is making progress even when the
+        arguments repeat; one that returns the same bytes is not.
+
+        ``failing_only`` additionally requires every call in the streak to have
+        failed. Identical *successful* results are the signature of legitimate
+        polling -- five `git status` on a clean tree, or a readiness check on a
+        service that is not up yet -- and ending a run over that would be a new
+        way to break working agents. The warning stage counts either kind so the
+        log still shows the pattern; only the abort insists on failure.
+        """
+        streak = 0
+        skipped = 0
+        expected_result: str | None = None
+        for record in reversed(history):
+            if record.tool_name != tool_name:
+                # Unrelated work with another tool does not end the streak. A
+                # model that writes a todo or reads a file between attempts is
+                # still not making progress on the failing command, and requiring
+                # the repeats to be strictly consecutive made one interleaved
+                # call enough to hide the whole pattern. `_get_no_progress_streak`
+                # already skips for the same reason.
+                #
+                # Bounded per gap, so a repeat from far back in the session
+                # cannot be stitched onto a recent one. The budget is reset
+                # once a repeat is accepted below: a cumulative budget caps the
+                # streak at roughly the budget itself, so a loop with two
+                # interleaved calls per attempt could never reach the abort.
+                skipped += 1
+                if skipped > _MAX_INTERLEAVED_SKIPS:
+                    break
+                continue
+            if record.args_hash != args_hash:
+                # Same tool, different arguments: that *is* variation, so the
+                # streak genuinely ends here.
+                break
+            if record.result_hash is None:
+                break
+            if failing_only and not record.has_error:
+                break
+            if expected_result is None:
+                expected_result = record.result_hash
+            elif record.result_hash != expected_result:
+                break
+            streak += 1
+            skipped = 0
+        return streak
 
     def _get_unknown_tool_streak(
         self,
