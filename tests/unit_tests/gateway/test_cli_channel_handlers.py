@@ -152,6 +152,113 @@ class FailedOnceScheduledDisconnectMessageHandler(FakeMessageHandler):
         )
 
 
+class RewindCancelMessageHandler(FakeMessageHandler):
+    def __init__(self):
+        super().__init__()
+        self.rewind_cancels: list[tuple[str, str, dict]] = []
+
+    async def cancel_agent_session_work(
+        self,
+        channel_id,
+        session_id,
+        *,
+        user_id=None,
+        publish_interrupt_result=False,
+    ):
+        self.rewind_cancels.append(
+            (
+                channel_id,
+                session_id,
+                {
+                    "user_id": user_id,
+                    "publish_interrupt_result": publish_interrupt_result,
+                },
+            )
+        )
+        return True
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_work_before_rewind_invokes_message_handler():
+    handler = RewindCancelMessageHandler()
+    await tui_connect_module._cancel_session_work_before_rewind(
+        handler, "sess-1", user_id="alice",
+    )
+    assert handler.rewind_cancels == [
+        ("tui", "sess-1", {"user_id": "alice", "publish_interrupt_result": False}),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_session_rewind_cancels_in_flight_work_before_rewind(monkeypatch):
+    server = FakeGatewayServer()
+    handler = RewindCancelMessageHandler()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.session_ops_service.rewind_session",
+        lambda **kwargs: {"remaining_records": 1},
+    )
+
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=_offline_local_client(),
+            message_handler=handler,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+
+    await server.local_handlers["/tui"]["session.rewind"](
+        object(),
+        "req-rewind",
+        {"session_id": "sess-rewind", "turn_index": 1},
+        "sess-rewind",
+    )
+
+    assert handler.rewind_cancels == [
+        ("tui", "sess-rewind", {"user_id": None, "publish_interrupt_result": False}),
+    ]
+    assert server.responses[-1]["ok"] is True
+
+
+@pytest.mark.asyncio
+async def test_session_rewind_and_restore_cancels_before_local_fallback(monkeypatch):
+    server = FakeGatewayServer()
+    handler = RewindCancelMessageHandler()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.session_ops_service.rewind_session",
+        lambda **kwargs: {"remaining_records": 0},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.session_ops_service.restore_session_files",
+        lambda **kwargs: {"restored_files": [], "deleted_files": [], "errors": []},
+    )
+
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=_offline_local_client(),
+            message_handler=handler,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+
+    await server.local_handlers["/tui"]["session.rewind_and_restore"](
+        object(),
+        "req-rewind-restore",
+        {"session_id": "sess-restore", "turn_index": 2},
+        "sess-restore",
+    )
+
+    assert handler.rewind_cancels == [
+        ("tui", "sess-restore", {"user_id": None, "publish_interrupt_result": False}),
+    ]
+    assert server.responses[-1]["ok"] is True
+
+
 @pytest.mark.asyncio
 async def test_register_cli_handlers_registers_local_methods():
     server = FakeGatewayServer()

@@ -1564,6 +1564,43 @@ class MessageHandler(ABC):
             )
             return False
 
+    async def cancel_agent_session_work(
+        self,
+        channel_id: str,
+        session_id: str,
+        *,
+        user_id: str | None = None,
+        publish_interrupt_result: bool = False,
+    ) -> bool:
+        """Cancel gateway streams and AgentServer work for one session.
+
+        Control commands such as TUI rewind reuse the disconnect cancel stub.
+        ``publish_interrupt_result`` defaults to ``False`` so rewind does not
+        surface an intermediate interrupt notice to the user.
+        """
+        cid = (channel_id or "").strip()
+        sid = (session_id or "").strip()
+        if not cid or not sid:
+            return True
+        stub = self._build_disconnect_cancel_message(cid, sid, user_id=user_id)
+        try:
+            return bool(
+                await self._cancel_agent_work_for_session(
+                    stub,
+                    sid,
+                    publish_interrupt_result=publish_interrupt_result,
+                    channel_id=cid,
+                )
+            )
+        except Exception:
+            logger.warning(
+                "[MessageHandler] session work cancel failed: channel_id=%s session_id=%s",
+                cid,
+                sid,
+                exc_info=True,
+            )
+            return False
+
     async def _delayed_disconnect_cancel(
         self,
         channel_id: str,
