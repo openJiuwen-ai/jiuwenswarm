@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.common.tools.pdf_tools import (
     _format_page_list,
     _normalize_request,
     _parse_page_ranges,
+    _resolve_pdf_path,
     read_pdf,
 )
 
@@ -323,6 +324,77 @@ async def test_read_pdf_relative_path_matches_permission_primary_workspace(
     assert facts.read_paths == (pdf_path.as_posix(),)
     assert "Primary workspace anchored" in result
     assert "Wrong global workspace file" not in result
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "url",
+    [
+        "https://example.invalid/pdf/2601.01234",
+        "http://example.invalid/a.pdf",
+        "HTTPS://example.invalid/a.pdf",
+        "ftp://example.invalid/a.pdf",
+    ],
+)
+async def test_read_pdf_tells_the_caller_to_fetch_a_url_first(
+    url: str, tmp_path: Path
+):
+    """A URL must produce the remedy, not a missing-local-file report.
+
+    A URL is not absolute as a path, so it used to be joined onto the workspace
+    and reported as a file that does not exist — an error whose stated remedy is
+    to look for a local file, which is not what the caller needs to do.
+    """
+    init_cwd(str(tmp_path), project_root=str(tmp_path), workspace=str(tmp_path))
+
+    result = await read_pdf.invoke({"pdf_path": url})
+
+    assert result.startswith("[ERROR]")
+    assert "must be a local file path, not a URL" in result
+    assert "Fetch the document" in result
+    assert "do not guess a filename" in result
+    # Neither the old wording nor the workspace path the URL used to be
+    # appended to, both of which sent the caller looking for a local file.
+    assert "does not exist" not in result
+    assert str(tmp_path) not in result
+
+
+def test_resolve_pdf_path_accepts_a_local_name_containing_a_colon(tmp_path: Path):
+    """Only ``scheme://`` is a URL: a colon alone is legal in a relative path."""
+    init_cwd(str(tmp_path), project_root=str(tmp_path), workspace=str(tmp_path))
+    local = tmp_path / "notes:2026.pdf"
+    local.write_bytes(b"%PDF-1.4\n")
+
+    assert _resolve_pdf_path("notes:2026.pdf") == local.resolve()
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_missing_absolute_path_names_the_next_action(tmp_path: Path):
+    """A missing file still fails — but says how to obtain a path that works."""
+    missing = tmp_path / "guessed.pdf"
+
+    result = await read_pdf.invoke({"pdf_path": str(missing)})
+
+    assert result.startswith("[ERROR]")
+    assert f"No PDF at {missing}" in result
+    assert "do not guess a filename" in result
+    assert "List the containing directory" in result
+    # An absolute path was not anchored anywhere, so it must not claim it was.
+    assert "resolved against the runtime workspace" not in result
+
+
+@pytest.mark.asyncio
+async def test_read_pdf_missing_relative_path_names_the_directory_searched(
+    tmp_path: Path,
+):
+    """A relative pdf_path is anchored somewhere the caller never named."""
+    init_cwd(str(tmp_path), project_root=str(tmp_path), workspace=str(tmp_path))
+
+    result = await read_pdf.invoke({"pdf_path": "guessed.pdf"})
+
+    assert result.startswith("[ERROR]")
+    assert f"No PDF at {tmp_path / 'guessed.pdf'}" in result
+    assert "relative pdf_path resolved against the runtime workspace" in result
 
 
 @pytest.mark.asyncio
