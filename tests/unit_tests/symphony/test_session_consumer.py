@@ -552,6 +552,172 @@ def test_session_consumer_reuses_session_activated_skills_incrementally(
     ]
 
 
+def test_session_consumer_defers_permission_placeholder_until_matching_resume(
+    monkeypatch,
+    tmp_path,
+):
+    session_root = tmp_path / "sessions"
+    graph_dir = tmp_path / "graph"
+    session_id = "session-permission-resume"
+    ask_user_call_id = "call-ask-user"
+    interrupted_call_id = "call-write-file"
+    _use_session_root(monkeypatch, session_root)
+    _write_history(
+        session_root,
+        session_id,
+        [*_plan_records(), _completion_record("req-plan")],
+    )
+    consume_session_history(
+        session_id,
+        completed_request_id="req-plan",
+        graph_dir=graph_dir,
+    )
+
+    execution_records = [
+        {
+            "role": "user",
+            "request_id": "req-run",
+            "content": "确认，继续执行",
+        }
+    ]
+    for index, current_skill_id in enumerate(("ocr-invoice", "verify-invoice")):
+        execution_records.extend(
+            _tool_exchange(
+                "req-run",
+                call_id=f"load-{index}",
+                tool_name="skill_tool",
+                arguments={"skill_name": current_skill_id},
+            )
+        )
+    execution_records.extend(
+        [
+            {
+                "role": "assistant",
+                "request_id": "req-run",
+                "event_type": "chat.tool_result",
+                "tool_name": "ask_user",
+                "tool_call_id": ask_user_call_id,
+                "result": "success=False data=None error=''",
+            },
+            {
+                "role": "assistant",
+                "request_id": "req-run",
+                "event_type": "chat.final",
+                "content": "等待用户确认写入",
+            },
+            _completion_record("req-run"),
+        ]
+    )
+    _append_history(session_root, session_id, execution_records)
+
+    interrupted = consume_session_history(
+        session_id,
+        completed_request_id="req-run",
+        graph_dir=graph_dir,
+    )
+
+    assert interrupted["outcomes"] == []
+    assert read_events(graph_dir) == []
+    pending = _read_session_state(graph_dir, session_id)["pending_plan"]
+    assert pending["deferred_tool_call_ids"] == [ask_user_call_id]
+    assert pending["skipped_turns"] == 0
+
+    ask_user_resumed = _tool_exchange(
+        "req-ask-user-resume",
+        call_id=ask_user_call_id,
+        tool_name="ask_user",
+        arguments={"question": "是否允许写入？"},
+        result="本次允许",
+        success=None,
+    )
+    for record in ask_user_resumed:
+        record["source"] = "ask_user_interrupt"
+    ask_user_resumed.extend(
+        [
+            {
+                "role": "assistant",
+                "request_id": "req-ask-user-resume",
+                "event_type": "chat.tool_result",
+                "tool_name": "write_file",
+                "tool_call_id": interrupted_call_id,
+                "result": "success=False data=None error=''",
+                "source": "ask_user_interrupt",
+            },
+            _completion_record("req-ask-user-resume"),
+        ]
+    )
+    _append_history(session_root, session_id, ask_user_resumed)
+
+    waiting_for_permission = consume_session_history(
+        session_id,
+        completed_request_id="req-ask-user-resume",
+        graph_dir=graph_dir,
+    )
+
+    assert waiting_for_permission["outcomes"] == []
+    assert read_events(graph_dir) == []
+    pending = _read_session_state(graph_dir, session_id)["pending_plan"]
+    assert pending["deferred_tool_call_ids"] == [
+        ask_user_call_id,
+        interrupted_call_id,
+    ]
+    assert pending["skipped_turns"] == 0
+
+    for request_id, call_id in (
+        ("req-unrelated-resume", "call-unrelated"),
+        ("req-matching-resume", interrupted_call_id),
+    ):
+        resumed_records = [
+            record
+            for record in _tool_exchange(
+                request_id,
+                call_id=call_id,
+                tool_name="write_file",
+                arguments={"file_path": "/tmp/result.md"},
+                result="success=True data={'bytes_written': 1} error=None",
+                success=None,
+            )
+        ]
+        for record in resumed_records:
+            record["source"] = "permission_interrupt"
+        resumed_records.extend(
+            [
+                {
+                    "role": "assistant",
+                    "request_id": request_id,
+                    "event_type": "chat.final",
+                    "content": "文件写入完成",
+                    "source": "permission_interrupt",
+                },
+                _completion_record(request_id),
+            ]
+        )
+        _append_history(session_root, session_id, resumed_records)
+        resumed = consume_session_history(
+            session_id,
+            completed_request_id=request_id,
+            graph_dir=graph_dir,
+        )
+        if call_id != interrupted_call_id:
+            assert resumed["outcomes"] == []
+            assert session_feedback_status(graph_dir)["pending_plan_count"] == 1
+
+    assert resumed["outcomes"][0]["outcome"] == "success"
+    assert resumed["outcomes"][0]["request_id"] == "req-matching-resume"
+    assert resumed["outcomes"][0]["correlation"] == (
+        "session_activation_with_permission_resume_tool_execution"
+    )
+    events = read_events(graph_dir)
+    assert len(events) == 1
+    edge = read_overlay(graph_dir)["edges"][
+        "ocr-invoice->verify-invoice:can_feed"
+    ]
+    assert edge["success_count"] == 1
+    assert edge["failure_count"] == 0
+    assert edge["runtime_weight"] == 1.05
+    assert session_feedback_status(graph_dir)["pending_plan_count"] == 0
+
+
 def test_session_consumer_attributes_single_skill_loaded_with_read_file(
     monkeypatch,
     tmp_path,
