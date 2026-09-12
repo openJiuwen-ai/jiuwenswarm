@@ -53,6 +53,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
     RegistryError,
     RegistryNotFoundError,
     RegistryValidationError,
+    cmd_for_access_mode,
     compute_backoff_delay,
     instance_service_id,
 )
@@ -1660,8 +1661,13 @@ class AgentOSRouterClient(AgentServerClient):
         *,
         user_id: str,
         current_agent_type: str = "",
+        access_mode: str = "",
     ) -> dict[str, Any]:
-        """Handle ``3rdagent.list``: list switchable third-party agent images."""
+        """Handle ``3rdagent.list``: list switchable third-party agent images.
+
+        Each agent includes ``cmd``. TUI requests pass ``access_mode="tui"``
+        so ``cmd`` is taken from the registry row whose ``name`` is ``tui``.
+        """
         uid = str(user_id or "").strip()
         if not uid:
             return {
@@ -1669,20 +1675,19 @@ class AgentOSRouterClient(AgentServerClient):
                 "error": "user_id is required for AgentOS routing",
                 "code": "BAD_REQUEST",
             }
+        mode = str(access_mode or "").strip()
         images = await self._registry.list_user_images(uid)
         agents: list[dict[str, Any]] = []
         for image in images:
-            agent_type = str(
-                (image.metadata or {}).get("agent_type") or image.image_name or ""
-            ).strip()
+            meta = dict(image.metadata or {})
+            name = str(meta.get("name") or image.image_name or "").strip()
+            agent_type = str(meta.get("agent_type") or name).strip()
             if not agent_type:
                 continue
             agents.append(
                 {
                     "agent_type": agent_type,
-                    "image_name": image.image_name,
-                    "image_uri": image.image_uri,
-                    "metadata": dict(image.metadata or {}),
+                    "cmd": cmd_for_access_mode(meta.get("access_mode"), mode),
                 }
             )
         current = (

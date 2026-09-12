@@ -10,12 +10,15 @@ import pytest
 
 from jiuwenswarm.extensions.agentos.agentos_router.models import AgentInfo, AgentStatus
 from jiuwenswarm.extensions.agentos.agentos_router.registry_client import (
+    ImageEntry,
     RegistryClient,
     RegistryConfig,
     RegistryConflictError,
     RegistryNotFoundError,
+    cmd_for_access_mode,
     compute_backoff_delay,
     instance_service_id,
+    parse_access_mode,
     resolve_instance_kind,
 )
 
@@ -35,6 +38,48 @@ def test_resolve_instance_kind() -> None:
     assert resolve_instance_kind("custom-agent") == "三方"
     assert resolve_instance_kind("jiuwenswarm") == "九问"
     assert resolve_instance_kind("jiuwen-report") == "九问"
+
+
+def test_image_entry_prefers_registry_name() -> None:
+    named = ImageEntry.from_dict(
+        {"name": "claude", "framework": "legacy", "framework_version": "2.1.202"}
+    )
+    assert named.name == "claude"
+    assert named.list_name == "claude"
+    assert named.framework == "legacy"
+
+    fallback = ImageEntry.from_dict({"framework": "opencode", "is_default": True})
+    assert fallback.name == "opencode"
+    assert fallback.list_name == "opencode"
+    assert fallback.framework == "opencode"
+
+
+def test_parse_access_mode_and_tui_cmd() -> None:
+    modes = parse_access_mode(
+        [
+            {"name": "tui", "port": "2222", "cmd": "claude"},
+            {"name": "web", "port": "8080", "cmd": "serve"},
+            "skip-me",
+        ]
+    )
+    assert modes == [
+        {"name": "tui", "port": "2222", "cmd": "claude"},
+        {"name": "web", "port": "8080", "cmd": "serve"},
+    ]
+    assert cmd_for_access_mode(modes, "tui") == "claude"
+    assert cmd_for_access_mode(modes, "web") == "serve"
+    assert cmd_for_access_mode(modes, "") == ""
+    assert cmd_for_access_mode(None, "tui") == ""
+    assert parse_access_mode(None) == []
+
+    entry = ImageEntry.from_dict(
+        {
+            "name": "claude-code",
+            "framework": "claude",
+            "access_mode": [{"name": "tui", "port": "2222", "cmd": "claude"}],
+        }
+    )
+    assert entry.access_mode[0]["cmd"] == "claude"
 
 
 def test_compute_backoff_delay_exponential() -> None:
@@ -81,6 +126,8 @@ async def test_local_list_user_images_contains_supported_types() -> None:
     names = {item.image_name for item in images}
     assert names == {"jiuwenswarm"}
     assert all(item.metadata.get("user_id") == "user-01" for item in images)
+    assert all(item.metadata.get("name") == item.image_name for item in images)
+    assert all("framework" not in item.metadata for item in images)
     await client.close()
 
 
@@ -127,7 +174,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                 200,
                 json=[
                     {
-                        "framework": "opencode",
+                        "name": "opencode",
                         "framework_version": "v0.1.0",
                         "is_default": False,
                         "imageurl": "harbor.local/adapted/opencode:v0.1.0",
@@ -136,7 +183,7 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                         "uploaded_by": "user-01",
                     },
                     {
-                        "framework": "opencode",
+                        "name": "opencode",
                         "framework_version": "v0.2.0",
                         "is_default": True,
                         "imageurl": "harbor.local/adapted/opencode:v0.2.0",
@@ -145,6 +192,9 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
                         "ports": [{"port": 8080, "protocol": "tcp"}],
                         "env": {"A2X_LLM_KEY": "${A2X_LLM_KEY}"},
                         "uploaded_by": "user-01",
+                        "access_mode": [
+                            {"name": "tui", "port": "2222", "cmd": "opencode"},
+                        ],
                     },
                 ],
             )
@@ -274,6 +324,8 @@ async def test_http_list_images_flat_entries_prefer_default() -> None:
 
     entries = await client.list_images()
     assert len(entries) == 2
+    assert entries[0].name == "opencode"
+    assert entries[0].list_name == "opencode"
     assert entries[0].framework == "opencode"
     assert entries[0].framework_version == "v0.1.0"
     assert entries[0].is_default is False
@@ -284,8 +336,14 @@ async def test_http_list_images_flat_entries_prefer_default() -> None:
     by_name = {item.image_name: item for item in images}
     assert set(by_name) == {"opencode"}
     assert by_name["opencode"].image_uri.endswith("opencode:v0.2.0")
+    assert by_name["opencode"].metadata["name"] == "opencode"
+    assert by_name["opencode"].metadata["agent_type"] == "opencode"
+    assert "framework" not in by_name["opencode"].metadata
     assert by_name["opencode"].metadata["is_default"] is True
     assert by_name["opencode"].metadata["framework_version"] == "v0.2.0"
+    assert by_name["opencode"].metadata["access_mode"] == [
+        {"name": "tui", "port": "2222", "cmd": "opencode"},
+    ]
     await client.close()
 
 
