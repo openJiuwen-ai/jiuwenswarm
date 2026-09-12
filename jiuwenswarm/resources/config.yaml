@@ -1140,6 +1140,32 @@ permissions:
     cron_preview_job: allow
     acp_chat: ask
     skill_acceleration_exec: ask
+    # 团队编排工具默认放行；用户 tools 中的显式 ask / deny 仍优先。
+    # 角色限制及成员权限收紧由团队运行时继续执行。
+    build_team: allow
+    clean_team: allow
+    spawn_teammate: allow
+    spawn_human_agent: allow
+    spawn_bridge_agent: allow
+    spawn_external_cli: allow
+    shutdown_member: allow
+    approve_plan: allow
+    approve_tool: allow
+    list_members: allow
+    create_task: allow
+    update_task: allow
+    claim_task: allow
+    submit_plan: allow
+    verify_task: allow
+    member_complete_task: allow
+    view_task: allow
+    send_message: allow
+    send_message_scheduled: allow
+    workspace_meta: allow
+    swarmflow: allow
+    async_tasks_list: allow
+    async_task_output: allow
+    async_task_cancel: allow
 
   rules:
     - id: shell_allow_dir

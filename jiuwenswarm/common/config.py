@@ -2318,44 +2318,6 @@ def update_a2ui_in_config(updates: dict[str, Any]) -> None:
     _dump_yaml_round_trip(_current_config_yaml_path(), data)
 
 
-def _deep_merge(
-    template: dict[str, Any],
-    user: dict[str, Any],
-    depth: int = 0,
-) -> dict[str, Any]:
-    """Recursively merge template with user config, cleaning deprecated fields.
-
-    Rules:
-    - Add: fields only in template (new config options)
-    - Keep: user values for fields that exist in template (preserve user settings)
-    - Remove: fields only in user (deprecated config, cleanup)
-    - Max recursion depth: 4 (covers deep nested config like context_engine_config)
-
-    Args:
-        template: Template config dict with default values
-        user: User config dict
-        depth: Current recursion depth
-
-    Returns:
-        Merged dict synced with template structure, preserving user values.
-    """
-    if depth >= 4:
-        return user
-
-    result: dict[str, Any] = {}
-
-    for key, template_value in template.items():
-        if key not in user:
-            result[key] = template_value
-        elif isinstance(template_value, dict) and isinstance(user.get(key), dict):
-            result[key] = _deep_merge(template_value, user[key], depth + 1)
-        else:
-            result[key] = user[key]
-
-    return result
-
-
-
 _LEGACY_AGENT_SUBMODE_KEYS: tuple[str, ...] = ("plan", "fast", "agent.plan", "agent.fast")
 
 
@@ -2397,6 +2359,7 @@ def migrate_config_from_template(
     - Add: new fields from template (new config options)
     - Keep: user values for fields that exist in template
     - Remove: deprecated fields not in template (cleanup)
+    - Preserve dynamic permissions.tools entries, with user policies taking precedence
 
     This preserves user settings like:
     - models.*.model_config_obj.temperature
@@ -2426,11 +2389,11 @@ def migrate_config_from_template(
         user_data = {}
 
     # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
-    # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
+    # 必须在模板合并之前执行，否则旧子节点会被静默丢弃而非迁移。
     _migrate_legacy_agent_submode_memory(user_data)
 
     # Deep merge: template provides defaults, user values preserved
-    merged_data = _deep_merge(template_data, user_data)
+    merged_data = merge_template_with_override(template_data, user_data)
 
     # Guard against empty merged_data overwriting valid user config
     if merged_data is None or not merged_data:
@@ -2444,11 +2407,20 @@ def migrate_config_from_template(
     return False
 
 
-def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], depth: int = 0) -> dict[str, Any]:
+def _prune_override_keys(
+    template: dict[str, Any],
+    override: dict[str, Any],
+    depth: int = 0,
+    path: tuple[str, ...] = (),
+) -> dict[str, Any]:
     """递归清理 override 中模板不存在的字段（Remove 规则）。
 
-    与 _deep_merge 的 Remove 规则一致，但只做清理不合并模板值。
+    与 merge_template_with_override 的 Remove 规则一致，但只做清理不合并模板值。
+    permissions.tools 中的工具名和规则由用户配置，不作为废弃字段清理。
     """
+    if path == ("permissions", "tools"):
+        return override
+
     if depth >= 4:
         return override
     result: dict[str, Any] = {}
@@ -2458,7 +2430,7 @@ def _prune_override_keys(template: dict[str, Any], override: dict[str, Any], dep
             continue
         tmpl_val = template[key]
         if isinstance(tmpl_val, dict) and isinstance(over_val, dict):
-            result[key] = _prune_override_keys(tmpl_val, over_val, depth + 1)
+            result[key] = _prune_override_keys(tmpl_val, over_val, depth + 1, path + (key,))
         else:
             result[key] = over_val
     return result
