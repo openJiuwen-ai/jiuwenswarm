@@ -129,17 +129,14 @@ def _decode_token_payload(token: str) -> dict[str, Any] | None:
 def resolve_agent_http_base_for_token(token: str, *, endpoint: str) -> str:
     """解析当前请求应代理到的 AgentServer HTTP 基址。
 
-    AgentServer 在签发 token 时会将 AgentOS 注入的目标 bridge 基址写入
-    ``download_http_base`` / ``upload_http_base``。这是 Web 静态服务跨进程
-    代理到正确用户 sandbox 的主通路。旧部署可继续注册 resolver 作为兼容回退。
+    Token payload 只用于提取 resolver 所需的路由标识，不能提供代理目标：
+    payload 在此处尚未完成签名校验，直接使用其中的 URL 会让攻击者控制
+    Gateway 的出站请求目标。AgentOS 多用户部署应注册 resolver；旧部署继续
+    使用环境变量或单机默认推导。
     """
     if endpoint not in {"download", "upload"}:
         raise ValueError(f"unsupported HTTP bridge endpoint: {endpoint}")
     payload = _decode_token_payload(token)
-    if payload is not None:
-        embedded = str(payload.get(f"{endpoint}_http_base") or "").strip()
-        if embedded:
-            return embedded.rstrip("/")
     resolver = _agent_http_base_resolver
     if resolver is not None and payload is not None:
         try:
