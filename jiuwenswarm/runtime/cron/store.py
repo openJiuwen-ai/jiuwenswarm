@@ -208,10 +208,16 @@ class CronJobStore:
                 except Exception as exc:  # noqa: BLE001
                     # Keep one corrupt entry from disabling the scheduler, but
                     # make the rejected job and reason observable to operators.
+                    # The store path is part of the message because a missing id
+                    # is itself a rejection reason, so the id cannot be relied on
+                    # to identify the entry, and the store is not at a fixed
+                    # location: it follows the workspace. Without the path the
+                    # warning names a line the operator still has to find.
                     logger.warning(
-                        "Ignoring invalid cron job id=%s: %s",
-                        str(item.get("id") or ""),
+                        "Ignoring invalid cron job id=%s: %s (in %s)",
+                        str(item.get("id") or "").strip() or "<missing>",
                         exc,
+                        self._path,
                     )
                     continue
             return jobs
