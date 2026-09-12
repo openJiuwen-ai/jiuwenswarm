@@ -643,6 +643,59 @@ def test_member_skill_toolkit_carries_selected_skills() -> None:
     assert toolkit.params == {"skills": ["alpha", "beta"]}
 
 
+def test_member_skill_toolkit_prefers_spec_skills_for_named_members() -> None:
+    """Named predefined members resolve skills from their own spec entry.
+
+    Predefined members are keyed by ``member_name`` in ``spec.agents``, so the
+    role-level ``config.agents.teammate`` lookup misses them and the toolkit
+    used to mount with an empty skill view (member-side ``Skill not found``).
+    """
+    config: dict[str, Any] = {}
+    base_spec = DeepAgentSpec(skills=["cg-rules", "  ", ""])
+
+    rails, _ = build_member_capability_specs(config, "team", "teammate", member_skills=["cg-rules"])
+    toolkit = next(
+        spec for spec in rails if spec.type == registry.MEMBER_SKILL_TOOLKIT
+    )
+    assert toolkit.params == {"skills": ["cg-rules"]}
+
+    # build_member_deep_agent_spec derives member_skills from base_spec.skills.
+    member_spec = build_member_deep_agent_spec(config, "team", "teammate", base_spec)
+    toolkit_rail = next(
+        rail for rail in (member_spec.rails or []) if rail.type == registry.MEMBER_SKILL_TOOLKIT
+    )
+    assert toolkit_rail.params == {"skills": ["cg-rules"]}
+
+
+def test_enrich_team_spec_for_swarm_enriches_named_predefined_members() -> None:
+    """Named predefined member specs get the full capability rails, not raw specs."""
+    spec = _make_team_spec()
+    spec.agents["product-architect"] = DeepAgentSpec(skills=["cg-rules"])
+    spec.predefined_members = [
+        TeamMemberSpec(
+            member_name="product-architect",
+            display_name="Product Architect",
+            role_type=TeamRole.TEAMMATE,
+        ),
+    ]
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode="team",
+        channel_id="web",
+    )
+
+    member_rail_names = {rail.type for rail in (spec.agents["product-architect"].rails or [])}
+    assert registry.MEMBER_SKILL_TOOLKIT in member_rail_names
+    toolkit = next(
+        rail
+        for rail in (spec.agents["product-architect"].rails or [])
+        if rail.type == registry.MEMBER_SKILL_TOOLKIT
+    )
+    assert toolkit.params == {"skills": ["cg-rules"]}
+
+
 def test_swarm_skill_retrieval_tools_use_global_skill_manager(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1195,10 +1248,16 @@ def test_enrich_mounts_stream_events_only_on_named_llm_teammates() -> None:
     analyst_rails = [rail.type for rail in (spec.agents["analyst"].rails or [])]
     reviewer_rails = [rail.type for rail in (spec.agents["reviewer"].rails or [])]
     human_rails = [rail.type for rail in (spec.agents["human"].rails or [])]
-    assert analyst_rails == [registry.STREAM_EVENT]
-    assert reviewer_rails == [registry.STREAM_EVENT]
+    # Named LLM teammates are fully enriched (capability rails incl. the skill
+    # toolkit) and end with exactly one canonical STREAM_EVENT mount (the
+    # reviewer's pre-declared rail deduplicates via _mount_named_teammate_stream_events).
+    assert analyst_rails.count(registry.STREAM_EVENT) == 1
+    assert registry.MEMBER_SKILL_TOOLKIT in analyst_rails
+    assert reviewer_rails.count(registry.STREAM_EVENT) >= 1
+    assert reviewer_rails.count(registry.MEMBER_SKILL_TOOLKIT) == 1
+    # Human-agent members stay untouched.
     assert human_rails == []
-    assert not spec.agents["analyst"].tools
+    assert not spec.agents["human"].tools
 
 
 def test_enriched_spec_serialization_round_trip() -> None:
