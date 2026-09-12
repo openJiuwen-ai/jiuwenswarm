@@ -66,6 +66,7 @@ from jiuwenswarm.common.config import (
     update_kv_cache_release_enabled_in_config,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
+    update_code_graph_in_config,
     update_permissions_profile_in_config,
     update_setup_guide_enabled_in_config,
     update_memory_forbidden_enabled_in_config,
@@ -114,6 +115,11 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+    CODE_GRAPH_PANEL_KEYS as _CODE_GRAPH_CONFIG_KEYS,
+    build_code_graph_config_update as _build_code_graph_config_update,
+    flatten_code_graph_for_config_panel as _flatten_code_graph_for_config_panel,
+)
 from jiuwenswarm.symphony.skill_retrieval.taxonomy_config import (
     coerce_root_categories_value,
     root_categories_to_text,
@@ -603,6 +609,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "acp.tool_response",
     "team.delete",
     "command.goal",
+    "command.status",
     "chat.send",
     "chat.interrupt",
     "chat.resume",
@@ -704,6 +711,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.session.bind",
     "team.delete",
     "command.goal",
+    "command.status",
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
@@ -2409,6 +2417,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
+            payload.update(_flatten_code_graph_for_config_panel(raw))
             if not payload.get("free_search_ddg_enabled"):
                 payload["free_search_ddg_enabled"] = "false"
             if not payload.get("free_search_bing_enabled"):
@@ -2741,6 +2750,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 yaml_updated.extend(k for k in _SKILL_RETRIEVAL_CONFIG_KEYS if k in params)
             except Exception as e:
                 logger.warning("[config.set] 写回 skill_retrieval 失败: %s", e)
+
+        code_graph_updates = _build_code_graph_config_update(params)
+        if code_graph_updates:
+            try:
+                update_code_graph_in_config(code_graph_updates)
+                yaml_updated.extend(k for k in _CODE_GRAPH_CONFIG_KEYS if k in params)
+            except Exception as e:
+                logger.warning("[config.set] 写回 code_graph 失败: %s", e)
 
         for env_key, value in env_updates.items():
             os.environ[env_key] = value

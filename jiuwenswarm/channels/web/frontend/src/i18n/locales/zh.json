@@ -883,7 +883,13 @@
       "proactiveEnabled": "启用主动推荐",
       "proactiveTickInterval": "检查间隔（分钟）",
       "proactiveMaxPerDay": "每日推荐上限",
-      "proactiveMaxRounds": "每次检查对话轮数"
+      "proactiveMaxRounds": "每次检查对话轮数",
+      "codeGraphProfile": "检索档位",
+      "codeGraphAgent": "挂载点",
+      "codeGraphMaxFiles": "最大文件数",
+      "codeGraphMaxSourceBytes": "最大源码体积（MB）",
+      "codeGraphMaxBuildRssMb": "建图内存上限（MB）",
+      "codeGraphMaxCacheSizeMb": "索引磁盘上限（MB）"
     },
     "defaults": {
       "teamLeaderDisplayName": "团队领导",
@@ -935,7 +941,19 @@
       "teamMemberName": "成员内部 ID：须以小写字母开头，仅含小写字母、数字或连字符。",
       "teamPersona": "角色人设与职责描述，影响该成员的行为风格与分工。",
       "teamPromptHint": "额外提示词片段，会注入该成员的系统提示中。",
-      "teamAgentKey": "绑定到「多 Agent 配置」中已有 Agent 的名称（name）。"
+      "teamAgentKey": "绑定到「多 Agent 配置」中已有 Agent 的名称（name）。",
+      "codeGraphProfile": "off：关闭。graph：按符号与调用关系。",
+      "codeGraphAgent": "root：挂在主对话。code_agent：挂在子代理（会自动打开 code_agent）。",
+      "codeGraphMaxFiles": "超过这个文件数就不建图，并提示抬上限。",
+      "codeGraphMaxSourceBytes": "源码体积上限，单位 MB（1024 进制，与 yaml 字节一致）。可填 40、40MB 或 1GB。超过则不建图。",
+      "codeGraphMaxBuildRssMb": "建图过程内存硬停（MB）。超了就清图。",
+      "codeGraphMaxCacheSizeMb": "索引磁盘上限（MB）。超了就清旧仓。"
+    },
+    "codeGraph": {
+      "profileOff": "off",
+      "profileGraph": "graph",
+      "agentRoot": "root（主对话）",
+      "agentCodeAgent": "code_agent（子代理）"
     },
     "hideValue": "隐藏明文",
     "showValue": "显示明文",
@@ -1128,6 +1146,10 @@
         "label": "技能交响乐",
         "hint": "控制技能交响乐"
       },
+      "codeGraph": {
+        "label": "Code Graph",
+        "hint": "代码图检索：开关、挂载点和建图上限"
+      },
       "skillRetrieval": {
         "label": "技能交响乐",
         "hint": "控制技能交响乐"
@@ -1230,7 +1252,12 @@
         "read_file": "读取文件内容（文本、图片、PDF、Notebook 等）。",
         "read": "文件读取类工具的权限别名（常对应 read_file）。",
         "acp_chat": "向配置中的外部 ACP Agent 子进程发送消息。",
-        "grep": "在工作区文件中搜索匹配内容。"
+        "grep": "在工作区文件中搜索匹配内容。",
+        "resolve_symbol": "按精确符号名解析定义位置（Code Graph focused）。",
+        "find_code_symbols": "按模糊名搜索符号候选，再对候选调用 focus_code。",
+        "search_source_text": "按字面量检索源码（报错、配置键、decorator）。",
+        "inspect_code_structure": "查看文件或类的结构概览。",
+        "focus_code": "打开符号源码窗口；需要关系时打开 include_relations。"
       }
     },
     "proactive": {

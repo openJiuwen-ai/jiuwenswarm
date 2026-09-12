@@ -34,6 +34,9 @@ parse_dotenv_early("jiuwenswarm-start")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.utils import get_env_file, get_root_dir, get_user_workspace_dir, is_package_installation
+from jiuwenswarm.server.runtime.agent_adapter.code_graph_setup import (
+    preload_code_graph_grammars,
+)
 from jiuwenswarm.instance_manager import (
     InstanceConfig,
     InstanceLock,
@@ -421,6 +424,7 @@ def _run_instance_with_pid(commands: list[tuple[str, list[str], Path]],
     Returns:
         Exit code
     """
+    preload_code_graph_grammars()
     processes: dict[str, subprocess.Popen[bytes]] = {}
     try:
         for cmd_name, cmd_args, cwd in commands:
@@ -712,6 +716,7 @@ def _run_processes(
     Returns:
         Exit code
     """
+    preload_code_graph_grammars()
     processes: dict[str, subprocess.Popen[bytes]] = {}
     try:
         for name, cmd, cwd in commands:

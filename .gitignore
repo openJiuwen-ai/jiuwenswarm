@@ -52,6 +52,7 @@ developerID_application.cer
 # IDE / Editor
 .vscode/
 .idea/
+.cursor/
 *.swp
 *.swo
 .DS_Store
@@ -67,6 +68,7 @@ workspace/agent-data.json
 reference/
 openspec/
 docs/ai/
+eval-runs/
 
 # logs
 logs/

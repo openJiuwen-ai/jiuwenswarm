@@ -883,7 +883,13 @@
       "proactiveEnabled": "Enable proactive recommendation",
       "proactiveTickInterval": "Check interval (minutes)",
       "proactiveMaxPerDay": "Daily recommendation limit",
-      "proactiveMaxRounds": "Max rounds per check"
+      "proactiveMaxRounds": "Max rounds per check",
+      "codeGraphProfile": "Profile",
+      "codeGraphAgent": "Mount point",
+      "codeGraphMaxFiles": "Max files",
+      "codeGraphMaxSourceBytes": "Max source volume (MB)",
+      "codeGraphMaxBuildRssMb": "Build RSS cap (MB)",
+      "codeGraphMaxCacheSizeMb": "Index disk cap (MB)"
     },
     "defaults": {
       "teamLeaderDisplayName": "Team Leader",
@@ -935,7 +941,19 @@
       "teamMemberName": "Internal member ID: must start with a lowercase letter, then lowercase letters, digits, or hyphens.",
       "teamPersona": "Role persona and responsibilities; shapes behavior and division of labor.",
       "teamPromptHint": "Extra prompt fragment injected into this member's system prompt.",
-      "teamAgentKey": "Name of an existing Agent from Multi-Agent Configuration."
+      "teamAgentKey": "Name of an existing Agent from Multi-Agent Configuration.",
+      "codeGraphProfile": "off: disabled. graph: symbols and calls.",
+      "codeGraphAgent": "root: mount on the main chat. code_agent: mount on the subagent (opens code_agent automatically).",
+      "codeGraphMaxFiles": "Repos over this file count are not indexed.",
+      "codeGraphMaxSourceBytes": "Source-volume cap in MB (1024-based, same as yaml bytes). Accepts 40, 40MB, or 1GB. Over it, the repo is not indexed.",
+      "codeGraphMaxBuildRssMb": "Hard stop for build RSS (MB). Over it, drop the graph.",
+      "codeGraphMaxCacheSizeMb": "Index disk cap (MB). Over it, evict older caches."
+    },
+    "codeGraph": {
+      "profileOff": "off",
+      "profileGraph": "graph",
+      "agentRoot": "root (main chat)",
+      "agentCodeAgent": "code_agent (subagent)"
     },
     "hideValue": "Hide value",
     "showValue": "Show value",
@@ -1128,6 +1146,10 @@
         "label": "Skill Symphony",
         "hint": "Control Skill Symphony"
       },
+      "codeGraph": {
+        "label": "Code Graph",
+        "hint": "Code-graph retrieval: on/off, mount point, and build caps"
+      },
       "skillRetrieval": {
         "label": "Skill Symphony",
         "hint": "Control Skill Symphony"
@@ -1230,7 +1252,12 @@
         "read_file": "Read file contents (text, images, PDF, notebooks, etc.).",
         "read": "Permission alias for read-style tools (often maps to read_file).",
         "acp_chat": "Send a message to an external ACP agent process from config.",
-        "grep": "Search for matching content in workspace files."
+        "grep": "Search for matching content in workspace files.",
+        "resolve_symbol": "Resolve a known symbol name to its definition (Code Graph focused).",
+        "find_code_symbols": "Search symbol candidates by fuzzy name, then call focus_code.",
+        "search_source_text": "Search source by literal text (errors, config keys, decorators).",
+        "inspect_code_structure": "Inspect file or class structure.",
+        "focus_code": "Open a symbol source window; turn on include_relations for callers/imports."
       }
     },
     "proactive": {

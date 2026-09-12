@@ -37,6 +37,7 @@ from jiuwenswarm.common.config import (
     update_swarmflow_budget_in_config,
     update_swarmflow_enabled_in_config,
     update_skill_evolution_enabled_in_config,
+    update_code_graph_in_config,
     update_config,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
@@ -627,6 +628,26 @@ def _build_config_schema() -> list[dict]:
          "type": "toggle", "source": "yaml", "default": "true"},
         {"key": "skill_evolution", "label": "技能演进与创建", "group": "Features",
          "type": "toggle", "source": "yaml", "default": "false"},
+        # Code Graph（与 Web 配置面板同一套 yaml 键）
+        {"key": "code_graph_profile", "label": "检索档位", "group": "Code Graph",
+         "type": "select", "options": ["off", "graph"], "source": "yaml", "default": "off",
+         "description": "off：关闭。graph：按符号与调用关系"},
+        {"key": "code_graph_agent", "label": "挂载点", "group": "Code Graph",
+         "type": "select", "options": ["root", "code_agent"], "source": "yaml",
+         "default": "root",
+         "description": "root：挂在主对话。code_agent：挂在子代理（会自动打开）"},
+        {"key": "code_graph_max_files", "label": "最大文件数", "group": "Code Graph",
+         "type": "string", "source": "yaml", "default": "5000",
+         "description": "超过这个文件数就不建图，并提示抬上限"},
+        {"key": "code_graph_max_source_bytes", "label": "最大源码体积 (MB)", "group": "Code Graph",
+         "type": "string", "source": "yaml", "default": "40",
+         "description": "源码体积上限，单位 MB。可填 40、40MB 或 1GB"},
+        {"key": "code_graph_max_build_rss_mb", "label": "建图内存上限 (MB)", "group": "Code Graph",
+         "type": "string", "source": "yaml", "default": "4096",
+         "description": "建图过程内存硬停"},
+        {"key": "code_graph_max_cache_size_mb", "label": "索引磁盘上限 (MB)", "group": "Code Graph",
+         "type": "string", "source": "yaml", "default": "2048",
+         "description": "索引磁盘硬停"},
         # Auto-Harness (定时任务配置) - 合并为三项
         {"key": "auto_harness_git_user_name", "label": "用户名", "group": "Auto-Harness",
          "type": "string", "source": "yaml", "default": empty,
@@ -839,6 +860,11 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         payload["app_version"] = __version__
         try:
             raw = get_config_raw()
+            from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+                flatten_code_graph_for_config_panel,
+            )
+
+            payload.update(flatten_code_graph_for_config_panel(raw))
             for key, val in payload.items():
                 from jiuwenswarm.extensions import ExtensionRegistry
 
@@ -939,6 +965,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("preferred_language", "zh")
             payload.setdefault("skill_evolution", "false")
+            payload.setdefault("code_graph_profile", "off")
+            payload.setdefault("code_graph_agent", "root")
+            payload.setdefault("code_graph_max_files", "5000")
+            payload.setdefault("code_graph_max_source_bytes", "40")
+            payload.setdefault("code_graph_max_build_rss_mb", "4096")
+            payload.setdefault("code_graph_max_cache_size_mb", "2048")
         
         # Auto-Harness config values (from ~/.jiuwenswarm/auto-harness/config.yaml)
         # 合并显示：用户名、邮箱、Access Token 三项
@@ -1033,6 +1065,19 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 logger.warning(
                     "[cli config.set] 写回 config.yaml 失败 %s: %s", param_key, e
                 )
+
+        from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+            CODE_GRAPH_PANEL_KEYS,
+            build_code_graph_config_update,
+        )
+
+        code_graph_updates = build_code_graph_config_update(params)
+        if code_graph_updates:
+            try:
+                update_code_graph_in_config(code_graph_updates)
+                yaml_updated.extend(k for k in CODE_GRAPH_PANEL_KEYS if k in params)
+            except Exception as e:
+                logger.warning("[cli config.set] 写回 code_graph 失败: %s", e)
 
         for env_key, value in env_updates.items():
             os.environ[env_key] = value

@@ -13,6 +13,9 @@ export function summarizeToolArguments(name: string, args: unknown): string | un
   }
   const obj = args as Record<string, unknown>;
   const normalized = name.toLowerCase();
+  if (isCodeGraphTool(name)) {
+    return summarizeCodeGraphArguments(name, obj);
+  }
   if (normalized.includes("read") || normalized.includes("view")) {
     return summarizePath(obj.path ?? obj.file_path ?? obj.file);
   }
@@ -72,6 +75,13 @@ export function getStringArg(args: Record<string, unknown>, ...keys: string[]): 
     if (typeof value === "string" && value.trim()) return value;
   }
   return undefined;
+}
+
+function formatRelationArg(value: unknown): string | undefined {
+  if (typeof value === "string" && value.trim()) return value.trim();
+  if (!Array.isArray(value)) return undefined;
+  const parts = value.filter((item): item is string => typeof item === "string" && Boolean(item.trim()));
+  return parts.length ? parts.join(",") : undefined;
 }
 
 export function getNumericArg(
@@ -153,6 +163,37 @@ export function isSearchTool(name: string): boolean {
     normalized === "mcp_free_search" ||
     normalized === "mcp_paid_search"
   );
+}
+
+const CODE_GRAPH_TOOLS = new Set([
+  "resolve_symbol",
+  "find_code_symbols",
+  "search_source_text",
+  "inspect_code_structure",
+  "focus_code",
+]);
+
+export function isCodeGraphTool(name: string): boolean {
+  return CODE_GRAPH_TOOLS.has(name.toLowerCase());
+}
+
+export function summarizeCodeGraphArguments(
+  name: string,
+  args: Record<string, unknown>,
+): string | undefined {
+  const primary =
+    getStringArg(args, "name", "query", "symbol_id", "file", "path", "parent_symbol") ??
+    (typeof args.symbol_id === "string" ? args.symbol_id : undefined);
+  const direction = getStringArg(args, "direction");
+  const relations = formatRelationArg(args.include_relations ?? args.relations);
+  const short = primary ? summarize(primary, 56) : undefined;
+  if (name.toLowerCase() === "focus_code" && relations && short) {
+    return `${short} ${relations}`;
+  }
+  if (name.toLowerCase() === "focus_code" && relations) return relations;
+  if (direction && short) return `${short} ${direction}`;
+  if (direction) return direction;
+  return short;
 }
 
 export function isFetchTool(name: string): boolean {

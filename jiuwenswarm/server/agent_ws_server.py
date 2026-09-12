@@ -499,6 +499,91 @@ def resolve_request_project_dir(request: AgentRequest) -> str | None:
     return None
 
 
+def resolve_status_graph_workspace(request: AgentRequest) -> str:
+    """Workspace whose Code Graph /status should describe.
+
+    Prefer the stable project identity, then cwd. Do not use trusted_dirs[0]:
+    extra trusted folders are allowlisted paths, not the graph root.
+    """
+    params = request.params or {}
+    metadata = request.metadata or {}
+    for value in (
+        params.get("project_dir"),
+        metadata.get("project_dir") if isinstance(metadata, dict) else None,
+        params.get("cwd"),
+        metadata.get("cwd") if isinstance(metadata, dict) else None,
+    ):
+        if isinstance(value, str) and value.strip():
+            return value.strip()
+    return os.getcwd()
+
+
+def resolve_status_code_graph(config: dict | None, workspace: str) -> dict[str, object]:
+    """Code Graph block for ``/status``.
+
+    ``profile: off`` reports ``absent`` so Status does not show a leftover graph.
+    The in-memory entry and disk checkpoint stay put; turning ``graph`` back on
+    can restore without a full rebuild.
+    """
+    from jiuwenswarm.server.runtime.agent_adapter.code_graph_flags import (
+        admit_code_graph_workspace,
+        product_code_graph_config,
+        resolve_code_graph_flags,
+        rewrite_code_graph_limit_message,
+    )
+
+    flags = resolve_code_graph_flags(config if isinstance(config, dict) else None)
+    if not flags.enabled:
+        return {"present": False, "state": "absent"}
+    try:
+        from openjiuwen.core.retrieval.code_graph.manager import get_code_graph_manager
+
+        cfg = product_code_graph_config(config if isinstance(config, dict) else None)
+        manager = get_code_graph_manager(cfg)
+        stats = manager.stats(workspace, config=cfg)
+        if not isinstance(stats, dict):
+            return {"present": False, "state": "absent"}
+        payload = dict(stats)
+        if payload.get("limit_exceeded"):
+            payload["state"] = "unavailable"
+        elif str(payload.get("state") or "") == "stale":
+            over = admit_code_graph_workspace(workspace, cfg)
+            if over is not None:
+                payload["state"] = "unavailable"
+                payload["limit_exceeded"] = True
+                payload["message"] = str(getattr(over, "message", over))
+                _kick_code_graph_ensure_fresh(manager, workspace, cfg)
+        if payload.get("message"):
+            payload["message"] = rewrite_code_graph_limit_message(payload["message"])
+        return payload
+    except Exception:  # noqa: BLE001 — status must still return
+        return {"present": False, "state": "absent"}
+
+
+_code_graph_fresh_tasks: set[asyncio.Task[Any]] = set()
+
+
+def _kick_code_graph_ensure_fresh(manager: object, workspace: str, cfg: object) -> None:
+    """Let the manager record ``limit_error`` after ``/status`` already walked."""
+    ensure_fresh = getattr(manager, "ensure_fresh", None)
+    if not callable(ensure_fresh):
+        return
+
+    async def _warm() -> None:
+        try:
+            await ensure_fresh(workspace, cfg)
+        except Exception:  # noqa: BLE001 — next find_* still retries
+            return
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_warm())
+    _code_graph_fresh_tasks.add(task)
+    task.add_done_callback(_code_graph_fresh_tasks.discard)
+
+
 def _sync_chat_request_metadata(
     request: AgentRequest,
     project_dir: str | None,
@@ -7769,6 +7854,9 @@ class AgentWebSocketServer:
                     )
                     memory_warnings = []
 
+                graph_workspace = resolve_status_graph_workspace(request)
+                code_graph_status = resolve_status_code_graph(config, graph_workspace)
+
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
@@ -7785,6 +7873,7 @@ class AgentWebSocketServer:
                         "config_path": config_path,
                         "settings_sources": settings_sources,
                         "memory_warnings": memory_warnings,
+                        "code_graph": code_graph_status,
                     },
                 )
         except Exception as e:  # noqa: BLE001
