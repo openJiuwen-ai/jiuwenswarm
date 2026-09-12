@@ -18,12 +18,14 @@ from jiuwenswarm.common.schema.agent import AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.extensions.agentos.agentos_router.agent_manager import (
     BUILTIN_AGENT_TYPE,
+    OPENCLAW_WEB_PORT,
     AgentCreateFailed,
     AgentCreatingTimeout,
     AgentDeleted,
     AgentManager,
     AgentPreCreateError,
     AgentRuntime,
+    is_openclaw_agent_type,
     is_third_party_agent_type,
 )
 from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import AgentOSAuthenticator
@@ -387,6 +389,59 @@ def build_inline_runtime_spec(image_info: ImageInfo) -> AgentRuntimeSpec:
             f"runtime_spec is required from registry for agent_type={image_info.image_name}"
         )
     return dict(raw_spec)  # type: ignore[return-value]
+
+
+def _positive_int(value: Any) -> int | None:
+    try:
+        port = int(value)
+    except (TypeError, ValueError):
+        return None
+    return port if port > 0 else None
+
+
+def _ensure_agent_web_port(
+    runtime_spec: dict[str, Any],
+    *,
+    agent_type: str,
+    image_metadata: Mapping[str, Any] | None = None,
+) -> int | None:
+    """Publish a container web port on create (OpenClaw default 18789)."""
+    meta = image_metadata if isinstance(image_metadata, Mapping) else {}
+    port = _positive_int(meta.get("web_port"))
+    if port is None and is_openclaw_agent_type(agent_type):
+        port = OPENCLAW_WEB_PORT
+    if port is None:
+        return None
+    rootfs = runtime_spec.get("rootfs")
+    if not isinstance(rootfs, dict):
+        rootfs = {}
+        runtime_spec["rootfs"] = rootfs
+    ports = rootfs.get("ports")
+    if not isinstance(ports, list):
+        ports = []
+        rootfs["ports"] = ports
+    label = f"tcp:{port}"
+    if label not in {str(item) for item in ports}:
+        ports.append(label)
+    return port
+
+
+def _web_port_from_runtime(runtime: AgentRuntime, agent_type: str) -> int | None:
+    meta = runtime.info.metadata if runtime.info is not None else {}
+    if not isinstance(meta, dict):
+        meta = {}
+    for key in ("web_port", "agent_port"):
+        port = _positive_int(meta.get(key))
+        if port:
+            return port
+    image_info = meta.get("image_info")
+    if isinstance(image_info, dict):
+        port = _positive_int(image_info.get("web_port"))
+        if port:
+            return port
+    if is_openclaw_agent_type(agent_type):
+        return OPENCLAW_WEB_PORT
+    return None
 
 
 def _third_agent_ssh_probe_port(ssh_relay: YuanrongSshRelay | None) -> int:
@@ -1188,6 +1243,30 @@ class AgentOSRouterClient(AgentServerClient):
         for ws_client in self._ws_clients.values():
             ws_client.set_server_push_handler(handler)
 
+    async def resolve_web_endpoint(
+        self,
+        user_id: str,
+        agent_type: str,
+        protocol: str,
+    ) -> str | None:
+        """Resolve the YuanRong frontend URL for a running agent's Web UI.
+
+        ``protocol`` is ``"ws"`` or ``"http"``. Port order:
+        ``metadata.web_port`` → ``metadata.agent_port`` → OpenClaw ``18789``.
+        """
+        runtime = await self._agent_manager.get_agent(user_id, agent_type)
+        if runtime is None or not runtime.is_ready():
+            return None
+        sandbox_id = runtime.info.sandbox_id
+        if not sandbox_id:
+            return None
+        port = _web_port_from_runtime(runtime, agent_type)
+        if not port:
+            return None
+        if str(protocol or "").strip().lower() == "http":
+            return self._agent_http_url(sandbox_id, port)
+        return self._agent_ws_url(sandbox_id, port)
+
     def _agent_ws_url(self, instance_id: str, agent_port: int) -> str:
         """YuanRong frontend 的 instance WS 代理地址.
 
@@ -1206,6 +1285,23 @@ class AgentOSRouterClient(AgentServerClient):
             }
         )
         return f"{ws_scheme}://{parsed.netloc}/serverless/v1/ws?{query}"
+
+    def _agent_http_url(self, instance_id: str, agent_port: int) -> str:
+        """Frontend instance HTTP proxy URL.
+
+        ``http://<host>:8888/serverless/v1/http?instance=<id>&tenant_id=default&port=<port>``
+        """
+        frontend = str(self._yuanrong.frontend_endpoint or "").rstrip("/")
+        parsed = urllib.parse.urlsplit(frontend)
+        http_scheme = "https" if parsed.scheme == "https" else "http"
+        query = urllib.parse.urlencode(
+            {
+                "instance": instance_id,
+                "tenant_id": self._yuanrong.agent_namespace or "default",
+                "port": str(agent_port),
+            }
+        )
+        return f"{http_scheme}://{parsed.netloc}/serverless/v1/http?{query}"
 
     async def _connect_ws_until_ready(
         self,
@@ -2234,6 +2330,11 @@ class AgentOSRouterClient(AgentServerClient):
                 ssh_port=_third_agent_ssh_probe_port(self._ssh_relay),
                 probe_settings=self._probe_settings,
             )
+            web_port = _ensure_agent_web_port(
+                runtime_spec,
+                agent_type=agent_info.agent_type,
+                image_metadata=image_info.metadata,
+            )
             env_raw = image_info.metadata.get("env_vars")
             env_vars = (
                 {str(k): str(v) for k, v in dict(env_raw).items()}
@@ -2241,6 +2342,8 @@ class AgentOSRouterClient(AgentServerClient):
                 else None
             )
             extra_metadata = {"image_info": dict(image_info.metadata)}
+            if web_port is not None:
+                extra_metadata["web_port"] = web_port
             # 3rdagent 走 SSH：registry 未带 probes 时补 startup+liveness
             # TCP:2222（gateway.agentos.ssh.port）。未改探针配置时用
             # delay=2/failure=8；gateway.agentos.probes / AGENTOS_PROBE_*

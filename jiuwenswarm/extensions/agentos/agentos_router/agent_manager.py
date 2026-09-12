@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 AgentCreator = Callable[[AgentInfo], Awaitable[AgentInfo | None]]
 AgentKey = tuple[str, ...]
 BUILTIN_AGENT_TYPE = "jiuwenswarm"
+OPENCLAW_AGENT_TYPE = "openclaw"
+OPENCLAW_WEB_PORT = 18789
 SUPPORTED_AGENT_KEY_FIELDS = frozenset({"user_id", "agent_type", "session_id"})
 DEFAULT_AGENT_KEY_FIELDS = ("user_id", "agent_type")
 
@@ -26,6 +28,11 @@ DEFAULT_AGENT_KEY_FIELDS = ("user_id", "agent_type")
 def is_third_party_agent_type(agent_type: str) -> bool:
     """True when *agent_type* is not the builtin swarm type."""
     return str(agent_type or "").strip().lower() not in {"", BUILTIN_AGENT_TYPE}
+
+
+def is_openclaw_agent_type(agent_type: str) -> bool:
+    """True when *agent_type* is the openclaw type."""
+    return str(agent_type or "").strip().lower() == OPENCLAW_AGENT_TYPE
 
 
 def normalize_agent_key_fields(raw: Any = None) -> tuple[str, ...]:
