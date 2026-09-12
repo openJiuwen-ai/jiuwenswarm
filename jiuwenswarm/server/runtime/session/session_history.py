@@ -151,6 +151,16 @@ def _has_persistable_assistant_payload(
         return True
     if et == "chat.subagent_activity" and isinstance(payload.get("subagent_activity"), dict):
         return True
+    # Prompt / usage capture records — no display content but persisted so
+    # the exact LLM prompt can be retrieved offline.
+    if et == "chat.llm_call_start" and str(payload.get("prompt") or "").strip():
+        return True
+    if et == "chat.usage_metadata" and payload.get("metadata"):
+        return True
+    # llm_call_end closes a model call; keep it even when the call produced no
+    # text (e.g. a tool-calling call) so start/end stay symmetric in the timeline.
+    if et == "chat.llm_call_end":
+        return True
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False

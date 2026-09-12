@@ -1723,6 +1723,14 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
 
+        # history_path: 仅当会话确有历史文件时才填充，供 IDE 展示“复制历史链接”按钮。
+        try:
+            from jiuwenswarm.server.runtime.session.session_history import get_read_history_path
+            history_path = get_read_history_path(session_id)
+            metadata["history_path"] = str(history_path) if history_path.exists() else ""
+        except Exception:
+            metadata["history_path"] = ""
+
         sessions.append(metadata)
 
     # 按最后消息时间倒序排序

@@ -142,7 +142,12 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot():
 
     await _TestRail().after_model_call(ctx)
 
-    assert session.outputs == []
+    # after_model_call always emits the llm_call_end "thinking" marker, but it
+    # must NOT re-emit the legacy context.usage frame when core already
+    # reported the full snapshot.
+    assert not [
+        o for o in session.outputs if getattr(o, "type", "") == "context.usage"
+    ]
 
 
 @pytest.mark.asyncio
@@ -159,7 +164,11 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 
     await _TestRail().after_model_call(ctx)
 
-    assert session.outputs == []
+    # The core-emitted marker suppresses the rail's legacy context.usage frame;
+    # only the new llm_call_end marker is expected.
+    assert not [
+        o for o in session.outputs if getattr(o, "type", "") == "context.usage"
+    ]
 
 
 @pytest.mark.asyncio
