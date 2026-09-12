@@ -749,7 +749,6 @@ modes:
       - web_free_search
       - web_fetch_webpage
       - web_paid_search
-      - user_todos
 
     embedding_config:
       model_name:

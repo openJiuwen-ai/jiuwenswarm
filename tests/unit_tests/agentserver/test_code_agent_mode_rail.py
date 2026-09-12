@@ -249,3 +249,119 @@ def test_init_no_longer_patches_exit_plan_mode_invoke() -> None:
 
     # Verify the tool's invoke was NOT replaced
     assert tool.invoke is original_invoke
+
+
+# ─── task_tool / design rail / general_agent 启用（与 office 对齐）──────────
+
+
+def test_code_plan_allowed_tools_includes_task_tool() -> None:
+    """_CODE_PLAN_ALLOWED_TOOLS must include task_tool so that, when subagents
+    are configured, AgentModeRail registers task_tool in plan mode — mirroring
+    office WORK_PLAN_ALLOWED_TOOLS and the team path (code_rails)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        _CODE_PLAN_ALLOWED_TOOLS,
+    )
+
+    assert "task_tool" in _CODE_PLAN_ALLOWED_TOOLS
+
+
+def test_design_plan_allowed_tools_includes_task_tool() -> None:
+    """DESIGN_PLAN_ALLOWED_TOOLS already includes task_tool; documenting the
+    contract so a future regression is caught here, next to the code one."""
+    from jiuwenswarm.agents.harness.design.prompt.design_plan_prompts import (
+        DESIGN_PLAN_ALLOWED_TOOLS,
+    )
+
+    assert "task_tool" in DESIGN_PLAN_ALLOWED_TOOLS
+
+
+def test_build_agent_mode_rail_design_returns_design_rail() -> None:
+    """``_static_prompt_profile == "design"`` must build DesignAgentModeRail
+    (its __init__ defaults to DESIGN_PLAN_ALLOWED_TOOLS, which includes
+    task_tool). Regression guard for the design/code branch in
+    JiuwenSwarmCodeAdapter._build_agent_mode_rail."""
+    from jiuwenswarm.agents.harness.design.rails.design_agent_mode_rail import (
+        DesignAgentModeRail,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._static_prompt_profile = "design"
+    rail = adapter._build_agent_mode_rail()
+    assert isinstance(rail, DesignAgentModeRail)
+    assert "task_tool" in rail._allowed_tools
+
+
+def test_build_agent_mode_rail_code_returns_code_rail() -> None:
+    """``_static_prompt_profile == "code"`` must build CodeAgentModeRail with
+    _CODE_PLAN_ALLOWED_TOOLS (which now includes task_tool)."""
+    from jiuwenswarm.agents.harness.code.rails.code_agent_mode_rail import (
+        CodeAgentModeRail,
+    )
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        _CODE_PLAN_ALLOWED_TOOLS,
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._static_prompt_profile = "code"
+    rail = adapter._build_agent_mode_rail()
+    assert isinstance(rail, CodeAgentModeRail)
+    assert "task_tool" in rail._allowed_tools
+    assert set(rail._allowed_tools) == set(_CODE_PLAN_ALLOWED_TOOLS)
+
+
+def test_code_subagents_general_agent_enabled_sets_flag() -> None:
+    """``subagents.general_agent.enabled: true`` must return
+    ``should_add_general=True`` — mirroring office DeepAdapter, so that
+    create_deep_agent injects the general-purpose subagent and SubagentRail
+    registers task_tool by default (visible in the default tool list)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    model = MagicMock()
+    subagents, should_add_general = adapter._build_configured_subagents(
+        model,
+        {"subagents": {"general_agent": {"enabled": True}}},
+        {},
+    )
+    assert should_add_general is True
+
+
+def test_code_subagents_without_general_agent_keeps_flag_false() -> None:
+    """Config without ``general_agent`` must keep ``should_add_general=False``
+    so no general-purpose subagent is injected (preserves prior behavior when
+    the key is absent)."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    model = MagicMock()
+    subagents, should_add_general = adapter._build_configured_subagents(
+        model,
+        {"subagents": {"explore_agent": {"enabled": True}}},
+        {},
+    )
+    assert should_add_general is False
+
+
+def test_code_subagents_general_agent_disabled_keeps_flag_false() -> None:
+    """Explicit ``general_agent.enabled: false`` must keep
+    ``should_add_general=False``."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
+        JiuwenSwarmCodeAdapter,
+    )
+
+    adapter = JiuwenSwarmCodeAdapter()
+    model = MagicMock()
+    subagents, should_add_general = adapter._build_configured_subagents(
+        model,
+        {"subagents": {"general_agent": {"enabled": False}}},
+        {},
+    )
+    assert should_add_general is False

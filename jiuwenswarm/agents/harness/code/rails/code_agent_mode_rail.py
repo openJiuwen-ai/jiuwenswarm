@@ -117,8 +117,14 @@ class CodeAgentModeRail(AgentModeRail):
     def init(self, agent: "DeepAgent") -> None:
         """Register tools. No exit_plan_mode patching needed —
         ``PlanApprovalInterruptRail`` handles the approval gate.
+
+        ``switch_mode`` is unregistered after parent init so the LLM cannot
+        self-enter/exit plan mode via a tool; plan mode is UI/server-driven
+        only (consistent across work/code/design modes). ``enter_plan_mode``
+        and ``exit_plan_mode`` remain available once plan mode is active.
         """
         super().init(agent)
+        agent.ability_manager.remove_ability("switch_mode")
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         """Enforce plan-mode write blocks beyond the parent git-only guard."""

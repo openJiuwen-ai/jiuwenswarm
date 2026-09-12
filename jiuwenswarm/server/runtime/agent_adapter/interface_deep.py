@@ -5593,19 +5593,20 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     "[JiuWenSwarmDeepAdapter] xiaoyi phone tools registration failed: %s", exc
                 )
 
-        try:
-            skill_toolkit = SkillToolkit(manager=self._skill_manager)
-            skill_tool_names: list[str] = []
-            for tool in skill_toolkit.get_tools():
-                self._register_shared_tool(tool)
-                tool_cards.append(tool.card)
-                skill_tool_names.append(tool.card.name)
-            logger.info(
-                "[JiuWenSwarmDeepAdapter] SkillToolkit registered: tools=%s",
-                skill_tool_names,
-            )
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
+        # SkillToolkit (uninstall_skill) disabled — tool no longer exposed to LLM.
+        # try:
+        #     skill_toolkit = SkillToolkit(manager=self._skill_manager)
+        #     skill_tool_names: list[str] = []
+        #     for tool in skill_toolkit.get_tools():
+        #         self._register_shared_tool(tool)
+        #         tool_cards.append(tool.card)
+        #         skill_tool_names.append(tool.card.name)
+        #     logger.info(
+        #         "[JiuWenSwarmDeepAdapter] SkillToolkit registered: tools=%s",
+        #         skill_tool_names,
+        #     )
+        # except Exception as exc:
+        #     logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
 
         if is_skill_retrieval_enabled():
             try:
