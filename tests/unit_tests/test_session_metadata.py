@@ -189,7 +189,33 @@ class TestUpdateSessionMetadata:
         _METADATA_QUEUE.join()
 
         data = _read_json(sessions_dir / "sess_u1" / "metadata.json")
-        assert data["channel_id"] == "feishu"
+        assert data["channel_id"] == "web"  # 首次锁定：保持 web，不被 feishu 覆写
+        assert data["message_count"] == 1
+
+    @staticmethod
+    def test_channel_id_empty_string_does_not_clear_locked(sessions_dir):
+        """channel_id 首次锁定：空串更新不再清空已锁定的归属通道。
+
+        旧实现 `if channel_id is not None` 会把空串写入并清空 channel_id；
+        新守卫跳过空串，保留锁定值。
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            update_session_metadata,
+            _METADATA_QUEUE,
+        )
+
+        init_session_metadata(session_id="sess_u_emp", channel_id="web")
+
+        update_session_metadata(
+            session_id="sess_u_emp",
+            channel_id="",
+            increment_message_count=True,
+        )
+        _METADATA_QUEUE.join()
+
+        data = _read_json(sessions_dir / "sess_u_emp" / "metadata.json")
+        assert data["channel_id"] == "web"  # 空串不覆盖已锁定归属通道
         assert data["message_count"] == 1
 
     @staticmethod
@@ -908,6 +934,41 @@ class TestDeliveryContext:
         assert push["session_id"] == "sess_push"
         assert push["metadata"]["telegram_chat_id"] == "chat-1"
 
+    @staticmethod
+    def test_delivery_context_channel_dynamic_while_top_level_channel_locked(sessions_dir):
+        """顶层 metadata.channel_id 首次锁定；delivery_context.channel_id 保持动态。
+
+        顶层归属通道稳定为 web，不被 feishu server_push 覆写（否则 web 侧栏丢会话）；
+        而 delivery_context.channel_id 必须仍为 feishu，供 build_server_push_message
+        路由异步推送回到用户最近活动的 feishu 通道。
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_QUEUE,
+            init_session_metadata,
+            get_session_delivery_context,
+            set_session_delivery_context,
+        )
+
+        init_session_metadata(session_id="sess_delivery_lock", channel_id="web")
+
+        set_session_delivery_context(
+            session_id="sess_delivery_lock",
+            channel_id="feishu",
+            source_request_id="req-1",
+            route_metadata={"feishu_chat_id": "oc_1"},
+        )
+        _METADATA_QUEUE.join()
+
+        data = _read_json(sessions_dir / "sess_delivery_lock" / "metadata.json")
+        assert data["channel_id"] == "web", "顶层 channel_id 首次锁定，不被 server_push 覆写"
+        assert (
+            data["delivery_context"]["channel_id"] == "feishu"
+        ), "delivery_context.channel_id 保持动态更新"
+
+        context = get_session_delivery_context("sess_delivery_lock")
+        assert context is not None
+        assert context["channel_id"] == "feishu"
+
 
 # ===========================================================================
 # 需求验证: 会话标题稳定性
@@ -1170,6 +1231,26 @@ class TestSyncSessionRequestMetadata:
         _drain_queue()
         assert effective is None
         assert get_session_metadata("s1")["project_dir"] == ""
+
+    @staticmethod
+    def test_sync_channel_id_first_locked_not_overwritten(sessions_dir):
+        """channel_id 首次锁定：web 归属的会话不被 feishu 通道消息覆写。
+
+        联机/共享会话场景下 feishu 人机消息经 _forward_loop 转发进共享会话时，
+        若 sync 无条件写 channel_id 会把归属通道从 web 翻转为 feishu，
+        导致 web 侧栏按 channel_id=="web" 过滤后会话消失。
+        """
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            init_session_metadata,
+            sync_session_request_metadata,
+            get_session_metadata,
+        )
+
+        init_session_metadata(session_id="s_lock_ch", channel_id="web")
+        # feishu 通道的请求同步进来 → 不得覆盖已锁定的归属通道
+        sync_session_request_metadata(session_id="s_lock_ch", channel_id="feishu")
+        _drain_queue()
+        assert get_session_metadata("s_lock_ch")["channel_id"] == "web"
 
     @staticmethod
     def test_sync_model_overwritten_each_call(sessions_dir):
