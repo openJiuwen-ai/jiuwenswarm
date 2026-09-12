@@ -22,6 +22,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
@@ -429,7 +433,7 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     if not isinstance(params, dict):
         return None
 
-    extra: dict[str, Any] = {}
+    extra = _with_cross_session_history_metadata(None, params) or {}
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -462,6 +466,37 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
             extra["skills"] = skills
 
     return _with_heartbeat_history_metadata(extra, params)
+
+
+def _with_cross_session_history_metadata(
+    extra: dict[str, Any] | None,
+    params: Any,
+) -> dict[str, Any] | None:
+    """Persist the public origin marker on cross-Session assistant records."""
+    result = dict(extra or {})
+    if not isinstance(params, dict):
+        return result or None
+    raw_cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if not isinstance(raw_cross_session, dict):
+        return result or None
+    cross_session: dict[str, Any] = {}
+    for key in (
+        "message_id",
+        "source_session_id",
+        "source_title",
+        "chain_id",
+        "parent_message_id",
+        "hop_count",
+        "language",
+    ):
+        if key in raw_cross_session:
+            cross_session[key] = raw_cross_session[key]
+    result["message_origin"] = SESSION_MESSAGE_ORIGIN
+    result["cross_session"] = cross_session
+    message_id = str(cross_session.get("message_id") or "").strip()
+    if message_id:
+        result["session_message_id"] = message_id
+    return result
 
 
 def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
@@ -1386,7 +1421,12 @@ class JiuWenSwarm:
         _request_debug = False
         _dbg_mode = params.get("mode")
         _dbg_mode_s = _dbg_mode.strip().lower() if isinstance(_dbg_mode, str) else ""
-        if not (params.get("team") or is_team_runtime_mode(_dbg_mode_s)):
+        cross_session_turn = isinstance(
+            params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if not cross_session_turn and not (
+            params.get("team") or is_team_runtime_mode(_dbg_mode_s)
+        ):
             if isinstance(query, str):
                 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
                 query, _request_debug = strip_debug_directive(query)
@@ -3313,12 +3353,15 @@ class JiuWenSwarm:
             })
             if not isinstance(extra_fields, dict):
                 extra_fields = {}
-            extra_fields = _with_heartbeat_history_metadata(
-                _with_web_agent_template_metadata(
-                    extra_fields,
+            extra_fields = _with_cross_session_history_metadata(
+                _with_heartbeat_history_metadata(
+                    _with_web_agent_template_metadata(
+                        extra_fields,
+                        request.params,
+                        cid,
+                        event_type="chat.final",
+                    ),
                     request.params,
-                    cid,
-                    event_type="chat.final",
                 ),
                 request.params,
             ) or {}
@@ -3764,13 +3807,16 @@ class JiuWenSwarm:
                                         extra_fields[pk] = request.params[pk]
                                 if not isinstance(extra_fields, dict):
                                     extra_fields = {}
-                                extra_fields = _with_heartbeat_history_metadata(
-                                    _with_web_agent_template_metadata(
-                                        extra_fields,
+                                extra_fields = _with_cross_session_history_metadata(
+                                    _with_heartbeat_history_metadata(
+                                        _with_web_agent_template_metadata(
+                                            extra_fields,
+                                            request.params,
+                                            cid,
+                                            event_type=et,
+                                            payload=payload_dict,
+                                        ),
                                         request.params,
-                                        cid,
-                                        event_type=et,
-                                        payload=payload_dict,
                                     ),
                                     request.params,
                                 ) or {}
@@ -3955,13 +4001,16 @@ class JiuWenSwarm:
                                     extra_fields[pk] = request.params[pk]
                             if not isinstance(extra_fields, dict):
                                 extra_fields = {}
-                            extra_fields = _with_heartbeat_history_metadata(
-                                _with_web_agent_template_metadata(
-                                    extra_fields,
+                            extra_fields = _with_cross_session_history_metadata(
+                                _with_heartbeat_history_metadata(
+                                    _with_web_agent_template_metadata(
+                                        extra_fields,
+                                        request.params,
+                                        cid,
+                                        event_type=et,
+                                        payload=data,
+                                    ),
                                     request.params,
-                                    cid,
-                                    event_type=et,
-                                    payload=data,
                                 ),
                                 request.params,
                             ) or {}

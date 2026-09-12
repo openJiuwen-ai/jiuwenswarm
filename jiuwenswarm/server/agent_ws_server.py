@@ -12,6 +12,7 @@ import math
 import os
 import shutil
 import sys
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, ClassVar, NamedTuple, Optional
 from weakref import WeakValueDictionary
@@ -24,7 +25,16 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.runtime import HeartbeatRai
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
-from jiuwenswarm.common.utils import get_agent_sessions_dir, get_config_file, mask_sensitive
+from jiuwenswarm.common.utils import (
+    get_agent_root_dir,
+    get_agent_sessions_dir,
+    get_config_file,
+    mask_sensitive,
+)
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+)
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import (
@@ -68,7 +78,20 @@ from jiuwenswarm.runtime import (
     SessionSwitchInput,
 )
 from jiuwenswarm.server.runtime.tokenizer_service import TokenizerService
-from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
+from jiuwenswarm.server.runtime.session.session_metadata import (
+    build_server_push_message,
+    get_all_sessions_metadata,
+    get_session_metadata,
+    remove_session_metadata_cache,
+)
+from jiuwenswarm.server.runtime.session.session_message_service import (
+    SessionMessageExecutionResult,
+    SessionMessageService,
+)
+from jiuwenswarm.server.runtime.session.session_message_store import (
+    SessionMessageRecord,
+    SessionMessageStore,
+)
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
     append_history_record,
@@ -78,6 +101,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     load_history_records,
     read_member_history_records,
     read_team_history_records,
+    wait_for_history_receipt,
 )
 from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     build_filesystem_policy,
@@ -89,7 +113,12 @@ from jiuwenswarm.server.runtime.agent_adapter.sysop_builder import (
     validate_sandbox_files_runtime,
 )
 from jiuwenswarm.server.utils.utils import is_team_params
-from jiuwenswarm.common.mode_matrix import is_plan_mode, is_team_mode
+from jiuwenswarm.common.mode_matrix import (
+    deprecate_mode,
+    is_plan_mode,
+    is_single_agent_mode,
+    is_team_mode,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
@@ -195,6 +224,24 @@ def _parse_single_byte_range(
 # Session owner preparation completes before the response. Optional KVC signals
 # run after the response so affinity latency cannot fail a UI session change.
 _background_session_kvc_tasks: set[asyncio.Task] = set()
+
+
+def _strip_untrusted_session_message_context(request: AgentRequest) -> None:
+    """Remove the private origin marker from every Gateway-supplied request."""
+
+    request.trusted_session_message_route = None
+    if isinstance(request.params, dict):
+        params = dict(request.params)
+        params.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+        if isinstance(params.get("metadata"), dict):
+            nested_metadata = dict(params["metadata"])
+            nested_metadata.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+            params["metadata"] = nested_metadata
+        request.params = params
+    if isinstance(request.metadata, dict):
+        metadata = dict(request.metadata)
+        metadata.pop(SESSION_MESSAGE_INTERNAL_KEY, None)
+        request.metadata = metadata
 
 
 def _is_session_prewarm_model_eligible(
@@ -473,6 +520,68 @@ async def _stop_stream_keepalive(
     _consume_keepalive_task_result(keepalive_task, request_id)
 
 
+@dataclass(slots=True)
+class _SessionMessageResumeState:
+    """Stable mailbox identity while one user answer resumes a target turn."""
+
+    message_id: str
+    target_session_id: str
+    interrupt_request_id: str
+    interrupt_source: str
+    waiting_user: bool = False
+
+
+@dataclass(slots=True)
+class _TurnOutcomeTracker:
+    """Classify Runtime events only when they contain a terminal signal."""
+
+    saw_chat_final: bool = False
+    saw_runtime_accepted: bool = False
+    waiting_user: bool = False
+    saw_error: bool = False
+    error: str = ""
+
+    def observe(self, event: RuntimeEvent) -> None:
+        event_type = event.event_type
+        if event_type == "chat.final":
+            self.saw_chat_final = True
+        elif event_type == "runtime.accepted":
+            self.saw_runtime_accepted = True
+        elif event_type == "chat.ask_user_question":
+            self.waiting_user = True
+        if not event.ok or event_type in {
+            "chat.error",
+            "runtime.error",
+            "execution.error",
+            "error",
+        }:
+            self.fail(self._event_error(event))
+
+    def fail(self, error: str) -> None:
+        self.saw_error = True
+        if error:
+            self.error = error
+
+    def outcome(self) -> str:
+        if self.saw_error:
+            return "failed"
+        if self.waiting_user:
+            return "waiting_user"
+        if self.saw_chat_final:
+            return "succeeded"
+        return "unknown"
+
+    def unconfirmed_error(self) -> str:
+        if self.saw_runtime_accepted:
+            return "Runtime accepted the request without confirming completion"
+        return "Runtime stream ended without confirming completion"
+
+    @staticmethod
+    def _event_error(event: RuntimeEvent) -> str:
+        payload = event.payload if isinstance(event.payload, dict) else {}
+        return str(payload.get("error") or payload.get("message") or "")
+
+
 class _StreamKeepalive:
     """Own the transport keepalive task for one streaming request."""
 
@@ -739,8 +848,6 @@ def _is_restorable_history_record(record: Any) -> bool:
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
     """Read locked session fields that decide where ``todo.json`` lives."""
     try:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         metadata = get_session_metadata(session_id, enable_writeback=False) or {}
     except Exception:
         metadata = {}
@@ -1008,6 +1115,7 @@ class AgentWebSocketServer:
         self._runtime.set_admission_controller(self._heartbeat_runtime.admission)
         self._runtime.set_session_delete_lifecycle(self._heartbeat_runtime)
         self._agent_manager.set_heartbeat_service(self._heartbeat_runtime)
+        self._install_session_message_service()
         # Gateway user-business RPCs execute in the current AgentServer's
         # injected data directory. Register adapters once per server; request
         # dispatch occurs before the legacy handler chain below.
@@ -1058,6 +1166,21 @@ class AgentWebSocketServer:
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
+
+    def _install_session_message_service(self) -> None:
+        """Create the AgentServer-owned durable mailbox for this Runtime."""
+
+        service = SessionMessageService(
+            store=SessionMessageStore(
+                get_agent_root_dir() / "session_messages.sqlite3"
+            ),
+            admission=self._heartbeat_runtime.admission,
+            execute=self.execute_internal_session_message,
+            status_callback=self._push_session_message_status,
+            available=self._current_ws is not None,
+        )
+        self._session_message_service = service
+        self._runtime.set_session_message_service(service)
 
     def set_proactive_engine(self, engine: Any) -> None:
         """Store the proactive engine instance for debug trigger interface."""
@@ -1623,6 +1746,9 @@ class AgentWebSocketServer:
                 task.cancel()
         if tokenizer_tasks:
             await asyncio.gather(*tokenizer_tasks, return_exceptions=True)
+        session_message_service = getattr(self, "_session_message_service", None)
+        if session_message_service is not None:
+            await session_message_service.stop()
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None
@@ -1716,6 +1842,7 @@ class AgentWebSocketServer:
                 self._agent_manager.set_heartbeat_service(
                     self._heartbeat_runtime
                 )
+                self._install_session_message_service()
                 self._adapter_registry = AdapterRegistry()
                 for adapter in (
                     SessionAdapter(),
@@ -1763,6 +1890,7 @@ class AgentWebSocketServer:
         send_lock = asyncio.Lock()
         self._current_ws = ws
         self._current_send_lock = send_lock
+        session_message_service = getattr(self, "_session_message_service", None)
 
         # 发送 connection.ack 事件，通知 Gateway 服务端已就绪
         try:
@@ -1777,6 +1905,8 @@ class AgentWebSocketServer:
                 },
             }
             await send_wire_payload(ws, ack_frame)
+            if session_message_service is not None:
+                await session_message_service.set_available(True)
             logger.info("[AgentWebSocketServer] 已发送 connection.ack: %s", remote)
         except Exception as e:
             logger.warning("[AgentWebSocketServer] 发送 connection.ack 失败: %s", e)
@@ -1806,6 +1936,8 @@ class AgentWebSocketServer:
         except Exception as e:
             logger.exception("[AgentWebSocketServer] 连接处理异常 (%s): %s", remote, e)
         finally:
+            if session_message_service is not None:
+                await session_message_service.set_available(False)
             owns_current_connection = self._release_current_connection(ws)
             self._clear_ws_acp_client_capabilities(ws)
             connection_tasks = list(tasks)
@@ -1988,6 +2120,8 @@ class AgentWebSocketServer:
                     env.is_stream,
                 )
                 request = e2a_to_agent_request(env)
+
+        _strip_untrusted_session_message_context(request)
 
         logger.info(
             "[AgentWebSocketServer] 收到请求: request_id=%s channel_id=%s is_stream=%s",
@@ -2836,10 +2970,6 @@ class AgentWebSocketServer:
                 metadata=request.metadata,
             )
         else:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
             meta = get_session_metadata(
                 sid,
                 cache_bust=True,
@@ -2996,6 +3126,9 @@ class AgentWebSocketServer:
             return
 
         runtime = self._execution_runtime()
+        resume_state = await self._open_session_message_resume(request)
+        resume_outcome = "unknown"
+        resume_error = "resumed turn ended before its outcome was confirmed"
 
         async def _send_control_event(event: RuntimeEvent) -> None:
             await self._send_runtime_event(
@@ -3006,27 +3139,64 @@ class AgentWebSocketServer:
                 sequence=0,
             )
 
-        if request.req_method == ReqMethod.CHAT_ANSWER:
-            events = await runtime.answer_interaction(
-                request,
-                trigger_hook=False,
-                on_control_event=_send_control_event,
-            )
-        else:
-            events = await runtime.invoke(
-                request,
-                trigger_hook=False,
-                on_control_event=_send_control_event,
-            )
+        outcome_tracker = _TurnOutcomeTracker()
+        try:
+            if request.req_method == ReqMethod.CHAT_ANSWER:
+                events = await runtime.answer_interaction(
+                    request,
+                    trigger_hook=False,
+                    on_control_event=_send_control_event,
+                )
+            else:
+                events = await runtime.invoke(
+                    request,
+                    trigger_hook=False,
+                    on_control_event=_send_control_event,
+                )
 
-        for event in events:
-            await self._send_runtime_event(
-                ws,
-                event,
-                send_lock,
-                streaming=False,
-                sequence=0,
+            for event in events:
+                outcome_tracker.observe(event)
+                if event.event_type == "chat.ask_user_question":
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    await self._persist_repeated_session_question(
+                        request,
+                        next_interrupt_request_id=str(
+                            payload.get("request_id") or ""
+                        ).strip(),
+                        next_interrupt_source=str(payload.get("source") or "").strip(),
+                        resume_state=resume_state,
+                    )
+                await self._send_runtime_event(
+                    ws,
+                    event,
+                    send_lock,
+                    streaming=False,
+                    sequence=0,
+                )
+            if resume_state is not None and resume_state.waiting_user:
+                outcome_tracker.waiting_user = True
+            resume_outcome = outcome_tracker.outcome()
+            resume_error = (
+                outcome_tracker.error
+                if resume_outcome == "failed"
+                else outcome_tracker.unconfirmed_error()
+                if resume_outcome == "unknown"
+                else ""
             )
+        finally:
+            try:
+                await self._finalize_session_message_resume(
+                    request,
+                    resume_state,
+                    outcome=resume_outcome,
+                    error=resume_error,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[SessionMessaging] failed to finalize resumed unary turn: "
+                    "request_id=%s",
+                    request.request_id,
+                )
         logger.info(
             "[AgentWebSocketServer] 非流式响应已发送: request_id=%s",
             request.request_id,
@@ -3054,10 +3224,6 @@ class AgentWebSocketServer:
         data = params.get("data") if isinstance(params.get("data"), dict) else {}
         effective_user_id = str(request.user_id or "").strip()
         if not effective_user_id and request.session_id:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
             effective_user_id = str(
                 (get_session_metadata(request.session_id) or {}).get("user_id") or ""
             ).strip()
@@ -3230,20 +3396,292 @@ class AgentWebSocketServer:
                         }
                     )
 
+    async def _push_session_message_status(
+        self, record: SessionMessageRecord
+    ) -> None:
+        """Push a mailbox status hint using the target Session's saved route."""
+
+        message = build_server_push_message(
+            session_id=record.target_session_id,
+            request_id=record.execution_request_id or record.message_id,
+            payload={
+                "event_type": "session.message.updated",
+                "message": {
+                    "message_id": record.message_id,
+                    "source_session_id": record.source_session_id,
+                    "source_title": record.source_title_snapshot,
+                    "target_session_id": record.target_session_id,
+                    "chain_id": record.chain_id,
+                    "hop_count": record.hop_count,
+                    "status": record.status,
+                    "created_at": record.created_at,
+                    "started_at": record.started_at,
+                    "finished_at": record.finished_at,
+                    "error_code": record.last_error_code,
+                    "error": record.last_error,
+                },
+            },
+            fallback_channel_id="web",
+        )
+        await self.send_push(message)
+
+    async def execute_internal_session_message(
+        self, record: SessionMessageRecord
+    ) -> SessionMessageExecutionResult:
+        """Execute one claimed mailbox record in its target product Session."""
+
+        metadata = get_session_metadata(
+            record.target_session_id,
+            cache_bust=True,
+            enable_writeback=False,
+        )
+        mode = deprecate_mode(metadata.get("mode")) if metadata else ""
+        channel_id = str(metadata.get("channel_id") or "").strip().lower()
+        # metadata 缺失 / 非单 Agent 模式 / 渠道不支持 / cron 会话，均视为目标不可用
+        target_unsupported = (
+            not metadata
+            or not is_single_agent_mode(mode)
+            or channel_id not in {"web", "tui"}
+            or bool(str(metadata.get("cron_id") or "").strip())
+        )
+        if target_unsupported:
+            return SessionMessageExecutionResult(
+                status="failed",
+                error_code="UNSUPPORTED_TARGET",
+                error="target Session no longer supports Agent messaging",
+            )
+
+        stored_user_id = str(metadata.get("user_id") or "").strip()
+        owner_matches = (
+            not stored_user_id
+            if record.owner_scope_id == "local"
+            else stored_user_id == record.owner_scope_id
+        )
+        if not owner_matches:
+            return SessionMessageExecutionResult(
+                status="failed",
+                error_code="NOT_FOUND_OR_FORBIDDEN",
+                error="target Session ownership changed before execution",
+            )
+
+        cross_session = {
+            "message_id": record.message_id,
+            "source_session_id": record.source_session_id,
+            "source_title": record.source_title_snapshot,
+            "chain_id": record.chain_id,
+            "parent_message_id": record.parent_message_id,
+            "hop_count": record.hop_count,
+            "language": str(get_config().get("preferred_language") or "zh"),
+        }
+        params: dict[str, Any] = {
+            "query": record.content,
+            "mode": mode,
+            SESSION_MESSAGE_INTERNAL_KEY: cross_session,
+        }
+        for key in ("project_id", "project_dir", "work_mode"):
+            value = metadata.get(key)
+            if value is not None and str(value).strip():
+                params[key] = value
+        model_name = metadata.get("model")
+        if isinstance(model_name, str) and model_name.strip():
+            params["model_name"] = model_name.strip()
+
+        request = AgentRequest(
+            request_id=record.execution_request_id,
+            channel_id=channel_id,
+            session_id=record.target_session_id,
+            req_method=ReqMethod.CHAT_SEND,
+            params=params,
+            is_stream=True,
+            timestamp=_dt.datetime.now(_dt.timezone.utc).timestamp(),
+            metadata={SESSION_MESSAGE_INTERNAL_KEY: cross_session},
+            user_id=stored_user_id,
+        )
+
+        public_cross_session = {
+            **cross_session,
+            "content": record.content,
+        }
+
+        def _with_cross_session_marker(
+            payload: dict[str, Any],
+            *,
+            request_id: str,
+        ) -> dict[str, Any]:
+            return {
+                **payload,
+                # ask_user 等事件的 request_id 是交互关联 ID，不能覆盖；
+                # 后台轮自身的稳定身份单独使用 turn_request_id。
+                "request_id": payload.get("request_id") or request_id,
+                "turn_request_id": request_id,
+                "message_origin": SESSION_MESSAGE_ORIGIN,
+                "session_message_id": record.message_id,
+                "cross_session": public_cross_session,
+            }
+
+        await self.send_push(
+            build_server_push_message(
+                session_id=record.target_session_id,
+                request_id=request.request_id,
+                payload=_with_cross_session_marker(
+                    {
+                        "event_type": "chat.processing_status",
+                        "session_id": record.target_session_id,
+                        "is_processing": True,
+                        "is_complete": False,
+                        "content": record.content,
+                    },
+                    request_id=request.request_id,
+                ),
+                fallback_channel_id=channel_id,
+            )
+        )
+
+        outcome_tracker = _TurnOutcomeTracker()
+        processing_finished = False
+        runtime_stream = self._execution_runtime().stream(
+            request,
+            trigger_hook=False,
+            background=True,
+        )
+        try:
+            async for event in runtime_stream:
+                payload = (
+                    dict(event.payload)
+                    if isinstance(event.payload, dict)
+                    else event.payload
+                )
+                event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                outcome_tracker.observe(event)
+                if not event.ok or event_type in {
+                    "chat.error",
+                    "runtime.error",
+                    "execution.error",
+                    "error",
+                }:
+                    error_payload = dict(payload or {})
+                    error_payload["event_type"] = "chat.error"
+                    error_payload["error"] = str(
+                        error_payload.get("error")
+                        or error_payload.get("message")
+                        or "Runtime execution failed"
+                    )
+                    payload = error_payload
+                    outcome_tracker.fail(str(error_payload.get("error") or ""))
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.ask_user_question"
+                ):
+                    interrupt_request_id = str(payload.get("request_id") or "").strip()
+                    interrupt_source = str(payload.get("source") or "").strip()
+                    service = getattr(self, "_session_message_service", None)
+                    if not interrupt_request_id or not interrupt_source:
+                        outcome_tracker.fail(
+                            "Runtime emitted an uncorrelated user question"
+                        )
+                    elif service is None:
+                        outcome_tracker.fail("Session message service is unavailable")
+                    elif not await service.mark_waiting(
+                        record.message_id,
+                        interrupt_request_id=interrupt_request_id,
+                        interrupt_source=interrupt_source,
+                    ):
+                        outcome_tracker.fail(
+                            "Failed to persist user-question correlation"
+                        )
+                if isinstance(payload, dict):
+                    payload = _with_cross_session_marker(
+                        payload,
+                        request_id=event.request_id or request.request_id,
+                    )
+                    processing_finished = (
+                        processing_finished
+                        or (
+                            payload.get("event_type") == "chat.processing_status"
+                            and payload.get("is_processing") is False
+                        )
+                    )
+                push = build_server_push_message(
+                    session_id=record.target_session_id,
+                    request_id=event.request_id or request.request_id,
+                    payload=payload if isinstance(payload, dict) else {},
+                    fallback_channel_id=channel_id,
+                )
+                push["is_complete"] = event.is_complete
+                await self.send_push(push)
+        finally:
+            try:
+                await runtime_stream.aclose()
+            finally:
+                if not processing_finished:
+                    await self.send_push(
+                        build_server_push_message(
+                            session_id=record.target_session_id,
+                            request_id=request.request_id,
+                            payload=_with_cross_session_marker(
+                                {
+                                    "event_type": "chat.processing_status",
+                                    "session_id": record.target_session_id,
+                                    "is_processing": False,
+                                    "is_complete": True,
+                                },
+                                request_id=request.request_id,
+                            ),
+                            fallback_channel_id=channel_id,
+                        )
+                    )
+
+        outcome = outcome_tracker.outcome()
+        terminal_status = {
+            "succeeded": "success",
+            "failed": "failed",
+            "waiting_user": "waiting_user",
+            "unknown": "unknown",
+        }[outcome]
+        receipt = enqueue_history_request_completion(
+            record.target_session_id,
+            request.request_id,
+            terminal_status=terminal_status,
+        )
+        if receipt is not None:
+            await wait_for_history_receipt(receipt, timeout=5.0)
+
+        if outcome == "failed":
+            return SessionMessageExecutionResult(
+                status="failed",
+                error_code="EXECUTION_FAILED",
+                error=outcome_tracker.error or "Runtime execution failed",
+            )
+        if outcome == "unknown":
+            return SessionMessageExecutionResult(
+                status="unknown",
+                error_code="EXECUTION_NOT_COMPLETED",
+                error=outcome_tracker.unconfirmed_error(),
+            )
+        if outcome == "waiting_user":
+            return SessionMessageExecutionResult(status="waiting_user")
+        return SessionMessageExecutionResult(status="succeeded")
+
     async def _handle_stream_impl(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
         """流式处理：调用 process_message_stream，逐条发送 E2AResponse 线 JSON。"""
         session_id = request.session_id or "default"
-        channel_id = request.channel_id or "web"
+        resume_state = await self._open_session_message_resume(request)
+        resume_outcome = "unknown"
+        resume_error = "resumed turn ended before its outcome was confirmed"
         current_task = asyncio.current_task()
         stream_stop_event = asyncio.Event()
-        runtime = self._execution_runtime()
         uses_session_runtime = AgentRuntime.uses_session_runtime(request)
         if current_task is not None and not uses_session_runtime:
             self._session_stream_tasks.setdefault(session_id, {})[current_task] = stream_stop_event
 
         chunk_count = 0
+        outcome_tracker = _TurnOutcomeTracker()
         keepalive = _StreamKeepalive(
             ws,
             request,
@@ -3274,6 +3712,17 @@ class AgentWebSocketServer:
                 if event.event_type == PLAN_MODE_EXITED_EVENT_TYPE:
                     await _send_control_event(event)
                     continue
+                outcome_tracker.observe(event)
+                if event.event_type == "chat.ask_user_question":
+                    payload = event.payload if isinstance(event.payload, dict) else {}
+                    await self._persist_repeated_session_question(
+                        request,
+                        next_interrupt_request_id=str(
+                            payload.get("request_id") or ""
+                        ).strip(),
+                        next_interrupt_source=str(payload.get("source") or "").strip(),
+                        resume_state=resume_state,
+                    )
                 chunk_count += 1
                 # 通知 keepalive 有真实 chunk 发送，重置空闲计时。
                 keepalive.notify_activity(terminal=event.is_complete)
@@ -3299,29 +3748,243 @@ class AgentWebSocketServer:
                         request.request_id,
                     )
                     return
+            if resume_state is not None and resume_state.waiting_user:
+                outcome_tracker.waiting_user = True
+            resume_outcome = outcome_tracker.outcome()
+            resume_error = (
+                outcome_tracker.error
+                if resume_outcome == "failed"
+                else outcome_tracker.unconfirmed_error()
+                if resume_outcome == "unknown"
+                else ""
+            )
         finally:
-            # 尽早阻止新的 keepalive；Runtime 清理仍先完成，以尽快释放其资源。
-            keepalive.signal_stop()
             try:
-                if runtime_stream is not None:
-                    close_stream = getattr(runtime_stream, "aclose", None)
-                    if callable(close_stream):
-                        await close_stream()
+                # 尽早阻止新的 keepalive；Runtime 清理仍先完成，以尽快释放其资源。
+                keepalive.signal_stop()
+                try:
+                    if runtime_stream is not None:
+                        close_stream = getattr(runtime_stream, "aclose", None)
+                        if callable(close_stream):
+                            await close_stream()
+                finally:
+                    try:
+                        # 显式停止并唤醒 keepalive；Task.cancel 只作为有界的兜底。
+                        await keepalive.stop()
+                    finally:
+                        # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
+                        entries = self._session_stream_tasks.get(session_id)
+                        if entries is not None and current_task is not None:
+                            entries.pop(current_task, None)
+                            if not entries:
+                                self._session_stream_tasks.pop(session_id, None)
             finally:
                 try:
-                    # 显式停止并唤醒 keepalive；Task.cancel 只作为有界的兜底。
-                    await keepalive.stop()
-                finally:
-                    # 清除自身的宿主生命周期记录；同 session 的其它请求不受影响。
-                    entries = self._session_stream_tasks.get(session_id)
-                    if entries is not None and current_task is not None and not uses_session_runtime:
-                        entries.pop(current_task, None)
-                        if not entries:
-                            self._session_stream_tasks.pop(session_id, None)
+                    await self._finalize_session_message_resume(
+                        request,
+                        resume_state,
+                        outcome=resume_outcome,
+                        error=resume_error,
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.exception(
+                        "[SessionMessaging] failed to finalize resumed stream turn: "
+                        "request_id=%s",
+                        request.request_id,
+                    )
         logger.info(
             "[AgentWebSocketServer] 流式响应已发送: request_id=%s 共 %s 个 chunk",
             request.request_id,
             chunk_count,
+        )
+
+    async def _persist_repeated_session_question(
+        self,
+        request: AgentRequest,
+        *,
+        next_interrupt_request_id: str,
+        next_interrupt_source: str,
+        resume_state: _SessionMessageResumeState | None = None,
+    ) -> bool | None:
+        """Persist a resumed mailbox turn's next question before it is pushed."""
+
+        if resume_state is None:
+            resume_state = await self._open_session_message_resume(request)
+        if resume_state is None:
+            return None
+        service = getattr(self, "_session_message_service", None)
+        if service is None:
+            return None
+        next_request_id = str(next_interrupt_request_id or "").strip()
+        next_source = str(next_interrupt_source or "").strip()
+        if not next_request_id or not next_source:
+            raise RuntimeError("Runtime emitted an uncorrelated follow-up question")
+        persisted = await service.complete_waiting_after_resume(
+            resume_state.target_session_id,
+            interrupt_request_id=resume_state.interrupt_request_id,
+            interrupt_source=resume_state.interrupt_source,
+            waiting_user=True,
+            failed=False,
+            next_interrupt_request_id=next_request_id,
+            next_interrupt_source=next_source,
+        )
+        if not persisted:
+            raise RuntimeError("Failed to persist follow-up question correlation")
+        resume_state.interrupt_request_id = next_request_id
+        resume_state.interrupt_source = next_source
+        resume_state.waiting_user = True
+        return True
+
+    async def _open_session_message_resume(
+        self,
+        request: AgentRequest,
+    ) -> _SessionMessageResumeState | None:
+        """Capture the mailbox identity before executing an interrupt answer."""
+
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_interrupt_resume_payload,
+        )
+
+        if not is_interrupt_resume_payload(request.params):
+            return None
+        service = getattr(self, "_session_message_service", None)
+        if service is None:
+            return None
+        params = request.params if isinstance(request.params, dict) else {}
+        interrupt_request_id = str(params.get("request_id") or "").strip()
+        interrupt_source = str(params.get("source") or "").strip()
+        target_session_id = request.session_id or "default"
+        record = await service.find_waiting_for_resume(
+            target_session_id,
+            interrupt_request_id,
+            interrupt_source,
+        )
+        if record is None:
+            return None
+        request.trusted_session_message_route = {
+            "message_id": record.message_id,
+            "chain_id": record.chain_id,
+            "parent_message_id": record.parent_message_id,
+            "hop_count": record.hop_count,
+        }
+        return _SessionMessageResumeState(
+            message_id=record.message_id,
+            target_session_id=target_session_id,
+            interrupt_request_id=interrupt_request_id,
+            interrupt_source=interrupt_source,
+        )
+
+    async def _finalize_session_message_resume(
+        self,
+        request: AgentRequest,
+        resume_state: _SessionMessageResumeState | None,
+        *,
+        outcome: str,
+        error: str,
+    ) -> None:
+        """Persist history and resolve a resumed mailbox item exactly once."""
+
+        if resume_state is None:
+            return
+        if outcome not in {"succeeded", "failed", "waiting_user", "unknown"}:
+            raise ValueError(f"unsupported resumed-turn outcome: {outcome}")
+
+        terminal_status = {
+            "succeeded": "success",
+            "failed": "failed",
+            "waiting_user": "waiting_user",
+            "unknown": "unknown",
+        }[outcome]
+        error_code = (
+            "EXECUTION_FAILED"
+            if outcome == "failed"
+            else "RESUME_OUTCOME_UNKNOWN"
+            if outcome == "unknown"
+            else ""
+        )
+        try:
+            receipt = enqueue_history_request_completion(
+                resume_state.target_session_id,
+                request.request_id,
+                terminal_status=terminal_status,
+            )
+            if receipt is not None:
+                await wait_for_history_receipt(receipt, timeout=5.0)
+        except Exception as exc:  # noqa: BLE001
+            outcome = "unknown"
+            error_code = "HISTORY_PERSISTENCE_UNCONFIRMED"
+            error = f"history completion was not confirmed: {exc}"
+
+        if outcome == "waiting_user":
+            return
+        service = getattr(self, "_session_message_service", None)
+        if service is None:
+            return
+        await service.finalize_waiting_message(
+            message_id=resume_state.message_id,
+            target_session_id=resume_state.target_session_id,
+            status=outcome,
+            error_code=error_code,
+            error=error,
+        )
+
+    async def _complete_waiting_session_message_after_external_turn(
+        self,
+        request: AgentRequest,
+        *,
+        waiting_user: bool,
+        waiting_correlation_persisted: bool,
+        failed: bool,
+        error: str,
+        next_interrupt_request_id: str,
+        next_interrupt_source: str,
+    ) -> None:
+        """Compatibility wrapper for resolving a resumed mailbox turn."""
+
+        from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+            is_interrupt_resume_payload,
+        )
+
+        if not is_interrupt_resume_payload(request.params):
+            return
+        service = getattr(self, "_session_message_service", None)
+        if service is None:
+            return
+        if waiting_user and not waiting_correlation_persisted:
+            return
+        params = request.params if isinstance(request.params, dict) else {}
+        interrupt_request_id = (
+            next_interrupt_request_id
+            if waiting_correlation_persisted
+            else str(params.get("request_id") or "").strip()
+        )
+        interrupt_source = (
+            next_interrupt_source
+            if waiting_correlation_persisted
+            else str(params.get("source") or "").strip()
+        )
+        target_session_id = request.session_id or "default"
+        record = await service.find_waiting_for_resume(
+            target_session_id,
+            interrupt_request_id,
+            interrupt_source,
+        )
+        if record is None:
+            return
+        state = _SessionMessageResumeState(
+            message_id=record.message_id,
+            target_session_id=target_session_id,
+            interrupt_request_id=interrupt_request_id,
+            interrupt_source=interrupt_source,
+            waiting_user=waiting_user,
+        )
+        await self._finalize_session_message_resume(
+            request,
+            state,
+            outcome=(
+                "failed" if failed else "waiting_user" if waiting_user else "succeeded"
+            ),
+            error=error,
         )
 
     def _execution_runtime(self) -> AgentRuntime:
@@ -3345,6 +4008,9 @@ class AgentWebSocketServer:
                 enable_kvc_tracking=True,
             )
             self._runtime = runtime
+            runtime.set_session_message_service(
+                getattr(self, "_session_message_service", None)
+            )
         return runtime
 
     async def _send_runtime_event(
@@ -3530,7 +4196,6 @@ class AgentWebSocketServer:
             find_or_create_code_project_for_tui_params,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
             rebind_session_project,
         )
 
@@ -3872,8 +4537,6 @@ class AgentWebSocketServer:
 
 
     async def _find_team_session_ids(self, team_name: str) -> list[str]:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         sessions_dir = get_agent_sessions_dir()
         if not sessions_dir.exists():
             return []
@@ -4052,7 +4715,6 @@ class AgentWebSocketServer:
             return None
 
         from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
             update_session_metadata,
         )
 
@@ -4174,8 +4836,6 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _legacy_team_bindings_from_sessions(known_team_names: set[str]) -> list[dict[str, Any]]:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         sessions_dir = get_agent_sessions_dir()
         if not sessions_dir.exists():
             return []
@@ -4639,11 +5299,21 @@ class AgentWebSocketServer:
         """Delete a single session and its recoverable runtime state."""
         params = request.params if isinstance(request.params, dict) else {}
         target = str(params.get("session_id") or "").strip()
-        result = await self._execution_runtime().delete_session(
-            channel_id=request.channel_id or "",
-            session_id=target,
-        )
+        session_message_service = getattr(self, "_session_message_service", None)
+        if session_message_service is not None and target:
+            await session_message_service.begin_target_delete(target)
+        try:
+            result = await self._execution_runtime().delete_session(
+                channel_id=request.channel_id or "",
+                session_id=target,
+            )
+        except BaseException:
+            if session_message_service is not None and target:
+                await session_message_service.abort_target_delete(target)
+            raise
         if result.ok:
+            if session_message_service is not None:
+                await session_message_service.on_target_deleted(target)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -4652,6 +5322,8 @@ class AgentWebSocketServer:
                 metadata=request.metadata,
             )
         else:
+            if session_message_service is not None and target:
+                await session_message_service.abort_target_delete(target)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5155,7 +5827,7 @@ class AgentWebSocketServer:
                 session_id, request_id, terminal_status="failed"
             )
             if receipt is not None:
-                await asyncio.wait_for(asyncio.wrap_future(receipt), timeout=5.0)
+                await wait_for_history_receipt(receipt, timeout=5.0)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5283,7 +5955,6 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
             TeamMonitorHandler,
         )
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()

@@ -10,6 +10,9 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (
+    SESSION_MESSAGING_ROUTE_EXTRA_KEY,
+)
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
@@ -18,7 +21,12 @@ from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
 def _assert_symphony_request_model_context(inputs: dict) -> None:
     run = inputs["run"]
     assert run["kind"] == "normal"
-    assert set(run["context"]["extra"]) == {SYMPHONY_LLM_CONFIG_REF_KEY}
+    # The session-messaging route extra may ride along; it has dedicated tests
+    # in test_session_messaging.py. Here we only pin the model-reference contract.
+    assert set(run["context"]["extra"]) == {
+        SYMPHONY_LLM_CONFIG_REF_KEY,
+        SESSION_MESSAGING_ROUTE_EXTRA_KEY,
+    }
     reference = run["context"]["extra"][SYMPHONY_LLM_CONFIG_REF_KEY]
     assert isinstance(reference, str)
     assert len(reference) == 64

@@ -210,6 +210,15 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
+from jiuwenswarm.agents.harness.common.tools.session_messaging_toolkit import (  # noqa: E402
+    SessionMessagingRouteRail,
+    SessionMessagingToolkit,
+    bind_session_messaging_route,
+    current_session_messaging_route,
+    reset_session_messaging_route,
+    session_messaging_route_context,
+    with_session_messaging_route,
+)
 from jiuwenswarm.agents.harness.code.rails.heartbeat_rail import HeartbeatRail
 from jiuwenswarm.agents.harness.common.auto_harness import (
     AutoHarnessService,
@@ -257,6 +266,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (  #
     resolve_declared_auto_workspace,
     supports_phase_auto_root,
 )
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY  # noqa: E402
 from jiuwenswarm.agents.harness.common.tools.todo_compat import (
     CompatibleTodoModifyTool,
     install_todo_modify_compat_patch,
@@ -1900,6 +1910,8 @@ class JiuWenSwarmDeepAdapter:
         self._dreaming_started = False
         self._dreaming_mode: str = "agent"
         self._send_file_toolkit: SendFileToolkit | None = None
+        self._session_messaging_toolkit: SessionMessagingToolkit | None = None
+        self._session_messaging_route_rail: SessionMessagingRouteRail | None = None
         self._runtime_state_write_task: asyncio.Task[None] | None = None
         self._channel_id: str | None = None
         self._is_cron_execution: bool = False
@@ -7854,6 +7866,10 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("[JiuWenSwarmDeepAdapter] CircuitBreakerRail create failed: %s", exc)
             return None
 
+    @staticmethod
+    def _build_session_messaging_route_rail() -> SessionMessagingRouteRail:
+        return SessionMessagingRouteRail()
+
     def _build_runtime_prompt_rail(self) -> RuntimePromptRail | None:
         """Build RuntimePromptRail for per-model-call time/channel/runtime injection."""
         try:
@@ -8262,6 +8278,10 @@ class JiuWenSwarmDeepAdapter:
                 {"config_base": config_base},
             ),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
+            _RailBuildInfo(
+                "_session_messaging_route_rail",
+                self._build_session_messaging_route_rail,
+            ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
@@ -10294,9 +10314,7 @@ class JiuWenSwarmDeepAdapter:
                 logger.info("[JiuWenSwarmDeepAdapter] StructuredAskUserRail registered for agent mode")
         # 卸载 multi-session 工具
         for existing in list(self._instance.ability_manager.list() or []):
-            if getattr(existing, "name", "").startswith(
-                ("session_new", "session_cancel", "session_list")
-            ):
+            if getattr(existing, "name", "") in {"session_new", "session_cancel"}:
                 self._instance.ability_manager.remove(existing.name)
         # agent 模式，根据config选择是否注册或者卸载memory rail（固定被动记忆）
         await self._handle_memory_rail_by_config("agent")
@@ -10415,16 +10433,17 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """multi-session 工具装配。
 
-        plan / fast 合并为单一 ``agent`` 模式后，多会话工具
-        （session_new / session_cancel / session_list）不再注册：
-        清理任何遗留的 session_* 工具后返回。
+        plan / fast 合并为单一 ``agent`` 模式后，旧的临时协程工具
+        （session_new / session_cancel）不再注册。产品会话使用独立的
+        ``session_list`` / ``session_send_message`` 工具。
         """
         # 清理历史遗留的 multi-session 工具（旧 agent.fast 会话切换而来）
         try:
             for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "").startswith(
-                    ("session_new", "session_cancel", "session_list")
-                ):
+                if getattr(existing, "name", "") in {
+                    "session_new",
+                    "session_cancel",
+                }:
                     self._instance.ability_manager.remove(existing.name)
         except Exception as exc:
             logger.debug("[JiuWenSwarmDeepAdapter] 清理 multi-session 工具失败: %s", exc)
@@ -10512,6 +10531,78 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.error("[JiuWenSwarmDeepAdapter] 定时工具注册失败: %s", exc)
 
+    def _ensure_session_messaging_tools_registered(
+        self,
+        session_id: str | None,
+        channel_id: str | None,
+    ) -> None:
+        """Register stable product Session messaging tools once per adapter."""
+
+        normalized_session_id = str(session_id or "").strip()
+        from jiuwenswarm.runtime.context import get_current_runtime
+
+        runtime = get_current_runtime()
+        registered_names = {
+            getattr(existing, "name", "")
+            for existing in (self._instance.ability_manager.list() or [])
+        }
+        eligible = bool(
+            normalized_session_id
+            and not normalized_session_id.startswith(
+                ("heartbeat", "health_check", "cron")
+            )
+            and str(channel_id or "").strip().lower() in {"web", "tui"}
+            and not is_team_mode(deprecate_mode(self._last_mode))
+            and getattr(runtime, "session_message_service", None) is not None
+        )
+        if not eligible:
+            if self._session_messaging_toolkit is not None:
+                registered_tools = [
+                    tool
+                    for tool in self._session_messaging_toolkit.get_tools()
+                    if tool.card.name in registered_names
+                ]
+                self._remove_registered_tools(registered_tools)
+                registered_names -= {
+                    tool.card.name for tool in registered_tools
+                }
+            for name in {
+                "session_list",
+                "session_send_message",
+                "session_message_list",
+                "session_message_resolve",
+            } & registered_names:
+                self._instance.ability_manager.remove(name)
+            return
+        required_names = {
+            "session_list",
+            "session_send_message",
+            "session_message_list",
+            "session_message_resolve",
+        }
+        if self._session_messaging_toolkit is None:
+            # A restored adapter may still carry the retired multi-session
+            # ``session_list`` implementation. Replace it once by identity;
+            # subsequent requests keep the product tool registered.
+            if "session_list" in registered_names:
+                self._instance.ability_manager.remove("session_list")
+                registered_names.discard("session_list")
+            self._session_messaging_toolkit = SessionMessagingToolkit(
+                service=runtime.session_message_service
+            )
+        else:
+            self._session_messaging_toolkit.set_service(
+                runtime.session_message_service
+            )
+        if required_names <= registered_names:
+            return
+        for tool in self._session_messaging_toolkit.get_tools():
+            if tool.card.name in registered_names:
+                continue
+            self._register_agent_owned_tool(tool, self._tool_owner_id())
+            self._instance.ability_manager.add(tool.card)
+            registered_names.add(tool.card.name)
+
     async def _update_session_tools(
         self,
         session_id: str | None,
@@ -10525,6 +10616,7 @@ class JiuWenSwarmDeepAdapter:
         这里每次请求只做幂等检查和运行时上下文更新。
         """
         self._ensure_cron_tools_registered(session_id)
+        self._ensure_session_messaging_tools_registered(session_id, channel_id)
 
         # send_file 工具：由 channels.<channel>.send_file_allowed 控制。工具实例只建一次，
         # 之后每次请求只用 update_runtime_context 刷新 request_id/session_id/channel 等
@@ -13775,12 +13867,16 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
-        slash_result = await self._handle_slash_command(
-            query,
-            session_id,
-            mode,
-            channel_id=request.channel_id,
-        )
+        slash_result = None
+        if not isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        ):
+            slash_result = await self._handle_slash_command(
+                query,
+                session_id,
+                mode,
+                channel_id=request.channel_id,
+            )
         if slash_result is not None:
             result_type = slash_result.get("result_type")
             if result_type == "goal_stream":
@@ -13870,6 +13966,12 @@ class JiuWenSwarmDeepAdapter:
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             user_id=getattr(request, "user_id", None),
         )
+        session_message_context_token = bind_session_messaging_route(
+            session_id=request.session_id,
+            request_id=request.request_id,
+            user_id=getattr(request, "user_id", None),
+            cross_session=session_messaging_route_context(request),
+        )
         self._runtime_cron_tool_context.remember_current_binding()
         token_perm = setup_permission_context(request)
         resolved_model = self._resolve_model_for_request(request)
@@ -13901,6 +14003,9 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = with_session_messaging_route(
+            inputs, current_session_messaging_route()
+        )
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -14100,6 +14205,7 @@ class JiuWenSwarmDeepAdapter:
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
+            reset_session_messaging_route(session_message_context_token)
             self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
@@ -14366,8 +14472,15 @@ class JiuWenSwarmDeepAdapter:
         attach_goal_request = self._wants_attach_goal(request.params)
         # Structured command.goal set/resume (Web/TUI): same attach→set→read path.
         # Plain chat text "/goal ..." is NOT parsed here for Web — only TUI slash.
-        pending_goal_op = self._structured_goal_op_from_request(request)
-        if self._should_parse_tui_goal_slash(
+        cross_session_turn = isinstance(
+            request.params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        pending_goal_op = (
+            None
+            if cross_session_turn
+            else self._structured_goal_op_from_request(request)
+        )
+        if not cross_session_turn and self._should_parse_tui_goal_slash(
             pending_goal_op=pending_goal_op,
             attach_goal_request=attach_goal_request,
             channel_id=request.channel_id,
@@ -14378,7 +14491,11 @@ class JiuWenSwarmDeepAdapter:
                 # Defer set/resume until after attach_output (attach → set).
                 pending_goal_op = intent
         slash_result = None
-        if pending_goal_op is None and not attach_goal_request:
+        if (
+            not cross_session_turn
+            and pending_goal_op is None
+            and not attach_goal_request
+        ):
             slash_result = await self._handle_slash_command(
                 query,
                 session_id,
@@ -14570,6 +14687,12 @@ class JiuWenSwarmDeepAdapter:
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             user_id=getattr(request, "user_id", None),
         )
+        session_message_context_token = bind_session_messaging_route(
+            session_id=request.session_id,
+            request_id=request.request_id,
+            user_id=getattr(request, "user_id", None),
+            cross_session=session_messaging_route_context(request),
+        )
         self._runtime_cron_tool_context.remember_current_binding()
         token_perm = setup_permission_context(request)
         # 按请求选择模型
@@ -14601,6 +14724,9 @@ class JiuWenSwarmDeepAdapter:
             sync_agent_observability,
         )
         inputs = self._with_symphony_request_model(inputs, resolved_model)
+        inputs = with_session_messaging_route(
+            inputs, current_session_messaging_route()
+        )
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -15437,6 +15563,7 @@ class JiuWenSwarmDeepAdapter:
             cleanup_permission_context(token_perm)
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
+                reset_session_messaging_route(session_message_context_token)
             # Always clean up rail state — process_interrupt's
             # _stop_session_interrupt_work sets abort flags but does NOT
             # call cleanup_session(), so skipping cleanup here would leak

@@ -29,6 +29,7 @@ from typing import Final
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.utils import get_agent_root_dir
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
     GatewayAdapter,
     build_error_response,
@@ -471,7 +472,42 @@ class SessionAdapter(GatewayAdapter):
                     target,
                     exc,
                 )
+            from jiuwenswarm.server.runtime.session.session_message_store import (
+                SessionMessageStore,
+            )
+
+            # Remove the directory first: this fallback path has no access to
+            # the live consumer, so a mailbox wipe must only happen once the
+            # Session itself is really gone. A failed rmtree keeps the queued
+            # messages (and their content) intact for a retry.
             await asyncio.to_thread(shutil.rmtree, session_dir)
+            # The Session directory is already gone, so a mailbox-cancel
+            # failure must not fail the delete itself: a client retry would
+            # hit NOT_FOUND (the dir no longer exists) and never reach this
+            # cleanup again. Record the residue loudly instead — the target
+            # Session is deleted either way.
+            try:
+                mailbox = SessionMessageStore(
+                    get_agent_root_dir() / "session_messages.sqlite3"
+                )
+                if mailbox.exists():
+                    records = await asyncio.to_thread(
+                        mailbox.cancel_pending_for_target, target
+                    )
+                    logger.info(
+                        "[SessionAdapter] session.delete cleared %d mailbox "
+                        "record(s): session_id=%s",
+                        len(records),
+                        target,
+                    )
+            except Exception as exc:  # noqa: BLE001
+                logger.warning(
+                    "[SessionAdapter] session.delete mailbox cleanup failed; "
+                    "mailbox records for this session remain pending: "
+                    "session_id=%s error=%s",
+                    target,
+                    exc,
+                )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[SessionAdapter] session.delete failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")

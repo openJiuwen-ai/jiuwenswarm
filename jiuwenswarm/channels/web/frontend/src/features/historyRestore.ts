@@ -4,6 +4,11 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
+import {
+  crossSessionAssistantMessageId,
+  crossSessionUserMessageId,
+  extractCrossSessionMessage,
+} from '../utils/crossSessionMessage';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import {
@@ -937,7 +942,7 @@ function parseHistoryTimelineEntry(
     if (!content.trim() && mediaItems.length === 0) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-user-${sessionId}-${at}`;
     const isGoalObjectiveMessage =
       isTruthyHistoryFlag(record.is_goal_objective_message) ||
@@ -950,6 +955,12 @@ function parseHistoryTimelineEntry(
     // 历史恢复时读回同一个标记，保证刷新/切会话/后端重启后仍能识别 Heartbeat 轮。
     // 与实时链路（useWebSocket.ts）共用同一个 extractAutomation。
     const userAutomation = extractAutomation(record) ?? extractAutomation(buildEventPayloadForRecord(record));
+    const userCrossSession =
+      extractCrossSessionMessage(record) ??
+      extractCrossSessionMessage(buildEventPayloadForRecord(record));
+    const id = userCrossSession
+      ? crossSessionUserMessageId(userCrossSession.messageId)
+      : restoredId;
     return {
       kind: 'message',
       message: {
@@ -961,6 +972,7 @@ function parseHistoryTimelineEntry(
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
         ...(skills && skills.length > 0 ? { skills } : {}),
         ...(userAutomation ? { automation: userAutomation } : {}),
+        ...(userCrossSession ? { crossSession: userCrossSession } : {}),
       },
     };
   }
@@ -1056,7 +1068,7 @@ function parseHistoryTimelineEntry(
     if (!content.trim()) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-final-${sessionId}-${at}`;
     if (isTeamModeRecord(record)) {
       if (isHiddenTeamTeammateMessageRecord(record)) {
@@ -1065,7 +1077,7 @@ function parseHistoryTimelineEntry(
       return {
         kind: 'message',
         message: {
-          id: `team-leader-${id}`,
+          id: `team-leader-${restoredId}`,
           role: 'system',
           content: `team.leader:${JSON.stringify({
             content,
@@ -1085,6 +1097,11 @@ function parseHistoryTimelineEntry(
       : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
     const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    const assistantCrossSession =
+      extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
+    const id = assistantCrossSession
+      ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -1115,6 +1132,7 @@ function parseHistoryTimelineEntry(
           : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
         ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
+        ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
         ...((extractAutomation(payload) ?? extractAutomation(record))

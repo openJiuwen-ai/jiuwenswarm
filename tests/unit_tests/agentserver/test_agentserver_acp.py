@@ -3985,7 +3985,8 @@ async def test_find_team_session_ids_uses_metadata_team_name(monkeypatch, tmp_pa
         lambda: sessions_root,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+        agent_ws_server_module,
+        "get_session_metadata",
         lambda session_id: metadata_map.get(session_id, {}),
     )
 
