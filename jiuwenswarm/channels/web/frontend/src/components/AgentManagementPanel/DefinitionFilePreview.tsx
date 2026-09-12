@@ -29,6 +29,9 @@ function toPreviewTreeNodes(entries: DefinitionFileEntry[]): FilePreviewTreeNode
     label: getPreviewFileLabel(entry.relativePath),
     kind: entry.kind,
     previewable: entry.previewable,
+    // 透传后端隐藏标记：FilePreviewTree 会按 visible === false 不渲染该节点（与旧 TreeEntry
+    // 行为一致）；当前后端虽不下发 visible，但协议字段保留，防御性过滤不能丢
+    visible: entry.visible,
     highlight: entry.kind === 'file' && getPreviewFileLabel(entry.relativePath).toLowerCase() === 'skill.md',
     children: entry.children ? toPreviewTreeNodes(entry.children) : undefined,
   }));

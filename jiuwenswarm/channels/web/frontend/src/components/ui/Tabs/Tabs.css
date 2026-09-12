@@ -45,8 +45,3 @@
   background: var(--color-text-strong);
   content: '';
 }
-
-.tabs > [aria-disabled='true'] {
-  color: var(--color-text-placeholder);
-  cursor: not-allowed;
-}
