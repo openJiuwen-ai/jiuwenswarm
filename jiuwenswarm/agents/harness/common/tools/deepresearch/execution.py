@@ -905,7 +905,11 @@ async def _handle_outcome(
         "single-page concise reports; infer from the user's original wording."
     ),
 )
-async def deepresearch_execute(query: str, file_name: str = "", report_type: DeepResearchReportType | None = None) -> dict[str, Any]:
+async def deepresearch_execute(
+    query: str,
+    file_name: str = "",
+    report_type: DeepResearchReportType | None = None,
+) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
     if context is None:

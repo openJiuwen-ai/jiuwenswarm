@@ -2461,7 +2461,7 @@ async def _consume_stream(
                 {
                     "path": value,
                     "name": Path(value).name,
-                    "mime_type": artifact_mime_types[key],
+                    "mime_type": artifact_mime_types.get(key),
                 }
                 for key, value in artifacts.items()
                 if key in artifact_mime_types
