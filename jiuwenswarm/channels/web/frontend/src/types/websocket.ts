@@ -2,12 +2,7 @@
  * WebSocket 消息类型
  */
 
-export type WebConnectionState =
-  | 'idle'
-  | 'connecting'
-  | 'ready'
-  | 'reconnecting'
-  | 'closed';
+export type WebConnectionState = 'idle' | 'connecting' | 'ready' | 'reconnecting' | 'closed';
 
 export interface WsRequest {
   type: 'req';
@@ -55,6 +50,7 @@ export interface WebError extends Error {
   code?: string;
   requestId?: string;
   retriable?: boolean;
+  payload?: Record<string, unknown>;
 }
 
 export interface ConnectionAckPayload {
@@ -99,7 +95,7 @@ export interface InterruptResultPayload {
   new_input?: string;
   merged_input?: string;
   paused_task?: string;
-  has_active_task?: boolean;  // 是否有活跃任务，false 表示任务已完成
+  has_active_task?: boolean; // 是否有活跃任务，false 表示任务已完成
 }
 
 /**
@@ -150,6 +146,12 @@ export interface AskUserQuestionPayload {
   source?: string; // 来源标识，用于区分自进化确认和工具权限确认
   approvalSchema?: string;
   evolutionMeta?: Record<string, unknown>;
+  swarmflowMeta?: {
+    run_id: string;
+    correlation_id: string;
+    agent_id: string;
+    agent_name: string;
+  };
   planApprovalKind?: string;
   planContent?: string;
   planLanguage?: 'cn' | 'en';

@@ -95,6 +95,10 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
     EvolutionSlashContext,
     handle_evolution_slash_command,
 )
+from jiuwenswarm.server.runtime.debug_trace.directives import (
+    DEBUG_PREFIX as _DEBUG_PREFIX,
+    strip_slash_directive as _strip_directive,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -116,12 +120,45 @@ _STREAM_TRACE_ENV_KEY = "JIUWENSWARM_TEAM_STREAM_TRACE"
 # When set to "true", non-leader teammate frames are filtered out in team
 # streaming so the frontend only receives leader output.
 _HIDE_TEAMMATE_ENV_KEY = "JIUWENSWARM_TEAM_HIDE_TEAMMATE"
-# /debug 剥离原语与 Agent/Code 共享（debug_trace.directives），消除两份实现。
-# 别名保持 _DEBUG_PREFIX / _strip_directive 不变，_extract_query_directives 零改动。
-from jiuwenswarm.server.runtime.debug_trace.directives import (
-    DEBUG_PREFIX as _DEBUG_PREFIX,
-    strip_slash_directive as _strip_directive,
-)
+_SCHEDULED_EXPERT_ROUTING_GATE = "[EXPERT_TEAM_ROUTING_GATE]"
+
+
+def _apply_scheduled_expert_routing_gate(query: Any, team_spec: Any) -> Any:
+    """Keep a scheduled expert-team leader in its routing-only role.
+
+    Some models optimize a small request by answering it themselves even when
+    the leader policy forbids that.  Scheduled expert teams have a fixed roster
+    specifically so *one member* is the minimum valid execution, not zero.  A
+    short, query-adjacent control block makes that invariant explicit without
+    changing the user-visible message or forcing every roster member to run.
+
+    Identity-prefixed and slash-command inputs are transport/control messages;
+    wrapping them would break their syntax, so they remain untouched.
+    """
+
+    if str(getattr(team_spec, "dispatch_mode", "") or "").strip() != "scheduled":
+        return query
+    if not isinstance(query, str) or not query.strip():
+        return query
+    stripped = query.lstrip()
+    if (
+        stripped.startswith(_SCHEDULED_EXPERT_ROUTING_GATE)
+        or stripped.startswith("$")
+        or stripped.startswith("/")
+    ):
+        return query
+    return (
+        f"{_SCHEDULED_EXPERT_ROUTING_GATE}\n"
+        "这是平台调度控制信息，不是用户要求的正文，最终回复不要提及本段。\n"
+        "你是主理人，不是专业执行成员。即使原始请求很简单，也必须先从已注册成员中选择"
+        "最少且足够的至少 1 位，调用 create_task 指派后等待其真实完成；禁止主理人直接"
+        "写正文、方案、大纲、代码或成品。单成员直达=只调度 1 位成员，不是零成员。\n"
+        "只选与原始 Query 有关的成员；独立任务可并行，有真实产物依赖才串行。\n\n"
+        "原始用户 Query：\n"
+        f"{query}"
+    )
+
+
 _FOLLOWUP_INTERACT_BOUNDARY_TIMEOUT_SEC = 10.0
 _FOLLOWUP_INTERACT_POLL_INTERVAL_SEC = 0.05
 
@@ -911,7 +948,6 @@ async def _finish_cron_team_stream_after_delegation_grace(
 ) -> None:
     """Wait briefly after a solo harness final before ending the cron team stream."""
     await asyncio.sleep(_CRON_DELEGATION_GRACE_SECONDS)
-    resolved_channel_id = _resolve_channel_id(channel_id)
     completion = get_team_manager(channel_id).get_cron_completion(session_id)
     if completion is None:
         return
@@ -1768,10 +1804,13 @@ async def process_team_message_stream(
             # 之前 follow-up 也创建 waiter 导致 _broadcast_event 广播到两个 queue，
             # 同一事件被 yield 两次 → Gateway dispatch 两次 → 重复消息。
             if query:
+                dispatch_query = _apply_scheduled_expert_routing_gate(
+                    query, team_spec
+                )
                 success, reason = await _interact_with_request_metadata(
                     team_manager,
                     session_id,
-                    query,
+                    dispatch_query,
                     request_metadata,
                 )
                 if not success:
@@ -1787,7 +1826,7 @@ async def process_team_message_stream(
                         boundary_result = await _deliver_followup_with_request_metadata(
                             team_manager,
                             session_id,
-                            query,
+                            dispatch_query,
                             request_metadata=request_metadata,
                             initial_reason=reason,
                         )
@@ -1962,7 +2001,7 @@ async def process_team_message_stream(
                 team_manager=team_manager,
                 team_name=team_name,
                 team_spec=team_spec,
-                query=query,
+                query=_apply_scheduled_expert_routing_gate(query, team_spec),
                 hide_dm=hide_dm,
                 debug=debug,
                 source=first_request_source,

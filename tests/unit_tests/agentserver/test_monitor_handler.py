@@ -608,10 +608,15 @@ def _make_handler(task_dao: _FakeTaskDao | None = None, *, session_id: str = "se
 
 
 @pytest.mark.anyio
-async def test_handle_task_created_supplements_title_and_content_from_db() -> None:
-    """TASK_CREATED re-queries the DB and attaches title/content to the event."""
+async def test_handle_task_created_supplements_task_snapshot_from_db() -> None:
+    """TASK_CREATED attaches the canonical title/content/assignee snapshot."""
     task_dao = _FakeTaskDao(
-        _FakeTask(task_id="task-1", title="research plan", content="do the thing")
+        _FakeTask(
+            task_id="task-1",
+            title="research plan",
+            content="do the thing",
+            assignee="content-creator",
+        )
     )
     handler = _make_handler(task_dao)
     base = {"type": "team.task.created", "team_id": "team-1"}
@@ -629,6 +634,7 @@ async def test_handle_task_created_supplements_title_and_content_from_db() -> No
     assert result["status"] == "pending"
     assert result["title"] == "research plan"
     assert result["content"] == "do the thing"
+    assert result["assignee"] == "content-creator"
     # Under limit → no truncation flags.
     assert "title_truncated" not in result
     assert "content_truncated" not in result

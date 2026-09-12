@@ -41,6 +41,9 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyOrchestrationRail,
 )
+from jiuwenswarm.agents.harness.team.rails.expert_team_delegation_gate_rail import (
+    ExpertTeamDelegationGateRail,
+)
 from jiuwenswarm.agents.harness.team.rails.team_deliverable_location_rail import (
     TeamDeliverableLocationRail,
 )
@@ -72,6 +75,7 @@ SKILL_RETRIEVAL_PROMPT = "swarm.skill_retrieval_prompt"
 SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 TEAM_PERMISSION_POLICY = "swarm.team_permission_policy"
 TEAM_MEMBER_IDENTITY = "swarm.team_member_identity"
+EXPERT_TEAM_DELEGATION_GATE = "swarm.expert_team_delegation_gate"
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:
@@ -159,6 +163,25 @@ def _build_symphony_orchestration_rail(
     if getattr(context, "role", "") != "leader":
         return None
     return SymphonyOrchestrationRail()
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=EXPERT_TEAM_DELEGATION_GATE,
+    description="Leader-only deterministic gate requiring successful member delegation.",
+)
+def _build_expert_team_delegation_gate_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> ExpertTeamDelegationGateRail | None:
+    """Build the gate only for a leader spec that explicitly mounts it."""
+    _ = params
+    if getattr(context, "role", "") != "leader":
+        return None
+    backend = get_team_backend(context)
+    return ExpertTeamDelegationGateRail(
+        task_manager=getattr(backend, "task_manager", None),
+    )
 
 
 class RuntimePromptInput(ConstructionInput):

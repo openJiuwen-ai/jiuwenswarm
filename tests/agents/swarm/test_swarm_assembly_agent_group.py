@@ -8,6 +8,7 @@
 
 from __future__ import annotations
 
+import json
 import shutil
 from pathlib import Path
 
@@ -17,15 +18,25 @@ from openjiuwen.agent_teams.schema.blueprint import LeaderSpec, TeamAgentSpec
 from openjiuwen.agent_teams.schema.deep_agent_spec import DeepAgentSpec
 
 from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
+from jiuwenswarm.agents.swarm.registry import EXPERT_TEAM_DELEGATION_GATE
 from jiuwenswarm.server.runtime.expert import expert_store as es
+from jiuwenswarm.server.runtime.expert.team_contract import (
+    EXPERT_GRAPH_GENERATOR,
+    EXPERT_TEAM_DISPATCH_CONTRACT,
+    EXPERT_TEAM_MATERIALIZER_VERSION,
+    EXPERT_TEAM_STAGE_FILE,
+    EXPERT_TEAM_STAGE_METADATA_KEY,
+    LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT,
+    LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION,
+)
 
 TESTDATA_GROUP = (
-        Path(__file__).parent.parent.parent
-        / "unit_tests"
-        / "agentserver"
-        / "testdata"
-        / "expert_groups"
-        / "sample-expert-group"
+    Path(__file__).parent.parent.parent
+    / "unit_tests"
+    / "agentserver"
+    / "testdata"
+    / "expert_groups"
+    / "sample-expert-group"
 )
 
 
@@ -52,6 +63,73 @@ def _enrich(spec: TeamAgentSpec, agent_group_name: str | None) -> None:
         mode="team",
         agent_group_name=agent_group_name,
     )
+
+
+def _stamp_scheduled_contract(
+    package: Path,
+    *,
+    dispatch_contract: str = EXPERT_TEAM_DISPATCH_CONTRACT,
+    materializer_version: int = EXPERT_TEAM_MATERIALIZER_VERSION,
+) -> None:
+    manifest_path = package / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["metadata"] = {
+        **(manifest.get("metadata") or {}),
+        "generatedBy": EXPERT_GRAPH_GENERATOR,
+        "dispatchMode": "scheduled",
+        "dispatchContract": dispatch_contract,
+        "materializerVersion": materializer_version,
+    }
+    if (
+        dispatch_contract == EXPERT_TEAM_DISPATCH_CONTRACT
+        and materializer_version == EXPERT_TEAM_MATERIALIZER_VERSION
+    ):
+        roster = [
+            member_id for member_id in manifest["agents"] if member_id != "leader"
+        ]
+        manifest["metadata"].update(
+            {
+                "memberExpertIds": roster,
+                "routingPolicy": {
+                    "mode": "leader_selected",
+                    "selection": "minimal_sufficient",
+                    "minSelected": 1,
+                    "maxSelected": len(roster),
+                    "allowSingleMember": True,
+                    "allowSerial": True,
+                    "allowParallel": True,
+                    "graphRole": "discovery_and_routing_evidence",
+                },
+                "memberProfiles": [
+                    {
+                        "id": member_id,
+                        "name": member_id,
+                        "description": "",
+                        "tags": [],
+                        "skills": [],
+                        "quickPrompts": [],
+                        "deliverables": [],
+                    }
+                    for member_id in roster
+                ],
+                "routeExamples": [],
+            }
+        )
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    for member_id in manifest["agents"]:
+        if member_id == "leader":
+            continue
+        member_root = package / "agents" / member_id
+        member_manifest_path = member_root / "manifest.json"
+        member_manifest = json.loads(member_manifest_path.read_text(encoding="utf-8"))
+        member_manifest["metadata"] = {
+            **(member_manifest.get("metadata") or {}),
+            EXPERT_TEAM_STAGE_METADATA_KEY: EXPERT_TEAM_STAGE_FILE,
+        }
+        member_manifest_path.write_text(json.dumps(member_manifest), encoding="utf-8")
+        (member_root / EXPERT_TEAM_STAGE_FILE).write_text(
+            "scheduled stage contract", encoding="utf-8"
+        )
 
 
 def test_apply_agent_group_full_assembly(group_cache: Path) -> None:
@@ -110,7 +188,7 @@ def test_apply_agent_group_cache_missing_raises(group_cache: Path) -> None:
 
 
 def test_apply_agent_group_prefetched_package_dir_bypasses_cache(
-        tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """调用方经 resolve_expert_package_dir 预取后传入 package_dir，
     缓存为空（LocalDir 调试源不落缓存场景）也能装配。
@@ -135,6 +213,183 @@ def test_apply_agent_group_prefetched_package_dir_bypasses_cache(
     assert set(roster) == {"member1", "member2"}
 
 
+def test_graph_materialized_agent_group_uses_scheduled_dispatch(
+    group_cache: Path,
+) -> None:
+    graph_group = group_cache / "graph-generated-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(graph_group)
+    spec = _make_team_spec()
+
+    _enrich(spec, graph_group.name)
+
+    assert spec.dispatch_mode == "scheduled"
+    assert spec.team_mode == "predefined"
+    leader_rails = [rail.type for rail in (spec.agents["leader"].rails or [])]
+    assert leader_rails.count(EXPERT_TEAM_DELEGATION_GATE) == 1
+    for member_id in ("member1", "member2"):
+        member_rails = [rail.type for rail in (spec.agents[member_id].rails or [])]
+        assert EXPERT_TEAM_DELEGATION_GATE not in member_rails
+
+
+def test_v2_graph_materialized_group_remains_scheduled_compatible(
+    group_cache: Path,
+) -> None:
+    graph_group = group_cache / "v2-graph-generated-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest["instruction"] = "旧版固定路由契约：member1 -> member2"
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(
+        graph_group,
+        dispatch_contract=LEGACY_EXPERT_TEAM_DISPATCH_CONTRACT,
+        materializer_version=LEGACY_EXPERT_TEAM_MATERIALIZER_VERSION,
+    )
+
+    spec = _make_team_spec()
+    _enrich(spec, graph_group.name)
+
+    assert spec.dispatch_mode == "scheduled"
+    assert spec.team_mode == "predefined"
+    assert EXPERT_TEAM_DELEGATION_GATE not in [
+        rail.type for rail in (spec.agents["leader"].rails or [])
+    ]
+    assert "旧版固定路由契约：member1 -> member2" in spec.leader.prompt
+    assert (
+        "旧版固定路由契约：member1 -> member2"
+        in {member.member_name: member.prompt for member in spec.predefined_members}[
+            "member1"
+        ]
+    )
+
+
+@pytest.mark.parametrize(
+    ("field", "bad_value"),
+    [
+        ("memberExpertIds", ["member1"]),
+        ("routingPolicy", {"mode": "fixed"}),
+        ("memberProfiles", []),
+        ("routeExamples", "not-a-list"),
+        (
+            "routeExamples",
+            [
+                {
+                    "id": "bad-route",
+                    "type": "single",
+                    "selectedMemberIds": ["member1"],
+                    "steps": [{"expertId": "member1", "dependsOn": ["member2"]}],
+                }
+            ],
+        ),
+        ("generatedBy", "external-generator"),
+    ],
+)
+def test_v3_dynamic_contract_rejects_tampered_required_metadata(
+    group_cache: Path,
+    field: str,
+    bad_value: object,
+) -> None:
+    graph_group = group_cache / f"tampered-{field}"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(graph_group)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["metadata"][field] = bad_value
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="调度契约.*不完整"):
+        _enrich(_make_team_spec(), graph_group.name)
+
+
+def test_legacy_generated_by_only_group_stays_autonomous(
+    group_cache: Path,
+) -> None:
+    graph_group = group_cache / "legacy-graph-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest["metadata"] = {"generatedBy": "expert-graph"}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    spec = _make_team_spec()
+
+    _enrich(spec, graph_group.name)
+
+    assert spec.dispatch_mode == "autonomous"
+    assert spec.team_mode == "hybrid"
+    assert EXPERT_TEAM_DELEGATION_GATE not in [
+        rail.type for rail in (spec.agents["leader"].rails or [])
+    ]
+
+
+def test_member_stage_marker_without_top_contract_fails_closed(
+    group_cache: Path,
+) -> None:
+    graph_group = group_cache / "mixed-contract-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest["metadata"] = {"generatedBy": EXPERT_GRAPH_GENERATOR}
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    member_root = graph_group / "agents" / "member1"
+    member_manifest_path = member_root / "manifest.json"
+    member_manifest = json.loads(member_manifest_path.read_text(encoding="utf-8"))
+    member_manifest["metadata"] = {
+        EXPERT_TEAM_STAGE_METADATA_KEY: EXPERT_TEAM_STAGE_FILE
+    }
+    member_manifest_path.write_text(json.dumps(member_manifest), encoding="utf-8")
+    (member_root / EXPERT_TEAM_STAGE_FILE).write_text(
+        "scheduled-only stage", encoding="utf-8"
+    )
+
+    with pytest.raises(ValueError, match="调度契约.*不完整"):
+        _enrich(_make_team_spec(), graph_group.name)
+
+
+def test_partial_scheduled_contract_fails_closed(group_cache: Path) -> None:
+    graph_group = group_cache / "partial-graph-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest["metadata"] = {
+        "generatedBy": EXPERT_GRAPH_GENERATOR,
+        "dispatchMode": "scheduled",
+        "dispatchContract": EXPERT_TEAM_DISPATCH_CONTRACT,
+        "materializerVersion": EXPERT_TEAM_MATERIALIZER_VERSION,
+    }
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="调度契约.*不完整"):
+        _enrich(_make_team_spec(), graph_group.name)
+
+
+def test_scheduled_contract_version_mismatch_fails_closed(group_cache: Path) -> None:
+    graph_group = group_cache / "future-graph-group"
+    shutil.copytree(TESTDATA_GROUP, graph_group)
+    manifest_path = graph_group / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["name"] = graph_group.name
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+    _stamp_scheduled_contract(graph_group)
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["metadata"]["materializerVersion"] = 999
+    manifest_path.write_text(json.dumps(manifest), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="调度契约.*不完整"):
+        _enrich(_make_team_spec(), graph_group.name)
+
+
 def test_apply_agent_group_requires_teammate_base(group_cache: Path) -> None:
     spec = TeamAgentSpec(
         agents={"leader": DeepAgentSpec()},
@@ -147,7 +402,7 @@ def test_apply_agent_group_requires_teammate_base(group_cache: Path) -> None:
 
 
 def test_apply_agent_group_capability_probe(
-        group_cache: Path, monkeypatch: pytest.MonkeyPatch
+    group_cache: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     from openjiuwen.harness.deep_agent import DeepAgent
 
@@ -160,18 +415,20 @@ def test_apply_agent_group_capability_probe(
 
 def test_enrich_without_agent_group_keeps_vanilla_behavior(group_cache: Path) -> None:
     spec = _make_team_spec(leader_prompt="原有主理人规则")
+    spec.dispatch_mode = "autonomous"
 
     _enrich(spec, None)
 
     assert spec.leader.prompt == "原有主理人规则"
     assert spec.predefined_members in (None, [])
     assert spec.team_mode in (None, "default")
+    assert spec.dispatch_mode == "autonomous"
     assert "member1" not in spec.agents
     assert getattr(spec.agents["leader"], "agent_template_spec", None) is None
 
 
 def test_switch_group_rebuilds_prompts_and_roster(
-        group_cache: Path, tmp_path: Path
+    group_cache: Path, tmp_path: Path
 ) -> None:
     """切换专家团（A→B）：新包重建的 spec 提示词/roster 完全是 B 的，无 A 残留。
 
@@ -179,8 +436,6 @@ def test_switch_group_rebuilds_prompts_and_roster(
     （stop_session_runtime → _clear_terminal_session_markers 清 initialized 标记），
     下次 chat is_first_request=True 走全量重建（team_helpers.py:1554-1558）。
     """
-    import json
-
     # 组 B：复制样例包后改名（name 须=目录名）+ 内容差异化
     pkg_b = group_cache / "another-group"
     shutil.copytree(TESTDATA_GROUP, pkg_b)
@@ -215,4 +470,7 @@ def test_switch_group_rebuilds_prompts_and_roster(
     # roster 同样按 B 重建
     roster_b = {m.member_name: m for m in spec_b.predefined_members}
     assert "B团成员一人设" in roster_b["member1"].prompt
-    assert "成员一人设" not in roster_b["member1"].prompt or "B团" in roster_b["member1"].prompt
+    assert (
+        "成员一人设" not in roster_b["member1"].prompt
+        or "B团" in roster_b["member1"].prompt
+    )
