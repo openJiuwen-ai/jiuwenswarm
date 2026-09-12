@@ -291,6 +291,10 @@ from jiuwenswarm.symphony.llm import (
     register_request_model,
 )
 
+from jiuwenswarm.agents.harness.common.rails.autonomous_mode_rail import (
+    AutonomousModeRail,
+)
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
@@ -1786,6 +1790,7 @@ class JiuWenSwarmDeepAdapter:
         )
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
+        self._autonomous_mode_rail: AutonomousModeRail | None = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
@@ -8165,6 +8170,28 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_autonomous_mode_rail(config_base: dict[str, Any]) -> AutonomousModeRail | None:
+        """Build AutonomousModeRail: override interactive hedging when running unattended.
+
+        Reads ``autonomy.enabled`` from the config snapshot. When enabled, the
+        rail injects a high-priority system-prompt directive (no asking for
+        confirmation, no hedging, verify + finish end-to-end) for CI / scripted
+        / benchmark runs without a human in the loop. Attached unconditionally
+        with the resolved flag — the rail itself no-ops when disabled.
+        """
+        try:
+            _autonomy_enabled = bool((config_base.get("autonomy") or {}).get("enabled", False))
+            rail = AutonomousModeRail(_autonomy_enabled)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] AutonomousModeRail attached (enabled=%s)",
+                _autonomy_enabled,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach AutonomousModeRail: %s", exc)
+            return None
+
     def _auto_permission_capability_enabled(self) -> bool:
         """Only a session-owned Deep runtime may install Smart permission rails."""
         return self._is_session_scoped_adapter and self._auto_permission_profile_supported()
@@ -8223,7 +8250,11 @@ class JiuWenSwarmDeepAdapter:
         mode: str = "agent",
         composition_scope: str = "single_agent",
     ) -> list[Any]:
-        """Build DeepAgent rails consistently for cold start and hot reload."""
+        """Build DeepAgent rails for cold start (agent creation / mode change).
+
+        Hot reload does not go through this method: on config reload the
+        rails are reconciled by ``_get_current_agent_rails`` instead.
+        """
         permission_config = config_base.get("permissions", {})
         self._enable_auto_permission = self._auto_permission_enabled_for_config(
             permission_config, composition_scope=composition_scope,
@@ -8242,7 +8273,6 @@ class JiuWenSwarmDeepAdapter:
             self._root_permission_queue_rail = None
             self._root_context_rail = None
             self._root_permission_completion_rail = None
-
         rail_infos = [
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
@@ -8279,6 +8309,11 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            _RailBuildInfo(
+                "_autonomous_mode_rail",
+                self._build_autonomous_mode_rail,
+                {"config_base": config_base},
             ),
         ]
 
@@ -8966,6 +9001,15 @@ class JiuWenSwarmDeepAdapter:
 
         if self._heartbeat_rail is None:
             self._heartbeat_rail = self._build_heartbeat_rail()
+
+        # Rebuild the autonomous-mode rail from the current config snapshot so
+        # an ``autonomy.enabled`` change takes effect on hot reload. Its type
+        # appearing in the returned list makes ``_hot_reload_rails`` cycle the
+        # old instance out (uninit) and register the rebuilt one (init).
+        self._autonomous_mode_rail = self._build_autonomous_mode_rail(
+            config_base or self._config_base_cache or {}
+        )
+
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
@@ -8983,6 +9027,8 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
+        if self._autonomous_mode_rail is not None:
+            rails_list.append(self._autonomous_mode_rail)
         return rails_list
 
     def _tool_owner_id(self) -> str:
