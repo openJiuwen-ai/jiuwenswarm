@@ -10,6 +10,10 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager, SkillRpcError
 
+# import_local 的源在 pytest 临时目录下；macOS 上该目录位于 /private/var，
+# 需绕过内置 /var 黑名单（与 test_skill_manager_path_safety.py 一致）。
+pytestmark = pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
+
 _TEAM_SKILLS_HUB_ZIP_URL = "https://openjiuwen-market.obs.ap-southeast-1.myhuaweicloud.com/plugins/demo.zip"
 
 

@@ -30,6 +30,10 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
     SkillRpcError,
 )
 
+# import_local 的源在 pytest 临时目录下；macOS 上该目录位于 /private/var，
+# 需绕过内置 /var 黑名单（与 test_skill_manager_path_safety.py 一致）。
+pytestmark = pytest.mark.usefixtures("allow_macos_pytest_temp_sources")
+
 
 def _skill_md(name: str, description: str = "demo skill") -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n# Body\n"
