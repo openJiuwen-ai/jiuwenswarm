@@ -1848,18 +1848,16 @@ def test_recover_torn_team_binding_returns_none_without_store_binding(
 def test_lookup_bound_team_identity_skips_recovery_when_metadata_has_team(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    recovery_calls: list[str] = []
-
-    def fake_recover(session_id: str, *, sessions_root=None):
-        recovery_calls.append(session_id)
-        return None
-
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
         lambda _session_id, cache_bust=False: {
             "team_name": "custom_team",
             "team_template_id": "beta_template",
         },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager._find_session_binding",
+        staticmethod(lambda _session_id: None),
     )
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
@@ -1869,7 +1867,6 @@ def test_lookup_bound_team_identity_skips_recovery_when_metadata_has_team(
         "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity",
         lambda **_kwargs: None,
     )
-    monkeypatch.setattr(TeamManager, "_recover_torn_team_binding", staticmethod(fake_recover))
 
     team_name, runtime_team_name, template_id, template_snapshot = (
         TeamManager._lookup_bound_team_identity("sess-bound")
@@ -1881,7 +1878,125 @@ def test_lookup_bound_team_identity_skips_recovery_when_metadata_has_team(
     assert runtime_team_name == "custom_team"
     assert template_id == "beta_template"
     assert template_snapshot is None
-    assert recovery_calls == []
+
+
+def test_lookup_bound_team_identity_reconciles_polluted_metadata_from_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="oc_team_user4", template_id="oc_team_user4")
+    store.bind_session(team_name="oc_team_user4", session_id="officeclaw_test_sid")
+    sessions_root = tmp_path / "sessions"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False, **kwargs: {
+            "team_name": "oc_team_preset-software-dev",
+            "team_template_id": "oc_team_preset-software-dev",
+            "runtime_team_name": "oc_team_preset-software-dev_officeclaw_test_sid",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_team_template_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity_for_binding",
+        lambda binding, **kwargs: SimpleNamespace(
+            template_id=binding.template_id,
+            template_snapshot={"team_name": binding.team_name},
+        ),
+    )
+
+    team_name, runtime_team_name, template_id, _snapshot = (
+        TeamManager._lookup_bound_team_identity(
+            "officeclaw_test_sid",
+            config_base={},
+            sessions_root=sessions_root,
+        )
+    )
+
+    assert team_name == "oc_team_user4"
+    assert template_id == "oc_team_user4"
+    assert runtime_team_name == TeamManager.build_session_scoped_team_name(
+        "oc_team_user4",
+        "officeclaw_test_sid",
+    )
+    metadata_path = sessions_root / "officeclaw_test_sid" / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_user4"
+    assert payload["team_template_id"] == "oc_team_user4"
+
+
+def test_lookup_bound_team_identity_reconciles_session_scoped_team_name_pollution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    session_id = "officeclaw_test_sid"
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(
+        team_name="oc_team_preset-software-dev",
+        template_id="oc_team_preset-software-dev",
+    )
+    store.bind_session(team_name="oc_team_preset-software-dev", session_id=session_id)
+    sessions_root = tmp_path / "sessions"
+    polluted_team_name = TeamManager.build_session_scoped_team_name(
+        "oc_team_preset-software-dev",
+        session_id,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False, **kwargs: {
+            "team_name": polluted_team_name,
+            "team_template_id": "oc_team_preset-software-dev",
+            "runtime_team_name": polluted_team_name,
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_team_template_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity_for_binding",
+        lambda binding, **kwargs: SimpleNamespace(
+            template_id=binding.template_id,
+            template_snapshot={"team_name": binding.team_name},
+        ),
+    )
+
+    team_name, runtime_team_name, template_id, _snapshot = (
+        TeamManager._lookup_bound_team_identity(
+            session_id,
+            config_base={},
+            sessions_root=sessions_root,
+        )
+    )
+
+    assert team_name == "oc_team_preset-software-dev"
+    assert template_id == "oc_team_preset-software-dev"
+    assert runtime_team_name == polluted_team_name
+    metadata_path = sessions_root / session_id / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_preset-software-dev"
+    assert payload["runtime_team_name"] == polluted_team_name
 
 
 def test_register_workflow_handler() -> None:

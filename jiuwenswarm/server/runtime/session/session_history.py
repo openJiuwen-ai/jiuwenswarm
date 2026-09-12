@@ -1196,6 +1196,7 @@ def append_history_record(
                 channel_id=cid,
                 source_request_id=rid,
                 route_metadata=channel_metadata,
+                sessions_root=sessions_root_s,
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)

@@ -452,9 +452,13 @@ def sync_team_identity_metadata(
     mode: str,
     ready_team_name: str,
     activation_kind: str | None,
+    sessions_root: str | Path | None = None,
 ) -> None:
     """Persist team identity when a team runtime becomes ready."""
-    metadata = get_session_metadata(session_id)
+    metadata_kwargs: dict[str, Any] = {}
+    if sessions_root is not None:
+        metadata_kwargs["sessions_root"] = sessions_root
+    metadata = get_session_metadata(session_id, **metadata_kwargs)
     existing_team_name = str(metadata.get("team_name") or "").strip()
     normalized_kind = str(activation_kind or "").strip()
 
@@ -474,6 +478,7 @@ def sync_team_identity_metadata(
         channel_id=_resolve_channel_id(channel_id),
         mode=mode,
         team_name=ready_team_name,
+        sessions_root=sessions_root,
     )
 
 
@@ -1677,6 +1682,7 @@ async def _start_team_stream_round(
     hide_dm: bool = False,
     debug: bool = False,
     source: str = "first",
+    sessions_root: str | Path | None = None,
 ) -> asyncio.Queue:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -1710,6 +1716,7 @@ async def _start_team_stream_round(
             query,
             round_id=round_id,
             envs=stream_envs or None,
+            sessions_root=sessions_root,
         )
     )
     team_manager.register_stream_task(session_id, stream_task)
@@ -2217,6 +2224,7 @@ async def process_team_message_stream(
                 hide_dm=hide_dm,
                 debug=debug,
                 source=first_request_source,
+                sessions_root=sessions_root,
             )
 
         try:
@@ -2363,6 +2371,7 @@ async def _consume_stream_with_query(
     *,
     round_id: int,
     envs: dict[str, Any] | None = None,
+    sessions_root: str | Path | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -2525,6 +2534,7 @@ async def _consume_stream_with_query(
                         mode="team",
                         ready_team_name=ready_team_name,
                         activation_kind=activation_kind,
+                        sessions_root=sessions_root,
                     )
                     tm = get_team_manager(channel_id)
                     tm.commit_runtime_ready(session_id, ready_team_name)
