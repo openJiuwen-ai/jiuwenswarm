@@ -2020,7 +2020,11 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
         base_dir = Path(self.directory or os.getcwd()).resolve()
         target = (base_dir / rel_path).resolve()
-        in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        try:
+            in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+        except ValueError:
+            # Windows: paths on different drives cannot be compared with commonpath.
+            in_base = False
 
         # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
         # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
