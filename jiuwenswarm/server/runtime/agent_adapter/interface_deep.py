@@ -79,8 +79,10 @@ from openjiuwen.harness.factory import (
 from openjiuwen.harness.image_modality_probe import get_cached_image_support
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
+    BudgetNoticeRail,
     ModelAnomalyDetectionRail,
     SkillUseRail,
+    TaskCompletionRail,
     TaskPlanningRail,
     SecurityRail,
     SubagentRail,
@@ -291,6 +293,7 @@ from jiuwenswarm.symphony.llm import (
     register_request_model,
 )
 
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
@@ -8215,6 +8218,33 @@ class JiuWenSwarmDeepAdapter:
             if getattr(self, attr_name, None) is not expected_rail:
                 raise RuntimeError(f"required_agent_rail_attr_identity_mismatch:{attr_name}")
 
+    @staticmethod
+    def _build_budget_notice_rail(config: dict[str, Any]) -> BudgetNoticeRail | None:
+        """Build BudgetNoticeRail: warn the agent as task-loop budgets run low.
+
+        The loop's actual budget limits (rounds / tokens / wall-clock) live on
+        the stop-condition evaluators and are read by the rail itself through
+        ``LoopCoordinator.budget_limits()`` — this builder deliberately does
+        **not** carry a parallel copy of ``max_iterations``, so the warning can
+        never drift from the limit that really stops the loop. Only the
+        warning threshold comes from host config: ``budget_warning_threshold``
+        maps to an absolute number of remaining rounds (default 10). Parsing is
+        lenient (``parse_int``) so a null/empty value falls back instead of
+        crashing.
+        """
+        try:
+            round_remaining = parse_int(config.get("budget_warning_threshold"), 10)
+            rail = BudgetNoticeRail(round_remaining=round_remaining)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] BudgetNoticeRail attached "
+                "(round_remaining=%d)",
+                round_remaining,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach BudgetNoticeRail: %s", exc)
+            return None
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -8279,6 +8309,11 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            _RailBuildInfo(
+                "_budget_notice_rail",
+                self._build_budget_notice_rail,
+                {"config": config},
             ),
         ]
 
@@ -8354,6 +8389,17 @@ class JiuWenSwarmDeepAdapter:
                 completion_rail=group["_root_permission_completion_rail"],
                 root_context_rail=group["_root_context_rail"],
                 stream_event_rail=group["_stream_event_rail"], permission_rail=group["_permission_rail"],
+            )
+        # Make the outer task-loop rounds budget real: cap the loop at the
+        # configured ``max_iterations`` and give BudgetNoticeRail a budget to
+        # read via ``LoopCoordinator.budget_limits()``. Agent-core only
+        # auto-injects a default TaskCompletionRail when the caller supplies
+        # none, so passing ours also avoids a parallel host-side limit.
+        if not any(isinstance(rail, TaskCompletionRail) for rail in rails):
+            rails.append(
+                TaskCompletionRail(
+                    max_rounds=parse_int(config.get("max_iterations"), 15)
+                )
             )
         return rails
 
