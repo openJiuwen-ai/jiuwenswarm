@@ -3473,7 +3473,8 @@ class JiuWenClawDeepAdapter:
             if request_id:
                 self._track_session_toolkit(request_id, session_id, self._multi_session_toolkit)
             for ms_tool in self._multi_session_toolkit.get_tools():
-                Runner.resource_mgr.add_tool(ms_tool)
+                if not Runner.resource_mgr.get_tool(ms_tool.card.id):
+                    Runner.resource_mgr.add_tool(ms_tool)
                 self._instance.ability_manager.add(ms_tool.card)
             logger.info("[JiuWenClawDeepAdapter] MultiSessionToolkit registered for agent mode")
         except Exception as exc:
