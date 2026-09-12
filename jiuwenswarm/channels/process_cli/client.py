@@ -12,7 +12,7 @@ if TYPE_CHECKING:
     from collections.abc import AsyncIterator
 
     from jiuwenswarm.common.schema.agent import AgentRequest
-    from jiuwenswarm.runtime import (
+    from jiuwenswarm.runtime.session_provisioner import (
         PreparedSessionProvision,
         SessionCreateInput,
         SessionCreateResult,

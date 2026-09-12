@@ -11,10 +11,9 @@ from typing import Any, cast
 
 import pytest
 
-from jiuwenswarm.runtime import (
-    AgentRuntime,
+from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
+from jiuwenswarm.runtime.session_provisioner import (
     RuntimeSessionProvisioner,
-    RuntimeStateError,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
     SessionProvisionError,

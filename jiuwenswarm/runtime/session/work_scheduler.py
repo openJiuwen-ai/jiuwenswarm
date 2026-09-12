@@ -1,4 +1,4 @@
-"""Per-Session LATEST_FIRST scheduler used by the Runtime coordinator."""
+"""Per-Session work scheduler used by the Runtime coordinator."""
 
 from __future__ import annotations
 
@@ -53,10 +53,14 @@ class SessionWorkScheduler:
         loop = asyncio.get_running_loop()
         result: asyncio.Future[Any] = loop.create_future()
         queued = _QueuedWork(handle, operation, contextvars.copy_context(), result)
-        lane.priority -= 1
         lane.sequence += 1
+        if handle.work_kind.latest_first:
+            lane.priority -= 1
+            priority = (0, lane.priority, lane.sequence)
+        else:
+            priority = (1, 0, lane.sequence)
         lane.queued[handle.execution_id] = queued
-        await lane.queue.put((lane.priority, lane.sequence, queued))
+        await lane.queue.put((*priority, queued))
         return await result
 
     async def cancel_handles(
@@ -167,7 +171,7 @@ class SessionWorkScheduler:
             while True:
                 if self._lanes.get(lane.session_id) is not lane:
                     return
-                _priority, _sequence, queued = await lane.queue.get()
+                _group, _priority, _sequence, queued = await lane.queue.get()
                 lane.queued.pop(queued.handle.execution_id, None)
                 lane.current = queued
                 if queued.result.cancelled():
@@ -222,7 +226,7 @@ class SessionWorkScheduler:
     def _drain_queued(lane: _Lane) -> None:
         while True:
             try:
-                _priority, _sequence, queued = lane.queue.get_nowait()
+                _group, _priority, _sequence, queued = lane.queue.get_nowait()
             except asyncio.QueueEmpty:
                 return
             lane.queued.pop(queued.handle.execution_id, None)

@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
 from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegistry
@@ -32,6 +32,10 @@ class _SessionRecord:
     persistence_policy: SessionPersistencePolicy
     generation: int
     state: RuntimeSessionState = RuntimeSessionState.READY
+    control_ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.control_ready.set()
 
 
 @dataclass(slots=True)
@@ -100,7 +104,49 @@ class RuntimeSessionCoordinator:
     ) -> T:
         record = self._require_open_session(session_id)
         handle = self._new_execution(record, request_id, work_kind)
+        return await self._run_unary(record, handle, operation, suspension_key)
 
+    def submit_unary(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        suspension_key: Callable[[T], str | None] | None = None,
+    ) -> SessionExecutionSnapshot:
+        """Queue owned work and return before the operation completes."""
+        record = self._require_open_session(session_id)
+        existing = self._registry.select(
+            session_id=session_id,
+            request_id=request_id,
+            generation=record.generation,
+        )
+        if existing:
+            if existing[-1].work_kind is not work_kind:
+                raise ValueError(
+                    f"request_id already belongs to {existing[-1].work_kind.value}"
+                )
+            return existing[-1].snapshot()
+        handle = self._new_execution(record, request_id, work_kind)
+
+        async def submitted() -> None:
+            if work_kind is SessionWorkKind.SESSION_MESSAGE:
+                await record.control_ready.wait()
+            await self._run_unary(record, handle, operation, suspension_key)
+
+        task = asyncio.create_task(submitted())
+        handle.task = task
+        task.add_done_callback(self._consume_task)
+        return handle.snapshot()
+
+    async def _run_unary(
+        self,
+        record: _SessionRecord,
+        handle: SessionExecutionHandle,
+        operation: Callable[[], Awaitable[T]],
+        suspension_key: Callable[[T], str | None] | None,
+    ) -> T:
         async def tracked() -> T:
             self._registry.mark_running(handle)
             record.state = RuntimeSessionState.ACTIVE
@@ -132,13 +178,13 @@ class RuntimeSessionCoordinator:
                 self._refresh_session_state(record)
 
         try:
-            if work_kind.scheduled:
+            if handle.work_kind.scheduled:
                 return await self._scheduler.submit_and_wait(handle, tracked)
             handle.task = asyncio.current_task()
             return await tracked()
         except asyncio.CancelledError:
             handle.cancellation_requested = True
-            if work_kind.scheduled:
+            if handle.work_kind.scheduled:
                 await self._scheduler.cancel_handles(
                     [handle], wait_timeout=self._cancel_timeout
                 )
@@ -147,7 +193,10 @@ class RuntimeSessionCoordinator:
                 self._refresh_session_state(record)
             raise
         finally:
-            if not work_kind.scheduled and handle.task is asyncio.current_task():
+            if (
+                not handle.work_kind.scheduled
+                and handle.task is asyncio.current_task()
+            ):
                 handle.task = None
 
     async def deliver_control(
@@ -225,26 +274,6 @@ class RuntimeSessionCoordinator:
         finally:
             self._refresh_session_state(record)
 
-    def has_control_target(self, session_id: str, request_id: str) -> bool:
-        """Return whether control input can resume a live Session execution."""
-        record = self._sessions.get(session_id)
-        if record is None or record.state is RuntimeSessionState.CLOSED:
-            return False
-        active = self._registry.select(
-            session_id=session_id,
-            generation=record.generation,
-            active_only=True,
-        )
-        for handle in active:
-            if handle.waiting_control_id != request_id:
-                continue
-            if handle.state in {
-                SessionExecutionState.RUNNING,
-                SessionExecutionState.WAITING_FOR_CONTROL,
-            }:
-                return True
-        return False
-
     async def run_stream(
         self,
         session_id: str,
@@ -272,6 +301,7 @@ class RuntimeSessionCoordinator:
                     )
                     if control_id:
                         self._registry.mark_awaiting_control(handle, control_id)
+                        self._refresh_control_gate(record)
                     await queue.put(_StreamItem(value=item))
             except asyncio.CancelledError as exc:
                 self._registry.mark_terminal(
@@ -354,7 +384,7 @@ class RuntimeSessionCoordinator:
         )
         for handle in handles:
             handle.cancellation_requested = True
-        direct = [handle for handle in handles if not handle.work_kind.scheduled]
+        direct = [handle for handle in handles if self._requires_direct_cancel(handle)]
         work = [handle for handle in handles if handle.work_kind.scheduled]
         timed_out = await self._scheduler.cancel_handles(
             work,
@@ -372,6 +402,9 @@ class RuntimeSessionCoordinator:
                 self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED)
             if handle.state is SessionExecutionState.CANCELLED:
                 cancelled += 1
+        record = self._sessions.get(session_id)
+        if record is not None:
+            self._refresh_session_state(record)
         return CancelExecutionResult(
             matched=len(handles), cancelled=cancelled, timed_out=timed_out
         )
@@ -393,7 +426,7 @@ class RuntimeSessionCoordinator:
             generation=target_generation,
             active_only=True,
         )
-        direct = [handle for handle in active if not handle.work_kind.scheduled]
+        direct = [handle for handle in active if self._requires_direct_cancel(handle)]
         direct_timeouts = await self._cancel_direct_handles(
             direct,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
@@ -502,6 +535,12 @@ class RuntimeSessionCoordinator:
         return handle
 
     @staticmethod
+    def _requires_direct_cancel(handle: SessionExecutionHandle) -> bool:
+        if handle.work_kind is SessionWorkKind.SESSION_MESSAGE:
+            return True
+        return not handle.work_kind.scheduled
+
+    @staticmethod
     async def _cancel_direct_handles(
         handles: list[SessionExecutionHandle],
         *,
@@ -534,7 +573,33 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             active_only=True,
         )
+        self._refresh_control_gate(record, active)
         record.state = RuntimeSessionState.ACTIVE if active else RuntimeSessionState.READY
+
+    def _refresh_control_gate(
+        self,
+        record: _SessionRecord,
+        active: list[SessionExecutionHandle] | None = None,
+    ) -> None:
+        if active is None:
+            active = self._registry.select(
+                session_id=record.session_id,
+                generation=record.generation,
+                active_only=True,
+            )
+        if any(handle.waiting_control_id for handle in active):
+            record.control_ready.clear()
+        else:
+            record.control_ready.set()
+
+    @staticmethod
+    def _consume_task(task: asyncio.Task[Any]) -> None:
+        if not task.done():
+            return
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     def _snapshot(self, record: _SessionRecord) -> RuntimeSessionSnapshot:
         return RuntimeSessionSnapshot(

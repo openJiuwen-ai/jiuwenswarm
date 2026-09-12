@@ -23,6 +23,7 @@ class SessionPersistencePolicy(str, Enum):
 class SessionWorkKind(str, Enum):
     CHAT_UNARY = "chat_unary"
     CHAT_STREAM = "chat_stream"
+    SESSION_MESSAGE = "session_message"
     GOAL_STREAM = "goal_stream"
     GOAL_CONTROL = "goal_control"
     GOAL_ATTACH = "goal_attach"
@@ -30,6 +31,14 @@ class SessionWorkKind(str, Enum):
 
     @property
     def scheduled(self) -> bool:
+        return self in {
+            SessionWorkKind.CHAT_UNARY,
+            SessionWorkKind.CHAT_STREAM,
+            SessionWorkKind.SESSION_MESSAGE,
+        }
+
+    @property
+    def latest_first(self) -> bool:
         return self in {
             SessionWorkKind.CHAT_UNARY,
             SessionWorkKind.CHAT_STREAM,
