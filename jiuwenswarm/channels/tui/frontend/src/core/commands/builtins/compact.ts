@@ -2,7 +2,7 @@ import { addError, addInfo } from "../helpers.js";
 import { CommandKind, type SlashCommand } from "../types.js";
 
 interface CompactResponse {
-  result: "busy" | "compressed" | "noop";
+  result: "busy" | "compressed" | "noop" | "blocked";
   stats?: {
     total_messages: number;
     total_tokens: number;
@@ -10,6 +10,7 @@ interface CompactResponse {
   };
   summary?: string;
   compact_summary?: string;
+  reason?: string;
 }
 
 export function createCompactCommand(): SlashCommand {
@@ -60,6 +61,17 @@ export function createCompactCommand(): SlashCommand {
             addInfo(
               ctx.sessionId,
               "No compression needed - context is already optimized.",
+              "i",
+            ),
+          );
+        } else if (result === "blocked") {
+          const reason = typeof payload?.reason === "string" && payload.reason.trim()
+            ? `: ${payload.reason.trim()}`
+            : "";
+          ctx.addItem(
+            addInfo(
+              ctx.sessionId,
+              `Compaction blocked by PreCompact hook${reason}`,
               "i",
             ),
           );

@@ -18,7 +18,7 @@ class HookType(str, Enum):
 
 
 class HookEvent(str, Enum):
-    """当前 17 个底层能力支持的event."""
+    """The 18 events supported by the hooks system."""
     PRE_TOOL_USE = "PreToolUse"
     POST_TOOL_USE = "PostToolUse"
     POST_TOOL_USE_FAILURE = "PostToolUseFailure"
@@ -36,6 +36,7 @@ class HookEvent(str, Enum):
     SETUP = "Setup"
     BEFORE_MODEL_CALL = "BeforeModelCall"
     AFTER_MODEL_CALL = "AfterModelCall"
+    PRE_COMPACT = "PreCompact"
 
 
 # 需要在 AgentServer Rail 层执行的事件（工具/Agent 生命周期）

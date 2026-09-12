@@ -20,8 +20,8 @@ class TestHookEvent:
     """测试 HookEvent 枚举."""
 
     @staticmethod
-    def test_all_17_events_defined():
-        assert len(HookEvent) == 17
+    def test_all_18_events_defined():
+        assert len(HookEvent) == 18
 
     @staticmethod
     def test_tool_events():
@@ -37,6 +37,10 @@ class TestHookEvent:
     @staticmethod
     def test_stop_event():
         assert HookEvent.STOP.value == "Stop"
+
+    @staticmethod
+    def test_compact_event():
+        assert HookEvent.PRE_COMPACT.value == "PreCompact"
 
 
 class TestEventRouting:
@@ -229,7 +233,7 @@ class TestGetEventSummary:
             "PreToolUse": [HookMatcher(matcher="*", hooks=[{"type": "command", "command": "test"}])]
         })
         summary = config.get_event_summary()
-        assert len(summary) == 17  # all events
+        assert len(summary) == 18  # all events
 
     @staticmethod
     def test_correct_hook_counts():

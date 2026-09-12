@@ -783,7 +783,7 @@ The TUI requests the Gateway via the `hooks.list` RPC, which loads the `hooks` s
    - `Source` — Configuration source (`config.yaml`)
    - `Global Status` — Global toggle state (`enabled` / `DISABLED`)
    - `Total Hooks` — Total hook count across all events
-   - `Active Events` — Events with at least 1 hook / total events (out of 17)
+   - `Active Events` — Events with at least 1 hook / total events (out of 18)
 3. **Hook Detail Cards (Level 2)**: Grouped by `Event > Matcher`, each hook shows:
    - `Type` — `command` (shell command) or `prompt` (LLM review)
    - `Command` / `Prompt` — The hook content
@@ -797,7 +797,7 @@ If `config.yaml` has no hooks configured, displays `No hooks configured.` with a
 
 #### Hooks Concept Overview
 
-Hooks are extension logic that executes automatically when specific events fire. 17 events are supported:
+Hooks are extension logic that executes automatically when specific events fire. 18 events are supported:
 
 | Event | Execution Layer | Trigger |
 |---|---|---|
@@ -818,6 +818,7 @@ Hooks are extension logic that executes automatically when specific events fire.
 | `ConfigChange` | Gateway | Configuration changes |
 | `InstructionsLoaded` | Gateway | Instructions are loaded |
 | `Setup` | Gateway | Initialization |
+| `PreCompact` | Agent Server | Before context compaction (manual `/compact` or auto) |
 
 Two hook types are supported:
 
@@ -827,6 +828,7 @@ Two hook types are supported:
 | `prompt` | Invokes LLM review. `$ARGUMENTS` in the template is replaced with JSON context, `$TOOL_NAME` with the tool name. LLM response JSON with `decision: "block"` blocks the operation. | `prompt`, `timeout` (default 15s), `model` |
 
 - **Blocking**: Exit code 2 (command) or `decision: "block"` (prompt) blocks the current operation (e.g., skip tool call) and feeds the reason back to the model.
+- **PreCompact Matcher**: The `PreCompact` matcher matches the compaction trigger — `manual` (from `/compact`) or `auto` (automatic compaction). Blocking cancels a manual `/compact`; auto-triggered hooks are fire-and-forget and cannot block.
 - **Input Modification**: PreToolUse hooks can modify tool input parameters via `modifiedInput` in stdout JSON.
 - **Additional Context**: Extra information can be injected into tool results or model context via `additionalContext` in stdout JSON.
 - **Global Toggle**: `hooks.disable_all_hooks: true` in `config.yaml` disables all hooks.
