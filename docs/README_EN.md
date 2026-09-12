@@ -81,6 +81,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="50%">Configuration, execution, and management of scheduled tasks.</td>
     </tr>
     <tr>
+      <td width="22%"><strong>Loop Tasks</strong></td>
+      <td width="28%"><a href="en/LoopTasks.md">Loop Tasks</a></td>
+      <td width="50%">Loop Engineering orchestration: rubric decomposition, maker/checker acceptance loop, and the two entry points.</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>Skills</strong></td>
       <td width="28%"><a href="en/Skills.md">Skills</a></td>
       <td width="50%">Agent skill mounting, invocation, and extension mechanisms.</td>

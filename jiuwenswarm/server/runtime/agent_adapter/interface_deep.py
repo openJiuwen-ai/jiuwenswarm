@@ -13176,6 +13176,16 @@ class JiuWenSwarmDeepAdapter:
 
         stripped = query.strip()
 
+        # /loop 斜杠（Loop Engineering 编排入口）：解析命中即拦截，
+        # 由流式分支调用 loop_slash.run_loop_stream 执行编排。
+        from jiuwenswarm.server.runtime.agent_adapter.loop_slash import (
+            parse_loop_slash,
+        )
+
+        loop_result = parse_loop_slash(stripped)
+        if loop_result is not None:
+            return loop_result
+
         slash_result = await handle_evolution_slash_command(
             stripped,
             EvolutionSlashContext(
@@ -14429,6 +14439,16 @@ class JiuWenSwarmDeepAdapter:
                     },
                     is_complete=True,
                 )
+                return
+            elif result_type == "loop_stream":
+                # /loop 斜杠：Loop Engineering 编排（rubric 分解 → maker 轮 →
+                # 机器验证 → grader 验收），过程与结果以 chat.* 事件流返回。
+                from jiuwenswarm.server.runtime.agent_adapter.loop_slash import (
+                    run_loop_stream,
+                )
+
+                async for loop_chunk in run_loop_stream(request=request):
+                    yield loop_chunk
                 return
             followup_prompt = self._extract_followup_prompt(slash_result)
             if followup_prompt is not None:
