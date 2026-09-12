@@ -1278,7 +1278,9 @@ class AgentRuntime:
             if work_kind is not None:
                 await self._ensure_session_registered(request)
                 if work_kind is SessionWorkKind.CONTROL_INPUT:
-                    return await self._deliver_control(request)
+                    return await self._deliver_control(
+                        request, on_control_event=on_control_event,
+                    )
                 return await self._session_coordinator.run_unary(
                     request.session_id or "default",
                     request.request_id,
@@ -1687,7 +1689,9 @@ class AgentRuntime:
         if work_kind is not None:
             await self._ensure_session_registered(request)
             if work_kind is SessionWorkKind.CONTROL_INPUT:
-                events = await self._deliver_control(request)
+                events = await self._deliver_control(
+                    request, on_control_event=on_control_event,
+                )
                 for event in events:
                     yield event
                 return
@@ -1991,7 +1995,12 @@ class AgentRuntime:
                 metadata=request.metadata,
             )
 
-    async def _deliver_control(self, request: AgentRequest) -> list[RuntimeEvent]:
+    async def _deliver_control(
+        self,
+        request: AgentRequest,
+        *,
+        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
+    ) -> list[RuntimeEvent]:
         """Resume existing work while keeping later Heartbeats out."""
         session_id = request.session_id or "default"
         request_id = self._control_request_id(request)
@@ -2010,7 +2019,9 @@ class AgentRuntime:
             events = await self._session_coordinator.deliver_control(
                 session_id,
                 request_id,
-                lambda: self._deliver_control_started(request),
+                lambda: self._deliver_control_started(
+                    request, on_control_event=on_control_event,
+                ),
                 suspension_key=self._waiting_control_id,
             )
             if not heartbeat_control:
@@ -2037,6 +2048,8 @@ class AgentRuntime:
     async def _deliver_control_started(
         self,
         request: AgentRequest,
+        *,
+        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
     ) -> list[RuntimeEvent]:
         """Inject control input without opening another Session work turn."""
         from jiuwenswarm.runtime.events import RuntimeEvent
@@ -2057,6 +2070,19 @@ class AgentRuntime:
         deliver = getattr(agent, "deliver_control_input", None)
         if not callable(deliver):
             raise RuntimeError("active agent does not accept control input")
+        params = request.params if isinstance(request.params, dict) else {}
+        answers = params.get("answers")
+        card_id = (
+            answers[0].get("card_id")
+            if isinstance(answers, list) and len(answers) == 1
+            and isinstance(answers[0], dict) else None
+        )
+        # This selects transport timing, not permission. Only the adapter's
+        # actual handoff acknowledgement can settle the submitted answer.
+        forward_permission_ack = (
+            params.get("source") == "permission_interrupt"
+            and isinstance(card_id, str) and 0 < len(card_id.strip()) <= 128
+        )
         events: list[RuntimeEvent] = []
         response_stream = deliver(request)
         try:
@@ -2068,7 +2094,17 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
-                events.append(event)
+                if (
+                    forward_permission_ack and on_control_event is not None
+                    and event.event_type == "runtime.accepted"
+                    and event.request_id == request.request_id
+                    and event.session_id == request.session_id
+                    and event.payload.get("request_id") == request.request_id
+                    and event.payload.get("session_id", event.session_id) == request.session_id
+                ):
+                    await on_control_event(event)
+                else:
+                    events.append(event)
         finally:
             close_stream = getattr(response_stream, "aclose", None)
             if callable(close_stream):
