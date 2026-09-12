@@ -453,24 +453,11 @@ class SessionAdapter(GatewayAdapter):
                 return build_error_response(
                     request, "session is not a directory", code="BAD_REQUEST"
                 )
-            from openjiuwen.core.session.agent import create_agent_session
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-                get_kv_cache_runtime,
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                release_session_kvc,
             )
 
-            try:
-                session = create_agent_session(
-                    session_id=target,
-                    kv_cache_runtime=get_kv_cache_runtime(),
-                )
-                await session.release_kvc()
-            except Exception as exc:  # noqa: BLE001 - preserve deletion behavior
-                logger.warning(
-                    "[SessionAdapter] session.delete KV cache evict failed: "
-                    "session_id=%s error=%s",
-                    target,
-                    exc,
-                )
+            await release_session_kvc(session_id=target)
             await asyncio.to_thread(shutil.rmtree, session_dir)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[SessionAdapter] session.delete failed: %s", exc)
