@@ -66,7 +66,7 @@ class EventRenderer:
         if self.output_format == "human":
             self._human_ui.clear_status()
 
-    def render(self, event: RuntimeEvent) -> None:
+    def render(self, event: RuntimeEvent, *, view: str | None = None) -> None:
         data = event.to_dict()
         self.events.append(data)
         self.failed = (
@@ -85,9 +85,20 @@ class EventRenderer:
             return
         if self.output_format == "json":
             return
+        if view == "skills.list" and event.ok:
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            raw_skills = payload.get("skills")
+            self._human_ui.skills(raw_skills if isinstance(raw_skills, list) else [])
+            return
         self._render_human(event)
 
-    def finish(self, *, session_id: str, request_id: str) -> None:
+    def finish(
+        self,
+        *,
+        session_id: str,
+        request_id: str,
+        show_completion: bool = True,
+    ) -> None:
         if self.output_format == "json":
             document = {
                 "ok": not self.failed,
@@ -100,7 +111,7 @@ class EventRenderer:
             )
         elif self.output_format == "human" and self._wrote_delta:
             self.stdout.write("\n")
-        if self.output_format == "human" and not self.failed:
+        if self.output_format == "human" and not self.failed and show_completion:
             self._human_ui.completed(session_id)
         self.stdout.flush()
 
@@ -136,6 +147,8 @@ class EventRenderer:
             self.stderr.write(
                 f"\n! 计划模式已退出，当前模式：{payload.get('mode', 'normal')}\n"
             )
+        elif event_type.startswith("session."):
+            self._human_ui.session_event(event_type, payload)
         self.stderr.flush()
 
 

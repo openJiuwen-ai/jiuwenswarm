@@ -29,6 +29,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import 
 from jiuwenswarm.extensions.agentos.auth.common import (
     extract_headers,
     extract_token,
+    extract_token_from_path_and_headers,
     get_remote_addr,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
@@ -79,11 +80,16 @@ _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # the host workspace bind path (``/home/agentos/users/<user_id>``).
 USER_DIRECTORY_ENV_KEY = "JIUWENSWARM_USER_DIRECTORY"
 
-# Gateway-side file transfer limits (design: stricter than YuanRong 512MB).
+# Container file root. Upload size is not capped on Gateway; YuanRong
+# Frontend / working-directory quota (default 512MB) rejects oversized files
+# with HTTP 413, mapped to ``file_too_large``.
 _AGENT_FILE_PATH_ROOT = "/home/agentos"
-_MAX_AGENT_FILE_UPLOAD_BYTES = 50 * 1024 * 1024
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
+# Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
+_CONNECT_WARMUP_CHANNELS = frozenset(
+    {ChannelType.WEB.value, ChannelType.CLI.value}
+)
 
 # create_sandbox 返回后 agentserver 仍在进程内启动；YuanRong WS 代理此时会回
 # HTTP 502。在 deadline 内重试，避免首条 chat 立刻空失败（TUI "Worked for 0s"）。
@@ -274,16 +280,6 @@ def normalize_agent_file_download_path(path: str) -> str:
     return text
 
 
-def enforce_agent_file_upload_size(content: bytes) -> None:
-    """Reject uploads larger than the Gateway-side 50MB limit."""
-    size = len(content)
-    if size > _MAX_AGENT_FILE_UPLOAD_BYTES:
-        raise AgentOSFileTransferError(
-            f"file size exceeds {_MAX_AGENT_FILE_UPLOAD_BYTES} bytes limit",
-            code="file_too_large",
-        )
-
-
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
     """Build Authorization header for YuanRong file APIs from WS/auth headers."""
     if not headers:
@@ -368,6 +364,7 @@ class AgentOSRouterClient(AgentServerClient):
         sandbox_idle_timeout_seconds: float = 600.0,
         sandbox_idle_check_interval_seconds: float = 30.0,
         disconnect_cleanup_timeout_seconds: float = 60.0,
+        connect_warmup_enabled: bool = True,
         auth_client: AgentOSAuthenticator | None = None,
         ws_client_factory: Callable[[], WebSocketAgentServerClient] | None = None,
     ) -> None:
@@ -390,6 +387,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._disconnect_cleanup_timeout_seconds = float(
             disconnect_cleanup_timeout_seconds
         )
+        self._connect_warmup_enabled = bool(connect_warmup_enabled)
         self._idle_reaper_task: asyncio.Task[None] | None = None
         self._server_ready = False
         self._background_tasks: set[asyncio.Task[Any]] = set()
@@ -399,6 +397,8 @@ class AgentOSRouterClient(AgentServerClient):
         self._auth_client = auth_client
         # 延迟清理任务：user_id → pending cleanup task
         self._pending_cleanups: dict[str, asyncio.Task[None]] = {}
+        # Web/TUI 连接预热：user_id → in-flight warmup task（同用户合并）
+        self._warmup_tasks: dict[str, asyncio.Task[None]] = {}
         # create 后走 YuanRong frontend 的 WS 代理直连 instance（不走 invoke 链路）：
         # instance_id(sandbox_id) → 已连接的 WebSocketAgentServerClient
         self._ws_clients: dict[str, WebSocketAgentServerClient] = {}
@@ -476,14 +476,28 @@ class AgentOSRouterClient(AgentServerClient):
             fields["error"] = error
         log_agentos(logger, level, event, **fields)
 
-    async def on_connect(self, ws: Any) -> AuthResult | None:
-        channel = self._ws_channel_name(ws)
-        remote = get_remote_addr(ws)
-        if self._auth_client is None:
+    @property
+    def auth_enabled(self) -> bool:
+        return self._auth_client is not None
+
+    @staticmethod
+    def _header_user_id(headers: Mapping[str, str]) -> str:
+        lowered = {str(k).lower(): str(v or "") for k, v in headers.items()}
+        return str(lowered.get("x-user-id", "") or "").strip()
+
+    async def _verify_request_token(
+        self,
+        *,
+        token: str | None,
+        headers: Mapping[str, str],
+        remote: str,
+        channel: str,
+    ) -> AuthResult:
+        auth_client = self._auth_client
+        if not self.auth_enabled or auth_client is None:
             # auth 未启用时回落使用握手头里的 X-User-Id，
             # 否则 user_id 为空会跳过连接计数/延迟清理，导致 agent 泄漏不回收。
-            headers = {k.lower(): v for k, v in extract_headers(ws).items()}
-            fallback_user_id = str(headers.get("x-user-id", "") or "").strip()
+            fallback_user_id = self._header_user_id(headers)
             fields: dict[str, Any] = {
                 "user_id": fallback_user_id,
                 "channel": channel,
@@ -496,15 +510,13 @@ class AgentOSRouterClient(AgentServerClient):
                 success=True,
                 user_id=fallback_user_id,
             )
-        token = extract_token(ws)
-        headers = extract_headers(ws)
         context = AuthContext(
-            channel_type="",
-            credentials={"token": token} if token else {},
-            headers=headers,
+            channel_type=channel,
+            credentials={"token": token or ""},
+            headers=dict(headers),
             remote_addr=remote,
         )
-        result = await self._auth_client.authenticate(context)
+        result = await auth_client.authenticate(context)
         if result.success:
             log_agentos(
                 logger,
@@ -527,6 +539,42 @@ class AgentOSRouterClient(AgentServerClient):
                 remote=remote,
                 error=error_code or result.error or "unauthorized",
             )
+        return result
+
+    async def authenticate_http(
+        self,
+        *,
+        path: str,
+        headers: Mapping[str, str],
+        remote: str = "",
+        channel: str = "file-api",
+        allow_query_token: bool = True,
+    ) -> AuthResult:
+        """IAM-verify an HTTP request token. Skips when ``auth_enabled`` is false.
+
+        ``/file-api/download?token=`` carries a file-location token, not an IAM
+        credential; callers must pass ``allow_query_token=False`` on that path.
+        """
+        token_path = path if allow_query_token else urllib.parse.urlparse(path).path
+        token = extract_token_from_path_and_headers(token_path, headers)
+        return await self._verify_request_token(
+            token=token,
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+
+    async def on_connect(self, ws: Any) -> AuthResult | None:
+        channel = self._ws_channel_name(ws)
+        remote = get_remote_addr(ws)
+        headers = extract_headers(ws)
+        result = await self._verify_request_token(
+            token=extract_token(ws),
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+        if not result.success:
             close = getattr(ws, "close", None)
             if callable(close):
                 ret = close(code=1008, reason="unauthorized")
@@ -545,7 +593,7 @@ class AgentOSRouterClient(AgentServerClient):
         self._ephemeral_key_ttl_sec = float(ephemeral_key_ttl_sec)
 
     async def _on_channel_event(self, event: Any) -> None:
-        """处理 Channel 连接事件，维护用户连接计数并触发延迟清理。"""
+        """处理 Channel 连接事件：连接计数、延迟清理、Web/TUI 预热。"""
         user_id = str(getattr(event, "user_id", "") or "").strip()
         if not user_id:
             return
@@ -556,6 +604,9 @@ class AgentOSRouterClient(AgentServerClient):
             task = self._pending_cleanups.pop(user_id, None)
             if task is not None and not task.done():
                 task.cancel()
+            channel_type = str(getattr(event, "channel_type", "") or "").strip().lower()
+            if channel_type in _CONNECT_WARMUP_CHANNELS:
+                self._schedule_connect_warmup(user_id)
         elif event_type == "disconnected":
             count = self._agent_manager.decrement_user_connections(user_id)
             # 配置的超时清理时长为0或者负数时，不触发清理机制
@@ -667,6 +718,75 @@ class AgentOSRouterClient(AgentServerClient):
             except asyncio.CancelledError:
                 return
 
+    def _schedule_connect_warmup(self, user_id: str) -> None:
+        """Fire-and-forget builtin sandbox + instance WS warmup for one user."""
+        if self._closed or not self._connect_warmup_enabled:
+            return
+        if "session_id" in self._agent_manager.key_fields:
+            logger.info(
+                "[AgentOSRouter] skip connect warmup: session_id in "
+                "agent_key_fields user=%s",
+                user_id,
+            )
+            return
+        existing = self._warmup_tasks.get(user_id)
+        if existing is not None and not existing.done():
+            return
+        task = asyncio.create_task(
+            self._warmup_user_agent(user_id),
+            name=f"agentos-connect-warmup-{user_id[:24]}",
+        )
+        self._warmup_tasks[user_id] = task
+        self._background_tasks.add(task)
+
+        def _on_done(done: asyncio.Task[None]) -> None:
+            self._background_tasks.discard(done)
+            if self._warmup_tasks.get(user_id) is done:
+                self._warmup_tasks.pop(user_id, None)
+
+        task.add_done_callback(_on_done)
+
+    async def _warmup_user_agent(self, user_id: str) -> None:
+        """Create the builtin jiuwenswarm sandbox and open instance WS.
+
+        Must not raise: handshake / connection.ack already succeeded. Chat
+        still goes through get_or_create_agent, so a failed warmup only
+        means the first request pays the cold-start cost.
+        """
+        if self._closed:
+            return
+        agent_type = BUILTIN_AGENT_TYPE
+        logger.info(
+            "[AgentOSRouter] connect warmup start: user=%s agent_type=%s",
+            user_id,
+            agent_type,
+        )
+        try:
+            runtime = await self._agent_manager.get_or_create_agent(
+                user_id,
+                agent_type,
+                creator=self._create_agent,
+                acquire=False,
+            )
+            await self._get_ws_client(runtime)
+        except Exception:
+            logger.warning(
+                "[AgentOSRouter] connect warmup failed: user=%s agent_type=%s",
+                user_id,
+                agent_type,
+                exc_info=True,
+            )
+            return
+        if self._closed:
+            return
+        logger.info(
+            "[AgentOSRouter] connect warmup ready: user=%s agent_type=%s "
+            "sandbox_id=%s",
+            user_id,
+            agent_type,
+            runtime.info.sandbox_id,
+        )
+
     def get_current_agent_type(self, user_id: str) -> str:
         """Return the user's current agent_type (default ``jiuwenswarm``)."""
         uid = str(user_id or "").strip()
@@ -772,8 +892,11 @@ class AgentOSRouterClient(AgentServerClient):
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Upload bytes into the user's agent container workspace."""
-        enforce_agent_file_upload_size(content)
+        """Upload bytes into the user's agent container workspace.
+
+        Gateway does not enforce a file-size cap. Oversized payloads are
+        rejected by YuanRong (HTTP 413 / ``file_too_large``).
+        """
         normalized_path = normalize_agent_file_upload_path(
             path, dir_prefix=dir_prefix, user_id=user_id
         )
@@ -932,6 +1055,7 @@ class AgentOSRouterClient(AgentServerClient):
             if not task.done():
                 task.cancel()
         self._pending_cleanups.clear()
+        self._warmup_tasks.clear()
         await self._drain_background_tasks()
         await self._close_all_ws_clients()
         try:

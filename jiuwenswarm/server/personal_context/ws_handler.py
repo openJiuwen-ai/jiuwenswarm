@@ -47,6 +47,7 @@ PERSONAL_CONTEXT_REQUEST_METHODS = frozenset(
         ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_SERVICE,
         ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ALL,
         ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ONE,
+        ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN,
         ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS,
         ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS,
         ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
@@ -279,14 +280,23 @@ async def _execute(
         return await host.run_fetch()
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_RUN_ONE:
         return await host.run_fetch(service_id=_text(params, "service_id"))
+    if method == ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN:
+        return await host.stop_fetch_run(_text(params, "service_id"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS:
         return await host.get_fetch_run_status(
-            cast(str | None, params.get("service_id"))
+            cast(str | None, params.get("service_id")),
+            run_id=cast(str | None, params.get("run_id")),
         )
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS:
         return await host.get_authorization_status(_text(params, "provider"))
     if method == ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER:
-        return await host.authorize_provider(_text(params, "provider"))
+        credentials = params.get("credentials")
+        if credentials is not None and not isinstance(credentials, dict):
+            raise ValueError("credentials must be an object")
+        return await host.authorize_provider(
+            _text(params, "provider"),
+            credentials=cast(dict[str, object] | None, credentials),
+        )
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES:
         return await host.search_graph(_text(params, "query"))
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_GET_NODE:

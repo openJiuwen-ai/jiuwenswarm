@@ -4,11 +4,12 @@ from typing import Any
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.extensions.loader import ExtensionLoader
 from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.common.utils import logger
+from jiuwenswarm.common.utils import get_root_dir, logger
 
 
 _DEFAULT_PACKAGE_EXTENSION_DIR = ("jiuwenswarm", "extensions")
 _DEFAULT_EXTENSION_DIR = "/".join(_DEFAULT_PACKAGE_EXTENSION_DIR)
+_USER_APPLICATION_PLUGIN_DIR = "application_plugins"
 
 
 def _is_default_package_extension_dir(path: Path) -> bool:
@@ -65,8 +66,10 @@ class ExtensionManager:
 
     def _setup_search_paths(self) -> None:
         seen: set[str] = set()
+        user_plugin_dir = get_root_dir() / _USER_APPLICATION_PLUGIN_DIR
+        user_plugin_dir.mkdir(parents=True, exist_ok=True)
         extension_dirs = _extension_dir_paths_from_config(get_config())
-        for path in extension_dirs:
+        for path in [str(user_plugin_dir), *extension_dirs]:
             for p in _extension_search_path_candidates(path):
                 if not p.exists():
                     continue

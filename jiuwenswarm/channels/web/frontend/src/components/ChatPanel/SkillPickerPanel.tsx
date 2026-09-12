@@ -4,6 +4,7 @@ import clsx from 'clsx';
 import { useChatStore, useSessionStore } from '../../stores';
 import { webRequest } from '../../services/webClient';
 import { getSkillAvatar } from '../../utils/skillAvatar';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { PickerPanel } from './PickerPanel';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
 
@@ -118,6 +119,8 @@ export function SkillPickerPanel({
     });
   }, [installedSkills, searchQuery]);
 
+  const { tooltip, handlers } = useAdaptiveTooltip({ offsetX: -50 });
+
   const fetchInstalledSkills = useCallback(async () => {
     if (!activeSessionId) return;
     setLoading(true);
@@ -174,6 +177,7 @@ export function SkillPickerPanel({
   );
 
   return (
+    <>
     <PickerPanel
       panelRef={panelRef}
       className="chat-skill-picker"
@@ -224,11 +228,12 @@ export function SkillPickerPanel({
             aria-pressed={isSelected}
             data-testid="chat-panel-skill-select-item"
             data-variant={skill.name}
-            title={isSelected ? t('chat.skillsRemove') : t('chat.skillsAdd')}
+            data-tooltip={skill.description || t('skills.noDescription')}
+            {...handlers}
           >
             <div className="chat-skill-select__item-main" data-testid="chat-panel-skill-select-item-main">
               <div className="chat-skill-select__item-head">
-                <div className={`chat-skill-select__avatar ${avatar.color}`} data-testid="chat-panel-skill-select-item-avatar">
+                <div className="chat-skill-select__avatar" style={avatar.style} data-testid="chat-panel-skill-select-item-avatar">
                   {avatar.firstChar}
                 </div>
                 <div className="chat-skill-select__item-name" data-testid="chat-panel-skill-select-item-name">{skill.display_name || skill.name}</div>
@@ -246,5 +251,7 @@ export function SkillPickerPanel({
         );
       })}
     </PickerPanel>
+    {tooltip}
+    </>
   );
 }

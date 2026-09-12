@@ -18,9 +18,16 @@ export function CodeEnvironmentPanel({ project, isProcessing, diffWatch, onRevie
   const loading = diffWatch.summaryLoading && !diffWatch.summary;
   const currentUnavailable = Boolean(diffWatch.summary && !diffWatch.summary.repo.is_git && !diffWatch.summary.current);
   const unavailable = Boolean((diffWatch.summaryError && !diffWatch.summary) || currentUnavailable);
+  const repoIsParentOfProject = Boolean(diffWatch.summary?.repo.repo_is_parent_of_project);
+  const repoRoot = diffWatch.summary?.repo.repo_root ?? null;
 
   return (
     <section className="code-environment" aria-label={t('codeMode.environment')} data-testid="code-mode-environment-panel">
+      {repoIsParentOfProject ? (
+        <div className="code-environment__notice" role="status" data-testid="code-mode-environment-repo-parent-notice">
+          当前 Git 仓库位于项目目录的上级（{repoRoot}），分支变更会统计项目目录之外的文件。
+        </div>
+      ) : null}
       <button type="button" className="code-environment__row" onClick={onReview} title={diffWatch.summaryError || '打开代码审核'} data-testid="code-mode-environment-review-button">
         <FileDiff size={15} />
         <span>{t('codeMode.changes')}</span>

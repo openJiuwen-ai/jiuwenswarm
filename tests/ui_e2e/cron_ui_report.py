@@ -6,13 +6,11 @@ import base64
 import contextlib
 import json
 import os
-import shutil
 import socket
 import subprocess
-import sys
 import time
 from dataclasses import asdict, dataclass, field
-from datetime import datetime, timezone
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -22,14 +20,22 @@ from playwright.async_api import Browser, Page, async_playwright
 try:
     from .runtime_openjiuwen import (
         build_repo_pythonpath,
+        build_workspace_env,
+        resolve_browser_executable,
         resolve_openjiuwen_runtime,
+        resolve_npm_executable,
         resolve_runtime_python,
+        terminate_process_tree,
     )
 except ImportError:
     from runtime_openjiuwen import (
         build_repo_pythonpath,
+        build_workspace_env,
+        resolve_browser_executable,
         resolve_openjiuwen_runtime,
+        resolve_npm_executable,
         resolve_runtime_python,
+        terminate_process_tree,
     )
 
 UI_E2E_ROOT = Path(__file__).resolve().parent
@@ -84,12 +90,7 @@ def _default_runtime_python() -> str:
 
 
 def _chrome_path() -> str | None:
-    return (
-        shutil.which("google-chrome")
-        or shutil.which("google-chrome-stable")
-        or shutil.which("chromium")
-        or shutil.which("chromium-browser")
-    )
+    return resolve_browser_executable()
 
 
 def _start_process(cmd: list[str], *, env: dict[str, str], log_path: Path, cwd: Path) -> subprocess.Popen:
@@ -481,7 +482,11 @@ async def async_main() -> int:
     args = parser.parse_args()
 
     if args.build:
-        subprocess.run(["npm", "run", "build"], cwd=str(WEB_DIR), check=True)
+        subprocess.run(
+            [resolve_npm_executable(), "run", "build"],
+            cwd=str(WEB_DIR),
+            check=True,
+        )
     elif not WEB_DIST_DIR.exists():
         raise SystemExit(f"Missing dist directory: {WEB_DIST_DIR}. Run with --build first.")
 
@@ -502,10 +507,9 @@ async def async_main() -> int:
     ui_log = report_dir / "ui.log"
     runtime_info = resolve_openjiuwen_runtime(args.runtime_python, require=True)
 
-    env = os.environ.copy()
+    env = build_workspace_env(args.home)
     env.update(
         {
-            "HOME": str(Path(args.home).expanduser()),
             "AGENT_PORT": str(agent_port),
             "AGENT_SERVER_PORT": str(agent_port),
             "WEB_PORT": str(backend_port),
@@ -582,13 +586,7 @@ async def async_main() -> int:
         for proc in (ui_proc, backend_proc):
             if proc is None:
                 continue
-            if proc.poll() is None:
-                proc.terminate()
-                try:
-                    proc.wait(timeout=10)
-                except subprocess.TimeoutExpired:
-                    proc.kill()
-                    proc.wait(timeout=5)
+            terminate_process_tree(proc)
 
     context = ReportContext(
         timestamp=timestamp,
@@ -608,7 +606,7 @@ async def async_main() -> int:
     )
     report_path = _write_report(report_dir, context, cases)
     print(report_path)
-    return exit_code
+    return exit_code or (1 if any(case.status != "PASS" for case in cases) else 0)
 
 
 def main() -> int:

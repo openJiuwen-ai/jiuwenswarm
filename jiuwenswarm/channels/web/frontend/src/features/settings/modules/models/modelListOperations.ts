@@ -11,13 +11,13 @@ export type ModelDisplayGroup = {
 };
 
 export function getEditableModels(models: ModelEntry[]): ModelEntry[] {
-  return models.filter((model) => model.is_free !== true && model.is_agentos !== true);
+  return models.filter((model) => model.is_agentos !== true);
 }
 
 export function getModelDisplayGroups(models: ModelEntry[]): ModelDisplayGroup[] {
   const editableGroups = new Map<string, ModelDisplayItem[]>();
   models.forEach((model, index) => {
-    if (model.is_free === true || model.is_agentos === true) return;
+    if (model.is_agentos === true) return;
     const items = editableGroups.get(model.model_name) ?? [];
     items.push({ model, index });
     editableGroups.set(model.model_name, items);
@@ -26,7 +26,7 @@ export function getModelDisplayGroups(models: ModelEntry[]): ModelDisplayGroup[]
   const emittedModelNames = new Set<string>();
   const displayGroups: ModelDisplayGroup[] = [];
   models.forEach((model, index) => {
-    if (model.is_free === true || model.is_agentos === true) {
+    if (model.is_agentos === true) {
       displayGroups.push({ modelName: model.model_name, items: [{ model, index }] });
       return;
     }
@@ -40,6 +40,16 @@ export function getModelDisplayGroups(models: ModelEntry[]): ModelDisplayGroup[]
 export function removeEditableModel(models: ModelEntry[], target: ModelEntry): ModelEntry[] {
   if (getEditableModels(models).length <= 1) throw new Error('LAST_EDITABLE_MODEL');
   return models.filter((model) => model !== target);
+}
+
+export function addEditableModel(models: ModelEntry[], model: ModelEntry): ModelEntry[] {
+  const primaryModel = getEditableModels(models)[0];
+  if (primaryModel?.model_name.trim() !== 'your-model-name') return [...models, model];
+
+  return promotePrimaryModel(
+    models.filter((candidate) => candidate !== primaryModel).concat(model),
+    model,
+  );
 }
 
 export function promotePrimaryModel(models: ModelEntry[], target: ModelEntry): ModelEntry[] {

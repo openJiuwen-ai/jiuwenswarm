@@ -5,17 +5,46 @@
  * - skill_recommend: Blue-purple gradient
  * - task_reminder: Amber-orange gradient
  * - need_exploration: Green-cyan gradient
+ *
+ * Includes feedback buttons (like/dislike) for strategy optimization.
  */
 
-import React from 'react';
+import React, { useState, useCallback } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Sparkles, Clock, Compass } from 'lucide-react';
+import { Sparkles, Clock, Compass, ThumbsUp, ThumbsDown } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import type { Message } from '../../types';
 import { formatTimestamp } from '../../utils';
+import { webClient } from '../../services/webClient';
 
 interface ProactiveRecommendationCardProps {
   message: Message;
+}
+
+// ── 反馈状态本地持久化 ──────────────────────────────────────────────
+// 后端 buffer 持久化反馈，但前端无法查询"某 rec_id 是否已反馈"。刷新页面或组件
+// 重建后，按钮的"已记录"态会丢失，用户会重复点击（后端去重会丢弃，但 UX 不好）。
+// 用 localStorage 记 rec_id -> 'like'|'dislike'，让按钮回显已反馈态。
+// key 带前缀避免撞名；纯本地 UI 态，后端仍是反馈的权威来源。
+const FEEDBACK_LS_PREFIX = 'proactive-feedback:';
+
+function loadFeedbackGiven(recId?: string): 'like' | 'dislike' | null {
+  if (!recId || typeof window === 'undefined') return null;
+  try {
+    const v = window.localStorage.getItem(FEEDBACK_LS_PREFIX + recId);
+    return v === 'like' || v === 'dislike' ? v : null;
+  } catch {
+    return null;
+  }
+}
+
+function saveFeedbackGiven(recId: string, type: 'like' | 'dislike'): void {
+  if (typeof window === 'undefined') return;
+  try {
+    window.localStorage.setItem(FEEDBACK_LS_PREFIX + recId, type);
+  } catch {
+    // localStorage 不可用（隐私模式等）时静默降级，不影响点赞请求本身。
+  }
 }
 
 const typeConfig = {
@@ -49,6 +78,32 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
   const Icon = config.icon;
   const label = t(`config.proactive.typeLabel.${proactiveType}`, { defaultValue: t('config.proactive.typeLabel.skill_recommend') });
 
+  const [feedbackGiven, setFeedbackGiven] = useState<'like' | 'dislike' | null>(() =>
+    loadFeedbackGiven(message.proactiveRecId),
+  );
+
+  const handleFeedback = useCallback((type: 'like' | 'dislike') => {
+    if (feedbackGiven) return;
+    const recId = message.proactiveRecId;
+    if (!recId) {
+      console.warn('[ProactiveCard] no proactiveRecId, cannot send feedback');
+      return;
+    }
+
+    webClient.request('proactive.feedback', {
+      rec_id: recId,
+      feedback_type: type === 'like' ? 'explicit_like' : 'explicit_dislike',
+      // 带上推荐元数据，后端 history 未写入时兜底填充反馈记录（避免时序竞态丢反馈）。
+      proactive_type: message.proactiveType,
+      proactive_target: message.proactiveTarget,
+    }).catch((err: unknown) => {
+      console.warn('[ProactiveCard] feedback request failed:', err);
+    });
+
+    saveFeedbackGiven(recId, type);
+    setFeedbackGiven(type);
+  }, [feedbackGiven, message.proactiveRecId, message.proactiveType, message.proactiveTarget]);
+
   return (
     <div className="proactive-recommendation-card animate-fade-in" data-testid="chat-panel-proactive-recommendation-card">
       <div className={`proactive-card bg-gradient-to-br ${config.gradient} border ${config.border} rounded-lg p-4`} data-testid="chat-panel-proactive-recommendation-inner" data-variant={proactiveType}>
@@ -64,6 +119,46 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
         <div className="proactive-card-content prose prose-sm max-w-none" data-testid="chat-panel-proactive-recommendation-content">
           <ReactMarkdown>{message.content}</ReactMarkdown>
         </div>
+
+        {/* Feedback buttons */}
+        {message.proactiveRecId && (
+          <div className="flex items-center gap-2 mt-3" data-testid="chat-panel-proactive-recommendation-feedback">
+            <button
+              onClick={() => handleFeedback('like')}
+              disabled={!!feedbackGiven}
+              aria-pressed={feedbackGiven === 'like'}
+              data-testid="chat-panel-proactive-feedback-like"
+              className={
+                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
+                (feedbackGiven === 'like'
+                  ? 'bg-green-500/30 border-green-500/60 text-green-300'
+                  : feedbackGiven === 'dislike'
+                    ? 'bg-green-500/10 border-green-500/20 text-green-400/60 opacity-40 cursor-not-allowed'
+                    : 'bg-green-500/10 hover:bg-green-500/25 text-green-400 border-green-500/20 hover:border-green-500/40')
+              }
+            >
+              <ThumbsUp className="w-3.5 h-3.5" />
+              {t('proactive.feedback.helpful', '有帮助')}
+            </button>
+            <button
+              onClick={() => handleFeedback('dislike')}
+              disabled={!!feedbackGiven}
+              aria-pressed={feedbackGiven === 'dislike'}
+              data-testid="chat-panel-proactive-feedback-dislike"
+              className={
+                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
+                (feedbackGiven === 'dislike'
+                  ? 'bg-red-500/30 border-red-500/60 text-red-300'
+                  : feedbackGiven === 'like'
+                    ? 'bg-red-500/10 border-red-500/20 text-red-400/60 opacity-40 cursor-not-allowed'
+                    : 'bg-red-500/10 hover:bg-red-500/25 text-red-400 border-red-500/20 hover:border-red-500/40')
+              }
+            >
+              <ThumbsDown className="w-3.5 h-3.5" />
+              {t('proactive.feedback.notNeeded', '不需要')}
+            </button>
+          </div>
+        )}
 
         {/* Timestamp */}
         {message.timestamp && (

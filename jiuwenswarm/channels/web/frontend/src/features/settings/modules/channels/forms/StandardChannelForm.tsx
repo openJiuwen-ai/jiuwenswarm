@@ -18,7 +18,7 @@ export function StandardChannelForm<TValues extends FormValues>({
   const { t } = useTranslation();
   return (
     <div className="settings-channel-form">
-      {hint ? <div className="settings-channel-form__hint">{hint}</div> : null}
+      {hint ? <div className="settings-channel-form__hint" data-testid="settings-channels-panel-channel-form-hint">{hint}</div> : null}
       <Form
         form={controller.form}
         items={items}

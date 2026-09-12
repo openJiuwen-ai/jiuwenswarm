@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import getpass
 import os
+import re
 import tempfile
 from typing import Any, List
 
@@ -32,8 +34,37 @@ _CATEGORY_COLORS = {
 }
 
 
+def _user_scope() -> str:
+    """Return a filesystem-safe token identifying the current user."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None:
+        return str(getuid())
+    try:
+        name = getpass.getuser()
+    except (KeyError, OSError):
+        return "unknown"
+    return re.sub(r"[^A-Za-z0-9._-]", "_", name) or "unknown"
+
+
+def _mpl_config_dir() -> str:
+    """Return a per-user matplotlib config directory under the system temp dir."""
+    # The temp directory is shared, so a fixed name is owned by whichever account
+    # creates it first and denied to the rest. Matplotlib does not fail on a
+    # config directory it cannot use: it warns and falls back to a fresh one per
+    # process, rebuilding the font cache on every run.
+    path = os.path.join(tempfile.gettempdir(), f"trace_analysis_matplotlib-{_user_scope()}")
+    try:
+        os.makedirs(path, mode=0o700, exist_ok=True)
+        # Best effort: a usable directory matters more than its exact mode.
+        os.chmod(path, 0o700)
+    except OSError:
+        pass
+    return path
+
+
 def _load_pyplot():
-    os.environ.setdefault("MPLCONFIGDIR", os.path.join(tempfile.gettempdir(), "trace_analysis_matplotlib"))
+    if "MPLCONFIGDIR" not in os.environ:
+        os.environ["MPLCONFIGDIR"] = _mpl_config_dir()
     import matplotlib
 
     matplotlib.use("Agg", force=True)

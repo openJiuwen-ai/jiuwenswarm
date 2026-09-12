@@ -43,6 +43,13 @@ export interface Session {
   user_id?: string;            // 创建人ID
   last_message_at?: number;    // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
+  cron_id?: string;            // 定时任务ID；非空表示 cron 触发的会话，侧栏仅归属定时任务分组
+  /** 后端保存的会话级装备快照，用于刷新页面后恢复插件/MCP选择。 */
+  session_equipment?: {
+    agent_template_name?: string;
+    plugin_names?: string[];
+    mcp?: string[];
+  };
 }
 
 export type AgentMode =
@@ -111,8 +118,6 @@ export interface ModelEntry {
   plan?: ModelPlan;
   /** OpenAI 兼容接口的端点方言；Anthropic 协议不携带此字段。 */
   endpoint_profile?: string;
-  /** 免费模型标识（如 Opencode Zen 免费模型）。前端据此归入"免费模型"分组；非免费模型不带此字段。 */
-  is_free?: boolean;
   /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
   is_agentos?: boolean;
 }

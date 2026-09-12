@@ -127,9 +127,9 @@ export function SettingsPageLayout({
   if (!active) return null;
   return (
     <div className="settings-page" data-testid="settings-page">
-      <aside className="settings-page__nav" aria-label={t('settingsPanel.title')}>
-        <h1>{t('settingsPanel.title')}</h1>
-        <nav>
+      <aside className="settings-page__nav" aria-label={t('settingsPanel.title')} data-testid="settings-nav">
+        <h1 data-testid="settings-nav-title">{t('settingsPanel.title')}</h1>
+        <nav data-testid="settings-nav-list">
           {availableModules.map(({ module }) => {
             const Icon = module.icon;
             return (
@@ -138,6 +138,8 @@ export function SettingsPageLayout({
                 type="button"
                 className="settings-page__nav-button"
                 aria-current={active.module.id === module.id ? 'page' : undefined}
+                data-testid="settings-nav-button"
+                data-variant={module.id}
                 onClick={() => selectModule(module.id)}
                 disabled={saveStatus.status === 'saving'}
               >
@@ -148,32 +150,32 @@ export function SettingsPageLayout({
           })}
         </nav>
       </aside>
-      <main className="settings-page__main">
+      <main className="settings-page__main" data-testid="settings-main">
         <div className="settings-page__content">
-          <header className="settings-page__header">
+          <header className="settings-page__header" data-testid="settings-header">
             <div className="settings-page__header-copy">
-              <h1>{t(active.module.titleKey)}</h1>
-              {active.module.descriptionKey ? <p>{t(active.module.descriptionKey)}</p> : null}
+              <h1 data-testid="settings-module-title">{t(active.module.titleKey)}</h1>
+              {active.module.descriptionKey ? <p data-testid="settings-module-description">{t(active.module.descriptionKey)}</p> : null}
             </div>
             {saveStatus.status === 'saving' ? (
-              <span className="settings-page__status" role="status">
+              <span className="settings-page__status" role="status" data-testid="settings-save-status" data-variant="saving">
                 <Loading size="sm" aria-label="" />
                 {t('settingsPanel.feedback.saving')}
               </span>
             ) : saveStatus.status === 'saved' ? (
-              <span className="settings-page__status settings-page__status--saved" role="status">
+              <span className="settings-page__status settings-page__status--saved" role="status" data-testid="settings-save-status" data-variant="saved">
                 <Check size={14} aria-hidden />
                 {t('settingsPanel.feedback.saved')}
               </span>
             ) : saveStatus.status === 'error' ? (
-              <span className="settings-page__status settings-page__status--error" role="alert">
+              <span className="settings-page__status settings-page__status--error" role="alert" data-testid="settings-save-status" data-variant="error">
                 <CircleAlert size={14} aria-hidden />
                 {saveStatus.error || t('settingsPanel.feedback.saveFailed')}
               </span>
             ) : null}
           </header>
           <SettingsSourceProvider source={active.module.source}>
-            <div className="settings-page__module" data-settings-module={active.module.id}>
+            <div className="settings-page__module" data-settings-module={active.module.id} data-testid="settings-module" data-variant={active.module.id}>
               {active.visible.sections.map(({ section, items }) => (
                 <SettingsSection
                   key={section.id}

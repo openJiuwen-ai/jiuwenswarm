@@ -1,5 +1,6 @@
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
+import { requestEquipmentList } from '../equipmentListRequest';
 import {
   AgentInstallPendingError,
   AgentManagementError,
@@ -47,26 +48,28 @@ function extractPendingConnectors(error: unknown): string[] | undefined {
   const payload = error instanceof AgentManagementError ? error.payload : undefined;
   if (payload && typeof payload === 'object') {
     const pending = (payload as { pending_connectors?: unknown }).pending_connectors;
-    if (Array.isArray(pending) && pending.every(item => typeof item === 'string') && pending.length > 0) return pending;
+    if (Array.isArray(pending) && pending.every((item) => typeof item === 'string') && pending.length > 0)
+      return pending;
   }
 
   // The current Gateway error projection keeps the contract's human-readable
   // message but drops the failed payload. Preserve the install flow when that
   // projection is encountered; unrelated errors do not match this exact form.
   const message = error instanceof Error ? error.message : String(error || '');
-  const names = /^connector not connected:\s*(.+)$/i.exec(message.trim())?.[1]
+  const names = /^connector not connected:\s*(.+)$/i
+    .exec(message.trim())?.[1]
     ?.split(',')
-    .map(name => name.trim())
+    .map((name) => name.trim())
     .filter(Boolean);
   return names && names.length > 0 ? names : undefined;
 }
 
 async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplateListItem>[]) {
-  const missingTags = items.filter(item => item.tags.length === 0);
+  const missingTags = items.filter((item) => item.tags.length === 0);
   if (missingTags.length === 0) return items;
 
   const enriched = await Promise.all(
-    missingTags.map(async item => {
+    missingTags.map(async (item) => {
       const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id: item.id });
       if (!payload.template) {
         throw new AgentManagementError('Agent detail is empty', 'agent_detail_empty', false);
@@ -81,7 +84,7 @@ async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplate
   enriched.forEach(({ id, tags }) => {
     if (tags.length > 0) tagsById.set(id, tags);
   });
-  return items.map(item => {
+  return items.map((item) => {
     const tags = tagsById.get(item.id);
     return tags ? { ...item, tags } : item;
   });
@@ -92,7 +95,9 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
-        const payload = await webRequest<RawAgentListPayload>('agent_templates.list', {});
+        const payload = await requestEquipmentList<RawAgentListPayload>(webRequest, 'agent_templates.list', {
+          ...(options.filter ? { filter: options.filter } : {}),
+        });
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
         );
@@ -146,7 +151,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       try {
         const local = await connectorApi.list('local');
         return local
-          .map(item => ({
+          .map((item) => ({
             id: item.name,
             name: item.displayName || item.name,
             description: item.description || '',
@@ -155,7 +160,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
             connectionState: item.connectionState,
             source: item.source,
           }))
-          .filter(item => item.id.length > 0);
+          .filter((item) => item.id.length > 0);
       } catch (error) {
         return rethrowAgentError(error);
       }
@@ -170,7 +175,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
           tags: resolveAgentTagPayload(draft.tagIds, draft.customTags),
           skills: draft.skillRefs,
           mcps: draft.mcpRefs,
-          quickInputs: draft.suggestedPrompts.filter(prompt => prompt.trim().length > 0),
+          quickInputs: draft.suggestedPrompts.filter((prompt) => prompt.trim().length > 0),
         });
         invalidateAgentCatalog();
       } catch (error) {
@@ -197,10 +202,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       } catch (error) {
         const pendingConnectors = extractPendingConnectors(error);
         if (pendingConnectors) {
-          throw new AgentInstallPendingError(
-            error instanceof Error ? error.message : String(error),
-            pendingConnectors,
-          );
+          throw new AgentInstallPendingError(error instanceof Error ? error.message : String(error), pendingConnectors);
         }
         return rethrowAgentError(error);
       }

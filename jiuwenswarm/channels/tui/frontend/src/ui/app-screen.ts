@@ -3,6 +3,7 @@ import {
   Editor,
   SelectList,
   type SelectItem,
+  type SelectListTruncatePrimaryContext,
   type AutocompleteItem,
   type AutocompleteProvider,
   type Component,
@@ -271,7 +272,7 @@ const MODEL_VALUE_SEPARATOR = "\x00";
 const MODEL_FORM_FIELDS: ModelFormField[] = ["model_name", "alias", "api_base", "api_key", "model_provider", "reasoning_level"];
 const MODEL_REQUIRED_FIELDS: ModelFormField[] = ["model_name", "api_base", "api_key", "model_provider"];
 const DEFAULT_MODEL_PROVIDER = "OpenAI";
-const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "InferenceAffinity", "AscendAffinity", "DeepSeek"];
+const MODEL_PROVIDER_OPTIONS = ["OpenAI", "OpenRouter", "DashScope", "SiliconFlow", "AscendAffinity", "DeepSeek"];
 const REASONING_LEVEL_OPTIONS = ["", "off", "low", "medium", "high"];
 const MAX_MODEL_NAME_LENGTH = 100;
 const MAX_ALIAS_LENGTH = 100;
@@ -1547,19 +1548,40 @@ function formatRelativeTime(timestamp: number | undefined): string {
 }
 
 function getDisplayLabel(s: SessionMeta): string {
-  const title = s.title?.trim();
-  if (title) {
-    return `${s.session_id}  |  ${title}`;
+  return s.title?.trim() || s.session_id;
+}
+
+const RESUME_SESSION_ID_HINT_SUFFIX_LENGTH = 4;
+
+function getResumeSessionIdHint(sessionId: string, occurrence: number): string {
+  return `#${occurrence}:${sessionId.slice(-RESUME_SESSION_ID_HINT_SUFFIX_LENGTH)}`;
+}
+
+function truncateResumeSessionPrimary({
+  text,
+  maxWidth,
+}: SelectListTruncatePrimaryContext, idHint?: string): string {
+  if (!idHint) {
+    return truncateToWidth(text, maxWidth, "");
   }
-  return s.session_id;
+
+  const suffix = `  ${idHint}`;
+  const suffixWidth = visibleWidth(suffix);
+  if (maxWidth <= suffixWidth) {
+    return truncateToWidth(idHint, maxWidth, "");
+  }
+  return `${truncateToWidth(text, maxWidth - suffixWidth, "")}${suffix}`;
 }
 
 function sessionToSelectItem(s: SessionMeta, showProject = false): SelectItem {
-  const parts: string[] = [formatRelativeTime(s.last_message_at)];
+  const title = s.title?.trim();
+  const parts: string[] = [];
+  if (s.active_in_window) parts.push("in another window");
+  if (title) parts.push(s.session_id);
+  if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
+  parts.push(formatRelativeTime(s.last_message_at));
   const msgCount = s.message_count ?? 0;
   if (msgCount > 0) parts.push(`${msgCount} msgs`);
-  if (showProject && s.project_dir?.trim()) parts.push(s.project_dir.trim());
-  if (s.active_in_window) parts.push("in another window");
   return {
     value: s.session_id,
     label: getDisplayLabel(s),
@@ -4036,9 +4058,24 @@ export class AppScreen implements Component, Focusable {
   }
 
   private makeResumeSelectList(items: SelectItem[]): SelectList {
+    const labelCounts = new Map<string, number>();
+    for (const item of items) {
+      labelCounts.set(item.label, (labelCounts.get(item.label) ?? 0) + 1);
+    }
+    const labelOccurrences = new Map<string, number>();
+    const idHints = new Map<string, string>();
+    for (const item of items) {
+      if ((labelCounts.get(item.label) ?? 0) < 2) continue;
+      const occurrence = (labelOccurrences.get(item.label) ?? 0) + 1;
+      labelOccurrences.set(item.label, occurrence);
+      idHints.set(item.value, getResumeSessionIdHint(item.value, occurrence));
+    }
+
     const list = new SelectList(items, Math.min(Math.max(items.length, 1), 8), selectListTheme, {
       minPrimaryColumnWidth: 24,
       maxPrimaryColumnWidth: 42,
+      truncatePrimary: (context) =>
+        truncateResumeSessionPrimary(context, idHints.get(context.item.value)),
     });
     list.onSelect = (item) => {
       if (item && item.value) {
@@ -4412,6 +4449,19 @@ export class AppScreen implements Component, Focusable {
   private buildResumeSessionPreviewLines(width: number, session: SessionMeta, previewMessages: PreviewMessage[]): string[] {
     const title = session.title?.trim() || "(untitled)";
     const project = session.project_dir?.trim() || "-";
+    const titleLines = renderWrappedText(width, title, palette.text.primary);
+    const sessionPrefix = "Session:   ";
+    const sessionLines = prefixedLines(
+      renderWrappedText(
+        Math.max(1, width - sessionPrefix.length),
+        session.session_id,
+        palette.text.primary,
+      ),
+      width,
+      sessionPrefix,
+      palette.text.dim,
+      " ".repeat(sessionPrefix.length),
+    );
 
     // Build preview message lines: full transcript style, matching Claude Code SessionPreview
     const messageLines: string[] = [];
@@ -4448,9 +4498,9 @@ export class AppScreen implements Component, Focusable {
     }
 
     // Clip message lines to fit terminal height with scroll offset.
-    // Overhead: 7 header lines + 2 footer lines in this method,
-    // plus ~4 lines for status bar / welcome / transcript in the screen layout.
-    const overhead = 13;
+    // Six fixed header lines, the wrapped title/session identity, two footer
+    // lines, and ~4 lines for status bar / welcome / transcript.
+    const overhead = 12 + titleLines.length + sessionLines.length;
     const availableHeight = Math.max(3, this.tui.terminal.rows - overhead);
     let visibleMessages = messageLines;
     let scrollHint = "";
@@ -4468,7 +4518,8 @@ export class AppScreen implements Component, Focusable {
 
     return [
       padToWidth(palette.status.warning("Session preview"), width),
-      padToWidth(palette.text.primary(title), width),
+      ...titleLines,
+      ...sessionLines,
       "",
       padToWidth(`${palette.text.dim("Project:   ")}${palette.text.primary(project)}`, width),
       "",

@@ -62,6 +62,12 @@ class ChannelManager(ABC):
         # 统一管理 Channel 相关配置（例如 FeishuChannel / XiaoyiChannel 等）。
         # 默认仅在网关侧使用；其他简单用法可以忽略该字段。
         self._config: dict[str, Any] = dict(config or {})
+        # Per-channel monotonically increasing revisions.  They include writes
+        # whose callback later fails and rolls back ``_config``.  Background
+        # startup retries use these to distinguish their own reset-to-empty
+        # state from a user changing or disabling that same channel while the
+        # retry is sleeping.
+        self._conf_revisions: dict[str, int] = {}
         self._on_config_updated = on_config_updated
         # 下一次 on_config_updated 时强制重启的 channel_id（例如微信解绑：YAML 中 bot_token 本就为空时配置 dict 对比不会变，但内存里仍有旧凭据）
         self._pending_channel_restart: set[str] = set()
@@ -353,25 +359,48 @@ class ChannelManager(ABC):
         conf = self._config.get(channel_id)
         return dict(conf) if isinstance(conf, dict) else {}
 
+    def get_conf_revision(self, channel_id: str) -> int:
+        """Return the revision of configuration writes for one channel."""
+        return self._conf_revisions.get(channel_id, 0)
+
     async def set_conf(self, channel_id: str, new_conf: dict[str, Any]) -> None:
         """更新指定 channel_id 的配置，并在必要时触发重新实例化回调.
 
         内部仍维护完整的 Channel 配置字典，并将其整体传给 on_config_updated，
         以兼容现有回调实现（如根据 channels.feishu 重建 FeishuChannel）。
         """
-        merged = dict(self._config)
+        self._conf_revisions[channel_id] = self.get_conf_revision(channel_id) + 1
+        previous = self._config
+        merged = dict(previous)
         merged[channel_id] = dict(new_conf or {})
         self._config = merged
         cb = self._on_config_updated
         if cb is not None:
-            await cb(self._config)
+            try:
+                await cb(self._config)
+            except Exception:
+                # A channel callback may fail while constructing an optional
+                # integration.  Keep the manager's visible configuration in
+                # sync with the integrations that actually started, so a
+                # later retry is not mistaken for an unchanged no-op.
+                self._config = previous
+                raise
 
     async def set_config(self, new_conf: dict[str, Any]) -> None:
         """兼容保留：整体替换配置的旧接口（不推荐新调用方使用）."""
-        self._config = dict(new_conf or {})
+        previous = self._config
+        replacement = dict(new_conf or {})
+        for channel_id in set(previous) | set(replacement):
+            if isinstance(channel_id, str):
+                self._conf_revisions[channel_id] = self.get_conf_revision(channel_id) + 1
+        self._config = replacement
         cb = self._on_config_updated
         if cb is not None:
-            await cb(self._config)
+            try:
+                await cb(self._config)
+            except Exception:
+                self._config = previous
+                raise
 
     def set_config_callback(
         self,

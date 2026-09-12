@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, UploadCloud, Info, FileArchive, Loader2 } from 'lucide-react';
 import {
@@ -8,8 +9,10 @@ import {
   type LocalFilePick,
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
+import { mapLocalPackageImportError } from '../../features/agentManagement/upload';
 
 interface UploadFileCreateModalProps {
+  error?: string | null;
   onCancel: () => void;
   onConfirm: (filePath: string) => void | Promise<void>;
 }
@@ -44,7 +47,7 @@ function formatFileSize(bytes: number): string {
 //   OS 文件拖拽天然拿不到路径，这里跟 ChatPanel/InputArea.tsx 的 handleFileDragOver 同一个限制
 //   ——非桌面壳直接拒绝（dropEffect='none'），不做"能拖但拖了没用"的假交互。
 // 上一版（同日更早）用浏览器 File 对象 + 假路径糊弄 UI，这版整个换成上面这套真实基础设施。
-export function UploadFileCreateModal({ onCancel, onConfirm }: UploadFileCreateModalProps) {
+export function UploadFileCreateModal({ error, onCancel, onConfirm }: UploadFileCreateModalProps) {
   const { t } = useTranslation();
   const [filePick, setFilePick] = useState<LocalFilePick | null>(null);
   const [invalid, setInvalid] = useState(false);
@@ -129,7 +132,16 @@ export function UploadFileCreateModal({ onCancel, onConfirm }: UploadFileCreateM
     }
   }
 
-  return (
+  const displayError = error
+    ? mapLocalPackageImportError(error, t, {
+        readme: 'connectorMarket.upload.missingReadme',
+        manifest: 'connectorMarket.upload.missingManifest',
+      })
+    : null;
+
+  // createPortal 到 document.body：统一所有连接器市场弹窗的挂载方式，避免 `fixed inset-0` 遮罩
+  // 被 index.css 里 `.detail-body > * / .page-scroll > *` 的限宽规则压窄（bug 2026091001-001）。
+  return createPortal(
     <div className="fixed inset-0 z-50 flex items-center justify-center bg-overlay-cron-dialog" data-testid="connector-market-upload-modal">
       <div className="relative w-[520px] rounded-2xl bg-card p-6 shadow-xl">
         <div className="mb-4 flex items-center justify-between">
@@ -204,6 +216,11 @@ export function UploadFileCreateModal({ onCancel, onConfirm }: UploadFileCreateM
           )}
         </div>
         {invalid && <p className="mt-1.5 text-[11px] text-danger" data-testid="connector-market-upload-invalid">{t('connectorMarket.upload.invalidType')}</p>}
+        {displayError ? (
+          <p className="mt-1.5 text-[11px] text-danger" role="alert" data-testid="connector-market-upload-error">
+            {displayError}
+          </p>
+        ) : null}
 
         <div className="mt-5 flex justify-end gap-2">
           <button type="button" onClick={onCancel} className="rounded-lg border border-border px-4 py-1.5 text-[13px] text-text hover:border-border-hover" data-testid="connector-market-upload-cancel">
@@ -220,6 +237,7 @@ export function UploadFileCreateModal({ onCancel, onConfirm }: UploadFileCreateM
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

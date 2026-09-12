@@ -25,15 +25,11 @@ def _parse_api_base(api_base: str | None):
     return urlparse(value)
 
 
-# 部分厂商对采样参数有硬性约束(传错值直接 400)。Moonshot(api.moonshot.cn)
-# 的 kimi-k2.6 实测要求 temperature=1、top_p=0.95(报错 "only 1 is allowed for
-# this model" / "only 0.95 is allowed for this model")。core 的 ModelRequestConfig
-# 默认 temperature=0.95 正好踩雷,故在此按 api_base 识别后强制覆盖,且无视用户
-# 填值——因为传任何其它值都必失败,无协商余地。Moonshot 无专属 endpoint_profile,
-# 与 deepseek_official 一样靠 api_base host 识别。约束带 "for this model" 字样
-# 可能按模型配置,但对无约束的 moonshot 模型固定到安全值不会报错,故按厂商识别即可。
+# Kimi models reject any other sampling values. Match both official endpoints
+# and the model ID because aggregators such as DashScope expose Kimi models too.
 SAMPLING_OVERRIDE_RULES: dict[str, dict[str, float]] = {
     "api.moonshot.cn": {"temperature": 1.0, "top_p": 0.95},
+    "api.kimi.com": {"temperature": 1.0, "top_p": 0.95},
 }
 
 
@@ -69,17 +65,16 @@ def effective_endpoint_profile(api_base: str | None, endpoint_profile: Any = Non
     return resolve_endpoint_profile_override(api_base)
 
 
-def resolve_sampling_override(api_base: str | None) -> dict[str, float] | None:
-    """Return forced sampling params for hosts that reject defaults, else None.
-
-    Some vendors reject the SDK's default sampling values with HTTP 400.
-    Moonshot's kimi-k2.6 requires exactly temperature=1 and top_p=0.95; the
-    core default temperature=0.95 trips this. Identify by api_base host (no
-    dedicated endpoint_profile exists) and force the values, overriding
-    anything the user supplied — any other value is guaranteed to fail.
-    """
+def resolve_sampling_override(
+    api_base: str | None,
+    model_name: str | None = None,
+) -> dict[str, float] | None:
+    """Return the required sampling parameters for Kimi endpoints/models."""
     host = (_parse_api_base(api_base).hostname or "").lower()
-    return SAMPLING_OVERRIDE_RULES.get(host)
+    normalized_model = str(model_name or "").strip().lower().rsplit("/", 1)[-1]
+    if host in SAMPLING_OVERRIDE_RULES or normalized_model.startswith("kimi-"):
+        return {"temperature": 1.0, "top_p": 0.95}
+    return None
 
 
 def normalize_reasoning_level(raw: Any) -> ReasoningLevel | None:

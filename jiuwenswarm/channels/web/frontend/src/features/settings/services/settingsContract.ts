@@ -66,10 +66,10 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
   envField('embed_api_key', 'models', 'text', 'EMBED_API_KEY'),
   envField('embed_model', 'models', 'text', 'EMBED_MODEL'),
-  yamlField('enable_free_models', 'models', 'boolean', 'models.enable_free_models'),
 
   yamlField('skill_evolution', 'agent', 'boolean', 'react.evolution.skill_evolution'),
   yamlField('skill_retrieval_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.enabled'),
+  yamlField('skill_retrieval_index_enabled', 'agent', 'boolean', 'symphony.skill_retrieval.index.enabled'),
   envField('free_search_ddg_enabled', 'agent', 'boolean', 'FREE_SEARCH_DDG_ENABLED'),
   envField('free_search_bing_enabled', 'agent', 'boolean', 'FREE_SEARCH_BING_ENABLED'),
   envField('jina_api_key', 'agent', 'text', 'JINA_API_KEY'),
@@ -101,11 +101,39 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('video_vendor_key', 'agent', 'text', 'VIDEO_VENDOR_KEY'),
   envField('video_plan', 'agent', 'text', 'VIDEO_PLAN'),
   envField('video_enabled', 'agent', 'boolean', 'VIDEO_ENABLED'),
+  // Video processing (generation) - dedicated slot, separate from the video
+  // understanding fields above.
+  envField('video_gen_api_base', 'agent', 'text', 'VIDEO_GEN_API_BASE'),
+  envField('video_gen_api_key', 'agent', 'text', 'VIDEO_GEN_API_KEY'),
+  envField('video_gen_model', 'agent', 'text', 'VIDEO_GEN_MODEL_NAME'),
+  envField('video_gen_provider', 'agent', 'text', 'VIDEO_GEN_PROVIDER'),
+  envField('video_gen_protocol', 'agent', 'text', 'VIDEO_GEN_PROTOCOL'),
+  envField('video_gen_enabled', 'agent', 'boolean', 'VIDEO_GEN_ENABLED'),
+  // Visual processing (image generation) - dedicated slot, independent of
+  // both the Image processing (vision) fields above and image_tools.py's
+  // DashScope-only generate_image (IMAGE_GEN_* - not exposed as a settings
+  // field at all, since that tool cannot serve a non-DashScope model).
+  envField('visual_gen_api_base', 'agent', 'text', 'VISUAL_GEN_API_BASE'),
+  envField('visual_gen_api_key', 'agent', 'text', 'VISUAL_GEN_API_KEY'),
+  envField('visual_gen_model', 'agent', 'text', 'VISUAL_GEN_MODEL_NAME'),
+  envField('visual_gen_provider', 'agent', 'text', 'VISUAL_GEN_PROVIDER'),
+  envField('visual_gen_protocol', 'agent', 'text', 'VISUAL_GEN_PROTOCOL'),
+  envField('visual_gen_enabled', 'agent', 'boolean', 'VISUAL_GEN_ENABLED'),
 
   yamlField('permissions_enabled', 'security', 'boolean', 'permissions.enabled'),
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
+  yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
+  envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),
+  envField('asr_api_key', 'experimental', 'text', 'ASR_API_KEY'),
+  envField('asr_model', 'experimental', 'text', 'ASR_MODEL_NAME'),
+  yamlField(
+    'kv_cache_affinity_enabled',
+    'experimental',
+    'boolean',
+    'kv_cache_affinity_config.enable_kv_cache_affinity',
+  ),
   yamlField(
     'external_cli_agent_claude_enabled',
     'experimental',
@@ -156,7 +184,7 @@ export const SETTINGS_OTHER_PERSISTENCE = [
     id: 'browser',
     method: 'path.set',
     persistence: 'config.yaml',
-    path: 'browser.chrome_path, browser.browser_type, browser.headless',
+    path: 'browser.chrome_path, browser.headless',
   },
   {
     id: 'permissions.tools',

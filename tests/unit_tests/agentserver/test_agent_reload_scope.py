@@ -1,10 +1,22 @@
 import asyncio
 import contextlib
 import json
+
+# TEST ONLY: model URLs use RFC-reserved domains and API-key values are synthetic
+# configuration fixtures; all model clients are patched and no network I/O occurs.
+
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
+
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
+from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
+    SessionPermissionState,
+)
 
 
 _OJ_MEMORY_MANAGER_MODULE = "openjiuwen.core.memory.lite.manager"
@@ -24,11 +36,6 @@ def _maybe_patch_aclose_memory_cache():
     else:
         yield
 
-from jiuwenswarm.common.schema.agent import AgentRequest
-from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
-from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
-
 
 class FakeWebSocket:
     def __init__(self):
@@ -41,6 +48,11 @@ class FakeWebSocket:
 class FakeAgent:
     def __init__(self):
         self.reload_calls = []
+        self._instance = None
+        self._enable_auto_permission = False
+        self._permission_state = SessionPermissionState(
+            permission_cleanup_complete=True,
+        )
 
     async def reload_agent_config(self, *args, **kwargs):
         if args:
@@ -62,6 +74,27 @@ class FakeAgent:
     def persist_skill_retrieval_session_profile(self) -> None:
         """Match the child adapter's public profile persistence hook."""
 
+    def refresh_paid_search_tool_for_runtime(self) -> None:
+        """Match the child adapter's public paid-search refresh hook."""
+
+    def _should_defer_permission_reload(
+        self,
+        _config_base,
+        *,
+        session_id: str,
+        **_kwargs,
+    ) -> bool:
+        """Model an idle child with no pending permission reload lifecycle."""
+        _ = session_id
+        return False
+
+    def _has_permission_config_delta(self, *_args, **_kwargs) -> bool:
+        return False
+
+    def _uses_smart_permission_lifecycle(self, _config_base=None) -> bool:
+        """Keep the ordinary reload fixture outside Smart lifecycle admission."""
+        return False
+
 
 class FailingReloadAgent(FakeAgent):
     async def reload_agent_config(self, *args, **kwargs):
@@ -76,6 +109,262 @@ class FakeTeamManager:
 
     async def update_evolution_config(self, config):
         self.calls.append((self.channel_id, config))
+
+
+@pytest.mark.asyncio
+async def test_permission_rpc_notification_uses_captured_global_reload() -> None:
+    manager = agent_manager_module.AgentManager()
+    manager.reload_agents_config = AsyncMock()
+
+    manager.schedule_permissions_reload({})
+    await asyncio.sleep(0)
+    await asyncio.sleep(0)
+
+    manager.reload_agents_config.assert_awaited_once_with(
+        {},
+        None,
+        permission_notification=True,
+    )
+    assert manager._permissions_reload_tasks == set()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("fail_finalizer", [False, True])
+async def test_cleanup_settles_owned_reload_before_agents(fail_finalizer):
+    manager = agent_manager_module.AgentManager()
+    entered, finalizing, release = asyncio.Event(), asyncio.Event(), asyncio.Event()
+    events = []
+
+    async def reload(*_args, **_kwargs):
+        async with manager._reload_lock:
+            entered.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                finalizing.set()
+                await release.wait()
+                events.append("reload settled")
+                if fail_finalizer:
+                    raise RuntimeError("reload cleanup failed")
+
+    async def cleanup_agent():
+        assert events == ["reload settled"]
+        events.append("agent cleaned")
+
+    manager.reload_agents_config = reload
+    manager.agents = {"web": {"agent": SimpleNamespace(cleanup=cleanup_agent)}}
+    first = manager.schedule_permissions_reload({})
+    await asyncio.wait_for(entered.wait(), 2)
+    queued = manager.schedule_permissions_reload({})
+    cleanup = asyncio.create_task(manager.cleanup())
+    try:
+        await asyncio.wait_for(finalizing.wait(), 2)
+        assert not cleanup.done()
+        assert events == []
+        with pytest.raises(RuntimeError, match="owner is closing"):
+            manager.schedule_permissions_reload({})
+    finally:
+        release.set()
+        await asyncio.wait_for(cleanup, 2)
+    assert first.done() and queued.done()
+    assert events == ["reload settled", "agent cleaned"]
+    assert not manager._permissions_reload_tasks
+    assert manager._permissions_reload_tail is None
+    assert manager._permissions_reload_schedule_failure is None
+    with pytest.raises(RuntimeError, match="owner is closing"):
+        manager.schedule_permissions_reload({})
+    await manager.cleanup()
+    assert events == ["reload settled", "agent cleaned"]
+
+
+@pytest.mark.asyncio
+async def test_agent_creation_injects_permission_reload_notifier(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.server.runtime.agent_adapter import interface
+
+    class StubSwarm:
+        def __init__(self) -> None:
+            self.heartbeat_service = None
+            self.notifier = None
+            self.fresh_context_builder = None
+
+        def set_heartbeat_service(self, service) -> None:
+            self.heartbeat_service = service
+
+        def set_permissions_changed_notifier(self, notifier) -> None:
+            self.notifier = notifier
+
+        def set_permissions_external_input_context_builder(self, builder) -> None:
+            self.fresh_context_builder = builder
+
+        async def create_instance(self, *_args, **_kwargs) -> None:
+            return None
+
+    monkeypatch.setattr(interface, "JiuWenSwarm", StubSwarm)
+    manager = agent_manager_module.AgentManager()
+
+    agent = await manager._create_agent("web")
+
+    assert agent.heartbeat_service is None
+    assert agent.notifier == manager.schedule_permissions_reload
+    assert (
+        agent.fresh_context_builder
+        == manager.build_permissions_external_input_context
+    )
+
+
+@pytest.mark.asyncio
+async def test_permission_reload_waiter_cancellation_does_not_cancel_tail() -> None:
+    manager = agent_manager_module.AgentManager()
+    reload_started = asyncio.Event()
+    reload_release = asyncio.Event()
+
+    async def slow_reload(*_args, **_kwargs):
+        reload_started.set()
+        await reload_release.wait()
+
+    manager.reload_agents_config = slow_reload
+    tail = manager.schedule_permissions_reload({})
+    await reload_started.wait()
+    waiter = asyncio.create_task(manager.wait_for_permissions_ready())
+    await asyncio.sleep(0)
+
+    waiter.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await waiter
+    assert tail.cancelled() is False
+
+    reload_release.set()
+    await tail
+    await manager.wait_for_permissions_ready()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_reload_waiting_for_existing_lock_does_not_run() -> None:
+    manager = agent_manager_module.AgentManager()
+    first_started, first_release = asyncio.Event(), asyncio.Event()
+    second_waiting = asyncio.Event()
+    calls = 0
+
+    async def serialized_reload(*_args, **_kwargs):
+        nonlocal calls
+        if manager._reload_lock.locked():
+            second_waiting.set()
+        async with manager._reload_lock:
+            calls += 1
+            if calls == 1:
+                first_started.set()
+                await first_release.wait()
+
+    manager.reload_agents_config = serialized_reload
+    first = manager.schedule_permissions_reload({})
+    await asyncio.wait_for(first_started.wait(), 2)
+    cancelled = manager.schedule_permissions_reload({})
+    await asyncio.wait_for(second_waiting.wait(), 2)
+    cancelled.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await cancelled
+    assert calls == 1
+    first_release.set()
+    await first
+    await manager.schedule_permissions_reload({})
+    await manager.wait_for_permissions_ready()
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_later_permission_reload_retries_after_prior_failure() -> None:
+    manager = agent_manager_module.AgentManager()
+    calls = 0
+
+    async def flaky_reload(*_args, **_kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise RuntimeError("first reload failed")
+
+    manager.reload_agents_config = flaky_reload
+    first = manager.schedule_permissions_reload({})
+    with pytest.raises(RuntimeError, match="first reload failed"):
+        await first
+
+    second = manager.schedule_permissions_reload({})
+    await second
+    await manager.wait_for_permissions_ready()
+    assert calls == 2
+
+
+@pytest.mark.asyncio
+async def test_schedule_failure_latch_survives_older_tail_success(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = agent_manager_module.AgentManager()
+    reload_started = asyncio.Event()
+    reload_release = asyncio.Event()
+
+    async def slow_reload(*_args, **_kwargs):
+        reload_started.set()
+        await reload_release.wait()
+
+    manager.reload_agents_config = slow_reload
+    older_tail = manager.schedule_permissions_reload({})
+    await reload_started.wait()
+    real_get_running_loop = asyncio.get_running_loop
+
+    def fail_get_running_loop():
+        raise RuntimeError("scheduler unavailable")
+
+    monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        manager.schedule_permissions_reload({})
+    monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
+
+    reload_release.set()
+    await older_tail
+    with pytest.raises(RuntimeError, match="permission reload scheduling failed"):
+        await manager.wait_for_permissions_ready()
+
+    recovered = manager.schedule_permissions_reload({})
+    await recovered
+    await manager.wait_for_permissions_ready()
+
+
+@pytest.mark.asyncio
+async def test_reused_schedule_exception_cannot_clear_newer_failure_latch(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = agent_manager_module.AgentManager()
+    shared_error = RuntimeError("scheduler unavailable")
+    reload_started = asyncio.Event()
+    reload_release = asyncio.Event()
+    real_get_running_loop = asyncio.get_running_loop
+
+    def fail_get_running_loop():
+        raise shared_error
+
+    monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        manager.schedule_permissions_reload({})
+    monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
+
+    async def slow_reload(*_args, **_kwargs):
+        reload_started.set()
+        await reload_release.wait()
+
+    manager.reload_agents_config = slow_reload
+    recovery = manager.schedule_permissions_reload({})
+    await reload_started.wait()
+
+    monkeypatch.setattr(asyncio, "get_running_loop", fail_get_running_loop)
+    with pytest.raises(RuntimeError, match="scheduler unavailable"):
+        manager.schedule_permissions_reload({})
+    monkeypatch.setattr(asyncio, "get_running_loop", real_get_running_loop)
+
+    reload_release.set()
+    await recovery
+    with pytest.raises(RuntimeError, match="permission reload scheduling failed"):
+        await manager.wait_for_permissions_ready()
 
 
 @pytest.mark.asyncio
@@ -436,7 +725,8 @@ async def test_agent_reload_config_handler_warms_zen_cache_on_model_scope(monkey
 
 
 @pytest.mark.asyncio
-async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypatch):
+@pytest.mark.parametrize("scope", ["multimodal", "search"])
+async def test_tool_reload_refreshes_agents_without_model_probes(monkeypatch, scope):
     from jiuwenswarm.agents.harness import team as team_harness_module
     from jiuwenswarm.server.runtime import image_modality_warmup, opencode_zen
 
@@ -476,7 +766,7 @@ async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypat
             "config": {"models": {"vision": {}}},
             "env": {"VISION_ENABLED": "true"},
             "target_channel_id": "web",
-            "reload_scopes": ["multimodal"],
+            "reload_scopes": [scope],
         },
     )
 
@@ -488,7 +778,7 @@ async def test_multimodal_reload_refreshes_agents_without_model_probes(monkeypat
         {"models": {"vision": {}}},
         {"VISION_ENABLED": "true"},
         target_channel_id="web",
-        reload_scopes={"multimodal"},
+        reload_scopes={scope},
     )
     refresh_image_modality.assert_not_awaited()
     warm_zen.assert_not_awaited()
@@ -553,7 +843,18 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_filesystem_rail_enabled_for_profile", MagicMock(return_value=True)),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "load_user_rails", AsyncMock()),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_get_current_agent_rails", MagicMock(return_value=[])),
-        patch.object(interface_module.JiuWenSwarmDeepAdapter, "_make_deep_agent_config", MagicMock(return_value=object())),
+        patch.object(
+            interface_module.JiuWenSwarmDeepAdapter,
+            "_make_deep_agent_config",
+            MagicMock(
+                return_value=SimpleNamespace(
+                    rails=[],
+                    permissions=None,
+                    model=None,
+                    system_prompt=None,
+                )
+            ),
+        ),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_active_evolution_review_agent_after_reload", MagicMock()),
         patch.object(interface_module.JiuWenSwarmDeepAdapter, "_sync_mcp_servers_for_runtime", _async_noop),
     ):
@@ -568,7 +869,10 @@ async def test_deep_adapter_global_reload_marks_sessions_stale_without_fanout(mo
 
 def _fake_deep_reload_model():
     return SimpleNamespace(
-        model_client_config={"api_base": "https://example.test/v1", "api_key": "secret"},
+        model_client_config={
+            "api_base": "https://example.test/v1",
+            "api_key": "TEST_ONLY_API_KEY",
+        },
         model_config={"model_name": "glm-5", "temperature": 0.95},
     )
 
@@ -675,13 +979,20 @@ async def _reload_deep_adapter_config_for_test(previous_config, deep_config_fact
     return adapter, configured_fields
 
 
-def test_deep_adapter_rejects_invalid_default_model_even_when_other_cached_model_is_valid():
-    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
-        JiuWenSwarmDeepAdapter,
+def test_deep_adapter_rejects_invalid_default_model_even_when_other_cached_model_is_valid(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+    monkeypatch.setattr(
+        interface_deep,
+        "is_placeholder_api_base",
+        lambda value: value == "https://api.example.invalid/v1",
     )
+    JiuWenSwarmDeepAdapter = interface_deep.JiuWenSwarmDeepAdapter
 
     adapter = JiuWenSwarmDeepAdapter()
-    invalid_default = _real_deep_reload_model("https://api.example.com/v1", "bad-default")
+    invalid_default = _real_deep_reload_model("https://api.example.invalid/v1", "bad-default")
     valid_other = _real_deep_reload_model("https://real.provider.test/v1", "good-model")
     adapter._model = invalid_default
     adapter._model_cache = {
@@ -720,7 +1031,7 @@ def test_deep_adapter_resolve_model_for_request_falls_back_to_session_metadata()
     )
 
     adapter = JiuWenSwarmDeepAdapter()
-    default_model = _real_deep_reload_model("https://api.example.com/v1", "default-model")
+    default_model = _real_deep_reload_model("https://api.example.invalid/v1", "default-model")
     session_model = _real_deep_reload_model("https://real.provider.test/v1", "session-model")
     adapter._model = default_model
     adapter._model_cache = {
@@ -753,7 +1064,7 @@ def test_deep_adapter_apply_model_updates_deep_config_for_goal_assessor():
     )
 
     adapter = JiuWenSwarmDeepAdapter()
-    default_model = _real_deep_reload_model("https://api.example.com/v1", "default-model")
+    default_model = _real_deep_reload_model("https://api.example.invalid/v1", "default-model")
     session_model = _real_deep_reload_model("https://real.provider.test/v1", "session-model")
     react_config = SimpleNamespace(
         model_name="default-model",
@@ -771,6 +1082,8 @@ def test_deep_adapter_apply_model_updates_deep_config_for_goal_assessor():
 
     react_agent.set_llm.assert_called_once_with(session_model)
     assert deep_config.model is session_model
+    assert adapter._model_client_config is session_model.model_client_config
+    assert adapter._model_request_config is session_model.model_config
     assert adapter._last_resolved_model is session_model
     assert adapter._active_request_model is session_model
 
@@ -784,7 +1097,7 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
         "react": {
             "model_client_config": {
                 "api_base": "https://real.provider.test/v1",
-                "api_key": "secret",
+                "api_key": "TEST_ONLY_API_KEY",
             },
             "model_name": "old-model",
             "model_config_obj": {"temperature": 0.1},
@@ -794,7 +1107,7 @@ def test_deep_adapter_model_config_fingerprint_includes_legacy_react_model_field
         "react": {
             "model_client_config": {
                 "api_base": "https://real.provider.test/v1",
-                "api_key": "secret",
+                "api_key": "TEST_ONLY_API_KEY",
             },
             "model_name": "new-model",
             "model_config_obj": {"temperature": 0.9},
@@ -918,6 +1231,38 @@ async def test_deep_adapter_existing_session_lazy_reload_once(monkeypatch):
     assert call["args"][1] == {"MODEL_NAME": "new-model"}
     assert call["kwargs"]["target_session_id"] == "session-a"
     assert parent._session_adapter_versions["session-a"] == 1
+
+
+@pytest.mark.asyncio
+async def test_session_admission_reservation_does_not_double_active_count():
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    parent = JiuWenSwarmDeepAdapter()
+    child = JiuWenSwarmDeepAdapter()
+    child._is_session_scoped_adapter = True
+    child._parent_session_id = "session-a"
+    parent._session_adapters = {"session-a": child}
+
+    resolved = await parent._get_or_create_session_adapter(
+        "session-a",
+        reserve_activity=True,
+    )
+    assert resolved is child
+    assert child._active_session_ids.get("session-a", 0) == 0
+    assert child._is_session_active("session-a") is True
+
+    child._mark_session_active("session-a")
+    try:
+        assert child._active_session_ids["session-a"] == 1
+        assert child._should_defer_goal_objective_history("session-a") is False
+    finally:
+        child._unmark_session_active("session-a")
+        child._unregister_session_agent_task("session-a")
+
+    assert child._active_session_ids.get("session-a", 0) == 0
+    assert child._is_session_active("session-a") is False
 
 
 @pytest.mark.asyncio

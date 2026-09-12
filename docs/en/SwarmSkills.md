@@ -83,7 +83,7 @@ team-skill-name/
 
 ```markdown
 ---
-name: medical-consultation-team
+name: medical-consultation-swarm
 version: 1.0.0
 author: jiuwenclaw-team
 description: |
@@ -145,7 +145,7 @@ This swarm skill uses a specialization pipeline pattern (Pattern C) to organize 
 
 **Key field descriptions**:
 
-- **`name`**: Unique skill identifier; must match the directory name (kebab-case, conventionally ending with `-team`).
+- **`name`**: Unique skill identifier; must match the directory name (kebab-case, conventionally ending with `-swarm`).
 - **`kind`**: Must be `team-skill` (note: not `type`), distinguishing Swarm Skills from regular Agent Skills.
 - **`roles`**: Role list; **at least 2 roles required**, each role must include `id` (role identifier), `purpose` (one-line responsibility description, ≤150 characters), `skills` (dependent skill list), and `tools` (dependent tool list).
 - **`description`**: Skill description following conciseness principles (≤4 lines, recommended ≤500 characters, hard limit 1024), using WHAT / WHEN / NOT three-line structure.

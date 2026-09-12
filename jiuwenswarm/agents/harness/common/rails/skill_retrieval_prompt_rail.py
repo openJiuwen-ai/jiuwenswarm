@@ -54,7 +54,6 @@ class SkillRetrievalPromptRail(DeepAgentRail):
     priority = SkillUseRail.priority - 1
     SECTION_NAME = "skill_retrieval"
     CANDIDATE_SECTION_NAME = "skill_retrieval.session_candidates"
-    SECTION_PRIORITY = 41
     ATTACHMENT_SOURCE = "jiuwenswarm.skill_retrieval_prompt_rail"
     # Keep the inventory-dependent appendix after the reusable system/tool
     # prefix. Its content is frozen once in ``init``.
@@ -192,25 +191,16 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                 exc_info=True,
             )
             snapshot = self._empty_prompt_snapshot()
-        guidance = self._build_guidance(language, snapshot)
         candidate_appendix = self._build_candidate_appendix(language, snapshot)
         manager = self.attachment_manager
         if manager is None:
-            self._add_prompt_builder_sections(language, guidance, candidate_appendix)
+            self._add_prompt_builder_section(language, candidate_appendix)
             return
 
         self.system_prompt_builder.remove_section(self.SECTION_NAME)
         self.system_prompt_builder.remove_section(self.CANDIDATE_SECTION_NAME)
         writer = manager.bind_context(ctx)
         try:
-            await writer.add_section(
-                section=self.SECTION_NAME,
-                content=guidance,
-                kind=PromptAttachmentKind.SKILL,
-                source=self.ATTACHMENT_SOURCE,
-                priority=self.SECTION_PRIORITY,
-                content_kind="text/markdown",
-            )
             await writer.add_section(
                 section=self.CANDIDATE_SECTION_NAME,
                 content=candidate_appendix,
@@ -224,23 +214,15 @@ class SkillRetrievalPromptRail(DeepAgentRail):
                 "[SkillRetrievalPromptRail] attachment write failed: %s", exc
             )
             await self._clear_prompt_attachments(ctx)
-            self._add_prompt_builder_sections(language, guidance, candidate_appendix)
+            self._add_prompt_builder_section(language, candidate_appendix)
 
-    def _add_prompt_builder_sections(
+    def _add_prompt_builder_section(
         self,
         language: str,
-        guidance: str,
         candidate_appendix: str,
     ) -> None:
         if self.system_prompt_builder is None:
             return
-        self.system_prompt_builder.add_section(
-            PromptSection(
-                name=self.SECTION_NAME,
-                content={language: guidance},
-                priority=self.SECTION_PRIORITY,
-            )
-        )
         self.system_prompt_builder.add_section(
             PromptSection(
                 name=self.CANDIDATE_SECTION_NAME,
@@ -462,299 +444,58 @@ class SkillRetrievalPromptRail(DeepAgentRail):
             index_state="missing",
         )
 
-    def _build_guidance(
-        self,
-        language: str,
-        snapshot: SkillPromptSnapshot | None = None,
-    ) -> str:
-        if str(language).lower().startswith("en"):
-            return self._build_english_guidance(snapshot)
-        return self._build_chinese_guidance(snapshot)
-
-    def _build_chinese_guidance(
-        self,
-        snapshot: SkillPromptSnapshot | None = None,
-    ) -> str:
-        lines = [
-            "## Skill 发现",
-            "",
-            "### 使用规则",
-            (
-                "- `skill_index` 是只读的已安装 Skill 目录，仅用于发现和选择 "
-                "Skill。它只接受 `list`、`search`、`read` 三种结构化操作；"
-                "其路径是虚拟目录资源，不是主机文件路径。"
-            ),
-            (
-                "- 项目、工作区或系统文件使用文件工具或 Bash。不要用 "
-                "`skill_index` 执行、修改、安装、删除、启用或禁用 Skill。"
-                "普通问答、闲聊和不需要已安装 Skill 的任务不得仅为确认目录而调用它。"
-                "用户要求执行已选 Skill 时，把工具实际返回的精确 `skill_id` "
-                "交给 `skill_tool`。"
-            ),
-            (
-                "- 任务明确匹配会话候选快照中的 Skill 时可直接选择其精确 `skill_id`；"
-                "只有任务确实可能需要或明显受益于已安装 Skill、且快照不足以选择时，"
-                "才使用 `skill_index`。`list` 浏览当前目录或分类层级，"
-                "`search` 按名称或能力证据检索，`read` 批量读取已观察到的"
-                "元数据路径。参数必须使用工具的结构化字段，不得传入 "
-                "Shell 命令、选项或管道文本。"
-            ),
-            self._chinese_routing_rule(snapshot),
-            (
-                "- 检索前先提炼会改变 Skill 选择的约束。只有一个能力约束时，"
-                "把已知的高信号格式、库、API、协议、方法名及同义词合并到 "
-                "`query`；有两个或更多独立能力约束时，在第一次 `search` 中"
-                "使用 `queries`，每项对应一个约束，并设置 `per_query_limit`，"
-                "不要拆成连续多次搜索。`match=content` 时用 `|` 分隔同一约束的"
-                "备选词（如 "
-                "`youtube|subtitle|字幕|翻译`），不要用空格把它们拼成连续短语；"
-                "已知多个目录时，也在同一次调用中传入多个 `paths`。已有"
-                "充分候选后立即停止；只有具体任务约束仍未覆盖时才扩大"
-                "或改写查询，不要机械地逐组尝试同义词。"
-            ),
-            (
-                "- 候选名称和描述已是选择证据；足以判断时直接选择。只有"
-                "多个候选需要比较或描述不足时，才用一次 `read` 批量读取"
-                "已观察到的 metadata；发现和选择阶段不要读取完整 `SKILL.md`。"
-                "只报告覆盖任务的最小充分候选集，不要为凑数加入弱相关项。"
-            ),
-            (
-                "- `search` 使用 `per_query_limit` 限制每个需求的候选，不要再同时"
-                "传入 `pipeline limit`。`list` 可能返回多条结果时，在有序 "
-                "`pipeline` 末尾加入 `limit` 阶段：用户指定数量时使用该数量，"
-                "否则限制为 10 行。只有用户明确要求全部、完整清单或一个"
-                "不漏时才省略该阶段；“多一些”或“更广”不是穷举要求。"
-                "只需总数时设置 `output_mode=count`；`count` 不是第四种操作。"
-                "同时需要总数和有限样例时，在同一模型轮次分别发起一次 "
-                "`output_mode=count` 调用和一次带 `limit` 的结果调用；有限结果"
-                "本身不代表总数。"
-            ),
-            (
-                "- 若工具说明内容因篇幅未显示，仍基于已返回内容完成当前"
-                "回答，不要仅为扩展可见条目而重试。只有用户明确要求展示"
-                "或列举，且省略影响请求完整性时，才在回答后说明继续可能"
-                "占用较多上下文并询问是否继续。只有用户已明确允许不截断"
-                "或不折叠输出时，才能设置 `disable_output_truncation=true`。"
-            ),
-            (
-                "- 只能使用工具实际返回的 `skill_id` 和路径，不得猜测。"
-                "只有完整目录根范围的检索无结果后，才能断言没有匹配的"
-                "已安装 Skill；局部目录无命中只能说明该范围尚未找到。"
-            ),
-        ]
-        return "\n".join(lines)
-
-    def _build_english_guidance(
-        self,
-        snapshot: SkillPromptSnapshot | None = None,
-    ) -> str:
-        lines = [
-            "## Skill Discovery",
-            "",
-            "### Rules",
-            (
-                "- `skill_index` is the read-only installed-Skill directory. Use it "
-                "only to discover and select Skills. It accepts exactly three structured "
-                "operations: `list`, `search`, and `read`. Its paths name virtual "
-                "directory resources, not host filesystem paths."
-            ),
-            (
-                "- Use filesystem tools or Bash for project and system files. "
-                "Do not use `skill_index` to execute, modify, install, remove, "
-                "enable, or disable a Skill. Do not call it merely to check the catalog "
-                "for ordinary Q&A, chat, or tasks that need no installed Skill. "
-                "When the user requests execution, pass an "
-                "exact observed `skill_id` to `skill_tool`."
-            ),
-            (
-                "- A clear match in the session candidate snapshot may be selected "
-                "directly by exact `skill_id`; "
-                "use `skill_index` only when an installed Skill may materially help "
-                "and the snapshot is insufficient. Use `list` to browse a directory or "
-                "category hierarchy, `search` for name or capability evidence, and "
-                "`read` to batch-read observed metadata paths. Always use the structured "
-                "fields; never pass a shell command, option, or pipeline string."
-            ),
-            self._english_routing_rule(snapshot),
-            (
-                "- Before searching, identify the constraints that could change Skill "
-                "selection. For one capability constraint, combine known high-signal "
-                "formats, libraries, APIs, protocols, method names, and synonyms in "
-                "`query`. For two or more independent capability constraints, use "
-                "`queries` in the first `search`, one item per constraint, and set "
-                "`per_query_limit`; do not split them into sequential searches. For "
-                "`match=content`, separate alternatives for the same constraint with `|` (for example, "
-                "`youtube|subtitle|字幕|翻译`); spaces mean consecutive text. When "
-                "several directories are known, include all of them in the same `paths` list. "
-                "Stop as soon as the result contains sufficient candidates. Broaden or "
-                "rewrite only when a concrete task constraint is still uncovered; do "
-                "not mechanically try several synonym groups."
-            ),
-            (
-                "- Candidate names and descriptions are selection evidence. Select "
-                "directly when they are sufficient. Use one `read` call to batch-read "
-                "observed metadata only when candidates genuinely need comparison or "
-                "their descriptions are insufficient; do not read complete `SKILL.md` "
-                "files during discovery and selection. Report the smallest sufficient "
-                "shortlist and never add weak matches to fill a quota."
-            ),
-            (
-                "- Limit `search` candidates with `per_query_limit`; do not also pass a "
-                "pipeline `limit`. When `list` may return multiple rows, append a "
-                "`limit` stage to its ordered `pipeline`: use the user's requested count, or "
-                "10 rows when none is given. Omit it only for an explicit request for "
-                "all entries, a complete inventory, or no omissions; requests for more "
-                "or broader results are not exhaustive. For only a total, set "
-                "`output_mode=count`; `count` is not a fourth operation. When both a "
-                "total and a limited sample are needed, issue one `output_mode=count` "
-                "call and one limited entries call in the same model turn; a limited "
-                "result does not imply the total."
-            ),
-            (
-                "- If the tool says content was omitted for length, still complete the "
-                "current answer from returned content; do not retry merely to expand "
-                "visible entries. Only when the user explicitly requested display or "
-                "enumeration and omission makes that request incomplete, ask after "
-                "answering whether to continue and briefly note the extra context cost. "
-                "Set `disable_output_truncation=true` only after explicit permission "
-                "for output without truncation or collapsing."
-            ),
-            (
-                "- Use only `skill_id` values and paths actually returned by the tool; "
-                "never guess them. Claim that no installed Skill matches only after a "
-                "directory-root search. A miss within one branch proves only that the "
-                "Skill was not found in that scope."
-            ),
-        ]
-        return "\n".join(lines)
-
-    @staticmethod
-    def _chinese_routing_rule(snapshot: SkillPromptSnapshot | None) -> str:
-        if snapshot is not None and snapshot.mode == "indexed-stale":
-            return (
-                "- 当前索引分类可能已过期。直接对完整目录 `/` 执行一次高信号 "
-                "`search`；旧分支只作为会话冻结方向参考，只有已确认相关时才用于"
-                "限定 scope，不要按旧树逐层优先浏览。"
-            )
-        if snapshot is not None and snapshot.branches:
-            return (
-                "- 会话快照已显示根分类。任务主要落在一个信息明确的分类时，"
-                '直接使用复数参数，例如 `list(paths=["/OfficeDocs"], '
-                'view="details")`，沿主能力分支逐层浏览；不要再次 list 根目录。'
-                "若分支标签不足以路由、任务跨多个分类或已知精确 API/格式，"
-                "直接执行一次高信号 `search`。只有浏览结果仍缺少会改变选择的"
-                "证据时，才在已探索的 `paths` 内补充 search；不要机械地同时 list 和 search。"
-            )
-        if snapshot is not None and snapshot.all_candidates_included:
-            return (
-                "- 当前快照包含全部候选。先从名称和描述直接选择；只有没有明确"
-                "候选但任务仍明显需要 Skill 时，才调用一次高信号 `search`。"
-            )
-        return (
-            "- 当前会话没有可用分类方向。需要 Skill 时直接执行一次高信号 "
-            "`search`；不要先无目的地遍历根目录。"
-        )
-
-    @staticmethod
-    def _english_routing_rule(snapshot: SkillPromptSnapshot | None) -> str:
-        if snapshot is not None and snapshot.mode == "indexed-stale":
-            return (
-                "- The indexed categories may be stale. Run one high-signal `search` "
-                "over the full catalog `/` first. Treat old branches only as frozen "
-                "session orientation and scope to one only after its relevance is "
-                "confirmed; do not browse the old tree first."
-            )
-        if snapshot is not None and snapshot.branches:
-            return (
-                "- Root categories are already visible in the session snapshot. When one "
-                "informative category clearly owns the task, browse it with the plural "
-                'field, for example `list(paths=["/OfficeDocs"], view="details")`, '
-                "then follow only the main capability branch; do not list `/` again. "
-                "Use one high-signal `search` directly when labels are uninformative, the "
-                "task spans categories, or an exact API/format is known. Add a scoped "
-                "search only if browsing leaves evidence that could change selection; "
-                "never run list and search mechanically."
-            )
-        if snapshot is not None and snapshot.all_candidates_included:
-            return (
-                "- The snapshot contains every candidate. Select from its names and "
-                "descriptions first; call one high-signal `search` only when no clear "
-                "candidate is visible but the task still clearly needs a Skill."
-            )
-        return (
-            "- No useful category orientation is available in this session. When a Skill "
-            "is needed, use one high-signal `search` instead of browsing `/` without a goal."
-        )
-
     def _build_candidate_appendix(
         self,
         language: str,
         snapshot: SkillPromptSnapshot,
     ) -> str:
-        small = snapshot.all_candidates_included
-        if str(language).lower().startswith("en"):
-            heading = "## Session Skill Candidate Snapshot"
-            description = (
-                "This complete installed-Skill metadata snapshot was captured when "
-                "the session was created."
-                if small
-                else "These preset/frequently used Skill references were captured "
-                "when the session was created; use `skill_index` for the complete directory."
-            )
-            empty = (
-                "No enabled Skill was present when the session was created."
-                if small
-                else "No preset Skill reference is fixed in this session."
-            )
-        else:
-            heading = "## 会话 Skill 候选快照"
-            description = (
-                "以下是会话创建时获取的完整已安装 Skill 元数据快照。"
-                if small
-                else "以下是会话创建时固定的预置/常用 Skill 引用；完整目录请使用 `skill_index`。"
-            )
-            empty = (
-                "会话创建时没有已启用 Skill。"
-                if small
-                else "当前会话没有固定的预置 Skill 引用。"
-            )
-        lines = [heading, "", description]
+        english = str(language).lower().startswith("en")
+        complete = snapshot.all_candidates_included
+        lines = ["## Installed Skills" if english else "## 已安装 Skill"]
+
         if snapshot.branches:
             lines.extend(
                 [
                     "",
-                    "### Root Category Orientation"
-                    if str(language).lower().startswith("en")
-                    else "### 根分类方向",
-                    *(
-                        _render_prompt_branches(snapshot.branches)
-                        or [
-                            "No category orientation is available."
-                            if str(language).lower().startswith("en")
-                            else "当前没有可用分类方向。"
-                        ]
-                    ),
+                    "Categories:" if english else "分类：",
+                    *_render_prompt_branches(snapshot.branches),
                 ]
             )
             if snapshot.omitted_branch_count:
                 lines.append(
-                    f"- … {snapshot.omitted_branch_count} more root categories omitted."
-                    if str(language).lower().startswith("en")
-                    else f"- … 另有 {snapshot.omitted_branch_count} 个根分类未显示。"
+                    f"- … {snapshot.omitted_branch_count} more categories."
+                    if english
+                    else f"- … 另有 {snapshot.omitted_branch_count} 个分类。"
                 )
-        lines.extend(
-            [
-                "",
-                (
-                    "### Complete Skill Candidates"
-                    if small
-                    else "### Pinned Skill References"
-                )
-                if str(language).lower().startswith("en")
-                else ("### 完整 Skill 候选" if small else "### 固定 Skill 引用"),
-                *_render_prompt_entries(snapshot.entries, empty_text=empty),
-            ]
-        )
+
+        if snapshot.entries:
+            lines.extend(
+                [
+                    "",
+                    ("Skills:" if complete else "Examples:")
+                    if english
+                    else ("Skill：" if complete else "示例："),
+                    *_render_prompt_entries(snapshot.entries, empty_text=""),
+                ]
+            )
+        elif not snapshot.branches:
+            lines.extend(
+                [
+                    "",
+                    (
+                        "No available Skills."
+                        if complete
+                        else "No examples shown; use skill_index to find installed Skills."
+                    )
+                    if english
+                    else (
+                        "当前没有可用 Skill。"
+                        if complete
+                        else "未展示示例；可使用 skill_index 检索已安装 Skill。"
+                    ),
+                ]
+            )
+
         return "\n".join(lines)
 
     @staticmethod
@@ -810,7 +551,7 @@ def _render_prompt_branches(
     branches: tuple[SkillPromptBranch, ...],
 ) -> list[str]:
     return [
-        f"- `{_compact_prompt_text(branch.path)}`: "
+        f"- `{_compact_prompt_text(branch.label)}`: "
         f"{_compact_branch_description(branch.description, branch.label)}"
         for branch in branches
     ]

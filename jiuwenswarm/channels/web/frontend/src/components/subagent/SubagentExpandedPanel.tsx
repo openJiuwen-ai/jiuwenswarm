@@ -2,6 +2,7 @@ import { AlertCircle, ChevronRight, CircleEllipsis, Lightbulb, ListTodo, Search,
 import { memo, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import ProcessingIcon from '../../assets/subagent/processing.svg?react';
+import BackIcon from '../../assets/back.svg?react';
 import { getSubagentStatusLabelKey } from '../../features/subagent/subagentStatusPresentation';
 import { extractSubagentTasks, finalizeSubagentTasks, getSubagentActivityPreview, groupSubagentActivities, type SubagentActivityGroup } from '../../features/subagent/subagentActivityPresentation';
 import { selectSubagentActivities, selectSubagentHistoryRestoring, selectSubagentResult, selectSubagentTurns, selectSubagents, useSubagentStore } from '../../stores/subagentStore';
@@ -208,7 +209,7 @@ function SubagentDetail({ sessionId, subagentId, onBack }: { sessionId: string; 
             className="flex shrink-0 items-center text-sm text-text-muted hover:text-text"
             data-testid="subagent-member-detail-back"
           >
-            <ChevronRight size={16} className="rotate-180" />
+            <BackIcon className="text-text" />
           </button>
         ) : null}
         <div className="flex min-w-0 items-center gap-2">
@@ -223,7 +224,7 @@ function SubagentDetail({ sessionId, subagentId, onBack }: { sessionId: string; 
         ) : null}
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="subagent-member-detail-body">
+      <div className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="subagent-member-detail-body">
         {hasFailed && subagent.error ? (
           <div className="subagent-error-note" role="alert" data-testid="subagent-detail-error">
             {subagent.error.message}

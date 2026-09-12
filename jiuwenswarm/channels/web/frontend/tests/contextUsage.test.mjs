@@ -16,6 +16,7 @@ const snapshot = (changes = {}) => ({ ...structuredClone(fixture), ...changes })
 
 test('consumes the canonical v1 fields and all four returned categories', () => {
   const result = parseContextUsageSnapshot(snapshot({ rate: 99, context_max: 1, tokens_used: 1 }));
+  assert.equal(result.role, null);
   assert.deepEqual(result.context_window, { limit_tokens: 2000, input_tokens: 1000, occupancy_rate: 0.5 });
   assert.deepEqual(Object.keys(result.parts).sort(), ['messages', 'skills', 'system_prompt', 'tools']);
   assert.equal(result.parts.skills.tokens, 24);
@@ -60,6 +61,8 @@ test('rejects legacy, unsupported, incomplete and malformed payloads without ali
     snapshot({ product_session_id: null }),
     snapshot({ product_session_id: '' }),
     snapshot({ request_id: '' }),
+    snapshot({ role: 1 }),
+    snapshot({ role: 'assistant' }),
     snapshot({ depth: -1 }),
     snapshot({ team_id: undefined }),
     snapshot({ parts: [] }),
@@ -148,7 +151,7 @@ test('uses backend ratios even when they differ from locally calculated token sh
   assert.equal(formatContextLimitTokens(1_000_000), '1000.0K');
 });
 
-test('routes only single-agent main snapshots by product session, never the currently visible session', () => {
+test('routes single-agent root snapshots by product session, never the currently visible session', () => {
   const store = useSessionStore.getState();
   const first = fixture.product_session_id;
   const second = 'context-session-b';
@@ -175,6 +178,65 @@ test('routes only single-agent main snapshots by product session, never the curr
   } finally {
     store.removeRuntime(first);
     store.removeRuntime(second);
+  }
+});
+
+test('team mode accepts only semantic leader frames and keeps the latest leader during worker activity', () => {
+  const store = useSessionStore.getState();
+  const sessionId = 'team-context-session';
+  store.ensureRuntime(sessionId);
+  store.setMode(sessionId, 'team');
+  try {
+    store.receiveContextUsage(
+      snapshot({
+        product_session_id: sessionId,
+        role: 'teammate',
+        member_name: 'worker-1',
+      }),
+    );
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).contextUsageSnapshot, null);
+
+    const leader = snapshot({
+      product_session_id: sessionId,
+      role: 'leader',
+      depth: 3,
+      team_id: 'runtime-team',
+      member_name: 'explicit-leader-name',
+      timestamp: '2026-09-03T03:00:00.000Z',
+    });
+    leader.context_window.input_tokens = 700;
+    store.receiveContextUsage(leader);
+    assert.equal(
+      useSessionStore.getState().getRuntime(sessionId).contextUsageSnapshot.context_window.input_tokens,
+      700,
+    );
+
+    const newerWorker = snapshot({
+      product_session_id: sessionId,
+      role: 'teammate',
+      member_name: 'worker-2',
+      timestamp: '2026-09-03T03:01:00.000Z',
+    });
+    newerWorker.context_window.input_tokens = 900;
+    store.receiveContextUsage(newerWorker);
+    assert.equal(
+      useSessionStore.getState().getRuntime(sessionId).contextUsageSnapshot.context_window.input_tokens,
+      700,
+    );
+
+    const olderLeader = structuredClone(leader);
+    olderLeader.timestamp = '2026-09-03T02:59:00.000Z';
+    olderLeader.context_window.input_tokens = 600;
+    store.receiveContextUsage(olderLeader);
+    assert.equal(
+      useSessionStore.getState().getRuntime(sessionId).contextUsageSnapshot.context_window.input_tokens,
+      700,
+    );
+
+    store.setMode(sessionId, 'agent');
+    assert.equal(useSessionStore.getState().getRuntime(sessionId).contextUsageSnapshot, null);
+  } finally {
+    store.removeRuntime(sessionId);
   }
 });
 
@@ -214,4 +276,8 @@ test('history restore accepts the full context usage event while live delivery s
   }
   assert.match(source('features/historyRestore.ts'), /'context\.usage'/);
   assert.match(source('features/historyRestore.ts'), /onContextUsage/);
+  assert.match(
+    source('components/ChatPanel/InputArea.tsx'),
+    /\(isAgentMode \|\| isTeamMode\) && <ContextUsageIndicator/,
+  );
 });

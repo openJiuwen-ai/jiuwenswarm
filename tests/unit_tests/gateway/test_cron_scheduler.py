@@ -289,7 +289,7 @@ class FakeMessageHandler:
         self.cancel_calls.append((msg, old_sid, kwargs))
 
 
-async def _create_one_job(store, name="job", targets="tui", user_id=""):
+async def _create_one_job(store, name="job", targets="tui", user_id="", mode=None):
     """Convenience: create a single cron job via the store."""
     return await store.create_job(
         name=name,
@@ -298,6 +298,7 @@ async def _create_one_job(store, name="job", targets="tui", user_id=""):
         description="reminder",
         targets=targets,
         user_id=user_id,
+        mode=mode,
     )
 
 
@@ -346,19 +347,38 @@ class TestCronLastSessionId:
         assert stored.last_session_id == "cron_agentserver_allocated"
 
     @pytest.mark.asyncio
-    async def test_run_now_info_returns_current_execution_session_id(self, tmp_path):
+    async def test_run_now_info_returns_agentserver_execution_session_id(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = await _create_one_job(store, user_id="run-now-owner")
-        svc = _make_scheduler(store)
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
 
         info = await svc.trigger_run_now_info(job.id)
 
         assert info["run_id"].startswith(f"{job.id}:")
-        assert info["session_id"].startswith("cron_")
-        assert info["session_id"].endswith(f"_{job.id}")
+        assert info["session_id"] == "cron_agentserver_allocated"
         state = svc.runs[info["run_id"]]
         assert state.exec_session_id == info["session_id"]
         assert state.exec_user_id == "run-now-owner"
+        assert state.execution_session_allocated is True
+
+        await svc.on_wake(job, info["run_id"])
+        await svc.run_tasks[info["run_id"]]
+        assert [request.method for request in agent.unary_requests].count("session.create") == 1
+
+    @pytest.mark.asyncio
+    async def test_run_now_info_does_not_allocate_session_for_proactive_tick(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = await _create_one_job(store, mode="proactive.tick")
+        agent = FakeAgentClient()
+        svc = _make_scheduler(store, agent_client=agent)
+
+        info = await svc.trigger_run_now_info(job.id)
+
+        assert info["session_id"].startswith("cron_")
+        state = svc.runs[info["run_id"]]
+        assert state.execution_session_allocated is False
+        assert not agent.unary_requests
 
 
 class TestCheckStoreChanged:

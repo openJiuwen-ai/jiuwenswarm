@@ -1,4 +1,4 @@
-import { useEffect, useId, type ReactNode } from 'react';
+import { useCallback, useEffect, useId, type ReactNode } from 'react';
 import { useFullscreenPanel } from '../../hooks';
 import { useSessionArtifactsCount } from '../ArtifactsPanel';
 import { ArtifactExpandedPanel } from '../ArtifactsPanel';
@@ -47,6 +47,14 @@ export function ExpandedPanel({
     }
   }, [shouldFullscreen, enterFullscreen, exitFullscreen]);
 
+  const handleToggleFullscreen = useCallback(() => {
+    if (shouldFullscreen) {
+      onCollapse();
+    } else {
+      toggleFullscreen();
+    }
+  }, [shouldFullscreen, onCollapse, toggleFullscreen]);
+
   const resolvedTab = resolveActiveTab(activeTab, artifactsCount, reviewPanel);
 
   const tabs = useExpandedPanelTabs({ middleTab, showMiddleTab, artifactsCount, reviewPanel });
@@ -58,7 +66,7 @@ export function ExpandedPanel({
         activeTab={resolvedTab}
         onTabChange={onTabChange}
         onCollapse={onCollapse}
-        onToggleFullscreen={toggleFullscreen}
+        onToggleFullscreen={handleToggleFullscreen}
         isFullscreen={isFullscreen}
         testIdPrefix={testIdPrefix}
       />

@@ -25,6 +25,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _validate_wechat_numeric_params,
 )
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
+from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 
 
 class FakeWebChannel:
@@ -71,6 +72,21 @@ class FakeAgentClient:
             self.reload_finished.set()
 
 
+class _FakeModelsResponse:
+    def __init__(self, model_ids):
+        self.status_code = 200
+        self._model_ids = model_ids
+
+    def json(self):
+        return {
+            "object": "list",
+            "data": [
+                {"id": model_id, "object": "model", "owned_by": "system"}
+                for model_id in self._model_ids
+            ],
+        }
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 
@@ -109,7 +125,87 @@ class _CapturingSessionListAgentClient:
         )()
 
 
-from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_applies_alibaba_allowlist(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(
+            [
+                "qwen-turbo-0919",
+                "MiniMax-M2.5",
+                "MiniMax/MiniMax-M2.5",
+                "qwen3.8-max",
+                "kimi/kimi-k3",
+            ]
+        ),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "alibaba", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "models": ["qwen3.8-max", "MiniMax-M2.5"],
+        "source": "remote",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_keeps_namespaced_models_for_other_vendors(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(
+            ["deepseek-chat", "vendor/deepseek-chat"]
+        ),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "deepseek", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {
+        "models": ["deepseek-chat", "vendor/deepseek-chat"],
+        "source": "remote",
+    }
+
+
+@pytest.mark.asyncio
+async def test_vendors_fetch_models_falls_back_when_all_alibaba_models_are_namespaced(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "httpx.get",
+        lambda *args, **kwargs: _FakeModelsResponse(["MiniMax/MiniMax-M2.5"]),
+    )
+
+    await channel.methods["vendors.fetch_models"](
+        object(),
+        "req-fetch-models",
+        {"vendor_key": "alibaba", "plan": "custom_api", "api_key": "secret"},
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"]["source"] == "preset"
+    assert response["payload"]["models"]
+    assert response["payload"]["reason"] == (
+        "no remote models matched the Alibaba plan allowlist"
+    )
 
 
 class _OfflineRemoteAgentClient:
@@ -239,6 +335,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
         {
             "name": "n",
             "prompt": "p",
+            "max_runs": None,
             "channel_id": "other",
             "session_id": "other-session",
             "schedule": {"type": "interval", "interval_seconds": 120},
@@ -254,6 +351,7 @@ async def test_heartbeat_web_methods_preserve_health_check_aliases_and_session()
     )
     created = controller.calls[1][1]
     assert created["channel_id"] == "web"
+    assert created["max_runs"] is None
     assert created["session_id"] == "session-current"
     assert created["source"] == "web_rpc"
     assert controller.calls[1][2] == "user-current"
@@ -646,7 +744,7 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
     )
 
     assert saved_configs == [
-        {"chrome_path": "C:\\Chrome\\chrome.exe", "browser_type": "auto", "headless": False}
+        {"chrome_path": "C:\\Chrome\\chrome.exe", "headless": False}
     ]
     assert lifecycle_calls == [
         ("reload", agent_client),
@@ -664,7 +762,6 @@ async def test_path_set_reloads_config_and_resets_agent_browser_runtime(
         "ok": True,
         "payload": {
             "chrome_path": "C:\\Chrome\\chrome.exe",
-            "browser_type": "auto",
             "headless": False,
         },
         "error": None,
@@ -978,11 +1075,31 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
 
 
 @pytest.mark.asyncio
-async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, tmp_path):
+@pytest.mark.parametrize(
+    "params,keys,scopes",
+    [
+        ({"api_base": "https://example.com/one"}, {"API_BASE"}, ["model"]),
+        ({"bocha_api_key": "test-key"}, {"BOCHA_API_KEY"}, ["search"]),
+        ({"serper_api_key": ""}, {"SERPER_API_KEY"}, ["search"]),
+        (
+            {"bocha_api_key": "test-key", "vision_api_key": "test-vision-key"},
+            {"BOCHA_API_KEY", "VISION_API_KEY"},
+            ["multimodal", "search"],
+        ),
+    ],
+)
+async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, tmp_path, params, keys, scopes):
     channel = FakeWebChannel()
     reload_started = asyncio.Event()
     release_first_reload = asyncio.Event()
     reload_calls: list[tuple[set[str], dict, dict]] = []
+
+    monkeypatch.setattr(
+        "jiuwenswarm.extensions.registry.ExtensionRegistry.get_instance",
+        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
+    )
+    for key in keys:
+        monkeypatch.setenv(key, "")
 
     monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ENV_FILE",
@@ -1009,19 +1126,20 @@ async def test_config_set_applies_scoped_reload_before_responding(monkeypatch, t
     task = asyncio.create_task(channel.methods["config.set"](
         object(),
         "req-1",
-        {"api_base": "https://example.com/one"},
+        params,
         "sess-1",
     ))
 
-    await asyncio.wait_for(reload_started.wait(), timeout=1)
-    assert channel.responses == []
+    try:
+        await asyncio.wait_for(reload_started.wait(), timeout=1)
+        assert channel.responses == []
+    finally:
+        release_first_reload.set()
+        await task
 
-    release_first_reload.set()
-    await task
-
-    assert reload_calls[0][0] == {"API_BASE"}
+    assert reload_calls[0][0] == keys
     assert reload_calls[0][2]["target_channel_id"] == "web"
-    assert reload_calls[0][2]["reload_scopes"] == ["model"]
+    assert reload_calls[0][2]["reload_scopes"] == scopes
     assert channel.responses[-1]["id"] == "req-1"
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["applied_without_restart"] is True
@@ -1184,6 +1302,35 @@ async def test_trajectory_ui_switch_round_trips_through_config_rpc(monkeypatch):
     assert change_set.reload_scopes == {"agent_runtime", "web_ui"}
 
 
+@pytest.mark.asyncio
+async def test_task_full_duplex_switch_round_trips_through_config_rpc(monkeypatch):
+    channel = FakeWebChannel()
+    persisted: list[bool] = []
+    raw_config = {"experimental": {"task_full_duplex_enabled": False}}
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    monkeypatch.setattr(
+        app_web_handlers,
+        "update_task_full_duplex_in_config",
+        lambda enabled: persisted.append(enabled),
+    )
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](object(), "req-duplex-get", {}, "session")
+    assert channel.responses[-1]["payload"]["task_full_duplex_enabled"] == "false"
+
+    await channel.methods["config.set"](
+        object(),
+        "req-duplex-set",
+        {"task_full_duplex_enabled": "true"},
+        "session",
+    )
+    assert persisted == [True]
+    assert channel.responses[-1]["payload"]["updated"] == ["task_full_duplex_enabled"]
+    change_set = app_web_handlers._ConfigChangeSet({}, ["task_full_duplex_enabled"])
+    assert change_set.reload_scopes == {"web_ui"}
+
+
 def test_media_capability_config_uses_multimodal_hot_reload_scope():
     for env_key in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS:
         change_set = app_web_handlers._ConfigChangeSet({env_key: "true"}, [])
@@ -1199,6 +1346,44 @@ def test_media_capability_provider_identity_has_exact_env_contract():
         assert f"{prefix}_ENDPOINT_PROFILE" in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
         assert f"{prefix}_VENDOR_KEY" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
         assert f"{prefix}_PLAN" not in app_web_handlers._MULTIMODAL_RELOAD_ENV_KEYS
+
+
+def test_task_chat_uses_general_asr_config_independent_from_joyai():
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_base"] == "ASR_API_BASE"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_api_key"] == "ASR_API_KEY"
+    assert app_web_handlers._CONFIG_SET_ENV_MAP["asr_model"] == "ASR_MODEL_NAME"
+    assert not any(value.startswith("VOICE_ASR_") for value in app_web_handlers._ASR_ENV_KEYS)
+    assert not any(value.startswith("JOYAI_") for value in app_web_handlers._ASR_ENV_KEYS)
+    for env_key in app_web_handlers._ASR_ENV_KEYS:
+        change_set = app_web_handlers._ConfigChangeSet({env_key: "value"}, [])
+        assert change_set.reload_scopes == {"web_ui"}
+
+
+@pytest.mark.asyncio
+async def test_task_asr_rpc_returns_transcript(monkeypatch):
+    channel = FakeWebChannel()
+
+    async def fake_transcribe(params):
+        assert params == {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"}
+        return "transcribed speech"
+
+    monkeypatch.setattr(app_web_handlers, "transcribe_task_audio", fake_transcribe)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["task.asr.transcribe"](
+        object(),
+        "req-task-asr",
+        {"audio_base64": "YXVkaW8=", "mime_type": "audio/webm"},
+        "session",
+    )
+
+    assert channel.responses[-1] == {
+        "id": "req-task-asr",
+        "ok": True,
+        "payload": {"text": "transcribed speech"},
+        "error": None,
+        "code": None,
+    }
 
 
 @pytest.mark.asyncio
@@ -1794,6 +1979,10 @@ async def test_config_set_saves_claude_while_codex_dependency_is_installing(monk
         lambda: {"status": "running", "error": "", "started_at": 1.0, "finished_at": 0.0},
     )
     monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers._ensure_claude_dependency_available_or_start_install",
+        lambda: None,
+    )
+    monkeypatch.setattr(
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_external_cli_agents_in_config",
         lambda agents, publish_url=None: updates.append((agents, publish_url)),
     )
@@ -1873,8 +2062,44 @@ def test_codex_dependency_install_is_not_started_twice(monkeypatch):
     release_install.set()
 
     assert first and first["status"] == "running"
+    assert first["progress_kind"] == "installer_activity"
     assert second and second["status"] == "running"
     assert len(install_calls) == 1
+
+
+def test_claude_dependency_install_running_snapshot_does_not_reenter_lock(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class FailOnReentryLock:
+        def __init__(self) -> None:
+            self.locked = False
+
+        def __enter__(self) -> None:
+            if self.locked:
+                raise AssertionError("Claude dependency lock was re-entered")
+            self.locked = True
+
+        def __exit__(self, *_args: object) -> None:
+            self.locked = False
+
+    lock = FailOnReentryLock()
+    monkeypatch.setattr(app_web_handlers, "_CLAUDE_DEPENDENCY_INSTALL_LOCK", lock)
+    monkeypatch.setitem(app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS, "claude", lock)
+    monkeypatch.setattr(app_web_handlers, "_activate_managed_external_cli_paths_if_needed", lambda: None)
+    monkeypatch.setattr(app_web_handlers.importlib.util, "find_spec", lambda _name: None)
+    monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
+    app_web_handlers._CLAUDE_DEPENDENCY_INSTALL_STATUS.update({
+        "status": "running",
+        "phase": "downloading",
+        "error": "",
+        "log_tail": [],
+    })
+
+    snapshot = app_web_handlers._ensure_claude_dependency_available_or_start_install()
+
+    assert snapshot is not None
+    assert snapshot["status"] == "running"
+    assert snapshot["phase"] == "downloading"
 
 
 @pytest.mark.parametrize(
@@ -1939,6 +2164,7 @@ def test_external_cli_dependency_install_starts_managed_runtime_in_frozen_deskto
 
     assert first and first["status"] == "running"
     assert first["phase"] == "preparing"
+    assert first["progress_kind"] == "download_metrics"
     assert second and second["status"] == "running"
     assert len(created_threads) == 1
     assert created_threads[0].target is app_web_handlers._run_managed_external_cli_runtime_install
@@ -1986,11 +2212,19 @@ def test_optional_dependency_install_times_out_after_one_hour(
             10.0 + app_web_handlers._OPTIONAL_DEPENDENCY_INSTALL_TIMEOUT_SECONDS,
         ],
     )
+    calling_thread = threading.current_thread()
+    real_monotonic = time.monotonic
+
+    def fake_monotonic() -> float:
+        if threading.current_thread() is calling_thread:
+            return next(monotonic_values)
+        return real_monotonic()
+
     monkeypatch.setattr(app_web_handlers, "_is_frozen_runtime", lambda: False)
     monkeypatch.setattr(
         app_web_handlers,
         "_build_optional_dependency_install_args",
-        lambda _package: ["installer"],
+        lambda _package, _cli_agent: ["installer"],
     )
     monkeypatch.setattr(
         app_web_handlers.subprocess,
@@ -2001,7 +2235,7 @@ def test_optional_dependency_install_times_out_after_one_hour(
     monkeypatch.setattr(
         app_web_handlers.time,
         "monotonic",
-        lambda: next(monotonic_values),
+        fake_monotonic,
     )
 
     with pytest.raises(
@@ -2061,6 +2295,46 @@ async def test_external_cli_codex_install_status_returns_snapshot():
     assert payload["download_attempt"] == 3
     assert payload["download_max_attempts"] == 5
     assert payload["switching_source"] is False
+
+
+@pytest.mark.parametrize("cli_agent", ["claude", "codex"])
+def test_external_cli_install_success_clears_download_artifact_state(cli_agent: str) -> None:
+    lock = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_LOCKS[cli_agent]
+    status = app_web_handlers._EXTERNAL_CLI_DEPENDENCY_INSTALL_STATUSES[cli_agent]
+    with lock:
+        status.update({
+            "status": "running",
+            "phase": "downloading",
+            "downloaded_bytes": 1024,
+            "total_bytes": 4096,
+            "bytes_per_second": 512.0,
+            "eta_seconds": 6.0,
+            "artifact_index": 1,
+            "artifact_count": 1,
+            "current_package": "claude-agent-sdk",
+            "current_version": "0.2.115",
+            "download_attempt": 2,
+            "download_max_attempts": 5,
+            "switching_source": True,
+        })
+
+    app_web_handlers._update_external_cli_dependency_install_status(
+        cli_agent,
+        app_web_handlers._external_cli_dependency_install_succeeded_updates(),
+    )
+
+    snapshot = app_web_handlers._snapshot_external_cli_dependency_install_status(cli_agent)
+    assert snapshot["status"] == "succeeded"
+    assert snapshot["phase"] == "succeeded"
+    assert snapshot["downloaded_bytes"] == 0
+    assert snapshot["total_bytes"] == 0
+    assert snapshot["artifact_index"] == 0
+    assert snapshot["artifact_count"] == 0
+    assert snapshot["current_package"] == ""
+    assert snapshot["current_version"] == ""
+    assert snapshot["download_attempt"] == 0
+    assert snapshot["download_max_attempts"] == 0
+    assert snapshot["switching_source"] is False
 
 
 @pytest.mark.asyncio
@@ -2350,6 +2624,14 @@ def test_detect_external_cli_agent_rejects_windows_script_path(monkeypatch, tmp_
     assert result["path"] == str(script_path)
 
 
+def test_detect_external_cli_agent_reports_directory_path(tmp_path) -> None:
+    result = _detect_external_cli_agent("claude", str(tmp_path))
+
+    assert result["status"] == "unsupported"
+    assert result["reason"] == "directory"
+    assert result["message"] == f"{tmp_path} is a directory"
+
+
 def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     raw = {
         "symphony": {
@@ -2469,6 +2751,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
         "personal_context.fetch.delete_service",
         "personal_context.fetch.patch_service",
         "personal_context.fetch.start_service",
+        "personal_context.fetch.stop_run",
         "personal_context.fetch.stop_service",
         "personal_context.fetch.run_all",
         "personal_context.fetch.run_one",
@@ -2494,7 +2777,7 @@ def test_web_forwards_only_canonical_personal_context_rpc_methods():
 
     assert forwarded == methods
     assert no_local == methods
-    assert len(methods) == 24
+    assert len(methods) == 25
 
 
 # =====================================================================

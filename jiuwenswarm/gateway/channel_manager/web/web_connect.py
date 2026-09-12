@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
+_LOCAL_ONLY_METHODS: frozenset[str] = frozenset()
 
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
 _STREAM_COALESCE_MAX_FRAMES = 32
@@ -66,6 +67,10 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "heartbeat.relay",
         "context.usage",
         "context.compression_state",
+        "personal_context.context.start",
+        "personal_context.context.nodes",
+        "personal_context.context.edges",
+        "personal_context.context.end",
         "chat.ask_user_question",
         "chat.subtask_update",
         "chat.subagent_activity",
@@ -85,7 +90,6 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
-        "proactive_recommendation",
     }
 )
 
@@ -146,6 +150,7 @@ class WebChannel(BaseWsChannel):
         self._uvicorn_server: Any = None
         self._on_message_cb: Callable[[Message], Any] | None = None
         self._method_handlers: dict[str, MethodHandler] = {}
+        self._local_only_methods: set[str] = set(_LOCAL_ONLY_METHODS)
         self._connect_hooks: list[ConnectHook] = []
         self._disconnect_hooks: list[ConnectHook] = []
         # ws -> set[session_id]: 追踪每个连接上活跃的 session
@@ -261,13 +266,26 @@ class WebChannel(BaseWsChannel):
 
     # ── 扩展注册 API ──────────────────────────────────────
 
-    def register_method(self, method: str, handler: MethodHandler) -> None:
+    def register_method(
+        self,
+        method: str,
+        handler: MethodHandler,
+        *,
+        local_only: bool = False,
+    ) -> None:
         """注册 req method 处理器.
 
         handler 签名: ``async def handler(ws, req_id, params, session_id) -> None``
         handler 应通过 `send_response` / `send_event` 向客户端回复。
         """
         self._method_handlers[method] = handler
+        if local_only:
+            self._local_only_methods.add(method)
+
+    def unregister_method(self, method: str) -> None:
+        """Remove a dynamically registered method and its routing metadata."""
+        self._method_handlers.pop(method, None)
+        self._local_only_methods.discard(method)
 
     def on_message(self, callback: Callable[[Message], None]) -> None:
         """注册消息接收回调（替代默认的 router.publish_user_messages）。"""
@@ -625,7 +643,7 @@ class WebChannel(BaseWsChannel):
         self._uvicorn_server = uvicorn.Server(uv_cfg)
         self._running = True
         logger.info(
-            "WebChannel 已启动(dual_protocol): ws://%s:%s%s (HTTP-ready same port)",
+            "WebChannel 正在启动(dual_protocol): ws://%s:%s%s",
             self.config.host,
             self.config.port,
             self.config.path,
@@ -814,6 +832,7 @@ class WebChannel(BaseWsChannel):
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
+            or event_name.startswith("personal_context.context.")
         )
 
     @staticmethod
@@ -875,6 +894,11 @@ class WebChannel(BaseWsChannel):
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
                 "source", "proactive_type", "proactive_target",
+                # proactive_rec_id 必须透传，前端用它关联赞/踩反馈按钮。
+                # 不在此白名单会被本分支丢弃 → 卡片虽渲染但 message.proactiveRecId
+                # 为空 → 赞/踩按钮不出现（ProactiveRecommendationCard 按 proactiveRecId
+                # 条件渲染按钮）。
+                "proactive_rec_id",
             ):
                 _val = msg.payload.get(_key)
                 if _val is not None:
@@ -1544,6 +1568,21 @@ class WebChannel(BaseWsChannel):
 
         # 发布到 route 或回调
         handler = self._method_handlers.get(method)
+        if method in self._local_only_methods:
+            if handler is None:
+                await self.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error=f"unknown method: {method}",
+                    code="METHOD_NOT_FOUND",
+                )
+                return
+            invocation = _MethodHandlerInvocation(
+                ws, method, req_id, params, session_id, handler,
+            )
+            await self._invoke_method_handler(invocation)
+            return
         handler_already_called = False
         if method in _HANDLER_BEFORE_CALLBACK_METHODS and handler is not None:
             handler_already_called = await self._invoke_method_handler(

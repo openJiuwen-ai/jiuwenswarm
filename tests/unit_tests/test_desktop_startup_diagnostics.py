@@ -3,7 +3,9 @@
 
 from __future__ import annotations
 
+import json
 import sys
+import threading
 import time
 import types
 from pathlib import Path
@@ -33,9 +35,11 @@ def _runtime(desktop_app, tmp_path: Path, monkeypatch):
 
 
 def test_child_env_is_scoped_to_current_startup_session(
-    desktop_app, tmp_path: Path
+    desktop_app, tmp_path: Path, monkeypatch
 ) -> None:
     session_dir = tmp_path / "session"
+    monkeypatch.delenv("JIUWENSWARM_START_CMD", raising=False)
+    monkeypatch.setattr(desktop_app.sys, "argv", ["workswarm.exe"])
     env = desktop_app._build_child_env(
         "app",
         calculate_instance_ports(0),
@@ -43,6 +47,7 @@ def test_child_env_is_scoped_to_current_startup_session(
     )
 
     assert env[desktop_app.STARTUP_DIAGNOSTICS_DIR_ENV] == str(session_dir)
+    assert json.loads(env["JIUWENSWARM_START_CMD"]) == ["workswarm.exe"]
 
 
 def test_failed_status_reports_correlated_system_dependency(
@@ -232,6 +237,196 @@ def test_process_started_during_shutdown_is_terminated(
     assert "web" not in runtime.processes
 
 
+def test_start_services_terminates_peer_waiter_after_first_readiness_failure(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    """A failed readiness probe must not leave the other probe timing out."""
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    agent_process = types.SimpleNamespace(poll=lambda: None)
+    gateway_process = types.SimpleNamespace(poll=lambda: None)
+    web_process = types.SimpleNamespace(poll=lambda: None)
+    peer_terminated = threading.Event()
+    terminated = []
+
+    monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
+    monkeypatch.setattr(desktop_app, "_warmup_page_cache_background", lambda: None)
+    monkeypatch.setattr(desktop_app, "prepare_runtime_workspace", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_start_managed_process",
+        lambda name, _command: {
+            "agent": agent_process,
+            "gateway": gateway_process,
+            "web": web_process,
+        }[name],
+    )
+    monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
+
+    def wait_for_tcp(_host, port, *_args, **_kwargs):
+        if port == runtime.ports["agent_server"]:
+            raise RuntimeError("agent failed")
+        assert peer_terminated.wait(timeout=1.0)
+        raise RuntimeError("gateway terminated")
+
+    def wait_for_termination(*_args, **_kwargs):
+        assert peer_terminated.wait(timeout=1.0)
+        raise RuntimeError("web terminated")
+
+    def terminate(process):
+        terminated.append(process)
+        peer_terminated.set()
+
+    monkeypatch.setattr(desktop_app, "_wait_for_tcp", wait_for_tcp)
+    monkeypatch.setattr(desktop_app, "_wait_for_http", wait_for_termination)
+    monkeypatch.setattr(desktop_app, "_terminate_process_tree", terminate)
+
+    started_at = time.monotonic()
+    with pytest.raises(RuntimeError, match="agent failed"):
+        runtime.start_services()
+
+    assert time.monotonic() - started_at < 1.0
+    assert {id(process) for process in terminated} == {
+        id(agent_process),
+        id(gateway_process),
+        id(web_process),
+    }
+
+
+def test_web_ready_state_is_overridable_by_failed(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    """先行导航态(web_ready)非终态, app 随后失败时 failed 必须能覆盖。"""
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    runtime._set_startup_status("web_ready", frontend_url=runtime.frontend_url)
+    assert runtime.get_startup_status()["state"] == "web_ready"
+    runtime._set_startup_status(
+        "failed", title="t", message="app failed", component="app"
+    )
+    status = runtime.get_startup_status()
+    assert status["state"] == "failed"
+    assert status["component"] == "app"
+
+
+def test_start_services_reports_web_ready_when_backend_fails_at_same_time(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    """A concurrent Web-ready and Agent failure must still surface web_ready first."""
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+    agent_process = types.SimpleNamespace(poll=lambda: None)
+    gateway_process = types.SimpleNamespace(poll=lambda: None)
+    web_process = types.SimpleNamespace(poll=lambda: None)
+    web_ready = threading.Event()
+    callback_calls: list[str] = []
+
+    monkeypatch.setattr(runtime, "_preflight_gateway_singleton", lambda: None)
+    monkeypatch.setattr(desktop_app, "_warmup_page_cache_background", lambda: None)
+    monkeypatch.setattr(desktop_app, "prepare_runtime_workspace", lambda: None)
+    monkeypatch.setattr(
+        runtime,
+        "_start_managed_process",
+        lambda name, _command: {
+            "agent": agent_process,
+            "gateway": gateway_process,
+            "web": web_process,
+        }[name],
+    )
+    monkeypatch.setattr(desktop_app, "_ensure_process_running", lambda *_args: None)
+    monkeypatch.setattr(desktop_app, "_terminate_process_tree", lambda *_args: None)
+
+    def wait_for_tcp(_host, port, *_args, **_kwargs):
+        if port == runtime.ports["agent_server"]:
+            assert web_ready.wait(timeout=1.0)
+            raise RuntimeError("agent failed immediately after web ready")
+        raise RuntimeError("gateway terminated")
+
+    def wait_for_http(*_args, **_kwargs):
+        web_ready.set()
+
+    monkeypatch.setattr(desktop_app, "_wait_for_tcp", wait_for_tcp)
+    monkeypatch.setattr(desktop_app, "_wait_for_http", wait_for_http)
+
+    # Either backend waiter may win the race and provide the surfaced error;
+    # the invariant is that Web-ready was still observed exactly once before
+    # startup transitioned to failure.
+    with pytest.raises(RuntimeError):
+        runtime.start_services(on_web_ready=lambda: callback_calls.append("web_ready"))
+
+    assert callback_calls == ["web_ready"]
+
+
+def test_failure_after_early_navigation_shows_diagnostics(
+    desktop_app, tmp_path: Path, monkeypatch
+) -> None:
+    """web 先行导航后 app 失败: failed 必须可达, 诊断页须重新载入窗口。"""
+    runtime = _runtime(desktop_app, tmp_path, monkeypatch)
+
+    class FakeEvent:
+        def __iadd__(self, _handler):
+            return self
+
+    class FakeWindow:
+        def __init__(self) -> None:
+            self.events = types.SimpleNamespace(
+                loaded=FakeEvent(), closed=FakeEvent()
+            )
+            self.loaded_html = None
+
+        def load_html(self, html):
+            self.loaded_html = html
+
+    fake_window = FakeWindow()
+    monkeypatch.setattr(desktop_app, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        desktop_app.webview,
+        "create_window",
+        lambda *_args, **_kwargs: fake_window,
+        raising=False,
+    )
+    monkeypatch.setattr(runtime, "_clear_wkwebview_system_cache", lambda: None)
+    monkeypatch.setattr(
+        runtime, "_should_run_startup_doctor", lambda _exc, _cf: False
+    )
+    monkeypatch.setattr(
+        runtime,
+        "_build_failed_status",
+        lambda _exc, _dr, _cf=None: {
+            "title": "t",
+            "message": "app failed",
+            "component": "app",
+            "diagnostic_path": str(runtime._startup_diagnostics_dir),
+        },
+    )
+    monkeypatch.setattr(runtime, "shutdown", lambda: None)
+
+    def fake_start_services(on_web_ready=None) -> None:
+        if on_web_ready:
+            on_web_ready()
+        raise RuntimeError("app failed")
+
+    monkeypatch.setattr(runtime, "start_services", fake_start_services)
+
+    def start_webview(**_kwargs) -> None:
+        deadline = time.monotonic() + 3.0
+        while time.monotonic() < deadline:
+            if (
+                runtime.get_startup_status()["state"] == "failed"
+                and fake_window.loaded_html is not None
+            ):
+                return
+            time.sleep(0.01)
+        raise AssertionError("startup failure surface not presented")
+
+    monkeypatch.setattr(desktop_app.webview, "start", start_webview, raising=False)
+
+    runtime.run(window_title="test", width=1200, height=800, debug=False)
+
+    status = runtime.get_startup_status()
+    assert status["state"] == "failed"
+    assert status["component"] == "app"
+    assert fake_window.loaded_html is not None
+    assert "get_startup_status" in fake_window.loaded_html
+
+
 def test_loading_page_polls_state_and_has_bridge_watchdog(desktop_app) -> None:
     html = desktop_app.DesktopRuntime._build_loading_html()
 
@@ -279,7 +474,7 @@ def test_service_failure_transitions_loading_state_without_worker_window_calls(
             time.sleep(0.01)
         raise AssertionError("startup failure did not reach the UI state")
 
-    def fail_services() -> None:
+    def fail_services(*_args: object, **_kwargs: object) -> None:
         raise RuntimeError("child exited early")
 
     monkeypatch.setattr(desktop_app.webview, "start", start_webview, raising=False)

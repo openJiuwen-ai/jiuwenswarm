@@ -29,6 +29,11 @@ import {
 } from './toolResultLifecycle';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs } from '../utils/timestamp';
+import {
+  consumePendingQuestion as consumeQueuedQuestion,
+  clearPermissionQuestions as clearQueuedPermissionQuestions,
+  enqueuePendingQuestions,
+} from './pendingQuestionQueue';
 
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
@@ -122,7 +127,7 @@ export interface ChatRuntime {
   };
   taskQueue: TaskItem[];
   queuePaused: boolean;
-  pendingQuestion: AskUserQuestionPayload | null;
+  pendingQuestions: AskUserQuestionPayload[];
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -168,7 +173,7 @@ function createEmptyRuntime(): ChatRuntime {
     },
     taskQueue: [],
     queuePaused: false,
-    pendingQuestion: null,
+    pendingQuestions: [],
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -266,10 +271,13 @@ interface ChatState {
   clearTaskQueue: (sessionId: string) => void;
   removeFromTaskQueue: (sessionId: string, id: string) => void;
   reorderTaskQueue: (sessionId: string, fromIndex: number, toIndex: number) => void;
-  setPendingQuestion: (sessionId: string, question: AskUserQuestionPayload | null) => void;
+  enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
+  clearPendingQuestions: (sessionId: string) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
+  clearPermissionQuestions: (sessionId: string) => void;
   setInputValue: (sessionId: string, value: string) => void;
   setSessionError: (sessionId: string, error: string | null) => void;
   setUsageSummary: (sessionId: string, messageId: string, usage: UsageSummary) => void;
@@ -341,7 +349,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             ...runtime,
             messages: [...runtime.messages, ...messages],
             messageRenderKeySeq,
-            ...(message.role === 'user' ? { assistantStreamSplit: false, reasoningSegments: runtime.reasoningSegments.filter((s) => s.closed) } : {}),
+            ...(message.role === 'user'
+              ? {
+                  assistantStreamSplit: false,
+                  // 上一轮被中断（暂停/停止）时思考段可能永远等不到 closeReasoning；
+                  // 新一轮开始只把它冻结收尾，不能整段丢弃——否则上一轮思考块连同头像
+                  // 会凭空消失（刷新后历史又能恢复）。closedAt 落在最后一个真实 delta 帧。
+                  reasoningSegments: runtime.reasoningSegments.map((segment) =>
+                    segment.closed
+                      ? segment
+                      : { ...segment, closed: true, closedAt: segment.updatedAt ?? Date.now() }
+                  ),
+                }
+              : {}),
           },  
         },
       };
@@ -384,7 +404,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1309,7 +1329,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolExecutionOrder: nextOrder,
               orphanResults: new Map(),
               interruptResult: null,
-              pendingQuestion: null,
+              pendingQuestions: [],
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1327,7 +1347,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             toolExecutionOrder: [],
             orphanResults: new Map(),
             interruptResult: null,
-            pendingQuestion: null,
+            pendingQuestions: [],
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1390,7 +1410,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestion: null,
+            pendingQuestions: [],
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1470,14 +1490,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     });
   },
 
-  setPendingQuestion: (sessionId, question) => {
+  enqueuePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = enqueuePendingQuestions(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  consumePendingQuestion: (sessionId, question) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = consumeQueuedQuestion(runtime.pendingQuestions, question);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
+  },
+
+  clearPendingQuestions: (sessionId) => {
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
       return {
         runtimes: {
           ...state.runtimes,
-          [sessionId]: { ...runtime, pendingQuestion: question },
+          [sessionId]: { ...runtime, pendingQuestions: [] },
         },
       };
     });
@@ -1579,6 +1633,23 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         isGoalObjectiveMessage: true,
       });
     }
+  },
+
+  clearPermissionQuestions: (sessionId) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const pendingQuestions = clearQueuedPermissionQuestions(runtime.pendingQuestions);
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: {
+            ...runtime,
+            pendingQuestions,
+          },
+        },
+      };
+    });
   },
 
   setInputValue: (sessionId, value) => {

@@ -142,6 +142,8 @@ export interface WorkflowRun {
   detail_pending?: boolean;
   phase_total?: number;
   has_more?: boolean;
+  /** 冷启动恢复的 run（无进程内 controller 句柄）；true 时控制按钮应置灰。 */
+  recovered?: boolean;
 }
 
 const SPLITTABLE_AGENT_FIELDS = [
@@ -647,6 +649,24 @@ export function sortPhasesByExecution(phases: WorkflowPhase[]): WorkflowPhase[] 
     }
   }
   return result;
+}
+
+/**
+ * 计算 session 卡片代表节点的状态。
+ *
+ * 不能直接取 members[0]（Turn 0）——session 的 turn 是按轮递增的多条记录，
+ * Turn0 completed 而 Turn1 running 时，members[0] 会让整张卡片提前变绿。
+ * 聚合规则：任一成员还活着（waiting_for_human / running / paused）就按活着的
+ * 状态渲染；全部 terminal 后取最新一轮 turn 的状态。
+ */
+export function computeSessionStatus<T extends { status: WorkflowStatus }>(
+  members: T[],
+): WorkflowStatus {
+  if (members.length === 0) return 'planned';
+  if (members.some((m) => m.status === 'waiting_for_human')) return 'waiting_for_human';
+  if (members.some((m) => m.status === 'running')) return 'running';
+  if (members.some((m) => m.status === 'paused')) return 'paused';
+  return members[members.length - 1]?.status ?? 'planned';
 }
 
 /**

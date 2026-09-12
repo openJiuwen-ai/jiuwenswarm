@@ -18,6 +18,9 @@ touching a real LLM, the network, or a live ``DeepAgent``:
 
 from __future__ import annotations
 
+# TEST ONLY: endpoint literals use RFC-reserved domains and are configuration
+# values only; the assembly suite never performs network I/O.
+
 import inspect
 import json
 import logging
@@ -190,6 +193,7 @@ _TEAM_SHARED_RAIL_NAMES: frozenset[str] = frozenset(
         registry.MULTIMODAL_IMAGE,
         registry.TEAM_WORKSPACE_REPORT_PATH,
         registry.CONTEXT_PROCESSOR,
+        registry.PERSONAL_CONTEXT,
         registry.PLUGIN_RAILS,
         registry.SKILL_RETRIEVAL_PROMPT,
         registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -219,6 +223,8 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
+        registry.VIDEO_GEN,
+        registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
@@ -578,7 +584,7 @@ def test_build_member_capability_specs_rail_names(
 
     assert _TEAM_SHARED_RAIL_NAMES <= rail_names
     assert extra_rails <= rail_names
-    assert len(_TEAM_SHARED_RAIL_NAMES) == 18
+    assert len(_TEAM_SHARED_RAIL_NAMES) == 19
     assert rail_names == expected
     # No DeepAgent is involved; every entry is a plain declarative RailSpec.
     assert all(isinstance(spec, RailSpec) for spec in rails_specs)
@@ -1473,6 +1479,33 @@ def test_send_file_gating_defaults_by_channel() -> None:
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
 
 
+def test_team_send_file_does_not_enable_auto_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team assembly keeps the legacy manual send-file execution path."""
+    toolkit = MagicMock()
+    toolkit.get_tools.return_value = [object()]
+    toolkit_type = MagicMock(return_value=toolkit)
+    monkeypatch.setattr(runtime_tools, "SendFileToolkit", toolkit_type)
+    ctx = SwarmBuildContext(
+        session_id="session-team",
+        request_id="request-team",
+        channel_id="web",
+        request_metadata={"mode": "team"},
+    )
+
+    assert runtime_tools.build_send_file_tools({}, ctx) == toolkit.get_tools.return_value
+    toolkit_type.assert_called_once_with(
+        request_id="request-team",
+        session_id="session-team",
+        channel_id="web",
+        metadata={"mode": "team"},
+        user_id=None,
+        project_dir=None,
+        team_workspace_root=None,
+    )
+
+
 def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cron provider builds the member-scoped toolkit via CronRuntimeBridge."""
 
@@ -1580,10 +1613,11 @@ async def test_team_workspace_policy_keeps_project_deliverables_in_project(
 
     content = builder.build()
     assert f"User project root: `{project_dir}`" in content
-    assert f"Team collaboration workspace: `{team_ws_root}`" in content
+    assert f"Team shared workspace (config / internal data): `{team_ws_root}`" in content
     assert "Source code, tests, configuration" in content
     assert "When worktree isolation is active" in content
-    assert "Do not place final project files in the team collaboration workspace" in content
+    assert "final deliverables stay in the project" in content
+    assert "Do not place final project files in the team shared workspace root" in content
     assert "Use the internal mount path only" not in content
 
 
@@ -1609,8 +1643,8 @@ async def test_team_workspace_policy_does_not_fallback_project_files_to_team_wor
     )
 
     content = builder.build()
-    assert "User project root: unavailable" in content
-    assert "Do not silently use the team collaboration workspace" in content
+    assert "No user project root is available" in content
+    assert "do not silently drop them in the team workspace" in content
 
 
 @pytest.mark.parametrize("role", ["leader", "teammate"])
@@ -1800,12 +1834,12 @@ def test_vision_model_config_params_gating(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(tools, "multimodal_model_enabled", lambda cfg, kind: True)
     monkeypatch.setattr(tools, "apply_vision_model_config_from_yaml", lambda cfg: None)
     monkeypatch.setenv("VISION_API_KEY", "key")
-    monkeypatch.setenv("VISION_BASE_URL", "https://vision.example")
+    monkeypatch.setenv("VISION_BASE_URL", "https://vision.invalid")
     monkeypatch.setenv("VISION_MODEL", "vlm-1")
 
     params = tools.vision_model_config_params({})
     assert params["api_key"] == "key"
-    assert params["base_url"] == "https://vision.example"
+    assert params["base_url"] == "https://vision.invalid"
     assert params["model"] == "vlm-1"
 
 
@@ -2169,6 +2203,8 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.USER_TODOS,
         registry.VIDEO,
         registry.IMAGE_GEN,
+        registry.VIDEO_GEN,
+        registry.VISUAL_GEN,
         registry.XIAOYI_PHONE,
         registry.SYMPHONY_TOOLKIT,
         registry.CODE_EXTRA_TOOLS,
@@ -2606,6 +2642,7 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
 
     calls: list[str] = []
     created: list[object] = []
+    build_calls: list[dict[str, object]] = []
 
     class FakePermissionRail:
         priority = 90
@@ -2616,7 +2653,8 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
         async def before_tool_call(self, ctx: object) -> None:
             calls.append(ctx.inputs.tool_name)
 
-    def fake_build_permission_rail(**_kwargs: object) -> FakePermissionRail:
+    def fake_build_permission_rail(**kwargs: object) -> FakePermissionRail:
+        build_calls.append(kwargs)
         rail = FakePermissionRail()
         created.append(rail)
         return rail
@@ -2624,22 +2662,60 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
     monkeypatch.setattr(interrupt_helpers, "build_permission_rail", fake_build_permission_rail)
 
     plan_rail = code_rails.build_permission_interrupt(
-        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        {
+            "permissions_config": {"enabled": True, "mode": "auto"},
+            "model_name": "gpt-4",
+        },
         SwarmBuildContext(mode="team.plan.code", role="leader"),
     )
     code_rail = code_rails.build_permission_interrupt(
-        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        {
+            "permissions_config": {"enabled": True, "mode": "auto"},
+            "model_name": "gpt-4",
+        },
         SwarmBuildContext(mode="code.team", role="leader"),
     )
 
     assert plan_rail is not created[0]
     assert code_rail is created[1]
+    assert all(
+        call_kwargs.get("enable_auto_permission", False) is False
+        for call_kwargs in build_calls
+    )
     assert plan_rail.get_callbacks()[AgentCallbackEvent.BEFORE_TOOL_CALL] == plan_rail.before_tool_call
 
     await plan_rail.before_tool_call(types.SimpleNamespace(inputs=types.SimpleNamespace(tool_name="exit_plan_mode")))
     await plan_rail.before_tool_call(types.SimpleNamespace(inputs=types.SimpleNamespace(tool_name="bash")))
 
     assert calls == ["bash"]
+
+
+def test_permission_interrupt_omitted_for_cron_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common.rails.interrupt import interrupt_helpers
+
+    created: list[object] = []
+
+    def fake_build_permission_rail(**_kwargs: object) -> object:
+        rail = object()
+        created.append(rail)
+        return rail
+
+    monkeypatch.setattr(interrupt_helpers, "build_permission_rail", fake_build_permission_rail)
+
+    rail = code_rails.build_permission_interrupt(
+        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        SwarmBuildContext(
+            mode="team",
+            role="leader",
+            session_id="cron_19abc_job1",
+            channel_id="__cron__",
+        ),
+    )
+
+    assert rail is None
+    assert created == []
 
 
 def test_code_extra_tools_gated_by_config() -> None:
@@ -2789,7 +2865,7 @@ def test_code_member_builds_declaratively_without_post_processing(
         model=TeamModelConfig(
             model_client_config=ModelClientConfig(
                 client_provider="OpenAI",
-                api_key="test-key",
+                api_key="TEST_ONLY_MODEL_KEY",
                 api_base="https://example.test/v1",
                 verify_ssl=False,
             )
@@ -2956,10 +3032,39 @@ def test_enrich_sets_serializable_build_context_seed() -> None:
     assert spec.build_context_seed is not None
     assert spec.build_context_seed["mode"] == "code.team"
     assert spec.build_context_seed["project_dir"] == "/tmp/proj"
-    assert spec.build_context_seed["disable_teammate_worktree"] is True
+    assert spec.build_context_seed["disable_teammate_worktree"] is False
     assert spec.build_context_seed["team_id"] == spec.team_name
     # The seed equals what the live context exports.
     assert spec.build_context_seed == spec.build_context.to_seed()
+
+
+@pytest.mark.parametrize(
+    ("mode", "expected_disabled"),
+    [
+        ("team.work.normal", True),
+        ("team.work.plan", True),
+        ("agent.code.normal", True),
+        ("code.team", False),
+        ("team.plan.code", False),
+        ("team.code.normal", False),
+        ("team.code.plan", False),
+    ],
+)
+def test_enrich_enables_teammate_worktree_only_for_web_code_team(
+    mode: str,
+    expected_disabled: bool,
+) -> None:
+    spec = _make_team_spec()
+
+    enrich_team_spec_for_swarm(
+        spec,
+        session_id="s",
+        mode=mode,
+        channel_id="web",
+    )
+
+    assert spec.build_context.disable_teammate_worktree is expected_disabled
+    assert spec.build_context_seed["disable_teammate_worktree"] is expected_disabled
 
 
 def test_distributed_member_rebuild_reconstructs_build_context() -> None:

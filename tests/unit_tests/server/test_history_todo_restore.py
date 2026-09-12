@@ -39,6 +39,10 @@ async def test_history_get_stream_emits_todo_updated_on_page_one(tmp_path, monke
         lambda: tmp_path / "todo",
     )
     monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        lambda _session_id: {},
+    )
+    monkeypatch.setattr(
         AgentWebSocketServer,
         "get_conversation_history",
         staticmethod(
@@ -148,7 +152,7 @@ async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatc
     )
     load_mock = SimpleNamespace(called=False)
 
-    def _should_not_load(_session_id: str):
+    def _should_not_load(_session_id: str, **_kwargs):
         load_mock.called = True
         return [{"id": "x"}]
 
@@ -178,3 +182,92 @@ async def test_history_get_stream_skips_todo_on_later_pages(tmp_path, monkeypatc
         for w in sent_wires
         if isinstance(w.get("payload"), dict)
     )
+
+
+@pytest.mark.asyncio
+async def test_history_get_stream_reads_code_project_todo(tmp_path, monkeypatch):
+    session_id = "web_code_hist_todo"
+    project = tmp_path / "agent-core"
+    todo_dir = project / "todo" / session_id
+    todo_dir.mkdir(parents=True)
+    (todo_dir / "todo.json").write_text(
+        json.dumps(
+            [
+                {
+                    "id": "t1",
+                    "content": "from project",
+                    "activeForm": "restoring",
+                    "status": "in_progress",
+                }
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.todo_snapshot.get_deepagent_todo_dir",
+        lambda: tmp_path / "unused-default-todo",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server._todo_snapshot_session_fields",
+        lambda _session_id: {
+            "project_dir": str(project),
+            "work_mode": "code",
+            "mode": "agent.code.normal",
+        },
+    )
+    monkeypatch.setattr(
+        AgentWebSocketServer,
+        "get_conversation_history",
+        staticmethod(
+            lambda session_id, page_idx, **_kwargs: {
+                "messages": [],
+                "total_pages": 1,
+                "page_idx": page_idx,
+            }
+        ),
+    )
+
+    sent_wires: list[dict] = []
+
+    async def _capture_send(_ws, wire):
+        sent_wires.append(wire)
+        return True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.send_wire_payload",
+        _capture_send,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.agent_ws_server.encode_agent_chunk_for_wire",
+        lambda chunk, response_id, sequence: {
+            "response_id": response_id,
+            "sequence": sequence,
+            "payload": chunk.payload,
+            "is_complete": chunk.is_complete,
+        },
+    )
+
+    request = AgentRequest(
+        request_id="req-hist-code-proj",
+        channel_id="web",
+        req_method="history.get",
+        params={"session_id": session_id, "page_idx": 1},
+        is_stream=True,
+    )
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    await AgentWebSocketServer._handle_history_get_stream(
+        server,
+        _FakeWs(),
+        request,
+        AsyncMock(),
+    )
+
+    todo_wire = next(w for w in sent_wires if w["payload"].get("event_type") == "todo.updated")
+    assert todo_wire["payload"]["todos"] == [
+        {
+            "id": "t1",
+            "content": "from project",
+            "activeForm": "restoring",
+            "status": "in_progress",
+        }
+    ]

@@ -645,6 +645,33 @@ def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
     return tools
 
 
+class _NoCreateCronBackend:
+    """Backend view that forbids creating new cron jobs.
+
+    用于 cron 执行会话的工具集：统一 ``cron`` 工具的 ``add`` 动作与
+    ``cron_create_job`` 都汇聚到 ``create_job``，在这里统一拒绝，防止
+    cron 运行中再派生出新 cron；其余管理操作照常委托内层 backend。
+    """
+
+    def __init__(self, inner: CronToolBackend) -> None:
+        self._inner = inner
+
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        _ = (params, context)
+        raise ValueError(
+            "Creating new cron jobs from a cron session is not allowed; "
+            "manage existing jobs (list/get/update/delete) instead"
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class CronRuntimeBridge:
     """Resolve the host cron backend for DeepAgents while keeping gateway diffs minimal."""
 
@@ -685,8 +712,21 @@ class CronRuntimeBridge:
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
 
-    def build_tools(self, *, context: Any, agent_id: Optional[str], language: str = "cn") -> list[Any]:
-        """Build cron tools."""
+    def build_tools(
+        self,
+        *,
+        context: Any,
+        agent_id: Optional[str],
+        language: str = "cn",
+        allow_create: bool = True,
+    ) -> list[Any]:
+        """Build cron tools.
+
+        Args:
+            allow_create: False 时下掉创建类工具（``cron_create_job``），并让
+                统一 ``cron`` 工具的 ``add`` 动作直接报错。用于 cron 执行会话，
+                禁止 cron 再派生新 cron；list/get/update/delete 等管理能力保留。
+        """
         backend = self.get_backend()
         if backend is None:
             logger.warning("[CronRuntimeBridge] cron backend is not ready, skip builtin cron tools")
@@ -700,10 +740,11 @@ class CronRuntimeBridge:
         if isinstance(backend, _CronToolsCronBackend):
             backend.bind_context(context)
 
-        logger.info("[CronRuntimeBridge] Building cron tools for context: %s", 
+        logger.info("[CronRuntimeBridge] Building cron tools for context: %s",
                     getattr(context, 'tool_scope', 'unknown'))
+        effective_backend = backend if allow_create else _NoCreateCronBackend(backend)
         tools = create_cron_tools(
-            backend,
+            effective_backend,
             context=context,
             target_channels=[channel.value for channel in CronTargetChannel],
             default_target_channel=None,
@@ -711,10 +752,18 @@ class CronRuntimeBridge:
             language=language,
         )
         tools = list(tools or [])
+        if not allow_create:
+            # 创建类工具下掉：cron 会话内不暴露 cron_create_job。
+            tools = [
+                tool
+                for tool in tools
+                if getattr(getattr(tool, "card", None), "name", "") != "cron_create_job"
+            ]
         # 修正 openjiuwen 工具描述中的 dow 编号语义（1=SUN→0=SUN，与 croniter 一致），
         # 见模块顶部 _CRON_DOW_SEMANTIC_FIXES 说明。
         tools = _patch_cron_tool_cards(tools)
-        logger.info("[CronRuntimeBridge] Built %d cron tools: %s", 
-                    len(tools), 
+        logger.info("[CronRuntimeBridge] Built %d cron tools (create_enabled=%s): %s",
+                    len(tools),
+                    allow_create,
                     [tool.card.name if hasattr(tool, 'card') else str(tool) for tool in tools])
         return tools

@@ -326,16 +326,16 @@ Working tree changes are obtained via `git diff HEAD` (tracked files only). The 
 
 These commands are registered and parsed by the TUI, then forwarded as slash text through the normal chat channel. The actual evolution logic runs on the Agent / Team backend:
 
-- Agent mode: handled by `SkillEvolutionRail`; only `agent.plan` is supported.
-- Team mode: handled by `TeamSkillEvolutionRail` for team skill evolution.
+- Agent mode: uses the single-Agent evolution runtime; automatic suggestions target regular Skills.
+- Team mode: uses the team evolution runtime; automatic suggestions target Team/Swarm Skills.
 - Code mode and `agent.fast` do not support these commands.
 
 #### Subcommands
 
 | Command | Description |
 |---|---|
-| `/evolve <skill_name> [user_query]` | Trigger evolution for one skill. `agent.plan` scans the current conversation for tool failures and user corrections; Team mode requires `user_query`. |
-| `/evolve_list <skill_name> [--sort score]` | Show one skill's evolution records with count, average score, usage/feedback stats, section, and content preview. |
+| `/evolve <skill_name> [user_intent]` | Start an evolution review for the named Skill; trailing text is an optional review intent. The explicit command resolves the target's actual kind, so Team mode can manually evolve a regular Skill and normal mode can manually evolve a Team/Swarm Skill. |
+| `/evolve_list <skill_name>` | Show one skill's score-ordered evolution records with count, average score, usage/feedback stats, section, and content preview. |
 | `/evolve_simplify <skill_name> [user_intent]` | Generate an approval-gated cleanup plan to merge duplicates, split long records, or remove low-value records. Trailing text is passed to the backend as intent. |
 | `/evolve_rebuild <skill_name> [user_intent]` | Generate a rebuild follow-up prompt and continue as a normal Agent / Team task to rebuild `SKILL.md`. |
 
@@ -350,7 +350,7 @@ These commands are registered and parsed by the TUI, then forwarded as slash tex
 
 ```bash
 /evolve pptx improve export error handling
-/evolve_list pptx --sort score
+/evolve_list pptx
 /evolve_simplify pptx merge duplicate export-failure records
 /evolve_rebuild pptx strengthen Troubleshooting and Examples
 ```

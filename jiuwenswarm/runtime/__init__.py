@@ -10,6 +10,86 @@ from typing import Any
 _EXPORTS = {
     "AgentRuntime": ("jiuwenswarm.runtime.service", "AgentRuntime"),
     "RuntimeStateError": ("jiuwenswarm.runtime.service", "RuntimeStateError"),
+    "RuntimeSessionProvisioner": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "RuntimeSessionProvisioner",
+    ),
+    "PreparedSessionProvision": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "PreparedSessionProvision",
+    ),
+    "SessionCreateInput": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionCreateInput",
+    ),
+    "SessionCreateResult": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionCreateResult",
+    ),
+    "SessionDeleteLifecycle": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionDeleteLifecycle",
+    ),
+    "SessionDeleteResult": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionDeleteResult",
+    ),
+    "SessionDescriptor": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionDescriptor",
+    ),
+    "SessionForkInput": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionForkInput",
+    ),
+    "SessionForkResult": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionForkResult",
+    ),
+    "SessionProvisionCommitContext": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionCommitContext",
+    ),
+    "SessionProvisionCommitTiming": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionCommitTiming",
+    ),
+    "SessionProvisionError": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionError",
+    ),
+    "SessionProvisionInput": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionInput",
+    ),
+    "SessionProvisionResult": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionResult",
+    ),
+    "SessionProvisionState": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionState",
+    ),
+    "SessionProvisionStateError": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionStateError",
+    ),
+    "SessionProvisionerContract": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionProvisionerContract",
+    ),
+    "SessionSwitchInput": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionSwitchInput",
+    ),
+    "SessionSwitchResult": (
+        "jiuwenswarm.runtime.session_provisioner",
+        "SessionSwitchResult",
+    ),
+    "RuntimeSessionCoordinator": (
+        "jiuwenswarm.runtime.session",
+        "RuntimeSessionCoordinator",
+    ),
     "RuntimeExecutionContext": (
         "jiuwenswarm.runtime.context",
         "RuntimeExecutionContext",

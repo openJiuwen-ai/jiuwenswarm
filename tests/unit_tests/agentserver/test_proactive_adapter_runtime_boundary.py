@@ -57,13 +57,14 @@ async def test_trigger_uses_injected_manager_and_runtime_push_transport() -> Non
         async def process_message_stream(self, _request):
             yield SimpleNamespace(
                 request_id="chunk-1",
-                payload={"content": "hello"},
+                payload={"content": "hello", "event_type": "chat.final"},
                 is_complete=True,
             )
 
     class _PushTransport:
-        async def send_push(self, message: dict[str, Any]) -> None:
+        async def send_push(self, message: dict[str, Any]) -> bool:
             pushed.append(message)
+            return True
 
     server = SimpleNamespace(
         get_agent_manager=lambda: pytest.fail("explicit manager must be used"),
@@ -74,7 +75,7 @@ async def test_trigger_uses_injected_manager_and_runtime_push_transport() -> Non
         channel_id="web",
         query="recommend",
         decision=SimpleNamespace(type="tip", target="user"),
-        on_delivered=delivered.set,
+        on_delivered=lambda _msg: delivered.set(),
     )
 
     triggered = await proactive_adapter.trigger_main_agent(
@@ -94,6 +95,7 @@ async def test_trigger_uses_injected_manager_and_runtime_push_transport() -> Non
             "session_id": "session-transport",
             "payload": {
                 "content": "hello",
+                "event_type": "chat.final",
                 "source": "proactive_recommendation",
                 "proactive_type": "tip",
                 "proactive_target": "user",
@@ -112,12 +114,13 @@ async def test_agentserver_host_path_preserves_push_behavior(monkeypatch) -> Non
         async def process_message_stream(self, _request):
             yield SimpleNamespace(
                 request_id="server-chunk",
-                payload={"content": "server path"},
+                payload={"content": "server path", "event_type": "chat.final"},
                 is_complete=True,
             )
 
-    async def server_send_push(message: dict[str, Any]) -> None:
+    async def server_send_push(message: dict[str, Any]) -> bool:
         pushed.append(message)
+        return True
 
     manager = _AgentManager(_Agent())
     server = SimpleNamespace(
@@ -135,7 +138,7 @@ async def test_agentserver_host_path_preserves_push_behavior(monkeypatch) -> Non
         channel_id="web",
         query="recommend",
         decision=SimpleNamespace(type="tip", target="user"),
-        on_delivered=delivered.set,
+        on_delivered=lambda _msg: delivered.set(),
     )
     try:
         triggered = await proactive_adapter.trigger_main_agent(server, request)
@@ -157,20 +160,21 @@ async def test_trigger_push_unavailable_does_not_report_delivery() -> None:
         async def process_message_stream(self, _request):
             yield SimpleNamespace(
                 request_id="chunk-1",
-                payload={"content": "hello"},
+                payload={"content": "hello", "event_type": "chat.final"},
                 is_complete=True,
             )
 
     class _UnavailableTransport:
-        async def send_push(self, _message: dict[str, Any]) -> None:
-            raise RuntimeError("runtime push is unavailable")
+        # 真实 send_push 失败时返回 False（不抛异常），见 AgentWebSocketServer.send_push。
+        async def send_push(self, _message: dict[str, Any]) -> bool:
+            return False
 
     request = proactive_adapter.ProactiveTriggerRequest(
         session_id="session-unavailable",
         channel_id="web",
         query="recommend",
         decision=SimpleNamespace(type="tip", target="user"),
-        on_delivered=delivered.set,
+        on_delivered=lambda _msg: delivered.set(),
     )
 
     triggered = await proactive_adapter.trigger_main_agent(

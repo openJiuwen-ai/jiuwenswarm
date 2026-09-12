@@ -20,6 +20,8 @@
   --color-surface-panel-strong-rgb: 255, 255, 255;
   --color-surface-panel-hover: #ffffff;
   --color-surface-panel-hover-rgb: 255, 255, 255;
+  --color-skill-card-action-surface: #f4f4f5;
+  --color-skill-card-action-hover-surface: #e4e4e7;
   --color-surface-chrome: rgba(255, 255, 255, 0.95);
   --color-surface-shell: #f3f3f3;
   --color-surface-transparent: transparent;
@@ -32,16 +34,22 @@
   --color-text-secondary: #777777;
   --color-text-secondary-rgb: 119, 119, 119;
   --color-text-tertiary: #52525b;
+  --color-text-weak: #595959;
+  --color-text-weak-rgb: 89, 89, 89;
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
+  --color-text-meta-rgb: 128, 128, 128;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
   --color-text-link: #0067d1;
+  --color-text-divider: #dbdbdb;
+  --color-text-divider-rgb: 219, 219, 219;
 
   /* Borders */
   --color-border-default: #e4e4e7;
   --color-border-default-rgb: 228, 228, 231;
+  --color-border-card: #e6e6e6;
   --color-border-strong: #d4d4d8;
   --color-border-hover: #a1a1aa;
   --color-border-accent: rgba(37, 99, 235, 0.5);
@@ -51,6 +59,9 @@
   --color-border-warning: rgba(217, 119, 6, 0.5);
   --color-border-danger: rgba(220, 38, 38, 0.5);
   --color-border-input: #e4e4e7;
+  --color-border-input-strong: #c2c2c2;
+  --color-border-input-strong-rgb: 194, 194, 194;
+  --color-border-toolbar-input: #e2e2e2;
   --color-border-focus: #2563eb;
 
   /* Actions and brand */
@@ -69,7 +80,6 @@
   --color-button-hover: #fafafa;
   --color-brand-secondary: #0d9488;
   --color-tool-tab-active-bg: #e6e6e6;
-  --color-tool-tab-hover-bg: #fafafa;
   --color-artifact-toolbar-icon: #191919;
   --color-artifact-toolbar-icon-disabled: #c0c0c0;
   --color-artifact-toolbar-divider: #e5e5e5;
@@ -96,6 +106,17 @@
   --color-tag-neutral-surface: #f5f5f5;
   --color-feedback-success-toast: #d5f2dc;
   --color-feedback-danger-toast: #fce9e9;
+  /* 断联警示横幅（connector detail）：2026-08-19 用户指定的精确色值，
+     不用 danger-subtle（10% 透明红叠底换算值与它有肉眼可辨偏差） */
+  --color-feedback-danger-banner: #fce3e1;
+  /* ConnectorMarket 操作反馈 Toast（带图标+hover 态，与扁平的 feedback-*-toast 视觉不同）；
+     色值为组件既定视觉的精确值，勿与 feedback-*-toast 混用 */
+  --color-connector-toast-success-surface: #eaf9ee;
+  --color-connector-toast-success-text: #1a8a3d;
+  --color-connector-toast-success-surface-hover: #d7f1df;
+  --color-connector-toast-error-surface: #fdecec;
+  --color-connector-toast-error-text: #c0332b;
+  --color-connector-toast-error-surface-hover: #f7dada;
   --color-code-stat-added-surface: #d5f2dc;
   --color-code-stat-removed-surface: #fce3e0;
   --color-feedback-success-indicator: #1a991d;
@@ -157,6 +178,14 @@
   --color-skill-action-surface: #ffffff;
   --color-skill-action-text: #000000;
   --color-skill-action-hover: #f0f0f0;
+  --color-skill-card-action-surface: #f5f5f5;
+  --color-skill-card-action-hover-surface: #f0f7ff;
+  --color-skill-badge-multimodal-surface: #d5f2dc;
+  --color-skill-badge-multimodal-text: #029931;
+  --color-skill-evolution-card-surface: #fafafa;
+  --color-skill-notice-surface: #deecff;
+  --color-skill-dropzone-surface: #f5f5f5;
+  --color-skill-dropzone-hover-surface: #eeeeee;
   --color-skill-capsule-active: #0066ff;
   --color-team-event-surface: var(--color-surface-elevated);
   --color-team-event-summary-surface: transparent;
@@ -164,7 +193,7 @@
   --color-sidebar-nav-active: #e6e6e6;
   --color-sidebar-nav-active-hover: #dedee0;
   --color-sidebar-action-hover: #e6e6e6;
-  --color-sidebar-surface: var(--color-surface-shell);
+  --color-sidebar-surface: #f5f5f5;
   --color-settings-nav-surface: #f5f5f5;
   --color-settings-card-subtle: #fafafa;
   --color-settings-border: #f0f0f0;
@@ -245,7 +274,7 @@
   --color-task-card-surface: #fafafa;
   --color-task-progress: #67c57e;
   --color-task-progress-track: #e0e0e0;
-  --color-task-column-label: #595959;
+  --color-task-column-label: #8c8c8c;
   --color-team-overflow-surface: #edf1ff;
   --color-member-card-badge-surface: #e1e8fd;
   --color-team-detail-surface: #f8fafc;
@@ -263,7 +292,9 @@
   --color-source-selected-surface: #eaeaeb;
   --color-option-disabled: #8c8c96;
   --color-control-emphasis: #191919;
+  --color-control-emphasis-rgb: 25, 25, 25;
   --color-control-emphasis-text: #ffffff;
+  --color-control-emphasis-text-rgb: 255, 255, 255;
   --color-control-emphasis-hover: #1f2937;
   --color-control-emphasis-hover-strong: #333333;
   --color-config-team-icon: rgb(217, 70, 239);
@@ -274,9 +305,10 @@
   --color-cron-action-link: #1476ff;
   --color-cron-auto-managed-surface: #e0f2fe;
   --color-cron-auto-managed-text: #0369a1;
+  --color-cron-table-header-surface: #f5f5f5;
   --color-overlay-cron-dialog: rgba(0, 0, 0, 0.4);
   --color-overlay-cron-drawer: rgba(0, 0, 0, 0.3);
-  --color-connector-tag-surface: #f5f5f5;
+  --color-tag-surface: #f5f5f5;
   --color-connector-tool-icon-surface: #f3f3f3;
   --color-connector-tool-icon-border: #dfdfdf;
   --color-connector-add-hover-surface: rgba(20, 118, 255, 0.06);

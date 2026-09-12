@@ -33,5 +33,5 @@ test('resolveFrontendPlatform uses the first explicit supported source', () => {
 
 test('getHiddenNavItemsForPlatform preserves current web behavior and trims Harmony sidebar', () => {
   assert.deepEqual(getHiddenNavItemsForPlatform('web'), ['sessions']);
-  assert.deepEqual(getHiddenNavItemsForPlatform('harmony'), ['teams', 'sessions', 'updatepanel']);
+  assert.deepEqual(getHiddenNavItemsForPlatform('harmony'), ['sessions', 'updatepanel']);
 });

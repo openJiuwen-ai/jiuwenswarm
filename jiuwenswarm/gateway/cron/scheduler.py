@@ -29,6 +29,7 @@ from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -215,22 +216,7 @@ def _format_cron_broadcast_text(*, job_name: str, text: str, is_placeholder: boo
 
 
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
-    # Lazy import so the rest of the system can still run without cron enabled.
-    from croniter import croniter  # type: ignore
-
-    # Support Quartz 7-field format: second minute hour day month dow year
-    # croniter default is minute hour day month dow second year
-    field_count = len(cron_expr.strip().split())
-    second_at_beginning = field_count == 7
-
-    it = croniter(cron_expr, base_dt, second_at_beginning=second_at_beginning)
-    nxt = it.get_next(datetime)
-    if not isinstance(nxt, datetime):
-        raise RuntimeError("croniter returned invalid datetime")
-    if nxt.tzinfo is None:
-        # Keep tz-consistent; base_dt is tz-aware in our usage.
-        return nxt.replace(tzinfo=base_dt.tzinfo)
-    return nxt
+    return next_cron_datetime(cron_expr, base_dt)
 
 
 @dataclass(frozen=True, order=True)
@@ -312,11 +298,22 @@ class CronSchedulerService:
             signature != self._last_store_signature
             and (signature != (0, 0, 0) or self._last_store_signature != (0, 0, 0))
         ):
-            logger.info(
-                "[Cron] store file changed (signature %s -> %s), reloading",
-                self._last_store_signature,
-                signature,
-            )
+            if signature == (0, 0, 0) and self._jobs:
+                # Losing a populated store is not routine housekeeping: an
+                # INFO "changed" line reads the same whether the file was edited
+                # or relocated away. Name what stops.
+                logger.warning(
+                    "[Cron] store %s disappeared while holding %d job(s); "
+                    "all schedules stop until it returns",
+                    self._store.path,
+                    len(self._jobs),
+                )
+            else:
+                logger.info(
+                    "[Cron] store file changed (signature %s -> %s), reloading",
+                    self._last_store_signature,
+                    signature,
+                )
             await self.reload()
             return True
         return False
@@ -454,6 +451,18 @@ class CronSchedulerService:
         continue executing and pushing results despite having no persistent record.
         """
         jobs = await self._store.list_jobs()
+        # A scheduler holding zero jobs is otherwise indistinguishable from a
+        # healthy one, which is how a relocated store goes unnoticed.
+        if jobs:
+            logger.info(
+                "[Cron] loaded %d job(s) from %s", len(jobs), self._store.path
+            )
+        else:
+            logger.warning(
+                "[Cron] loaded 0 jobs from %s (exists=%s) - nothing is scheduled",
+                self._store.path,
+                self._store.path.exists(),
+            )
         self._jobs = {j.id: j for j in jobs}
         new_job_ids = set(self._jobs.keys())
 
@@ -615,7 +624,7 @@ class CronSchedulerService:
         wake_dt = now
         run_id = f"{job.id}:{int(push_dt.timestamp())}"
         channel_id, exec_session_id = self._make_execution_context(job)
-        self._runs[run_id] = CronRunState(
+        state = CronRunState(
             run_id=run_id,
             job_id=job.id,
             wake_at_iso=wake_dt.isoformat(),
@@ -632,10 +641,27 @@ class CronSchedulerService:
             exec_work_mode=job.work_mode or DEFAULT_WEB_WORK_MODE,
             exec_project_id=job.project_id or None,
         )
+        # 普通 cron 原先先把本地构造的 ``cron_<timestamp>_<job>`` 返回给 Web，
+        # 再在 wake 阶段向 AgentServer 创建真正的 session。两个 ID 不同，前端会
+        # 先跳到不存在的 warmup 占位页。立即分配并返回真正的执行 session，wake
+        # 阶段复用它即可；team cron 的 session 仍由原有流式路径创建。
+        # proactive.tick has its own wake handler and sends PROACTIVE_TICK to a
+        # stable session (``cron_<job_id>``).  It never consumes a normal cron
+        # chat session, so allocating one here would leave an orphan session.
+        mode = state.exec_mode or CRON_JOB_DEFAULT_MODE
+        if mode != "proactive.tick" and not is_team_cron_mode(mode):
+            state.exec_session_id = await self._allocate_single_agent_session(
+                job,
+                mode=mode,
+                run_id=run_id,
+            )
+            state.exec_channel_id = "__cron__"
+            state.execution_session_allocated = True
+        self._runs[run_id] = state
         self._schedule_event(wake_dt, "wake", job.id, run_id)
         self._schedule_event(push_dt, "push", job.id, run_id)
         self._reload_event.set()
-        return {"run_id": run_id, "session_id": exec_session_id}
+        return {"run_id": run_id, "session_id": state.exec_session_id or ""}
 
     def _make_execution_context(self, job: CronJob) -> tuple[str, str]:
         ts = format(int(time.time() * 1000), "x")
@@ -687,6 +713,30 @@ class CronSchedulerService:
 
     def _schedule_event(self, at_dt: datetime, kind: str, job_id: str, run_id: str) -> None:
         at_ts = float(at_dt.timestamp())
+        # 幂等去重（仅 wake，同 run_id 维度）：若堆里已有相同 run_id + wake 的 event，
+        # 不重复排入。
+        # 背景：proactive.tick 每次 completed 后（854行）都调 _compute_next_run 算下一次
+        # wake 并 _schedule_event。相邻几次 tick（cron 到点 + 用户多次 run_now）算出的
+        # next_run_id 相同（下一个 cron 到点不变），重复排入会让堆里累积多个同 run_id
+        # wake，到点时被主循环逐个消费 → 同一 run_id triggering 多次 → 连推多张卡片
+        # （2026-08-31 实测 9 次同 run_id 推 6 张；2026-09-01 插桩确证堆里累积 6 个同
+        # run_id wake）。
+        #
+        # 用 run_id 维度而非 job 维度：trigger_run_now（597行）每次的 run_id = 触发时刻
+        # （每次不同），不会被去重 → 用户点"立即执行"正常执行，不误杀。只有 completed
+        # 重排的 next_run_id（短时间内多次 tick 都相同，= 下一个 cron 到点）才会命中
+        # 去重 → 堵住累积。无需时间魔法数字，靠 run_id 语义自然区分。
+        # 只对 wake 去重：push/push_update 是补发场景，可能需重复（如 push_update 补
+        # 最终结果），不去重。
+        if kind == "wake":
+            for _, _, e in self._events:
+                if e.kind == "wake" and e.run_id == run_id:
+                    logger.info(
+                        "[Cron] _schedule_event skip duplicate wake: job=%s run_id=%s "
+                        "already in heap (at=%.3f)",
+                        job_id, run_id, e.at_ts,
+                    )
+                    return
         self._seq += 1
         ev = _Event(at_ts=at_ts, seq=self._seq, kind=kind, job_id=job_id, run_id=run_id)
         heapq.heappush(self._events, (ev.at_ts, ev.seq, ev))
@@ -1070,7 +1120,7 @@ class CronSchedulerService:
                 state.exec_work_mode = job.work_mode or DEFAULT_WEB_WORK_MODE
                 state.exec_project_id = job.project_id or None
                 state.exec_project_dir = None
-                if not is_team_cron_mode(mode):
+                if not is_team_cron_mode(mode) and not state.execution_session_allocated:
                     exec_session_id = await self._allocate_single_agent_session(
                         job,
                         mode=mode,
@@ -1078,6 +1128,7 @@ class CronSchedulerService:
                     )
                     state.exec_channel_id = "__cron__"
                     state.exec_session_id = exec_session_id
+                    state.execution_session_allocated = True
                 cron_meta = {
                     "job_id": job.id,
                     "job_name": job.name,

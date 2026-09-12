@@ -6,9 +6,17 @@ from datetime import datetime
 from pathlib import Path
 
 try:
-    from .runtime_openjiuwen import DEFAULT_RUNTIME_ENV_VAR, resolve_runtime_python
+    from .runtime_openjiuwen import (
+        DEFAULT_RUNTIME_ENV_VAR,
+        resolve_npm_executable,
+        resolve_runtime_python,
+    )
 except ImportError:
-    from runtime_openjiuwen import DEFAULT_RUNTIME_ENV_VAR, resolve_runtime_python
+    from runtime_openjiuwen import (
+        DEFAULT_RUNTIME_ENV_VAR,
+        resolve_npm_executable,
+        resolve_runtime_python,
+    )
 
 
 UI_E2E_ROOT = Path(__file__).resolve().parent
@@ -16,6 +24,7 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 WEB_DIR = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend"
 
 CASE_SCRIPTS = {
+    "task-multimodal": UI_E2E_ROOT / "task_multimodal_ui_report.py",
     "todo": UI_E2E_ROOT / "todo_ui_report.py",
     "cron": UI_E2E_ROOT / "cron_ui_report.py",
 }
@@ -28,7 +37,7 @@ def _parse_args() -> argparse.Namespace:
         "--cases",
         nargs="+",
         choices=tuple(CASE_SCRIPTS.keys()),
-        default=["todo", "cron"],
+        default=["task-multimodal", "todo", "cron"],
         help="Cases to run. Default runs all Web UI E2E cases.",
     )
     parser.add_argument(
@@ -66,7 +75,11 @@ def main() -> int:
     args = _parse_args()
 
     if args.build:
-        subprocess.run(["npm", "run", "build"], cwd=str(WEB_DIR), check=True)
+        subprocess.run(
+            [resolve_npm_executable(), "run", "build"],
+            cwd=str(WEB_DIR),
+            check=True,
+        )
 
     timestamp = datetime.now().strftime("%Y%m%d-%H%M%S")
     report_root = (

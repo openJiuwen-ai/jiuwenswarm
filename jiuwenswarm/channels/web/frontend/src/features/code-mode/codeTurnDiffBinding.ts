@@ -36,9 +36,16 @@ function isAssistantTurnAnchor(message: Message): boolean {
 }
 
 function findDirectMessageId(messageIds: Set<string>, turn: GitTurnDiff): string | null {
+  // Cron persists its request as ``cron-<run_id>`` but the WebSocket timeline
+  // renders its final output as ``cron-final-<run_id>``. Treat both as the
+  // same turn anchor so the latest cron change card retains undo/redo actions.
+  const cronFinalMessageId = turn.request_id.startsWith('cron-')
+    ? `cron-final-${turn.request_id.slice('cron-'.length)}`
+    : '';
   const candidates = [
     turn.assistant_message_id,
     turn.request_id,
+    cronFinalMessageId,
     turn.assistant_message_id ? `team-leader-${turn.assistant_message_id}` : '',
     turn.request_id ? `team-leader-${turn.request_id}` : '',
   ];

@@ -1,0 +1,14 @@
+id: video-duplex
+name: Full-duplex Video
+version: 1.0.0
+description: Camera, screen, microphone, realtime model, search, ASR and TTS workspace
+author: JiuwenSwarm
+min_jiuwenswarm_version: "0.2.5"
+package_type: application
+dependencies: {}
+permissions:
+  - camera
+  - microphone
+  - display_capture
+  - outbound_network
+  - agent_tools

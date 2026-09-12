@@ -13,6 +13,10 @@ _EXPORTS = {
         "jiuwenswarm.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
     ),
+    "ApplicationPluginExtension": (
+        "jiuwenswarm.extensions.sdk.application_plugin",
+        "ApplicationPluginExtension",
+    ),
     "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (
         "jiuwenswarm.extensions.sdk.crypto_utility",

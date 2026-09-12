@@ -13,7 +13,14 @@ from unittest.mock import AsyncMock, Mock
 
 import pytest
 from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
+from openjiuwen.agent_teams.schema.status import MemberStatus
 from openjiuwen.agent_teams.schema.team import TeamRole
+
+from jiuwenswarm.agents.harness.team.handlers.workflow_state import (
+    WorkflowAgentState,
+    WorkflowPhaseState,
+    WorkflowRunState,
+)
 
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 from jiuwenswarm.server.runtime.agent_adapter import team_helpers
@@ -22,11 +29,6 @@ from jiuwenswarm.server.runtime.agent_adapter import team_helpers
 def _broadcast_recorder(events: list[dict], manager=None):
     async def _record(_channel_id, session_id: str, event: dict) -> None:
         events.append(event)
-        if (
-            manager is not None
-            and event.get("event_type") in team_helpers._TEAM_BUILDING_EVENT_TYPES
-        ):
-            manager.mark_seen_team_events(session_id)
 
     return _record
 
@@ -367,27 +369,26 @@ class _InactiveTeamRuntimeManagerMixin:
     """Provide the session-scoped runtime state API for inactive test managers."""
 
     def __init__(self) -> None:
-        self._seen_team_events: dict[str, bool] = {}
-        self._workflow_completed: dict[str, bool] = {}
         self._test_rounds: dict[str, str] = {}
+        self._test_startup_locks: dict[str, asyncio.Lock] = {}
 
-    def mark_seen_team_events(self, session_id: str) -> None:
-        self._seen_team_events[session_id] = True
+    def get_startup_lock(self, session_id: str) -> asyncio.Lock:
+        return self._test_startup_locks.setdefault(session_id, asyncio.Lock())
 
-    def has_seen_team_events(self, session_id: str) -> bool:
-        return self._seen_team_events.get(session_id, False)
+    def hold_idle(self, session_id: str, marker: dict) -> None:
+        self.__dict__.setdefault("_test_held_idle", {})[session_id] = marker
 
-    def reset_seen_team_events(self, session_id: str) -> None:
-        self._seen_team_events.pop(session_id, None)
+    def pop_held_idle(self, session_id: str):
+        return self.__dict__.setdefault("_test_held_idle", {}).pop(session_id, None)
 
-    def mark_workflow_completed(self, session_id: str) -> None:
-        self._workflow_completed[session_id] = True
+    def get_background_task_controller(self, session_id: str):
+        # Real TeamManager owns the per-session controller; the helpers reach it
+        # through get_team_manager(), so a patched manager must serve one too.
+        from openjiuwen.agent_teams.runtime.background_task_controller import BackgroundTaskController
 
-    def is_workflow_completed(self, session_id: str) -> bool:
-        return self._workflow_completed.get(session_id, False)
-
-    def reset_workflow_completed(self, session_id: str) -> None:
-        self._workflow_completed.pop(session_id, None)
+        return self.__dict__.setdefault("_test_controllers", {}).setdefault(
+            session_id, BackgroundTaskController()
+        )
 
     @staticmethod
     def is_runtime_active(session_id: str) -> bool:
@@ -1718,16 +1719,17 @@ def test_sync_team_identity_metadata_persists_ready_team_for_any_activation(monk
     team_helpers.sync_team_identity_metadata(
         channel_id="web",
         session_id="sess-runtime",
-        mode="team",
         ready_team_name="ready-team",
         activation_kind="resume",
     )
 
+    # 只写 team_name，不碰 metadata.mode（sync_team_identity_metadata 曾写死
+    # mode="team" 会盖掉 chat 轮次落盘的 team.work.plan，制造 session.plan_status
+    # 误报 false 的空窗）。
     assert updates == [
         {
             "session_id": "sess-runtime",
             "channel_id": "web",
-            "mode": "team",
             "team_name": "ready-team",
         }
     ]
@@ -1746,7 +1748,6 @@ def test_sync_team_identity_metadata_keeps_existing_conflicting_team(monkeypatch
     team_helpers.sync_team_identity_metadata(
         channel_id="web",
         session_id="sess-runtime",
-        mode="team",
         ready_team_name="ready-team",
         activation_kind="resume",
     )
@@ -1819,13 +1820,19 @@ async def test_handle_team_slash_command_allows_evolve_rollback(monkeypatch, tmp
 
 
 @pytest.mark.anyio
-async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch, tmp_path):
+async def test_process_team_message_stream_forwards_project_dir_and_handles_team_evolve_list(
+    monkeypatch,
+    tmp_path,
+):
     _write_team_skill(
         tmp_path,
         "demo-skill",
         records=[_evolution_record("First summary line")],
     )
     captured_spec: list[object] = []
+    captured_build_kwargs: list[dict[str, Any]] = []
+    project_dir = tmp_path / "project"
+    project_dir.mkdir()
 
     class _FakeManager(_InactiveTeamRuntimeManagerMixin):
         @staticmethod
@@ -1834,6 +1841,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
 
         @staticmethod
         async def get_swarm_enriched_team_spec(**kwargs):
+            captured_build_kwargs.append(kwargs)
             spec = SimpleNamespace(
                 team_name="unit-team",
                 workspace=SimpleNamespace(root_path=str(tmp_path / "team-workspace")),
@@ -1841,21 +1849,27 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
             captured_spec.append(spec)
             return spec
 
-    monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
+    monkeypatch.setattr(
+        team_helpers, "get_team_manager", lambda channel_id: _FakeManager()
+    )
 
     request = SimpleNamespace(
         session_id="sess-team-stream",
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"mode": "team", "project_dir": str(project_dir)},
     )
-    inputs = {"query": "/evolve_list demo-skill"}
+    inputs = {
+        "query": "/evolve_list demo-skill",
+        "project_dir": str(project_dir),
+    }
 
     chunks = []
     async for chunk in team_helpers.process_team_message_stream(
-            request,
-            inputs,
-            object(),
+        request,
+        inputs,
+        object(),
     ):
         chunks.append(chunk)
 
@@ -1872,6 +1886,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert chunks[1].is_complete is False
     assert chunks[2].is_complete is True
     assert captured_spec
+    assert captured_build_kwargs[0]["project_dir"] == str(project_dir)
 
 
 @pytest.mark.anyio
@@ -2144,7 +2159,11 @@ async def test_cancelled_heartbeat_followup_aborts_submitted_team_round(monkeypa
 
 
 @pytest.mark.anyio
-async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypatch):
+@pytest.mark.parametrize("mode", ["team", "team.plan", "team.code.plan"])
+@pytest.mark.parametrize("completion_timing", ["after_ack", "final_before_ack", "terminal_before_ack"])
+async def test_interactive_team_followup_uses_round_only_for_lifecycle(
+    monkeypatch, mode, completion_timing,
+):
     from jiuwenswarm.agents.harness.code.rails.heartbeat.execution import (
         SessionRunAdmission,
     )
@@ -2158,10 +2177,25 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
             return SimpleNamespace(team_name="unit-team")
 
         async def interact(self, session_id: str, query: str):
+            # Plan skip can finish without a model call, before interact returns.
+            if completion_timing != "after_ack":
+                await self.broadcast_event(
+                    session_id, {"event_type": "chat.final", "content": "continued"},
+                )
+            if completion_timing == "terminal_before_ack":
+                await self.broadcast_event(
+                    session_id,
+                    {
+                        "event_type": "chat.processing_status",
+                        "is_processing": False,
+                        "is_complete": True,
+                    },
+                )
             return True, None
 
     manager = _FakeManager()
-    manager.add_waiter("sess-team-user", "req-browser", asyncio.Queue())
+    browser_queue = asyncio.Queue()
+    manager.add_waiter("sess-team-user", "req-browser", browser_queue)
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: manager)
     monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
     admission = SessionRunAdmission()
@@ -2170,7 +2204,7 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         request_id="req-user-followup",
         channel_id="web",
         metadata={},
-        params={"mode": "team"},
+        params={"mode": mode},
         user_id="owner",
     )
 
@@ -2190,6 +2224,13 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         team_helpers.reset_team_heartbeat_service(heartbeat_token)
 
     assert chunks[0].payload["event_type"] == "chat.processing_status_deferred"
+    if completion_timing == "terminal_before_ack":
+        # A late acknowledgement must not resurrect an already completed round.
+        assert manager.is_round_active("sess-team-user") is False
+        assert admission.is_user_active("sess-team-user") is False
+        assert browser_queue.get_nowait()["event_type"] == "chat.final"
+        assert browser_queue.get_nowait()["is_processing"] is False
+        return
     # The user admission is retained until the actual Team round terminates,
     # even though the short follow-up transport has already returned.
     assert admission.is_user_active("sess-team-user") is True
@@ -2199,11 +2240,12 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         SimpleNamespace(admission=admission)
     )
     try:
-        await team_helpers._broadcast_event(
-            "web",
-            "sess-team-user",
-            {"event_type": "chat.final", "content": "continued"},
-        )
+        if completion_timing == "after_ack":
+            await team_helpers._broadcast_event(
+                "web",
+                "sess-team-user",
+                {"event_type": "chat.final", "content": "continued"},
+            )
         await team_helpers._broadcast_event(
             "web",
             "sess-team-user",
@@ -2217,6 +2259,233 @@ async def test_interactive_team_followup_uses_round_only_for_lifecycle(monkeypat
         team_helpers.reset_team_heartbeat_service(terminal_token)
     assert manager.is_round_active("sess-team-user") is False
     assert admission.is_user_active("sess-team-user") is False
+    assert browser_queue.get_nowait()["event_type"] == "chat.final"
+    assert browser_queue.get_nowait()["is_processing"] is False
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("first_outcome", ["success", "error", "cancel"])
+async def test_concurrent_team_cold_start_delivers_output_once(monkeypatch, first_outcome):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    preparing = asyncio.Event()
+    allow_prepare = asyncio.Event()
+    second_entered = asyncio.Event()
+    interacted = asyncio.Event()
+    runner_started = asyncio.Event()
+    emit_output = asyncio.Event()
+    starts = []
+    interactions = []
+    spec_calls = []
+
+    class _FakeManager(TeamManager):
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            spec_calls.append(kwargs["request_id"])
+            if len(spec_calls) == 1:
+                preparing.set()
+                await allow_prepare.wait()
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False, agents={})
+
+        async def interact(self, session_id, query):
+            interactions.append(_delivered_content(query))
+            interacted.set()
+            return True, None
+
+    manager = _FakeManager()
+    session_id = "sess-concurrent-cold-start"
+
+    async def _runner(channel_id, session_id, spec, query, **kwargs):
+        starts.append(_delivered_content(query))
+        runner_started.set()
+        try:
+            await emit_output.wait()
+            await manager.broadcast_event(
+                session_id, {"event_type": "chat.delta", "content": "杭州", "role": "leader"},
+            )
+        finally:
+            manager.clear_pending_runtime(session_id)
+            manager.pop_stream_task(session_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _runner)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    round_count = 0
+
+    def _increment_round(_session_id):
+        nonlocal round_count
+        round_count += 1
+        if first_outcome == "error" and round_count == 1:
+            # Fail after pending runtime + waiter registration to exercise rollback.
+            raise RuntimeError("startup failed")
+        return round_count
+
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", _increment_round)
+    monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
+
+    async def _submit(request_id, query):
+        request = SimpleNamespace(
+            session_id=session_id, request_id=request_id, channel_id="web",
+            metadata={}, params={"mode": "team"}, user_id="owner",
+        )
+        if request_id == "req-gold":
+            second_entered.set()
+        return [
+            chunk async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": query}, object(),
+            )
+        ]
+
+    tasks = [asyncio.create_task(_submit("req-weather", "查询杭州天气"))]
+    try:
+        await asyncio.wait_for(preparing.wait(), timeout=1)
+        tasks.append(asyncio.create_task(_submit("req-gold", "查询今日金价")))
+        await asyncio.wait_for(second_entered.wait(), timeout=1)
+        assert spec_calls == ["req-weather"]
+        if first_outcome == "cancel":
+            tasks[0].cancel()
+        else:
+            allow_prepare.set()
+        await asyncio.wait_for(runner_started.wait(), timeout=2)
+        if first_outcome == "success":
+            await asyncio.wait_for(interacted.wait(), timeout=1)
+            assert starts == ["查询杭州天气"]
+            assert interactions == ["查询今日金价"]
+            expected_waiter = "req-weather"
+        else:
+            assert starts == ["查询今日金价"]
+            assert interactions == []
+            expected_waiter = "req-gold"
+        assert [rid for rid, _ in manager.get_waiters(session_id)] == [expected_waiter]
+        emit_output.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks, return_exceptions=True), timeout=1)
+        assert isinstance(results[1], list)
+        if first_outcome == "success":
+            assert isinstance(results[0], list)
+        elif first_outcome == "error":
+            assert isinstance(results[0], RuntimeError)
+            assert str(results[0]) == "startup failed"
+        elif first_outcome == "cancel":
+            assert isinstance(results[0], asyncio.CancelledError)
+        deltas = [
+            chunk.payload["content"] for result in results if isinstance(result, list) for chunk in result
+            if chunk.payload and chunk.payload.get("event_type") == "chat.delta"
+        ]
+        assert deltas == ["杭州"]
+        assert not manager.has_waiters(session_id)
+        assert not manager.is_runtime_pending(session_id)
+        assert not manager.get_startup_lock(session_id).locked()
+    finally:
+        background = manager.pop_stream_task(session_id)
+        if background is not None:
+            tasks.append(background)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
+
+
+@pytest.mark.anyio
+async def test_concurrent_team_fallback_starts_one_replacement_stream(monkeypatch):
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    both_prepared = asyncio.Event()
+    deliver_inputs = asyncio.Event()
+    both_attempted = asyncio.Event()
+    allow_activation = asyncio.Event()
+    interacted = asyncio.Event()
+    finish = asyncio.Event()
+    starts = []
+    interactions = []
+
+    class _FakeManager(TeamManager):
+        old_stream_active = True
+        spec_calls = 0
+        activation_calls = 0
+        delivery_attempts = 0
+
+        def has_stream_task(self, session_id):
+            return self.old_stream_active or super().has_stream_task(session_id)
+
+        async def get_swarm_enriched_team_spec(self, **kwargs):
+            self.spec_calls += 1
+            if self.spec_calls == 2:
+                both_prepared.set()
+            await deliver_inputs.wait()
+            return SimpleNamespace(team_name="unit-team", enable_swarmflow=False, agents={})
+
+        async def prepare_runtime_activation(self, session_id, team_name):
+            self.activation_calls += 1
+            await allow_activation.wait()
+            await super().prepare_runtime_activation(session_id, team_name)
+
+        async def interact(self, session_id, query):
+            self.delivery_attempts += 1
+            if self.delivery_attempts == 2:
+                both_attempted.set()
+            if not self.has_stream_task(session_id):
+                return False, "not_active"
+            interactions.append(_delivered_content(query))
+            interacted.set()
+            return True, None
+
+    manager = _FakeManager()
+    session_id = "sess-concurrent-fallback"
+
+    async def _runner(channel_id, session_id, spec, query, **kwargs):
+        starts.append(_delivered_content(query))
+        try:
+            await finish.wait()
+            await manager.broadcast_event(
+                session_id, {"event_type": "chat.delta", "content": "杭州", "role": "leader"},
+            )
+        finally:
+            manager.clear_pending_runtime(session_id)
+            manager.pop_stream_task(session_id)
+
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda _: manager)
+    monkeypatch.setattr(team_helpers, "_consume_stream_with_query", _runner)
+    monkeypatch.setattr(team_helpers, "_persist_team_file_monitor_roots", lambda *args: None)
+    monkeypatch.setattr(team_helpers, "increment_session_round_count", lambda _: 1)
+    monkeypatch.setattr(team_helpers, "_handle_team_slash_command", AsyncMock(return_value=None))
+
+    async def _submit(request_id, query):
+        request = SimpleNamespace(
+            session_id=session_id, request_id=request_id, channel_id="web",
+            metadata={}, params={"mode": "team"}, user_id="owner",
+        )
+        return [
+            chunk async for chunk in team_helpers.process_team_message_stream(
+                request, {"query": query}, object(),
+            )
+        ]
+
+    tasks = [
+        asyncio.create_task(_submit("req-weather", "查询杭州天气")),
+        asyncio.create_task(_submit("req-gold", "查询今日金价")),
+    ]
+    try:
+        await asyncio.wait_for(both_prepared.wait(), timeout=1)
+        manager.old_stream_active = False
+        deliver_inputs.set()
+        await asyncio.wait_for(both_attempted.wait(), timeout=1)
+        assert manager.activation_calls == 1
+        allow_activation.set()
+        await asyncio.wait_for(interacted.wait(), timeout=1)
+        assert starts == ["查询杭州天气"]
+        assert interactions == ["查询今日金价"]
+        assert len(manager.get_waiters(session_id)) == 1
+        finish.set()
+        results = await asyncio.wait_for(asyncio.gather(*tasks), timeout=1)
+        assert sum(
+            chunk.payload is not None and chunk.payload.get("event_type") == "chat.delta"
+            for result in results for chunk in result
+        ) == 1
+    finally:
+        background = manager.pop_stream_task(session_id)
+        if background is not None:
+            tasks.append(background)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
 
 
 @pytest.mark.anyio
@@ -5035,6 +5304,10 @@ async def test_consume_workflow_events_broadcasts_raw_for_tui(monkeypatch):
 
     class _FakeWorkflowHandler:
         is_running = True
+        # The consumer owns the emission contract and reads these cross-class.
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
 
         async def events(self):
             yield event
@@ -5075,6 +5348,10 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
 
     class _FakeWorkflowHandler:
         is_running = True
+        # The consumer owns the emission contract and reads these cross-class.
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
 
         async def events(self):
             yield event
@@ -5086,17 +5363,223 @@ async def test_consume_workflow_events_converts_to_team_events_for_web(monkeypat
         "web", "sess-wf-web", handler,
     )
 
-    # All channels receive the raw workflow.updated (web tree view) plus the
-    # activation notice; web additionally receives converted team.* envelopes.
+    # All channels receive the raw workflow.updated (web tree view); web
+    # additionally receives converted team.* envelopes.
     assert broadcasted
-    raw_types = [e["event_type"] for e in broadcasted]
-    assert "swarmflow.activated" in raw_types
-    assert "workflow.updated" in raw_types
+    assert "workflow.updated" in [e["event_type"] for e in broadcasted]
     team_events = [e for e in broadcasted if e["event_type"] in ("team.member", "team.task")]
     assert team_events
     types = [e["event"]["type"] for e in team_events]
     assert "team.task.claimed" in types
     assert "team.member.spawned" in types
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_dedup_survives_consumer_restart(monkeypatch):
+    """A resume relaunch replays the whole event history (cached prefix):
+    every already-completed phase's agents re-emit started+completed. The
+    dedup state must live on the handler (session-scoped) — the consumer
+    loop is cancelled on team pause and restarted on wake, and a fresh
+    loop re-emitted the replayed events, double-counting finished work on
+    the task board.
+    """
+    from jiuwenswarm.agents.harness.team.handlers.workflow_monitor_handler import (
+        WorkflowMonitorHandler,
+    )
+
+    broadcasted: list[dict[str, object]] = []
+    replay = {
+        "event_type": "workflow.updated", "session_id": "s",
+        "workflow": {"id": "r", "status": "running", "phases": [{
+            "id": "p1", "name": "p1", "status": "completed",
+            "agents": [{"id": "a1", "name": "w", "status": "completed"}],
+        }]},
+    }
+    live = {
+        "event_type": "workflow.updated", "session_id": "s",
+        "workflow": {"id": "r", "status": "running", "phases": [{
+            "id": "p2", "name": "p2", "status": "running",
+            "agents": [{"id": "a2", "name": "w", "status": "running"}],
+        }]},
+    }
+
+    class _Handler(WorkflowMonitorHandler):
+        def __init__(self):
+            # Bypass the real __init__ (it needs a TeamMonitor); keep the
+            # session-scoped dedup state the consumer reads.
+            self._runs = {}
+            self.seen_phase = {}
+            self.seen_agent = {}
+            self.spawned_members = set()
+
+        is_running = True
+
+        async def events(self):
+            yield replay
+
+    # First consumer pass sees the phase-1 events (counts them), then the
+    # team pauses: the loop is cancelled, its local dedup dies.
+    class _TM:
+        def pop_held_idle(self, sid):
+            return None
+
+    handler = _Handler()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: _TM())
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", handler)
+
+    first_pass = [e for e in broadcasted if e.get("event_type") == "team.task"]
+    assert any(e["event"]["task_id"].endswith("p1") for e in first_pass)
+
+    # Second consumer pass (after wake): the engine replays the SAME phase-1
+    # events plus the genuinely new phase-2 agent.
+    async def events2():
+        yield replay
+        yield live
+
+    handler.events = events2
+    broadcasted.clear()  # second_pass must only see what THIS pass emits
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", handler)
+
+    second_pass = [e for e in broadcasted if e.get("event_type") == "team.task"]
+    p1_events = [e for e in second_pass if e["event"]["task_id"].endswith("p1")]
+    p2_events = [e for e in second_pass if e["event"]["task_id"].endswith("p2")]
+    # replayed phase-1 events are deduped (no new claimed/completed);
+    # the new phase-2 agent is announced.
+    assert p1_events == []
+    assert any(e["event"]["type"] == "team.task.claimed" for e in p2_events)
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_releases_held_idle_when_last_run_leaves_active(monkeypatch):
+    """team.idle is a one-shot marker. When the idle guard swallows it because
+    a run is active, and a tree-view pause/stop later drains the active set
+    with no leader activity in between, nothing re-emits idle and the lamp
+    stays lit forever. The workflow consumer must release the held marker
+    the moment every run has left the active set.
+    """
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    broadcasted: list[dict[str, object]] = []
+    paused = WorkflowRunState(id="r", status="paused")
+    event = {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "paused"}}
+
+    class _Handler:
+        is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        async def events(self):
+            yield event
+        def get_run_states(self):
+            return {"r": paused}
+
+    class _TM:
+        def __init__(self):
+            self.held = {"rid": "req-1", "member_count": 1}
+        def pop_held_idle(self, sid):
+            h, self.held = self.held, None
+            return h
+
+    tm = _TM()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: tm)
+
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", _Handler())
+
+    status = [e for e in broadcasted if e.get("event_type") == "chat.processing_status"]
+    assert status == [{
+        "event_type": "chat.processing_status", "session_id": "s", "rid": "req-1",
+        "is_processing": False, "is_complete": True, "member_count": 1,
+    }]
+    assert tm.held is None
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_keeps_held_idle_on_natural_completion(monkeypatch):
+    """A run that completes on its own wakes the leader (completion injection),
+    and the leader's own team.idle turns the lamp off after it reports.
+    Releasing the held marker on the last agent_completed / workflow_completed
+    turned the lamp off ~12ms before the leader woke, so it flickered off→on.
+    Only pause / stop — terminal transitions that do NOT wake the leader —
+    may release the held marker.
+    """
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    broadcasted: list[dict[str, object]] = []
+    done = WorkflowRunState(id="r", status="completed")
+    events = [
+        {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "running"}},
+        {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "completed"}},
+    ]
+
+    class _Handler:
+        is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        async def events(self):
+            for e in events:
+                yield e
+        def get_run_states(self):
+            return {"r": done}
+
+    class _TM:
+        def __init__(self):
+            self.held = {"rid": "req-1", "member_count": 1}
+            self.pops = 0
+        def pop_held_idle(self, sid):
+            self.pops += 1
+            h, self.held = self.held, None
+            return h
+
+    tm = _TM()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: tm)
+
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", _Handler())
+
+    # The consumer's per-event try/except would swallow an assert inside the
+    # fake, so the fake records and we assert here.
+    assert tm.pops == 0 and tm.held is not None
+    assert not [e for e in broadcasted if e.get("event_type") == "chat.processing_status"]
+
+
+@pytest.mark.anyio
+async def test_consume_workflow_events_keeps_held_idle_while_a_run_is_active(monkeypatch):
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    broadcasted: list[dict[str, object]] = []
+    live = WorkflowRunState(id="r", status="running")
+    live.phases = []
+    event = {"event_type": "workflow.updated", "session_id": "s", "workflow": {"id": "r", "status": "running"}}
+
+    class _Handler:
+        is_running = True
+        seen_phase: dict = {}
+        seen_agent: dict = {}
+        spawned_members: set = set()
+        async def events(self):
+            yield event
+        def get_run_states(self):
+            return {"r": live}
+
+    class _TM:
+        def __init__(self):
+            self.pops = 0
+        def pop_held_idle(self, sid):
+            self.pops += 1
+            return {"rid": "req-1", "member_count": 1}
+
+    tm = _TM()
+    monkeypatch.setattr(team_helpers, "_broadcast_event", _broadcast_recorder(broadcasted))
+    monkeypatch.setattr(team_helpers, "_run_lamp_active", lambda run: True)
+    monkeypatch.setattr(team_helpers, "get_team_manager", lambda cid: tm)
+
+    await _TeamHelpersTestApi.consume_workflow_events("web", "s", _Handler())
+
+    assert tm.pops == 0
+    assert not [e for e in broadcasted if e.get("event_type") == "chat.processing_status"]
 
 
 @pytest.mark.anyio
@@ -5366,7 +5849,7 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
 
 @pytest.mark.anyio
 async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch):
-    """Created-but-unstarted members are announced, and only once per stream."""
+    """Active roster members are announced once while shutdown members stay hidden."""
     broadcast_events: list[dict] = []
 
     class _FakeMonitorHandler:
@@ -5388,6 +5871,14 @@ async def test_announce_team_roster_broadcasts_created_members_once(monkeypatch)
                     "execution_status": "idle",
                     "mode": "build_mode",
                     "role": "human_agent",
+                },
+                {
+                    "member_id": "retired-member",
+                    "name": "Retired member",
+                    "status": MemberStatus.SHUTDOWN.value,
+                    "execution_status": "idle",
+                    "mode": "build_mode",
+                    "role": "teammate",
                 },
             ]
 
@@ -5670,6 +6161,36 @@ def test_workflow_updated_to_team_events_planned_phase_creates_task():
     assert ev["event"]["task_id"] == "run-1:planning-1"
     assert ev["event"]["title"] == "planning"
     assert ev["event"]["team_id"] == "wf"
+
+
+def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_thaws():
+    """A paused phase must freeze the board's visual progress, not reset it.
+
+    The board eases in_progress tasks toward 85% on wall-clock alone, so a
+    paused phase left untouched keeps creeping; mapping it to blocked (0%)
+    made the bar snap to zero instead. Keep the task in_progress (same
+    column, same start time) and carry progress_frozen so the easing clock
+    stops; running after a pause thaws it.
+    """
+    seen_phase, seen_agent, spawned = {}, {}, set()
+    team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "paused"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
+        ("team.task.paused", "in_progress", True),
+    ]
+    out = team_helpers._workflow_updated_to_team_events(
+        _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
+        "sess-wf", seen_phase, seen_agent, spawned,
+    )
+    assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
+        ("team.task.claimed", "in_progress", False),
+    ]
 
 
 def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_task():
@@ -6123,3 +6644,318 @@ def test_resolve_session_swarmflow_config_falls_back_to_metadata(
         "enable_swarmflow": True,
         "swarmflow_budget": 30000,
     }
+
+
+def _wf_run_with_agents(*agent_statuses: str) -> WorkflowRunState:
+    """Build a running single-phase run whose agents carry the given statuses."""
+    return WorkflowRunState(
+        status="running",
+        phases=[
+            WorkflowPhaseState(
+                id="phase-1",
+                name="Phase 1",
+                agents=[
+                    WorkflowAgentState(id=f"agent-{i}", name=f"agent-{i}", status=status)
+                    for i, status in enumerate(agent_statuses)
+                ],
+            )
+        ],
+    )
+
+
+def test_run_lamp_active_terminal_run_does_not_hold_lamp() -> None:
+    run = WorkflowRunState(status="completed", phases=[_wf_run_with_agents("running").phases[0]])
+
+    assert team_helpers._run_lamp_active(run) is False
+
+
+def test_run_lamp_active_paused_run_does_not_hold_lamp() -> None:
+    run = WorkflowRunState(status="paused", phases=[_wf_run_with_agents("running").phases[0]])
+
+    assert team_helpers._run_lamp_active(run) is False
+
+
+def test_run_lamp_active_running_agent_holds_lamp() -> None:
+    run = _wf_run_with_agents("completed", "running")
+
+    assert team_helpers._run_lamp_active(run) is True
+
+
+def test_run_lamp_active_waiting_for_human_holds_lamp() -> None:
+    run = _wf_run_with_agents("waiting_for_human")
+
+    assert team_helpers._run_lamp_active(run) is True
+
+
+def test_run_lamp_active_all_completed_agents_do_not_hold_lamp() -> None:
+    run = _wf_run_with_agents("completed", "failed")
+
+    assert team_helpers._run_lamp_active(run) is False
+
+
+# ---------------------------------------------------------------------------
+# _normalize_recovered_runs — park disk-restored zombies on cold start
+# ---------------------------------------------------------------------------
+
+def test_normalize_recovered_runs_parks_running_and_marks_recovered(monkeypatch):
+    """A crash-left running run is parked to paused and marked recovered.
+
+    A restored running run has no live controller (registries are empty after a
+    restart), so parking it keeps the idle lamp honest while recovered=True
+    greys its control buttons until the leader relaunches it.
+    """
+    persist_calls: list[tuple[str, dict[str, Any]]] = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda runs, session_id, **kwargs: persist_calls.append((session_id, runs)),
+    )
+
+    runs = {
+        "running": WorkflowRunState(status="running"),
+        "paused": WorkflowRunState(status="paused"),
+        "done": WorkflowRunState(status="completed"),
+    }
+    result = team_helpers._normalize_recovered_runs(runs, session_id="sess-cold")
+
+    assert result is runs
+    # crash zombie: running -> paused (non-terminal, resumable via relaunch) + recovered
+    assert runs["running"].status == "paused"
+    assert runs["running"].recovered is True
+    # already parked: status untouched, recovered marker added
+    assert runs["paused"].status == "paused"
+    assert runs["paused"].recovered is True
+    # terminal run: neither parked nor marked — it truly finished
+    assert runs["done"].status == "completed"
+    assert runs["done"].recovered is False
+    # a change was persisted exactly once
+    assert persist_calls == [("sess-cold", runs)]
+
+
+def test_normalize_recovered_runs_only_terminal_no_persist(monkeypatch):
+    """All-terminal runs need no normalization — nothing written to disk."""
+    persist_calls: list = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda *args, **kwargs: persist_calls.append(args),
+    )
+
+    runs = {
+        "done": WorkflowRunState(status="completed"),
+        "failed": WorkflowRunState(status="failed"),
+    }
+    team_helpers._normalize_recovered_runs(runs, session_id="sess-noop")
+    assert runs["done"].recovered is False
+    assert runs["failed"].recovered is False
+    assert persist_calls == []
+
+
+def test_normalize_recovered_runs_empty_and_none_returned_unchanged(monkeypatch):
+    """Empty dict / None have nothing to normalize — returned as-is, no persist."""
+    persist_calls: list = []
+    monkeypatch.setattr(
+        team_helpers,
+        "persist_workflow_runs",
+        lambda *args, **kwargs: persist_calls.append(args),
+    )
+
+    assert team_helpers._normalize_recovered_runs({}, "sess-empty") == {}
+    assert team_helpers._normalize_recovered_runs(None, "sess-empty") is None
+    assert persist_calls == []
+
+
+# ---------------------------------------------------------------------------
+# _inject_swarmflow_context — resume-advisory text prefix
+# ---------------------------------------------------------------------------
+
+def _advisory_turn(text: object) -> Any:
+    """Build a minimal UserTurn so _inject_swarmflow_context has a .text/.with_text."""
+    from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
+
+    return UserTurn(text=text, channel="web", language="zh", files={})
+
+
+class _Tickets:
+    """Fake controller: which run_ids still hold a pause ticket in-process."""
+
+    def __init__(self, *run_ids: str) -> None:
+        self._ids = set(run_ids)
+
+    def is_paused(self, run_id: str | None = None) -> bool:
+        return bool(self._ids) if run_id is None else run_id in self._ids
+
+
+def test_inject_swarmflow_context_cold_start_lists_non_terminal_runs() -> None:
+    turn = _advisory_turn("继续生成财务报表")
+    runs = {
+        "run-running": WorkflowRunState(
+            id="run-running", status="running", script_path="/abs/wf.py"
+        ),
+        "run-done": WorkflowRunState(id="run-done", status="completed"),
+    }
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets(),
+    )
+
+    assert isinstance(injected, team_helpers.UserTurn)
+    assert injected is not turn
+    assert isinstance(injected.text, str)
+    assert injected.text.startswith("[swarmflow-advisory]")
+    assert "[/swarmflow-advisory]" in injected.text
+    assert "已暂停状态" in injected.text
+    assert "run-running" in injected.text
+    assert "/abs/wf.py" in injected.text
+    assert 'swarmflow(resume_id="run-running", script_path="/abs/wf.py")' in injected.text
+    assert "run-done" not in injected.text
+    assert injected.text.endswith("\n\n继续生成财务报表")
+    # frozen turn untouched: original text preserved on the source object
+    assert turn.text == "继续生成财务报表"
+
+
+def test_inject_swarmflow_context_followup_lists_only_paused_runs() -> None:
+    turn = _advisory_turn("hi")
+    runs = {
+        "run-paused": WorkflowRunState(
+            id="run-paused", status="paused", script_path="/abs/w2.py"
+        ),
+        "run-running": WorkflowRunState(id="run-running", status="running"),
+        "run-done": WorkflowRunState(id="run-done", status="completed"),
+    }
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("run-paused"),
+    )
+
+    assert isinstance(injected.text, str)
+    assert "run-paused" in injected.text
+    assert "/abs/w2.py" in injected.text
+    assert "run-running" not in injected.text
+    assert "run-done" not in injected.text
+    # In-round the controller still holds the ticket: the leader must use the
+    # control plane, not the launch plane (which would start a brand-new run).
+    assert 'swarmflow(resume_id="run-paused", action="resume")' in injected.text
+    assert "script_path=" not in injected.text
+
+
+def test_inject_swarmflow_context_no_eligible_runs_returns_same_turn() -> None:
+    turn = _advisory_turn("hi")
+    all_terminal = {
+        "a": WorkflowRunState(id="a", status="completed"),
+        "b": WorkflowRunState(id="b", status="stopped"),
+    }
+
+    ctl = _Tickets()
+    assert team_helpers._inject_swarmflow_context(turn, all_terminal, cold_start=True, controller=ctl) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=True, controller=ctl) is turn
+    assert team_helpers._inject_swarmflow_context(turn, {}, cold_start=False, controller=ctl) is turn
+
+
+def test_inject_swarmflow_context_non_string_text_returns_same_turn() -> None:
+    turn = _advisory_turn({"type": "a2ui_event"})
+    runs = {
+        "run-paused": WorkflowRunState(
+            id="run-paused", status="paused", script_path="/abs/wf.py"
+        )
+    }
+
+    assert team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("run-paused"),
+    ) is turn
+
+
+def test_inject_swarmflow_context_cold_start_run_without_script_path_has_no_resume_line() -> None:
+    """Cold start needs the launch plane, which needs script_path; without it only the listing remains."""
+    turn = _advisory_turn("hi")
+    runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets(),
+    )
+
+    assert isinstance(injected.text, str)
+    assert "legacy-run" in injected.text
+    assert "wf.legacy" in injected.text
+    assert "恢复调用" not in injected.text
+
+
+def test_inject_swarmflow_context_followup_resume_needs_no_script_path() -> None:
+    """In-round the ticket carries the inputs, so the control plane works without script_path."""
+    turn = _advisory_turn("hi")
+    runs = {"legacy": WorkflowRunState(id="legacy-run", status="paused", script="wf.legacy")}
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=False, controller=_Tickets("legacy-run"),
+    )
+
+    assert 'swarmflow(resume_id="legacy-run", action="resume")' in injected.text
+
+
+def test_inject_swarmflow_context_first_request_after_pause_uses_ticket_plane() -> None:
+    """A team pause pops the workflow handler, so the next chat.send is a
+    'first request' — but the controller still holds the pause ticket in this
+    process. The template must follow the ticket (action="resume"), not the
+    request shape: the launch plane would start a brand-new run here.
+    """
+    turn = _advisory_turn("继续那个工作流")
+    runs = {"r": WorkflowRunState(id="r", status="paused", script_path="/abs/wf.py")}
+
+    injected = team_helpers._inject_swarmflow_context(
+        turn, runs, cold_start=True, controller=_Tickets("r"),
+    )
+
+    assert 'swarmflow(resume_id="r", action="resume")' in injected.text
+    assert "script_path=" not in injected.text
+
+
+def test_advisory_runs_falls_back_to_snapshot_when_handler_is_gone(monkeypatch) -> None:
+    """After a team pause the handler is popped; the persisted snapshot is the
+    only ledger left and must still feed the advisory (else the leader gets a
+    bare query and guesses).
+    """
+    snapshot = {"r": WorkflowRunState(id="r", status="paused")}
+    monkeypatch.setattr(team_helpers, "restore_workflow_runs", lambda sid: snapshot)
+    tm = SimpleNamespace(get_workflow_handler=lambda sid: None)
+    assert team_helpers._advisory_runs(tm, "sess") is snapshot
+
+    live = {"live": WorkflowRunState(id="live", status="running")}
+    tm = SimpleNamespace(get_workflow_handler=lambda sid: SimpleNamespace(get_run_states=lambda: live))
+    assert team_helpers._advisory_runs(tm, "sess") == live
+
+
+# ---------------------------------------------------------------------------
+# advisory: act on explicit requests, otherwise ask
+# ---------------------------------------------------------------------------
+
+
+def test_inject_swarmflow_context_explicit_request_acts_else_asks() -> None:
+    """The tree-view buttons are greyed while the team sleeps, so the leader is
+    the only control path. The advisory must (a) let an explicit user request
+    (resume/stop a named run) act directly, and (b) otherwise route the
+    decision through ask_user: one question first (全部恢复 / 全部停止 /
+    逐个选择 / 暂不处理), then per-run questions only if the user picks
+    逐个选择 — so several paused runs never exceed ask_user's 4-option box.
+    """
+    turn = _advisory_turn("hi")
+    runs = {
+        "r1": WorkflowRunState(id="r1", status="paused", script_path="/abs/a.py"),
+        "r2": WorkflowRunState(id="r2", status="paused", script_path="/abs/b.py"),
+    }
+
+    for cold_start in (True, False):
+        injected = team_helpers._inject_swarmflow_context(
+            turn, runs, cold_start=cold_start, controller=_Tickets("r1"),
+        )
+        text = injected.text
+        assert isinstance(text, str)
+        # (a) explicit request → act, no question
+        assert "明确要求" in text and "直接执行" in text
+        # (b) otherwise ask_user, coarse first, per-run only on 逐个选择
+        assert "ask_user" in text
+        for opt in ("全部恢复", "全部停止", "逐个选择", "暂不处理"):
+            assert opt in text
+        assert "直接忽略" not in text
+        # every listed run carries a stop call so "停止" is actionable
+        assert 'swarmflow(resume_id="r1", action="stop")' in text
+        assert 'swarmflow(resume_id="r2", action="stop")' in text

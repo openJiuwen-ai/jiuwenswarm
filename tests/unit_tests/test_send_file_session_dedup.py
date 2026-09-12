@@ -4,7 +4,10 @@ from unittest.mock import patch
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools import send_file_to_user as sfu
-from jiuwenswarm.agents.harness.common.tools.web_file_download import build_file_download_info
+from jiuwenswarm.agents.harness.common.tools.web_file_download import (
+    build_file_download_info,
+    validate_file_download_token,
+)
 
 
 @pytest.fixture(autouse=True)
@@ -39,6 +42,9 @@ def test_download_info_includes_agentos_user_id_in_url(tmp_path):
     )
 
     assert "user_id=user-1" in info["download_url"]
+    payload = validate_file_download_token(info["download_token"])
+    assert payload is not None
+    assert "exp" not in payload
 
 
 def test_send_file_skips_duplicate_after_success(tmp_path):

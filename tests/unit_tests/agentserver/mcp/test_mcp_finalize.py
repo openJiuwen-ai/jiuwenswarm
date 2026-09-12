@@ -14,6 +14,8 @@ from __future__ import annotations
 from pathlib import Path
 from unittest.mock import patch
 
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
+
 # --- _finalize_cli end-to-end: pure CLI does NOT register a stdio MCP entry ---
 
 def test_finalize_cli_no_mcp_entry_for_pure_cli(tmp_path: Path) -> None:
@@ -38,6 +40,7 @@ def test_finalize_cli_no_mcp_entry_for_pure_cli(tmp_path: Path) -> None:
         '"statusMatchJson":{"identity":"user"}}',
         encoding="utf-8",
     )
+    write_manifest(mp, "cli", credentials_type="cli-oauth")
     # NOTE: no mcp.json — pure CLI.
 
     upserts: list[dict] = []
@@ -63,10 +66,8 @@ def test_finalize_cli_no_mcp_entry_for_pure_cli(tmp_path: Path) -> None:
     assert result["installed_skills"] == ["lark-doc"]
 
 
-def test_finalize_cli_registers_mcp_for_hybrid_package(tmp_path: Path) -> None:
-    """Hybrid packages (cloudbase: cli.json for auth + mcp.json with command)
-    DO register a stdio MCP entry from mcp.json's command field, written to
-    state.json."""
+def test_finalize_cli_ignores_undeclared_mcp_file(tmp_path: Path) -> None:
+    """A CLI manifest does not infer a second integration from stray mcp.json."""
     mp = tmp_path / "mcp" / "mcp_builtins" / "cloudbase"
     mp.mkdir(parents=True)
     (mp / "cli.json").write_text(
@@ -79,6 +80,7 @@ def test_finalize_cli_registers_mcp_for_hybrid_package(tmp_path: Path) -> None:
         '{"mcpServers":{"cloudbase":{"command":"npx","args":["-y","@cloudbase/cloudbase-mcp@latest"]}}}',
         encoding="utf-8",
     )
+    write_manifest(mp, "cli", credentials_type="cli-oauth")
 
     upserts: list[dict] = []
     with patch("jiuwenswarm.server.runtime.mcp.registry.get_workspace_dir", return_value=tmp_path), \
@@ -93,7 +95,7 @@ def test_finalize_cli_registers_mcp_for_hybrid_package(tmp_path: Path) -> None:
         inst = InstallResult(name="cloudbase", installed=True, version="3.6.4", min_version="3.6.4", version_ok=True)
         result = _finalize_cli("cloudbase", inst)
 
-    # mcp.json declares command=npx -> stdio entry written to state.json.
+    # The undeclared mcp.json does not turn this into a hybrid package.
     assert len(upserts) == 1
-    assert upserts[0]["command"] == "npx"
-    assert result["mcp_entry"] is not None
+    assert "command" not in upserts[0]
+    assert result["mcp_entry"] is None

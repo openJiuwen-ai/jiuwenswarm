@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import argparse
 import errno
+import hmac
 import http.client
 import json
 import logging
@@ -17,31 +18,21 @@ import os
 import posixpath
 import re
 import select
+import signal
 import socket
 import ssl
 import sys
+import threading
 import time
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from typing import Any
-from urllib.parse import ParseResult, quote, unquote, urlparse
+from typing import Any, Mapping
+from urllib.parse import ParseResult, parse_qs, quote, unquote, urlencode, urlparse
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-web")
-
-# --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.agents.harness.common.tools.ssl_config import get_insecure_ssl_context, get_ssl_verify
-from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
-from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
-from jiuwenswarm.common.utils import get_agent_root_dir, get_logs_dir, \
-    get_agent_sessions_dir, get_user_workspace_dir, \
-    wait_for_tcp_port, SensitiveDataFilter
-from jiuwenswarm.server.runtime.session.session_history import history_exists, load_history_records
-
-configure_agent_teams_home()
 
 # AgentServer HTTP bridge 基址解析与上传执行统一收口在 gateway/routing 公共模块，
 # 供 Web 静态服务 / IM 附件落盘钩子 / Web media.persist 大图分流共用（避免各处
@@ -55,6 +46,57 @@ from jiuwenswarm.gateway.routing.agent_http_bridge import (
 
 _resolve_agent_http_base = resolve_agent_http_base
 _resolve_agent_upload_base = resolve_agent_upload_base
+
+
+def _get_user_workspace_dir() -> Path:
+    """Resolve the Web process workspace without importing the agent runtime."""
+    configured = os.getenv("JIUWENSWARM_DATA_DIR", "").strip()
+    if configured:
+        return Path(configured)
+    user_home = os.getenv("JIUWENSWARM_HOME", "").strip()
+    return (Path(user_home) if user_home else Path.home()) / ".jiuwenswarm"
+
+
+def _get_agent_root_dir() -> Path:
+    return _get_user_workspace_dir() / "agent"
+
+
+def _get_agent_sessions_dir() -> Path:
+    return _get_agent_root_dir() / "sessions"
+
+
+def _get_logs_dir() -> Path:
+    return _get_agent_root_dir() / ".logs"
+
+
+def _get_ssl_verify() -> bool:
+    """Load TLS policy only when a proxied HTTPS request needs it."""
+    from jiuwenswarm.agents.harness.common.tools.ssl_config import get_ssl_verify
+
+    return get_ssl_verify()
+
+
+def _get_insecure_ssl_context() -> ssl.SSLContext:
+    from jiuwenswarm.agents.harness.common.tools.ssl_config import (
+        get_insecure_ssl_context,
+    )
+
+    return get_insecure_ssl_context()
+
+
+def _format_ws_diagnostics(
+    *parts: Mapping[str, Any] | None,
+    **fields: Any,
+) -> str:
+    from jiuwenswarm.common.ws_diagnostics import format_ws_diagnostics
+
+    return format_ws_diagnostics(*parts, **fields)
+
+
+def _describe_ws_exception(exc: BaseException) -> dict[str, Any]:
+    from jiuwenswarm.common.ws_diagnostics import describe_ws_exception
+
+    return describe_ws_exception(exc)
 
 
 def _parse_single_byte_range(
@@ -91,11 +133,15 @@ def _parse_single_byte_range(
     return start, min(end, file_size - 1)
 
 
-def _get_agent_teams_root() -> Path:
-    """Return the agent teams root after dotenv initialization."""
-    from openjiuwen.agent_teams.paths import get_agent_teams_home
+def _get_agent_teams_root(project_root: Path) -> Path:
+    """Return the team state root without importing the agent runtime.
 
-    return get_agent_teams_home().resolve()
+    ``configure_agent_teams_home(project_root)`` in AgentServer resolves this
+    exact directory.  The static server only performs bounded file operations
+    under it, so importing OpenJiuwen solely to calculate the same path adds
+    startup work without providing any Web-side behaviour.
+    """
+    return (project_root / ".agent_teams").resolve()
 
 
 def _get_package_dir() -> Path:
@@ -232,6 +278,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     remote_mode = False
     ws_disable_compress = False
 
+    # --- 桌面对话页面限制: 启动 token + HttpOnly Cookie ---
+    # 仅保护 SPA 文档入口; 静态资源/API/WS 保持原有访问规则。
+    # 桌面窗口首次导航经 ?dt=<token> 换取 HttpOnly Cookie。
+    # 源码 web 模式不设置该值, 行为与之前完全一致。
+    desktop_token = ""
+    # Cookie 名按端口区分: 同 host 多桌面实例(端口偏移)互不覆盖。
+    desktop_cookie_name = "__wsdt"
+    _DESKTOP_TOKEN_QUERY_PARAM = "dt"
+
     # --- /auth-api cookie-based auth bridge ---
     # access_token 实测 TTL 15min(900s), refresh_token 实测 7d(604800s)。
     _AUTH_COOKIE_NAME = "jw_token"
@@ -239,10 +294,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     _AUTH_REFRESH_COOKIE_NAME = "jw_refresh"
     _AUTH_REFRESH_MAX_AGE = 7 * 24 * 3600
     _AUTH_API_PREFIX = "/auth-api"
-    project_root = get_user_workspace_dir()
-    workspace_root = get_agent_root_dir()
-    agent_teams_root = _get_agent_teams_root()
-    logs_root = get_logs_dir()
+    project_root = _get_user_workspace_dir()
+    workspace_root = _get_agent_root_dir()
+    agent_teams_root = _get_agent_teams_root(project_root)
+    logs_root = _get_logs_dir()
     auto_harness_root = project_root / "auto-harness"
     logger = logging.getLogger(__name__)
 
@@ -553,7 +608,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         parsed = urlparse(self.api_target)
         if parsed.scheme == "https":
-            ssl_ctx = None if get_ssl_verify() else get_insecure_ssl_context()
+            ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
                 parsed.hostname,
                 parsed.port or self._DEFAULT_HTTPS_PORT,
@@ -617,7 +672,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             return
         parsed = urlparse(self.iam_target)
         if parsed.scheme == "https":
-            ssl_ctx = None if get_ssl_verify() else get_insecure_ssl_context()
+            ssl_ctx = None if _get_ssl_verify() else _get_insecure_ssl_context()
             conn: http.client.HTTPConnection = http.client.HTTPSConnection(
                 parsed.hostname,
                 parsed.port or self._DEFAULT_HTTPS_PORT,
@@ -744,28 +799,48 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._DEFAULT_HTTPS_PORT if parsed.scheme in ("wss", "https") else self._DEFAULT_HTTP_PORT
         )
 
-        try:
-            upstream = socket.create_connection((upstream_host, upstream_port), timeout=self._WS_CONNECT_TIMEOUT)
-            if parsed.scheme in ("wss", "https"):
-                ctx = ssl.create_default_context() if get_ssl_verify() else get_insecure_ssl_context()
-                upstream = ctx.wrap_socket(upstream, server_hostname=upstream_host)
-        except OSError as exc:
+        # Desktop 先开放静态 Web、后启动 Gateway。若浏览器首次 WS upgrade
+        # 恰好落在 Gateway 端口尚未监听的窗口，旧逻辑立即返回 502，随后只能
+        # 等前端的重连退避；这会在 WebChannel 已经可用后额外留下约一轮退避。
+        # 保持当前浏览器连接一小段时间，端口一旦就绪即继续握手，既不改变
+        # 正常已就绪路径，也避免把后端启动竞争暴露给前端。
+        upstream: socket.socket | None = None
+        connect_error: OSError | None = None
+        connect_deadline = time.monotonic() + min(float(self._WS_CONNECT_TIMEOUT), 8.0)
+        while upstream is None:
+            try:
+                upstream = socket.create_connection(
+                    (upstream_host, upstream_port),
+                    timeout=min(0.25, self._WS_CONNECT_TIMEOUT),
+                )
+            except OSError as exc:
+                connect_error = exc
+                if time.monotonic() >= connect_deadline:
+                    break
+                time.sleep(0.05)
+
+        if upstream is None:
             self.log_error(
                 "proxy ws connect failed: %s",
-                format_ws_diagnostics(
+                _format_ws_diagnostics(
                     {
                         "client": self.client_address,
                         "upstream_host": upstream_host,
                         "upstream_port": upstream_port,
                         "scheme": parsed.scheme,
                     },
-                    describe_ws_exception(exc),
+                    _describe_ws_exception(
+                        connect_error or OSError("upstream connection did not complete")
+                    ),
                 ),
             )
             self.send_error(502, "proxy ws connect failed")
             return
 
         try:
+            if parsed.scheme in ("wss", "https"):
+                ctx = ssl.create_default_context() if _get_ssl_verify() else _get_insecure_ssl_context()
+                upstream = ctx.wrap_socket(upstream, server_hostname=upstream_host)
             # 注入 cookie 里的 access_token 作为 ?token=, gateway 鉴权优先级最高。
             # 浏览器 WS 无法带 Authorization 头, 故走 query 注入。
             upstream_path = self.path
@@ -802,7 +877,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             if not response_head:
                 self.log_error(
                     "proxy ws handshake failed: %s",
-                    format_ws_diagnostics(
+                    _format_ws_diagnostics(
                         {
                             "client": self.client_address,
                             "upstream_host": upstream_host,
@@ -820,7 +895,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 status_line = response_head.split(b"\r\n", 1)[0].decode("latin-1", errors="replace")
                 self.logger.info(
                     "[ws][handshake] upstream returned non-101, tunnel closed: %s",
-                    format_ws_diagnostics(
+                    _format_ws_diagnostics(
                         {
                             "client": self.client_address,
                             "upstream_host": upstream_host,
@@ -845,7 +920,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 if errored:
                     self.log_error(
                         "proxy ws socket error, closing tunnel: %s",
-                        format_ws_diagnostics(
+                        _format_ws_diagnostics(
                             {
                                 "client": self.client_address,
                                 "upstream_host": upstream_host,
@@ -867,21 +942,21 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     except OSError as recv_exc:
                         self.log_error(
                             "proxy ws recv failed, closing tunnel: %s",
-                            format_ws_diagnostics(
+                            _format_ws_diagnostics(
                                 {
                                     "client": self.client_address,
                                     "upstream_host": upstream_host,
                                     "upstream_port": upstream_port,
                                     "direction": direction,
                                 },
-                                describe_ws_exception(recv_exc),
+                                _describe_ws_exception(recv_exc),
                             ),
                         )
                         data = b""
                     if not data:
                         self.logger.info(
                             "[ws][tunnel] peer closed: %s",
-                            format_ws_diagnostics(
+                            _format_ws_diagnostics(
                                 {
                                     "client": self.client_address,
                                     "upstream_host": upstream_host,
@@ -916,7 +991,7 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                                 # 长时间不可写，对端疑似卡死，关闭隧道避免空转
                                 self.log_error(
                                     "proxy ws write stalled, closing tunnel: %s",
-                                    format_ws_diagnostics(
+                                    _format_ws_diagnostics(
                                         {
                                             "client": self.client_address,
                                             "upstream_host": upstream_host,
@@ -932,13 +1007,13 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         except Exception as exc:  # noqa: BLE001
             self.log_error(
                 "proxy ws error: %s",
-                format_ws_diagnostics(
+                _format_ws_diagnostics(
                     {
                         "client": self.client_address,
                         "upstream_host": upstream_host,
                         "upstream_port": upstream_port,
                     },
-                    describe_ws_exception(exc),
+                    _describe_ws_exception(exc),
                 ),
             )
             try:
@@ -950,6 +1025,81 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 upstream.close()
             except Exception:  # noqa: BLE001
                 pass
+
+    def _send_desktop_forbidden(self) -> None:
+        """桌面锁定: 拒绝未认证请求的 403 提示页。"""
+        body = (
+            "<!DOCTYPE html><html lang=\"zh-CN\"><head><meta charset=\"utf-8\">"
+            "<meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
+            "<title>禁止访问</title></head>"
+            "<body style=\"font-family:system-ui,sans-serif;background:#0f172a;"
+            "color:#e2e8f0;display:flex;align-items:center;justify-content:center;"
+            "height:100vh;margin:0\">"
+            "<div style=\"text-align:center\">"
+            "<h1 style=\"font-size:22px;font-weight:600\">禁止访问</h1>"
+            "<p style=\"color:#94a3b8;margin-top:12px\">"
+            "此服务仅限桌面端访问，请使用桌面应用打开。</p>"
+            "</div></body></html>"
+        ).encode("utf-8")
+        self.send_response(403)
+        self.send_header("Content-Type", "text/html; charset=utf-8")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        if self.command != "HEAD":
+            self.wfile.write(body)
+
+    def _check_desktop_access(self) -> bool:
+        """桌面锁定校验。返回 True 表示请求已被响应(403/302), 调用方应终止处理。
+
+        - 源码 web 模式 (desktop_token 为空) 恒返回 False, 不做任何校验;
+        - 首次导航携带匹配的 ?dt=<token>: 下发 HttpOnly Cookie 并 302 到
+          去掉 dt 的干净 URL (token 不留在地址栏/前端路由里);
+        - 仅在返回 SPA 文档时调用; 无有效 Cookie 的页面访问返回 403。
+        """
+        if not self.desktop_token:
+            return False
+
+        parsed = urlparse(self.path)
+        query = parse_qs(parsed.query)
+        values = query.get(self._DESKTOP_TOKEN_QUERY_PARAM, [])
+        if values:
+            provided = str(values[0])
+            # bytes 比较: compare_digest 的 str 形式要求 ASCII-only,
+            # 恶意非 ASCII 输入会抛 TypeError 导致连接崩溃。
+            if provided and hmac.compare_digest(
+                provided.encode("utf-8"), self.desktop_token.encode("utf-8")
+            ):
+                remaining = {
+                    key: val
+                    for key, val in query.items()
+                    if key != self._DESKTOP_TOKEN_QUERY_PARAM
+                }
+                location = parsed.path or "/"
+                if remaining:
+                    location += "?" + urlencode(remaining, doseq=True)
+                self.send_response(302)
+                self.send_header("Location", location)
+                self.send_header("Cache-Control", "no-store")
+                self.send_header(
+                    "Set-Cookie",
+                    f"{self.desktop_cookie_name}="
+                    f"{quote(self.desktop_token, safe='')}; "
+                    "Path=/; HttpOnly; SameSite=Lax",
+                )
+                self.end_headers()
+            else:
+                self._send_desktop_forbidden()
+            return True
+
+        cookie_token = self._get_auth_cookie(self.desktop_cookie_name)
+        if cookie_token and hmac.compare_digest(
+            cookie_token.encode("utf-8"), self.desktop_token.encode("utf-8")
+        ):
+            return False
+
+        self._send_desktop_forbidden()
+        return True
 
     def _dispatch_proxy(self) -> bool:
         if self._is_auth_api_route():
@@ -1067,13 +1217,18 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         *,
         session_id: str,
     ) -> tuple[dict[str, Any], str]:
-        sessions_root = get_agent_sessions_dir().resolve()
+        sessions_root = _get_agent_sessions_dir().resolve()
         session_dir = (sessions_root / session_id).resolve()
         try:
             if os.path.commonpath([str(sessions_root), str(session_dir)]) != str(sessions_root):
                 raise FileNotFoundError("history_not_found")
         except ValueError as exc:
             raise FileNotFoundError("history_not_found") from exc
+
+        from jiuwenswarm.server.runtime.session.session_history import (
+            history_exists,
+            load_history_records,
+        )
 
         if not session_dir.exists() or not history_exists(session_id):
             raise FileNotFoundError("history_not_found")
@@ -1332,11 +1487,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(500, {"error": "download_module_unavailable"})
             return
 
-        payload = validate_file_download_token(token)
+        # Delivered artifacts remain valid even when legacy tokens contain exp.
+        # Signature verification is still mandatory; scoped image tokens below
+        # retain their original lifetime and session constraints.
+        payload = validate_file_download_token(token, check_expiry=False)
         # Skill 正文图片 token intentionally does not carry an absolute path.
         # In the legacy shared-directory layout it must therefore be resolved
         # through the skill manifest before entering the generic file bridge.
         if payload is not None and str(payload.get("purpose") or "") == PURPOSE_SKILL_CONTENT_IMAGE:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
             request_sid = extract_request_session_id(query=query, headers=self.headers)
             error = validate_skill_content_image_payload(
                 payload, request_session_id=request_sid
@@ -1366,12 +1527,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                 return
             self._serve_verified_local_download(str(file_path), inline=True)
             return
+        verified_download_name: str | None = None
         if payload is not None:
             # 本进程 secret 能校验并不意味着 token 的路径位于 Gateway 宿主机。
             # AgentOS 的部署与用户 AgentServer 可能共用下载密钥；此时 token
             # 仍可被 Gateway 验证，但 ``path`` 是用户容器内路径，必须先按 token
             # 携带的 bridge 地址代理给目标 AgentServer，不能在这里误判 404。
             file_path = str(payload.get("path") or "")
+            if payload.get("kind") == "verified_asset_v1":
+                verified_download_name = str(payload.get("name") or "")
             has_target_bridge = bool(
                 str(payload.get("download_http_base") or "").strip()
             )
@@ -1389,7 +1553,10 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                     raw_inline = raw_inline[0] if raw_inline else ""
                 inline = str(raw_inline or "").strip().lower() in {"1", "true"}
                 _SpaStaticHandler._serve_verified_local_download(
-                    self, file_path, inline=inline
+                    self,
+                    file_path,
+                    inline=inline,
+                    download_name=verified_download_name,
                 )
                 return
 
@@ -1409,18 +1576,29 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         # the same secret, but it must never fall back to the Gateway directory.
         if payload is not None and os.path.isfile(file_path):
             _SpaStaticHandler._serve_verified_local_download(
-                self, file_path, inline=inline
+                self,
+                file_path,
+                inline=inline,
+                download_name=verified_download_name,
             )
             return
 
         self.logger.warning("[file-api/download] 目标 AgentServer 不可达: token=%s...", token[:8])
         self._write_json(503, {"error": "agent_server_unavailable"})
 
-    def _serve_verified_local_download(self, file_path: str, *, inline: bool) -> None:
+    def _serve_verified_local_download(
+        self,
+        file_path: str,
+        *,
+        inline: bool,
+        download_name: str | None = None,
+    ) -> None:
         """Stream a token-verified legacy single-user file with Range support."""
         try:
             file_size = os.path.getsize(file_path)
-            file_name = os.path.basename(file_path)
+            file_name = os.path.basename(str(download_name or "").replace("\\", "/"))
+            if not file_name:
+                file_name = os.path.basename(file_path)
             mime_type = mimetypes.guess_type(file_name)[0] or "application/octet-stream"
             byte_range = None
             range_header = self.headers.get("Range")
@@ -1539,8 +1717,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         Gateway），由 AgentServer 校验 upload token 并落盘注入目录。
         AgentServer 不可达 → 503 可重试错误（方案 §8 禁止本地 fallback）。
         """
-        from urllib.parse import parse_qs
-
         query = parse_qs(parsed.query)
         token = (query.get("token") or [""])[0]
         if not token:
@@ -1623,6 +1799,9 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self.wfile.write(raw)
 
     def _handle_file_api_post(self, parsed) -> None:
+        if parsed.path == "/file-api/skills/upload-temp":
+            self._handle_skills_upload_temp()
+            return
         if parsed.path == "/file-api/skills/import":
             self._handle_skills_import_upload()
             return
@@ -1714,6 +1893,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
     def _read_request_body(self) -> bytes:
         length = int(self.headers.get("Content-Length", "0") or "0")
         return self.rfile.read(length) if length > 0 else b""
+
+    def _handle_skills_upload_temp(self) -> None:
+        from jiuwenswarm.server.runtime.skill.skills_multipart_http import (
+            handle_skills_upload_temp_http,
+        )
+
+        status, payload = handle_skills_upload_temp_http(
+            content_type=self.headers.get("Content-Type", ""),
+            body=self._read_request_body(),
+        )
+        self._write_json(status, payload)
 
     def _handle_skills_import_upload(self) -> None:
         try:
@@ -1811,10 +2001,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         super().do_HEAD()
 
     def log_message(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.info("%s - %s", self.address_string(), format % args)
+        self.logger.info("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
 
     def log_error(self, format: str, *args) -> None:  # noqa: A002
-        self.logger.error("%s - %s", self.address_string(), format % args)
+        self.logger.error("%s - %s", self.address_string(), self._redact_desktop_token(format % args))
+
+    def _redact_desktop_token(self, message: str) -> str:
+        message = re.sub(r"([?&]dt=)[^&\s\"#]*", r"\1[REDACTED]", message)
+        if self.desktop_token:
+            message = message.replace(quote(self.desktop_token, safe=""), "[REDACTED]")
+            message = message.replace(self.desktop_token, "[REDACTED]")
+        return message
 
     def send_head(self):
         parsed = urlparse(self.path)
@@ -1824,6 +2021,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         base_dir = Path(self.directory or os.getcwd()).resolve()
         target = (base_dir / rel_path).resolve()
         in_base = os.path.commonpath([str(base_dir), str(target)]) == str(base_dir)
+
+        # 使用实际静态解析结果判定 SPA 入口, 覆盖 /、index.html 及路由回退。
+        # 现存静态资源及其他 HTML 产物不需要桌面 Cookie。
+        spa_index = (base_dir / "index.html").resolve()
+        serves_spa = not (in_base and target.exists()) or target == spa_index
+        if in_base and target.is_dir():
+            serves_spa = (target / "index.html").resolve() == spa_index
+        if serves_spa and self._check_desktop_access():
+            return None
 
         if in_base and target.exists():
             return super().send_head()
@@ -1869,6 +2075,8 @@ def _setup_logger(logs_root: Path, log_level: str) -> logging.Logger:
     # model_params，其中带 api_key/api_base 等敏感字段），必须挂脱敏 filter，
     # 否则 api_key 明文落盘。propagate 到根 logger 的 handler 虽已脱敏，
     # 但本 handler 自身需独立挂载，才能保证 ws-dev.log 也脱敏。
+    from jiuwenswarm.common.utils import SensitiveDataFilter
+
     privacy_filter = SensitiveDataFilter()
 
     file_handler = logging.FileHandler(logs_root / "ws-dev.log", mode="w", encoding="utf-8")
@@ -1884,10 +2092,31 @@ def _wait_for_gateway(ws_target: str, logger: logging.Logger) -> None:
     host = parsed.hostname or "127.0.0.1"
     port = parsed.port or (443 if parsed.scheme in ("wss", "https") else 80)
     logger.info("[jiuwenswarm-web] waiting for gateway %s:%s ...", host, port)
-    if wait_for_tcp_port(host, port, timeout=15.0, max_attempts=15, target_state="connected"):
+    if _wait_for_tcp_port(host, port, timeout=15.0, max_attempts=15):
         logger.info("[jiuwenswarm-web] gateway available")
     else:
         logger.warning("[jiuwenswarm-web] gateway not available after 15 seconds")
+
+
+def _wait_for_tcp_port(
+    host: str,
+    port: int,
+    *,
+    timeout: float,
+    max_attempts: int,
+) -> bool:
+    """Small Web-only probe; avoid importing the full runtime utility module."""
+    deadline = time.monotonic() + timeout
+    attempts = 0
+    while attempts < max_attempts and time.monotonic() < deadline:
+        attempts += 1
+        try:
+            with socket.create_connection((host, port), timeout=0.25):
+                return True
+        except OSError:
+            if attempts < max_attempts:
+                time.sleep(min(0.1, max(0.0, deadline - time.monotonic())))
+    return False
 
 
 def main() -> None:
@@ -1959,6 +2188,13 @@ def main() -> None:
         help="Disable websocket compression for easier ws req/res/event debug logging.",
     )
     parser.add_argument(
+        "--desktop-token",
+        default=None,
+        metavar="TOKEN",
+        help="Desktop lock token: enable desktop-only access control "
+        "(default: JIUWENSWARM_DESKTOP_TOKEN env, empty = disabled).",
+    )
+    parser.add_argument(
         "--name",
         metavar="<name>",
         help="Start a named instance from instances.yaml.",
@@ -1969,8 +2205,6 @@ def main() -> None:
         help="Load environment from .env file (processed at startup, not used here).",
     )
     args = parser.parse_args()
-
-    install_async_dump_handler("web")
 
     dist_dir = Path(args.dist).expanduser().resolve()
     if not dist_dir.exists():
@@ -1987,15 +2221,14 @@ def main() -> None:
     except ValueError as exc:
         raise SystemExit(str(exc)) from exc
 
-    # default_project_root should be the user workspace root (~/.jiuwenswarm in package mode)
-    # get_root_dir() already handles this correctly
-    default_project_root = get_user_workspace_dir()
-
-    project_root = default_project_root
+    project_root = _get_user_workspace_dir()
     workspace_root = (project_root / "agent").resolve()
-    agent_teams_root = _get_agent_teams_root()
-    logs_root = get_logs_dir().resolve()
-    logger = _setup_logger(logs_root, args.log_level)
+    agent_teams_root = _get_agent_teams_root(project_root)
+    logs_root = _get_logs_dir().resolve()
+    # Start with the process logger.  The file handler and diagnostic hook are
+    # installed in a post-listen worker below, so static HTML/CSS/JS can be
+    # served without waiting for the agent-runtime logging module to import.
+    logger = logging.getLogger(__name__)
 
     class _ConfiguredHandler(_SpaStaticHandler):
         pass
@@ -2005,6 +2238,15 @@ def main() -> None:
     _ConfiguredHandler.iam_target = iam_target
     _ConfiguredHandler.remote_mode = remote_mode
     _ConfiguredHandler.ws_disable_compress = args.ws_disable_compress
+    # 桌面锁定: 桌面端经 JIUWENSWARM_DESKTOP_TOKEN env 注入一次性 token;
+    # 源码 web 模式为空 = 不启用, 浏览器访问行为与之前完全一致。
+    desktop_token = (
+        args.desktop_token
+        if args.desktop_token is not None
+        else os.getenv("JIUWENSWARM_DESKTOP_TOKEN", "")
+    ).strip()
+    _ConfiguredHandler.desktop_token = desktop_token
+    _ConfiguredHandler.desktop_cookie_name = f"__wsdt{args.port}"
     _ConfiguredHandler.project_root = project_root
     _ConfiguredHandler.workspace_root = workspace_root
     _ConfiguredHandler.agent_teams_root = agent_teams_root
@@ -2013,27 +2255,62 @@ def main() -> None:
     handler = partial(_ConfiguredHandler, directory=str(dist_dir))
     server = ThreadingHTTPServer((args.host, args.port), handler)
 
-    logger.info("[jiuwenswarm-web] serving %s", dist_dir)
-    logger.info("[jiuwenswarm-web] http://%s:%s", args.host, args.port)
-    logger.info("[jiuwenswarm-web] /api -> %s", api_target)
-    logger.info("[jiuwenswarm-web] /ws  -> %s", ws_target)
-    logger.info("[jiuwenswarm-web] /auth-api -> %s", iam_target)
-    logger.info("[jiuwenswarm-web] all-in-one (remote) mode: %s", remote_mode)
-    logger.info("[jiuwenswarm-web] ws disable compress: %s", args.ws_disable_compress)
-    logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
+    # Windows has no SIGUSR1, so avoid importing debug_dump (which itself
+    # imports the runtime utility module) in the EXE's critical Web path.
+    # On Unix the handler must be registered from the main thread.
+    if hasattr(signal, "SIGUSR1"):
+        from jiuwenswarm.common.debug_dump import install_async_dump_handler
 
-    _wait_for_gateway(ws_target, logger)
+        install_async_dump_handler("web")
 
-    _web_info_path = (get_user_workspace_dir() / ".updates").resolve()
-    _web_info_path.mkdir(parents=True, exist_ok=True)
-    _web_info_file = _web_info_path / "web_process.json"
-    try:
-        _web_info_file.write_text(
-            json.dumps({"pid": os.getpid(), "argv": sys.argv[:]}, indent=2),
-            encoding="utf-8",
+    _web_info_file: Path | None = None
+
+    def _finish_after_listen() -> None:
+        """Complete optional observability after the static listener is live."""
+        nonlocal logger, _web_info_file
+        try:
+            logger = _setup_logger(logs_root, args.log_level)
+            _ConfiguredHandler.logger = logger
+        except Exception as exc:  # noqa: BLE001 - preserve serving on logging failure
+            logger.warning("Failed to configure web file logging: %s", exc)
+
+        logger.info("[jiuwenswarm-web] serving %s", dist_dir)
+        logger.info("[jiuwenswarm-web] http://%s:%s", args.host, args.port)
+        logger.info("[jiuwenswarm-web] /api -> %s", api_target)
+        logger.info("[jiuwenswarm-web] /ws  -> %s", ws_target)
+        logger.info("[jiuwenswarm-web] /auth-api -> %s", iam_target)
+        logger.info("[jiuwenswarm-web] all-in-one (remote) mode: %s", remote_mode)
+        logger.info("[jiuwenswarm-web] ws disable compress: %s", args.ws_disable_compress)
+        logger.info(
+            "[jiuwenswarm-web] desktop lock: %s",
+            "enabled" if desktop_token else "disabled",
         )
-    except Exception as exc:
-        logger.warning("Failed to write web process info: %s", exc)
+        logger.info("[jiuwenswarm-web] /file-api roots -> %s, %s, %s", workspace_root, agent_teams_root, logs_root)
+
+        _web_info_path = (_get_user_workspace_dir() / ".updates").resolve()
+        _web_info_path.mkdir(parents=True, exist_ok=True)
+        _web_info_file = _web_info_path / "web_process.json"
+        try:
+            _web_info_file.write_text(
+                json.dumps({"pid": os.getpid(), "argv": sys.argv[:]}, indent=2),
+                encoding="utf-8",
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("Failed to write web process info: %s", exc)
+
+        # Gateway 未就绪不阻塞静态页服务；前端会自行重连。
+        threading.Thread(
+            target=_wait_for_gateway,
+            args=(ws_target, logger),
+            name="web-wait-gateway",
+            daemon=True,
+        ).start()
+
+    threading.Thread(
+        target=_finish_after_listen,
+        name="web-post-listen-setup",
+        daemon=True,
+    ).start()
 
     try:
         server.serve_forever()
@@ -2041,7 +2318,8 @@ def main() -> None:
         pass
     finally:
         try:
-            _web_info_file.unlink(missing_ok=True)
+            if _web_info_file is not None:
+                _web_info_file.unlink(missing_ok=True)
         except Exception as exc:
             logger.warning("Failed to remove web process info: %s", exc)
         server.server_close()

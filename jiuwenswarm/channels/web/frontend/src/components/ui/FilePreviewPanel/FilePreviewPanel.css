@@ -1,0 +1,404 @@
+.file-preview-panel {
+  display: grid;
+  grid-template-columns: 296px minmax(0, 1fr);
+  gap: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  min-height: 0;
+  flex: 1 1 0%;
+}
+
+/* ── Tree (left panel) ────────────────────────────────────── */
+
+.file-preview-tree {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  border-right: 1px solid var(--color-border-default);
+  width: 296px;
+}
+
+.file-preview-tree__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ── Shared file tree (FilePreviewTree) ───────────────────── */
+
+.file-preview-tree__root {
+  min-width: 0;
+  min-height: 0;
+}
+
+/* 文件项：内容 24px + 上下 6px = 36px */
+.file-preview-tree__entry {
+  display: flex;
+  width: 100%;
+  min-height: 36px;
+  margin-bottom: 4px;
+  align-items: center;
+  gap: 8px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: left;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+/* 文件夹项：内容 24px 居中撑到 38px */
+.file-preview-tree__entry.is-directory {
+  min-height: 38px;
+}
+
+.file-preview-tree__entry:hover:not(:disabled),
+.file-preview-tree__entry.is-selected {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+}
+
+.file-preview-tree__entry.is-unsupported,
+.file-preview-tree__entry:disabled {
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+}
+
+.file-preview-tree__entry-chevron {
+  display: inline-flex;
+  width: 14px;
+  flex: 0 0 14px;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-preview-tree__entry-icon {
+  display: inline-flex;
+  width: 12px;
+  height: 12px;
+  align-items: center;
+  justify-content: center;
+}
+
+.file-preview-tree__entry-icon>svg {
+  flex: 0 0 auto;
+}
+
+.file-preview-tree__entry-label {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-tree__entry-badge {
+  flex: 0 0 auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+  padding: 1px 6px;
+  font-size: 10px;
+  line-height: 14px;
+}
+
+.file-preview-tree__retry-btn {
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 4px 12px;
+  font-size: 13px;
+  cursor: pointer;
+  transition:
+    color 0.15s ease,
+    background 0.15s ease;
+}
+
+.file-preview-tree__retry-btn:hover {
+  color: var(--color-text-primary);
+  background: var(--color-action-secondary);
+}
+
+/* ── Content (right panel) ────────────────────────────────── */
+
+.file-preview-content {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  min-width: 0;
+}
+
+.file-preview-content__main {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.file-preview-content__header {
+  display: flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 16px 16px;
+  font-weight: 600;
+}
+
+.file-preview-content__header-title {
+  font-size: 18px;
+  font-weight: 600;
+  height: 28px;
+  color: var(--color-text-primary);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.file-preview-content__header-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+
+.file-preview-content__header-actions button {
+  display: inline-flex;
+  min-width: 30px;
+  min-height: 30px;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  border: 0;
+  border-radius: var(--radius-sm);
+  background: transparent;
+  color: var(--color-text-primary);
+  padding: 0 6px;
+  cursor: pointer;
+}
+
+.file-preview-content__header-actions button:hover:not(:disabled) {
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+}
+
+.file-preview-content__header-actions button:disabled {
+  cursor: not-allowed;
+  opacity: 0.45;
+}
+
+.file-preview-content__body {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: auto;
+  padding: 16px;
+}
+
+/* ── Shared preview renderers (FilePreviewContent) ────────── */
+
+.file-preview-markdown {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.file-preview-markdown__frontmatter {
+  max-width: 100%;
+  margin: 0 0 20px;
+  overflow: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+  color: var(--color-text-secondary);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.file-preview-markdown__body {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.file-preview-markdown__body> :first-child {
+  margin-top: 0;
+}
+
+.file-preview-markdown__body> :last-child {
+  margin-bottom: 0;
+}
+
+.file-preview-markdown__body :where(h1, h2, h3, h4, h5, h6) {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.file-preview-markdown__body :where(h1) {
+  margin: 0 0 16px;
+  font-size: 20px;
+  line-height: 28px;
+}
+
+.file-preview-markdown__body :where(h2) {
+  margin: 24px 0 8px;
+  font-size: 18px;
+  line-height: 24px;
+}
+
+.file-preview-markdown__body :where(h3) {
+  margin: 20px 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.file-preview-markdown__body :where(p) {
+  margin: 0 0 12px;
+  font-size: 14px;
+  line-height: 24px;
+}
+
+.file-preview-markdown__body :where(ul, ol) {
+  margin: 0 0 16px;
+  padding-left: 22px;
+}
+
+.file-preview-markdown__body :where(li + li) {
+  margin-top: 4px;
+}
+
+.file-preview-markdown__body :where(blockquote) {
+  border-left-color: var(--color-border-strong);
+  color: var(--color-text-secondary);
+}
+
+.file-preview-markdown__body :where(:not(pre) > code) {
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-strong);
+  padding: 2px 5px;
+  font-family: var(--font-mono);
+  font-size: 0.9em;
+  white-space: break-spaces;
+}
+
+.file-preview-markdown__body :where(pre) {
+  max-width: 100%;
+  margin: 16px 0;
+  overflow: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+  padding: 12px 14px;
+}
+
+.file-preview-markdown__body :where(pre code) {
+  background: transparent;
+  padding: 0;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre;
+}
+
+.file-preview-markdown :where(code)::before,
+.file-preview-markdown :where(code)::after {
+  content: none !important;
+}
+
+.file-preview-code {
+  max-width: 100%;
+  min-height: 100%;
+  margin: 0;
+  overflow: auto;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+  color: var(--color-text-primary);
+  padding: 12px 14px;
+  font-family: var(--font-mono);
+  font-size: 12px;
+  line-height: 20px;
+  white-space: pre;
+}
+
+.file-preview-code-frame {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-panel);
+}
+
+.file-preview-code-frame .cm-editor {
+  height: 100%;
+}
+
+.file-preview-image {
+  display: flex;
+  flex: 1 1 auto;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 12px;
+}
+
+.file-preview-image img {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
+/* ── State message (loading / error / empty) ──────────────── */
+
+.file-preview-state {
+  display: flex;
+  min-height: 120px;
+  align-items: center;
+  justify-content: center;
+  flex-direction: column;
+  gap: 12px;
+  color: var(--color-text-secondary);
+  padding: 16px;
+  text-align: center;
+  font-size: 13px;
+}
+
+.file-preview-state p {
+  margin: 0;
+}
+
+.file-preview-state--error {
+  color: var(--color-feedback-danger);
+}
+
+/* ── Responsive: stack tree on top at narrow viewport ─────── */
+
+@media (max-width: 800px) {
+  .file-preview-panel {
+    grid-template-columns: 1fr;
+    grid-template-rows: 280px minmax(0, 1fr);
+  }
+
+  .file-preview-tree {
+    width: 100%;
+    border-right: 0;
+    border-bottom: 1px solid var(--color-border-default);
+  }
+}

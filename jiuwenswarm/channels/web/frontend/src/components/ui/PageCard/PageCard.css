@@ -1,0 +1,86 @@
+.page-card {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  height: 160px;
+  min-width: 360px;
+  overflow: visible;
+  padding: 24px;
+  gap: 18px;
+  background: var(--color-surface-card);
+  border: none;
+  border-radius: 16px;
+  box-shadow: inset 0 0 0 1px var(--color-border-default);
+  cursor: pointer;
+  text-align: left;
+  transition: box-shadow var(--duration-fast) ease;
+}
+
+.page-card:hover {
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
+}
+
+.page-card:focus-within {
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
+}
+
+@media (min-width: 1600px) {
+  .page-card {
+    max-width: 456px;
+  }
+}
+
+/* 卡片头部（头像/标题/标签行/操作区）已迁移到共享组件 ui/EntityHeader */
+
+/* 标签行样式已迁移到共享组件 ui/EntityHeader（.entity-header__tags/__tag） */
+
+/* 操作按钮统一容器：32×32 圆形底座 + hover 变色 */
+.page-card-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: 8px;
+  background: var(--color-skill-card-action-surface);
+  color: var(--color-text-primary);
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.page-card-action svg {
+  width: 16px;
+  height: 16px;
+}
+
+.page-card-action:hover {
+  background: var(--color-skill-card-action-hover-surface);
+  color: var(--color-chat-accent);
+}
+
+.page-card-action:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.page-card__body {
+  font-size: 12px;
+  color: var(--color-text-secondary);
+  line-height: 22px;
+  overflow: hidden;
+  display: -webkit-box;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+/* hover 时才显示的按钮组（菜单 / 去试试等），默认透明 */
+.page-card-actions-hover {
+  opacity: 0;
+  transition: opacity 150ms ease;
+}
+
+.page-card:hover .page-card-actions-hover {
+  opacity: 1;
+}

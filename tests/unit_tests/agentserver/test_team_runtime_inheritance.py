@@ -124,8 +124,8 @@ async def test_build_member_rails_separates_project_and_team_file_destinations(
     section = builder.sections["team_workspace_report_paths"]
     content = section.render("cn")
     assert f"User project root: `{project_dir}`" in content
-    assert f"Team collaboration workspace: `{team_ws_root}`" in content
-    assert "Do not place final project files in the team collaboration workspace" in content
+    assert f"Team shared workspace (config / internal data): `{team_ws_root}`" in content
+    assert "Do not place final project files in the team shared workspace root" in content
     assert "When worktree isolation is active" in content
 
 

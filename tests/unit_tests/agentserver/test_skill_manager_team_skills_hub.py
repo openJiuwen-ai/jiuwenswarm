@@ -59,7 +59,7 @@ def _build_skill_zip_bytes_flat_root(*, skill_name: str) -> bytes:
 def test_get_team_skills_hub_base_url_default(monkeypatch):
     monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
-    assert manager.get_team_skills_hub_base_url() == "https://teamskills.openjiuwen.com"
+    assert manager.get_team_skills_hub_base_url() == "https://swarmskills.openjiuwen.com"
 
 
 def test_get_team_skills_hub_base_url_env_override(monkeypatch):
@@ -72,7 +72,7 @@ def test_get_team_skills_hub_base_url_default_without_override(monkeypatch):
     """未配置 TEAM_SKILLS_HUB_BASE_URL 时应回退默认值。"""
     monkeypatch.delenv("TEAM_SKILLS_HUB_BASE_URL", raising=False)
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
-    assert manager.get_team_skills_hub_base_url() == "https://teamskills.openjiuwen.com"
+    assert manager.get_team_skills_hub_base_url() == "https://swarmskills.openjiuwen.com"
 
 
 @pytest.mark.asyncio
@@ -143,22 +143,17 @@ async def test_handle_skills_swarm_skills_hub_recommend_maps_response(tmp_path, 
         assert path == "/api/v1/recommend"
         assert kwargs["json_body"]["user_id"] == "u-1"
         assert kwargs["json_body"]["top_k"] == 5
+        assert "plugin_type" not in kwargs["json_body"]
         assert kwargs["headers"]["X-System-Token"] == "sys-token-demo"
         return {
             "request_id": "r1",
             "user_id": "u-1",
             "source": "user_history",
             "category_id": "",
-            "items": [{"asset_id": "demo-skill", "score": 0.9}],
-        }
-
-    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
-        assert path == "/api/v1/plugins"
-        assert kwargs["params"]["asset_id"] == "demo-skill"
-        return {
             "items": [
                 {
                     "asset_id": "demo-skill",
+                    "score": 0.9,
                     "name": "demo-skill",
                     "display_name": "Demo Skill",
                     "short_desc": "desc",
@@ -166,12 +161,22 @@ async def test_handle_skills_swarm_skills_hub_recommend_maps_response(tmp_path, 
                     "update_time": 123,
                     "plugin_type": "skill",
                     "tags": ["office", "productivity"],
+                    "publisher_name": "example-publisher",
+                    "install_count": 42,
+                    "like_count": 3,
+                    "view_count": 100,
+                    "icon_uri": "https://cdn.example/demo.png",
+                    "category_id": "office-productivity",
+                    "category_name": "Office",
                 }
-            ]
+            ],
         }
 
+    async def _should_not_list(path, **kwargs):  # noqa: ANN001
+        raise AssertionError(f"hydrated recommend must not GET {path}")
+
     manager.set_mock_post_data(_fake_post_data)
-    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_get_data(_should_not_list)
     payload = await manager.handle_skills_swarm_skills_hub_recommend(
         {"user_id": "u-1", "top_k": 5, "enrich": True}
     )
@@ -179,58 +184,61 @@ async def test_handle_skills_swarm_skills_hub_recommend_maps_response(tmp_path, 
     assert payload["source"] == "user_history"
     assert payload["count"] == 1
     assert payload["plugin_type"] == ""
-    assert payload["skills"][0]["asset_id"] == "demo-skill"
-    assert payload["skills"][0]["display_name"] == "Demo Skill"
-    assert payload["skills"][0]["score"] == 0.9
-    assert payload["skills"][0]["plugin_type"] == "skill"
-    assert payload["skills"][0]["tags"] == ["office", "productivity"]
+    skill = payload["skills"][0]
+    assert skill["asset_id"] == "demo-skill"
+    assert skill["display_name"] == "Demo Skill"
+    assert skill["score"] == 0.9
+    assert skill["plugin_type"] == "skill"
+    assert skill["tags"] == ["office", "productivity"]
+    assert skill["short_desc"] == "desc"
+    assert skill["summary"] == "desc"
+    assert skill["latest_version"] == "1.2.3"
+    assert skill["version"] == "1.2.3"
+    assert skill["publisher_name"] == "example-publisher"
+    assert skill["author"] == "example-publisher"
+    assert skill["install_count"] == 42
+    assert skill["like_count"] == 3
+    assert skill["view_count"] == 100
+    assert skill["icon_uri"] == "https://cdn.example/demo.png"
+    assert skill["updated_at"] == 123
+    assert payload["items"][0]["asset_id"] == "demo-skill"
 
 
 @pytest.mark.asyncio
 async def test_handle_skills_swarm_skills_hub_recommend_filters_plugin_type(tmp_path, monkeypatch):
     monkeypatch.setenv("TEAM_SKILLS_HUB_SYSTEM_TOKEN", "sys-token-demo")
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    posted_bodies: list[dict] = []
 
     async def _fake_post_data(path, **kwargs):  # noqa: ANN001
         assert path == "/api/v1/recommend"
-        # top_k=2 with plugin_type filter over-fetches (2 * 5)
-        assert kwargs["json_body"]["top_k"] == 10
+        posted_bodies.append(kwargs["json_body"])
+        assert kwargs["json_body"]["top_k"] == 2
+        assert kwargs["json_body"]["plugin_type"] == "swarmskill"
         return {
             "request_id": "r1",
             "user_id": "",
             "source": "topk_install",
             "category_id": "",
+            "plugin_type": "swarmskill",
             "items": [
-                {"asset_id": "a-skill", "score": 0.9},
-                {"asset_id": "b-swarm", "score": 0.8},
-                {"asset_id": "c-skill", "score": 0.7},
+                {
+                    "asset_id": "b-swarm",
+                    "score": 0.8,
+                    "name": "b-swarm",
+                    "display_name": "b-swarm",
+                    "short_desc": "d",
+                    "latest_version": "1.0.0",
+                    "plugin_type": "swarmskill",
+                }
             ],
         }
 
-    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
-        assert path == "/api/v1/plugins"
-        asset_id = kwargs["params"]["asset_id"]
-        plugin_type = {
-            "a-skill": "skill",
-            "b-swarm": "swarmskill",
-            "c-skill": "skill",
-        }[asset_id]
-        return {
-            "items": [
-                {
-                    "asset_id": asset_id,
-                    "name": asset_id,
-                    "display_name": asset_id,
-                    "short_desc": "d",
-                    "latest_version": "1.0.0",
-                    "update_time": 1,
-                    "plugin_type": plugin_type,
-                }
-            ]
-        }
+    async def _should_not_list(path, **kwargs):  # noqa: ANN001
+        raise AssertionError(f"hydrated recommend must not GET {path}")
 
     manager.set_mock_post_data(_fake_post_data)
-    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_get_data(_should_not_list)
     payload = await manager.handle_skills_swarm_skills_hub_recommend(
         {"top_k": 2, "plugin_type": "swarmskill"}
     )
@@ -247,10 +255,11 @@ async def test_handle_skills_swarm_skills_hub_recommend_filters_plugin_type(tmp_
     assert payload_alias["plugin_type"] == "swarmskill"
     assert payload_alias["count"] == 1
     assert payload_alias["skills"][0]["asset_id"] == "b-swarm"
+    assert [body["plugin_type"] for body in posted_bodies] == ["swarmskill", "swarmskill"]
 
 
 @pytest.mark.asyncio
-async def test_handle_skills_swarm_skills_hub_recommend_drops_unlisted(tmp_path, monkeypatch):
+async def test_handle_skills_swarm_skills_hub_recommend_enrich_skips_plugins(tmp_path, monkeypatch):
     monkeypatch.setenv("TEAM_SKILLS_HUB_SYSTEM_TOKEN", "sys-token-demo")
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
 
@@ -260,65 +269,18 @@ async def test_handle_skills_swarm_skills_hub_recommend_drops_unlisted(tmp_path,
             "request_id": "r1",
             "user_id": "",
             "source": "topk_install",
-            "category_id": "",
-            "items": [
-                {"asset_id": "online-skill", "score": 0.9},
-                {"asset_id": "offline-skill", "score": 0.8},
-            ],
+            "items": [{"asset_id": "hydrated-skill", "score": 0.5, "name": "hydrated-skill"}],
         }
 
-    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
-        assert path == "/api/v1/plugins"
-        asset_id = kwargs["params"]["asset_id"]
-        if asset_id == "offline-skill":
-            return {"items": []}
-        return {
-            "items": [
-                {
-                    "asset_id": "online-skill",
-                    "name": "online-skill",
-                    "display_name": "Online Skill",
-                    "short_desc": "ok",
-                    "latest_version": "1.0.0",
-                    "update_time": 1,
-                    "plugin_type": "skill",
-                }
-            ]
-        }
+    async def _should_not_list(path, **kwargs):  # noqa: ANN001
+        raise AssertionError(f"enrich=True must not GET {path}")
 
     manager.set_mock_post_data(_fake_post_data)
-    manager.set_mock_get_data(_fake_get_data)
-    payload = await manager.handle_skills_swarm_skills_hub_recommend({"top_k": 5, "enrich": True})
-    assert payload["success"] is True
-    assert payload["count"] == 1
-    assert payload["skills"][0]["asset_id"] == "online-skill"
-    assert payload["skills"][0]["display_name"] == "Online Skill"
-
-
-@pytest.mark.asyncio
-async def test_handle_skills_swarm_skills_hub_recommend_keeps_item_on_enrich_error(
-    tmp_path, monkeypatch
-):
-    monkeypatch.setenv("TEAM_SKILLS_HUB_SYSTEM_TOKEN", "sys-token-demo")
-    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
-
-    async def _fake_post_data(path, **kwargs):  # noqa: ANN001
-        return {
-            "request_id": "r1",
-            "user_id": "",
-            "source": "topk_install",
-            "items": [{"asset_id": "flaky-skill", "score": 0.5}],
-        }
-
-    async def _fake_get_data(path, **kwargs):  # noqa: ANN001
-        raise RuntimeError("hub timeout")
-
-    manager.set_mock_post_data(_fake_post_data)
-    manager.set_mock_get_data(_fake_get_data)
+    manager.set_mock_get_data(_should_not_list)
     payload = await manager.handle_skills_swarm_skills_hub_recommend({"top_k": 3, "enrich": True})
     assert payload["success"] is True
     assert payload["count"] == 1
-    assert payload["skills"][0]["asset_id"] == "flaky-skill"
+    assert payload["skills"][0]["asset_id"] == "hydrated-skill"
 
 
 @pytest.mark.asyncio
@@ -390,9 +352,12 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     manager.set_mock_get_data(_fake_get_data)
     manager.set_mock_download(_fake_download)
 
-    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    payload = await manager.handle_skills_team_skills_hub_install(
+        {"asset_id": "demo-skill", "display_name": "演示技能"}
+    )
     assert payload["success"] is True
     assert payload["skill"]["name"] == "demo-skill"
+    assert payload["skill"]["display_name"] == "演示技能"
     dest = tmp_path / "skills" / "demo-skill"
     assert (dest / "SKILL.md").is_file()
     assert (dest / ".archive" / "versions" / "index.json").is_file()
@@ -404,6 +369,9 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     assert (dest / ".archive" / "versions" / "content" / storage_id / "SKILL.md").is_file()
     plugins = manager._state.get("installed_plugins", [])
     assert plugins and "version" not in plugins[0]
+    assert plugins[0].get("display_name") == "演示技能"
+    local_skills = manager._state.get("local_skills", [])
+    assert local_skills and local_skills[0].get("display_name") == "演示技能"
 
 
 @pytest.mark.asyncio
@@ -686,6 +654,14 @@ def test_team_skills_hub_allowed_download_hosts_support_wildcard_region(monkeypa
     manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
     manager.call_assert_team_skills_hub_download_url_allowed(
         "https://openjiuwen-market.obs.ap-east-1.myhuaweicloud.com/plugins/demo.zip"
+    )
+
+
+def test_team_skills_hub_default_allowed_download_hosts_include_official_test_bucket(monkeypatch):
+    monkeypatch.delenv("TEAM_SKILLS_HUB_ALLOWED_DOWNLOAD_HOSTS", raising=False)
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir="dummy")
+    manager.call_assert_team_skills_hub_download_url_allowed(
+        "https://openjiuwen-market-test.obs.ap-southeast-1.myhuaweicloud.com/plugins/demo.zip"
     )
 
 

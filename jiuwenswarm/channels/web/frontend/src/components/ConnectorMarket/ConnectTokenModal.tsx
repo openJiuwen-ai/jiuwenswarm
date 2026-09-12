@@ -1,4 +1,5 @@
 import { useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { X, Loader2, ExternalLink } from 'lucide-react';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -59,7 +60,10 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
   // document.body 的兄弟节点，不在它们任何一个的 ref 范围内——两处监听都要靠这个属性识别"点的
   // 是弹窗内部"从而跳过关闭，否则点弹窗任何地方都会被误判成"点了外面"，把外层菜单和面板一起
   // 带崩（2026-08-25 用户反馈：点连接弹窗，整个"+"扩展下拉框直接退出）。
-  return (
+  // createPortal 到 document.body：见文件头注释——这个弹窗本就设计成 body 下的兄弟节点，且从
+  // 详情页里弹出时若留在 `.detail-body` 内会被 index.css 的 `.detail-body > *` 限宽规则压窄遮罩
+  // （bug 2026091001-001），挂到 body 下同时解决这两点。
+  return createPortal(
     <div data-connector-auth-modal="true" data-testid="connector-market-token-modal" className="fixed inset-0 z-[10100] flex items-center justify-center bg-overlay-cron-dialog">
       <div className="relative w-[400px] rounded-2xl bg-card p-6 shadow-xl">
         <button type="button" onClick={onCancel} className="absolute right-5 top-5 text-text-muted hover:text-text" data-testid="connector-market-token-modal-close">
@@ -78,7 +82,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           <EntityAvatar
             iconUrl={iconUrl}
             avatar={avatar}
-            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-xl text-[16px] font-semibold"
+            className="flex h-11 w-11 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
           />
         </div>
 
@@ -137,6 +141,7 @@ export function ConnectTokenModal({ name, displayName, iconUrl, response, onCanc
           {t('connectorMarket.tokenModal.saveAndConnect')}
         </button>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }

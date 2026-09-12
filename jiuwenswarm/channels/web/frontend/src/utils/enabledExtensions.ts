@@ -30,7 +30,12 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
 
   const plugins: string[] = [];
   for (const id of runtime.enabledPlugins) {
-    if (installed[id] && pluginConnectionStateMap[id] === 'connected') {
+    const installedState = installed[id];
+    const connectionState = pluginConnectionStateMap[id];
+    // Metadata can arrive before the marketplace list after a page refresh.
+    // Unknown is therefore preserved; only authoritative negative state is
+    // pruned. The backend still performs the final install/connector gate.
+    if (installedState !== false && (connectionState === undefined || connectionState === 'connected')) {
       plugins.push(id);
     } else {
       sessionStore.removeEnabledPlugin(sessionId, id);
@@ -39,7 +44,8 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
 
   const mcps: string[] = [];
   for (const name of runtime.enabledMcps) {
-    if (mcpConnectionByName.get(name) === 'connected') {
+    const connectionState = mcpConnectionByName.get(name);
+    if (connectionState === undefined || connectionState === 'connected') {
       mcps.push(name);
     } else {
       sessionStore.removeEnabledMcp(sessionId, name);
@@ -51,9 +57,8 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
 
 /**
  * 组装 chat.send（含 resume/激活确认等同族请求）里 plugin_names/mcp 这两个字段——语义见上面
- * pruneEnabledExtensions 调用方 useWebSocket.ts sendMessage 原有注释：plugin_names 恒传（含
- * 空数组，[] 和"不传"是两种不同语义，见 专家与插件装备-前端接口_v2.md §1.3/§3.6）；mcp 只在
- * 非空时才带（缺失和 [] 效果一致，MCP 接口文档 v2 §6.2）。
+ * 未完成会话状态恢复时不发送装备字段；恢复完成或用户明确操作后，plugin_names/mcp 均发送
+ * 当前快照（含空数组）。因此缺省表示"保留后端当前状态"，空数组表示"明确清空"。
  *
  * 2026-08-25：所有会发出 chat.send 的地方都要调这个函数，不要各自重新手写一遍——之前
  * sendUserAnswer（ask-user 等交互确认 resume、activate_confirm 分支）、respondActivate、
@@ -61,10 +66,21 @@ export function pruneEnabledExtensions(sessionId: string): { plugins: string[]; 
  * 选中状态丢失（用户反馈：ask-user 工具被拒绝后自动 resume，chat.send 没带上 plugin_names/
  * mcp）。
  */
-export function buildExtensionSendPayload(sessionId: string): { plugin_names: string[]; mcp?: string[] } {
+export function restoreSessionEquipment(
+  sessionId: string,
+  equipment: { plugin_names?: string[]; mcp?: string[] },
+): void {
+  useSessionStore.getState().restoreSessionEquipment(sessionId, equipment);
+}
+
+export function buildExtensionSendPayload(
+  sessionId: string,
+): { plugin_names?: string[]; mcp?: string[] } {
+  const runtime = useSessionStore.getState().runtimes[sessionId];
+  if (!runtime?.extensionsHydrated) return {};
   const { plugins, mcps } = pruneEnabledExtensions(sessionId);
   return {
     plugin_names: plugins,
-    ...(mcps.length > 0 ? { mcp: mcps } : {}),
+    mcp: mcps,
   };
 }

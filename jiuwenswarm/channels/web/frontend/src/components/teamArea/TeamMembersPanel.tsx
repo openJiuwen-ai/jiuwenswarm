@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
@@ -10,6 +11,7 @@ import { isTeamLeaderMember, isUserMember } from '../../utils/teamMemberAvatar';
 import { contextCompressionRunningText } from '../../utils/contextCompression';
 import teamIcon from '../../assets/team.svg';
 import PendingIcon from '../../assets/pending.svg?react';
+import BackIcon from '../../assets/back.svg?react';
 import { MemberListItem } from './MemberListItem';
 import { MemberTaskListBar, MemberTaskListItems } from './MemberTaskList';
 import {
@@ -27,7 +29,7 @@ import {
   type TeamDetailTab,
   type TeamMember,
 } from './shared';
-import { AlertTriangle, ChevronRight, CircleAlert, LoaderCircle, MessageSquare, Wrench, X } from 'lucide-react';
+import { AlertTriangle, CircleAlert, LoaderCircle, MessageSquare, Wrench, X } from 'lucide-react';
 
 type TeamMembersPanelProps = {
   variant: 'compact' | 'expanded';
@@ -50,7 +52,7 @@ type Translate = (key: string, options?: Record<string, unknown>) => string;
 const GROUP_LEADER_MEMBER_ID = 'team_leader';
 
 function getGroupMemberIds(members: TeamMember[]): string[] {
-  return members.map(member => member.member_id).filter(memberId => !isTeamLeaderMember(memberId));
+  return members.map((member) => member.member_id).filter((memberId) => !isTeamLeaderMember(memberId));
 }
 
 function isGroupMessageItem(item: { message: Message; event: ParsedTeamEvent | null }): item is GroupMessageItem {
@@ -63,7 +65,7 @@ function getGroupMessageTime(item: GroupMessageItem): number {
 
 function buildGroupMessageItems(historyMessages: Message[], messages: Message[]): GroupMessageItem[] {
   return mergeUniqueMessages(historyMessages.concat(messages))
-    .map(message => ({ message, event: parseTeamEventMessage(message) }))
+    .map((message) => ({ message, event: parseTeamEventMessage(message) }))
     .filter(isGroupMessageItem)
     .sort((a, b) => getGroupMessageTime(a) - getGroupMessageTime(b));
 }
@@ -139,7 +141,7 @@ function isLeaderMember(member: TeamMember, leaderIds: string[]): boolean {
     isTeamLeaderMember(member.member_id) ||
     member.mode === 'leader' ||
     member.mode === 'team_leader' ||
-    leaderIds.some(leaderId => memberKeys.includes(normalizeMemberKey(leaderId)))
+    leaderIds.some((leaderId) => memberKeys.includes(normalizeMemberKey(leaderId)))
   );
 }
 
@@ -152,7 +154,7 @@ function dedupeFinalEvents(events: TeamMemberExecutionEvent[]): TeamMemberExecut
   for (const event of events) {
     const normalizedContent = normalizeFinalEventContent(event.content);
     const duplicate = deduped.some(
-      item =>
+      (item) =>
         item.member_id === event.member_id &&
         normalizeFinalEventContent(item.content) === normalizedContent &&
         Math.abs((item.timestamp || 0) - (event.timestamp || 0)) <= 60_000,
@@ -177,21 +179,24 @@ export function TeamMembersPanel({
   onDetailTabChange,
 }: TeamMembersPanelProps) {
   const { t } = useTranslation();
-  const activeSessionId = useChatStore(s => s.activeSessionId);
-  const messages = useChatStore(s => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const teamLeaderMemberIds = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
+  const teamLeaderMemberIds = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamLeaderMemberIds ?? []);
   const groupMessages = useMemo(() => buildGroupMessageItems(historyMessages, messages), [historyMessages, messages]);
-  const visibleMembers = useMemo(() => members.filter(member => !isLeaderMember(member, teamLeaderMemberIds)), [members, teamLeaderMemberIds]);
+  const visibleMembers = useMemo(
+    () => members.filter((member) => !isLeaderMember(member, teamLeaderMemberIds)),
+    [members, teamLeaderMemberIds],
+  );
   const visibleSelectedMember = useMemo(() => {
     const id = selectedMember?.member_id || selectedMemberId;
     if (!id) return null;
-    return visibleMembers.find(member => member.member_id === id) || null;
+    return visibleMembers.find((member) => member.member_id === id) || null;
   }, [selectedMember?.member_id, selectedMemberId, visibleMembers]);
   const memberTaskProgress = useMemo(() => {
     const progress: Record<string, { completed: number; total: number }> = {};
-    visibleMembers.forEach(member => {
-      const memberTasks = tasks.filter(task => task.assignee === member.member_id);
-      const completed = memberTasks.filter(task => task.status === 'completed').length;
+    visibleMembers.forEach((member) => {
+      const memberTasks = tasks.filter((task) => task.assignee === member.member_id);
+      const completed = memberTasks.filter((task) => task.status === 'completed').length;
       progress[member.member_id] = { completed, total: memberTasks.length };
     });
     return progress;
@@ -199,8 +204,15 @@ export function TeamMembersPanel({
 
   if (variant === 'compact') {
     return (
-      <div className="flex flex-1 flex-col overflow-hidden rounded-b-lg bg-card min-h-0 px-3" data-testid="team-area-members-panel" data-variant="compact">
-        <div className="flex w-full shrink-0 items-center justify-between bg-card px-4 py-3 border-border" data-testid="team-area-members-header">
+      <div
+        className="flex flex-1 flex-col overflow-hidden rounded-b-lg bg-card min-h-0 px-3"
+        data-testid="team-area-members-panel"
+        data-variant="compact"
+      >
+        <div
+          className="flex w-full shrink-0 items-center justify-between bg-card px-4 py-3 border-border"
+          data-testid="team-area-members-header"
+        >
           <div className="flex items-center gap-2">
             <img src={teamIcon} alt="" className="h-4 w-4 text-text-muted" />
             <span className="text-sm font-medium text-text" data-testid="team-area-members-count">
@@ -214,7 +226,7 @@ export function TeamMembersPanel({
               {t('team.noMemberData')}
             </div>
           ) : (
-            visibleMembers.map(member => (
+            visibleMembers.map((member) => (
               <MemberListItem
                 key={member.member_id}
                 member={member}
@@ -230,9 +242,16 @@ export function TeamMembersPanel({
   }
 
   return (
-    <div className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden" data-testid="team-area-members-panel" data-variant="expanded">
+    <div
+      className="flex min-w-0 flex-1 overflow-x-auto overflow-y-hidden"
+      data-testid="team-area-members-panel"
+      data-variant="expanded"
+    >
       {activeDetailTab === 'members' && (
-        <aside className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card" data-testid="team-area-members-sidebar">
+        <aside
+          className="w-[240px] shrink-0 overflow-y-auto border-r border-border bg-card"
+          data-testid="team-area-members-sidebar"
+        >
           <div className="px-[24px] pt-[24px]">
             <DetailTabSwitch activeTab={activeDetailTab} onChange={onDetailTabChange} />
           </div>
@@ -243,7 +262,7 @@ export function TeamMembersPanel({
                 {t('team.noMemberData')}
               </div>
             ) : (
-              visibleMembers.map(member => (
+              visibleMembers.map((member) => (
                 <MemberListItem
                   key={member.member_id}
                   member={member}
@@ -257,21 +276,45 @@ export function TeamMembersPanel({
       )}
 
       {activeDetailTab === 'group' ? (
-        <GroupChatDetail items={groupMessages} members={members} activeTab={activeDetailTab} onTabChange={onDetailTabChange} />
+        <GroupChatDetail
+          items={groupMessages}
+          members={members}
+          activeTab={activeDetailTab}
+          onTabChange={onDetailTabChange}
+        />
       ) : visibleSelectedMember ? (
-        <MemberTaskDetail member={visibleSelectedMember} tasks={tasks} historyMessages={historyMessages} onBack={() => onSelectMember?.('')} />
+        <MemberTaskDetail
+          member={visibleSelectedMember}
+          tasks={tasks}
+          historyMessages={historyMessages}
+          onBack={() => onSelectMember?.('')}
+        />
       ) : (
-        <MemberOverviewPanel members={visibleMembers} tasks={tasks} historyMessages={historyMessages} onMemberClick={memberId => onSelectMember?.(memberId)} />
+        <MemberOverviewPanel
+          members={visibleMembers}
+          tasks={tasks}
+          historyMessages={historyMessages}
+          onMemberClick={(memberId) => onSelectMember?.(memberId)}
+        />
       )}
     </div>
   );
 }
 
-function DetailTabSwitch({ activeTab, onChange }: { activeTab: TeamDetailTab; onChange?: (tab: TeamDetailTab) => void }) {
+function DetailTabSwitch({
+  activeTab,
+  onChange,
+}: {
+  activeTab: TeamDetailTab;
+  onChange?: (tab: TeamDetailTab) => void;
+}) {
   const { t } = useTranslation();
 
   return (
-    <div className="grid grid-cols-2 rounded-md bg-[var(--color-connector-tag-surface)] p-1 text-sm" data-testid="team-area-detail-tab-switch">
+    <div
+      className="grid grid-cols-2 rounded-md bg-[var(--color-tag-surface)] p-1 text-sm"
+      data-testid="team-area-detail-tab-switch"
+    >
       <button
         type="button"
         data-testid="team-area-detail-tab-members"
@@ -309,6 +352,19 @@ function GroupChatDetail({
   const groupMemberIds = getGroupMemberIds(members);
   const memberNames = [t('team.leader'), ...groupMemberIds.map(getMemberDisplayName)].join(t('team.memberSeparator'));
   const avatarMemberIds = [GROUP_LEADER_MEMBER_ID, ...groupMemberIds];
+  const memberNamesRef = useRef<HTMLDivElement>(null);
+  const [memberNamesTruncated, setMemberNamesTruncated] = useState(false);
+  const { tooltip: memberNamesTooltip, handlers: memberNamesTooltipHandlers } = useAdaptiveTooltip();
+
+  useLayoutEffect(() => {
+    const element = memberNamesRef.current;
+    if (!element) return;
+    const checkOverflow = () => setMemberNamesTruncated(element.scrollWidth > element.clientWidth);
+    checkOverflow();
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [memberNames]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -338,7 +394,14 @@ function GroupChatDetail({
             <div className="text-base font-semibold text-text" data-testid="team-area-group-chat-title">
               {t('team.groupChat')}
             </div>
-            <div className="mt-1 truncate text-xs text-text-muted" data-testid="team-area-group-chat-member-names">
+            <div
+              ref={memberNamesRef}
+              className="mt-1 truncate text-xs text-text-muted"
+              data-testid="team-area-group-chat-member-names"
+              data-tooltip={memberNamesTruncated ? memberNames : undefined}
+              tabIndex={memberNamesTruncated ? 0 : undefined}
+              {...memberNamesTooltipHandlers}
+            >
               {memberNames}
             </div>
           </div>
@@ -348,6 +411,7 @@ function GroupChatDetail({
         </div>
       </div>
 
+      {memberNamesTooltip}
       <div
         ref={scrollContainerRef}
         className="team-group-chat-message-list min-h-0 flex-1 overflow-y-auto px-7 py-6"
@@ -355,7 +419,10 @@ function GroupChatDetail({
         data-testid="team-area-group-chat-message-list"
       >
         {items.length === 0 ? (
-          <div className="flex h-full items-center justify-center text-sm text-text-muted" data-testid="team-area-group-chat-empty">
+          <div
+            className="flex h-full items-center justify-center text-sm text-text-muted"
+            data-testid="team-area-group-chat-empty"
+          >
             {t('team.noGroupMessages')}
           </div>
         ) : (
@@ -376,7 +443,7 @@ function GroupAvatarStack({ memberIds }: { memberIds: string[] }) {
 
   return (
     <>
-      {visibleMemberIds.map(memberId => (
+      {visibleMemberIds.map((memberId) => (
         <TeamMemberAvatar key={memberId} member={memberId} className="!h-7 !w-7 ring-2 ring-card" />
       ))}
       {hiddenCount > 0 && (
@@ -400,21 +467,35 @@ function GroupChatMessage({ event }: { event: ParsedTeamEvent }) {
     <div className={`flex items-start gap-3 ${isUser ? 'justify-end' : ''}`}>
       {!isUser && <TeamMemberAvatar member={event.fromMember} className="h-8 w-8" />}
       <div className={`min-w-0 ${isUser ? 'max-w-[72%] text-right' : 'flex-1'}`}>
-        <div className="mb-1 text-base font-semibold text-text" data-testid="team-area-group-chat-message-sender">
+        <div
+          className="pb-2 text-base font-semibold leading-7 text-text"
+          data-testid="team-area-group-chat-message-sender"
+        >
           {displayName}
         </div>
-        <div className={`text-sm leading-6 text-text ${isUser ? 'inline-block rounded-lg bg-accent-subtle px-3 py-2 text-left' : ''}`}>
+        <div
+          className={`text-sm leading-6 text-text ${isUser ? 'inline-block rounded-lg bg-accent-subtle px-3 py-2 text-left' : ''}`}
+        >
           {event.isP2P && event.toMember && (
-            <span className="team-event-group-chip team-event-group-chip--p2p" data-testid="team-area-group-chat-message-p2p-chip">
+            <span
+              className="team-event-group-chip team-event-group-chip--p2p"
+              data-testid="team-area-group-chat-message-p2p-chip"
+            >
               @{getMemberDisplayName(event.toMember)}
             </span>
           )}
           {event.isBroadcast && (
-            <span className="team-event-group-chip team-event-group-chip--broadcast" data-testid="team-area-group-chat-message-broadcast-chip">
+            <span
+              className="team-event-group-chip team-event-group-chip--broadcast"
+              data-testid="team-area-group-chat-message-broadcast-chip"
+            >
               @{t('team.allMembers')}
             </span>
           )}
-          <MarkdownMessageBody content={event.content} className="team-message-markdown team-message-markdown--inline" />
+          <MarkdownMessageBody
+            content={event.content}
+            className="team-message-markdown team-message-markdown--inline"
+          />
         </div>
       </div>
       {isUser && <TeamMemberAvatar member={event.fromMember} className="h-8 w-8" />}
@@ -437,7 +518,10 @@ function MemberOverviewPanel({
 
   return (
     <section className="flex min-w-0 flex-1 flex-col bg-card" data-testid="team-area-member-overview">
-      <div className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-[48px] [scrollbar-gutter:stable]" data-testid="team-area-member-overview-body">
+      <div
+        className="min-h-0 flex-1 overflow-y-auto px-6 pt-6 pb-[48px] [scrollbar-gutter:stable]"
+        data-testid="team-area-member-overview-body"
+      >
         {members.length === 0 ? (
           <div className="py-12 text-center text-sm text-text-muted" data-testid="team-area-member-overview-empty">
             {t('team.noMemberData')}
@@ -476,20 +560,26 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
 }) {
   const { t } = useTranslation();
   const [expandedProcessIds, setExpandedProcessIds] = useState<Set<string>>(new Set());
-  const activeSessionId = useChatStore(s => s.activeSessionId);
-  const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
-  const teamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
-  const teamMemberExecutionEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
-  const messages = useChatStore(s => s.runtimes[activeSessionId ?? '']?.messages ?? []);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
+  const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
+  const teamMemberExecutionEvents = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
+  );
+  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
 
-  const processMessages = useMemo(() => mergeUniqueMessages([...historyMessages, ...messages]), [historyMessages, messages]);
+  const processMessages = useMemo(
+    () => mergeUniqueMessages([...historyMessages, ...messages]),
+    [historyMessages, messages],
+  );
   const prompt = useMemo(() => latestUserPrompt(messages), [messages]);
   const memberTasks = useMemo(
     () => buildTaskMap(member.member_id, todos, teamTaskEvents, prompt, tasks ?? []),
     [member.member_id, prompt, tasks, teamTaskEvents, todos],
   );
   const processItems = useMemo(
-    () => buildProcessItems(member.member_id, memberTasks, teamTaskEvents, processMessages, teamMemberExecutionEvents, t),
+    () =>
+      buildProcessItems(member.member_id, memberTasks, teamTaskEvents, processMessages, teamMemberExecutionEvents, t),
     [member.member_id, memberTasks, processMessages, t, teamMemberExecutionEvents, teamTaskEvents],
   );
 
@@ -498,7 +588,7 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
   }, [member.member_id]);
 
   const toggleProcess = (itemId: string) => {
-    setExpandedProcessIds(prev => {
+    setExpandedProcessIds((prev) => {
       const next = new Set(prev);
       if (next.has(itemId)) next.delete(itemId);
       else next.add(itemId);
@@ -529,7 +619,12 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
           {sequence}
         </span>
         <div className="relative shrink-0">
-          <TeamMemberAvatar member={member.member_id} alt={displayName} className="h-8 w-8 rounded-full" imageClassName="rounded-full" />
+          <TeamMemberAvatar
+            member={member.member_id}
+            alt={displayName}
+            className="h-8 w-8 rounded-full"
+            imageClassName="rounded-full"
+          />
         </div>
         <div className="min-w-0 flex-1">
           <div className="truncate text-sm font-normal text-text" data-testid="team-area-member-overview-card-name">
@@ -540,7 +635,12 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
           </div>
         </div>
         {isRunning ? (
-          <svg className="w-4 h-4 text-info animate-spin shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <svg
+            className="w-4 h-4 text-info animate-spin shrink-0"
+            fill="none"
+            stroke="currentColor"
+            viewBox="0 0 24 24"
+          >
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 2v4" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="m16.2 7.8 2.9-2.9" />
             <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M18 12h4" />
@@ -555,7 +655,12 @@ const MemberOverviewCard = memo(function MemberOverviewCard({
         )}
       </button>
       <div className="min-w-0 flex-1 overflow-hidden">
-        <ProcessListCard items={processItems} expandedIds={expandedProcessIds} onToggle={toggleProcess} maxListHeight="100%" />
+        <ProcessListCard
+          items={processItems}
+          expandedIds={expandedProcessIds}
+          onToggle={toggleProcess}
+          maxListHeight="100%"
+        />
       </div>
     </div>
   );
@@ -575,27 +680,37 @@ function MemberTaskDetail({
   const { t } = useTranslation();
   const [taskListExpanded, setTaskListExpanded] = useState(false);
   const [expandedProcessIds, setExpandedProcessIds] = useState<Set<string>>(new Set());
-  const activeSessionId = useChatStore(s => s.activeSessionId);
-  const todos = useTodoStore(s => s.runtimes[activeSessionId ?? '']?.todos ?? []);
-  const teamTaskEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
-  const teamMemberExecutionEvents = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
-  const teamMemberContextCompression = useSessionStore(s => s.runtimes[activeSessionId ?? '']?.teamMemberContextCompression ?? {});
-  const clearTeamMemberContextCompressionStatus = useSessionStore(s => s.clearTeamMemberContextCompressionStatus);
-  const messages = useChatStore(s => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const processMessages = useMemo(() => mergeUniqueMessages([...historyMessages, ...messages]), [historyMessages, messages]);
+  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const todos = useTodoStore((s) => s.runtimes[activeSessionId ?? '']?.todos ?? []);
+  const teamTaskEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamTaskEvents ?? []);
+  const teamMemberExecutionEvents = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
+  );
+  const teamMemberContextCompression = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.teamMemberContextCompression ?? {},
+  );
+  const clearTeamMemberContextCompressionStatus = useSessionStore((s) => s.clearTeamMemberContextCompressionStatus);
+  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
+  const processMessages = useMemo(
+    () => mergeUniqueMessages([...historyMessages, ...messages]),
+    [historyMessages, messages],
+  );
   const prompt = useMemo(() => latestUserPrompt(messages), [messages]);
   const memberTasks = useMemo(
     () => buildTaskMap(member.member_id, todos, teamTaskEvents, prompt, tasks),
     [member.member_id, prompt, tasks, teamTaskEvents, todos],
   );
   const processItems = useMemo(
-    () => buildProcessItems(member.member_id, memberTasks, teamTaskEvents, processMessages, teamMemberExecutionEvents, t),
+    () =>
+      buildProcessItems(member.member_id, memberTasks, teamTaskEvents, processMessages, teamMemberExecutionEvents, t),
     [member.member_id, memberTasks, processMessages, t, teamMemberExecutionEvents, teamTaskEvents],
   );
   const finalEvents = useMemo(
     () =>
       dedupeFinalEvents(
-        teamMemberExecutionEvents.filter(event => event.member_id === member.member_id && event.kind === 'final' && event.title !== '成员回复'),
+        teamMemberExecutionEvents.filter(
+          (event) => event.member_id === member.member_id && event.kind === 'final' && event.title !== '成员回复',
+        ),
       ).sort((a, b) => a.timestamp - b.timestamp),
     [member.member_id, teamMemberExecutionEvents],
   );
@@ -608,7 +723,7 @@ function MemberTaskDetail({
   }, [member.member_id]);
 
   const toggleProcess = (itemId: string) => {
-    setExpandedProcessIds(prev => {
+    setExpandedProcessIds((prev) => {
       const next = new Set(prev);
       if (next.has(itemId)) next.delete(itemId);
       else next.add(itemId);
@@ -626,7 +741,7 @@ function MemberTaskDetail({
             className="flex items-center text-sm text-text-muted hover:text-text"
             data-testid="team-area-member-detail-back"
           >
-            <ChevronRight size={16} className="rotate-180" />
+            <BackIcon className="text-text" />
           </button>
         )}
         <div className="text-sm font-semibold text-text" data-testid="team-area-member-detail-title">
@@ -634,7 +749,10 @@ function MemberTaskDetail({
         </div>
       </div>
 
-      <div className="min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="team-area-member-detail-body">
+      <div
+        className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7"
+        data-testid="team-area-member-detail-body"
+      >
         <ProcessListCard items={processItems} expandedIds={expandedProcessIds} onToggle={toggleProcess} />
         <FinalSummaryList events={finalEvents} />
       </div>
@@ -648,9 +766,16 @@ function MemberTaskDetail({
             }
           }}
         />
-        <MemberTaskListBar tasks={memberTasks} expanded={taskListExpanded} onToggle={() => setTaskListExpanded(expanded => !expanded)} />
+        <MemberTaskListBar
+          tasks={memberTasks}
+          expanded={taskListExpanded}
+          onToggle={() => setTaskListExpanded((expanded) => !expanded)}
+        />
         {taskListExpanded && (
-          <div className="px-5 pb-4 max-h-[200px] overflow-y-auto" data-testid="team-area-member-detail-task-list-panel">
+          <div
+            className="px-5 pb-4 max-h-[200px] overflow-y-auto"
+            data-testid="team-area-member-detail-task-list-panel"
+          >
             <MemberTaskListItems tasks={memberTasks} />
           </div>
         )}
@@ -659,7 +784,13 @@ function MemberTaskDetail({
   );
 }
 
-function TeamMemberContextCompressionBar({ state, onClose }: { state?: TeamMemberContextCompressionState; onClose: () => void }) {
+function TeamMemberContextCompressionBar({
+  state,
+  onClose,
+}: {
+  state?: TeamMemberContextCompressionState;
+  onClose: () => void;
+}) {
   const { t } = useTranslation();
   const runtime = state?.runtime;
   const summary = state?.summary;
@@ -679,7 +810,9 @@ function TeamMemberContextCompressionBar({ state, onClose }: { state?: TeamMembe
   } else if (isFailed) {
     statusTitle = t('team.contextCompression.failed');
   }
-  const detailsTitle = showSummaryDetails ? summaryItems.map((item, index) => `${index + 1}. ${item}`).join('\n') : undefined;
+  const detailsTitle = showSummaryDetails
+    ? summaryItems.map((item, index) => `${index + 1}. ${item}`).join('\n')
+    : undefined;
 
   const isComplete = !isRunning && !isFailed;
   let stateClass = 'is-complete';
@@ -690,17 +823,26 @@ function TeamMemberContextCompressionBar({ state, onClose }: { state?: TeamMembe
   }
   const statusIcon = isFailed ? <AlertTriangle size={14} /> : <CircleAlert size={14} />;
   const statusIconTitle = showSummaryDetails && !isRunning ? detailsTitle : undefined;
-  const activityClassName = isRunning ? 'team-event-group-summary__activity context-compression-running-text' : 'team-event-group-summary__activity';
+  const activityClassName = isRunning
+    ? 'team-event-group-summary__activity context-compression-running-text'
+    : 'team-event-group-summary__activity';
 
   return (
-    <div className="team-event-group team-event-group--context-compression w-[auto]" data-testid="team-area-context-compression">
+    <div
+      className="team-event-group team-event-group--context-compression w-[auto]"
+      data-testid="team-area-context-compression"
+    >
       <div
         className={`team-event-group-summary team-event-group-summary--context-compression ${stateClass}`}
         data-testid="team-area-context-compression-summary"
         data-variant={stateClass}
       >
         <span className="team-event-group-summary__main">
-          <span className="team-event-group-summary__icon team-event-group-summary__icon--status" title={statusIconTitle} aria-hidden="true">
+          <span
+            className="team-event-group-summary__icon team-event-group-summary__icon--status"
+            title={statusIconTitle}
+            aria-hidden="true"
+          >
             {statusIcon}
           </span>
           <span className="team-event-group-summary__title" data-testid="team-area-context-compression-status-title">
@@ -740,11 +882,19 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
   }
 
   return (
-    <div className="mx-auto mt-5 max-w-[720px] border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
+    <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
       <div className="mt-4 space-y-6">
-        {events.map(event => (
-          <section key={event.id} className="space-y-3" data-testid="team-area-final-summary-item" data-variant={event.id}>
-            <div className="whitespace-pre-wrap break-words text-sm leading-7 text-text" data-testid="team-area-final-summary-content">
+        {events.map((event) => (
+          <section
+            key={event.id}
+            className="space-y-3"
+            data-testid="team-area-final-summary-item"
+            data-variant={event.id}
+          >
+            <div
+              className="whitespace-pre-wrap break-words text-sm leading-7 text-text"
+              data-testid="team-area-final-summary-content"
+            >
               {event.content || '-'}
             </div>
           </section>
@@ -785,7 +935,7 @@ function ProcessListCard({
               <div key={item.id} data-testid="team-area-process-item" data-variant={item.id}>
                 <button
                   type="button"
-                  onClick={e => {
+                  onClick={(e) => {
                     e.stopPropagation();
                     onToggle(item.id);
                   }}
@@ -793,17 +943,20 @@ function ProcessListCard({
                   className="flex h-[22px] w-full items-center gap-3 px-3 pr-1 text-left hover:bg-secondary"
                 >
                   <ProcessIcon item={item} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2 text-sm text-text-muted">
-                      <span className="shrink-0 text-muted-strong" data-testid="team-area-process-item-title">
+                  <div className="min-w-0 flex-1 text-sm text-text-muted">
+                    <div className="truncate" data-testid="team-area-process-item-title-row">
+                      <span className="text-muted-strong" data-testid="team-area-process-item-title">
                         {item.title}
                       </span>
                       {item.subtitle && (
                         <>
-                          <span className="flex" data-testid="team-area-process-item-separator">
+                          <span
+                            className="mx-1 inline-flex align-middle"
+                            data-testid="team-area-process-item-separator"
+                          >
                             <span className="w-[1px] h-[10px] bg-border" />
                           </span>
-                          <span className="truncate text-muted" data-testid="team-area-process-item-subtitle">
+                          <span className="text-muted" data-testid="team-area-process-item-subtitle">
                             {item.subtitle}
                           </span>
                         </>
@@ -855,7 +1008,10 @@ function ProcessDetail({ item }: { item: ProcessItem }) {
   const rows = buildProcessDetailRows(item, t);
 
   return (
-    <div className="border-t border-border bg-secondary px-12 py-3 text-xs text-text" data-testid="team-area-process-detail">
+    <div
+      className="border-t border-border bg-secondary px-12 py-3 text-xs text-text"
+      data-testid="team-area-process-detail"
+    >
       <div className="space-y-2">
         {rows.map(([label, value]) => (
           <div key={label} className="grid grid-cols-[72px_minmax(0,1fr)] gap-3">

@@ -41,6 +41,8 @@ export interface WebRequestOptions {
   signal?: AbortSignal;
   /** 对应协议里请求消息的顶层 is_stream 字段（如 command.goal 的 set/resume） */
   isStream?: boolean;
+  /** Keep the existing request pending until the runtime confirms acceptance. */
+  awaitRuntimeAccepted?: boolean;
 }
 
 export interface WebConnectOptions {
@@ -145,6 +147,7 @@ export interface QuestionOption {
  * 问题定义
  */
 export interface Question {
+  card_id?: string;
   question: string;
   header: string;
   options: QuestionOption[];
@@ -183,6 +186,7 @@ export interface UserAnswer {
   question?: string;
   selected_options: string[];
   custom_input?: string;
+  card_id?: string;
 }
 
 /**

@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import base64
+import io
 import json
 import logging
 import re
@@ -14,9 +15,10 @@ import tarfile
 import tempfile
 import time
 import zipfile
+from collections import OrderedDict
 from datetime import datetime, timezone
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any
+from typing import Any, NamedTuple
 
 import yaml
 
@@ -26,6 +28,25 @@ from jiuwenswarm.common.utils import (
     get_user_workspace_dir,
 )
 from jiuwenswarm.server.runtime.mcp.state_store import get_mcp_record
+from jiuwenswarm.server.runtime.marketplace.hub_asset_installer import (
+    install_hub_asset_package,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_asset_port import (
+    HubAssetDetail,
+    HubAssetKind,
+    HubAssetPort,
+    HubAssetQuery,
+    HubAssetSummary,
+    HubDownloadRequest,
+    HubSearchRequest,
+    create_default_hub_asset_port,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_install_state import (
+    HubInstallStateStore,
+)
+from jiuwenswarm.server.runtime.marketplace.hub_package_downloader import (
+    HubPackageDownloader,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +69,15 @@ _AVATAR_MIME = {
 _AGENT_TEMPLATE_KIND = "agent_templates"
 _AGENT_GROUP_KIND = "agent_groups"
 _PLUGIN_PACKAGE_KIND = "plugin_packages"
+_HUB_PREVIEW_ARCHIVE_LIMIT = 8
+
+
+class _HubPreviewArchive(NamedTuple):
+    body: bytes
+    package_root: str
+
+
+_HUB_PREVIEW_ARCHIVES: OrderedDict[tuple[str, str, str], _HubPreviewArchive] = OrderedDict()
 
 
 def _reject_package_name(name: Any, kind: str) -> str:
@@ -173,12 +203,22 @@ def _read_readme_details(pkg_dir: Path) -> str:
         return ""
 
 
-def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
-    """Parse SKILL.md YAML frontmatter for name/description (best-effort)."""
-    try:
-        text = skill_md.read_text(encoding="utf-8")
-    except (OSError, UnicodeDecodeError):
-        return {}
+def _read_agent_template_persona(pkg_dir: Path) -> str:
+    """Return the persona markdown text, or empty string."""
+    persona_dir = pkg_dir / "persona"
+    if not persona_dir.is_dir():
+        return ""
+    for entry in sorted(persona_dir.iterdir(), key=lambda p: p.name):
+        if entry.is_file() and entry.suffix.lower() == ".md":
+            try:
+                return entry.read_text(encoding="utf-8")
+            except (OSError, UnicodeDecodeError):
+                return ""
+    return ""
+
+
+def _parse_skill_frontmatter_text(text: str) -> dict[str, Any]:
+    """Parse SKILL.md YAML frontmatter text for name/description (best-effort)."""
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.DOTALL)
     if not match:
         return {}
@@ -189,8 +229,7 @@ def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
             return loaded
     except Exception:
         logger.debug(
-            "SKILL.md frontmatter YAML parse failed, falling back to line parser: %s",
-            skill_md,
+            "SKILL.md frontmatter YAML parse failed, falling back to line parser",
             exc_info=True,
         )
     meta: dict[str, Any] = {}
@@ -201,6 +240,15 @@ def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
         key, _, val = line.partition(":")
         meta[key.strip()] = val.strip().strip("'\"")
     return meta
+
+
+def _parse_skill_frontmatter(skill_md: Path) -> dict[str, Any]:
+    """Parse SKILL.md YAML frontmatter for name/description (best-effort)."""
+    try:
+        text = skill_md.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return {}
+    return _parse_skill_frontmatter_text(text)
 
 
 def _skill_id_from_spec(spec: Any) -> str | None:
@@ -214,8 +262,18 @@ def _skill_id_from_spec(spec: Any) -> str | None:
     return None
 
 
-def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
-    """Map manifest skills → ability cards (id from dir name)."""
+def _read_package_text(pkg_dir: Path, rel: str) -> str | None:
+    path = pkg_dir.joinpath(*PurePosixPath(rel).parts)
+    if not path.is_file():
+        return None
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return None
+
+
+def _map_skills_with_reader(manifest: dict, read_text: Any) -> list[dict]:
+    """Map manifest skills → ability cards using a package-relative text reader."""
     specs = manifest.get("skills")
     if not isinstance(specs, list):
         return []
@@ -224,8 +282,8 @@ def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
         skill_id = _skill_id_from_spec(spec)
         if not skill_id:
             continue
-        skill_md = pkg_dir / "skills" / skill_id / "SKILL.md"
-        meta = _parse_skill_frontmatter(skill_md) if skill_md.is_file() else {}
+        text = read_text(f"skills/{skill_id}/SKILL.md")
+        meta = _parse_skill_frontmatter_text(text) if text else {}
         name = meta.get("name") if isinstance(meta.get("name"), str) else skill_id
         desc = meta.get("description")
         if not isinstance(desc, str):
@@ -239,6 +297,13 @@ def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
             }
         )
     return cards
+
+
+def _map_skills(pkg_dir: Path, manifest: dict) -> list[dict]:
+    """Map manifest skills → ability cards (id from dir name)."""
+    return _map_skills_with_reader(
+        manifest, lambda rel: _read_package_text(pkg_dir, rel)
+    )
 
 
 def _map_class_entries(manifest: dict, key: str) -> list[dict]:
@@ -278,8 +343,8 @@ def _connector_display(name: str) -> tuple[dict[str, str], dict[str, str]]:
         return _i18n(name, name), _i18n("")
 
 
-def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
-    """Map mcps from manifest: package ``file``/``dir`` plus host ``connector`` deps."""
+def _map_mcps_with_reader(manifest: dict, read_text: Any) -> list[dict]:
+    """Map mcps from manifest using a package-relative text reader."""
     cards: list[dict] = []
     seen: set[str] = set()
 
@@ -302,12 +367,12 @@ def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
             }
         )
 
-    def _add_from_mcp_file(path: Path) -> None:
-        if not path.is_file():
+    def _add_from_mcp_text(text: str | None) -> None:
+        if not text:
             return
         try:
-            data = json.loads(path.read_text(encoding="utf-8"))
-        except (ValueError, OSError):
+            data = json.loads(text)
+        except ValueError:
             return
         if not isinstance(data, dict):
             return
@@ -354,17 +419,24 @@ def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
             continue
         file_ref = spec.get("file")
         if isinstance(file_ref, str) and file_ref.strip():
-            _add_from_mcp_file(pkg_dir / file_ref)
+            _add_from_mcp_text(read_text(file_ref.replace("\\", "/")))
             continue
         dir_ref = spec.get("dir")
         if isinstance(dir_ref, str) and dir_ref.strip():
-            mcp_dir = pkg_dir / dir_ref
+            prefix = dir_ref.strip().replace("\\", "/").rstrip("/")
             for filename in ("mcp.json", "mcps.json"):
-                candidate = mcp_dir / filename
-                if candidate.is_file():
-                    _add_from_mcp_file(candidate)
+                text = read_text(f"{prefix}/{filename}")
+                if text is not None:
+                    _add_from_mcp_text(text)
                     break
     return cards
+
+
+def _map_mcps(pkg_dir: Path, manifest: dict) -> list[dict]:
+    """Map mcps from manifest: package ``file``/``dir`` plus host ``connector`` deps."""
+    return _map_mcps_with_reader(
+        manifest, lambda rel: _read_package_text(pkg_dir, rel)
+    )
 
 
 def _connector_names_from_manifest(manifest: dict) -> list[str]:
@@ -556,15 +628,8 @@ def _iter_resource_package_dirs(kind: str) -> list[Path]:
 
 def _iter_local_package_dirs(local_root: Path) -> list[Path]:
     """Return package dirs under the user local/ root."""
-    if not local_root.exists():
-        try:
-            local_root.mkdir(parents=True, exist_ok=True)
-        except OSError:
-            logger.warning(
-                "[extension_package_manager] failed to create missing package root: %s",
-                local_root,
-            )
-            return []
+    if not local_root.is_dir():
+        return []
     try:
         entries = sorted(local_root.iterdir(), key=lambda p: p.name)
     except OSError:
@@ -873,6 +938,49 @@ def _validate_package_manifest(
     return candidate
 
 
+def _canonical_hub_manifest(manifest: dict, *, package_type: str) -> tuple[dict, bool]:
+    """Copy Hub manifest aliases into Jiuwenswarm's canonical schema."""
+    normalized = dict(manifest)
+    changed = False
+    aliases = {
+        "packageType": "package_type",
+        "displayName": "display_name",
+        "displayDescription": "display_description",
+        "defaultInitInput": "default_init_input",
+        "quickInputs": "quick_inputs",
+    }
+    for hub_field, canonical_field in aliases.items():
+        if canonical_field not in normalized and hub_field in normalized:
+            normalized[canonical_field] = normalized[hub_field]
+            changed = True
+
+    if package_type == "agent_template":
+        agent_card = normalized.get("agentCard")
+        if isinstance(agent_card, dict):
+            if "name" not in normalized and "id" in agent_card:
+                normalized["name"] = agent_card["id"]
+                changed = True
+            if "description" not in normalized and "description" in agent_card:
+                normalized["description"] = agent_card["description"]
+                changed = True
+    return normalized, changed
+
+
+def _normalize_hub_equipment_manifest(package_root: Path, *, package_type: str) -> None:
+    """Translate Hub manifest aliases into Jiuwenswarm's canonical schema."""
+    manifest = _read_package_manifest(package_root)
+    if manifest is None:
+        raise ValueError(
+            f"{package_type} package missing/corrupt manifest.json: {package_root.name}"
+        )
+    normalized, changed = _canonical_hub_manifest(manifest, package_type=package_type)
+    if changed:
+        (package_root / "manifest.json").write_text(
+            json.dumps(normalized, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+
+
 def _resolve_package_dir(
     name: Any, *, kind: str, kind_label: str, package_type: str
 ) -> Path:
@@ -997,6 +1105,39 @@ def _build_file_tree(directory: Path, root: Path) -> list[dict]:
                     {"path": rel, "type": "file", "size": entry.stat().st_size}
                 )
     return result
+
+
+def _nest_preview_tree(entries: list[tuple[str, int]]) -> list[dict]:
+    """Build the preview tree JSON from package-relative files."""
+    root: dict[str, Any] = {}
+    for rel, size in entries:
+        if not _is_previewable_file(rel):
+            continue
+        node = root
+        parts = rel.split("/")
+        for part in parts[:-1]:
+            child = node.get(part)
+            if not isinstance(child, dict):
+                child = {}
+                node[part] = child
+            node = child
+        node[parts[-1]] = size
+
+    def walk(node: dict[str, Any], prefix: str) -> list[dict]:
+        dirs: list[dict] = []
+        files: list[dict] = []
+        for name in sorted(node):
+            value = node[name]
+            path = f"{prefix}{name}"
+            if isinstance(value, dict):
+                children = walk(value, path + "/")
+                if children:
+                    dirs.append({"path": path + "/", "type": "dir", "children": children})
+            else:
+                files.append({"path": path, "type": "file", "size": value})
+        return dirs + files
+
+    return walk(root, "")
 
 
 def _reject_preview_path_symlink(pkg_dir: Path, rel: str) -> Path:
@@ -1211,22 +1352,30 @@ def _lifecycle_package_id(params: dict, kind: str) -> str:
 def _apply_list_source_filter(
     cards: list[dict], params: dict | None
 ) -> list[dict]:
-    """Filter list cards by ``params.filter`` (``builtin`` | ``local``).
+    """Filter list cards by the catalog/mine source contract.
     local: source is local or builtin and installed
     builtin: source is builtin
     """
     if not isinstance(params, dict):
         return cards
     raw = params.get("filter")
-    if raw not in ("builtin", "local"):
+    if raw not in ("builtin", "local", "builtin+hub", "mine"):
         return cards
     if raw == "builtin":
         return [card for card in cards if card.get("source") == "builtin"]
+    if raw == "builtin+hub":
+        return [card for card in cards if card.get("source") in {"builtin", "hub"}]
+    if raw == "mine":
+        return [
+            card
+            for card in cards
+            if card.get("source") == "local" or bool(card.get("installed"))
+        ]
     filtered: list[dict] = []
     for card in cards:
         source = card.get("source")
         if source == "local" or (
-            source == "builtin" and bool(card.get("installed"))
+            source in {"builtin", "hub"} and bool(card.get("installed"))
         ):
             filtered.append(card)
     return filtered
@@ -1243,6 +1392,127 @@ def list_agent_templates(params: dict | None = None) -> list[dict]:
         marketplace_by_id=market,
     )
     return _apply_list_source_filter(cards, params)
+
+
+def _hub_install_state_store(kind: str) -> HubInstallStateStore:
+    return HubInstallStateStore(_kind_root(kind))
+
+
+def _hub_asset_kind(kind: str) -> HubAssetKind:
+    if kind == _AGENT_TEMPLATE_KIND:
+        return "agent_template"
+    if kind == _PLUGIN_PACKAGE_KIND:
+        return "plugin"
+    raise ValueError(f"unknown Hub asset kind: {kind}")
+
+
+def _hub_list_card(item: HubAssetSummary) -> dict[str, Any]:
+    package_name = item.package_name or item.asset_id
+    return {
+        "id": item.asset_id,
+        "packageName": package_name,
+        "displayName": _i18n(item.display_name, package_name),
+        "displayDescription": _i18n(item.short_description),
+        "category": "",
+        "source": "hub",
+        "installed": False,
+        "connection_state": "disconnected",
+        "avatar": item.icon_uri,
+        "tags": [_i18n(tag, tag) for tag in item.tags],
+        "version": item.public_latest_version,
+    }
+
+
+async def _list_equipment_with_hub(
+    kind: str,
+    params: dict | None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    hub_asset_kind = _hub_asset_kind(kind)
+    local_cards = (
+        list_agent_templates(None)
+        if kind == _AGENT_TEMPLATE_KIND
+        else list_plugin_packages(None)
+    )
+    cards_by_id: dict[str, dict] = {}
+    local_package_ids: set[str] = set()
+    for card in local_cards:
+        package_id = str(card.get("id") or "")
+        local_package_ids.add(package_id)
+        record = _hub_install_state_store(kind).get_by_package_id(package_id)
+        if record is not None and record.kind == hub_asset_kind:
+            card = {
+                **card,
+                "id": record.asset_id,
+                "packageName": package_id,
+                "source": "hub",
+                "installedVersion": record.version,
+            }
+            cards_by_id[record.asset_id] = card
+        else:
+            cards_by_id[package_id] = card
+
+    source_filter = params.get("filter") if isinstance(params, dict) else None
+    if source_filter in {"local", "mine"}:
+        return _apply_list_source_filter(list(cards_by_id.values()), params)
+
+    port = hub_port or create_default_hub_asset_port()
+    try:
+        remote_items: list[HubAssetSummary] = []
+        page_number = 1
+        while page_number <= 100:
+            page = await port.search_assets(
+                HubSearchRequest(
+                    kind=hub_asset_kind,
+                    page=page_number,
+                    page_size=100,
+                )
+            )
+            remote_items.extend(page.items)
+            if not page.items or len(remote_items) >= page.total:
+                break
+            page_number += 1
+    except Exception:
+        logger.warning(
+            "[extension_package_manager] failed to list Hub %s packages",
+            hub_asset_kind,
+            exc_info=True,
+        )
+        return _apply_list_source_filter(list(cards_by_id.values()), params)
+    for item in remote_items:
+        if (
+            item.kind != hub_asset_kind
+            or item.asset_id in cards_by_id
+            or (item.package_name or item.asset_id) in local_package_ids
+        ):
+            continue
+        cards_by_id[item.asset_id] = _hub_list_card(item)
+    cards = [cards_by_id[key] for key in sorted(cards_by_id)]
+    return _apply_list_source_filter(cards, params)
+
+
+async def list_agent_templates_with_hub(
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    return await _list_equipment_with_hub(
+        _AGENT_TEMPLATE_KIND, params, hub_port=hub_port, downloader=downloader
+    )
+
+
+async def list_plugin_packages_with_hub(
+    params: dict | None = None,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    return await _list_equipment_with_hub(
+        _PLUGIN_PACKAGE_KIND, params, hub_port=hub_port, downloader=downloader
+    )
 
 
 def list_agent_groups(params: dict | None = None) -> list[dict]:
@@ -1491,6 +1761,170 @@ def show_plugin_package(name: str) -> dict | None:
     )
 
 
+def _hub_detail_card(
+    detail: HubAssetDetail,
+) -> dict[str, Any]:
+    return {
+        "id": detail.asset_id,
+        "packageName": detail.package_name or detail.asset_id,
+        "displayName": _i18n(
+            detail.display_name, detail.package_name or detail.asset_id
+        ),
+        "displayDescription": _i18n(detail.short_description),
+        "source": "hub",
+        "avatar": detail.icon_uri,
+        "version": detail.version,
+        "details": detail.detail_description or detail.short_description,
+        "tags": [_i18n(tag, tag) for tag in detail.tags],
+        "skills": [],
+        "tools": [],
+        "rails": [],
+        "mcps": [],
+        "installed": False,
+        "connection_state": "disconnected",
+        "pending_connectors": [],
+        "quickInputs": [],
+    }
+
+
+def _apply_hub_identity(card: dict[str, Any], detail: HubAssetDetail) -> dict[str, Any]:
+    card["id"] = detail.asset_id
+    card["packageName"] = detail.package_name or detail.asset_id
+    card["source"] = "hub"
+    if not card.get("avatar"):
+        card["avatar"] = detail.icon_uri
+    if not card.get("version"):
+        card["version"] = detail.version
+    return card
+
+
+def _build_show_card_from_zip(
+    body: bytes,
+    package_root: str,
+    *,
+    package_type: str,
+    package_id: str,
+) -> dict | None:
+    """Build a show card from a Hub ZIP without extracting it to disk."""
+    text = _zip_member_text(body, package_root, "manifest.json")
+    if text is None:
+        return None
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    manifest, _changed = _canonical_hub_manifest(parsed, package_type=package_type)
+    if manifest.get("package_type") != package_type:
+        return None
+
+    def read_text(rel: str) -> str | None:
+        return _zip_member_text(body, package_root, rel)
+
+    version = manifest.get("version")
+    tags = manifest.get("tags")
+    details = read_text("README.md") or ""
+    if package_type == "agent_template":
+        description = manifest.get("description")
+        details = description if isinstance(description, str) else ""
+    card: dict[str, Any] = {
+        "id": package_id,
+        "displayName": manifest.get("display_name") or package_id,
+        "displayDescription": manifest.get("display_description") or {},
+        "source": "hub",
+        "avatar": _resolve_zip_avatar(body, package_root, manifest),
+        "version": version if isinstance(version, str) else "",
+        "details": details,
+        "tags": tags if isinstance(tags, list) else [],
+        "skills": _map_skills_with_reader(manifest, read_text),
+        "tools": _map_class_entries(manifest, "tools"),
+        "rails": _map_class_entries(manifest, "rails"),
+        "mcps": _map_mcps_with_reader(manifest, read_text),
+        "installed": False,
+    }
+    card["connection_state"] = _package_connection_state(manifest, installed=False)
+    card["pending_connectors"] = unready_connectors(
+        _connector_names_from_manifest(manifest)
+    )
+    quick = manifest.get("quick_inputs")
+    card["quickInputs"] = quick if isinstance(quick, list) else []
+    return card
+
+
+async def _show_equipment_with_hub(
+    kind: str,
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> dict | None:
+    hub_asset_kind = _hub_asset_kind(kind)
+    state_store = _hub_install_state_store(kind)
+    record = state_store.get(name) or state_store.get_by_package_id(name)
+    local_name = record.package_id if record is not None else name
+    local_card = (
+        show_agent_template(local_name)
+        if kind == _AGENT_TEMPLATE_KIND
+        else show_plugin_package(local_name)
+    )
+    if local_card is not None:
+        if record is not None and record.kind == hub_asset_kind:
+            local_card.update(
+                {
+                    "id": record.asset_id,
+                    "packageName": record.package_id,
+                    "source": "hub",
+                    "installedVersion": record.version,
+                }
+            )
+        return local_card
+    port = hub_port or create_default_hub_asset_port()
+    remote_asset_id = record.asset_id if record is not None else name
+    remote = await port.query_asset(
+        HubAssetQuery(kind=hub_asset_kind, asset_id=remote_asset_id)
+    )
+    if remote.kind != hub_asset_kind:
+        raise ValueError(f"Hub package type mismatch: {name}")
+    if remote.asset_id != remote_asset_id:
+        raise ValueError(
+            f"Hub asset id mismatch: expected {remote_asset_id!r}, "
+            f"got {remote.asset_id!r}"
+        )
+    archive = await _load_hub_preview_archive(
+        kind,
+        remote.asset_id,
+        hub_port=port,
+        downloader=downloader,
+        detail=remote,
+    )
+    card = _build_show_card_from_zip(
+        archive.body,
+        archive.package_root,
+        package_type=hub_asset_kind,
+        package_id=remote.package_name or remote.asset_id,
+    )
+    if card is None:
+        return _hub_detail_card(remote)
+    return _apply_hub_identity(card, remote)
+
+
+async def show_agent_template_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
+) -> dict | None:
+    return await _show_equipment_with_hub(
+        _AGENT_TEMPLATE_KIND, name, hub_port=hub_port, downloader=downloader
+    )
+
+
+async def show_plugin_package_with_hub(
+    name: str, *, hub_port: HubAssetPort | None = None, downloader: Any = None
+) -> dict | None:
+    return await _show_equipment_with_hub(
+        _PLUGIN_PACKAGE_KIND, name, hub_port=hub_port, downloader=downloader
+    )
+
+
 def manifest_connector_names(kind: str, package_id: str) -> list[str]:
     """Return deduplicated connector names from a package manifest (read-only).
 
@@ -1625,6 +2059,117 @@ def install_equipment_gated(kind: str, params: dict) -> tuple[bool, dict[str, An
     return True, {}
 
 
+def _equipment_definition_exists(kind: str, package_id: str) -> bool:
+    resources = _resources_root(kind)
+    candidates = [
+        _local_root(kind) / package_id,
+        _built_in_root(kind) / package_id,
+    ]
+    if resources is not None:
+        candidates.append(resources / package_id)
+    return any(candidate.is_dir() for candidate in candidates)
+
+
+async def _prepare_hub_equipment(
+    kind: str,
+    package_id: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> str:
+    hub_asset_kind = _hub_asset_kind(kind)
+    kind_label = hub_asset_kind
+    package_type = hub_asset_kind
+
+    def validate_package(package_root: Path, expected_package_id: str) -> None:
+        _normalize_hub_equipment_manifest(package_root, package_type=package_type)
+        _validate_package_manifest(package_root, kind_label, package_type)
+        manifest = _read_package_manifest(package_root)
+        if manifest is None:
+            raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+        manifest_id = _package_id_from_manifest(
+            manifest, package_type=package_type, kind_label=kind_label
+        )
+        if manifest_id != expected_package_id:
+            raise ValueError(
+                f"Hub {kind_label} package id mismatch: expected "
+                f"{expected_package_id!r}, "
+                f"got {manifest_id!r}"
+            )
+
+    def reject_conflict(runtime_package_id: str) -> None:
+        _assert_package_id_available(
+            runtime_package_id,
+            local_root=_local_root(kind),
+            built_in_root=_built_in_root(kind),
+            kind=kind_label,
+            resources_root=_resources_root(kind),
+        )
+
+    def write_marketplace(record: Any) -> None:
+        if kind == _PLUGIN_PACKAGE_KIND:
+            upsert_plugin_marketplace_entry(
+                record.package_id, installed=False, source="hub"
+            )
+        else:
+            upsert_agent_template_marketplace_entry(
+                record.package_id, installed=False, source="hub"
+            )
+
+    result = await install_hub_asset_package(
+        kind=hub_asset_kind,
+        asset_id=package_id,
+        destination_root=_local_root(kind),
+        state_store=_hub_install_state_store(kind),
+        package_name_validator=lambda value: _reject_package_name(
+            value, f"Hub {kind_label} package"
+        ),
+        package_validator=validate_package,
+        conflict_validator=reject_conflict,
+        on_committed=write_marketplace,
+        on_rollback=lambda runtime_package_id: _remove_marketplace_entry(
+            kind, runtime_package_id
+        ),
+        hub_port=hub_port,
+        downloader=downloader,
+    )
+    return result.package_id
+
+
+async def install_equipment_from_hub_gated(
+    kind: str,
+    params: dict,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> tuple[bool, dict[str, Any]]:
+    kind_label = _hub_asset_kind(kind)
+    requested_id = _lifecycle_package_id(params, kind_label)
+    state_store = _hub_install_state_store(kind)
+    record = state_store.get(requested_id) or state_store.get_by_package_id(
+        requested_id
+    )
+    runtime_package_id = record.package_id if record is not None else requested_id
+    if not _equipment_definition_exists(kind, runtime_package_id):
+        runtime_package_id = await _prepare_hub_equipment(
+            kind,
+            requested_id,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+    ok, payload = install_equipment_gated(kind, {"id": runtime_package_id})
+    record = state_store.get(requested_id) or state_store.get_by_package_id(
+        runtime_package_id
+    )
+    if record is not None:
+        _upsert_marketplace_entry(
+            kind,
+            runtime_package_id,
+            fields={"installed": ok, "source": "hub"},
+        )
+    return ok, payload
+
+
 _CONNECTOR_UNINSTALL_NOTICE = (
     "本装备依赖的 connector 仍保持连接，可在 MCP 管理页断开"
 )
@@ -1637,15 +2182,13 @@ def uninstall_equipment_with_notice(kind: str, params: dict) -> dict[str, Any]:
     declared connectors, the success payload includes a ``notice`` tip.
     """
     if kind == _AGENT_TEMPLATE_KIND:
-        kind_label = "agent_template"
         uninstall_fn = uninstall_agent_template
     elif kind == _PLUGIN_PACKAGE_KIND:
-        kind_label = "plugin"
         uninstall_fn = uninstall_plugin_package
     else:
         raise ValueError(f"unknown package kind: {kind}")
 
-    package_id = _lifecycle_package_id(params, kind_label)
+    package_id = resolve_equipment_runtime_id(kind, params.get("id"))
     connectors = manifest_connector_names(kind, package_id)
     uninstall_fn(params)
     if connectors:
@@ -1653,15 +2196,301 @@ def uninstall_equipment_with_notice(kind: str, params: dict) -> dict[str, Any]:
     return {}
 
 
-def list_agent_template_files(name: str) -> list[dict]:
-    """Return the previewable file tree for one agent_template package."""
-    pkg_dir = resolve_agent_template_dir(name)
-    return _build_file_tree(pkg_dir, pkg_dir)
+def resolve_equipment_runtime_id(kind: str, identifier: Any) -> str:
+    """Translate a Hub asset UUID to its local runtime package identifier."""
+    package_id = _lifecycle_package_id({"id": identifier}, _hub_asset_kind(kind))
+    store = _hub_install_state_store(kind)
+    record = store.get(package_id) or store.get_by_package_id(package_id)
+    return record.package_id if record is not None else package_id
 
 
-def read_agent_template_file(name: str, rel_path: str) -> dict:
-    """Read one previewable file from an agent_template package."""
-    pkg_dir = resolve_agent_template_dir(name)
+def _agent_template_preview_dir(name: str) -> Path:
+    """Resolve an expert package dir for file preview, including uninstalled shelf items."""
+    package_id = resolve_equipment_runtime_id(_AGENT_TEMPLATE_KIND, name)
+    resolved = _resolve_agent_template_definition_dir(package_id)
+    if resolved is None:
+        raise ValueError(f"agent_template package not found: {package_id}")
+    pkg_dir, _ = resolved
+    return pkg_dir
+
+
+def _clear_hub_preview_archives() -> None:
+    """Drop the in-process Hub preview ZIP cache."""
+    _HUB_PREVIEW_ARCHIVES.clear()
+
+
+def _store_hub_preview_archive(
+    key: tuple[str, str, str], archive: _HubPreviewArchive
+) -> _HubPreviewArchive:
+    _HUB_PREVIEW_ARCHIVES.pop(key, None)
+    _HUB_PREVIEW_ARCHIVES[key] = archive
+    while len(_HUB_PREVIEW_ARCHIVES) > _HUB_PREVIEW_ARCHIVE_LIMIT:
+        _HUB_PREVIEW_ARCHIVES.popitem(last=False)
+    return archive
+
+
+def _zip_package_root(file_paths: list[PurePosixPath], kind_label: str) -> PurePosixPath:
+    """Return the package root inside a ZIP: this archive, or exactly one child folder."""
+    if any(path == PurePosixPath("manifest.json") for path in file_paths):
+        return PurePosixPath()
+    candidates = [
+        path.parts[0]
+        for path in file_paths
+        if len(path.parts) == 2 and path.name == "manifest.json"
+    ]
+    unique = list(dict.fromkeys(candidates))
+    if len(unique) != 1:
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    return PurePosixPath(unique[0])
+
+
+def _zip_info_for_relative(
+    members: list[tuple[zipfile.ZipInfo, PurePosixPath]], relative: PurePosixPath
+) -> zipfile.ZipInfo:
+    wanted = relative.as_posix()
+    for info, path in members:
+        if path.as_posix() == wanted and not info.is_dir():
+            return info
+    raise ValueError(f"file not found: {wanted}")
+
+
+def _zip_member_bytes(body: bytes, package_root: str, rel: str) -> bytes | None:
+    relative = PurePosixPath(str(rel or "").strip().replace("\\", "/"))
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        return None
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    member = root / relative if root.parts else relative
+    try:
+        with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+            members = HubPackageDownloader.validated_members(archive)
+            info = _zip_info_for_relative(members, member)
+            if stat.S_ISLNK(info.external_attr >> 16):
+                return None
+            return archive.read(info)
+    except (ValueError, zipfile.BadZipFile):
+        return None
+
+
+def _zip_member_text(body: bytes, package_root: str, rel: str) -> str | None:
+    data = _zip_member_bytes(body, package_root, rel)
+    if data is None:
+        return None
+    try:
+        return data.decode("utf-8")
+    except UnicodeDecodeError:
+        return None
+
+
+def _resolve_zip_avatar(body: bytes, package_root: str, manifest: dict) -> str:
+    raw = manifest.get("avatar")
+    if not isinstance(raw, str):
+        return ""
+    rel = raw.strip().replace("\\", "/")
+    if not rel or rel.startswith("/") or ".." in PurePosixPath(rel).parts:
+        return ""
+    mime = _AVATAR_MIME.get(Path(rel).suffix.lower())
+    if mime is None:
+        return ""
+    data = _zip_member_bytes(body, package_root, rel)
+    if not data:
+        return ""
+    return f"data:{mime};base64,{base64.b64encode(data).decode('ascii')}"
+
+
+def _inspect_hub_preview_zip(
+    body: bytes, *, kind_label: str, package_type: str
+) -> str:
+    """Validate a Hub ZIP and return the package-root prefix inside it."""
+    if not body.startswith(b"PK"):
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    try:
+        with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+            members = HubPackageDownloader.validated_members(archive)
+            files = [relative for info, relative in members if not info.is_dir()]
+            package_root = _zip_package_root(files, kind_label)
+            manifest_path = (
+                package_root / "manifest.json"
+                if package_root.parts
+                else PurePosixPath("manifest.json")
+            )
+            info = _zip_info_for_relative(members, manifest_path)
+            raw = archive.read(info)
+    except zipfile.BadZipFile as exc:
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json") from exc
+    try:
+        parsed = json.loads(raw.decode("utf-8"))
+    except ValueError as exc:
+        raise ValueError(
+            f"{kind_label} package missing/corrupt manifest.json"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise ValueError(f"{kind_label} package missing/corrupt manifest.json")
+    canonical, _changed = _canonical_hub_manifest(parsed, package_type=package_type)
+    declared = canonical.get("package_type")
+    if declared != package_type:
+        label = package_root.name if package_root.parts else kind_label
+        raise ValueError(
+            f"{kind_label} package wrong package_type: {label} "
+            f"(expected {package_type}, got {declared!r})"
+        )
+    return "" if not package_root.parts else package_root.as_posix()
+
+
+def _package_relative_from_zip(
+    relative: PurePosixPath, package_root: PurePosixPath
+) -> str | None:
+    if not package_root.parts:
+        rel = relative.as_posix()
+        return None if rel in {".", ""} else rel
+    try:
+        stripped = relative.relative_to(package_root)
+    except ValueError:
+        return None
+    rel = stripped.as_posix()
+    if rel in {".", ""}:
+        return None
+    return rel
+
+
+def _build_file_tree_from_zip(body: bytes, package_root: str) -> list[dict]:
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+        members = HubPackageDownloader.validated_members(archive)
+        entries: list[tuple[str, int]] = []
+        for info, relative in members:
+            if info.is_dir():
+                continue
+            rel = _package_relative_from_zip(relative, root)
+            if rel is None:
+                continue
+            entries.append((rel, info.file_size))
+    return _nest_preview_tree(entries)
+
+
+def _read_previewable_file_from_zip(
+    body: bytes, package_root: str, rel_path: str
+) -> dict:
+    rel = str(rel_path or "").strip().replace("\\", "/")
+    if not _is_previewable_file(rel):
+        raise ValueError(f"file not previewable: {rel}")
+    relative = PurePosixPath(rel)
+    if relative.is_absolute() or ".." in relative.parts or not relative.parts:
+        raise ValueError(f"path escapes package: {rel}")
+    root = PurePosixPath(package_root) if package_root else PurePosixPath()
+    member = root / relative if root.parts else relative
+    with zipfile.ZipFile(io.BytesIO(body), "r") as archive:
+        members = HubPackageDownloader.validated_members(archive)
+        try:
+            info = _zip_info_for_relative(members, member)
+        except ValueError as exc:
+            raise ValueError(f"file not found: {rel}") from exc
+        mode = info.external_attr >> 16
+        if stat.S_ISLNK(mode):
+            raise ValueError(f"symlink not allowed: {rel}")
+        if info.file_size > _MAX_PREVIEW_FILE_BYTES:
+            raise ValueError(f"file too large: {rel} ({info.file_size} bytes)")
+        data = archive.read(info)
+    size = len(data)
+    if size > _MAX_PREVIEW_FILE_BYTES:
+        raise ValueError(f"file too large: {rel} ({size} bytes)")
+    try:
+        content = data.decode("utf-8")
+    except UnicodeDecodeError:
+        content = f"[二进制文件，大小 {size} bytes]"
+    return {"path": rel, "content": content}
+
+
+async def _download_hub_preview_bytes(downloader: Any, artifact: Any) -> bytes:
+    download_bytes = getattr(downloader, "download_bytes", None)
+    if not callable(download_bytes):
+        raise ValueError("Hub preview downloader cannot provide ZIP bytes")
+    body = await download_bytes(artifact)
+    if not isinstance(body, (bytes, bytearray)):
+        raise ValueError("Hub preview download did not return bytes")
+    return bytes(body)
+
+
+async def _load_hub_preview_archive(
+    kind: str,
+    identifier: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+    detail: HubAssetDetail | None = None,
+) -> _HubPreviewArchive:
+    """Download a Hub package ZIP for preview without installing or extracting it."""
+    hub_asset_kind = _hub_asset_kind(kind)
+    kind_label = hub_asset_kind
+    package_type = hub_asset_kind
+    asset_id = _reject_package_name(identifier, kind_label)
+    port = hub_port or create_default_hub_asset_port()
+    if detail is None:
+        detail = await port.query_asset(
+            HubAssetQuery(kind=hub_asset_kind, asset_id=asset_id)
+        )
+    if detail.kind != hub_asset_kind:
+        raise ValueError(f"Hub package type mismatch: {asset_id}")
+    if detail.asset_id != asset_id:
+        raise ValueError(
+            f"Hub asset id mismatch: expected {asset_id!r}, got {detail.asset_id!r}"
+        )
+    version = str(detail.version or "").strip()
+    if not version:
+        raise ValueError(f"Hub package has no public version: {asset_id}")
+    cache_key = (kind, asset_id, version)
+    cached = _HUB_PREVIEW_ARCHIVES.get(cache_key)
+    if cached is not None:
+        _HUB_PREVIEW_ARCHIVES.move_to_end(cache_key)
+        return cached
+
+    artifact = await port.resolve_download(
+        HubDownloadRequest(kind=hub_asset_kind, asset_id=asset_id, version=version)
+    )
+    if artifact.kind != hub_asset_kind:
+        raise ValueError(f"Hub artifact type mismatch: {asset_id}")
+    if artifact.asset_id != asset_id:
+        raise ValueError(
+            f"Hub artifact asset id mismatch: expected {asset_id!r}, "
+            f"got {artifact.asset_id!r}"
+        )
+    if artifact.version != version:
+        raise ValueError(
+            f"Hub artifact version mismatch: expected {version!r}, "
+            f"got {artifact.version!r}"
+        )
+
+    package_downloader = downloader or HubPackageDownloader()
+    body = await _download_hub_preview_bytes(package_downloader, artifact)
+    package_root = _inspect_hub_preview_zip(
+        body, kind_label=kind_label, package_type=package_type
+    )
+    return _store_hub_preview_archive(
+        cache_key, _HubPreviewArchive(body=body, package_root=package_root)
+    )
+
+
+async def _resolve_agent_template_preview_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> tuple[Path | None, _HubPreviewArchive | None]:
+    """Resolve local expert files, or a Hub preview ZIP if the package is not installed."""
+    try:
+        return _agent_template_preview_dir(name), None
+    except ValueError as exc:
+        if "package not found" not in str(exc):
+            raise
+        archive = await _load_hub_preview_archive(
+            _AGENT_TEMPLATE_KIND,
+            name,
+            hub_port=hub_port,
+            downloader=downloader,
+        )
+        return None, archive
+
+
+def _read_previewable_file(pkg_dir: Path, rel_path: str) -> dict:
     rel = str(rel_path or "").strip().replace("\\", "/")
     if not _is_previewable_file(rel):
         raise ValueError(f"file not previewable: {rel}")
@@ -1674,6 +2503,54 @@ def read_agent_template_file(name: str, rel_path: str) -> dict:
     except UnicodeDecodeError:
         content = f"[二进制文件，大小 {size} bytes]"
     return {"path": rel, "content": content}
+
+
+def list_agent_template_files(name: str) -> list[dict]:
+    """Return the previewable file tree for one agent_template package."""
+    pkg_dir = _agent_template_preview_dir(name)
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_agent_template_file(name: str, rel_path: str) -> dict:
+    """Read one previewable file from an agent_template package."""
+    return _read_previewable_file(_agent_template_preview_dir(name), rel_path)
+
+
+async def list_agent_template_files_with_hub(
+    name: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> list[dict]:
+    """List previewable files, downloading an uninstalled Hub expert if needed."""
+    pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    if archive is not None:
+        return _build_file_tree_from_zip(archive.body, archive.package_root)
+    if pkg_dir is None:
+        raise ValueError(f"agent_template package not found: {name}")
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+async def read_agent_template_file_with_hub(
+    name: str,
+    rel_path: str,
+    *,
+    hub_port: HubAssetPort | None = None,
+    downloader: Any = None,
+) -> dict:
+    """Read one previewable file, downloading an uninstalled Hub expert if needed."""
+    pkg_dir, archive = await _resolve_agent_template_preview_with_hub(
+        name, hub_port=hub_port, downloader=downloader
+    )
+    if archive is not None:
+        return _read_previewable_file_from_zip(
+            archive.body, archive.package_root, rel_path
+        )
+    if pkg_dir is None:
+        raise ValueError(f"agent_template package not found: {name}")
+    return _read_previewable_file(pkg_dir, rel_path)
 
 
 def list_agent_group_files(name: str) -> list[dict]:
@@ -2077,6 +2954,38 @@ def _package_id_from_manifest(
     return _reject_package_name(raw.strip(), kind_label)
 
 
+def _require_import_readme(pkg_root: Path, kind_label: str) -> None:
+    """Reject an imported package that lacks README.md before it is copied to local/."""
+    if not (pkg_root / "README.md").is_file():
+        raise ValueError(f"{kind_label} package missing README.md")
+
+
+def _validate_agent_template_import_layout(pkg_root: Path, manifest: dict) -> None:
+    """Reject an imported expert package that lacks persona markdown."""
+    persona = manifest.get("persona")
+    if not isinstance(persona, dict) or "dir" not in persona:
+        raise ValueError(
+            'agent_template package missing persona (expected {"dir": "./persona"})'
+        )
+    raw_dir = persona.get("dir")
+    if not isinstance(raw_dir, str) or not raw_dir.strip():
+        raise ValueError("agent_template package missing persona.dir")
+    rel = raw_dir.strip().replace("\\", "/")
+    posix = PurePosixPath(rel)
+    if posix.is_absolute() or ".." in rel.split("/") or PureWindowsPath(raw_dir).is_absolute():
+        raise ValueError("agent_template package persona dir escapes package root")
+    pkg_root_resolved = pkg_root.resolve()
+    persona_dir = (pkg_root / rel).resolve()
+    if persona_dir == pkg_root_resolved or not persona_dir.is_relative_to(pkg_root_resolved):
+        raise ValueError("agent_template package persona dir escapes package root")
+    if not persona_dir.is_dir():
+        raise ValueError(f"agent_template package persona dir not found: {raw_dir}")
+    if not any(path.is_file() for path in persona_dir.rglob("*.md")):
+        raise ValueError(
+            f"agent_template package persona dir has no markdown files: {raw_dir}"
+        )
+
+
 def _commit_imported_package(
     pkg_root: Path, *, kind: str, kind_label: str, package_type: str
 ) -> dict:
@@ -2090,6 +2999,10 @@ def _commit_imported_package(
     package_id = _package_id_from_manifest(
         manifest, package_type=package_type, kind_label=kind_label
     )
+    if kind in (_AGENT_TEMPLATE_KIND, _PLUGIN_PACKAGE_KIND):
+        _require_import_readme(pkg_root, kind_label)
+    if kind == _AGENT_TEMPLATE_KIND:
+        _validate_agent_template_import_layout(pkg_root, manifest)
     if kind == _AGENT_GROUP_KIND:
         from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
 
@@ -2109,13 +3022,13 @@ def _commit_imported_package(
     )
     dest = local_root / package_id
     local_root.mkdir(parents=True, exist_ok=True)
+    staging_parent = Path(
+        tempfile.mkdtemp(prefix=f".{package_id}.staging-", dir=local_root)
+    )
+    staged = staging_parent / package_id
     try:
-        shutil.copytree(pkg_root, dest)
-    except Exception:
-        if dest.exists():
-            shutil.rmtree(dest, ignore_errors=True)
-        raise
-    try:
+        shutil.copytree(pkg_root, staged)
+        staged.replace(dest)
         if kind == _PLUGIN_PACKAGE_KIND:
             upsert_plugin_marketplace_entry(package_id, installed=False, source="local")
         elif kind == _AGENT_GROUP_KIND:
@@ -2127,9 +3040,20 @@ def _commit_imported_package(
                 package_id, installed=False, source="local"
             )
     except Exception:
-        if kind == _AGENT_GROUP_KIND:
+        if dest.exists():
             shutil.rmtree(dest, ignore_errors=True)
+        try:
+            _remove_marketplace_entry(kind, package_id)
+        except Exception:
+            logger.warning(
+                "[extension_package_manager] failed to roll back marketplace entry: %s/%s",
+                kind,
+                package_id,
+                exc_info=True,
+            )
         raise
+    finally:
+        shutil.rmtree(staging_parent, ignore_errors=True)
     return {"id": package_id}
 
 
@@ -2316,12 +3240,16 @@ def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
 
 def uninstall_agent_template(params: dict) -> None:
     """Uninstall an expert package."""
-    package_id = _lifecycle_package_id(params, "agent_template")
+    requested_id = _lifecycle_package_id(params, "agent_template")
+    store = _hub_install_state_store(_AGENT_TEMPLATE_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
         package_id, kind=_AGENT_TEMPLATE_KIND, kind_label="agent_template"
     )
     _rmtree(pkg_dir)
     remove_agent_template_marketplace_entry(package_id)
+    store.remove(record.asset_id if record is not None else requested_id)
 
 
 def uninstall_agent_group(params: dict) -> None:
@@ -2338,12 +3266,16 @@ def uninstall_agent_group(params: dict) -> None:
 
 def uninstall_plugin_package(params: dict) -> None:
     """Uninstall a plugin package."""
-    package_id = _lifecycle_package_id(params, "plugin")
+    requested_id = _lifecycle_package_id(params, "plugin")
+    store = _hub_install_state_store(_PLUGIN_PACKAGE_KIND)
+    record = store.get(requested_id) or store.get_by_package_id(requested_id)
+    package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
         package_id, kind=_PLUGIN_PACKAGE_KIND, kind_label="plugin"
     )
     _rmtree(pkg_dir)
     remove_plugin_marketplace_entry(package_id)
+    store.remove(record.asset_id if record is not None else requested_id)
 
 
 def is_agent_template_installed(package_id: str) -> bool:

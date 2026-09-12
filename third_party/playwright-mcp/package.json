@@ -1,0 +1,12 @@
+{
+  "name": "jiuwenswarm-playwright-mcp-runtime",
+  "version": "0.0.78",
+  "private": true,
+  "description": "Reproducible browser-free Playwright MCP runtime bundled by JiuWenSwarm",
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "@playwright/mcp": "0.0.78"
+  }
+}

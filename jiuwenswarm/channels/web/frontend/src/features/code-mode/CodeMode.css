@@ -658,6 +658,14 @@ button.code-environment__row:disabled {
   font-size: 11px;
 }
 
+.code-environment__notice {
+  padding: 6px 0;
+  color: var(--color-feedback-warning);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
 .code-review-backdrop {
   position: fixed;
   z-index: 280;
@@ -782,23 +790,6 @@ button.code-environment__row:disabled {
   background: transparent;
   color: var(--color-code-toolbar-icon);
   cursor: pointer;
-}
-
-/* data-tooltip 自适应提示：useAdaptiveTooltip 以 portal 渲染到 body，
-   水平位置由 JS 计算（默认居中，空间不足贴边/收进视口），这里只管外观 */
-.adaptive-tooltip {
-  box-sizing: border-box;
-  max-width: 240px;
-  padding: 7px 16px;
-  border: 1px solid var(--color-border-default);
-  border-radius: 6px;
-  background: var(--color-surface-popover);
-  box-shadow: var(--effect-shadow-lg);
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 18px;
-  white-space: nowrap;
-  pointer-events: none;
 }
 
 .code-review__icon-button:hover {

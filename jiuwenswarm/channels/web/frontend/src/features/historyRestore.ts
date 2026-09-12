@@ -12,6 +12,11 @@ import {
 } from '../components/GoalBar/goalCompletedMessage';
 import { HistoryRecordReassembler } from './historyRecordReassembler';
 import { readAgentTemplateName } from './agentIdentity';
+import {
+  isSingleAgentContextUsageSnapshot,
+  isTeamLeaderContextUsageSnapshot,
+  parseContextUsageSnapshot,
+} from './contextUsage/contextUsageModel';
 
 export { HistoryRecordReassembler };
 
@@ -1078,6 +1083,8 @@ function parseHistoryTimelineEntry(
     const agentTemplateName = isProactiveRecommendation
       ? undefined
       : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
+    // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
+    const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -1093,12 +1100,21 @@ function parseHistoryTimelineEntry(
         role: 'assistant',
         content,
         timestamp: at,
+        ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
+          ? { presentation: 'tool_result' as const }
+          : {}),
+        // Full-duplex chat.final records are spoken replies, including earlier acknowledgements.
+        // Infer from the persisted channel so existing conversations also retain their replies.
+        ...(record.channel_id === 'video_duplex' || payload.channel_id === 'video_duplex'
+          ? { keepExpanded: true }
+          : {}),
         ...(completedAt ? { completedAt } : {}),
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType
           ? { proactiveType: histProactiveType as 'skill_recommend' | 'task_reminder' | 'need_exploration' }
           : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
+        ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
         ...((extractAutomation(payload) ?? extractAutomation(record))
@@ -1157,10 +1173,16 @@ function parseHistoryTimelineEntry(
     // These keys are normally history-record metadata and are therefore
     // omitted by buildEventPayloadForRecord. They are also part of the full
     // context.usage event, so put them back for the restored frontend payload.
-    for (const key of ['request_id', 'session_id', 'timestamp']) {
+    for (const key of ['request_id', 'session_id', 'timestamp', 'mode']) {
       if (contextPayload[key] === undefined && record[key] !== undefined) {
         contextPayload[key] = record[key];
       }
+    }
+    if (
+      contextPayload.role === undefined &&
+      (record.role === 'leader' || record.role === 'teammate')
+    ) {
+      contextPayload.role = record.role;
     }
     return {
       kind: 'context_usage',
@@ -1419,6 +1441,24 @@ function materializeHistoryTimeline(
   };
 }
 
+function selectLatestContextUsagePayload(items: HistoryContextUsageReplayItem[]): Record<string, unknown> | null {
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const item = items[index];
+    const snapshot = parseContextUsageSnapshot(item.payload);
+    if (!snapshot) continue;
+
+    const mode = typeof item.payload.mode === 'string' ? item.payload.mode.trim().toLowerCase() : '';
+    const eligible =
+      mode === 'team'
+        ? isTeamLeaderContextUsageSnapshot(snapshot)
+        : mode === 'agent'
+          ? isSingleAgentContextUsageSnapshot(snapshot)
+          : isTeamLeaderContextUsageSnapshot(snapshot) || isSingleAgentContextUsageSnapshot(snapshot);
+    if (eligible) return item.payload;
+  }
+  return null;
+}
+
 /**
  * 将磁盘上的 history.json 解析结果（通常为记录数组）转为与历史恢复相同的筛选规则下的消息列表，
  * 并按时间升序返回全部可展示的用户/助手消息。
@@ -1499,10 +1539,7 @@ export function parseHistoryJsonFileToTimelinePreview(
     executions,
     reasoningSegments,
     mode: isTeam ? 'team' : null,
-    contextUsageSnapshot:
-      contextUsageReplay.length > 0
-        ? contextUsageReplay[contextUsageReplay.length - 1].payload
-        : null,
+    contextUsageSnapshot: selectLatestContextUsagePayload(contextUsageReplay),
   };
 }
 
@@ -1808,9 +1845,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
     const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
-    const latestContextUsage = contextUsageReplay.length > 0
-      ? contextUsageReplay[contextUsageReplay.length - 1].payload
-      : null;
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
@@ -1981,9 +2016,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
 
     const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
       materializeHistoryTimeline(entries);
-    const latestContextUsage = contextUsageReplay.length > 0
-      ? contextUsageReplay[contextUsageReplay.length - 1].payload
-      : null;
+    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     dispose();
 

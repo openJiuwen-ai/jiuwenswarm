@@ -57,9 +57,8 @@ if getattr(sys, "frozen", False):
         _old_path = os.environ.get("PATH", "")
         os.environ["PATH"] = os.pathsep.join([*_path_prefixes, _old_path] if _old_path else _path_prefixes)
 
-    # macOS：把 .app 内置的 node-runtime/bin 前置到 PATH，使 shutil.which("npx")
-    # 与 playwright_runtime 默认的 "npx" 命令命中内置 Node（> v18），
-    # 用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
+    # macOS：把 .app 内置的 node-runtime/bin 前置到 PATH，使浏览器运行时
+    # 优先命中内置 Node 22，用户无需单独安装 Node。入口脚本是所有冻结进程（主进程 + --desktop-run-*
     # 子进程）的共同入口，PATH 在每个进程启动时都会被前置，幂等且随子进程继承。
     if sys.platform == "darwin":
         _node_bin = (
@@ -71,17 +70,27 @@ if getattr(sys, "frozen", False):
             os.environ["PATH"] = (
                 f"{_node_bin}{os.pathsep}{_old_path}" if _old_path else str(_node_bin)
             )
-    # Windows: use the Node runtime bundled by scripts/build-exe.ps1, when present.
-    # This makes browser runtime's default "npx" command work on machines without
-    # a system Node.js installation. Frozen child processes inherit this PATH too.
+    # Windows: prefer the Node runtime bundled by scripts/build-exe.ps1. The
+    # healthy browser path invokes the packaged MCP CLI directly with node;
+    # npm/npx are retained only for the prominently logged pinned fallback.
     elif os.name == "nt":
         _node_runtime = Path(sys.executable).resolve().parent / "runtime" / "node-runtime"
-        if (_node_runtime / "npx.cmd").is_file():
+        if (_node_runtime / "node.exe").is_file():
             _old_path = os.environ.get("PATH", "")
             os.environ["PATH"] = (
                 f"{_node_runtime}{os.pathsep}{_old_path}"
                 if _old_path
                 else str(_node_runtime)
+            )
+        # uvx-based stdio MCP servers: prefer the bundled
+        # uv runtime so `uvx` resolves without a user-installed uv.
+        _uv_runtime = Path(sys.executable).resolve().parent / "runtime" / "uv-runtime"
+        if (_uv_runtime / "uvx.exe").is_file():
+            _old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = (
+                f"{_uv_runtime}{os.pathsep}{_old_path}"
+                if _old_path
+                else str(_uv_runtime)
             )
 
     # Windows: 防止 subprocess 弹出控制台窗口（console=False 编译时 git 等命令会弹出黑框）
@@ -110,10 +119,6 @@ if getattr(sys, "frozen", False):
 
         subprocess.Popen.__init__ = _patched_popen_init
 
-    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
-
-    activate_external_cli_runtime_paths()
-
 _DESKTOP_RUN_AGENT = "--desktop-run-agent"
 _DESKTOP_RUN_GATEWAY = "--desktop-run-gateway"
 _DESKTOP_INSTALL_EXTERNAL_CLI = "--desktop-install-external-cli"
@@ -122,6 +127,25 @@ _DESKTOP_RESET_EXTERNAL_CLI_CONFIG = "--desktop-reset-external-cli-config"
 # 子进程 flag 集合，这些模式下需要将错误写入日志文件，
 # 因为 console=False 的 PyInstaller exe 在 Windows 上无法通过 stderr 捕获错误。
 _DESKTOP_INSTALL_UPDATE = "--desktop-install-update"
+
+
+def _activate_external_cli_runtime_paths() -> None:
+    """Expose optional CLI packages only in roles that can use them.
+
+    Importing ``external_cli_runtime`` also imports its installer stack
+    (HTTP client, certificate and locking dependencies).  The desktop shell
+    and static Web server never import Claude/Codex SDKs, so doing this for
+    every frozen child made their cold-start import path needlessly long.
+    AgentServer executes those SDKs, so it activates the paths immediately
+    before its business imports. Gateway only needs them while a user is
+    configuring or installing an external CLI, where the handler activates
+    them on demand.
+    """
+    if not getattr(sys, "frozen", False):
+        return
+    from jiuwenswarm.common.external_cli_runtime import activate_external_cli_runtime_paths
+
+    activate_external_cli_runtime_paths()
 
 _CHILD_FLAGS = {
     "--desktop-run-app",
@@ -560,6 +584,7 @@ def _dispatch() -> int | None:
         web_main()
         return None
     if _pop_flag(_DESKTOP_RUN_AGENT):
+        _activate_external_cli_runtime_paths()
         from jiuwenswarm.server.app_agentserver import main as agent_main
         agent_main()
         return None

@@ -2552,12 +2552,20 @@ async def _ensure_dynamic_member_execution_loop(
         async def _run_invoke_loop() -> None:
             try:
                 from openjiuwen.core.runner import Runner
+                from openjiuwen.core.session.agent_team import create_agent_team_session
+                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+                    get_kv_cache_runtime,
+                )
 
+                team_session = create_agent_team_session(
+                    session_id=sid,
+                    kv_cache_runtime=get_kv_cache_runtime(),
+                )
                 await Runner.run_agent_team(
                     teammate_agent,
                     {"query": kickoff},
                     member=True,
-                    session=sid,
+                    session=team_session,
                 )
             except Exception as exc:
                 logger.warning(

@@ -3,10 +3,18 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueue,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
+    SessionPermissionState,
+)
 
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
@@ -20,6 +28,8 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
 class _IdleChildAdapter:
     def __init__(self) -> None:
         self.cleaned = False
+        self._permission_state = SessionPermissionState()
+        self._root_permission_queue = RootPermissionQueue()
 
     @staticmethod
     def is_session_active(_session_id: str) -> bool:
@@ -28,6 +38,9 @@ class _IdleChildAdapter:
     @staticmethod
     def is_deep_agent_executing_for_session(_session_id: str) -> bool:
         return False
+
+    def _has_live_root_permission_owner(self, session_id: str) -> bool:
+        return self._root_permission_queue.has_live(root_session_id=session_id)
 
     async def cleanup(self) -> None:
         self.cleaned = True
@@ -162,6 +175,41 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
     assert getattr(parent, "_session_adapter_last_used") == {}
     assert getattr(parent, "_session_adapter_versions") == {}
     assert getattr(parent, "_session_adapter_reload_failures") == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_session_adapter_keeps_pending_permission_owner() -> None:
+    child = _IdleChildAdapter()
+    card = child._root_permission_queue.begin(
+        root_session_id="sess-pending",
+        request_id="request-old",
+        execution_session_id="sess-pending",
+        tool_call_id="call-old",
+        tool_name="bash",
+    )
+    child._root_permission_queue.mark_pending(
+        card.key,
+        request=InterruptRequest(
+            message="approve",
+            metadata={"tool_invocation_key": card.key.to_wire()},
+        ),
+        auto_manual=True,
+        root_context=None,
+    )
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={"sess-pending": child},
+        _session_adapter_locks={"sess-pending": asyncio.Lock()},
+        _session_adapter_last_used={"sess-pending": 1.0},
+        _session_adapter_versions={"sess-pending": 1},
+        _session_adapter_reload_failures={},
+    )
+
+    removed = await parent.cleanup_session_adapter("sess-pending")
+
+    assert removed is False
+    assert child.cleaned is False
+    assert parent._session_adapters == {"sess-pending": child}
 
 
 @pytest.mark.asyncio
@@ -419,3 +467,92 @@ async def test_idle_eviction_skips_locked_adapter_without_waiting() -> None:
     assert getattr(parent, "_session_adapter_locks")["sess_locked_idle"] is lock
 
     lock.release()
+
+
+class _LiveSubagentControl:
+    """Stand-in for openjiuwen SubagentControl with live instances."""
+
+    @staticmethod
+    def list_live() -> list[object]:
+        return [object()]
+
+
+class _EmptySubagentControl:
+    """Stand-in for openjiuwen SubagentControl without live instances."""
+
+    @staticmethod
+    def list_live() -> list[object]:
+        return []
+
+
+class _SubagentChildAdapter(_IdleChildAdapter):
+    """Child adapter whose DeepAgent owns a per-session subagent control."""
+
+    def __init__(self, control: object) -> None:
+        super().__init__()
+        self._control = control
+
+    def get_live_session_instance(self, _session_id: str) -> object:
+        return SimpleNamespace(_subagent_controls={"sess_subagents": self._control})
+
+
+def _make_subagent_adapter(
+    control: object | None,
+) -> tuple[JiuWenSwarmDeepAdapter, _SubagentChildAdapter]:
+    child = _SubagentChildAdapter(control or _EmptySubagentControl())
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={"sess_subagents": child},
+        _session_adapter_locks={},
+        _session_adapter_last_used={"sess_subagents": 1.0},
+        _session_adapter_versions={"sess_subagents": 1},
+        _session_adapter_reload_failures={},
+        SESSION_ADAPTER_EVICT_BATCH_SIZE=8,
+        SESSION_ADAPTER_IDLE_TTL_SEC=1.0,
+    )
+    return parent, child
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_keeps_adapter_with_live_subagents() -> None:
+    # issue #3625: idle TTL eviction must not cancel_all live subagents.
+    parent, child = _make_subagent_adapter(_LiveSubagentControl())
+
+    await getattr(parent, "_evict_idle_session_adapters")()
+
+    assert child.cleaned is False
+    assert getattr(parent, "_session_adapters") == {"sess_subagents": child}
+
+
+@pytest.mark.asyncio
+async def test_idle_eviction_removes_adapter_without_live_subagents() -> None:
+    parent, child = _make_subagent_adapter(None)
+
+    await getattr(parent, "_evict_idle_session_adapters")()
+
+    assert child.cleaned is True
+    assert getattr(parent, "_session_adapters") == {}
+
+
+def test_session_has_live_subagents_without_agent_or_controls() -> None:
+    child = _IdleChildAdapter()
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={"sess_no_agent": child},
+        _session_adapter_last_used={"sess_no_agent": 1.0},
+    )
+
+    # _IdleChildAdapter has no get_live_session_instance -> no DeepAgent.
+    assert getattr(parent, "_session_has_live_subagents")("sess_no_agent") is False
+    assert getattr(parent, "_session_has_live_subagents")("sess_missing") is False
+
+
+def test_subagent_control_attr_name_contract() -> None:
+    # Contract test: _session_has_live_subagents hardcodes the openjiuwen
+    # private attribute name "_subagent_controls" (getattr-based, so an
+    # upstream rename silently disables the idle-eviction guard and
+    # regresses issue #3625). Pin the upstream constant so a rename fails
+    # loudly here first — fix by syncing the string in interface_deep.py.
+    from openjiuwen.harness.tools.subagent._control_registry import _CONTROL_ATTR
+
+    assert _CONTROL_ATTR == "_subagent_controls"

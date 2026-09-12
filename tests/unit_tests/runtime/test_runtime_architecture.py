@@ -192,7 +192,11 @@ def test_agentserver_injects_runtime_manager_into_teammate_daemon() -> None:
 def test_agentserver_session_lifecycle_uses_runtime_public_api() -> None:
     source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
     tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
-    forbidden = {"create_session", "cleanup_session_runtime"}
+    forbidden = {
+        "cancel_all_inflight_work",
+        "cleanup_session_runtime",
+        "create_session",
+    }
     violations: list[str] = []
 
     for node in ast.walk(tree):
@@ -209,3 +213,154 @@ def test_agentserver_session_lifecycle_uses_runtime_public_api() -> None:
             violations.append(f"{node.lineno}: {node.func.attr}")
 
     assert violations == []
+
+
+def test_agentserver_does_not_bypass_runtime_for_global_team_cancel() -> None:
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    helper_name = "cancel_all_team_stream_tasks_across_managers"
+    violations: list[str] = []
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.endswith(helper_name):
+                    violations.append(f"{node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom):
+            for alias in node.names:
+                if alias.name == helper_name:
+                    violations.append(f"{node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.Call):
+            if isinstance(node.func, ast.Name) and node.func.id == helper_name:
+                violations.append(f"{node.lineno}: call {helper_name}")
+            elif isinstance(node.func, ast.Attribute) and node.func.attr == helper_name:
+                violations.append(f"{node.lineno}: call {helper_name}")
+
+    assert violations == []
+
+
+def test_agentserver_session_delete_is_transport_only() -> None:
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_handle_session_delete"
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    runtime_delete_calls = [
+        node
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Attribute)
+        and node.func.attr == "delete_session"
+        and isinstance(node.func.value, ast.Call)
+        and isinstance(node.func.value.func, ast.Attribute)
+        and isinstance(node.func.value.func.value, ast.Name)
+        and node.func.value.func.value.id == "self"
+        and node.func.value.func.attr == "_execution_runtime"
+    ]
+    assert len(runtime_delete_calls) == 1
+
+    forbidden_symbols = {
+        "Runner",
+        "_agent_manager",
+        "_heartbeat_runtime",
+        "_plan_active_sessions",
+        "_plan_exited_sessions",
+        "_resolve_adapter",
+        "abort_session_delete",
+        "abort_trajectory_session_delete",
+        "adapter",
+        "begin_session_delete",
+        "begin_trajectory_session_delete",
+        "cleanup_session",
+        "cleanup_session_runtime",
+        "commit_session_delete",
+        "commit_trajectory_session_delete",
+        "delete_session_runtime",
+        "evict_plan_session",
+        "get_agent_nowait",
+        "get_agent_sessions_dir",
+        "get_session_metadata",
+        "get_team_binding_store",
+        "get_team_manager",
+        "mark_session_deleted",
+        "release_subagent_runtime_for_session",
+        "remove_session_metadata_cache",
+        "resolve_session_dir",
+        "restore_session_after_failed_delete",
+        "rmtree",
+        "session_dir",
+        "shutil",
+        "team_manager",
+        "unbind_session",
+    }
+    forbidden_import_prefixes = (
+        "openjiuwen.core.runner",
+        "jiuwenswarm.agents.harness.team",
+        "jiuwenswarm.observability.session_delete",
+        "jiuwenswarm.server.runtime.session",
+        "jiuwenswarm.server.runtime.team_binding_store",
+        "shutil",
+    )
+    violations: list[str] = []
+
+    for node in ast.walk(handler):
+        if isinstance(node, ast.Name) and node.id in forbidden_symbols:
+            violations.append(f"{node.lineno}: name {node.id}")
+        elif isinstance(node, ast.Attribute) and node.attr in forbidden_symbols:
+            violations.append(f"{node.lineno}: attribute {node.attr}")
+        elif isinstance(node, ast.Import):
+            for alias in node.names:
+                if alias.name.startswith(forbidden_import_prefixes):
+                    violations.append(f"{node.lineno}: import {alias.name}")
+        elif isinstance(node, ast.ImportFrom) and node.module:
+            if node.module.startswith(forbidden_import_prefixes):
+                violations.append(f"{node.lineno}: import {node.module}")
+
+    assert violations == []
+
+
+def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_handle_session_switch"
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    called_names = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert {
+        "_execution_runtime",
+        "prepare_session_switch",
+        "commit_session_provision",
+    } <= called_attributes
+    assert {
+        "SessionSwitchInput",
+        "SessionProvisionCommitContext",
+        "encode_agent_response_for_wire",
+        "send_wire_payload",
+    } <= called_names
+    assert {
+        "_prepare_session_switch_owner",
+        "_dispatch_session_switch_kvc",
+        "prepare_session_switch",
+    }.isdisjoint(called_names)
+    assert "get_team_manager" not in called_names
+    assert "resolve_session_switch_context" not in called_names

@@ -30,6 +30,9 @@ function todoLabel(todo: TodoItem, animationPhase: number = 0): string {
   if (todo.status === "completed") {
     return `${palette.status.success("✓")} ${chalk.strikethrough(palette.text.dim(text))}`;
   }
+  if (todo.status === "cancelled") {
+    return `${palette.text.dim("✗")} ${chalk.strikethrough(palette.text.dim(text))}`;
+  }
   if (todo.status === "error") {
     return `${palette.status.error("✗")} ${text}`;
   }
@@ -57,12 +60,14 @@ export function renderTodoList(
   const inProgressCount = todos.filter((t) => t.status === "in_progress").length;
   const completedCount = todos.filter((t) => t.status === "completed").length;
   const errorCount = todos.filter((t) => t.status === "error").length;
+  const cancelledCount = todos.filter((t) => t.status === "cancelled").length;
 
   const statusText = [
     inProgressCount > 0 ? `${inProgressCount} in progress` : "",
     errorCount > 0 ? `${errorCount} error` : "",
     pendingCount > 0 ? `${pendingCount} pending` : "",
     completedCount > 0 ? `${completedCount} completed` : "",
+    cancelledCount > 0 ? `${cancelledCount} cancelled` : "",
   ]
     .filter(Boolean)
     .join(", ");
@@ -80,6 +85,7 @@ export function renderTodoList(
     ...todos.filter((todo) => todo.status === "error"),
     ...todos.filter((todo) => todo.status === "pending"),
     ...todos.filter((todo) => todo.status === "completed"),
+    ...todos.filter((todo) => todo.status === "cancelled"),
   ];
 
   const visibleTodos = ordered.slice(0, 8);

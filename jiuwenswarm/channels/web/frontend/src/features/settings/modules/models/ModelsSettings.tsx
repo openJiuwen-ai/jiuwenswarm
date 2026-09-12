@@ -17,6 +17,7 @@ import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -112,7 +113,7 @@ export function ModelsSettings() {
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
       const parsed = parseModelsPayload(payload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
@@ -216,7 +217,7 @@ export function ModelsSettings() {
       }
       const refreshedPayload = await request('models.list');
       const parsed = parseModelsPayload(refreshedPayload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
       showValidationToast({
         success: true,
@@ -270,9 +271,12 @@ export function ModelsSettings() {
         delete next[key];
         return next;
       });
+      const detail = error instanceof Error ? error.message.trim() : '';
       showValidationToast({
         success: false,
-        message: error instanceof Error ? error.message : t('settingsPanel.models.validationFailed'),
+        message: detail
+          ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+          : t('settingsPanel.models.validationFailed'),
       });
     }
   };
@@ -314,20 +318,22 @@ export function ModelsSettings() {
       <article
         className={`settings-model-card${isDuplicate ? ' settings-model-card--grouped' : ''}${presentation.logo ? '' : ' settings-model-card--no-logo'}`}
         key={key}
+        data-testid="settings-models-card"
+        data-variant={model.origin_index ?? 'new'}
       >
         {presentation.logo ? (
           <img className="settings-model-card__logo" src={presentation.logo} alt="" aria-hidden />
         ) : null}
         <div className="settings-model-card__copy">
           <div className="settings-model-card__title-row">
-            <h3 title={presentation.customName}>{presentation.customName}</h3>
-            {isPrimary ? <Tag variant="info">{t('settingsPanel.models.primary')}</Tag> : null}
+            <h3 title={presentation.customName} data-testid="settings-models-card-title" data-variant={model.origin_index ?? 'new'}>{presentation.customName}</h3>
+            {isPrimary ? <Tag variant="info" data-testid="settings-models-card-primary-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.primary')}</Tag> : null}
             {isDuplicate && model.is_default ? (
-              <Tag variant="neutral">{t('settingsPanel.models.groupDefault')}</Tag>
+              <Tag variant="neutral" data-testid="settings-models-card-group-default-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.groupDefault')}</Tag>
             ) : null}
-            {readOnly ? <Tag variant="neutral">{t('settingsPanel.models.agentOsReadonly')}</Tag> : null}
+            {readOnly ? <Tag variant="neutral" data-testid="settings-models-card-readonly-tag" data-variant={model.origin_index ?? 'new'}>{t('settingsPanel.models.agentOsReadonly')}</Tag> : null}
           </div>
-          <p title={presentation.metadata}>{presentation.metadata}</p>
+          <p title={presentation.metadata} data-testid="settings-models-card-metadata" data-variant={model.origin_index ?? 'new'}>{presentation.metadata}</p>
         </div>
         <div className="settings-model-card__actions">
           {canSetPrimary ? (
@@ -337,6 +343,8 @@ export function ModelsSettings() {
               size="sm"
               disabled={actionsDisabled}
               onClick={() => void setPrimary(model).catch(() => undefined)}
+              data-testid="settings-models-card-set-primary-btn"
+              data-variant={model.origin_index ?? 'new'}
             >
               {t('settingsPanel.models.setPrimary')}
             </Button>
@@ -361,6 +369,8 @@ export function ModelsSettings() {
                   ),
                 });
               }}
+              data-testid="settings-models-card-set-group-default-btn"
+              data-variant={model.origin_index ?? 'new'}
             >
               {t('settingsPanel.models.setGroupDefault')}
             </Button>
@@ -372,6 +382,8 @@ export function ModelsSettings() {
             loading={validationState === 'testing'}
             disabled={actionsDisabled}
             onClick={() => void testSavedModel(model, index)}
+            data-testid="settings-models-card-test-btn"
+            data-variant={model.origin_index ?? 'new'}
           />
           {!readOnly ? (
             <Button
@@ -380,6 +392,8 @@ export function ModelsSettings() {
               title={t('common.modify')}
               disabled={actionsDisabled}
               onClick={() => openModelDialog({ model })}
+              data-testid="settings-models-card-edit-btn"
+              data-variant={model.origin_index ?? 'new'}
             />
           ) : null}
           {!readOnly ? (
@@ -400,6 +414,8 @@ export function ModelsSettings() {
                   }),
                 });
               }}
+              data-testid="settings-models-card-delete-btn"
+              data-variant={model.origin_index ?? 'new'}
             />
           ) : null}
         </div>
@@ -413,35 +429,35 @@ export function ModelsSettings() {
         title={t('settingsPanel.models.primaryModels')}
         separatedRows
         action={
-          <Button variant="primary" disabled={actionsDisabled} onClick={() => openModelDialog({})}>
+          <Button variant="primary" disabled={actionsDisabled} onClick={() => openModelDialog({})} data-testid="settings-models-add-btn">
             {t('settingsPanel.models.addModel')}
           </Button>
         }
       >
         {modelsError ? (
-          <div className="settings-page__error" role="alert">
+          <div className="settings-page__error" role="alert" data-testid="settings-models-error">
             {modelsError}
           </div>
         ) : null}
         {saveError ? (
-          <div className="settings-page__error settings-models__save-error" role="alert">
+          <div className="settings-page__error settings-models__save-error" role="alert" data-testid="settings-models-save-error">
             <span>{saveError}</span>
-            <Button size="sm" disabled={!isConnected || modelsLoading || saving} onClick={() => void reloadModels()}>
+            <Button size="sm" disabled={!isConnected || modelsLoading || saving} onClick={() => void reloadModels()} data-testid="settings-models-reload-btn">
               {t('settingsPanel.models.reloadAfterFailure')}
             </Button>
           </div>
         ) : null}
         {!hasModelsError && !modelsLoading && editableModels.length === 0 ? (
-          <div className="settings-models__empty">
+          <div className="settings-models__empty" data-testid="settings-models-empty">
             <img src={settingsEmptyBoxIllustration} alt="" aria-hidden />
             <strong>{t('settingsPanel.models.empty')}</strong>
             <p>{t('settingsPanel.models.emptyDescription')}</p>
-            <Button variant="primary" disabled={!isConnected || saving} onClick={() => openModelDialog({})}>
+            <Button variant="primary" disabled={!isConnected || saving} onClick={() => openModelDialog({})} data-testid="settings-models-empty-add-btn">
               {t('settingsPanel.models.addModel')}
             </Button>
           </div>
         ) : null}
-        <div className="settings-models__list" aria-busy={saving || undefined}>
+        <div className="settings-models__list" aria-busy={saving || undefined} data-testid="settings-models-list">
           {!hasModelsError && !modelsLoading
             ? modelDisplayGroups.map((group, displayGroupIndex) => {
                 if (group.items.length === 1) {
@@ -461,6 +477,8 @@ export function ModelsSettings() {
                       count: group.items.length,
                     })}
                     key={`group:${group.modelName}`}
+                    data-testid="settings-models-group"
+                    data-variant={group.modelName}
                   >
                     <button
                       type="button"
@@ -472,6 +490,8 @@ export function ModelsSettings() {
                         { model: group.modelName },
                       )}
                       onClick={() => toggleModelGroup(group.modelName)}
+                      data-testid="settings-models-group-toggle-btn"
+                      data-variant={group.modelName}
                     >
                       <div className="settings-model-group__title">
                         <ChevronRight
@@ -480,12 +500,12 @@ export function ModelsSettings() {
                         />
                         <strong title={group.modelName}>{group.modelName}</strong>
                       </div>
-                      <span className="settings-model-group__meta">
+                      <span className="settings-model-group__meta" data-testid="settings-models-group-meta" data-variant={group.modelName}>
                         {t('settingsPanel.models.groupMeta', { count: group.items.length })}
                       </span>
                     </button>
                     {renderModelCard(defaultItem.model, defaultItem.index, defaultOrdinal)}
-                    <div id={groupContentId} className="settings-model-group__alternatives" hidden={!isExpanded}>
+                    <div id={groupContentId} className="settings-model-group__alternatives" hidden={!isExpanded} data-testid="settings-models-group-alternatives" data-variant={group.modelName}>
                       <div className="settings-model-group__items">
                         {alternativeItems.map((item) =>
                           renderModelCard(item.model, item.index, group.items.indexOf(item) + 1),
@@ -511,7 +531,7 @@ export function ModelsSettings() {
           onSave={async (next) => {
             const nextModels = dialog.model
               ? models.map((current) => (current === dialog.model ? next : current))
-              : [...models, next];
+              : addEditableModel(models, next);
             await saveModels(nextModels, dialog.model ? 'model.edit' : 'model.add', { errorScope: 'caller' });
           }}
         />
@@ -536,6 +556,8 @@ export function ModelsSettings() {
           className={`settings-models__toast settings-models__toast--${validationToast.success ? 'success' : 'error'}`}
           role={validationToast.success ? 'status' : 'alert'}
           aria-live="polite"
+          data-testid="settings-models-toast"
+          data-variant={validationToast.success ? 'success' : 'error'}
         >
           {validationToast.success ? <Check aria-hidden /> : null}
           <span>{validationToast.message}</span>

@@ -12,6 +12,7 @@
  * - children:            区域内容
  * - onExpand?:           点击右上角展开按钮的回调
  * - onExpandAll?:        点击"展开 X 个"按钮的回调，通知子组件展开全部
+ * - onCollapseAll?:      区段被折叠时的回调，通知父组件重置列表展开状态
  * - showExpandButton?:   是否显示展开按钮（默认 true）
  * - showCollapseButton?: 是否显示折叠按钮（默认 true）
  * - dataTestId?:         测试用 data-testid 前缀（默认 'collapsible-section'）
@@ -33,11 +34,13 @@ interface CollapsibleSectionProps {
   children: ReactNode;
   onExpand?: () => void;
   onExpandAll?: () => void;
+  onCollapseAll?: () => void;
   showExpandButton?: boolean;
   showCollapseButton?: boolean;
   dataTestId?: string;
   defaultCollapsed?: boolean;
   autoExpandOnContent?: boolean;
+  expanded?: boolean;
 }
 
 export function CollapsibleSection({
@@ -48,16 +51,20 @@ export function CollapsibleSection({
   children,
   onExpand,
   onExpandAll,
+  onCollapseAll,
   showExpandButton = true,
   showCollapseButton = true,
   dataTestId = 'collapsible-section',
   defaultCollapsed = false,
   autoExpandOnContent = false,
+  expanded: expandedProp = false,
 }: CollapsibleSectionProps) {
   const { t } = useTranslation();
   const [collapsed, setCollapsed] = useState(defaultCollapsed);
-  const [expanded, setExpanded] = useState(false);
+  const [internalExpanded, setInternalExpanded] = useState(false);
   const [userToggled, setUserToggled] = useState(false);
+
+  const expanded = expandedProp || internalExpanded;
 
   useEffect(() => {
     if (autoExpandOnContent && childCount !== undefined && childCount > 0 && collapsed && !userToggled) {
@@ -67,11 +74,16 @@ export function CollapsibleSection({
 
   const handleToggleCollapse = () => {
     setUserToggled(true);
-    setCollapsed(prev => !prev);
+    const nextCollapsed = !collapsed;
+    setCollapsed(nextCollapsed);
+    if (nextCollapsed) {
+      setInternalExpanded(false);
+      onCollapseAll?.();
+    }
   };
 
   const handleExpandAll = () => {
-    setExpanded(true);
+    setInternalExpanded(true);
     onExpandAll?.();
   };
 

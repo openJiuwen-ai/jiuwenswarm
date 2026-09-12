@@ -350,16 +350,16 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 这组命令由 TUI 本地注册并解析，随后通过普通聊天通道把 slash 文本转发给后端。实际演进逻辑在 Agent / Team 侧完成：
 
-- Agent 模式：由 `SkillEvolutionRail` 处理，仅 `agent.plan` 可用。
-- Team 模式：由 `TeamSkillEvolutionRail` 处理，用于团队技能演进。
+- Agent 模式：使用单 Agent 演进运行时，自动建议面向普通 Skill。
+- Team 模式：使用团队演进运行时，自动建议面向 Team/Swarm Skill。
 - Code 模式与 `agent.fast` 不支持这组命令。
 
 #### 子命令
 
 | 命令 | 说明 |
 |---|---|
-| `/evolve <skill_name> [user_query]` | 为指定 Skill 触发演进。`agent.plan` 会扫描当前会话中的工具失败、用户纠错等信号；Team 模式必须提供 `user_query`。 |
-| `/evolve_list <skill_name> [--sort score]` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
+| `/evolve <skill_name> [user_intent]` | 为指定 Skill 发起演进审查；尾随文本是可选的审查意图。显式命令按目标实际类型处理，支持 Team 模式手动演进普通 Skill，也支持普通模式手动演进 Team/Swarm Skill。 |
+| `/evolve_list <skill_name>` | 按分数查看某个 Skill 的演进经验，展示记录数、平均分、使用/反馈统计、section 与内容预览。 |
 | `/evolve_simplify <skill_name> [user_intent]` | 生成经验库整理方案，用于合并重复经验、拆分过长经验或清理低价值经验；尾随文本会作为整理意图传入后端。 |
 | `/evolve_rebuild <skill_name> [user_intent]` | 生成重建 `SKILL.md` 的 follow-up prompt，并继续作为一次普通 Agent / Team 任务执行。 |
 
@@ -374,7 +374,7 @@ SwarmFlow 专用命令；完整流程见 **[TUI 使用 SwarmFlow 指南](TUI使�
 
 ```bash
 /evolve pptx 修复导出失败时的错误处理
-/evolve_list pptx --sort score
+/evolve_list pptx
 /evolve_simplify pptx 合并重复的导出失败经验
 /evolve_rebuild pptx 强化 Troubleshooting 和 Examples
 ```

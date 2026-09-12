@@ -38,6 +38,114 @@ class FakeWebSocket:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel_id",
+    [
+        "web",
+        "tui",
+        "feishu",
+        "feishu_enterprise:tenant-a",
+        "xiaoyi",
+        "wecom",
+        "dingtalk",
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "wechat",
+    ],
+)
+@pytest.mark.parametrize(
+    ("mode", "work_mode"),
+    [("agent.work.normal", "work"), ("agent.code.normal", "code")],
+)
+async def test_single_agent_stream_skips_transport_task_registry_for_every_channel(
+    channel_id: str,
+    mode: str,
+    work_mode: str,
+) -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"content": "done"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id=f"{channel_id}-request",
+        channel_id=channel_id,
+        session_id=f"{channel_id.replace(':', '-')}-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode, "work_mode": work_mode},
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_single_agent_goal_stream_skips_transport_task_registry() -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"event_type": "goal.snapshot"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id="goal-request",
+        channel_id="web",
+        session_id="goal-session",
+        req_method=ReqMethod.COMMAND_GOAL,
+        params={
+            "action": "set",
+            "objective": "finish the task",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_send_wire_payload_sends_small_wire_unchanged(monkeypatch):
     monkeypatch.setattr(ws_send, "AGENT_WS_SEND_BUDGET_BYTES", 1024)
     ws = FakeWebSocket()
@@ -171,6 +279,22 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
         async def get_agent(self, **kwargs):
             self.events.append("get")
             return self.agent
+
+        async def get_agent_for_request(
+            self,
+            request,
+            *,
+            mode=None,
+            sub_mode=None,
+            admit_request=None,
+        ):
+            project_dir = admit_request() if callable(admit_request) else None
+            return await self.get_agent(
+                channel_id=request.channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                sub_mode=sub_mode,
+            )
 
         async def begin_foreground_chat(self):
             self.events.append("begin")
@@ -425,6 +549,7 @@ async def test_stream_runtime_error_uses_legacy_agent_error_wire_contract() -> N
         channel_id="web",
         session_id="session-1",
         error=ValueError("boom"),
+        metadata={"trace_id": "stream-error"},
     )
 
     await server._send_runtime_event(
@@ -453,6 +578,7 @@ async def test_stream_runtime_error_uses_legacy_agent_error_wire_contract() -> N
     decoded = parse_agent_server_wire_chunk(wire)
     assert decoded.payload == {"error": "boom"}
     assert decoded.is_complete is True
+    assert decoded.metadata == {"trace_id": "stream-error"}
 
 
 @pytest.mark.asyncio
@@ -466,6 +592,7 @@ async def test_unary_runtime_error_uses_legacy_agent_error_wire_contract() -> No
         channel_id="web",
         session_id="session-1",
         error=ValueError("boom"),
+        metadata={"trace_id": "unary-error"},
     )
 
     await server._send_runtime_event(
@@ -490,6 +617,7 @@ async def test_unary_runtime_error_uses_legacy_agent_error_wire_contract() -> No
     decoded = parse_agent_server_wire_unary(wire)
     assert decoded.payload == {"error": "boom"}
     assert decoded.ok is False
+    assert decoded.metadata == {"trace_id": "unary-error"}
 
 
 @pytest.mark.asyncio
@@ -539,6 +667,62 @@ async def test_server_unary_disables_duplicate_runtime_hook() -> None:
 
     assert runtime.call is not None
     trigger_hook, control_handler = runtime.call
+    assert trigger_hook is False
+    assert callable(control_handler)
+    assert len(ws.sent) == 1
+
+
+@pytest.mark.asyncio
+async def test_server_chat_answer_uses_runtime_interaction_api() -> None:
+    manager = object()
+
+    class RecordingRuntime:
+        agent_manager = manager
+
+        def __init__(self) -> None:
+            self.call: tuple[object, bool, object] | None = None
+
+        async def answer_interaction(
+            self,
+            request,
+            *,
+            trigger_hook=True,
+            on_control_event=None,
+        ):
+            self.call = (request, trigger_hook, on_control_event)
+            return [
+                RuntimeEvent(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    session_id=request.session_id,
+                    payload={"event_type": "chat.final", "content": "answered"},
+                    is_complete=True,
+                )
+            ]
+
+        async def invoke(self, *_args, **_kwargs):
+            raise AssertionError("CHAT_ANSWER must use answer_interaction")
+
+    runtime = RecordingRuntime()
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    request = AgentRequest(
+        request_id="interaction-runtime-api",
+        channel_id="tui",
+        session_id="session-1",
+        req_method=ReqMethod.CHAT_ANSWER,
+        params={"answer": "approve"},
+    )
+    ws = FakeWebSocket()
+
+    await server._handle_unary_impl(ws, request, asyncio.Lock())
+
+    assert runtime.call is not None
+    actual_request, trigger_hook, control_handler = runtime.call
+    assert actual_request is request
     assert trigger_hook is False
     assert callable(control_handler)
     assert len(ws.sent) == 1

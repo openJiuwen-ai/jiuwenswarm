@@ -5,10 +5,32 @@ from __future__ import annotations
 from importlib import import_module
 from typing import Any
 
+_APPLICATION_PLUGIN_MODULE = "jiuwenswarm.extensions.sdk.application_plugin"
+
 _EXPORTS = {
     "AgentServerClientExtension": (
         "jiuwenswarm.extensions.sdk.agent_server_client",
         "AgentServerClientExtension",
+    ),
+    "ApplicationPluginExtension": (
+        _APPLICATION_PLUGIN_MODULE,
+        "ApplicationPluginExtension",
+    ),
+    "ApplicationPluginServices": (
+        _APPLICATION_PLUGIN_MODULE,
+        "ApplicationPluginServices",
+    ),
+    "FrontendContribution": (
+        _APPLICATION_PLUGIN_MODULE,
+        "FrontendContribution",
+    ),
+    "ManifestApplicationPlugin": (
+        _APPLICATION_PLUGIN_MODULE,
+        "ManifestApplicationPlugin",
+    ),
+    "WebSocketRouteContribution": (
+        _APPLICATION_PLUGIN_MODULE,
+        "WebSocketRouteContribution",
     ),
     "BaseExtension": ("jiuwenswarm.extensions.sdk.base", "BaseExtension"),
     "CryptoUtility": (

@@ -94,12 +94,14 @@ class RuntimeEvent:
         channel_id: str,
         session_id: str | None,
         error: BaseException,
+        metadata: dict[str, Any] | None = None,
     ) -> RuntimeEvent:
         return cls(
             request_id=request_id,
             channel_id=channel_id,
             session_id=session_id,
             payload={"event_type": "runtime.error", "error": str(error)},
+            metadata=dict(metadata) if metadata is not None else None,
             is_complete=True,
             ok=False,
         )

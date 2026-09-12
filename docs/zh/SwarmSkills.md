@@ -83,7 +83,7 @@ swarm-skill-name/
 
 ````markdown
 ---
-name: medical-consultation-team
+name: medical-consultation-swarm
 version: 1.0.0
 author: jiuwenSwarm-team
 description: |
@@ -149,7 +149,7 @@ roles:
 
 **关键字段说明**：
 
-- **`name`**：技能的唯一标识符，必须与目录名一致（kebab-case，约定以 `-team` 结尾。kebab-case 是使用短横线分隔的命名方式，如 `medical-consultation-team`）。
+- **`name`**：技能的唯一标识符，必须与目录名一致（kebab-case，约定以 `-swarm` 结尾。kebab-case 是使用短横线分隔的命名方式，如 `medical-consultation-swarm`）。
 - **`kind`**：必须为 `swarm-skill`（注意：不是 `type`），用于区分 Swarm Skill 和普通 Agent Skill。
 - **`roles`**：角色列表，**至少 2 个角色**，每个角色必须包含 `id`（角色标识）、`kind`（角色类型，`ai_agent` 或 `human_agent`）、`purpose`（一句话职责描述，≤150 字符）、`skills`（依赖的技能列表）和 `tools`（依赖的工具列表）。
 - **`description`**：技能描述，遵循简洁原则（≤4 行、建议 ≤500 字符，硬上限 1024），采用 WHAT / WHEN / NOT 三行结构。
@@ -852,7 +852,7 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 3. 点击「上传」
 4. 首次使用需要认证（输入 Swarm Skills Hub Token）
 
-> **Token 获取方式**：访问 [Swarm Skills Hub](https://swarmskills.openjiuwen.com) 注册账号后，在个人设置页面获取 API Token。
+> **Token 获取方式**：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后，在个人设置页面获取 API Token。
 
 也可以通过命令行发布：
 
@@ -864,7 +864,7 @@ python3 scripts/validate_swarmskill.py path/to/<swarmskill-name>/
 /teamskills publish path/to/<swarmskill-name> --version 1.0.1 --token <TOKEN> --force
 ```
 
-> **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。Token 获取方式：访问 [Swarm Skills Hub](https://swarmskills.openjiuwen.com) 注册账号后在个人设置页面获取。
+> **鉴权说明**：发布和删除操作需要提供 `--token`（用户 Token）或 `--system-token`（系统 Token），且只能选择一种。Token 可通过 `/teamskills config --token <TOKEN>` 预配置，避免每次手动输入。Token 获取方式：访问 [Swarm Skills Hub](https://teamskills.openjiuwen.com) 注册账号后在个人设置页面获取。
 
 **步骤三：维护更新**
 
@@ -928,7 +928,7 @@ A: 是的。SKILL.md、roles/、workflow.md、bind.md、dependencies.yaml 都是
 
 **Q: Swarm Skills Hub 的默认地址是什么？**
 
-A: 默认地址为 `https://swarmskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
+A: 默认地址为 `https://teamskills.openjiuwen.com`，可通过环境变量 `TEAM_SKILLS_HUB_BASE_URL` 覆盖。
 
 ---
 

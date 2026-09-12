@@ -1,10 +1,15 @@
-import { ArrowLeft } from 'lucide-react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
 import { useTranslation } from 'react-i18next';
-import { getAgentAvatarUrl, type AgentCapability, type AgentDetail, type DefinitionFileEntry, type RequestStatus } from '../../features/agentManagement';
+import {
+  getAgentAvatarUrl,
+  type AgentDetail,
+  type DefinitionFileEntry,
+  type RequestStatus,
+} from '../../features/agentManagement';
 import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
+import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
+import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
+import { getSkillAvatar } from '../../utils/skillAvatar';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 
 type DefinitionDetailPageProps = {
@@ -34,46 +39,6 @@ type DefinitionDetailPageProps = {
   onUninstall: (id: string) => void;
 };
 
-function Avatar({ name, avatarUrl }: { name: string; avatarUrl: string | null }) {
-  return (
-    <span className="agent-management-avatar agent-management-avatar--detail" aria-hidden="true">
-      {avatarUrl ? <img src={avatarUrl} alt="" /> : <span className="agent-management-avatar__letter">{name.trim().slice(0, 1).toUpperCase() || '?'}</span>}
-    </span>
-  );
-}
-
-function ChipList({ title, items }: { title: string; items: Array<{ id: string; name: string }> }) {
-  if (items.length === 0) return null;
-  return (
-    <section className="agent-management-detail-capability-group">
-      <h2>{title}</h2>
-      <div className="agent-management-chip-row">
-        {items.map(item => (
-          <span key={item.id} className="agent-management-chip">
-            {item.name}
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
-function CapabilityList({ title, items }: { title: string; items: AgentCapability[] }) {
-  if (items.length === 0) return null;
-  return (
-    <section className="agent-management-detail-capability-group">
-      <h2>{title}</h2>
-      <div className="agent-management-chip-row">
-        {items.map(item => (
-          <span key={item.id} className="agent-management-chip">
-            {item.name}
-          </span>
-        ))}
-      </div>
-    </section>
-  );
-}
-
 export function DefinitionDetailPage({
   detail,
   detailStatus,
@@ -102,22 +67,31 @@ export function DefinitionDetailPage({
 }: DefinitionDetailPageProps) {
   const { t } = useTranslation();
 
-  if (detailStatus === 'loading') {
+  if (detailStatus === 'loading' && !detail) {
     return (
-      <div className="agent-management-detail agent-management-detail--state">
-        <button type="button" className="agent-management-back" onClick={onBack}>
-          <ArrowLeft size={16} aria-hidden="true" />
+      <div
+        className="agent-management-detail agent-management-detail--state"
+        data-testid="agent-management-detail-state"
+        data-variant="loading"
+      >
+        <button type="button" className="detail-back" onClick={onBack}>
+          <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
         <p>{t('common.loading')}</p>
       </div>
     );
   }
-  if (detailStatus === 'error' || !detail) {
+  if (!detail) {
     return (
-      <div className="agent-management-detail agent-management-detail--state agent-management-state--error" role="alert">
-        <button type="button" className="agent-management-back" onClick={onBack}>
-          <ArrowLeft size={16} aria-hidden="true" />
+      <div
+        className="agent-management-detail agent-management-detail--state agent-management-state--error"
+        role="alert"
+        data-testid="agent-management-detail-state"
+        data-variant="error"
+      >
+        <button type="button" className="detail-back" onClick={onBack}>
+          <BackIcon aria-hidden="true" />
           {t('agentManagement.actions.back')}
         </button>
         <p>{detailError || t('agentManagement.states.detailError')}</p>
@@ -132,187 +106,219 @@ export function DefinitionDetailPage({
   const canUse = detail.installed && detail.connectionState === 'connected' && detail.enabled !== false;
   const needsConnection = detail.installed && detail.connectionState !== 'connected';
   const canDelete = detail.source === 'local' && !detail.installed;
-  const canPreviewFiles = detail.source === 'local' || detail.installed;
+  const capabilityGroups = [
+    { title: t('agentManagement.detail.tags'), items: detail.tags.map((tag) => ({ id: tag.id, name: tag.label })) },
+    { title: t('agentManagement.detail.skills'), items: detail.skills },
+    { title: t('agentManagement.detail.tools'), items: detail.tools },
+    { title: t('agentManagement.detail.rails'), items: detail.rails },
+    { title: t('agentManagement.detail.mcps'), items: detail.mcps },
+  ].filter((group) => group.items.length > 0);
   return (
-    <div className="agent-management-detail" data-testid="agent-detail">
-      <button type="button" className="agent-management-back" onClick={onBack}>
-        <ArrowLeft size={16} aria-hidden="true" />
+    <div className="agent-management-detail" data-testid="agent-management-detail">
+      <button type="button" className="detail-back" onClick={onBack} data-testid="agent-management-detail-back-btn">
+        <BackIcon aria-hidden="true" />
         {t('agentManagement.actions.back')}
       </button>
-      <header className="agent-management-detail__header">
-        <div className="agent-management-detail__identity">
-          <Avatar name={detail.displayName} avatarUrl={avatarUrl} />
-          <div>
-            <h1>{detail.displayName}</h1>
-            <div className="agent-management-detail__badges">
-              <span className="agent-management-tag">
-                {t(`agentManagement.categories.${detail.category}`, { defaultValue: detail.category || t('agentManagement.categoryOther') })}
-              </span>
-              <span className="agent-management-source">
-                {t('agentManagement.detail.sourcePrefix', {
-                  source: detail.source === 'builtin' ? t('agentManagement.source.builtin') : t('agentManagement.source.local'),
-                })}
-              </span>
-              {detail.installed ? <span className="agent-management-installed">{t('agentManagement.states.installed')}</span> : null}
+      <div className="detail-body flex-1 min-h-0 overflow-y-auto">
+        <EntityHeader
+          testId="agent-management-detail-header"
+          avatar={avatarUrl ? <img src={avatarUrl} alt="" /> : getSkillAvatar(detail.displayName)}
+          title={detail.displayName}
+          titleTestId="agent-management-detail-name"
+          tags={[
+            t(`agentManagement.categories.${detail.category}`, {
+              defaultValue: detail.category || t('agentManagement.categoryOther'),
+            }),
+            t('agentManagement.detail.sourcePrefix', {
+              source: t(`agentManagement.source.${detail.source}`),
+            }),
+            ...(detail.installed ? [t('agentManagement.states.installed')] : []),
+          ]}
+          actions={
+            <div className="agent-management-detail__actions">
+              {detail.installed ? (
+                <>
+                  {needsConnection ? (
+                    <button
+                      type="button"
+                      className="agent-management-button agent-management-button--secondary"
+                      disabled={busy}
+                      aria-busy={busy}
+                      onClick={() => onReconnect(detail.id)}
+                      data-testid="agent-management-detail-connect-btn"
+                    >
+                      {busy ? t('agentManagement.actions.connecting') : t('agentManagement.actions.connect')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="agent-management-detail-action agent-management-detail-action--uninstall"
+                    disabled={busy}
+                    aria-busy={busy}
+                    onClick={() => onUninstall(detail.id)}
+                    data-testid="agent-management-detail-uninstall-btn"
+                  >
+                    <UninstallIcon aria-hidden="true" />
+                    {busy ? t('agentManagement.actions.uninstalling') : t('agentManagement.actions.uninstall')}
+                  </button>
+                  <button
+                    type="button"
+                    className="agent-management-button agent-management-button--secondary agent-management-detail-action--use"
+                    disabled={!canUse || busy}
+                    aria-disabled={!canUse}
+                    onClick={() => onUse(detail.id)}
+                    data-testid="agent-management-detail-use-btn"
+                  >
+                    {t('agentManagement.actions.use')}
+                  </button>
+                </>
+              ) : (
+                <>
+                  {canDelete ? (
+                    <button
+                      type="button"
+                      className="agent-management-detail-action agent-management-detail-action--uninstall"
+                      disabled={busy}
+                      aria-busy={busy}
+                      onClick={() => onUninstall(detail.id)}
+                      data-testid="agent-management-detail-delete-btn"
+                    >
+                      <UninstallIcon aria-hidden="true" />
+                      {busy ? t('agentManagement.actions.deleting') : t('agentManagement.actions.delete')}
+                    </button>
+                  ) : null}
+                  <button
+                    type="button"
+                    className="agent-management-button agent-management-button--primary agent-management-detail-action--install"
+                    disabled={busy}
+                    aria-busy={busy}
+                    onClick={() => onInstall(detail.id)}
+                    data-testid="agent-management-detail-install-btn"
+                  >
+                    {busy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
+                  </button>
+                </>
+              )}
             </div>
+          }
+        />
+        {actionError ? (
+          <div
+            className="agent-management-inline-error"
+            role="alert"
+            data-testid="agent-management-detail-action-error"
+          >
+            {actionError}
           </div>
-        </div>
-        <div className="agent-management-detail__actions">
-          {detail.installed ? (
-            <>
-              {needsConnection ? (
-                <button
-                  type="button"
-                  className="agent-management-button agent-management-button--secondary"
-                  disabled={busy}
-                  aria-busy={busy}
-                  onClick={() => onReconnect(detail.id)}
-                >
-                  {busy ? t('agentManagement.actions.connecting') : t('agentManagement.actions.connect')}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="agent-management-detail-action agent-management-detail-action--uninstall"
-                disabled={busy}
-                aria-busy={busy}
-                onClick={() => onUninstall(detail.id)}
-              >
-                <UninstallIcon aria-hidden="true" />
-                {busy ? t('agentManagement.actions.uninstalling') : t('agentManagement.actions.uninstall')}
-              </button>
-              <button
-                type="button"
-                className="agent-management-button agent-management-button--secondary agent-management-detail-action--use"
-                disabled={!canUse || busy}
-                aria-disabled={!canUse}
-                onClick={() => onUse(detail.id)}
-              >
-                {t('agentManagement.actions.use')}
-              </button>
-            </>
+        ) : null}
+
+        {actionNotice ? (
+          <div
+            className="agent-management-inline-notice"
+            role="status"
+            data-testid="agent-management-detail-action-notice"
+          >
+            {actionNotice}
+          </div>
+        ) : null}
+
+        {detailStatus === 'error' ? (
+          /* 详情加载失败：与 skill 详情一致的内联灰字条（不加边框底色） */
+          <div
+            className="text-sm text-text-muted"
+            role="status"
+            data-testid="agent-management-detail-state"
+            data-variant="error"
+          >
+            {detailError || t('agentManagement.states.detailError')}
+          </div>
+        ) : null}
+
+        {needsConnection ? (
+          <div
+            className="agent-management-connection-warning"
+            role="status"
+            data-testid="agent-management-detail-connection-warning"
+          >
+            {t('agentManagement.states.connectionUnavailable')}
+          </div>
+        ) : null}
+
+        <DetailSection testId="agent-management-detail-ability" title={t('agentManagement.detail.ability')}>
+          <p>{detail.description || t('agentManagement.unknownDescription')}</p>
+        </DetailSection>
+
+        {capabilityGroups.map((group) => (
+          <DetailSection key={group.title} title={group.title}>
+            <div className="detail-chip-row">
+              {group.items.map((item) => (
+                <span key={item.id} className="detail-chip">
+                  {item.name}
+                </span>
+              ))}
+            </div>
+          </DetailSection>
+        ))}
+
+        {detail.suggestedPrompts.length > 0 ? (
+          <DetailSection testId="agent-management-detail-prompts" title={t('agentManagement.detail.quickInputs')}>
+            {/* 共享组件 ui/DetailPromptChip：文案+发送图标两端对齐、每项独占一行（容器
+                .detail-prompt-list），与连接器详情"试试这样用"示例同款。整行是一个 button：
+                点击行内任意位置（含文案）都跳会话预填 prompt。图标降级为纯装饰 span——
+                button 内不允许嵌套 button。testid/variant 保持不变。 */}
+            <div className="detail-prompt-list">
+              {detail.suggestedPrompts.map((prompt, index) => (
+                <DetailPromptChip
+                  key={prompt}
+                  text={prompt}
+                  icon={<PromptSendIcon width={16} height={16} />}
+                  disabled={!canUse || busy || !onUsePrompt}
+                  onClick={() => onUsePrompt?.(detail.runtimePackageName, prompt)}
+                  testId="agent-management-detail-prompt-send"
+                  variant={index}
+                />
+              ))}
+            </div>
+          </DetailSection>
+        ) : null}
+
+        <div data-testid="agent-management-detail-tabs-section" className="flex flex-col min-h-0">
+          <PageToolbar style={{ marginTop: 0, flexShrink: 0 }}>
+            <Tabs
+              role="tablist"
+              ariaLabel={t('agentManagement.detail.tabsLabel')}
+              wrapperTestId="agent-management-detail-tabs"
+              itemTestId="agent-management-detail-tab"
+              className="text-base"
+              value={detailTab}
+              onChange={onTabChange}
+              items={[
+                { value: 'content', label: t('agentManagement.detail.contentTab') },
+                { value: 'files', label: t('agentManagement.detail.filesTab') },
+              ]}
+            />
+          </PageToolbar>
+          {detailTab === 'content' ? (
+            <MarkdownPane
+              testId="agent-management-detail-content"
+              content={detail.details || null}
+              emptyText={t('skills.noContent')}
+            />
           ) : (
-            <>
-              {canDelete ? (
-                <button
-                  type="button"
-                  className="agent-management-detail-action agent-management-detail-action--uninstall"
-                  disabled={busy}
-                  aria-busy={busy}
-                  onClick={() => onUninstall(detail.id)}
-                >
-                  <UninstallIcon aria-hidden="true" />
-                  {busy ? t('agentManagement.actions.deleting') : t('agentManagement.actions.delete')}
-                </button>
-              ) : null}
-              <button
-                type="button"
-                className="agent-management-button agent-management-button--primary agent-management-detail-action--install"
-                disabled={busy}
-                aria-busy={busy}
-                onClick={() => onInstall(detail.id)}
-              >
-                {busy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
-              </button>
-            </>
+            <DefinitionFilePreview
+              files={files}
+              filesStatus={filesStatus}
+              filesError={filesError}
+              selectedFilePath={selectedFilePath}
+              fileContent={fileContent}
+              fileStatus={fileStatus}
+              fileError={fileError}
+              onRetryFiles={onRetryFiles}
+              onSelectFile={onSelectFile}
+            />
           )}
         </div>
-      </header>
-
-      {actionError ? (
-        <div className="agent-management-inline-error" role="alert">
-          {actionError}
-        </div>
-      ) : null}
-
-      {actionNotice ? (
-        <div className="agent-management-inline-notice" role="status">
-          {actionNotice}
-        </div>
-      ) : null}
-
-      {needsConnection ? (
-        <div className="agent-management-connection-warning" role="status">
-          {t('agentManagement.states.connectionUnavailable')}
-        </div>
-      ) : null}
-
-      <section className="agent-management-detail-section">
-        <h2>{t('agentManagement.detail.ability')}</h2>
-        <p className="agent-management-detail-description">{detail.description || t('agentManagement.unknownDescription')}</p>
-      </section>
-
-      <div className="agent-management-detail-capabilities">
-        <ChipList title={t('agentManagement.detail.tags')} items={detail.tags.map(tag => ({ id: tag.id, name: tag.label }))} />
-        <CapabilityList title={t('agentManagement.detail.skills')} items={detail.skills} />
-        <CapabilityList title={t('agentManagement.detail.tools')} items={detail.tools} />
-        <CapabilityList title={t('agentManagement.detail.rails')} items={detail.rails} />
-        <CapabilityList title={t('agentManagement.detail.mcps')} items={detail.mcps} />
       </div>
-
-      {detail.suggestedPrompts.length > 0 ? (
-        <section className="agent-management-detail-section agent-management-detail-section--prompts">
-          <h2>{t('agentManagement.detail.quickInputs')}</h2>
-          <div className="agent-management-prompt-list">
-            {detail.suggestedPrompts.map(prompt => (
-              <div key={prompt} className="agent-management-prompt">
-                <span>{prompt}</span>
-                <button
-                  type="button"
-                  className="agent-management-prompt__send"
-                  aria-label={t('agentManagement.detail.usePrompt', { prompt })}
-                  disabled={!canUse || busy || !onUsePrompt}
-                  onClick={() => onUsePrompt?.(detail.id, prompt)}
-                >
-                  <PromptSendIcon width={16} height={16} aria-hidden="true" />
-                </button>
-              </div>
-            ))}
-          </div>
-        </section>
-      ) : null}
-
-      <div className="agent-management-detail-tabs" role="tablist" aria-label={t('agentManagement.detail.tabsLabel')}>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={detailTab === 'content'}
-          className={detailTab === 'content' ? 'is-active' : ''}
-          onClick={() => onTabChange('content')}
-        >
-          {t('agentManagement.detail.contentTab')}
-        </button>
-        <button
-          type="button"
-          role="tab"
-          aria-selected={detailTab === 'files'}
-          className={detailTab === 'files' ? 'is-active' : ''}
-          onClick={() => onTabChange('files')}
-        >
-          {t('agentManagement.detail.filesTab')}
-        </button>
-      </div>
-      {detailTab === 'content' ? (
-        <article className="agent-management-detail-content prose prose-sm max-w-none">
-          {detail.details ? <ReactMarkdown remarkPlugins={[remarkGfm]}>{detail.details}</ReactMarkdown> : null}
-        </article>
-      ) : !canPreviewFiles ? (
-        <div className="agent-management-file-preview agent-management-file-preview--unavailable">
-          <div className="agent-management-file-state">{t('agentManagement.detail.filesUnavailable')}</div>
-        </div>
-      ) : (
-        <DefinitionFilePreview
-          files={files}
-          filesStatus={filesStatus}
-          filesError={filesError}
-          selectedFilePath={selectedFilePath}
-          fileContent={fileContent}
-          fileStatus={fileStatus}
-          fileError={fileError}
-          onRetryFiles={onRetryFiles}
-          onSelectFile={onSelectFile}
-        />
-      )}
     </div>
   );
 }

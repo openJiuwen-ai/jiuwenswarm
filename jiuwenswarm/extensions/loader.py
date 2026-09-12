@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.extensions.sdk.application_plugin import (
+    ApplicationPluginExtension,
+    ManifestApplicationPlugin,
+)
 from jiuwenswarm.common.utils import logger
 
 MANIFEST_FILENAME = "extension.yaml"
@@ -63,6 +67,19 @@ class ExtensionLoader:
 
         await self._install_dependencies(manifest, root)
 
+        entry = _find_entry_script(root)
+        if entry is None and manifest.get("package_type") == "application":
+            plugin = ManifestApplicationPlugin(root)
+            if not plugin.plugin_id:
+                raise ValueError("manifest-only application plugin id must not be empty")
+            if not plugin.frontend_contributions():
+                raise ValueError(
+                    "manifest-only application plugin must declare at least one frontend"
+                )
+            self.registry.register_application_plugin(plugin)
+            await plugin.initialize(self.registry.config)
+            return [plugin]
+
         module = self._import_module(root)
 
         if hasattr(module, "register_extensions"):
@@ -75,6 +92,8 @@ class ExtensionLoader:
             for ext in items:
                 if hasattr(ext, "set_extension_dir"):
                     ext.set_extension_dir(root)
+                if isinstance(ext, ApplicationPluginExtension):
+                    await ext.initialize(self.registry.config)
             return registered
 
         return None

@@ -13,6 +13,26 @@ import {
 const sessionId = 'web_session';
 const subagentId = 'web_session_sub_general-purpose_1';
 
+test('existing full-duplex spoken replies stay expanded after history restore without changing normal chat', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'ack', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final', content: '好的，没问题，我现在就帮你生成这道题的代码。', timestamp: 1 },
+    { id: 'receipt', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final', content: '代码已生成。', timestamp: 2 },
+    { id: 'normal', channel_id: 'web', role: 'assistant', event_type: 'chat.final', content: '普通对话。', timestamp: 3 },
+  ], sessionId);
+  assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
+});
+
+test('history distinguishes a Core Agent result from Qwen acknowledgement and receipt', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'ack', role: 'assistant', event_type: 'chat.final', content: '我来处理。', timestamp: 1 },
+    { id: 'result', role: 'assistant', event_type: 'chat.final', content: '```cpp\nint main() {}\n```', presentation: 'tool_result', timestamp: 2 },
+    { id: 'receipt', role: 'assistant', event_type: 'chat.final', content: '代码已生成。', timestamp: 3 },
+  ], sessionId);
+  assert.equal(messages.length, 3);
+  assert.deepEqual(messages.map((message) => message.presentation), [undefined, 'tool_result', undefined]);
+  assert.equal(messages[1].content, '```cpp\nint main() {}\n```');
+});
+
 test('history restores the selected Agent identity from top-level and event payload fields', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
     {
@@ -209,6 +229,54 @@ test('session history restores the complete context usage payload without adding
   assert.deepEqual(preview.contextUsageSnapshot.parts, contextUsage.parts);
   assert.deepEqual(preview.contextUsageSnapshot.kv_cache, contextUsage.kv_cache);
   assert.deepEqual(preview.contextUsageSnapshot.measurement, contextUsage.measurement);
+});
+
+test('team history restores the latest leader before a newer teammate frame', () => {
+  const contextUsageRecord = ({ requestId, role, memberName, timestamp, inputTokens }) => ({
+    id: requestId,
+    role,
+    mode: 'team',
+    event_type: 'context.usage',
+    request_id: requestId,
+    product_session_id: sessionId,
+    depth: role === 'leader' ? 2 : 0,
+    team_id: 'runtime-team',
+    member_name: memberName,
+    timestamp,
+    content: '',
+    schema_version: 'context-usage.v1',
+    phase: 'post_call',
+    context_window: {
+      limit_tokens: 2000,
+      input_tokens: inputTokens,
+      occupancy_rate: inputTokens / 2000,
+    },
+    parts: {},
+    session_kv_cache_hit_rate: 0,
+  });
+  const leader = contextUsageRecord({
+    requestId: 'leader-context',
+    role: 'leader',
+    memberName: 'explicit-leader-name',
+    timestamp: '2026-09-03T03:00:00.000Z',
+    inputTokens: 700,
+  });
+  const worker = contextUsageRecord({
+    requestId: 'worker-context',
+    role: 'teammate',
+    memberName: 'worker-1',
+    timestamp: '2026-09-03T03:01:00.000Z',
+    inputTokens: 900,
+  });
+
+  const preview = parseHistoryJsonFileToTimelinePreview([leader, worker], sessionId);
+  assert.equal(preview.mode, 'team');
+  assert.equal(preview.contextUsageSnapshot.request_id, 'leader-context');
+  assert.equal(preview.contextUsageSnapshot.role, 'leader');
+  assert.equal(preview.contextUsageSnapshot.context_window.input_tokens, 700);
+
+  const workerOnly = parseHistoryJsonFileToTimelinePreview([worker], sessionId);
+  assert.equal(workerOnly.contextUsageSnapshot, null);
 });
 
 test('subagent history replays persisted roster status updates', () => {

@@ -1,6 +1,6 @@
 version: 0.0.1
 artifact_root: .doc_project_maintainer
-last_updated: '2026-08-16'
+last_updated: '2026-09-08'
 sync:
   status: partial
   last_scanned_commit: 10afedf222bcd6db98b24347a28f75e4613b3c87
@@ -14,7 +14,7 @@ sync:
     flow_traces: partial
     code_symbols: partial
     symbol_audits: pending
-    notes: The 2026-07-15 normalized-AST scan at 10afedf2 found 0 expired audits among the 128 existing AgentWebSocketServer method reviews. No method card, audit signature, or previously unaudited symbol was added or promoted. Six newly observed unaudited server methods remain outside the frozen queue. Current integrity verification trusts 59 records and flags 69 non-source-expired entry-document hash mismatches; project-wide symbol docs, broader flows, and audits remain pending.
+    notes: The 2026-07-15 scan found 0 source-expired audits among 128 existing AgentWebSocketServer reviews. Six later methods remain outside the frozen queue. Integrity trusts 59 records and flags 69 entry-document hash mismatches; wider docs, flows, and audits remain pending.
   pending:
   - id: SYNC-20260707-001
     reason: Full repository coverage is incomplete after initial AgentServer-focused slice.
@@ -120,6 +120,20 @@ modules:
   coverage:
     status: planned
     last_scanned: '2026-07-07'
+- id: runtime-session
+  name: Runtime Session
+  summary: Runtime-owned Session execution and the Process CLI reference chain.
+  confidence: confirmed
+  docs:
+    readme: modules/runtime-session/README.md
+  directories:
+  - jiuwenswarm/runtime
+  - jiuwenswarm/channels/process_cli
+  related_flows:
+  - runtime-session-reference-chain
+  coverage:
+    status: partial
+    last_scanned: '2026-09-08'
 - id: project-packaging
   name: Project Packaging
   summary: Packaging, deploy, build, installer, and package metadata.
@@ -175,6 +189,17 @@ directories:
     status: partial
     last_scanned: '2026-07-07'
 flows:
+- id: runtime-session-reference-chain
+  name: Runtime Session Reference Chain
+  summary: Process CLI Work/Code Normal use the managed Session runtime while durable stores remain unchanged.
+  confidence: confirmed
+  doc: project/flows/runtime-session-reference-chain.md
+  modules:
+  - runtime-session
+  - agent-harness
+  directories:
+  - jiuwenswarm/runtime/session
+  - jiuwenswarm/channels/process_cli
 - id: eternal-conversation-memory
   name: Eternal Conversation Memory
   summary: Explicit Web/TUI request flag mounts a common Work/Code Rail; Session-owned Extractor and Builder publish audited Snapshot and Pending/Built UT state without losing foreground context.
@@ -421,6 +446,9 @@ decisions:
   title: AgentServer Owns Prewarmed Session Identity
   doc: decisions/ADR-0001-agentserver-owned-prewarmed-sessions.md
 changes:
+- id: CHG-20260908-001
+  title: Cut Process CLI over to managed-only Session execution
+  doc: changes/records/CHG-20260908-001-process-cli-managed-only.md
 - id: CHG-20260731-001
   title: Add AgentServer-owned session allocation and DeepAgent prewarming
   doc: changes/records/CHG-20260731-001-session-prewarm-allocation.md

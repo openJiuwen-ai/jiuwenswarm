@@ -18,7 +18,7 @@ python --version
 
 ### Q: 启动时报错 "Node.js not found"
 
-JiuwenSwarm 前端依赖 Node.js，请安装 18.x 或更高版本。
+普通安装与启动不需要 Node.js。源码前端开发需要 Node.js 18 或更高版本；pip/wheel 或源码安装如需使用浏览器运行时，则需要 Node.js 20 或更高版本。桌面版已内置 Node 22.11.0。
 
 ```bash
 node --version
@@ -62,7 +62,7 @@ pip uninstall jiuwenswarm
 
 ### Q: 支持哪些模型提供商？
 
-JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、InferenceAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
+JiuwenSwarm 支持多种模型平台：华为云 MaaS、OpenAI、DeepSeek、DashScope、SiliconFlow、AscendAffinity、OpenRouter 等 OpenAI 兼容接口，也支持本地模型部署。
 
 ### Q: 模型配置测试失败怎么办？
 

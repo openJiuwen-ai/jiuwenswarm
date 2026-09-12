@@ -42,12 +42,13 @@ import {
   detectPhaseLoops,
   sortPhasesByExecution,
   computeLoopStatus,
+  computeSessionStatus,
   findActiveIterationIndex,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { webRequest } from '../../services/webClient';
-import type { AskUserQuestionPayload } from '../../types/websocket';
+import type { AskUserQuestionPayload, WebError } from '../../types/websocket';
 import {
   AgentDetailModal,
   buildDetailSections,
@@ -55,6 +56,7 @@ import {
   accentChipClass,
   type AgentModalState,
 } from './AgentDetailModal';
+import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
 
@@ -80,6 +82,17 @@ function StatusIcon({ status, className }: { status: WorkflowStatus; className?:
       return <Circle className={`${cls} text-gray-400`} />;
   }
 }
+
+// 控制 RPC 失败时服务端带回的权威 status → toast 文案 key 映射。
+// 服务端在 controller miss 时会把 run 的真实状态（终态/暂停态）附在失败
+// payload 里，前端据此提示并纠正陈旧卡片。
+const CONTROL_STATUS_KEY: Record<string, string> = {
+  completed: 'swarmflow.controlAlreadyCompleted',
+  stopped: 'swarmflow.controlAlreadyStopped',
+  failed: 'swarmflow.controlAlreadyFailed',
+  paused: 'swarmflow.controlAlreadyPaused',
+  running: 'swarmflow.controlUnavailable',
+};
 
 // ── 状态文本 ──────────────────────────────────────────────
 
@@ -151,6 +164,8 @@ function IterationStrip<T extends { status: WorkflowStatus }>({
             i === selectedIndex ? 'ring-2 ring-blue-400 ring-offset-1 ring-offset-card' : ''
           }`}
           title={`第${i + 1}轮 · ${member.status}`}
+          data-testid="team-area-swarmflow-iteration-dot"
+          data-variant={i}
           onClick={(e) => {
             e.stopPropagation();
             onSelect(i);
@@ -190,6 +205,8 @@ function AgentLoopNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-loop-header"
+        data-variant={name}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -231,6 +248,8 @@ function AgentLoopNode({
                   e.stopPropagation();
                   setSelectedIdx(i);
                 }}
+                data-testid="team-area-swarmflow-iteration-row"
+                data-variant={i}
               >
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={member.status} className="w-3.5 h-3.5" />
@@ -281,6 +300,8 @@ function PhaseLoopNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-loop-header"
+        data-variant={baseName}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -321,6 +342,8 @@ function PhaseLoopNode({
                   e.stopPropagation();
                   setSelectedIdx(i);
                 }}
+                data-testid="team-area-swarmflow-iteration-row"
+                data-variant={i}
               >
                 <div className="w-[18px] shrink-0" />
                 <StatusIcon status={phase.status} className="w-3.5 h-3.5" />
@@ -438,9 +461,16 @@ function AgentNode({
           agent_name: agent.name,
         },
       };
-      useChatStore.getState().setPendingQuestion(sessionId, payload);
+      useChatStore.getState().enqueuePendingQuestion(sessionId, payload);
     })();
   }, [agent, runId, sessionId, ensureAgentDetail]);
+
+  // 刷新页面等场景会清空 pendingQuestions（后端 chat.ask_user_question 只在状态
+  // 首次跳转时推一次，无快照回放）——节点挂载时若已处于 waiting_for_human，按
+  // 当前状态补一次弹窗，语义等同用户手动点击该行。
+  useEffect(() => {
+    handleAgentClick();
+  }, [agent.status]);
 
   return (
     <div>
@@ -450,6 +480,8 @@ function AgentNode({
         onClick={handleAgentClick}
         role={agent.status === 'waiting_for_human' ? 'button' : undefined}
         title={agent.status === 'waiting_for_human' ? t('swarmflow.clickToReply') : undefined}
+        data-testid="team-area-swarmflow-agent-row"
+        data-variant={agent.id}
       >
         {hasSessionTree && (
           <button
@@ -469,7 +501,7 @@ function AgentNode({
         )}
         {!hasSessionTree && <div className="w-[18px] shrink-0" />}
         <StatusIcon status={agent.status} />
-        <span className="text-sm text-text break-words flex-1">{agent.name}</span>
+        <span className="text-sm text-text break-words flex-1" data-testid="team-area-swarmflow-agent-name" data-variant={agent.id}>{agent.name}</span>
         {agent.model && (
           <span className="text-xs text-text-muted shrink-0">{agent.model}</span>
         )}
@@ -478,6 +510,8 @@ function AgentNode({
           <button
             type="button"
             className="shrink-0 p-0.5 rounded hover:bg-secondary"
+            data-testid="team-area-swarmflow-agent-detail-toggle"
+            data-variant={agent.id}
             onClick={(e) => {
               e.stopPropagation();
               setShowDetail((v) => !v);
@@ -491,7 +525,7 @@ function AgentNode({
           </button>
         )}
         {agent.status === 'waiting_for_human' && (
-          <span className="text-xs text-amber-500 shrink-0 animate-pulse">
+          <span className="text-xs text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-agent-waiting-hint">
             {t('swarmflow.clickToReply')}
           </span>
         )}
@@ -502,6 +536,8 @@ function AgentNode({
         <div
           className="mx-2 mb-1 flex flex-wrap items-center gap-1.5 rounded-lg border border-border/50 bg-card/50 px-2 py-1.5"
           style={{ marginLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-detail-chips"
+          data-variant={agent.id}
         >
           {/* Meta 信息 */}
           {(agent.model || agent.token_count != null || agent.duration_ms != null || agent.started_at) && (
@@ -518,6 +554,8 @@ function AgentNode({
               key={sec.key}
               type="button"
               aria-label={`${sec.label} (${formatCharCount(sec.content)} 字符)`}
+              data-testid="team-area-swarmflow-agent-detail-chip"
+              data-variant={sec.key}
               onClick={(e) => {
                 e.stopPropagation();
                 setModalState({ sections: detailSections, activeKey: sec.key });
@@ -547,6 +585,7 @@ function AgentNode({
         <div
           className="flex items-start gap-1.5 px-2 pb-1 text-xs text-text-muted/60"
           style={{ paddingLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-outcome-preview"
         >
           <span className="shrink-0 text-text-muted/40">└</span>
           <span className="min-w-0 flex-1 truncate">{agent.outcome ?? agent.outcome_preview}</span>
@@ -556,6 +595,7 @@ function AgentNode({
         <div
           className="flex items-start gap-1.5 px-2 pb-1 text-xs text-red-400/80"
           style={{ paddingLeft: `${depth * 20 + 28}px` }}
+          data-testid="team-area-swarmflow-agent-error-preview"
         >
           <span className="shrink-0 text-red-400/40">└</span>
           <span className="min-w-0 flex-1 truncate">{agent.error ?? agent.error_preview}</span>
@@ -567,13 +607,15 @@ function AgentNode({
         <div
           className="border-l border-border/30 ml-4"
           style={{ marginLeft: `${depth * 20 + 16}px` }}
+          data-testid="team-area-swarmflow-agent-turns"
+          data-variant={agent.id}
         >
           {sessionMembers.map((member) => {
             const turn = parseTurnFromCorrelationId(member.correlation_id);
             return (
               <div key={member.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
-                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50">
+                <div className="flex items-center gap-2 px-2 py-1 rounded-md hover:bg-secondary/50" data-testid="team-area-swarmflow-agent-turn" data-variant={member.id}>
                   <StatusIcon status={member.status} className="w-3.5 h-3.5" />
                   <span className="text-xs text-text-muted">
                     Turn {turn ?? '?'}
@@ -651,6 +693,8 @@ function PhaseNode({
         className="flex items-center gap-2 px-2 py-1.5 rounded-md hover:bg-secondary/50 transition-colors cursor-pointer"
         style={{ paddingLeft: `${depth * 20 + 8}px` }}
         onClick={() => hasChildren && setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-phase-header"
+        data-variant={phase.id}
       >
         {hasChildren ? (
           expanded ? (
@@ -662,11 +706,11 @@ function PhaseNode({
           <div className="w-4 shrink-0" />
         )}
         <StatusIcon status={phase.status} />
-        <span className="text-sm font-medium text-text break-words flex-1">
+        <span className="text-sm font-medium text-text break-words flex-1" data-testid="team-area-swarmflow-phase-name" data-variant={phase.id}>
           {phase.name}
         </span>
         {phase.phase_type === 'child' && (
-          <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 shrink-0">
+          <span className="text-xs px-1.5 py-0.5 rounded bg-purple-500/10 text-purple-500 shrink-0" data-testid="team-area-swarmflow-phase-sub-workflow-badge">
             {t('swarmflow.subWorkflow')}
           </span>
         )}
@@ -708,11 +752,15 @@ function PhaseNode({
           {sessions.map((session) => {
             const representative = session.members[0];
             if (!representative) return null;
+            // 代表节点状态按 members 聚合：Turn0 完成不代表整张卡完成。
+            const status = computeSessionStatus(session.members);
+            const node =
+              status === representative.status ? representative : { ...representative, status };
             return (
               <div key={representative.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
                 <AgentNode
-                  agent={representative}
+                  agent={node}
                   phaseAgents={phase.agents ?? []}
                   depth={0}
                   runId={runId}
@@ -752,6 +800,69 @@ function RunNode({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
+  // Control request in-flight flag: clicking pause/resume/stop immediately
+  // spins and disables all three buttons until run.status flips to the target
+  // state (progress event arrives). Backend abort can take seconds; a blocked
+  // control channel longer (09-08 measured 80s before res returned, but the
+  // event arrived with it). Disabling prevents repeat clicks (19:18:16: pause
+  // then resume 4ms later, then 6 more resume clicks all ok=False). No timeout
+  // fallback: buttons honor run.status only — if the event never arrives the
+  // spinner stays. State follows events.
+  const [pendingControl, setPendingControl] = useState<
+    'pause' | 'resume' | 'stop' | null
+  >(null);
+  useEffect(() => {
+    if (!pendingControl) return;
+    if (pendingControl === 'pause' && run.status !== 'running') {
+      setPendingControl(null);
+    } else if (pendingControl === 'resume' && run.status === 'running') {
+      setPendingControl(null);
+    } else if (
+      pendingControl === 'stop' &&
+      (run.status === 'stopped' ||
+        run.status === 'completed' ||
+        run.status === 'failed')
+    ) {
+      setPendingControl(null);
+    }
+  }, [pendingControl, run.status]);
+  const [controlError, setControlError] = useState<string | null>(null);
+  // 控制 RPC 失败统一处理：服务端在 controller miss 时把权威 status 附在
+  // 失败 payload 里带回，据此纠正停在 running/paused 的陈旧卡片并用 Toast
+  // 明确提示——此前只 console.error，用户连点没反应还不知道原因
+  // （17:06-17:07 对已完成 run 反复点暂停、前端只报 not found 的先例）。
+  const applyControlFailure = useCallback(
+    (err: unknown): boolean => {
+      console.error('[swarmflow] control failed:', err);
+      const webErr = err as WebError | undefined;
+      const payload = webErr?.payload as
+        | { status?: unknown }
+        | undefined;
+      const status = typeof payload?.status === 'string' ? payload.status : null;
+      if (status && status !== run.status) {
+        // 最小 delta：mergeWorkflowRun 只覆盖 incoming 携带的字段，
+        // name/summary 等缺席字段保留 store 现值，不会用旧渲染快照回退。
+        useSessionStore.getState().applyWorkflowUpdate(sessionId, {
+          id: run.id,
+          status: status as WorkflowStatus,
+        } as WorkflowRun);
+      }
+      // 传输层错误（超时/断连，code 非空）没有权威 payload：如实显示其自带
+      // 文案（如"请求超时"），不误报"未找到工作流运行"（16:0x 断连窗口点
+      // resume 弹 controlNotFound 的先例）。返回是否服务端权威失败，供 pause
+      // 在途态决定复位——传输层错误时转圈保持到事件到达，状态以事件为准。
+      const transport = webErr?.code !== undefined;
+      setControlError(
+        status
+          ? t(CONTROL_STATUS_KEY[status] || 'swarmflow.controlNotFound')
+          : transport && webErr?.message
+            ? webErr.message
+            : t('swarmflow.controlNotFound'),
+      );
+      return !transport;
+    },
+    [run.id, run.status, sessionId, t],
+  );
   const completedCount =
     run.completed_agent_count ??
     (run.phases ?? []).reduce(
@@ -786,12 +897,25 @@ function RunNode({
       : run.budget?.total != null && run.budget?.exhausted
         ? 'session'
         : null);
+  // 机械按钮只在 team 活着（方块亮）时可用：灰飞机 = 无 leader harness 可宿主 run；
+  // recovered = 冷启动后 controller 无票据。两种情况恢复都只能由 Leader 经 ask_user 裁决。
+  const teamRunning = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
+  const controlsDisabled = !teamRunning || run.recovered === true;
+  // Two reasons to disable: team asleep / cold start (grey, not-allowed) or a
+  // control request in flight (spinner, wait cursor). The in-flight look wins
+  // while a request is pending.
+  const controlBtnClass =
+    `flex items-center justify-center w-7 h-7 rounded text-text-muted hover:bg-secondary transition-colors disabled:hover:bg-transparent disabled:hover:text-text-muted ${
+      pendingControl !== null ? 'disabled:opacity-70 disabled:cursor-wait' : 'disabled:opacity-40 disabled:cursor-not-allowed'
+    }`;
 
   return (
-    <div className="border border-border rounded-lg overflow-hidden bg-card/50">
+    <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
       <div
         className="flex items-center gap-2 px-3 py-2.5 bg-secondary/30 cursor-pointer hover:bg-secondary/50 transition-colors"
         onClick={() => setExpanded((v) => !v)}
+        data-testid="team-area-swarmflow-run-header"
+        data-variant={run.id}
       >
         {expanded ? (
           <ChevronDown className="w-4 h-4 text-text-muted shrink-0" />
@@ -801,19 +925,19 @@ function RunNode({
         <StatusIcon status={run.status} className="w-4 h-4 shrink-0" />
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-2">
-            <span className="text-sm font-semibold text-text-strong truncate">
+            <span className="text-sm font-semibold text-text-strong truncate" data-testid="team-area-swarmflow-run-name" data-variant={run.id}>
               {run.name}
             </span>
-            <span className="text-xs text-text-muted shrink-0">
+            <span className="text-xs text-text-muted shrink-0" data-testid="team-area-swarmflow-run-status" data-variant={run.id}>
               {statusText(run.status, t)}
             </span>
           </div>
           {run.summary && (
-            <p className="text-xs text-text-muted truncate mt-0.5">{run.summary}</p>
+            <p className="text-xs text-text-muted truncate mt-0.5" data-testid="team-area-swarmflow-run-summary" data-variant={run.id}>{run.summary}</p>
           )}
         </div>
         {waitingCount > 0 && (
-          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse">
+          <span className="text-xs px-2 py-0.5 rounded-full bg-amber-500/10 text-amber-500 shrink-0 animate-pulse" data-testid="team-area-swarmflow-run-waiting-badge" data-variant={run.id}>
             {t('swarmflow.waitingForHuman', { count: waitingCount })}
           </span>
         )}
@@ -826,6 +950,8 @@ function RunNode({
                 : 'bg-blue-500/10 text-blue-500'
             }`}
             title={t('swarmflow.sessionBudget')}
+            data-testid="team-area-swarmflow-run-budget"
+            data-variant="session"
           >
             {t('swarmflow.sessionBudgetShort')} {formatBudgetK(run.budget)}
             {run.budget.total == null && ` · ${t('swarmflow.budgetUnlimited')}`}
@@ -860,17 +986,38 @@ function RunNode({
           >
             <button
               type="button"
-              title={t('swarmflow.pauseResumeHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.pauseResumeHint')}
+              className={`${controlBtnClass} hover:text-amber-500`}
+              disabled={controlsDisabled || pendingControl !== null}
+              data-testid="team-area-swarmflow-run-pause-btn"
+              data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
-                const method =
-                  run.status === 'running' ? 'swarmflow.pause' : 'swarmflow.resume';
-                void webRequest(method, { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
-                );
+                if (run.status !== 'running') {
+                  setPendingControl('resume');
+                  void webRequest('swarmflow.resume', {
+                    session_id: sessionId,
+                    run_id: run.id,
+                  }).catch((err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  });
+                  return;
+                }
+                setPendingControl('pause');
+                void webRequest('swarmflow.pause', {
+                  session_id: sessionId,
+                  run_id: run.id,
+                }).catch((err) => {
+                  if (applyControlFailure(err)) {
+                    setPendingControl(null);
+                  }
+                });
               }}
             >
-              {run.status === 'running' ? (
+              {pendingControl === 'pause' || pendingControl === 'resume' ? (
+                <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+              ) : run.status === 'running' ? (
                 <Pause className="w-4 h-4" />
               ) : (
                 <Play className="w-4 h-4" />
@@ -878,20 +1025,34 @@ function RunNode({
             </button>
             <button
               type="button"
-              title={t('swarmflow.stopHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.stopHint')}
+              className={`${controlBtnClass} hover:text-red-500`}
+              disabled={controlsDisabled || pendingControl !== null}
+              data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
+                setPendingControl('stop');
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
+                  (err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  },
                 );
               }}
             >
-              <Square className="w-3.5 h-3.5" />
+              {pendingControl === 'stop' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+              ) : (
+                <Square className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
         )}
       </div>
 
+      {controlError && (
+        <Toast message={controlError} onClose={() => setControlError(null)} variant="error" />
+      )}
       {run.error && (
         <button
           type="button"
@@ -904,6 +1065,7 @@ function RunNode({
             })
           }
           className="flex w-full items-start gap-1.5 px-3 py-1.5 text-left text-xs text-red-400/90 hover:bg-red-500/5"
+          data-testid="team-area-swarmflow-run-error"
         >
           <CircleX className="w-3.5 h-3.5 shrink-0 mt-0.5 text-red-400/70" />
           <span className="flex-1 min-w-0 truncate">{run.error}</span>
@@ -921,6 +1083,7 @@ function RunNode({
             })
           }
           className="flex w-full items-start gap-1.5 px-3 py-1.5 text-left text-xs text-text-muted hover:bg-emerald-500/5"
+          data-testid="team-area-swarmflow-run-result"
         >
           <CircleCheck className="w-3.5 h-3.5 shrink-0 mt-0.5 text-emerald-500/70" />
           <span className="flex-1 min-w-0 truncate">{run.result}</span>
@@ -981,14 +1144,14 @@ export function SwarmflowTreeView({ runs, sessionId }: SwarmflowTreeViewProps) {
 
   if (runs.length === 0) {
     return (
-      <div className="flex items-center justify-center h-full text-sm text-text-muted">
+      <div className="flex items-center justify-center h-full text-sm text-text-muted" data-testid="team-area-swarmflow-tree-empty">
         {t('swarmflow.noWorkflow')}
       </div>
     );
   }
 
   return (
-    <div className="flex flex-col h-full">
+    <div className="flex flex-col h-full" data-testid="team-area-swarmflow-tree-view">
       <div className="flex-1 overflow-auto">
         <div className="flex flex-col gap-2 p-2">
           {runs.map((run) => (

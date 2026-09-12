@@ -9,11 +9,6 @@ export const modelsModule: SettingsModuleDefinition = {
   source: 'config',
   sections: [
     {
-      id: 'free-models',
-      titleKey: 'settingsPanel.models.freeModels',
-      items: [{ id: 'enable-free-models', component: 'switch', key: 'enable_free_models' }],
-    },
-    {
       id: 'model-manager',
       separatedRows: true,
       items: [{ id: 'model-manager', component: 'custom', render: ModelsSettings }],

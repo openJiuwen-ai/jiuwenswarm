@@ -1,7 +1,5 @@
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type RefObject } from 'react';
-import { createPortal } from 'react-dom';
+import { useEffect, useMemo, useRef, useState, type RefObject } from 'react';
 import { useTranslation } from 'react-i18next';
-import clsx from 'clsx';
 import { Loader2 } from 'lucide-react';
 import { useChatStore, useSessionStore } from '../../stores';
 import { useConnectorStore } from '../../stores/connectorStore';
@@ -9,6 +7,7 @@ import { usePluginPackageStore } from '../../stores/pluginPackageStore';
 import { localizedText } from '../../types/pluginPackage';
 import type { ConnectorConnectResponse } from '../../types/connector';
 import { getSkillAvatar } from '../../utils/skillAvatar';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { PickerPanel } from './PickerPanel';
 import { EntityAvatar } from '../ConnectorMarket/EntityAvatar';
 import '../ConnectorMarket/ConnectorMarket.css';
@@ -17,6 +16,8 @@ import { CliAuthModal } from '../ConnectorMarket/CliAuthModal';
 import { requestManageView } from '../ConnectorMarket';
 import { usePendingConnectorFlow, PendingConnectorModals } from '../ConnectorMarket/usePendingConnectorFlow';
 import { Switch } from '../Switch';
+import { Tabs } from '../ui';
+import { resolvePluginPickerIdentifiers } from '../../features/equipmentMarketplace';
 import { pruneEnabledExtensions } from '../../utils/enabledExtensions';
 import PlusIcon from '../../assets/agent-management/agent-plus.svg?react';
 import SearchIcon from '../../assets/agent-management/agent-search.svg?react';
@@ -123,7 +124,7 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
   // 才用非静默调用走正常的 loading 态，避免用户盯着一片空白却看不出到底是"真没数据"还是"正在
   // 加载中"。
   useEffect(() => {
-    void loadPluginList('local', { silent: packages.length > 0 });
+    void loadPluginList('mine', { silent: packages.length > 0 });
     void loadConnectorList('local', { silent: myConnectors.length > 0 });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
@@ -165,6 +166,8 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
     if (!q) return myConnectors;
     return myConnectors.filter((c) => c.displayName.toLowerCase().includes(q));
   }, [myConnectors, searchQuery]);
+
+  const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
 
   // 插件/MCP 两个 tab 共用同一个列表高度——itemCount 取两边条目数的较大值，由 PickerPanel 按
   // "行高 × 条目数、封顶 5 行"反推显式 height：条目少的一侧在列表内部留白撑到同样高度，超过
@@ -235,24 +238,23 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
         panelRef={panelRef}
         className="chat-extension-picker"
         direction={direction}
-        testId="chat-extension-picker-panel"
+        testId="chat-panel-extension-picker-panel"
         rowHeight={LIST_ROW_HEIGHT}
         itemCount={Math.max(filteredPlugins.length, filteredMcps.length)}
         tabs={
-          <div className="chat-picker-panel__tabs" role="tablist">
-            {(['plugin', 'mcp'] as const).map((key) => (
-              <button
-                key={key}
-                type="button"
-                role="tab"
-                aria-selected={tab === key}
-                onClick={() => setTab(key)}
-                className={clsx(tab === key && 'is-active')}
-              >
-                {t(key === 'plugin' ? 'connectorMarket.tabs.plugin' : 'connectorMarket.tabs.mcp')}
-              </button>
-            ))}
-          </div>
+          <Tabs
+            role="tablist"
+            wrapperTestId="chat-panel-extension-picker-tabs"
+            itemTestId="chat-panel-extension-picker-tab"
+            bordered
+            className="mb-4 text-sm"
+            value={tab}
+            onChange={setTab}
+            items={[
+              { value: 'plugin', label: t('connectorMarket.tabs.plugin') },
+              { value: 'mcp', label: t('connectorMarket.tabs.mcp') },
+            ]}
+          />
         }
         search={
           <div className="chat-picker-panel__search">
@@ -263,82 +265,125 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 value={searchQuery}
                 onChange={(e) => setSearchQuery(e.target.value)}
                 placeholder={t('chat.extensionSearchPlaceholder')}
-                data-testid="chat-extension-search"
+                data-testid="chat-panel-extension-picker-search-input"
               />
             </div>
           </div>
         }
         footer={{ label: t('chat.extensionMore'), onClick: handleManageClick }}
       >
-        {loading && <div className="chat-skill-select__state">{t('skills.detailLoading')}</div>}
+        {loading && (
+          <div
+            className="chat-skill-select__state"
+            data-testid="chat-panel-extension-picker-state"
+            data-variant="loading"
+          >
+            {t('skills.detailLoading')}
+          </div>
+        )}
 
         {!loading && tab === 'plugin' && filteredPlugins.length === 0 && (
-          <div className="chat-skill-select__state">
+          <div
+            className="chat-skill-select__state"
+            data-testid="chat-panel-extension-picker-state"
+            data-variant="no-plugin"
+          >
             {t('chat.extensionEmpty')}
           </div>
         )}
-        {!loading && tab === 'plugin' && filteredPlugins.map((pkg) => {
-          const label = localizedText(pkg.displayName, i18n.language);
-          const desc = localizedText(pkg.displayDescription, i18n.language);
-          const avatar = getSkillAvatar(label);
-          const installed = installedMap[pkg.id];
-          const linked = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-          const isEnabled = enabledPlugins.includes(pkg.id);
-          const isConnectingThis = connectingPluginIdRef.current === pkg.id && (pluginInstallFlow.active || pluginReconnectFlow.active);
-          const busy = pluginBusyId === pkg.id || isConnectingThis;
-          return (
-            <div key={pkg.id} className="chat-skill-select__item chat-extension-picker__item">
-              <div className={`chat-skill-select__avatar ${avatar.color}`}>
-                {avatar.firstChar}
+        {!loading &&
+          tab === 'plugin' &&
+          filteredPlugins.map((pkg) => {
+            const { marketplaceId, sessionPluginName } = resolvePluginPickerIdentifiers(pkg);
+            const label = localizedText(pkg.displayName, i18n.language);
+            const desc = localizedText(pkg.displayDescription, i18n.language);
+            const avatar = getSkillAvatar(label);
+            const installed = installedMap[marketplaceId];
+            const linked = (pluginConnectionStateMap[marketplaceId] ?? 'disconnected') === 'connected';
+            const isEnabled = enabledPlugins.includes(sessionPluginName);
+            const isConnectingThis =
+              connectingPluginIdRef.current === marketplaceId &&
+              (pluginInstallFlow.active || pluginReconnectFlow.active);
+            const busy = pluginBusyId === marketplaceId || isConnectingThis;
+            return (
+              <div
+                key={marketplaceId}
+                className="chat-skill-select__item chat-extension-picker__item"
+                data-testid="chat-panel-extension-picker-item"
+                data-variant={marketplaceId}
+              >
+                <div className="chat-skill-select__avatar" style={avatar.style}>
+                  {avatar.firstChar}
+                </div>
+                <ItemDescCell text={desc} handlers={tooltipHandlers}>
+                  <div className="chat-skill-select__item-name">{label}</div>
+                </ItemDescCell>
+                {busy ? (
+                  <Loader2 className="chat-extension-picker__spinner" size={16} />
+                ) : installed && linked ? (
+                  <Switch checked={isEnabled} onChange={() => handleTogglePlugin(sessionPluginName)} />
+                ) : installed ? (
+                  <ConnectButton
+                    label={t('chat.extensionConnect')}
+                    handlers={tooltipHandlers}
+                    onClick={() => void handleReconnectPlugin(marketplaceId)}
+                  />
+                ) : (
+                  <ConnectButton
+                    label={t('chat.extensionConnect')}
+                    handlers={tooltipHandlers}
+                    onClick={() => void handleConnectPlugin(marketplaceId)}
+                  />
+                )}
               </div>
-              <ItemDescCell text={desc}>
-                <div className="chat-skill-select__item-name">{label}</div>
-              </ItemDescCell>
-              {busy ? (
-                <Loader2 className="chat-extension-picker__spinner" size={16} />
-              ) : installed && linked ? (
-                <Switch checked={isEnabled} onChange={() => handleTogglePlugin(pkg.id)} />
-              ) : installed ? (
-                // 已装但依赖 connector 未就绪（§1.6.4 已装重连）——不能直接给开关（打开也会被
-                // chat.send 硬拒绝，见 v2 §1.3），复用同一个连接icon，走重连而不是 install。
-                <ConnectButton label={t('chat.extensionConnect')} onClick={() => void handleReconnectPlugin(pkg.id)} />
-              ) : (
-                <ConnectButton label={t('chat.extensionConnect')} onClick={() => void handleConnectPlugin(pkg.id)} />
-              )}
-            </div>
-          );
-        })}
+            );
+          })}
 
         {!loading && tab === 'mcp' && filteredMcps.length === 0 && (
-          <div className="chat-skill-select__state">
+          <div
+            className="chat-skill-select__state"
+            data-testid="chat-panel-extension-picker-state"
+            data-variant="no-mcp"
+          >
             {t('chat.extensionEmpty')}
           </div>
         )}
-        {!loading && tab === 'mcp' && filteredMcps.map((connector) => {
-          const avatar = getSkillAvatar(connector.displayName);
-          const linked = connector.connectionState === 'connected';
-          const isEnabled = enabledMcps.includes(connector.name);
-          const busy = Boolean(busyMap[connector.name]);
-          return (
-            <div key={connector.name} className="chat-skill-select__item chat-extension-picker__item">
-              <EntityAvatar
-                iconUrl={connector.icon ?? undefined}
-                avatar={avatar}
-                className="chat-skill-select__avatar"
-              />
-              <ItemDescCell text={connector.description ?? undefined}>
-                <div className="chat-skill-select__item-name">{connector.displayName}</div>
-              </ItemDescCell>
-              {busy ? (
-                <Loader2 className="chat-extension-picker__spinner" size={16} />
-              ) : linked ? (
-                <Switch checked={isEnabled} onChange={() => handleToggleMcp(connector.name)} />
-              ) : (
-                <ConnectButton label={t('chat.extensionConnect')} onClick={() => void handleConnectMcp(connector.name)} />
-              )}
-            </div>
-          );
-        })}
+        {!loading &&
+          tab === 'mcp' &&
+          filteredMcps.map((connector) => {
+            const avatar = getSkillAvatar(connector.displayName);
+            const linked = connector.connectionState === 'connected';
+            const isEnabled = enabledMcps.includes(connector.name);
+            const busy = Boolean(busyMap[connector.name]);
+            return (
+              <div
+                key={connector.name}
+                className="chat-skill-select__item chat-extension-picker__item"
+                data-testid="chat-panel-extension-picker-item"
+                data-variant={connector.name}
+              >
+                <EntityAvatar
+                  iconUrl={connector.icon ?? undefined}
+                  avatar={avatar}
+                  className="chat-skill-select__avatar"
+                />
+                <ItemDescCell text={connector.description ?? undefined} handlers={tooltipHandlers}>
+                  <div className="chat-skill-select__item-name">{connector.displayName}</div>
+                </ItemDescCell>
+                {busy ? (
+                  <Loader2 className="chat-extension-picker__spinner" size={16} />
+                ) : linked ? (
+                  <Switch checked={isEnabled} onChange={() => handleToggleMcp(connector.name)} />
+                ) : (
+                  <ConnectButton
+                    label={t('chat.extensionConnect')}
+                    handlers={tooltipHandlers}
+                    onClick={() => void handleConnectMcp(connector.name)}
+                  />
+                )}
+              </div>
+            );
+          })}
       </PickerPanel>
 
       {tokenTarget && (
@@ -364,91 +409,53 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
           连多个 pending connector。互斥（同一时刻只会有一个在跑），各自按 active 独立渲染。 */}
       <PendingConnectorModals flow={pluginInstallFlow} />
       <PendingConnectorModals flow={pluginReconnectFlow} />
+      {tooltip}
     </>
   );
 }
 
-/** 条目名称区——hover 时把描述以 tooltip 展示（不再常驻显示）。
- *
- * tooltip 必须走 createPortal 直接挂 document.body，不能用 ConnectorMarket.css 那套
- * `[data-tooltip]:hover::after` 纯 CSS 方案——那套方案的 tooltip 是 hover 元素自身的
- * ::after 伪元素，而这里的 hover 元素在 .chat-picker-panel__list（overflow-y:auto 的可滚动
- * 列表）内部：伪元素即使视觉上被裁剪，仍会被计入该滚动容器的 scrollHeight，一旦 tooltip 的高度
- * 让内容总高度超过列表本身的 clientHeight，就会瞬间蹦出一条纵向滚动条——滚动条占宽度导致内容
- * 重排，鼠标底下的元素跟着挪位，hover 状态被打断、tooltip 消失、滚动条又消失、内容再排回去、
- * hover 又恢复……如此循环，就是用户 2026-08-18 反馈的"鼠标放上去不断闪烁,像是一直在校准位置"。
- * 同时这条也直接导致 tooltip 本身被列表的 overflow 裁剪掉，对应用户反馈"提示显示不全"。
- * 改用 fixed 定位 + portal 到 document.body 后，tooltip 完全脱离滚动容器的布局与裁剪范围，
- * 两个问题一起解决。 */
-function ItemDescCell({ text, children }: { text?: string; children: React.ReactNode }) {
-  const [point, setPoint] = useState<TooltipPoint | null>(null);
+type TooltipHandlers = {
+  onMouseEnter: (event: { currentTarget: EventTarget | null }) => void;
+  onMouseLeave: () => void;
+  onFocus: (event: { currentTarget: EventTarget | null }) => void;
+  onBlur: () => void;
+};
+
+function ItemDescCell({
+  text,
+  handlers,
+  children,
+}: {
+  text?: string;
+  children: React.ReactNode;
+  handlers: TooltipHandlers;
+}) {
   return (
-    <div
-      className="chat-skill-select__item-main"
-      onMouseEnter={(e) => text && setPoint({ x: e.clientX, y: e.clientY })}
-      onMouseLeave={() => setPoint(null)}
-    >
+    <div className="chat-skill-select__item-main" data-tooltip={text} {...handlers}>
       {children}
-      {point && text && <ItemTooltipPortal point={point} text={text} />}
     </div>
   );
 }
 
-/** 列表行右侧的"连接"图标按钮——视觉对齐 ConnectorMarket 广场卡片同款的
- * .connector-market-icon-btn（见 MarketCard.tsx），但 hover 提示改走 ItemTooltipPortal 而不是
- * 该 class 自带的 [data-tooltip]:hover::after（原因同 ItemDescCell 头注释——同一个滚动容器裁剪/
- * 闪烁问题，这个按钮的提示同样会踩到，所以这里不传 data-tooltip 属性，让那条 CSS 规则不触发）。 */
-function ConnectButton({ label, onClick }: { label: string; onClick: () => void }) {
-  const [point, setPoint] = useState<TooltipPoint | null>(null);
+function ConnectButton({
+  label,
+  handlers,
+  onClick,
+}: {
+  label: string;
+  onClick: () => void;
+  handlers: TooltipHandlers;
+}) {
   return (
     <button
       type="button"
       className="connector-market-icon-btn flex h-7 w-7 shrink-0 items-center justify-center rounded-lg bg-bg-muted/75 text-[color:var(--color-text-placeholder)] transition-colors hover:bg-connector-add-hover-surface hover:text-[color:var(--color-chat-accent)]"
       aria-label={label}
+      data-tooltip={label}
+      {...handlers}
       onClick={onClick}
-      onMouseEnter={(e) => setPoint({ x: e.clientX, y: e.clientY })}
-      onMouseLeave={() => setPoint(null)}
-      onFocus={(e) => {
-        // 键盘 focus 没有鼠标坐标可用，退化成按钮右下角作为锚点。
-        const r = e.currentTarget.getBoundingClientRect();
-        setPoint({ x: r.right, y: r.bottom });
-      }}
-      onBlur={() => setPoint(null)}
     >
       <PlusIcon aria-hidden="true" />
-      {point && <ItemTooltipPortal point={point} text={label} />}
     </button>
-  );
-}
-
-interface TooltipPoint {
-  x: number;
-  y: number;
-}
-
-const TOOLTIP_EST_HEIGHT = 120;
-const TOOLTIP_MAX_WIDTH = 320;
-// 提示框左上角相对鼠标位置的固定偏移——2026-08-18 用户反馈：之前提示框横向对齐的是被 hover 元素
-// 的左边缘，同一行内不管鼠标停在哪里，提示框位置都不变，看着很怪；改成跟着触发时的鼠标坐标走，
-// 出现在鼠标右下角不远处（只在 hover/focus 触发的瞬间取一次坐标，不做逐像素跟随，避免每次
-// mousemove 都重新渲染）。
-const TOOLTIP_OFFSET_X = 12;
-const TOOLTIP_OFFSET_Y = 16;
-
-function ItemTooltipPortal({ point, text }: { point: TooltipPoint; text: string }) {
-  const showBelow = point.y + TOOLTIP_OFFSET_Y + TOOLTIP_EST_HEIGHT <= window.innerHeight;
-  const style: CSSProperties = {
-    position: 'fixed',
-    zIndex: 10050,
-    left: Math.min(Math.max(8, point.x + TOOLTIP_OFFSET_X), window.innerWidth - TOOLTIP_MAX_WIDTH - 8),
-    ...(showBelow
-      ? { top: point.y + TOOLTIP_OFFSET_Y }
-      : { bottom: window.innerHeight - point.y + TOOLTIP_OFFSET_Y }),
-  };
-  return createPortal(
-    <div className="chat-extension-picker__tooltip" style={style}>
-      {text}
-    </div>,
-    document.body,
   );
 }

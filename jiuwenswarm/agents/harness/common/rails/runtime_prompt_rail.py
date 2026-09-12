@@ -11,11 +11,13 @@ from __future__ import annotations
 import os
 import shutil
 import sys
+from contextvars import ContextVar
 from typing import Any
 
 import yaml
 
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
+from openjiuwen.core.sys_operation.cwd import init_cwd
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.prompts.prompt_attachment_manager import (
     PromptAttachmentKind,
@@ -52,6 +54,17 @@ class RuntimePromptRail(DeepAgentRail):
         self._cwd: str | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str | None = None
+        self._task_workspace_root: str | None = None
+        self._task_work_dir: str | None = None
+        self._task_outputs_dir: str | None = None
+        self._execution_cwd: str | None = None
+        self._execution_project_root: str | None = None
+        self._execution_workspace: str | None = None
+        self._execution_paths_revision = 0
+        self._bound_execution_paths_revision: ContextVar[int] = ContextVar(
+            "runtime_prompt_bound_execution_paths_revision",
+            default=-1,
+        )
         self._model_name: str = ""
         self._mode: str = ""
         self._session_id: str | None = None
@@ -77,6 +90,12 @@ class RuntimePromptRail(DeepAgentRail):
         self._agent = None
         self.system_prompt_builder = None
         self.attachment_manager = None
+        self._task_workspace_root = None
+        self._task_work_dir = None
+        self._task_outputs_dir = None
+        self._execution_cwd = None
+        self._execution_project_root = None
+        self._execution_workspace = None
 
     def set_language(self, language: str) -> None:
         """per-request 更新语言。"""
@@ -96,8 +115,11 @@ class RuntimePromptRail(DeepAgentRail):
         cwd: str | None = None,
         project_dir: str | None = None,
         workspace_dir: str | None = None,
+        task_workspace_root: str | None = None,
+        task_work_dir: str | None = None,
+        task_outputs_dir: str | None = None,
     ) -> None:
-        """Per-request stable project identity, dynamic cwd and own workspace.
+        """Per-request project identity, task paths, cwd, and own workspace.
 
         Args:
             cwd: Working directory shell runs in and relative paths resolve against.
@@ -105,6 +127,10 @@ class RuntimePromptRail(DeepAgentRail):
             workspace_dir: This agent's own workspace (artifacts, memory, skills
                 view). Team members each have their own; falls back to the
                 process-wide agent workspace when unset.
+            task_workspace_root: Root of an automatically allocated projectless
+                task workspace.
+            task_work_dir: Temporary/intermediate files directory.
+            task_outputs_dir: Final deliverables directory.
         """
         self._cwd = cwd.strip() if isinstance(cwd, str) and cwd.strip() else None
         self._project_dir = (
@@ -117,10 +143,49 @@ class RuntimePromptRail(DeepAgentRail):
             if isinstance(workspace_dir, str) and workspace_dir.strip()
             else None
         )
+        self._task_workspace_root = (
+            task_workspace_root.strip()
+            if isinstance(task_workspace_root, str) and task_workspace_root.strip()
+            else None
+        )
+        self._task_work_dir = (
+            task_work_dir.strip()
+            if isinstance(task_work_dir, str) and task_work_dir.strip()
+            else None
+        )
+        self._task_outputs_dir = (
+            task_outputs_dir.strip()
+            if isinstance(task_outputs_dir, str) and task_outputs_dir.strip()
+            else None
+        )
 
     def set_model_name(self, model_name: str) -> None:
         """per-request 更新模型名称，作为文件读取失败时的兜底。"""
         self._model_name = model_name or ""
+
+    def set_execution_paths(
+        self,
+        *,
+        cwd: str,
+        project_root: str,
+        workspace: str,
+    ) -> None:
+        """Bind Agent/Code paths inside the task that executes the round."""
+        execution_paths = (cwd, project_root, workspace)
+        if execution_paths == (
+            self._execution_cwd,
+            self._execution_project_root,
+            self._execution_workspace,
+        ):
+            return
+        self._execution_cwd = cwd
+        self._execution_project_root = project_root
+        self._execution_workspace = workspace
+        # A session normally keeps one fixed operational directory. Increment
+        # only when those paths actually change, so repeated requests in the
+        # same session do not overwrite a cwd selected by runtime tools (for
+        # example, a Code worktree).
+        self._execution_paths_revision += 1
 
     def set_mode(self, mode: str) -> None:
         """per-request 更新运行模式，作为文件读取失败时的兜底。"""
@@ -137,6 +202,31 @@ class RuntimePromptRail(DeepAgentRail):
     def set_force_english(self, force: bool) -> None:
         """Force English for runtime scaffolding in code mode."""
         self._force_english = force
+
+    def _bind_execution_paths(self) -> None:
+        """Bind request paths in the asyncio task that runs the current round."""
+        if (
+            self._execution_cwd is None
+            or self._execution_project_root is None
+            or self._execution_workspace is None
+        ):
+            return
+        if (
+            self._bound_execution_paths_revision.get()
+            == self._execution_paths_revision
+        ):
+            return
+        init_cwd(
+            self._execution_cwd,
+            project_root=self._execution_project_root,
+            workspace=self._execution_workspace,
+        )
+        self._bound_execution_paths_revision.set(self._execution_paths_revision)
+
+    def _uses_round_execution_paths(self) -> bool:
+        """Return whether Agent/Code rounds need request path rebinding."""
+        mode_root = str(self._mode or "").strip().lower().split(".", 1)[0]
+        return mode_root in {"agent", "code"}
 
     @staticmethod
     def _existing_dirs(paths: list[str] | None) -> list[str]:
@@ -225,10 +315,17 @@ class RuntimePromptRail(DeepAgentRail):
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
         """Prepare conversation-start context before the first model call."""
+        self._bind_execution_paths()
         runtime_state = await self._refresh_dynamic_attachments(ctx)
         await self._sync_git_system_context(ctx, runtime_state)
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
+        # Long-lived Agent/Code interactions execute rounds in a supervisor task
+        # created before the request arrives. Rebind inside that task so its
+        # subsequently spawned Bash/file tool tasks inherit the request cwd,
+        # rather than the Agent's internal data workspace captured at startup.
+        if self._uses_round_execution_paths():
+            self._bind_execution_paths()
         runtime_state = await self._refresh_dynamic_attachments(ctx)
         if not self.system_prompt_builder:
             return
@@ -314,10 +411,20 @@ class RuntimePromptRail(DeepAgentRail):
             agent_workspace_dir = self._existing_dir(self._workspace_dir) or str(get_agent_workspace_dir())
             config_dir = str(get_user_workspace_dir() / "config")
             project_dir = self._existing_dir(self._project_dir)
+            task_workspace_root = self._existing_dir(self._task_workspace_root)
+            task_work_dir = self._existing_dir(self._task_work_dir)
+            task_outputs_dir = self._existing_dir(self._task_outputs_dir)
             runtime_cwd = (
                 self._existing_dir(self._cwd)
+                or task_work_dir
                 or project_dir
                 or agent_workspace_dir
+            )
+            has_projectless_task = (
+                project_dir is None
+                and task_workspace_root is not None
+                and task_work_dir is not None
+                and task_outputs_dir is not None
             )
             has_project = project_dir is not None
             prompt_project_dir = project_dir or runtime_cwd
@@ -327,106 +434,159 @@ class RuntimePromptRail(DeepAgentRail):
             )
 
             if not self._force_english and self._language == "cn":
-                project_description = (
-                    "- 项目目录是当前项目的根目录与项目上下文边界，"
-                    if has_distinct_cwd
-                    else "- 项目目录是你当前的工作空间，"
-                )
-                cwd_description = (
-                    f"- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{runtime_cwd}`\n\n"
-                    if has_distinct_cwd
-                    else "\n"
-                )
-                separation_rule = (
-                    "- 项目目录与当前工作目录是两个独立概念，不得互相替换。\n"
-                    if has_distinct_cwd
-                    else ""
-                )
-                operation_directory = "当前工作目录" if has_distinct_cwd else "当前项目目录"
-                directory_content = (
-                    "# 目录与文件操作边界\n\n"
-                    "## 项目目录\n\n"
-                    "### 项目目录说明\n\n"
-                    f"{project_description}"
-                    f"当前项目目录是：`{prompt_project_dir}`\n"
-                    f"{cwd_description}"
-                    "### 项目目录规则\n\n"
-                    f"{separation_rule}"
-                    f"- 用户任务中的相对路径必须相对于{operation_directory}路径去解析。\n"
-                    f"- Bash 未显式传入 `workdir` 时，默认在{operation_directory}执行。\n"
+                if has_projectless_task:
+                    active_directory_content = (
+                        "## 当前任务目录\n\n"
+                        f"- 当前任务根目录：`{task_workspace_root}`\n"
+                        f"- 临时工作目录：`{task_work_dir}`\n"
+                        f"- 最终产物目录：`{task_outputs_dir}`\n\n"
+                        "- 相对路径以临时工作目录为基准。\n"
+                        "- Bash 未显式传入 `workdir` 时，默认在临时工作目录执行。\n"
+                        "- 中间文件、缓存和临时脚本放在临时工作目录。\n"
+                        "- 报告、导出文件、图片、数据等最终产物放在最终产物目录。\n\n"
+                    )
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        f"{active_directory_content}"
+                        "## 通用目录规则\n\n"
+                    )
+                elif not has_project:
+                    active_directory_content = (
+                        "## 当前项目目录\n\n"
+                        f"- 项目目录是当前运行时工作空间：`{prompt_project_dir}`\n\n"
+                        "- 相对路径以项目目录为基准。\n"
+                        "- Bash 未显式传入 `workdir` 时，默认在项目目录执行。\n"
+                        "- 未指定保存位置时，任务产物放在项目目录内的合理位置。\n\n"
+                    )
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        f"{active_directory_content}"
+                        "## 通用目录规则\n\n"
+                    )
+                else:
+                    project_description = (
+                        "- 项目目录是当前项目的根目录与项目上下文边界，"
+                        if has_distinct_cwd
+                        else "- 项目目录是你当前的工作空间，"
+                    )
+                    cwd_description = (
+                        f"- 当前工作目录（cwd、相对路径基准及 Bash 默认目录）是：`{runtime_cwd}`\n\n"
+                        if has_distinct_cwd
+                        else "\n"
+                    )
+                    separation_rule = (
+                        "- 项目目录与当前工作目录是两个独立概念，不得互相替换。\n"
+                        if has_distinct_cwd
+                        else ""
+                    )
+                    operation_directory = "当前工作目录" if has_distinct_cwd else "当前项目目录"
+                    directory_content = (
+                        "# 目录与文件操作边界\n\n"
+                        "## 项目目录\n\n"
+                        "### 项目目录说明\n\n"
+                        f"{project_description}"
+                        f"当前项目目录是：`{prompt_project_dir}`\n"
+                        f"{cwd_description}"
+                        "### 项目目录规则\n\n"
+                        f"{separation_rule}"
+                        f"- 用户任务中的相对路径必须相对于{operation_directory}路径去解析。\n"
+                        f"- Bash 未显式传入 `workdir` 时，默认在{operation_directory}执行。\n"
+                    )
+            else:
+                if has_projectless_task:
+                    active_directory_content = (
+                        "## Current Task Directories\n\n"
+                        f"- Current task root: `{task_workspace_root}`\n"
+                        f"- Temporary working directory: `{task_work_dir}`\n"
+                        f"- Final deliverables directory: `{task_outputs_dir}`\n\n"
+                        "- Resolve relative paths against the temporary working directory.\n"
+                        "- When Bash is called without an explicit `workdir`, "
+                        "run it in the temporary working directory.\n"
+                        "- Put intermediate files, caches, and temporary scripts in the temporary working directory.\n"
+                        "- Put reports, exports, images, data, and other final "
+                        "deliverables in the final deliverables directory.\n\n"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        f"{active_directory_content}"
+                        "## General Directory Rules\n\n"
+                    )
+                elif not has_project:
+                    active_directory_content = (
+                        "## Current Project Directory\n\n"
+                        f"- The project directory is the current runtime workspace: `{prompt_project_dir}`\n\n"
+                        "- Resolve relative paths against the project directory.\n"
+                        "- When Bash is called without an explicit `workdir`, run it in the project directory.\n"
+                        "- When no save location is specified, put task artifacts in "
+                        "an appropriate location under the project directory.\n\n"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        f"{active_directory_content}"
+                        "## General Directory Rules\n\n"
+                    )
+                else:
+                    project_description = (
+                        "- The project directory is the project root and project-context boundary; "
+                        if has_distinct_cwd
+                        else "- The project directory is your current workspace; "
+                    )
+                    cwd_description = (
+                        f"- The current working directory (cwd, relative-path base, and Bash default) is: "
+                        f"`{runtime_cwd}`\n\n"
+                        if has_distinct_cwd
+                        else "\n"
+                    )
+                    separation_rule = (
+                        "- The project directory and current working directory are independent concepts; do not "
+                        "substitute one for the other.\n"
+                        if has_distinct_cwd
+                        else ""
+                    )
+                    operation_directory = (
+                        "current working directory" if has_distinct_cwd else "current project directory"
+                    )
+                    directory_content = (
+                        "# Directory and File-Operation Boundaries\n\n"
+                        "## Project Directory\n\n"
+                        "### Project Directory Description\n\n"
+                        f"{project_description}"
+                        f"the current project directory is: `{prompt_project_dir}`\n"
+                        f"{cwd_description}"
+                        "### Project Directory Rules\n\n"
+                        f"{separation_rule}"
+                        f"- Resolve relative paths in user tasks against the {operation_directory}.\n"
+                        f"- When Bash is called without an explicit `workdir`, run it in the {operation_directory}.\n"
+                    )
+            if not self._force_english and self._language == "cn":
+                directory_content += (
                     "- 用户已经提供明确路径时直接使用，不要重复询问。\n"
-                    "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n"
-                    "- 用户明确指定保存位置时，优先使用用户指定位置；否则，项目代码、测试、配置、构建文件、项目文档、报告、导出文件、图片和数据文件等放在当前工作目录的合理位置。\n\n"
+                    "- 只有任务确实需要操作某个项目、且现有上下文无法确定项目位置时，才询问项目路径。\n\n"
                     "## JiuwenSwarm 内部目录\n\n"
                     f"- 智能体内部数据目录：`{agent_workspace_dir}`\n"
-                    f"- JiuwenSwarm 启动配置目录：`{config_dir}`\n\n"
-                    "以下资源由 JiuwenSwarm 提供，路径相对于运行时给出的智能体内部数据目录：\n\n"
-                    "- `IDENTITY.md`：用户为智能体指定的身份信息。\n"
-                    "- `skills/`：当前已安装并启用的技能。\n"
-                    "- `todo/`：任务和待办状态。\n\n"
-                    "目录规则：\n\n"
-                    "- 智能体内部数据目录只保存智能体自身数据，不是用户项目目录。\n"
-                    "- 智能体身份、记忆、技能、待办和运行状态只能保存在对应的内部数据目录。\n"
+                    f"- JiuwenSwarm 启动配置目录：`{config_dir}`\n"
+                    "- `IDENTITY.md`、`memory/`、`skills/`、`todo/` 和运行状态属于智能体内部数据。\n"
                     f"- 技能执行产生的内部技能资产放在 `{agent_workspace_dir}/skills/{{skill_name}}/`。\n"
-                    "- JiuwenSwarm 启动配置目录不得用于保存普通任务产物。\n"
+                    "- 不要把普通任务产物写入智能体内部目录或启动配置目录。\n"
                     "- 用户任务中的 `config/`、`memory/`、`skills/`、`todo/` 或 `workspace/` 不自动映射到 JiuwenSwarm 内部目录。"
                 )
             else:
-                project_description = (
-                    "- The project directory is the project root and project-context boundary; "
-                    if has_distinct_cwd
-                    else "- The project directory is your current workspace; "
-                )
-                cwd_description = (
-                    f"- The current working directory (cwd, relative-path base, and Bash default) is: "
-                    f"`{runtime_cwd}`\n\n"
-                    if has_distinct_cwd
-                    else "\n"
-                )
-                separation_rule = (
-                    "- The project directory and current working directory are independent concepts; do not "
-                    "substitute one for the other.\n"
-                    if has_distinct_cwd
-                    else ""
-                )
-                operation_directory = (
-                    "current working directory" if has_distinct_cwd else "current project directory"
-                )
-                directory_content = (
-                    "# Directory and File-Operation Boundaries\n\n"
-                    "## Project Directory\n\n"
-                    "### Project Directory Description\n\n"
-                    f"{project_description}"
-                    f"the current project directory is: `{prompt_project_dir}`\n"
-                    f"{cwd_description}"
-                    "### Project Directory Rules\n\n"
-                    f"{separation_rule}"
-                    f"- Resolve relative paths in user tasks against the {operation_directory}.\n"
-                    f"- When Bash is called without an explicit `workdir`, run it in the {operation_directory}.\n"
+                directory_content += (
                     "- When the user has provided an explicit path, use it directly without asking again.\n"
-                    "- Ask for a project path only when the task truly requires a project and its location "
-                    "cannot be determined from the existing context.\n"
-                    "- Prefer a user-specified save location. Otherwise, place project code, tests, "
-                    "configuration, build files, project documentation, reports, exports, images, and data "
-                    "files in an appropriate location under the current working directory.\n\n"
+                    "- Ask for a project path only when the task truly requires a "
+                    "project and its location cannot be determined from the existing "
+                    "context.\n\n"
                     "## JiuwenSwarm Internal Directories\n\n"
                     f"- Agent internal data directory: `{agent_workspace_dir}`\n"
-                    f"- JiuwenSwarm startup configuration directory: `{config_dir}`\n\n"
-                    "The following resources are provided by JiuwenSwarm. Their paths are relative to the "
-                    "Agent internal data directory supplied at runtime:\n\n"
-                    "- `IDENTITY.md`: identity information assigned to the Agent by the user.\n"
-                    "- `skills/`: currently installed and enabled skills.\n"
-                    "- `todo/`: task and to-do state.\n\n"
-                    "Directory rules:\n\n"
-                    "- The Agent internal data directory stores only the Agent's own data; it is not a user "
-                    "project directory.\n"
-                    "- Agent identity, memory, skills, to-dos, and runtime state must be stored only in their "
-                    "corresponding internal data directories.\n"
+                    f"- JiuwenSwarm startup configuration directory: `{config_dir}`\n"
+                    "- `IDENTITY.md`, `memory/`, `skills/`, `todo/`, and runtime state are Agent internal data.\n"
                     f"- Internal skill assets produced by skill execution belong in "
                     f"`{agent_workspace_dir}/skills/{{skill_name}}/`.\n"
-                    "- Do not use the JiuwenSwarm startup configuration directory for ordinary task deliverables.\n"
-                    "- `config/`, `memory/`, `skills/`, `todo/`, or `workspace/` in a user task do not "
-                    "automatically refer to JiuwenSwarm internal directories."
+                    "- Do not write ordinary task artifacts to the Agent internal data "
+                    "directory or startup configuration directory.\n"
+                    "- `config/`, `memory/`, `skills/`, `todo/`, or `workspace/` in a "
+                    "user task do not automatically refer to JiuwenSwarm internal "
+                    "directories."
                 )
             self.system_prompt_builder.add_section(PromptSection(
                 name="directory_boundaries",

@@ -1,3 +1,12 @@
+.app-page-body {
+  display: flex;
+  flex: 1 1 0%;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--color-surface-card);
+}
+
 .app-section {
   display: flex;
   flex: 1 1 0%;

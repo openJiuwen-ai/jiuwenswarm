@@ -4,14 +4,17 @@ from typing import TYPE_CHECKING, Any, Callable
 
 from openjiuwen.core.runner.callback.framework import AsyncCallbackFramework
 
+from jiuwenswarm.common.security.base_crypto import CryptoProvider
 from jiuwenswarm.extensions.callback_compat import unregister_callback_sync
 from jiuwenswarm.extensions.sdk.crypto_utility import CryptoUtility
 from jiuwenswarm.extensions.types import ExtensionConfig
-from jiuwenswarm.common.security.base_crypto import CryptoProvider
 
 if TYPE_CHECKING:
     from jiuwenswarm.extensions.sdk.agent_server_client import (
         AgentServerClientExtension,
+    )
+    from jiuwenswarm.extensions.sdk.application_plugin import (
+        ApplicationPluginExtension,
     )
     from jiuwenswarm.extensions.sdk.third_agent import ThirdAgentExtension
     from jiuwenswarm.gateway import AgentServerClient
@@ -20,9 +23,41 @@ else:
     # Keep runtime type-hint introspection valid without importing Gateway and
     # transport adapters into a Runtime-direct process.
     AgentServerClientExtension = Any
+    ApplicationPluginExtension = Any
     ThirdAgentExtension = Any
     AgentServerClient = Any
     ThirdAgent = Any
+
+
+class _ApplicationPluginChannel:
+    def __init__(self, channel: Any, plugin: ApplicationPluginExtension):
+        self._channel = channel
+        self._plugin = plugin
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._channel, name)
+
+    def register_method(
+        self,
+        method: str,
+        handler: Callable,
+        *,
+        local_only: bool = False,
+        available_when_disabled: bool = False,
+    ) -> None:
+        async def enabled_handler(ws, req_id, params, session_id):  # noqa: ANN001
+            if not available_when_disabled and not self._plugin.is_enabled():
+                await self._channel.send_response(
+                    ws,
+                    req_id,
+                    ok=False,
+                    error=f"application plugin {self._plugin.plugin_id} is disabled",
+                    code="APPLICATION_PLUGIN_DISABLED",
+                )
+                return
+            await handler(ws, req_id, params, session_id)
+
+        self._channel.register_method(method, enabled_handler, local_only=local_only)
 
 
 class ExtensionRegistry:
@@ -37,6 +72,7 @@ class ExtensionRegistry:
         self._agent_server_client: AgentServerClientExtension | None = None
         self._crypto_tool: CryptoUtility | None = None
         self._third_agent: ThirdAgentExtension | None = None
+        self._application_plugins: dict[str, ApplicationPluginExtension] = {}
         self.callback_framework = callback_framework
         self._config = ExtensionConfig(config=config, logger=logger)
 
@@ -74,6 +110,48 @@ class ExtensionRegistry:
 
     def register_third_agent(self, extension: ThirdAgentExtension) -> None:
         self._third_agent = extension
+
+    def register_application_plugin(
+        self,
+        extension: ApplicationPluginExtension,
+    ) -> None:
+        plugin_id = str(extension.plugin_id or "").strip()
+        if not plugin_id:
+            plugin_id = str(extension.metadata.id or "").strip()
+        if not plugin_id:
+            raise ValueError("application plugin id must not be empty")
+        if plugin_id in self._application_plugins:
+            raise ValueError(f"application plugin already registered: {plugin_id}")
+        self._application_plugins[plugin_id] = extension
+
+    def get_application_plugins(self) -> tuple[ApplicationPluginExtension, ...]:
+        return tuple(self._application_plugins.values())
+
+    def get_application_plugin(
+        self,
+        plugin_id: str,
+    ) -> ApplicationPluginExtension | None:
+        return self._application_plugins.get(plugin_id)
+
+    def bind_application_plugins(
+        self,
+        channel: Any,
+        *,
+        agent_client: Any = None,
+        media_attachment_normalizer: Callable[[dict[str, Any], str | None], None]
+        | None = None,
+    ) -> None:
+        from jiuwenswarm.extensions.sdk.application_plugin import (
+            ApplicationPluginServices,
+        )
+
+        services = ApplicationPluginServices(
+            agent_client=agent_client,
+            media_attachment_normalizer=media_attachment_normalizer,
+        )
+        for plugin in self.get_application_plugins():
+            plugin.bind_web_channel(_ApplicationPluginChannel(channel, plugin), services)
+        channel.application_plugin_registry = self
 
     def get_agent_server_client_extension(self) -> AgentServerClientExtension | None:
         return self._agent_server_client
