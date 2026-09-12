@@ -19,6 +19,7 @@ from jiuwenswarm.server.handlers import commands as commands_handlers
 from jiuwenswarm.server.handlers import extensions as extensions_handlers
 from jiuwenswarm.server.handlers import file_transfer as file_transfer_handlers
 from jiuwenswarm.server.handlers import mcp as mcp_handlers
+from jiuwenswarm.server.handlers import mcp_servers as mcp_servers_handlers
 from jiuwenswarm.server.handlers import ops as ops_handlers
 from jiuwenswarm.server.handlers import permissions as permissions_handlers
 from jiuwenswarm.server.handlers import sandbox as sandbox_handlers
@@ -129,6 +130,11 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.COMMAND_SIMPLIFY: HandlerSpec(fn=commands_handlers.handle_command_simplify),
     ReqMethod.COMMAND_MODEL: HandlerSpec(fn=commands_handlers.handle_command_model),
     ReqMethod.COMMAND_MCP: HandlerSpec(fn=mcp_handlers.handle_command_mcp),
+    ReqMethod.MCP_SERVER_ADD: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_add),
+    ReqMethod.MCP_SERVER_REMOVE: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_remove),
+    ReqMethod.MCP_SERVER_UPDATE: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_update),
+    ReqMethod.MCP_SERVER_LIST: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_list),
+    ReqMethod.MCP_SERVER_GET: HandlerSpec(fn=mcp_servers_handlers.handle_mcp_server_get),
     ReqMethod.COMMAND_SANDBOX: HandlerSpec(fn=sandbox_handlers.handle_command_sandbox),
     ReqMethod.COMMAND_RESUME: HandlerSpec(fn=commands_handlers.handle_command_resume),
     ReqMethod.COMMAND_SESSION: HandlerSpec(fn=commands_handlers.handle_command_session),

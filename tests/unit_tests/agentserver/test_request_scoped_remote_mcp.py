@@ -28,6 +28,13 @@ from jiuwenswarm.common.mcp_config import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _allow_loopback_mcp_in_mocked_remote_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本文件用 127.0.0.1 当假远端 URL；生产 SSRF 默认拦截 loopback，需显式放行。"""
+
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+
+
 def _sse_config() -> dict:
     return {
         "name": "baidu-netdisk",
