@@ -49,6 +49,7 @@ dependencies = [
     "pydantic>=2.0,<3.0",
     "pyyaml>=6.0,<7",
     "httpx[http2,socks]>=0.27,<1.0",
+    "aiohttp>=3.9,<4",
     "certifi>=2024.8.30,<2027",
     "json-repair>=0.30.0,<0.60",
     "gitcode-api>=1.2.20,<2",
@@ -211,3 +212,6 @@ lint = [
     "httpx[socks]>=0.28.1",
 ]
 dev = [{ include-group = "test" }, { include-group = "lint" }]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "ASYNC"]

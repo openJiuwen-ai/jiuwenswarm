@@ -15,7 +15,7 @@ import time
 from collections import OrderedDict
 from typing import Any, Callable
 
-import requests
+import aiohttp
 from pydantic import BaseModel, Field
 
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, ChannelMetadata, RobotMessageRouter
@@ -318,7 +318,7 @@ class WecomChannel(BaseChannel):
             return ""
         return normalized
 
-    def _generate_group_ack_sync(self, target_name: str, content: str) -> str:
+    async def _generate_group_ack(self, target_name: str, content: str) -> str:
         """调用轻量 LLM 生成群内简短确认文案。"""
         api_key = os.getenv("API_KEY", "").strip()
         api_base = os.getenv("API_BASE", "").strip()
@@ -339,27 +339,29 @@ class WecomChannel(BaseChannel):
             "- 更像'好的，我知道了，会准时参加会议''收到，我会跟进这件事'\n"
             "- 不要照搬原文，保留核心动作即可\n\n"
             "你私发给{name}的内容是：\n{content}"
-        ).format(   
+        ).format(
             name=target_name,
             content=content[:500],
         )
         try:
-            resp = requests.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 80,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            choices = resp.json().get("choices") or []
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.7,
+                        "max_tokens": 80,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    resp.raise_for_status()
+                    payload = await resp.json()
+            choices = payload.get("choices") or []
             if choices:
                 text = (choices[0].get("message") or {}).get("content", "").strip()
                 text = self._normalize_group_ack_text(target_name, text)
@@ -378,9 +380,7 @@ class WecomChannel(BaseChannel):
             if not group_chat_id:
                 return
 
-            ack_text = await asyncio.to_thread(
-                self._generate_group_ack_sync, target_name, content
-            )
+            ack_text = await self._generate_group_ack(target_name, content)
             if ack_text and self._ws_client and getattr(self._ws_client, "is_connected", False):
                 await self._ws_client.send_message(
                     group_chat_id,

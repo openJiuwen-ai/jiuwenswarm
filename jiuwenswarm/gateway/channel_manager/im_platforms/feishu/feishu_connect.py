@@ -13,7 +13,7 @@ from collections import OrderedDict
 from dataclasses import dataclass
 from typing import Any, Callable
 
-import requests
+import aiohttp
 from pydantic import BaseModel, Field
 from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.message import Message, ReqMethod, EventType
@@ -344,7 +344,7 @@ class FeishuChannel(BaseChannel):
         self._running = True
         self._main_loop = asyncio.get_running_loop()
         self._initialize_api_client()
-        self._start_websocket_in_thread()
+        await self._start_websocket_in_thread()
 
         logger.info("飞书机器人已启动，使用WebSocket长连接接收消息")
         logger.info("无需公网IP - 通过WebSocket接收事件")
@@ -391,7 +391,7 @@ class FeishuChannel(BaseChannel):
             self._file_service.set_persist_hook(self._file_persist_hook)
         # bot_open_id 改为懒加载，在需要时才获取（见 _replace_mentions_with_names）
 
-    def _fetch_bot_open_id(self) -> None:
+    async def _fetch_bot_open_id(self) -> None:
         """
         获取机器人自身的 open_id（用于 @bot 识别）。
 
@@ -405,15 +405,16 @@ class FeishuChannel(BaseChannel):
         try:
             # 1. 获取 tenant_access_token
             token_url = f"{self.config.api_base}/open-apis/auth/v3/tenant_access_token/internal"
-            token_resp = requests.post(
-                token_url,
-                json={
-                    "app_id": self.config.app_id,
-                    "app_secret": self.config.app_secret,
-                },
-                timeout=10,
-            )
-            token_data = token_resp.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    token_url,
+                    json={
+                        "app_id": self.config.app_id,
+                        "app_secret": self.config.app_secret,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as token_resp:
+                    token_data = await token_resp.json()
             if token_data.get("code") != 0:
                 logger.warning(
                     "[_fetch_bot_open_id] 获取 tenant_access_token 失败: code=%s msg=%s",
@@ -428,12 +429,13 @@ class FeishuChannel(BaseChannel):
 
             # 2. 调用 bot/v3/info 获取机器人信息
             bot_info_url = f"{self.config.api_base}/open-apis/bot/v3/info"
-            bot_resp = requests.get(
-                bot_info_url,
-                headers={"Authorization": f"Bearer {tenant_access_token}"},
-                timeout=10,
-            )
-            bot_data = bot_resp.json()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    bot_info_url,
+                    headers={"Authorization": f"Bearer {tenant_access_token}"},
+                    timeout=aiohttp.ClientTimeout(total=10),
+                ) as bot_resp:
+                    bot_data = await bot_resp.json()
             if bot_data.get("code") != 0:
                 logger.warning(
                     "[_fetch_bot_open_id] 获取机器人信息失败: code=%s msg=%s",
@@ -469,7 +471,7 @@ class FeishuChannel(BaseChannel):
         except Exception as e:
             logger.warning("[_fetch_bot_open_id] 获取机器人 open_id 异常: %s", e)
 
-    def _start_websocket_in_thread(self) -> None:
+    async def _start_websocket_in_thread(self) -> None:
         """在独立线程中启动WebSocket客户端，避免事件循环冲突。"""
         config = {
             "app_id": self.config.app_id,
@@ -486,7 +488,7 @@ class FeishuChannel(BaseChannel):
         self._websocket_thread.start()
 
         # 等待WebSocket客户端创建完成
-        self._wait_for_websocket_client_ready()
+        await self._wait_for_websocket_client_ready()
 
     def _run_websocket_client(self, config: dict) -> None:
         """
@@ -564,12 +566,12 @@ class FeishuChannel(BaseChannel):
 
         self._ws_thread_loop = None
 
-    def _wait_for_websocket_client_ready(self) -> None:
+    async def _wait_for_websocket_client_ready(self) -> None:
         """等待WebSocket客户端创建完成。"""
         for _ in range(50):
             if self._websocket_client is not None:
                 break
-            time.sleep(0.1)
+            await asyncio.sleep(0.1)
 
     async def stop(self) -> None:
         """停止飞书机器人。"""
@@ -770,7 +772,7 @@ class FeishuChannel(BaseChannel):
         else:
             return ""
 
-    def _replace_mentions_with_names(self, message: Any, text: str) -> str:
+    async def _replace_mentions_with_names(self, message: Any, text: str) -> str:
         """
         将消息中的 @mentions 占位符（如 @_user_1）替换为真实用户名。
 
@@ -791,7 +793,7 @@ class FeishuChannel(BaseChannel):
 
         # 懒加载：如果 bot_open_id 为空且有 mentions，尝试获取
         if not self.config.bot_open_id and mentions:
-            self._fetch_bot_open_id()
+            await self._fetch_bot_open_id()
 
         # 有效的 bot open_id: 仅使用运行时自动发现的 bot_open_id
         # my_user_id（数字分身配置）不参与 bot 识别——bot 识别只靠 bot_open_id
@@ -959,7 +961,7 @@ class FeishuChannel(BaseChannel):
             return ""
         return normalized
 
-    def _generate_group_ack_sync(self, target_name: str, content: str) -> str:
+    async def _generate_group_ack(self, target_name: str, content: str) -> str:
         """调用轻量 LLM 生成群内简短确认文案。"""
         api_key = os.getenv("API_KEY", "").strip()
         api_base = os.getenv("API_BASE", "").strip()
@@ -985,22 +987,24 @@ class FeishuChannel(BaseChannel):
             content=content[:500],
         )
         try:
-            resp = requests.post(
-                f"{api_base.rstrip('/')}/chat/completions",
-                headers={
-                    "Authorization": f"Bearer {api_key}",
-                    "Content-Type": "application/json",
-                },
-                json={
-                    "model": model_name,
-                    "messages": [{"role": "user", "content": prompt}],
-                    "temperature": 0.7,
-                    "max_tokens": 80,
-                },
-                timeout=30,
-            )
-            resp.raise_for_status()
-            choices = resp.json().get("choices") or []
+            async with aiohttp.ClientSession() as session:
+                async with session.post(
+                    f"{api_base.rstrip('/')}/chat/completions",
+                    headers={
+                        "Authorization": f"Bearer {api_key}",
+                        "Content-Type": "application/json",
+                    },
+                    json={
+                        "model": model_name,
+                        "messages": [{"role": "user", "content": prompt}],
+                        "temperature": 0.7,
+                        "max_tokens": 80,
+                    },
+                    timeout=aiohttp.ClientTimeout(total=30),
+                ) as resp:
+                    resp.raise_for_status()
+                    payload = await resp.json()
+            choices = payload.get("choices") or []
             if choices:
                 text = (choices[0].get("message") or {}).get("content", "").strip()
                 text = self._normalize_group_ack_text(target_name, text)
@@ -1019,9 +1023,7 @@ class FeishuChannel(BaseChannel):
             if not group_chat_id:
                 return
 
-            ack_text = await asyncio.to_thread(
-                self._generate_group_ack_sync, target_name, content
-            )
+            ack_text = await self._generate_group_ack(target_name, content)
             if ack_text:
                 card = self._build_card_content(ack_text)
                 await self._send_feishu_message(group_chat_id, "chat_id", card, "group_ack")
@@ -3004,7 +3006,7 @@ class FeishuChannel(BaseChannel):
 
         return False
 
-    def _parse_message_content(self, message: Any) -> str:
+    async def _parse_message_content(self, message: Any) -> str:
         """
         解析消息内容。
 
@@ -3020,7 +3022,7 @@ class FeishuChannel(BaseChannel):
             try:
                 text = json.loads(message.content).get("text", "")
                 # 替换 @mentions 占位符为真实用户名
-                text = self._replace_mentions_with_names(message, text)
+                text = await self._replace_mentions_with_names(message, text)
                 return text
             except json.JSONDecodeError:
                 return message.content or ""
@@ -3041,7 +3043,7 @@ class FeishuChannel(BaseChannel):
             tuple: (文本内容, 文件信息字典或None)
         """
         if not self._file_service:
-            return self._parse_message_content(message), None
+            return await self._parse_message_content(message), None
 
         msg_type = message.message_type
 
@@ -3050,7 +3052,7 @@ class FeishuChannel(BaseChannel):
             try:
                 text = json.loads(message.content).get("text", "")
                 # 替换 @mentions 占位符为真实用户名
-                text = self._replace_mentions_with_names(message, text)
+                text = await self._replace_mentions_with_names(message, text)
                 return text, None
             except json.JSONDecodeError:
                 return message.content or "", None

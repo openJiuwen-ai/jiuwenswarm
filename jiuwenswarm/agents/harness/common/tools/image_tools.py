@@ -16,7 +16,7 @@ from google.genai import types
 from openai import OpenAI
 from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
-import requests
+import aiohttp
 
 from jiuwenswarm.common.utils import get_agent_workspace_dir
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
@@ -187,9 +187,14 @@ async def _invoke_gemini_vision(src: str, q: str) -> str:
             data = None
             for attempt in range(4):
                 try:
-                    r = requests.get(src, headers={"User-Agent": ua}, verify=get_requests_verify())
-                    r.raise_for_status()
-                    data = r.content
+                    async with aiohttp.ClientSession() as session:
+                        async with session.get(
+                            src,
+                            headers={"User-Agent": ua},
+                            ssl=get_requests_verify(),
+                        ) as r:
+                            r.raise_for_status()
+                            data = await r.read()
                     break
                 except Exception as err:
                     if attempt == 3:
@@ -423,11 +428,15 @@ async def _invoke_model_image_generation(prompt: str, size: str = "1024x1024", q
                 "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
                 "(KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36"
             )
-            response = requests.get(image_url, headers={"User-Agent": ua})
-            response.raise_for_status()
+            async with aiohttp.ClientSession() as session:
+                async with session.get(
+                    image_url, headers={"User-Agent": ua}
+                ) as response:
+                    response.raise_for_status()
+                    image_bytes = await response.read()
 
             with open(output_path, "wb") as f:
-                f.write(response.content)
+                f.write(image_bytes)
 
             return {
                 "image_path": str(output_path.absolute()),
