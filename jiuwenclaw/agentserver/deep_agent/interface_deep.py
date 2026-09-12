@@ -4101,6 +4101,38 @@ class JiuWenClawDeepAdapter:
         for sid in list(self._session_toolkit_requests.keys()):
             await self._cancel_session_toolkits(sid, "gateway_disconnect: ")
 
+    async def cleanup(self) -> None:
+        """实例销毁时释放全局资源: 反注册全部 rail 回调.
+
+        rail 回调注册在进程级 CallbackFramework 的 card 级事件键上(同 bot
+        所有会话共享), 不反注册会随会话数累积 —— trigger() 成本与内存
+        随之线性增长(每轮新建会话时延劣化根因)。仅应在会话无在途工作时
+        调用; 记忆/检查点数据不在此清理(已持久化)。
+        """
+        from jiuwenclaw.agentserver.deep_agent.rail_cleanup import unregister_all_rails
+
+        instance = self._instance
+        if instance is not None:
+            removed = await unregister_all_rails(instance)
+            logger.info(
+                "[JiuWenClawDeepAdapter] cleanup: 反注册 rail 完成, count=%d",
+                removed,
+            )
+        # 释放 rail 引用, 打断 adapter -> rail -> agent 的引用链
+        for rail_attr in (
+            "_filesystem_rail", "_skill_rail", "_stream_event_rail",
+            "_task_execution_rail", "_task_planning_rail",
+            "_context_engineering_rail", "_runtime_prompt_rail",
+            "_response_prompt_rail", "_skill_protocol_prompt_rail",
+            "_skill_compliance_rail", "_skill_authorization_rail",
+            "_security_rail", "_memory_rail", "_external_memory_rail",
+            "_lsp_rail", "_heartbeat_rail", "_skill_evolution_rail",
+            "_subagent_rail", "_disabled_tools_rail", "_permission_rail",
+            "_avatar_rail",
+        ):
+            setattr(self, rail_attr, None)
+        self._external_memory_rail_registered = False
+
     def _track_session_toolkit(
         self,
         request_id: str,

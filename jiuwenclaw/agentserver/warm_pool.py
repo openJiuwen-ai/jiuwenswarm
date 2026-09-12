@@ -81,10 +81,31 @@ class AgentWarmPool:
         return instances
 
     def drain(self) -> None:
-        """清空全部半成品(配置/技能变更时作废旧配置实例)."""
-        dropped = len(self.pop_all())
-        if dropped:
-            logger.info("[AgentPerf] warm pool drain: dropped=%d", dropped)
+        """清空全部半成品(配置/技能变更时作废旧配置实例).
+
+        半成品已 create_instance(含 card 级 rail 回调注册), 丢弃前须调度
+        cleanup 反注册, 否则在共享事件键上泄漏; 无运行中事件循环时退化为
+        直接丢弃(交由 GC)。
+        """
+        instances = self.pop_all()
+        if not instances:
+            return
+        logger.info("[AgentPerf] warm pool drain: dropped=%d", len(instances))
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        loop.create_task(self._cleanup_discarded(instances), name="warm-pool-drain-cleanup")
+
+    async def _cleanup_discarded(self, instances: list[Any]) -> None:
+        for instance in instances:
+            try:
+                if hasattr(instance, "cleanup"):
+                    await instance.cleanup()
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("[AgentPerf] warm pool discard cleanup failed: %s", exc)
 
     def schedule_refill(self, channel_id: str, mode: str, build: BuildFn) -> None:
         """后台补池到 min_idle(幂等: 同组合补池任务在飞时不重复)."""

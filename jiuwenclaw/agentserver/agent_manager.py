@@ -97,6 +97,8 @@ class AgentManager:
         self.agent_id = agent_id
         self.service_id = service_id
         self.user_workspace_dir = user_workspace_dir
+        # 会话最近使用时间(monotonic), 空闲逐出用: 见 _evict_idle_sessions
+        self._session_last_used: dict[tuple[str, str, str], float] = {}
         # 租户级装配缓存: 并发新 session 复用 ent_cfg/skill_sync 装配结果,
         # 消除每 session 全量查 Gateway DB + 白名单同步排队(失效靠钩子+TTL)
         from jiuwenclaw.agentserver.deep_agent.tenant_assembly import TenantAssemblyCache
@@ -293,6 +295,7 @@ class AgentManager:
                     getattr(request, "request_id", "") if request is not None else "",
                     channel_id, mode, effective_session_id,
                 )
+                self._touch_session(channel_id, mode, effective_session_id)
                 return self.agents[channel_id][mode][effective_session_id]
 
         config = {"workspace_dir": workspace_dir} if workspace_dir else {}
@@ -308,6 +311,8 @@ class AgentManager:
             getattr(request, "request_id", "") if request is not None else "",
             channel_id, mode, effective_session_id,
         )
+        # 新会话到达即泄漏增长时刻: 先逐出同 channel/mode 下空闲超时的旧会话
+        await self._evict_idle_sessions(channel_id, mode)
         # 半成品池优先: 无 workspace_dir 覆盖且非 acp 的 miss, 取预装配实例直接绑定
         if workspace_dir is None and channel_id != "acp":
             warm_instance = self._warm_pool.take(channel_id, mode)
@@ -315,13 +320,58 @@ class AgentManager:
                 self.agents.setdefault(channel_id, {}).setdefault(mode, {})[
                     effective_session_id
                 ] = warm_instance
+                self._touch_session(channel_id, mode, effective_session_id)
                 self._schedule_warm_refill(channel_id, mode)
                 return warm_instance
         await self._create_agent(channel_id, mode, effective_session_id, config)
+        self._touch_session(channel_id, mode, effective_session_id)
         if workspace_dir is None and channel_id != "acp":
             self._remember_routing_ctx(request)
             self._schedule_warm_refill(channel_id, mode)
         return self.agents.get(channel_id, {}).get(mode, {}).get(effective_session_id)
+
+    def _touch_session(self, channel_id: str, mode: str, session_id: str) -> None:
+        """刷新会话最近使用时间(monotonic)."""
+        self._session_last_used[(channel_id, mode, session_id)] = time.monotonic()
+
+    def _session_idle_ttl_seconds(self) -> float:
+        """空闲会话逐出 TTL(秒), 0 或负数表示关闭逐出.
+
+        默认 120s: 网关侧 chat_session 亲和 TTL 为 60s, AgentServer 侧缓存
+        的实例在网关遗忘该会话后仅剩本地加速意义, 取 2 倍余量。
+        """
+        try:
+            return float(os.getenv("AGENT_SESSION_IDLE_TTL_SECONDS", "120"))
+        except ValueError:
+            return 120.0
+
+    async def _evict_idle_sessions(self, channel_id: str, mode: str) -> None:
+        """逐出同 channel/mode 下空闲超过 TTL 的会话实例.
+
+        每个实例持有注册在进程级回调框架上的 rail 回调(card 级共享事件键),
+        不清理会随会话数累积导致 trigger() 成本与时延线性增长, 故在空闲后
+        调用 cleanup() 反注册并从查找表移除。在途会话(is_working)跳过。
+        """
+        ttl = self._session_idle_ttl_seconds()
+        if ttl <= 0:
+            return
+        mode_agents = self.agents.get(channel_id, {}).get(mode, {})
+        if not mode_agents:
+            return
+        now = time.monotonic()
+        for session_id in list(mode_agents.keys()):
+            key = (channel_id, mode, session_id)
+            last_used = self._session_last_used.get(key)
+            if last_used is None or now - last_used < ttl:
+                continue
+            agent = mode_agents.get(session_id)
+            if agent is not None and getattr(agent, "is_working", None):
+                try:
+                    if agent.is_working():
+                        continue
+                except Exception:  # noqa: BLE001
+                    pass  # 状态未知按可清理处理
+            await self.cleanup_session(channel_id, mode, session_id)
 
     def _remember_routing_ctx(self, request: Any) -> None:
         """记录本租户最近请求的路由三元组, 供补池合成 bootstrap_request."""
@@ -594,6 +644,7 @@ class AgentManager:
         try:
             session_agents = self.agents.get(channel_id, {}).get(mode, {})
             agent = session_agents.pop(session_id, None)
+            self._session_last_used.pop((channel_id, mode, session_id), None)
 
             if agent:
                 if hasattr(agent, "cleanup"):
@@ -624,6 +675,7 @@ class AgentManager:
                             logger.warning("[AgentManager] Agent cleanup failed: %s", e)
             del self.agents[key]
         self._client_capabilities_by_channel.clear()
+        self._session_last_used.clear()
         logger.info("[AgentManager] All agents cleaned up for tenant %s", self.agent_id)
 
     def is_working(self) -> bool:

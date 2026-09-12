@@ -132,6 +132,27 @@ async def test_max_per_combo_caps_queue() -> None:
 
 
 @pytest.mark.unit
+async def test_drain_cleans_discarded_instances() -> None:
+    """drain 作废半成品时须调度 cleanup: 半成品已注册 card 级 rail 回调, 直接丢弃会泄漏."""
+    from unittest.mock import AsyncMock
+
+    pool = AgentWarmPool(min_idle=1)
+    agent = SimpleNamespace(cleanup=AsyncMock())
+
+    async def build() -> SimpleNamespace:
+        return agent
+
+    pool.schedule_refill("web", "agent", build)
+    await asyncio.sleep(0.05)
+    assert len(pool) == 1
+
+    pool.drain()
+    assert len(pool) == 0
+    await asyncio.sleep(0.05)  # 等后台清理任务执行
+    agent.cleanup.assert_awaited_once()
+
+
+@pytest.mark.unit
 def test_build_warm_bootstrap_request_routing() -> None:
     """合成 request 携带路由三元组(routing_cache_key 可提取)."""
     req = build_warm_bootstrap_request(("g1", "b1", "u1"))
