@@ -435,7 +435,13 @@ class TeamManager:
         else:
             self._pending_waiters.pop(session_id, None)
 
-    async def broadcast_event(self, session_id: str, event: dict[str, Any]) -> None:
+    async def broadcast_event(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> None:
         """Broadcast an event with backpressure to every active waiter.
 
         The short timed wait is only used while a queue is full.  It lets a
@@ -473,6 +479,17 @@ class TeamManager:
                 for request_id, queue in waiters
                 if request_id == exclusive_request_id
             ]
+
+        if not waiters and self._is_workflow_terminal_event(event):
+            # A cancel/stop kills the chat stream (and with it the waiters)
+            # before the engine unwinds and emits the terminal workflow
+            # status ~1s later; the normal broadcast has nowhere to land and
+            # the frontend keeps showing the previous status until the user
+            # opens the workflows view. Fall back to the gateway server-push
+            # side channel, which delivers events without a chat stream.
+            await self._push_workflow_event_without_waiter(
+                session_id, event, channel_id=channel_id
+            )
 
         async def _put_to_waiter(
             request_id: str,
@@ -515,6 +532,60 @@ class TeamManager:
                 session_id,
                 current_round,
                 event,
+            )
+
+    @staticmethod
+    def _is_workflow_terminal_event(event: dict[str, Any]) -> bool:
+        """Whether the event is a workflow.updated carrying a terminal status."""
+        if not isinstance(event, dict) or event.get("event_type") != "workflow.updated":
+            return False
+        workflow = event.get("workflow")
+        status = (
+            workflow.get("status") if isinstance(workflow, dict) else event.get("status")
+        )
+        return str(status or "") in {"stopped", "paused", "completed", "failed"}
+
+    async def _push_workflow_event_without_waiter(
+        self,
+        session_id: str,
+        event: dict[str, Any],
+        *,
+        channel_id: str | None = None,
+    ) -> None:
+        """Deliver a waiter-less terminal workflow event via gateway server push."""
+        try:
+            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+            server = AgentWebSocketServer.get_instance()
+        except Exception:
+            logger.debug(
+                "[TeamManager] workflow push fallback: server unavailable: session_id=%s",
+                session_id,
+                exc_info=True,
+            )
+            return
+        payload = dict(event)
+        payload.setdefault("session_id", session_id)
+        pushed = await server.send_push(
+            {
+                "request_id": "",
+                "channel_id": str(channel_id or "").strip() or "web",
+                "session_id": session_id,
+                "payload": payload,
+                "is_complete": False,
+            }
+        )
+        if pushed:
+            status = (
+                payload.get("workflow", {}).get("status", "")
+                if isinstance(payload.get("workflow"), dict)
+                else payload.get("status", "")
+            )
+            logger.info(
+                "[TeamManager] workflow terminal pushed without waiter: "
+                "session_id=%s status=%s",
+                session_id,
+                status,
             )
 
     def _observe_interactive_round_event(
@@ -726,6 +797,22 @@ class TeamManager:
             controller = BackgroundTaskController()
             self._background_task_controllers[session_id] = controller
         return controller
+
+    def has_swarmflow_runs(self, session_id: str) -> bool:
+        """Whether the session's controller still holds active or paused runs.
+
+        A swarmflow background run outlives the leader round: after the round
+        ends the stream task and active markers are gone, yet the run keeps
+        burning tokens. Lifecycle short-circuits keyed only on the foreground
+        round would silently skip these runs, so this is the "background work
+        exists" leg of those checks.
+        """
+        controller = self._background_task_controllers.get(session_id)
+        if controller is None:
+            return False
+        return bool(getattr(controller, "_active", None)) or bool(
+            getattr(controller, "_paused", None)
+        )
 
     def is_runtime_active(self, session_id: str) -> bool:
         """Return whether a Runner-owned runtime is active for the session."""
@@ -2514,7 +2601,11 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
-            if not has_stream_task and not has_team_runtime:
+            if (
+                not has_stream_task
+                and not has_team_runtime
+                and not self.has_swarmflow_runs(session_id)
+            ):
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
@@ -2588,7 +2679,11 @@ class TeamManager:
                 or self.is_runtime_active(session_id)
                 or self.is_runtime_pending(session_id)
             )
-            if not has_stream_task and not has_team_runtime:
+            if (
+                not has_stream_task
+                and not has_team_runtime
+                and not self.has_swarmflow_runs(session_id)
+            ):
                 await self.release_current_round(session_id)
                 self._clear_terminal_session_markers(session_id)
                 return False
@@ -2598,6 +2693,11 @@ class TeamManager:
                 reason,
                 session_id,
             )
+            # Drive the swarmflow controller BEFORE the teardown below drops
+            # it: without a controller-driven stop the run dies as a plain
+            # cancel — no abort reason, no seal record (same ordering
+            # rationale as the cancel path).
+            await self._dispatch_swarmflow_controller(session_id, action="stop")
             team_agent = self._team_agents.pop(session_id, None) if has_local_team_runtime else None
             await self._cleanup_runtime_locals(session_id)
 

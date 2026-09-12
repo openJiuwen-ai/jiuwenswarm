@@ -1422,6 +1422,7 @@ class MessageHandler(ABC):
         stale_request_keys: list[tuple[str, ...]] | None = None,
         delay_seconds: float = _TUI_DISCONNECT_CANCEL_GRACE_SECONDS,
         user_id: str | None = None,
+        mode: str | None = None,
     ) -> None:
         """Schedule a disconnect cancel unless the same session reconnects first."""
         merged, recovered_via_requests = self._merge_disconnect_session_keys(
@@ -1449,7 +1450,7 @@ class MessageHandler(ABC):
             self.cancel_scheduled_disconnect_cancel(channel_id, sid)
             task = asyncio.create_task(
                 self._delayed_disconnect_cancel(
-                    channel_id, sid, delay_seconds, user_id=user_id
+                    channel_id, sid, delay_seconds, user_id=user_id, mode=mode
                 )
             )
             self._disconnect_cancel_tasks[task_key] = task
@@ -1511,6 +1512,7 @@ class MessageHandler(ABC):
         channel_id: str,
         session_id: str,
         user_id: str | None = None,
+        mode: str | None = None,
     ) -> "Message":
         from jiuwenswarm.common.schema.message import Message, ReqMethod
 
@@ -1518,15 +1520,27 @@ class MessageHandler(ABC):
             "intent": "cancel",
             "session_id": session_id,
         }
-        disconnect_state = self._channel_states.get(
-            self._get_channel_state_key(channel_id, session_id)
-        ) or self._channel_states.get(channel_id)
-        if disconnect_state is not None:
-            disconnect_params["mode"] = (
-                disconnect_state.mode.value
-                if hasattr(disconnect_state.mode, "value")
-                else str(disconnect_state.mode)
-            )
+        # mode decides whether AgentServer routes the cancel into the team
+        # interrupt path (workflow_disposition=pause for disconnects). An
+        # explicit mode (the TUI's tui.disconnect request carries the live
+        # client mode) wins; the channel-state table is the fallback for
+        # passive transport-close cancels — for TUI/web the table is never
+        # populated (they are not control channels), and a mode-less cancel
+        # falls into the non-team terminate path, hard-stopping running
+        # workflows instead of pausing them.
+        cancel_mode = (mode or "").strip()
+        if not cancel_mode:
+            disconnect_state = self._channel_states.get(
+                self._get_channel_state_key(channel_id, session_id)
+            ) or self._channel_states.get(channel_id)
+            if disconnect_state is not None:
+                cancel_mode = (
+                    disconnect_state.mode.value
+                    if hasattr(disconnect_state.mode, "value")
+                    else str(disconnect_state.mode)
+                )
+        if cancel_mode:
+            disconnect_params["mode"] = cancel_mode
         return Message(
             id=f"ws_drop_{int(time.time() * 1000):x}_{secrets.token_hex(4)}",
             type="req",
@@ -1545,8 +1559,11 @@ class MessageHandler(ABC):
         channel_id: str,
         session_id: str,
         user_id: str | None = None,
+        mode: str | None = None,
     ) -> bool:
-        stub = self._build_disconnect_cancel_message(channel_id, session_id, user_id=user_id)
+        stub = self._build_disconnect_cancel_message(
+            channel_id, session_id, user_id=user_id, mode=mode
+        )
         try:
             return bool(
                 await self._cancel_agent_work_for_session(
@@ -1570,11 +1587,14 @@ class MessageHandler(ABC):
         session_id: str,
         delay_seconds: float,
         user_id: str | None = None,
+        mode: str | None = None,
     ) -> None:
         task_key = (channel_id, session_id)
         try:
             await asyncio.sleep(max(0.0, delay_seconds))
-            await self._cancel_disconnect_session(channel_id, session_id, user_id=user_id)
+            await self._cancel_disconnect_session(
+                channel_id, session_id, user_id=user_id, mode=mode
+            )
         finally:
             if self._disconnect_cancel_tasks.get(task_key) is asyncio.current_task():
                 self._disconnect_cancel_tasks.pop(task_key, None)

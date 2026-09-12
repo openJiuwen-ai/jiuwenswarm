@@ -5809,10 +5809,24 @@ export class AppScreen implements Component, Focusable {
     action: "pause" | "resume" | "stop",
   ): void {
     const snapshot = this.state.getSnapshot();
-    this.state.sendEventOnly(`swarmflow.${action}`, {
-      session_id: snapshot.sessionId,
-      run_id: workflowId,
-    });
+    // Use a request instead of fire-and-forget so backend rejections (for
+    // example, resume after the whole team was paused) are visible to the
+    // user rather than silently disappearing.
+    void this.state
+      .request<{ error?: string; message?: string }>(`swarmflow.${action}`, {
+        session_id: snapshot.sessionId,
+        run_id: workflowId,
+      })
+      .then((response) => {
+        const notice = response?.message || response?.error;
+        if (notice) {
+          this.showTransientNotice(notice);
+        }
+      })
+      .catch((error: unknown) => {
+        const message = error instanceof Error ? error.message : String(error);
+        this.showTransientNotice(message);
+      });
   }
 
   private globalActionKeyLabel(action: "app:viewHumanInputs"): string | null {
