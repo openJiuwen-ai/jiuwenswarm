@@ -349,6 +349,7 @@ class TestConfigFunctions:
                 True,
             ),
             ({"react": {"ttse": {"enabled": "true"}}}, True),
+            ({"react": {"ttse": {"enabled": "false"}}}, False),
             ({"react": {"ttse": {}}}, False),
             ({"react": {"ttse": {"inject_enabled": True}}}, False),
         ],
@@ -471,6 +472,13 @@ class TestConfigFunctions:
         assert embedding["base_url"] == "${EMBED_API_BASE}"
         assert embedding["model"] == "${EMBED_MODEL}"
         assert "modelarts-maas" not in str(embedding["base_url"])
+
+        registry_dir = (
+            Path(__file__).resolve().parents[2] / "jiuwenswarm" / "resources"
+        )
+        for name in ("secret_registry.yaml", "secret_registry.enterprise.yaml"):
+            registry = yaml.safe_load((registry_dir / name).read_text(encoding="utf-8"))
+            assert registry["react.ttse.embedding.api_key"]["path"] == "EMBED_API_KEY"
 
     @staticmethod
     def test_get_config_raw(temp_config_file: Path):

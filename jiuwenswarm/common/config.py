@@ -529,7 +529,7 @@ def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
     Opt-in: missing / unset ``enabled`` is False (shipped template and docs 2.7).
     Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
     """
-    return bool(_get_ttse_config(config).get("enabled"))
+    return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
 
 
 def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:

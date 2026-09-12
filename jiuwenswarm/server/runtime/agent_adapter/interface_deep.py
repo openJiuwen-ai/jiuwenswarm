@@ -7150,31 +7150,23 @@ class JiuWenSwarmDeepAdapter:
         return str(get_agent_workspace_dir() / ".ttse" / "bank.json")
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
-        """User yaml ``react.ttse`` plus adapter cache (yaml wins on known keys).
+        """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
 
-        ``store_path`` is not a user setting; the bank is always under workspace.
-        FACT/TIP disclosure is always catalog + ``ttse_consult``.
+        File yaml supplies defaults. The adapter cache / passed config overlays
+        it so a runtime ``enabled: false`` is not clobbered by the on-disk
+        default. ``store_path`` is not a user setting; the bank is always under
+        workspace. FACT/TIP disclosure is always catalog + ``ttse_consult``.
         """
         merged: dict[str, Any] = {}
-        merged.update(_get_ttse_config(config if config is not None else self._config_cache))
         try:
             yaml_ttse = _get_ttse_config(get_config())
         except Exception:
             yaml_ttse = {}
-        for key in (
-            "evolve_enabled",
-            "inject_enabled",
-            "enabled",
-            "dream_enabled",
-            "dream_interval",
-            "dream_min_hours",
-            "dream_ttl_days",
-            "consult_top_k",
-            "consult_rrf_k",
-        ):
-            value = yaml_ttse.get(key)
-            if value not in (None, ""):
-                merged[key] = value
+        if isinstance(yaml_ttse, dict):
+            merged.update(yaml_ttse)
+        runtime = _get_ttse_config(config if config is not None else self._config_cache)
+        if isinstance(runtime, dict):
+            merged.update(runtime)
         return merged
 
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
@@ -7288,20 +7280,13 @@ class JiuWenSwarmDeepAdapter:
         store_path = self._ttse_bank_path()
         evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
         inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
-        cfg = getattr(rail, "_ttse_config", None)
-        path_changed = False
-        if cfg is not None:
-            old_path = str(getattr(cfg, "store_path", "") or "")
-            cfg.store_path = store_path
-            cfg.evolve_enabled = evolve_enabled
-            cfg.inject_enabled = inject_enabled
-            path_changed = old_path != store_path
-        store = getattr(rail, "_ttse_store", None)
-        if path_changed and store is not None and hasattr(store, "_load_sync"):
-            store._load_sync()  # noqa: SLF001
-        sync_mode = getattr(rail, "sync_inject_mode", None)
-        if callable(sync_mode):
-            sync_mode()
+        apply_config = getattr(rail, "apply_runtime_config", None)
+        if callable(apply_config):
+            apply_config(
+                store_path=store_path,
+                evolve_enabled=evolve_enabled,
+                inject_enabled=inject_enabled,
+            )
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
             "store_path=%s evolve_enabled=%s inject_enabled=%s",
@@ -8739,12 +8724,13 @@ class JiuWenSwarmDeepAdapter:
                 signal_trigger=evolution_triggers["signal_trigger"],
             )
 
-        # TTSERail has no update_llm; patch the induction client in place.
         if self._ttse_rail is not None:
-            self._ttse_rail._ttse_llm = self._model
-            self._ttse_rail._ttse_model = self._default_model_name or config.get(
-                "model_name", "gpt-4"
-            )
+            update_llm = getattr(self._ttse_rail, "update_llm", None)
+            if callable(update_llm):
+                update_llm(
+                    self._model,
+                    self._default_model_name or config.get("model_name", "gpt-4"),
+                )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
         # from activate_package() / load_harness_config().  When agentic

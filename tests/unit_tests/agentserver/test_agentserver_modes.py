@@ -2901,6 +2901,47 @@ def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
     assert built == []
 
 
+def test_deep_adapter_skips_ttse_rail_when_runtime_disabled_overrides_yaml(monkeypatch):
+    """Runtime cache enabled:false must win over on-disk yaml enabled:true."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"enabled": False},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
 def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 
