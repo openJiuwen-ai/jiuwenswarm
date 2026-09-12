@@ -66,7 +66,7 @@ export interface ToolExecution {
   resultArrivedAfterTimeout?: boolean;
 }
 
-export type SubtaskStatus = "starting" | "tool_call" | "tool_result" | "completed" | "error";
+export type SubtaskStatus = "starting" | "tool_call" | "tool_result" | "completed" | "cancelled" | "error";
 
 export interface SubtaskState {
   task_id: string;
