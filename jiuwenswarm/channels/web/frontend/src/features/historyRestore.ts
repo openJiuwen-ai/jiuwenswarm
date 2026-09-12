@@ -830,10 +830,19 @@ function appendHistoryMediaItems(
   seenKeys: Set<string>,
   value: unknown
 ): void {
-  if (!Array.isArray(value)) {
+  // Support new scoped structure: { items: [...], scope: "current_turn" }
+  let items: unknown;
+  if (isRecord(value) && Array.isArray(value.items)) {
+    items = value.items;
+  } else if (Array.isArray(value)) {
+    items = value;
+  } else {
     return;
   }
-  for (const item of value) {
+  if (!Array.isArray(items)) {
+    return;
+  }
+  for (const item of items) {
     const normalized = normalizeHistoryMediaItem(item);
     if (!normalized) {
       continue;
