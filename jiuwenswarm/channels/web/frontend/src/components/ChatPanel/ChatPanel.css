@@ -1472,8 +1472,7 @@
    容器内覆盖，不影响会话界面本体的 .chat-mode-select 尺寸。 */
 .cron-drawer-mode-model-row .chat-mode-select__trigger {
   min-height: 26px;
-  padding: 0 8px;
-  gap: 6px;
+  gap: 4px;
 }
 
 .chat-mode-select__trigger:hover {

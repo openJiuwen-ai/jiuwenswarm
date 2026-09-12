@@ -2571,3 +2571,7 @@ body.workspace-resize-active iframe {
   overflow-wrap: anywhere;
   word-break: break-all;
 }
+
+.cron-template-card:hover {
+  box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.16);
+}

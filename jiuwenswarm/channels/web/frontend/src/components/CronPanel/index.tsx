@@ -1016,7 +1016,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                     onClick={() => openTemplateDrawer(tpl)}
                     data-testid="cron-empty-template-card"
                     data-variant={tpl.id}
-                    className="rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent"
+                    className="cron-template-card rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent"
                   >
                     <div className="mb-2 flex items-center gap-2">
                       <TemplateIcon icon={tpl.icon} />
@@ -1193,7 +1193,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                               </button>
                               {rowMenuJobId === job.id && (
                                 <div
-                                  className="absolute left-0 top-[calc(100%+4px)] z-20 w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                                  className="absolute right-0 top-[calc(100%+4px)] z-20 w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
                                   data-testid="cron-job-more-menu"
                                 >
                                   <button
@@ -1376,7 +1376,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   onClick={() => openTemplateDrawer(tpl)}
                   data-testid="cron-template-card"
                   data-variant={tpl.id}
-                  className="rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent"
+                  className="cron-template-card rounded-lg border border-border bg-card p-4 text-left transition-colors hover:border-accent"
                 >
                   <div className="mb-2 flex items-center gap-2">
                     <TemplateIcon icon={tpl.icon} />
