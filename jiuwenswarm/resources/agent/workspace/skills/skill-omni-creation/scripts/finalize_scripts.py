@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Finalize generated scripts after verification without blocking SKILL.md creation.
 
-Only paths listed with --keep survive. Every other generated file under the target
-scripts/ directory is deleted. The command always emits the mode the final
-SKILL.md must use: with_scripts or text_images_only.
+Only paths listed with --keep survive. Every other generated file under this
+run's package/scripts/ directory is deleted. The command always emits the mode
+the final SKILL.md must use: with_scripts or text_images_only.
 """
 import argparse
 import logging
@@ -19,6 +19,12 @@ logger = logging.getLogger(__name__)
 
 
 def _relative_script_path(value: str, script_dir: Path) -> Path:
+    """Normalize an input path to a path relative to package/scripts/.
+
+    The public contract is package-relative ``scripts/...``. Absolute paths and
+    legacy bare paths are still accepted as input for robustness, but every
+    emitted path is canonicalized by ``_canonical_script_path``.
+    """
     candidate = Path(value)
     if candidate.is_absolute():
         resolved = candidate.resolve()
@@ -33,29 +39,39 @@ def _relative_script_path(value: str, script_dir: Path) -> Path:
         raise ValueError(f"script path escapes target scripts directory: {value}") from exc
 
 
+def _canonical_script_path(relative_path: Path) -> str:
+    """Return the one public path form used by agents and SKILL.md."""
+    return (Path("scripts") / relative_path).as_posix()
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         description="Keep only verified scripts; zero survivors selects text+images-only finalization."
     )
-    parser.add_argument("slug")
+    parser.add_argument("run_id", help="UUID run_id")
     parser.add_argument(
         "--keep",
         nargs="*",
         required=True,
-        help="Verified script paths relative to scripts/. Pass --keep with no values when none passed.",
+        help=(
+            "Verified package-relative script paths, canonical form scripts/.... "
+            "Pass --keep with no values when none passed."
+        ),
     )
     default_skills_dir = Path(__file__).resolve().parent.parent.parent
     parser.add_argument("--skills-dir", default=str(default_skills_dir))
     args = parser.parse_args()
 
-    script_dir = (Path(args.skills_dir) / args.slug / "scripts").resolve()
+    skills_root = Path(args.skills_dir).expanduser().resolve()
+    run_root = skills_root / ".skill-omni-creation" / args.run_id
+    script_dir = (run_root / "package" / "scripts").resolve()
     keep_rel: set[Path] = set()
     for value in args.keep:
         try:
             keep_rel.add(_relative_script_path(value, script_dir))
         except ValueError as exc:
             logger.error("[finalize_scripts] ERROR: %s", exc)
-            raise SystemExit(2) from exc
+            raise RuntimeError("Invalid script path.") from exc
 
     deleted: list[str] = []
     kept: list[str] = []
@@ -63,10 +79,10 @@ def main() -> None:
         for path in sorted(p for p in script_dir.rglob("*") if p.is_file()):
             rel = path.resolve().relative_to(script_dir)
             if rel in keep_rel:
-                kept.append(rel.as_posix())
+                kept.append(_canonical_script_path(rel))
             else:
                 path.unlink()
-                deleted.append(rel.as_posix())
+                deleted.append(_canonical_script_path(rel))
 
         for directory in sorted(
             (p for p in script_dir.rglob("*") if p.is_dir()),
@@ -82,7 +98,11 @@ def main() -> None:
         except OSError:
             pass
 
-    missing = sorted(rel.as_posix() for rel in keep_rel if rel.as_posix() not in kept)
+    missing = sorted(
+        _canonical_script_path(rel)
+        for rel in keep_rel
+        if _canonical_script_path(rel) not in kept
+    )
     for rel in missing:
         logger.warning("[finalize_scripts] WARNING: verified path not found and was not kept: %s", rel)
 
@@ -93,7 +113,7 @@ def main() -> None:
         "deleted_scripts": deleted,
         "missing_verified_paths": missing,
     }
-    common.write_json(common.work_path(args.slug, "code_validation.json"), state)
+    common.write_json(run_root / "runtime" / "code_validation.json", state)
 
     logger.info("[finalize_scripts] KEPT: %s", kept)
     logger.info("[finalize_scripts] DELETED: %s", deleted)
