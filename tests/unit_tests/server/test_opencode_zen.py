@@ -10,14 +10,14 @@ def _entry(model_name: str) -> dict:
     return {"model_client_config": {"model_name": model_name}}
 
 
-def test_zen_default_prefers_deepseek_v4_flash(monkeypatch):
+def test_zen_default_returns_first_entry(monkeypatch):
     monkeypatch.setattr(
         opencode_zen,
         "get_zen_free_model_entries",
-        lambda: [_entry("laguna-s-2.1-free"), _entry(opencode_zen.DEFAULT_FREE_MODEL_ID)],
+        lambda: [_entry("laguna-s-2.1-free"), _entry("deepseek-v4-flash-free")],
     )
     entry = get_zen_default_free_model_entry()
-    assert entry["model_client_config"]["model_name"] == opencode_zen.DEFAULT_FREE_MODEL_ID
+    assert entry["model_client_config"]["model_name"] == "laguna-s-2.1-free"
 
 
 def test_zen_default_falls_back_to_first_entry(monkeypatch):
