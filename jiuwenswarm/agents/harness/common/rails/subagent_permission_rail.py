@@ -64,9 +64,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
     get_effective_permissions_config,
     merge_session_permissions_overlay,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.workspace_untrusted_policy import (
-    WorkspaceUntrustedPolicyEngine,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     _resolve_owner_scope_level,
@@ -387,7 +384,7 @@ class SubagentPermissionRail(ConfirmInterruptRail):
 
         # dev-stable：agent-core 引擎无 Skill overlay 钩子，手工合成后以临时引擎裁决。
         effective_config = self._adjudicate_config(session_id, agent_scope_id)
-        adjudication_engine = WorkspaceUntrustedPolicyEngine(
+        adjudication_engine = PermissionEngine(
             config=effective_config,
             workspace_root=self._workspace_root,
         )
