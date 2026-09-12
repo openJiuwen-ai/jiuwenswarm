@@ -722,6 +722,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_management_nav_enabled_in_config(value: bool) -> None:
+    """原子更新 management_nav.enabled（管理类导航卡片开关，默认关闭）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("management_nav")
+        if not isinstance(section, dict):
+            section = {}
+            data["management_nav"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_proactive_recommendation_in_config(updates: dict[str, Any]) -> None:
     """更新 proactive_recommendation 配置段并写回。"""
     data = load_yaml_round_trip(CONFIG_YAML_PATH)

@@ -18,10 +18,13 @@ from openjiuwen.core.foundation.tool import LocalFunction, Tool
 from openjiuwen.harness.rails.base import DeepAgentRail
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.agents.harness.common.tools.model_registry_toolkits import get_model_registry_tools
 from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.team.rails.team_skill_library_reload_rail import (
     reload_agent_skill_views,
 )
+from jiuwenswarm.agents.harness.common.tools.third_agent_toolkits import get_third_agent_tools
+from jiuwenswarm.agents.harness.common.tools.user_toolkits import get_user_tools
 
 if TYPE_CHECKING:
     from openjiuwen.harness.deep_agent import DeepAgent
@@ -73,6 +76,12 @@ class MemberSkillToolkitRail(DeepAgentRail):
             self._manager = SkillManager(workspace_dir=self._workspace_dir)
         toolkit = SkillToolkit(manager=self._manager)
         tools = self._wrap_skill_tools(toolkit.get_tools())
+        # 三方 Agent 管理工具无 workspace 状态，随本 rail 一并注册。
+        tools.extend(get_third_agent_tools())
+        # 模型注册工具同样无 workspace 状态（共享默认注册表），随本 rail 一并注册。
+        tools.extend(get_model_registry_tools())
+        # 用户管理工具同样无 workspace 状态（读写同一 users.json），随本 rail 一并注册。
+        tools.extend(get_user_tools())
 
         # ``add_ability`` qualifies the (stateful) skill-tool id with the owner
         # agent id and registers with refresh=True, so this rail's registration

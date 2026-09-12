@@ -160,6 +160,12 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+    THIRD_AGENTS_LIST = "third_agents.list"
+    HARDWARE_NPU_STATUS = "hardware.npu.status"
+    MODEL_REGISTRY_LIST = "model_registry.list"
+    USERS_LIST = "users.list"
+    USERS_CREATE = "users.create"
+    USERS_DELETE = "users.delete"
 
     SKILLS_MARKETPLACE_LIST = "skills.marketplace.list"
     SKILLS_LIST = "skills.list"

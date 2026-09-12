@@ -80,7 +80,11 @@ from jiuwenswarm.agents.harness.common.rails import (
 from jiuwenswarm.agents.harness.common.memory.config import is_memory_enabled
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
+    get_model_registry_tools,
+    get_third_agent_tools,
+    get_user_tools,
 )
+from jiuwenswarm.agents.harness.common.rails.third_agent_prompt_rail import ThirdAgentPromptRail
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool
@@ -278,6 +282,7 @@ _RAIL_BUILD_NAMES: dict[str, str] = {
     "SysOperationRail": "_build_filesystem_rail",
     "FileSystemRail": "_build_filesystem_rail",     # 别名映射
     "SkillUseRail": "_build_skill_rail_via_config",
+    "ThirdAgentPromptRail": "_build_third_agent_prompt_rail",
     "HeartbeatRail": "_build_heartbeat_rail",
     "AvatarPromptRail": "_build_avatar_rail",
     "TaskPlanningRail": "_build_task_planning_rail",
@@ -298,6 +303,9 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
     "web_paid_search": "_build_paid_search_tool",
     "user_todos": "_build_user_todos_tool",
     "skill_toolkit": "_build_skill_toolkit",
+    "third_agent_toolkit": "_build_third_agent_toolkit",
+    "model_registry_toolkit": "_build_model_registry_toolkit",
+    "user_toolkit": "_build_user_toolkit",
     "skill_retrieval": "_build_skill_retrieval_toolkit",
     "acp_chat": "_build_acp_chat_tool",
 }
@@ -1002,6 +1010,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         """构建 ContextEngineeringRail."""
         return ContextAssembleRail()
 
+    def _build_third_agent_prompt_rail(self) -> Any:
+        """构建 ThirdAgentPromptRail（向系统提示注入已安装三方 Agent 状态）."""
+        return ThirdAgentPromptRail()
+
     def _build_context_processor_rail(self) -> Any:
         """构建 ContextProcessorRail — 复用父类逻辑."""
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import _build_context_processor_rail
@@ -1497,6 +1509,45 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             return tools
         except Exception as exc:
             logger.warning("[JiuwenSwarmCodeAdapter] skill_toolkit build failed: %s", exc)
+            return None
+
+    def _build_third_agent_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建三方 Agent 管理工具（无状态，不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        try:
+            tools = mark_stateless(get_third_agent_tools())
+            logger.info(
+                "[JiuwenSwarmCodeAdapter] ThirdAgentToolkit built: tools=%s",
+                [t.card.name for t in tools],
+            )
+            return tools
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmCodeAdapter] third_agent_toolkit build failed: %s", exc)
+            return None
+
+    def _build_model_registry_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建模型注册工具（无状态，不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        try:
+            tools = mark_stateless(get_model_registry_tools())
+            logger.info(
+                "[JiuWenSwarmCodeAdapter] ModelRegistryToolkit built: tools=%s",
+                [t.card.name for t in tools],
+            )
+            return tools
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmCodeAdapter] model_registry_toolkit build failed: %s", exc)
+            return None
+
+    def _build_user_toolkit(self, agent_id: str) -> list[Any] | None:
+        """构建用户管理工具（无状态，不注册到 Runner，由 _get_tool_cards 统一注册）."""
+        try:
+            tools = mark_stateless(get_user_tools())
+            logger.info(
+                "[JiuWenSwarmCodeAdapter] UserToolkit built: tools=%s",
+                [t.card.name for t in tools],
+            )
+            return tools
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmCodeAdapter] user_toolkit build failed: %s", exc)
             return None
 
     def _skill_retrieval_tools_enabled_for_runtime(

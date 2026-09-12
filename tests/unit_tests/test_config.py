@@ -19,6 +19,7 @@ from jiuwenswarm.common.config import (
     update_permissions_profile_in_config,
     update_skill_retrieval_in_config,
     update_setup_guide_enabled_in_config,
+    update_management_nav_enabled_in_config,
     update_xiaoyi_runtime_in_config,
 )
 
@@ -167,6 +168,18 @@ class TestConfigFunctions:
             update_permissions_profile_in_config("future")
 
         assert temp_config_file.read_bytes() == original
+
+    @staticmethod
+    def test_update_management_nav_enabled_in_config(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ):
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+
+        update_management_nav_enabled_in_config(True)
+
+        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        assert raw["management_nav"] == {"enabled": True}
 
     @pytest.mark.parametrize(
         ("config", "expected"),
