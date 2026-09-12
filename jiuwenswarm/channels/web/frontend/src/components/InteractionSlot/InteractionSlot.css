@@ -128,17 +128,17 @@
   cursor: default;
 }
 
-/* 跳过（拒绝）：ghost 文本 */
+/* 拒绝：使用现有 danger token 强调不可逆动作 */
 .auth-prompt__btn--reject {
-  background: transparent;
-  border-color: transparent;
-  color: var(--color-text-secondary);
-  padding: 0 8px;
+  background: var(--color-feedback-danger-subtle);
+  border-color: var(--color-border-danger);
+  color: var(--color-feedback-danger);
 }
 
 .auth-prompt__btn--reject:hover:not(:disabled) {
-  color: var(--color-text-primary);
-  background: rgba(var(--color-text-primary-rgb), 0.06);
+  background: var(--color-feedback-danger);
+  border-color: var(--color-feedback-danger);
+  color: var(--color-text-inverse);
 }
 
 /* 总是允许 / 会话内记住 / 授权单次 / 其它：主按钮（深色填充） */
