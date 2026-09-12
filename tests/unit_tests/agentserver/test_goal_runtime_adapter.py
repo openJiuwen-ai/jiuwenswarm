@@ -1,17 +1,9 @@
 """Tests for the Goal capability adapter used by JiuwenSwarm."""
 from __future__ import annotations
 
-import sys
-from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
-
-# Goal capability tests exercise the checked-out OpenJiuwen implementation,
-# not whichever released package happens to be installed in the test venv.
-_AGENT_CORE_ROOT = Path(__file__).resolve().parents[3].parent / "agent-core"
-if str(_AGENT_CORE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AGENT_CORE_ROOT))
 
 from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.harness.goal.schema import GoalOperationError, GoalRecord, GoalStatus

@@ -10,17 +10,8 @@ flagged.
 """
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
-from pathlib import Path
-import sys
 
 import pytest
-
-# The installed openjiuwen editable install may point at an older checkout;
-# prefer the checked-out agent-core next to this repo (same trick as
-# test_goal_runtime_adapter.py).
-_AGENT_CORE_ROOT = Path(__file__).resolve().parents[4] / "agent-core"
-if _AGENT_CORE_ROOT.is_dir() and str(_AGENT_CORE_ROOT) not in sys.path:
-    sys.path.insert(0, str(_AGENT_CORE_ROOT))
 
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
