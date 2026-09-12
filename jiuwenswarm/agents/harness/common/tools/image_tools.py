@@ -18,7 +18,7 @@ from openjiuwen.core.foundation.tool import McpServerConfig, tool
 from openjiuwen.core.runner import Runner
 import requests
 
-from jiuwenswarm.common.utils import get_agent_workspace_dir
+from jiuwenswarm.common.utils import get_agent_workspace_dir, get_env_file
 from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
     apply_image_gen_model_config_from_yaml,
     apply_vision_model_config_from_yaml,
@@ -28,7 +28,7 @@ from jiuwenswarm.agents.harness.common.tools.ssl_config import get_requests_veri
 
 
 logger = logging.getLogger(__name__)
-load_dotenv(verbose=True, override=True)
+load_dotenv(dotenv_path=get_env_file(), verbose=True, override=True)
 
 _SANDBOX_MARKER = "home/user"
 
@@ -505,4 +505,3 @@ async def generate_image(
         response_parts.append(f"Original URL: {original_url}")
 
     return "\n".join(response_parts)
-
