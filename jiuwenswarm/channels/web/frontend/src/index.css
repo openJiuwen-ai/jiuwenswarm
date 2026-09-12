@@ -2568,4 +2568,6 @@ body.workspace-resize-active iframe {
   font-size: 12px;
   line-height: 18px;
   pointer-events: none;
+  overflow-wrap: anywhere;
+  word-break: break-all;
 }

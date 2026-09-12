@@ -1,4 +1,5 @@
-import { Check, ChevronRight, Circle } from 'lucide-react';
+import { ChevronRight, Circle } from 'lucide-react';
+import CheckIcon from '../../assets/work-mode/check.svg?react';
 import i18n from '../../i18n';
 import { ParsedTeamEvent, parseTeamEventMessage } from '../ChatPanel/teamEventUtils';
 import type { Message, TodoItem } from '../../types';
@@ -349,9 +350,13 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
   const completed = status === 'completed';
   const inProgress = status === 'in_progress';
 
+  if (completed) {
+    return <CheckIcon className="h-4 w-4 shrink-0" style={{ color: '#5ba854' }} />;
+  }
+
   return (
     <span className={`inline-flex h-4 w-4 shrink-0 items-center justify-center rounded-full ${getTaskStatusIconClass(status)}`}>
-      {completed ? <Check size={10} strokeWidth={2.5} /> : inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
+      {inProgress ? <Circle size={6} strokeWidth={2} /> : <Circle size={8} strokeWidth={1.5} />}
     </span>
   );
 }
