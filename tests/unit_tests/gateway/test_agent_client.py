@@ -90,6 +90,13 @@ def test_agent_client_uses_shared_websocket_limit():
     assert agent_client.AGENT_WS_MAX_MESSAGE_BYTES == AGENT_WS_MAX_MESSAGE_BYTES
 
 
+def test_payload_log_omits_uploaded_file_content():
+    payload = {"method": "expert.import", "params": {"filename": "a.zip", "file_content": "abcd"}}
+    safe = agent_client._payload_for_log(payload)
+    assert safe["params"]["file_content"] == "<omitted base64 chars=4>"
+    assert payload["params"]["file_content"] == "abcd"
+
+
 @pytest.mark.asyncio
 async def test_send_request_stream_keeps_tail_window_for_processing_status(monkeypatch):
     client = AgentClientHarness()

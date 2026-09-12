@@ -85,6 +85,22 @@ def _to_json(data: Any) -> str:
         return repr(data)
 
 
+def _payload_for_log(payload: dict[str, Any]) -> dict[str, Any]:
+    """隐藏上传正文，避免 Base64 日志造成巨量 I/O 并泄露文件内容。"""
+    params = payload.get("params")
+    if not isinstance(params, dict) or "file_content" not in params:
+        return payload
+    content = params.get("file_content")
+    safe = dict(payload)
+    safe["params"] = dict(params)
+    safe["params"]["file_content"] = (
+        f"<omitted base64 chars={len(content)}>"
+        if isinstance(content, str)
+        else "<omitted>"
+    )
+    return safe
+
+
 def _build_ws_origin(uri: str) -> str | None:
     """将 ws/wss URI 转为标准浏览器 Origin。"""
     try:
@@ -631,7 +647,7 @@ class WebSocketAgentServerClient(AgentServerClient):
                 else:
                     logger.info(
                         "[WebSocketAgentServerClient] 发送请求(非流式) payload: %s",
-                        _to_json(payload),
+                        _to_json(_payload_for_log(payload)),
                     )
                 await self._send_wire_payload(payload)
 
@@ -693,7 +709,10 @@ class WebSocketAgentServerClient(AgentServerClient):
             # 发送请求
             async with self._lock:
                 payload = _e2a_to_wire(envelope)
-                logger.info("[WebSocketAgentServerClient] 发送请求(流式) payload: %s", _to_json(payload))
+                logger.info(
+                    "[WebSocketAgentServerClient] 发送请求(流式) payload: %s",
+                    _to_json(_payload_for_log(payload)),
+                )
                 await self._send_wire_payload(payload)
 
             # 从队列中接收流式响应

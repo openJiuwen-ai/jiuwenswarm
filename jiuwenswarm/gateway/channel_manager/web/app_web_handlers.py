@@ -14,6 +14,7 @@ import secrets
 import shutil
 import time
 import base64
+import binascii
 import threading
 import uuid
 from dataclasses import dataclass
@@ -6380,6 +6381,48 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 pass
 
     channel.register_method("harness.import", _harness_import_handler)
+
+    async def _expert_import_handler(ws, req_id, params, session_id):
+        """在 Web Gateway 本地导入，避免 Base64 穿过 8MB 的内部 E2A 通道。"""
+        from jiuwenswarm.server.runtime.expert.expert_store import (
+            InvalidExpertPackage,
+            MAX_EXPERT_ZIP_BYTES,
+            import_expert_zip,
+        )
+
+        encoded = params.get("file_content") if isinstance(params, dict) else None
+        filename = str(params.get("filename") or "expert.zip") if isinstance(params, dict) else "expert.zip"
+        if not isinstance(encoded, str) or not encoded:
+            await channel.send_response(
+                ws, req_id, ok=False, error="missing file_content", code="BAD_REQUEST"
+            )
+            return
+        if len(encoded) > 70 * 1024 * 1024:
+            await channel.send_response(
+                ws, req_id, ok=False, error="专家 ZIP 不能超过 50 MB", code="BAD_REQUEST"
+            )
+            return
+        try:
+            content = base64.b64decode(encoded, validate=True)
+            if len(content) > MAX_EXPERT_ZIP_BYTES:
+                raise InvalidExpertPackage("专家 ZIP 不能超过 50 MB")
+            payload = import_expert_zip(content, filename=filename)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except (ValueError, binascii.Error) as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=f"file_content 不是有效 Base64: {exc}", code="BAD_REQUEST"
+            )
+        except InvalidExpertPackage as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="INVALID_PACKAGE"
+            )
+        except Exception as exc:
+            logger.exception("[expert.import] failed: %s", exc)
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+            )
+
+    channel.register_method("expert.import", _expert_import_handler)
 
     async def _harness_export_handler(ws, req_id, params, session_id):
         """Export a harness package - returns download URL instead of base64 content.

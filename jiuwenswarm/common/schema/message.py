@@ -224,6 +224,7 @@ class ReqMethod(Enum):
     EXPERT_UNLOAD = "expert.unload"
     # 仅拉取资源（fetch+校验+判型），不绑定会话——桌面端「召唤到我的专家（不对话）」
     EXPERT_INSTALL = "expert.install"
+    EXPERT_IMPORT = "expert.import"
     # ExpertGraph discovery and beta3 AgentGroup materialization
     EXPERTS_INVENTORY_REFRESH = "experts.inventory.refresh"
     EXPERTS_GRAPH_BUILD = "experts.graph.build"

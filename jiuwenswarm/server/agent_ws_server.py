@@ -2093,6 +2093,9 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.EXPERT_INSTALL:
                 await self._handle_expert_install(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.EXPERT_IMPORT:
+                await self._handle_expert_import(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.EXPERT_UNLOAD:
                 await self._handle_expert_unload(ws, request, send_lock)
                 return
@@ -4111,6 +4114,40 @@ class AgentWebSocketServer:
         """仅拉取专家资源、不绑定会话（业务编排在 ExpertService.install_expert）。"""
         _, expert_id = self._extract_expert_params(request)
         result = await self._expert_service.install_expert(expert_id=expert_id)
+        await self._send_expert_response(
+            ws, request, send_lock, ok=result.ok, payload=result.payload
+        )
+
+    async def _handle_expert_import(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """上传 ZIP，严格解码、校验并持久化为单专家或专家团。"""
+        import base64
+        import binascii
+
+        params = request.params if isinstance(request.params, dict) else {}
+        encoded = params.get("file_content")
+        filename = str(params.get("filename") or "expert.zip")
+        if not isinstance(encoded, str) or not encoded:
+            result = await self._expert_service.import_expert(
+                file_content=b"", filename=filename
+            )
+        else:
+            if len(encoded) > 70 * 1024 * 1024:
+                await self._send_expert_response(
+                    ws, request, send_lock, ok=False,
+                    payload={"error": "专家 ZIP 不能超过 50 MB", "code": "BAD_REQUEST"},
+                )
+                return
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                await self._send_expert_response(
+                    ws, request, send_lock, ok=False,
+                    payload={"error": "file_content 不是有效 Base64", "code": "BAD_REQUEST"},
+                )
+                return
+            result = await self._expert_service.import_expert(
+                file_content=content, filename=filename
+            )
         await self._send_expert_response(
             ws, request, send_lock, ok=result.ok, payload=result.payload
         )

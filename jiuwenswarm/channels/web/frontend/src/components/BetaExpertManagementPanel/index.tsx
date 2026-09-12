@@ -1,4 +1,4 @@
-import { ArrowLeft, ArrowRight, CheckCircle2, Crown, PackageCheck, Play, Search, Sparkles, Network, Users, Workflow } from 'lucide-react';
+import { ArrowLeft, ArrowRight, CheckCircle2, Crown, PackageCheck, Play, Search, Sparkles, Network, Upload, Users, Workflow } from 'lucide-react';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
 import { buildBetaExpertCallChain, normalizeBetaExpertCatalog, type BetaExpertCatalogItem } from '../../features/betaExpertCatalog';
@@ -54,6 +54,7 @@ function fallbackDeliverables(expert: BetaExpertCatalogItem): string[] {
 
 export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementPanelProps) {
   const panelRef = useRef<HTMLElement>(null);
+  const importInputRef = useRef<HTMLInputElement>(null);
   const [experts, setExperts] = useState<BetaExpertCatalogItem[]>([]);
   const [activeView, setActiveView] = useState<'catalog' | 'graph'>('catalog');
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -62,6 +63,8 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
   const [loadError, setLoadError] = useState<string | null>(null);
   const [actionError, setActionError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const [importing, setImporting] = useState(false);
+  const [importNotice, setImportNotice] = useState<{ ok: boolean; message: string } | null>(null);
 
   const loadExperts = async () => {
     setLoading(true);
@@ -79,6 +82,43 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
   useEffect(() => {
     void loadExperts();
   }, []);
+
+  const importExpertZip = async (file: File) => {
+    setImportNotice(null);
+    if (!file.name.toLowerCase().endsWith('.zip')) {
+      setImportNotice({ ok: false, message: '请选择 ZIP 格式的专家包' });
+      return;
+    }
+    if (file.size > 50 * 1024 * 1024) {
+      setImportNotice({ ok: false, message: '专家 ZIP 不能超过 50 MB' });
+      return;
+    }
+    setImporting(true);
+    try {
+      const dataUrl = await new Promise<string>((resolve, reject) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(String(reader.result || ''));
+        reader.onerror = () => reject(reader.error || new Error('读取 ZIP 失败'));
+        reader.readAsDataURL(file);
+      });
+      const fileContent = dataUrl.split(',', 2)[1] || '';
+      const result = await webRequest<{ expert_id: string; type: 'agent' | 'team'; replaced?: boolean }>(
+        'expert.import',
+        { filename: file.name, file_content: fileContent },
+        { timeoutMs: 90_000 },
+      );
+      await loadExperts();
+      setImportNotice({
+        ok: true,
+        message: `${result.type === 'team' ? '专家团' : '专家'}“${result.expert_id}”${result.replaced ? '已更新' : '已导入'}`,
+      });
+    } catch (error) {
+      setImportNotice({ ok: false, message: error instanceof Error ? error.message : '专家包导入失败' });
+    } finally {
+      setImporting(false);
+      if (importInputRef.current) importInputRef.current.value = '';
+    }
+  };
 
   useEffect(() => {
     panelRef.current?.scrollTo({ top: 0, behavior: 'auto' });
@@ -283,11 +323,33 @@ export function BetaExpertManagementPanel({ onUseExpert }: BetaExpertManagementP
                 </div>
                 <p>选择一个擅长交付成品的专家，用一句话开始工作。</p>
               </div>
-              <label className="beta-experts__search">
-                <Search size={18} />
-                <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索专家或能力" />
-              </label>
+              <div className="beta-experts__catalog-actions">
+                <input
+                  ref={importInputRef}
+                  className="beta-experts__file-input"
+                  type="file"
+                  accept=".zip,application/zip"
+                  onChange={event => {
+                    const file = event.target.files?.[0];
+                    if (file) void importExpertZip(file);
+                  }}
+                />
+                <button className="beta-experts__import" type="button" disabled={importing} onClick={() => importInputRef.current?.click()}>
+                  <Upload size={17} />
+                  {importing ? '正在导入…' : '导入 ZIP'}
+                </button>
+                <label className="beta-experts__search">
+                  <Search size={18} />
+                  <input value={query} onChange={event => setQuery(event.target.value)} placeholder="搜索专家或能力" />
+                </label>
+              </div>
             </header>
+
+            {importNotice && (
+              <div className={`beta-experts__import-notice ${importNotice.ok ? 'is-success' : 'is-error'}`} role="status">
+                {importNotice.message}
+              </div>
+            )}
 
             <div className="beta-experts__catalog-meta">
               <strong>已安装专家</strong>
