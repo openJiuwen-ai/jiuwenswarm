@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.command_tools import (
+    _decode_subprocess_output,
     _looks_like_posix,
     _resolve_execution_plan,
+    _run_command_sync,
     _split_shell_segments,
     _translate_mkdir_p_to_powershell,
     _translate_posix_for_powershell,
@@ -16,6 +19,59 @@ from jiuwenswarm.agents.harness.common.tools.command_tools import (
     _available_bash,
     _available_powershell,
 )
+
+
+class TestDecodeSubprocessOutput:
+    def test_prefers_utf8_over_windows_locale(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
+            lambda _do_setlocale: "gbk",
+        )
+
+        assert _decode_subprocess_output("中文 output".encode()) == "中文 output"
+
+    def test_falls_back_to_system_encoding(self, monkeypatch) -> None:
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.tools.command_tools.locale.getpreferredencoding",
+            lambda _do_setlocale: "gbk",
+        )
+
+        assert _decode_subprocess_output("中文 output".encode("gbk")) == "中文 output"
+
+    def test_sync_command_decodes_stdout_and_stderr_from_bytes(self, monkeypatch) -> None:
+        popen_kwargs = {}
+
+        class FakeProcess:
+            returncode = 0
+            stdout = None
+            stdin = None
+            stderr = None
+
+            def poll(self):
+                return self.returncode
+
+            def communicate(self, timeout):
+                return "标准输出".encode(), "错误输出".encode()
+
+        def fake_popen(*_args, **kwargs):
+            popen_kwargs.update(kwargs)
+            return FakeProcess()
+
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.tools.command_tools._resolve_execution_plan",
+            lambda *_args: (["utf8-cli"], False, "cmd"),
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.agents.harness.common.tools.command_tools.subprocess.Popen",
+            fake_popen,
+        )
+
+        completed, _resolved_shell = _run_command_sync("utf8-cli", 5, Path("."), "cmd")
+
+        assert completed.stdout == "标准输出"
+        assert completed.stderr == "错误输出"
+        assert "text" not in popen_kwargs
+        assert "encoding" not in popen_kwargs
 
 
 # ── _translate_mkdir_p_to_powershell ────────────────────────────────
