@@ -41,6 +41,7 @@ from jiuwenswarm.agents.harness.common.tools.deepresearch.path_safety import (
     private_mode_is_compatible,
 )
 from jiuwenswarm.agents.harness.common.tools.deepresearch.stream_router import (
+    FINAL_REPORT_NODES,
     ROUTER_LIMIT_ERROR,
     RouterState,
     _format_outline_card_markdown,
@@ -78,6 +79,7 @@ from jiuwenswarm.common.utils import (
     get_shared_agent_skills_dirs,
     parse_shared_skills_dirs_raw,
 )
+from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
 
@@ -105,6 +107,7 @@ DEEPRESEARCH_ZIP_INPUT_MAX_BYTES = 192 * 1024 * 1024
 _REPORT_PUBLICATION_ATTEMPTS = 8
 
 _CHILD_ERROR_CODE_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,63}")
+_CHILD_NUMERIC_ERROR_CODE_PATTERN = re.compile(r"[0-9]{6}", re.ASCII)
 _PROTOCOL_IDENTIFIER_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,127}")
 _LOG_CORRELATION_ID_PATTERN = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.:-]{0,127}")
 _PROTOCOL_FIXED_KEYS = frozenset(
@@ -129,6 +132,7 @@ _PROTOCOL_FIXED_KEYS = frozenset(
         "message_id",
         "message_type",
         "metadata",
+        "mime_type",
         "name",
         "node_id",
         "outline",
@@ -141,6 +145,7 @@ _PROTOCOL_FIXED_KEYS = frozenset(
         "report_chars",
         "report_delivered",
         "response_content",
+        "response_content_type",
         "returncode",
         "section_idx",
         "section_title",
@@ -154,6 +159,15 @@ _PROTOCOL_FIXED_KEYS = frozenset(
         "total_tasks",
     }
 )
+
+
+def _is_valid_child_error_code(value: object) -> bool:
+    return isinstance(value, str) and bool(
+        _CHILD_ERROR_CODE_PATTERN.fullmatch(value)
+        or _CHILD_NUMERIC_ERROR_CODE_PATTERN.fullmatch(value)
+    )
+
+
 _PROTOCOL_STATUS_VALUES = frozenset(
     {
         "cancelled",
@@ -237,15 +251,6 @@ class _KeyedLock:
 
 _REPORT_OUTPUT_LOCKS: dict[Path, _KeyedLock] = {}
 _REPORT_OUTPUT_LOCKS_GUARD = threading.Lock()
-_FINAL_PIPELINE_NODES = frozenset({
-    "reporter",
-    "vlm_chart_generator",
-    "source_tracer",
-    "source_tracer_infer",
-    "brief_reporter",
-    "brief_mermaid_generator",
-    "brief_source_tracer",
-})
 _TIMED_SDK_NODES = frozenset({
     "intent_recognition",
     "generate_questions",
@@ -679,7 +684,9 @@ def _is_protocol_control_value(key: str, value: str) -> bool:
     if key in {"__deepsearch_status__", "status", "current_task"}:
         return value in _PROTOCOL_STATUS_VALUES
     if key == "error_code":
-        return bool(_CHILD_ERROR_CODE_PATTERN.fullmatch(value))
+        return _is_valid_child_error_code(value)
+    if key in {"mime_type", "response_content_type"}:
+        return value in {"text/markdown", "text/html"}
     if key in {
         "agent",
         "event",
@@ -797,9 +804,7 @@ def _sanitize_terminal_outcome(
         return sanitized
 
     error_code = sanitized.get("error_code")
-    if not isinstance(error_code, str) or not _CHILD_ERROR_CODE_PATTERN.fullmatch(
-        error_code
-    ):
+    if not _is_valid_child_error_code(error_code):
         error_code = "workflow_error"
     sanitized["error_code"] = error_code
     sanitized["error"] = _bounded_diagnostic(
@@ -1685,6 +1690,23 @@ def _normalize_citation_artifacts(value: object) -> dict[str, str]:
     return normalized
 
 
+def _normalize_response_content_type(
+    final_result: dict[str, Any],
+) -> str | None:
+    """Classify the final body without guessing from its contents."""
+    value = final_result.get("response_content_type")
+    if value is None or value == "":
+        return "text/markdown"
+    if not isinstance(value, str):
+        return None
+    normalized = value.strip().lower()
+    if not normalized:
+        return "text/markdown"
+    if normalized in {"text/markdown", "text/html"}:
+        return normalized
+    return None
+
+
 def _build_related_artifact_bundle(
     value: object, markdown_index: int
 ) -> dict[str, object] | None:
@@ -1738,7 +1760,7 @@ def _report_output_lock(output_dir: Path):
 def _has_completed_final_pipeline_node(state: RouterState) -> bool:
     return any(
         isinstance(node_state, dict)
-        and node_state.get("agent_name") in _FINAL_PIPELINE_NODES
+        and node_state.get("agent_name") in FINAL_REPORT_NODES
         and node_state.get("done") is True
         for node_state in state.active_nodes.values()
     )
@@ -1771,9 +1793,19 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
     node: str = "",
     file_name: str = "",
     interaction_result: str = "",
+    report_type: DeepResearchReportType | None = None,
 ) -> str:
     skill_started_ns = time.monotonic_ns()
     route = _get_route()
+    if report_type is not None and report_type not in {"professional", "brief"}:
+        return json.dumps(
+            {
+                "status": "error",
+                "error_code": "report_type_invalid",
+                "error": "report_type must be one of: professional, brief",
+            },
+            ensure_ascii=False,
+        )
     try:
         python_bin = resolve_python_executable()
     except DeepResearchRuntimeError as exc:
@@ -1883,6 +1915,8 @@ async def deepresearch_stream(  # pylint: disable=huawei-too-many-arguments
             service_id=str(route.get("service_id") or "default"),
             agent_id=str(route.get("agent_id") or "default"),
         )
+        if report_type is not None:
+            config["REPORT_TYPE"] = report_type
         child_env = _build_deepresearch_child_env(
             interactive_ask=True,
             service_id=str(route.get("service_id") or "default"),
@@ -2177,9 +2211,10 @@ async def _consume_stream(
     }
     first_sdk_node_ns: int | None = None
     report_delivery_settled = False
+    seen_started = False
 
-    async def send_final_report_progress() -> None:
-        if not state.final_report_started or report_delivery_settled:
+    async def send_processing_progress() -> None:
+        if not seen_started or report_delivery_settled:
             return
         await send(
             {
@@ -2216,7 +2251,7 @@ async def _consume_stream(
             session_id=str(route.get("session_id") or ""),
             conversation_id=conversation_id,
         ),
-        send_final_report_progress,
+        send_processing_progress,
     ):
         try:
             line = raw.decode("utf-8").strip()
@@ -2248,6 +2283,7 @@ async def _consume_stream(
             if is_timed_node and chunk.get("event") != "done":
                 first_sdk_node_ns = time.monotonic_ns()
         if status_value in {"started", "resuming"}:
+            seen_started = True
             outcome_cid = str(chunk.get("conversation_id") or outcome_cid)
             stage = 1
             if action == "resume" and node == "outline_interaction":
@@ -2346,6 +2382,9 @@ async def _consume_stream(
                     "error_code": "empty_report",
                     "error": "completed marker missing final_result.response_content",
                 }, chunk)
+            response_content_type = _normalize_response_content_type(final_result)
+            if response_content_type is None:
+                return attach_terminal_timing(_stream_protocol_error(), chunk)
             if not state.final_report_started:
                 # dev-stable may deliberately finish with a degraded section and
                 # still run the final report pipeline.  Flush that observed
@@ -2372,18 +2411,41 @@ async def _consume_stream(
                     "status": "error",
                     "conversation_id": chunk.get("conversation_id", outcome_cid),
                     "error_code": "report_file_delivery_failed",
-                    "error": "Markdown report file route is unavailable",
+                    "error": "Report file route is unavailable",
                 }, chunk)
+            html_style_status = None
+            html_style_phase = None
+            html_style_reason_code = None
             try:
-                artifact_result = await _await_with_periodic_progress(
-                    _write_report_artifacts_stream(
-                        final_result,
-                        file_name,
-                        str(chunk.get("conversation_id") or outcome_cid),
-                        _normalize_citation_artifacts(chunk),
-                    ),
-                    send_final_report_progress,
-                )
+                if response_content_type == "text/html":
+                    primary_path = await _await_with_periodic_progress(
+                        _write_report_html(response_content, file_name),
+                        send_processing_progress,
+                    )
+                    artifacts = {"html": primary_path}
+                else:
+                    artifact_result = await _await_with_periodic_progress(
+                        _write_report_artifacts_stream(
+                            final_result,
+                            file_name,
+                            str(chunk.get("conversation_id") or outcome_cid),
+                            _normalize_citation_artifacts(chunk),
+                        ),
+                        send_processing_progress,
+                    )
+                    if isinstance(artifact_result, tuple) and len(artifact_result) == 4:
+                        (
+                            artifacts,
+                            html_style_status,
+                            html_style_phase,
+                            html_style_reason_code,
+                        ) = artifact_result
+                    elif isinstance(artifact_result, tuple):
+                        artifacts, html_style_status = artifact_result
+                    else:
+                        # Preserve compatibility with private test doubles and older callers.
+                        artifacts = artifact_result
+                    primary_path = artifacts.get("md", "")
             except Exception as exc:  # pylint: disable=broad-exception-caught
                 return attach_terminal_timing({
                     "status": "error",
@@ -2391,34 +2453,29 @@ async def _consume_stream(
                     "error_code": "report_file_write_failed",
                     "error": type(exc).__name__,
                 }, chunk)
-            html_style_phase = None
-            html_style_reason_code = None
-            if isinstance(artifact_result, tuple) and len(artifact_result) == 4:
-                (
-                    artifacts,
-                    html_style_status,
-                    html_style_phase,
-                    html_style_reason_code,
-                ) = artifact_result
-            elif isinstance(artifact_result, tuple):
-                artifacts, html_style_status = artifact_result
-            else:
-                # Preserve compatibility with private test doubles and older callers.
-                artifacts = artifact_result
-                html_style_status = None
+            artifact_mime_types = {
+                "md": "text/markdown",
+                "html": "text/html",
+            }
             files = [
-                {"path": value, "name": Path(value).name}
-                for value in artifacts.values()
+                {
+                    "path": value,
+                    "name": Path(value).name,
+                    "mime_type": artifact_mime_types.get(key),
+                }
+                for key, value in artifacts.items()
+                if key in artifact_mime_types
             ]
             file_payload: dict[str, Any] = {
                 "event_type": "chat.file",
                 "files": files,
             }
-            markdown_index = list(artifacts).index("md")
-            bundle = _build_related_artifact_bundle(chunk, markdown_index)
             file_metadata: dict[str, Any] = {}
-            if bundle:
-                file_metadata["artifactBundle"] = bundle
+            if response_content_type == "text/markdown":
+                markdown_index = list(artifacts).index("md")
+                bundle = _build_related_artifact_bundle(chunk, markdown_index)
+                if bundle:
+                    file_metadata["artifactBundle"] = bundle
             if html_style_status in {"applied", "fallback"}:
                 file_metadata["htmlStyleStatus"] = html_style_status
             if (
@@ -2436,7 +2493,7 @@ async def _consume_stream(
                     "conversation_id": chunk.get("conversation_id", outcome_cid),
                     "error_code": "report_file_delivery_failed",
                     "error": "Report files could not be delivered",
-                    "report_path": artifacts.get("md", ""),
+                    "report_path": primary_path,
                 }, chunk)
             report_delivery_settled = True
             for payload in advance_stage(state, 4, complete=True):
@@ -2496,6 +2553,64 @@ async def _consume_stream(
         for payload in route_chunk(chunk, state):
             await send(payload)
     return outcome
+
+
+async def _write_report_html(response_content: str, file_name: str) -> str:
+    return await asyncio.to_thread(
+        _write_report_html_sync,
+        response_content,
+        file_name,
+    )
+
+
+def _write_report_html_sync(response_content: str, file_name: str) -> str:
+    """Publish one immutable native HTML artifact with bounded collision retries."""
+    from jiuwenswarm.agents.harness.common.tools.deepresearch_plugin.artifact_naming import (
+        allocate_initial_html_path,
+    )
+
+    if not isinstance(response_content, str) or not response_content:
+        raise ValueError("native HTML report content is empty")
+    output_dir = _get_effective_request_output_dir()
+    output_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = response_content.encode("utf-8")
+    for _ in range(_REPORT_PUBLICATION_ATTEMPTS):
+        with _report_output_lock(output_dir):
+            root_fd, root_identity = _open_output_root(output_dir)
+            path: Path | None = None
+            published_identity: tuple[int, int] | None = None
+            try:
+                path = allocate_initial_html_path(output_dir, file_name)
+                _verify_output_root(output_dir, root_identity)
+                try:
+                    published_identity = _exclusive_write_at(
+                        root_fd,
+                        path.name,
+                        payload,
+                        output_dir=output_dir,
+                    )
+                except FileExistsError as exc:
+                    raise _ReportPublicationCollision() from exc
+                if root_fd is not None:
+                    os.fsync(root_fd)
+                _verify_output_root(output_dir, root_identity)
+                return str(path)
+            except _ReportPublicationCollision:
+                continue
+            except BaseException:
+                if path is not None and published_identity is not None:
+                    _cleanup_owned_output(
+                        root_fd,
+                        path.name,
+                        published_identity,
+                        False,
+                        output_dir=output_dir,
+                    )
+                raise
+            finally:
+                if root_fd is not None:
+                    os.close(root_fd)
+    raise FileExistsError("report publication attempts exhausted")
 
 
 def _write_report_markdown(

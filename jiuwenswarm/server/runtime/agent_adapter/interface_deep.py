@@ -28,7 +28,7 @@ from contextvars import ContextVar, Token
 from dataclasses import dataclass, replace
 from pathlib import Path
 from shutil import which
-from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, Tuple, cast
 from urllib.parse import quote_plus
 
 import yaml
@@ -366,7 +366,10 @@ from jiuwenswarm.server.runtime.agent_adapter.evolution_slash import (
     handle_evolution_slash_command,
 )
 from jiuwenswarm.server.runtime.agent_adapter import evolution_version as evolution_version_ctl
-from jiuwenswarm.server.utils.stream_utils import parse_ask_user_question_payload
+from jiuwenswarm.server.utils.stream_utils import (
+    build_tool_result_payload,
+    parse_ask_user_question_payload,
+)
 from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.local_env_config import (
     bind_agent_env_ns,
@@ -488,6 +491,7 @@ from jiuwenswarm.common.mcp_config import (
     validate_office_claw_mcp_config,
 )
 from jiuwenswarm.common.mcp_call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.perf.context import DeepResearchReportType
 from jiuwenswarm.perf.interface_hooks import (
     clear_perf_summary_context,
     finalize_perf_summary_request,
@@ -592,6 +596,22 @@ from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
+
+_DEEPRESEARCH_REPORT_TYPES = frozenset({"professional", "brief"})
+_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE = (
+    "params.report_type must be one of: professional, brief"
+)
+
+
+def _extract_requested_report_type(request: AgentRequest) -> DeepResearchReportType | None:
+    """Return the strict request-scoped report type; metadata is not trusted."""
+    params = request.params if isinstance(request.params, dict) else {}
+    if "report_type" not in params:
+        return None
+    value = params["report_type"]
+    if not isinstance(value, str) or value not in _DEEPRESEARCH_REPORT_TYPES:
+        raise ValueError(_INVALID_DEEPRESEARCH_REPORT_TYPE_MESSAGE)
+    return cast(DeepResearchReportType, value)
 TodoModifyTool = CompatibleTodoModifyTool
 install_todo_modify_compat_patch()
 install_evolution_rail_kwargs_compat()
@@ -7967,6 +7987,7 @@ class JiuWenSwarmDeepAdapter:
             scope = RuntimeScopeKey.from_adapter(
                 self, session_id=route["session_id"]
             )
+            output_dir = str(route.get("output_dir") or "").strip()
             return {
                 "request_id": str(route.get("request_id") or ""),
                 "channel_id": str(route.get("channel_id") or ""),
@@ -7981,6 +8002,7 @@ class JiuWenSwarmDeepAdapter:
         context = self._runtime_cron_tool_context
         metadata = context.metadata if isinstance(context.metadata, dict) else {}
         scope = RuntimeScopeKey.from_adapter(self, session_id=context.session_id)
+        request_workspace = metadata.get("workspace_dir") or metadata.get("project_dir")
         return {
             "request_id": str(metadata.get("request_id") or ""),
             "channel_id": str(context.channel_id or ""),
@@ -9842,6 +9864,7 @@ class JiuWenSwarmDeepAdapter:
         metadata: dict[str, Any] | None,
         request_id: str | None,
         mode: str | None,
+        workspace_dir: str | None = None,
         project_dir: str | None = None,
         params: dict[str, Any] | None = None,
     ) -> _RuntimeCronContextTokens:
@@ -9945,6 +9968,9 @@ class JiuWenSwarmDeepAdapter:
             )
 
         scope = RuntimeScopeKey.from_adapter(self, session_id=session_id)
+        request_workspace = workspace_dir or project_dir or normalized_metadata.get(
+            "project_dir"
+        )
         try:
             deepresearch_token = push_deepresearch_route(
                 request_id=request_id or "",
@@ -16417,6 +16443,17 @@ class JiuWenSwarmDeepAdapter:
                 metadata=request.metadata,
             )
 
+        try:
+            requested_report_type = _extract_requested_report_type(request)
+        except ValueError as exc:
+            return AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error_code": "invalid_request", "error": str(exc)},
+                metadata=request.metadata,
+            )
+
         if not self._is_session_scoped_adapter:
             # 提前绑定 LLM trace ContextVar，使 supervisor task（由
             # _get_or_create_session_adapter → start_interaction →
@@ -16616,6 +16653,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
             request_id=request.request_id,
             mode=mode,
+            workspace_dir=inputs.get("workspace_dir"),
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             params=request.params if isinstance(request.params, dict) else None,
         )
@@ -16666,6 +16704,7 @@ class JiuWenSwarmDeepAdapter:
                 session_id=request.session_id or "",
                 request_id=request.request_id or "",
                 mode=mode,
+                requested_report_type=requested_report_type,
             )
             perf_context_initialized = True
         except BaseException:
@@ -17046,6 +17085,22 @@ class JiuWenSwarmDeepAdapter:
         Yields:
             AgentResponseChunk 流式响应块
         """
+        try:
+            requested_report_type = _extract_requested_report_type(request)
+        except ValueError as exc:
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={
+                    "event_type": "chat.error",
+                    "error_code": "invalid_request",
+                    "error": str(exc),
+                },
+                is_complete=True,
+                metadata=request.metadata or {},
+            )
+            return
+
         # Start of this adapter's own share of the turn; reported on the
         # "entering runner streaming" line so the pre-dispatch work is visible.
         stream_impl_started_at = time.monotonic()
@@ -17221,9 +17276,7 @@ class JiuWenSwarmDeepAdapter:
             "channel_id": cid or "",
             "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
             "output_dir": self._deepresearch_artifact_output_dir(
-                request.params.get("project_dir")
-                if isinstance(request.params, dict)
-                else None
+                inputs.get("workspace_dir") or inputs.get("project_dir")
             ),
         }
 
@@ -17652,6 +17705,7 @@ class JiuWenSwarmDeepAdapter:
             metadata=request.metadata,
             request_id=request.request_id,
             mode=mode,
+            workspace_dir=inputs.get("workspace_dir"),
             project_dir=(request.params.get("project_dir") if isinstance(request.params, dict) else None),
             params=request.params if isinstance(request.params, dict) else None,
         )
@@ -17704,6 +17758,7 @@ class JiuWenSwarmDeepAdapter:
                 session_id=request.session_id or "",
                 request_id=request.request_id or "",
                 mode=mode,
+                requested_report_type=requested_report_type,
             )
             perf_context_initialized = True
             initialization_complete = True
@@ -19194,39 +19249,7 @@ class JiuWenSwarmDeepAdapter:
                 if chunk_type == "tool_result":
                     if isinstance(payload, dict):
                         result_info = payload.get("tool_result", payload)
-                        result_payload = {
-                            "result": (
-                                result_info.get("result", str(result_info))
-                                if isinstance(result_info, dict)
-                                else str(result_info)
-                            ),
-                        }
-                        if isinstance(result_info, dict):
-                            result_payload["tool_name"] = result_info.get(
-                                "tool_name"
-                            ) or result_info.get("name")
-                            result_payload["tool_call_id"] = result_info.get(
-                                "tool_call_id"
-                            ) or result_info.get("toolCallId")
-                            raw_output = result_info.get("raw_output")
-                            if raw_output is None:
-                                raw_output = result_info.get("rawOutput")
-                            if raw_output is not None:
-                                result_payload["raw_output"] = raw_output
-                            for key in (
-                                "status",
-                                "success",
-                                "is_error",
-                                "error",
-                                "summary",
-                                "score_status",
-                                "score_build",
-                                "direct_display",
-                                "display_format",
-                                "mermaid",
-                            ):
-                                if key in result_info:
-                                    result_payload[key] = result_info[key]
+                        result_payload = build_tool_result_payload(result_info)
                     else:
                         result_payload = {"result": str(payload)}
                     return {

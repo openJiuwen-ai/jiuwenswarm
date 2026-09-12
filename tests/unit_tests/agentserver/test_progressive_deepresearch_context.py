@@ -13,6 +13,10 @@ from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from jiuwenswarm.agents.harness.common.rails.progressive_tool_rail import (
     ProgressiveToolRail,
 )
+from jiuwenswarm.agents.harness.common.rails.deepresearch_execution_rail import (
+    DeepResearchExecutionRail,
+)
+from jiuwenswarm.agents.harness.common.tools.deepresearch import execution as de
 from jiuwenswarm.agents.harness.common.tools.deepresearch import tools as dt
 from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
     InvokeToolInput,
@@ -24,6 +28,99 @@ from jiuwenswarm.common.local_env_config import (
     get_task_env_overlay,
     replace_active_env,
 )
+from jiuwenswarm.common.schema.agent import AgentRequest
+from jiuwenswarm.perf.context import clear_request_context, set_request_context
+from jiuwenswarm.server.runtime.agent_adapter import interface_deep
+
+
+class _RequestContextSession:
+    def __init__(self, session_id: str):
+        self.session_id = session_id
+        self.state: dict[str, object] = {}
+
+    def get_session_id(self):
+        return self.session_id
+
+    def get_state(self, key):
+        return self.state.get(key)
+
+    def update_state(self, values):
+        self.state.update(values)
+
+
+def _execution_rail_context(session_id: str):
+    tool_call = SimpleNamespace(
+        id=f"call-{session_id}",
+        name="deepresearch_execute",
+        arguments={"query": "q"},
+    )
+    return SimpleNamespace(
+        session=_RequestContextSession(session_id),
+        inputs=ToolCallInputs(
+            tool_call=tool_call,
+            tool_name="deepresearch_execute",
+            tool_args=tool_call.arguments,
+            tool_result=None,
+        ),
+        extra={},
+    )
+
+
+@pytest.mark.asyncio
+async def test_report_type_uses_params_and_isolated_execution_contexts():
+    requests = (
+        AgentRequest(
+            request_id="request-brief",
+            channel_id="officeclaw",
+            session_id="session-brief",
+            params={"report_type": "brief"},
+            metadata={"report_type": "professional"},
+        ),
+        AgentRequest(
+            request_id="request-professional",
+            channel_id="officeclaw",
+            session_id="session-professional",
+            params={"report_type": "professional"},
+            metadata={"report_type": "brief"},
+        ),
+    )
+    both_bound = asyncio.Event()
+    bound_count = 0
+    bound_lock = asyncio.Lock()
+
+    async def _observe(request: AgentRequest) -> str | None:
+        nonlocal bound_count
+        requested_report_type = interface_deep._extract_requested_report_type(request)
+        set_request_context(
+            session_id=request.session_id or "",
+            request_id=request.request_id or "",
+            channel_id=request.channel_id or "",
+            mode="agent",
+            requested_report_type=requested_report_type,
+        )
+        async with bound_lock:
+            bound_count += 1
+            if bound_count == len(requests):
+                both_bound.set()
+        await both_bound.wait()
+
+        rail = DeepResearchExecutionRail(model_provider=lambda: None)
+        ctx = _execution_rail_context(request.session_id or "")
+        await rail.before_tool_call(ctx)
+        try:
+            execution_context = de._execution_context.get()
+            return execution_context.requested_report_type
+        finally:
+            await rail.after_tool_call(ctx)
+            clear_request_context(
+                session_id=request.session_id,
+                request_id=request.request_id,
+            )
+
+    assert await asyncio.gather(*(_observe(request) for request in requests)) == [
+        "brief",
+        "professional",
+    ]
 
 
 @pytest.mark.asyncio
@@ -50,7 +147,7 @@ async def test_deferred_deepresearch_rebinds_trusted_adapter_context():
             "service_id": service_id,
             "agent_id": agent_id,
         }
-        assert dt._get_effective_request_output_dir() == Path(output_dir)
+        assert dt._get_effective_request_output_dir() == Path(output_dir).resolve()
         return "ok"
 
     target.invoke.side_effect = _invoke

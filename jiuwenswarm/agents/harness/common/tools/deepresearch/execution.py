@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import re
@@ -21,6 +22,7 @@ from jiuwenswarm.common.schema.ask_user import (
     decode_user_input,
     parse_ask_user_response,
 )
+from jiuwenswarm.perf.context import DeepResearchReportType
 
 from .stream_router import _format_outline_card_markdown
 from .tools import _call_deepresearch_stream_impl
@@ -38,6 +40,7 @@ _FINISH_KEYWORDS = re.compile(r"(?:结束|完成|finish|\bend\b)", re.IGNORECASE
 _OTHER_LABELS = frozenset({"其他", "Other"})
 _OPTION_DESCRIPTION_MAX_CHARS = 50
 _OPTIONS_MAX_TOKENS = 2048
+_OPTIONS_GENERATION_TIMEOUT_SECONDS = 60.0
 _MAX_TIMING_WINDOWS = 8
 _MAX_TIMING_SPANS = 128
 
@@ -53,6 +56,7 @@ class DeepResearchExecutionContext:
     agent_id: str
     save_state: Callable[[dict[str, Any]], None]
     request_id: str = ""
+    requested_report_type: DeepResearchReportType | None = None
 
 
 _execution_context: ContextVar[DeepResearchExecutionContext | None] = ContextVar(
@@ -69,6 +73,7 @@ def bind_deepresearch_execution_context(
     save_state: Callable[[dict[str, Any]], None],
     agent_id: str = "jiuwenswarm",
     request_id: str = "",
+    requested_report_type: DeepResearchReportType | None = None,
 ) -> Token:
     """Bind state and resume input for one outer tool execution."""
     return _execution_context.set(
@@ -80,6 +85,7 @@ def bind_deepresearch_execution_context(
             agent_id=agent_id.strip() or "jiuwenswarm",
             save_state=save_state,
             request_id=request_id.strip(),
+            requested_report_type=requested_report_type,
         )
     )
 
@@ -439,42 +445,59 @@ async def _generate_options(
         f"研究主题：{query}\n问题：{json.dumps(questions, ensure_ascii=False)}"
     )
     started = time.monotonic()
-    for attempt in range(2):
-        attempt_started = time.monotonic()
-        try:
-            response = await model.invoke(
-                [{"role": "user", "content": prompt}],
-                max_tokens=_OPTIONS_MAX_TOKENS,
-            )
-            _record_options_llm_perf(
-                context,
-                response=response,
-                duration_ms=(time.monotonic() - attempt_started) * 1000,
-                status="ok",
-            )
-            parsed = _parse_option_payload(_response_text(response), len(questions))
-            if parsed is not None:
-                logger.info(
-                    "[deepresearch_execute] option generation completed attempts=%d "
-                    "questions=%d duration_ms=%.1f",
-                    attempt + 1,
-                    len(questions),
-                    (time.monotonic() - started) * 1000,
-                )
-                return parsed
-        except Exception as exc:  # pylint: disable=broad-exception-caught
-            _record_options_llm_perf(
-                context,
-                response=None,
-                duration_ms=(time.monotonic() - attempt_started) * 1000,
-                status="error",
-                error_message=type(exc).__name__,
-            )
-            logger.warning(
-                "[deepresearch_execute] option generation failed attempt=%d type=%s",
-                attempt + 1,
-                type(exc).__name__,
-            )
+    attempt_started = started
+    try:
+        async with asyncio.timeout(_OPTIONS_GENERATION_TIMEOUT_SECONDS):
+            for attempt in range(2):
+                attempt_started = time.monotonic()
+                try:
+                    response = await model.invoke(
+                        [{"role": "user", "content": prompt}],
+                        max_tokens=_OPTIONS_MAX_TOKENS,
+                    )
+                    _record_options_llm_perf(
+                        context,
+                        response=response,
+                        duration_ms=(time.monotonic() - attempt_started) * 1000,
+                        status="ok",
+                    )
+                    parsed = _parse_option_payload(_response_text(response), len(questions))
+                    if parsed is not None:
+                        logger.info(
+                            "[deepresearch_execute] option generation completed attempts=%d "
+                            "questions=%d duration_ms=%.1f",
+                            attempt + 1,
+                            len(questions),
+                            (time.monotonic() - started) * 1000,
+                        )
+                        return parsed
+                except Exception as exc:  # pylint: disable=broad-exception-caught
+                    _record_options_llm_perf(
+                        context,
+                        response=None,
+                        duration_ms=(time.monotonic() - attempt_started) * 1000,
+                        status="error",
+                        error_message=type(exc).__name__,
+                    )
+                    logger.warning(
+                        "[deepresearch_execute] option generation failed attempt=%d type=%s",
+                        attempt + 1,
+                        type(exc).__name__,
+                    )
+    except TimeoutError:
+        _record_options_llm_perf(
+            context,
+            response=None,
+            duration_ms=(time.monotonic() - attempt_started) * 1000,
+            status="error",
+            error_message="TimeoutError",
+        )
+        logger.warning(
+            "[deepresearch_execute] option generation timed out "
+            "questions=%d timeout_s=%.1f",
+            len(questions),
+            _OPTIONS_GENERATION_TIMEOUT_SECONDS,
+        )
     logger.warning(
         "[deepresearch_execute] option generation fell back to free text "
         "questions=%d duration_ms=%.1f",
@@ -877,10 +900,16 @@ async def _handle_outcome(
     description=(
         "Execute one complete interactive DeepResearch workflow. It preserves "
         "the standard detail, research-question, and outline review cards, "
-        "resumes the same SDK conversation, and directly delivers the terminal result."
+        "resumes the same SDK conversation, and directly delivers the terminal result. "
+        "report_type: 'professional' for in-depth multi-section reports, 'brief' for "
+        "single-page concise reports; infer from the user's original wording."
     ),
 )
-async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any]:
+async def deepresearch_execute(
+    query: str,
+    file_name: str = "",
+    report_type: DeepResearchReportType | None = None,
+) -> dict[str, Any]:
     """Run the interactive workflow without Main Agent resume choreography."""
     context = _execution_context.get()
     if context is None:
@@ -899,6 +928,12 @@ async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any
             "query": query.strip(),
             "file_name": file_name.strip(),
             "conversation_id": str(uuid.uuid4()),
+            # report_type 优先取 Main Agent 工具入参（从用户原话识别）；未传入时
+            # 回退执行上下文（params 通道），最终兜底 brief。归一后写入 state，
+            # resume 路径读此值不重新识别。deepresearch_stream:1918 据此写
+            # config REPORT_TYPE -> run_deepsearch.py -> SDK config.report_type，
+            # 触发 IntentRecognitionNode 锁死 report_type 字段，LLM 无决定权。
+            "requested_report_type": report_type or context.requested_report_type or "brief",
             "revision": 0,
         }
     if not str(state.get("query") or "").strip():
@@ -931,6 +966,7 @@ async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any
             query=str(state.get("query") or query),
             conversation_id=str(state.get("conversation_id") or ""),
             file_name=str(state.get("file_name") or file_name),
+            report_type=state.get("requested_report_type"),
         )
         return await _handle_outcome(context, state, outcome, action="start")
     if phase == "wait_feedback":
@@ -964,6 +1000,7 @@ async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any
             feedback=feedback,
             interaction_result=interaction_result,
             file_name=str(state.get("file_name") or file_name),
+            report_type=state.get("requested_report_type"),
         )
         return await _handle_outcome(
             context,
@@ -1000,6 +1037,7 @@ async def deepresearch_execute(query: str, file_name: str = "") -> dict[str, Any
             feedback=feedback,
             interaction_result=interaction_result,
             file_name=str(state.get("file_name") or file_name),
+            report_type=state.get("requested_report_type"),
         )
         return await _handle_outcome(
             context,

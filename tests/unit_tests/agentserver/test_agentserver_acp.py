@@ -340,6 +340,49 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     }
 
 
+@pytest.mark.parametrize(
+    "parser",
+    [
+        parse_stream_chunk,
+        getattr(interface_deep_module.JiuWenSwarmDeepAdapter, "_parse_stream_chunk"),
+    ],
+    ids=["shared_stream_parser", "deep_adapter_parser"],
+)
+def test_tool_result_without_result_uses_valid_json_fallback(parser):
+    raw_output = {
+        "kind": "error",
+        "status": "error",
+        "error_code": "workflow_error",
+        "returncode": 1,
+    }
+    parsed = parser(
+        types.SimpleNamespace(
+            type="tool_result",
+            payload={
+                "tool_result": {
+                    "tool_call_id": "deepresearch-1",
+                    "tool_name": "deepresearch_execute",
+                    "status": "error",
+                    "success": False,
+                    "is_error": True,
+                    "error": "section generation failed",
+                    "raw_output": raw_output,
+                }
+            },
+        )
+    )
+
+    decoded_result = json.loads(parsed["result"])
+    assert decoded_result["status"] == "error"
+    assert decoded_result["success"] is False
+    assert decoded_result["is_error"] is True
+    assert decoded_result["raw_output"]["kind"] == "error"
+    assert parsed["status"] == "error"
+    assert parsed["is_error"] is True
+    assert parsed["error"] == "section generation failed"
+    assert parsed["raw_output"] == raw_output
+
+
 def test_parse_stream_chunk_uses_raw_output_skill_tree_for_frontend():
     raw_output = {
         "success": True,

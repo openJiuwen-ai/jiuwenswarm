@@ -28,6 +28,7 @@ NODE_DISPLAY_INFO: dict[str, tuple[str, str]] = {
     "brief_reporter": ("精简报告整合", "生成核心摘要"),
     "brief_mermaid_generator": ("图表生成", "生成精简报告图表"),
     "brief_source_tracer": ("溯源校验", "核查精简报告引用"),
+    "brief_html_reporter": ("精简报告排版", "生成精简版 HTML 成品"),
     "plan_reasoning": ("规划调研", "为当前章节制定分步信息采集计划"),
     "collector_query_generation": ("生成检索词", "为当前章节生成搜索查询"),
     "collector_info_retrieval": ("资料检索", "并行检索网页和资料"),
@@ -58,17 +59,23 @@ _BRIEF_PROCESS_CONTENT_NODES = {
     "brief_info_collector",
     "brief_evidence_reviewer",
 }
-_FINAL_REPORT_NODES = {
+BRIEF_FINAL_REPORT_NODES = frozenset({
+    "brief_reporter",
+    "brief_mermaid_generator",
+    "brief_source_tracer",
+    "brief_html_reporter",
+})
+FINAL_REPORT_NODES = frozenset({
     "reporter",
     "vlm_chart_generator",
     "source_tracer",
     "source_tracer_infer",
-    "brief_reporter",
-    "brief_mermaid_generator",
-    "brief_source_tracer",
-}
+    *BRIEF_FINAL_REPORT_NODES,
+})
 
-_CONTROL_PROCESS_VALUES = {"SUCCESS", "ALL END", "SECTION END"}
+_SUMMARY_RESPONSE_EVENT = "summary_response"
+_SECTION_SUCCESS_MARKER = "SUCCESS"
+_CONTROL_PROCESS_VALUES = {_SECTION_SUCCESS_MARKER, "ALL END", "SECTION END"}
 _QUESTION_NODES = {"question_generator", "generate_questions"}
 _MARKDOWN_ESCAPE_RE = re.compile(r"""([!"#$%&'()*+,\-./:;<=>?@\[\\\]^_`{|}~])""")
 _SAFE_HTTP_URL_RE = re.compile(r"https?://[^\x00-\x20\x7f<>]+", re.IGNORECASE)
@@ -107,9 +114,7 @@ _NODE_STAGE: dict[str, int] = {
     "brief_info_collector": 3,
     "brief_evidence_reviewer": 3,
     "brief_sub_reporter": 3,
-    "brief_reporter": 3,
-    "brief_mermaid_generator": 3,
-    "brief_source_tracer": 3,
+    **dict.fromkeys(FINAL_REPORT_NODES, 3),
 }
 
 
@@ -759,11 +764,16 @@ def _all_sections_completed(state: RouterState) -> bool:
     return bool(expected) and expected.issubset(state.completed_section_indices)
 
 
+def _can_start_final_report(state: RouterState, agent: str) -> bool:
+    """Brief is report-wide; only Professional waits for per-section completion."""
+    return agent in BRIEF_FINAL_REPORT_NODES or _all_sections_completed(state)
+
+
 def _is_successful_workflow_end(chunk: dict, agent: str, event: str) -> bool:
     """Recognize the SDK EndNode result emitted after the workflow has finished."""
     if (
         agent != "end"
-        or event != "summary_response"
+        or event != _SUMMARY_RESPONSE_EVENT
         or str(chunk.get("section_idx", "0")).strip() not in {"", "0"}
     ):
         return False
@@ -823,7 +833,7 @@ def _node_reasoning(
     display: tuple[str, str],
     content: str,
 ) -> dict:
-    if agent not in _FINAL_REPORT_NODES:
+    if agent not in FINAL_REPORT_NODES:
         return _stage_child_reasoning(stage, agent, display, content)
     return {
         "event_type": "chat.reasoning",
@@ -934,9 +944,9 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
     must_defer_final_report = (
         display
         and target_stage in {1, 2, 3}
-        and agent in _FINAL_REPORT_NODES
+        and agent in FINAL_REPORT_NODES
         and not state.final_report_started
-        and not _all_sections_completed(state)
+        and not _can_start_final_report(state, agent)
     )
     if must_defer_final_report:
         preflight_node_frames = _node_frames_for_chunk(
@@ -1022,11 +1032,17 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
         if event == "done" and not node_state["done"]:
             node_state["done"] = True
             frames.append(_section_reasoning(state, chunk, f"{display[0]}完成\n"))
-            if agent == "sub_reporter" and section_idx not in state.completed_section_indices:
-                state.completed_section_indices.add(section_idx)
-                frames.append(_section_boundary(state, chunk, "task.complete"))
-                if _all_sections_completed(state):
-                    start_final_report = True
+
+        section_succeeded = (
+            agent == "sub_reporter"
+            and event == _SUMMARY_RESPONSE_EVENT
+            and _text_field(content) == _SECTION_SUCCESS_MARKER
+        )
+        if section_succeeded and section_idx not in state.completed_section_indices:
+            state.completed_section_indices.add(section_idx)
+            frames.append(_section_boundary(state, chunk, "task.complete"))
+            if _all_sections_completed(state):
+                start_final_report = True
 
         for process_content in process_parts:
             frames.append(_section_reasoning(state, chunk, process_content))
@@ -1050,7 +1066,7 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
         return frames
 
     if target_stage in {1, 2, 3}:
-        if agent in _FINAL_REPORT_NODES and _all_sections_completed(state):
+        if agent in FINAL_REPORT_NODES and _can_start_final_report(state, agent):
             frames.extend(start_final_report_processing(state))
         node_frames, starts_node, completes_node = (
             preflight_node_frames
@@ -1078,10 +1094,12 @@ def route_chunk(chunk: dict, state: RouterState) -> list[dict]:
             state.active_nodes[key] = node_state
         if completes_node:
             node_state["done"] = True
-        if agent in _FINAL_REPORT_NODES and not state.final_report_started:
+        if agent in FINAL_REPORT_NODES and not state.final_report_started:
             _extend_pending_final_report_frames(state, node_frames)
         else:
             frames.extend(node_frames)
+        if agent == "brief_sub_reporter" and completes_node:
+            frames.extend(start_final_report_processing(state))
         return frames
 
     reasoning = _chunk_reasoning_content(chunk, content)
