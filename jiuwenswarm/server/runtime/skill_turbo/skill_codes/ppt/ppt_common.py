@@ -324,9 +324,12 @@ class PptCommon:
             return None
 
         text = raw.strip()
-        fence_match = cls.JSON_FENCE_PATTERN.search(text)
-        if fence_match:
-            text = fence_match.group(1).strip()
+        for fence_match in cls.JSON_FENCE_PATTERN.finditer(text):
+            candidate = fence_match.group(1).strip()
+            try:
+                return json.loads(candidate)
+            except json.JSONDecodeError:
+                continue
 
         try:
             return json.loads(text)
