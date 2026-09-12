@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 from typing import Callable
 from urllib.parse import urlparse
 
+from jiuwenbox.log_sanitizer import sanitize_text
 from jiuwenbox.logging_config import configure_logging
 
 configure_logging()
@@ -150,9 +151,10 @@ class InferencePrivacyProxy:
         return normalized in self._enabled_routes
 
     def _log(self, message: str) -> None:
-        logger.info(message)
+        sanitized = sanitize_text(message)
+        logger.info(sanitized)
         if self._log_callback:
-            self._log_callback(message)
+            self._log_callback(sanitized)
 
     def _get_ssl_context(self, route: ProxyRoute) -> ssl.SSLContext:
         """Get or create SSL context for a route."""
@@ -198,6 +200,16 @@ class InferencePrivacyProxy:
     def match_route(self, path: str) -> ProxyRoute | None:
         """Public wrapper for route matching."""
         return self._match_route(path)
+
+    @staticmethod
+    def sanitize_url_for_log(raw_path: str) -> str:
+        """Strip query string from URL for safe logging.
+
+        Query strings routinely carry ``api_key=`` / ``token=`` and have no
+        diagnostic value in route logs; strip them entirely before logging.
+        The original (with query) is still used for request forwarding.
+        """
+        return urlparse(raw_path).path
 
     @staticmethod
     def _rewrite_path(path: str, route: ProxyRoute) -> str:
@@ -324,7 +336,8 @@ class InferencePrivacyProxy:
 
             route = self._match_route(original_path)
             if route is None:
-                self._log(f"[{conn_id}] No route matched for path: {original_path}")
+                log_path = self.sanitize_url_for_log(original_path)
+                self._log(f"[{conn_id}] No route matched for path: {log_path}")
                 error_response = (
                     "HTTP/1.1 404 Not Found\r\n"
                     "Content-Type: text/plain\r\n"
@@ -336,7 +349,8 @@ class InferencePrivacyProxy:
                 await client_writer.drain()
                 return
 
-            self._log(f"[{conn_id}] Route '{route.path_prefix}' matched for {method} {original_path}")
+            log_path = self.sanitize_url_for_log(original_path)
+            self._log(f"[{conn_id}] Route '{route.path_prefix}' matched for {method} {log_path}")
 
             new_path = self._rewrite_path(original_path, route)
             new_request_line = f"{method} {new_path} {version}"
