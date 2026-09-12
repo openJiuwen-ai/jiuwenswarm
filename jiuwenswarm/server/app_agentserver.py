@@ -26,9 +26,17 @@ from openjiuwen.core.common.logging import LogManager
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
 
+# 统一日志目录须先于其余 jiuwenswarm/openjiuwen import 钉死：import 链上的
+# 注册类模块（connector/parser 等）import 期即按默认配置创建文件 logger，
+# 晚了会在 CWD 下留下 logs/logs 双层空目录。
+from jiuwenswarm.common.utils import configure_agent_core_log_dir
+
+configure_agent_core_log_dir()
+
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
+    configure_agent_core_log_dir,
     ensure_builtin_skills_installed,
     get_env_file,
     get_root_dir,
@@ -68,7 +76,7 @@ else:
     _logs_root = get_logs_dir()
     _logs_root.mkdir(parents=True, exist_ok=True)
     _perm_fmt = logging.Formatter(
-        "%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        "%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     _perm_fh = logging.handlers.RotatingFileHandler(
@@ -121,6 +129,10 @@ else:
         _perm_ns_logger.addHandler(_perm_fh)
         _perm_ns_logger.addHandler(_perm_sh)
     _perm_ns_logger.propagate = False
+
+# 桌面端统一日志目录：注入 JIUWENSWARM_LOG_DIR 时，agent-core 日志
+# 同样落到统一目录（见 utils.configure_agent_core_log_dir）。
+configure_agent_core_log_dir()
 
 # Load env from user workspace config/.env
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)

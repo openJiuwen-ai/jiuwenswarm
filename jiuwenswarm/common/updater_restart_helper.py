@@ -34,7 +34,7 @@ def _wait_for_port_release(host: str, port: int, timeout: float = 15.0) -> bool:
 def main() -> None:
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        format="%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 

@@ -953,7 +953,7 @@ def main() -> None:
     """入口：配置日志并运行自验证."""
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s.%(msecs)03d %(name)s %(levelname)s: %(message)s",
+        format="%(asctime)s.%(msecs)03d %(name)s %(levelname)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     asyncio.run(_run_verification())
