@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@develop",
+    "openjiuwen[claude] @ git+https://gitcode.com/openJiuwen/agent-core.git@agent_os",
     "pgvector>=0.4.2,<0.6",
     "portalocker>=3.2.0,<4",
     "websockets>=12.0,<16",
