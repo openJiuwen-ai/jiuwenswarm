@@ -59,6 +59,7 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
         self.seen_phase: dict[str, str] = {}
         self.seen_agent: dict[str, str] = {}
         self.spawned_members: set[str] = set()
+        self.seen_activity: dict[str, int] = {}
 
     # ------------------------------------------------------------------
     # Properties

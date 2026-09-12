@@ -6139,19 +6139,61 @@ def _wf_event(phases: list[dict], *, run_id: str = "run-1", name: str = "wf") ->
 
 def test_workflow_updated_to_team_events_ignores_non_workflow_events():
     out = team_helpers._workflow_updated_to_team_events(
-        {"event_type": "team.member", "event": {}}, "sess-wf", {}, {}, set()
+        {"event_type": "team.member", "event": {}}, "sess-wf", team_helpers._WorkflowEventDedup()
     )
     assert out == []
 
 
+def test_workflow_updated_to_team_events_activity_emits_activity_changed():
+    """New worker activity entries become team.member.activity_changed events, deduped.
+
+    Activity present at spawn time is swallowed (the spawn event already covers the
+    worker's initial state); only entries appended in later deltas emit events.
+    """
+    state = team_helpers._WorkflowEventDedup()
+    phases = [
+        {
+            "id": "review-1",
+            "name": "review",
+            "status": "running",
+            "agents": [
+                {
+                    "id": "reviewer-1",
+                    "name": "reviewer",
+                    "status": "running",
+                    "activity": [
+                        {"type": "tool_call", "content": "tool: write_file"},
+                    ],
+                }
+            ],
+        }
+    ]
+    out = team_helpers._workflow_updated_to_team_events(_wf_event(phases), "sess-wf", state)
+    types = [e["event"]["type"] for e in out]
+    assert "team.member.spawned" in types
+    # The initial activity arrived inside the spawn delta -> no separate event yet.
+    assert "team.member.activity_changed" not in types
+
+    # A new entry in a later delta -> one activity_changed for the new entry only.
+    phases[0]["agents"][0]["activity"].append(
+        {"type": "tool_call", "content": "tool: bash"}
+    )
+    out2 = team_helpers._workflow_updated_to_team_events(_wf_event(phases), "sess-wf", state)
+    acts = [e for e in out2 if e["event"]["type"] == "team.member.activity_changed"]
+    assert [a["event"]["activity"] for a in acts] == ["tool: bash"]
+    assert all(a["event"]["workflow_run_id"] == "run-1" for a in acts)
+
+    # Same delta again -> no duplicate activity events.
+    again = team_helpers._workflow_updated_to_team_events(_wf_event(phases), "sess-wf", state)
+    assert all(e["event"]["type"] != "team.member.activity_changed" for e in again)
+
+
 def test_workflow_updated_to_team_events_planned_phase_creates_task():
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "planning-1", "name": "planning", "status": "planned"}]),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        state,
     )
     assert len(out) == 1
     ev = out[0]
@@ -6172,21 +6214,21 @@ def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_t
     column, same start time) and carry progress_frozen so the easing clock
     stops; running after a pause thaws it.
     """
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf", state,
     )
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "paused"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf", state,
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.paused", "in_progress", True),
     ]
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event([{"id": "p1", "name": "p", "status": "running"}]),
-        "sess-wf", seen_phase, seen_agent, spawned,
+        "sess-wf", state,
     )
     assert [(e["event"]["type"], e["event"]["status"], e["event"]["progress_frozen"]) for e in out] == [
         ("team.task.claimed", "in_progress", False),
@@ -6194,7 +6236,7 @@ def test_workflow_updated_to_team_events_paused_phase_freezes_task_then_resume_t
 
 
 def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_task():
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event(
             [
@@ -6209,9 +6251,7 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        state,
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.claimed" in types
@@ -6224,7 +6264,7 @@ def test_workflow_updated_to_team_events_running_agent_spawns_member_and_claims_
 
 
 def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     phases = [
         {
             "id": "planning-1",
@@ -6233,19 +6273,15 @@ def test_workflow_updated_to_team_events_dedups_repeated_running_delta():
             "agents": [{"id": "researcher-1", "name": "researcher", "status": "running"}],
         }
     ]
-    first = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
-    )
+    first = team_helpers._workflow_updated_to_team_events(_wf_event(phases), "sess-wf", state)
     assert first  # first delta emits events
     # Same delta again (e.g. another agent_started re-includes the running phase)
-    second = team_helpers._workflow_updated_to_team_events(
-        _wf_event(phases), "sess-wf", seen_phase, seen_agent, spawned
-    )
+    second = team_helpers._workflow_updated_to_team_events(_wf_event(phases), "sess-wf", state)
     assert second == []  # no status change -> nothing re-emitted
 
 
 def test_workflow_updated_to_team_events_agent_completed_changes_member_status():
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     # First: agent running
     team_helpers._workflow_updated_to_team_events(
         _wf_event(
@@ -6259,9 +6295,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        state,
     )
     # Then: agent completed, phase completed
     out = team_helpers._workflow_updated_to_team_events(
@@ -6276,9 +6310,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        state,
     )
     types = [e["event"]["type"] for e in out]
     assert "team.task.completed" in types
@@ -6291,7 +6323,7 @@ def test_workflow_updated_to_team_events_agent_completed_changes_member_status()
 
 
 def test_workflow_updated_to_team_events_first_sight_terminal_spawns_then_status():
-    seen_phase, seen_agent, spawned = {}, {}, set()
+    state = team_helpers._WorkflowEventDedup()
     out = team_helpers._workflow_updated_to_team_events(
         _wf_event(
             [
@@ -6304,9 +6336,7 @@ def test_workflow_updated_to_team_events_first_sight_terminal_spawns_then_status
             ]
         ),
         "sess-wf",
-        seen_phase,
-        seen_agent,
-        spawned,
+        state,
     )
     member_types = [e["event"]["type"] for e in out if e["event_type"] == "team.member"]
     assert member_types == ["team.member.spawned", "team.member.status_changed"]
