@@ -1,4 +1,4 @@
-# JiuwenClow 单元测试框架配置总结
+# JiuwenSwarm 单元测试框架配置总结
 
 ## 📦 已创建的文件
 ### 1. 测试配置文件
@@ -12,21 +12,34 @@ jiuwenswarm/
 │   ├── __init__.py
 │   ├── conftest.py                      # 共享 fixtures
 │   ├── README.md                        # 详细测试指南
-│   └── unit/                            # 单元测试目录
-│       ├── agentserver
-│       ├── channel
-│       ├── evolution
-│           ├── test_schema.py           # 演进模型测试
-│           ├── test_signal_detector.py  # 信号检测器测试
-│           ├── test_message.py          # 消息模型测试
-│       ├── gateway
-│       ├── schema
-│       ├── __init__.py
-│       ├── test_config.py               # 配置模块测试
-│       └── test_utils.py                # 工具函数测试
-└── .gitcode/workflows/
-    ├── ci.yml                           # gitcode Actions 测试工作流
-    └── test.yml                         # gitcode Actions 代码质量检查
+│   ├── unit/                            # 单元测试目录（agentserver/channel/deep_agent）
+│   │   ├── agentserver
+│   │   │   ├── test_cron_runtime.py
+│   │   │   ├── test_interface_chat_error.py
+│   │   │   └── test_gateway_push_transport.py
+│   │   ├── channel
+│   │   │   ├── test_dingtalk_file.py
+│   │   │   ├── test_acp_channel_envelope_path.py
+│   │   │   └── test_wecom_file.py
+│   │   └── deep_agent
+│   │       └── test_browser_subagent_integration.py
+│   ├── unit_tests/                     # 主单元测试套件（251 个文件）
+│   │   ├── evolution/                  # 演进模型测试
+│   │   │   ├── test_schema.py
+│   │   │   ├── test_signal_detector.py
+│   │   │   └── test_message.py
+│   │   ├── symphony/                   # 技能编排测试（含 test_config.py 等）
+│   │   ├── server/                     # 服务端（diff/rewind/hooks 等）
+│   │   ├── gateway/  channel/  agentserver/  cli/  acp/  a2ui/
+│   │   ├── test_config.py              # 配置模块测试
+│   │   └── test_utils.py               # 工具函数测试
+│   ├── agents/                         # swarm 组装测试
+│   ├── symphony/                       # 技能检索/编排集成测试
+│   ├── integration/                    # 集成测试
+│   └── system_tests/                   # 系统级测试
+└── .gitcode/workflows/                 # GitCode 镜像流水线（GitHub 仓库本体不含）
+    ├── ci.yml
+    └── test.yml
 ```
 
 ---
@@ -204,33 +217,44 @@ test_path_caching()                       # 测试路径缓存
 
 ---
 
-## 🤖 GitHub Actions CI
+## 🤖 CI 流水线
 
-### 工作流 1: Tests (`.github/workflows/test.yml`)
+> **注**：GitHub 仓库（openJiuwen-ai/jiuwenswarm）默认分支为 `develop`，仓库内**不含** `.github/workflows/`。CI 流水线位于 **GitCode 镜像**（gitcode.com/openJiuwen/jiuwenswarm）的 `.gitcode/workflows/` 目录。
+
+### 工作流 1: Tests (`.gitcode/workflows/test.yml`)
 
 **触发条件**：
-- Push to `main` or `develop`
-- Pull requests to `main` or `develop`
+- Push to `develop`
+- Pull requests to `develop`
 - 手动触发
 
-**测试矩阵**：
+**测试矩阵**（目标）：
 - Python: 3.11, 3.12, 3.13
 - OS: Ubuntu Latest
 
 **步骤**：
 1. ✅ Checkout 代码
 2. ✅ 设置 Python
-3. ✅ 安装依赖
-4. ✅ 运行单元测试
+3. ✅ 安装依赖（`pip install -e ".[test]"`）
+4. ✅ 运行单元测试（`pytest`）
 5. ✅ 上传覆盖率到 Codecov
 
-### 工作流 2: Code Quality (`.github/workflows/lint.yml`)
+### 工作流 2: Code Quality (`.gitcode/workflows/ci.yml`)
 
 **检查项目**：
 - ✅ 类型检查 (mypy)
 - ✅ 代码格式 (black)
 - ✅ Linting (ruff)
 - ✅ 安全扫描 (bandit)
+
+### 本地无 CI 时的验证方式
+
+开发者在 GitHub 侧提交前，请本地执行：
+
+```bash
+./run_tests.sh                 # 全量测试（等价于 CI 的 Tests 工作流）
+pytest tests/ -q               # 快速模式
+```
 
 ---
 
