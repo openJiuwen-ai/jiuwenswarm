@@ -1069,14 +1069,6 @@ permissions:
       tools: [bash, mcp_exec_command, create_terminal]
       pattern: "rd *"
       severity: HIGH
-    - id: shell_ask_mv
-      tools: [bash, mcp_exec_command, create_terminal]
-      pattern: "mv *"
-      severity: HIGH
-    - id: shell_ask_cp
-      tools: [bash, mcp_exec_command, create_terminal]
-      pattern: "cp *"
-      severity: HIGH
     - id: shell_ask_chmod
       tools: [bash, mcp_exec_command, create_terminal]
       pattern: "chmod *"
