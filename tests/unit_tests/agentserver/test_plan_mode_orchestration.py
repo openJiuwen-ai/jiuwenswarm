@@ -46,6 +46,10 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT,
+    _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS,
+    _INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_COUNT,
+    _INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_INTERVAL_SECONDS,
     JiuWenSwarmDeepAdapter,
 )
 
@@ -433,6 +437,28 @@ async def test_interrupt_output_reattach_retries_until_lease_is_released(
     assert result is stream
     assert adapter._instance.attach_output.await_count == 3
     assert sleep.await_count == 3
+
+
+@pytest.mark.asyncio
+async def test_interrupt_output_reattach_extends_window_with_slow_tail(
+    monkeypatch,
+) -> None:
+    """Lease waits fall back to a slower tail before returning ACK-only."""
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(attach_output=AsyncMock(return_value=None))
+    sleep = AsyncMock()
+    monkeypatch.setattr(asyncio, "sleep", sleep)
+
+    result = await adapter._reattach_interrupt_output("sess-slow-unwind")
+
+    assert result is None
+    fast_count = _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT
+    slow_count = _INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_COUNT
+    assert [call.args[0] for call in sleep.await_args_list] == (
+        [_INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS] * fast_count
+        + [_INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_INTERVAL_SECONDS] * slow_count
+    )
+    assert adapter._instance.attach_output.await_count == fast_count + slow_count
 
 
 def test_plan_exit_fallback_content_follows_runtime_language() -> None:

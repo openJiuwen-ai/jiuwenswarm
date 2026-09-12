@@ -144,6 +144,15 @@ ERROR_EVENT_TYPE = _ERROR_EVENT.value
 STREAM_SOURCE_ID_FIELD = "stream_source_id"
 _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT = 20
 _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
+_INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_COUNT = 10
+_INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_INTERVAL_SECONDS = 0.2
+# Interrupt resume: if inject+reattach succeeds but no runner chunk arrives, fail
+# closed instead of waiting on an empty interaction_stream forever.
+_INTERRUPT_RESUME_FIRST_CHUNK_TIMEOUT_SECONDS = float(
+    os.environ.get("JW_INTERRUPT_RESUME_FIRST_CHUNK_TIMEOUT", "30")
+)
+# Sentinel: interrupt-resume path did not prime the first chunk (normal streams).
+_STREAM_PRIMED_EMPTY = object()
 
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
@@ -13055,9 +13064,17 @@ class JiuWenSwarmDeepAdapter:
 
     async def _reattach_interrupt_output(self, session_id: str) -> Any | None:
         """Briefly wait for the interrupted consumer to release its output lease."""
+        # Fast retries cover the common unwind window; the slower tail absorbs
+        # predecessors that spend longer on checkpoint/usage-summary teardown.
+        retry_intervals = (
+            [_INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS]
+            * _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT
+            + [_INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_INTERVAL_SECONDS]
+            * _INTERRUPT_OUTPUT_ATTACH_SLOW_RETRY_COUNT
+        )
         started = time.monotonic()
-        for attempt in range(1, _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT + 1):
-            await asyncio.sleep(_INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS)
+        for attempt, interval in enumerate(retry_intervals, start=1):
+            await asyncio.sleep(interval)
             interaction_stream = await self._instance.attach_output()
             if interaction_stream is not None:
                 logger.info(
@@ -13072,7 +13089,7 @@ class JiuWenSwarmDeepAdapter:
             "[JiuWenSwarmDeepAdapter] interrupt output still leased; returning ACK: "
             "session_id=%s attempts=%s elapsed_ms=%.1f",
             session_id,
-            _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT,
+            len(retry_intervals),
             (time.monotonic() - started) * 1000,
         )
         return None
@@ -17641,6 +17658,9 @@ class JiuWenSwarmDeepAdapter:
         _debug_trace_token = None  # reset token for the ContextVar-bound logger
         interaction_stream = None
         interaction_stream_abort = True
+        # True once this request injects an interrupt-resume input while also
+        # holding the output reader lease (set inside the resume branch below).
+        resume_injected = False
         perf_summary_status = "ok"
         hitl_pending_stream = False
         try:
@@ -17997,27 +18017,14 @@ class JiuWenSwarmDeepAdapter:
                     return
             elif self._should_inject_into_existing_interaction(request.params):
                 # Idle → become the reader; busy → inject and accept.
-                # Interrupt resumes (permission/confirm/ask-user) must send_input
-                # even when Goal already holds the output lease.
+                # Interrupt resumes (permission/confirm/ask-user) must reach the
+                # blocked tool call, but the injection must not race the
+                # just-interrupted consumer's teardown: an input sent while that
+                # consumer still holds the lease can miss the waiting tool call
+                # entirely, leaving the resumed reply without any reader.
+                # Attach first (bounded retry), inject as the reader, and only
+                # inject fire-and-forget when another consumer keeps the lease.
                 interaction_stream = await self._instance.attach_output()
-                # Last stop before the message is injected into the running
-                # single-agent interaction (interrupt / HITL resume).
-                server_logger.info(
-                    "[AgentServer] message entering runner interaction inject: session_id=%s"
-                    " request_id=%s channel_id=%s mode=%s query=%s",
-                    session_id,
-                    rid,
-                    cid,
-                    mode,
-                    preview_text(inputs.get("query", "")),
-                )
-                await self._instance.send_input(
-                    SendInputRequest(
-                        request_id=rid,
-                        inputs=inputs,
-                        mode=self._resolve_input_dispatch_mode(request.params),
-                    )
-                )
                 if interaction_stream is None:
                     # The interrupted chat.send consumer releases its output
                     # lease asynchronously.  A resume arriving in that tiny
@@ -18030,11 +18037,31 @@ class JiuWenSwarmDeepAdapter:
                     interaction_stream = await self._reattach_interrupt_output(
                         request.session_id or "default"
                     )
+                # Last stop before the message is injected into the running
+                # single-agent interaction (interrupt / HITL resume).
+                server_logger.info(
+                    "[AgentServer] message entering runner interaction inject: session_id=%s"
+                    " request_id=%s channel_id=%s mode=%s query=%s lease_held=%s",
+                    session_id,
+                    rid,
+                    cid,
+                    mode,
+                    preview_text(inputs.get("query", "")),
+                    interaction_stream is not None,
+                )
+                await self._instance.send_input(
+                    SendInputRequest(
+                        request_id=rid,
+                        inputs=inputs,
+                        mode=self._resolve_input_dispatch_mode(request.params),
+                    )
+                )
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
                         yield chunk
                     interaction_stream_abort = False
                     return
+                resume_injected = True
             else:
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
@@ -18086,7 +18113,49 @@ class JiuWenSwarmDeepAdapter:
                 and not attach_goal_request
                 and not goal_stream_request
             )
-            async for chunk in interaction_stream:
+            # Interrupt resume: bound the wait for the first runner chunk so a
+            # missed InteractiveInput cannot hang the client forever.
+            resume_first_chunk_timed_out = False
+            _stream_aiter = interaction_stream.__aiter__()
+            _primed_chunk: Any | None = _STREAM_PRIMED_EMPTY
+            if (
+                resume_injected
+                and _INTERRUPT_RESUME_FIRST_CHUNK_TIMEOUT_SECONDS > 0
+            ):
+                try:
+                    _primed_chunk = await asyncio.wait_for(
+                        _stream_aiter.__anext__(),
+                        timeout=_INTERRUPT_RESUME_FIRST_CHUNK_TIMEOUT_SECONDS,
+                    )
+                except StopAsyncIteration:
+                    _primed_chunk = None
+                    _stream_aiter = None
+                except asyncio.TimeoutError:
+                    resume_first_chunk_timed_out = True
+                    _primed_chunk = None
+                    _stream_aiter = None
+                    server_logger.error(
+                        "[AgentServer] interrupt resume first chunk timed out: "
+                        "session_id=%s request_id=%s timeout_s=%.1f",
+                        session_id,
+                        rid,
+                        _INTERRUPT_RESUME_FIRST_CHUNK_TIMEOUT_SECONDS,
+                    )
+
+            async def _iter_interaction_chunks() -> AsyncIterator[Any]:
+                if _stream_aiter is None:
+                    return
+                if _primed_chunk is not _STREAM_PRIMED_EMPTY and _primed_chunk is not None:
+                    yield _primed_chunk
+                elif _primed_chunk is _STREAM_PRIMED_EMPTY:
+                    # No interrupt-resume priming; consume the whole stream.
+                    async for item in _stream_aiter:
+                        yield item
+                    return
+                async for item in _stream_aiter:
+                    yield item
+
+            async for chunk in _iter_interaction_chunks():
                 # After ask_user, skip trailing metadata until a real resume
                 # chunk arrives (in-place HITL). Unknown types default to clear
                 # so new SDK frames cannot re-hang the stream.
@@ -18447,6 +18516,35 @@ class JiuWenSwarmDeepAdapter:
                     if hitl_pending_stream:
                         suppress_stream_after_hitl = True
                         continue
+
+            if resume_first_chunk_timed_out or (resume_injected and not first_chunk_seen):
+                # Resume injected but no runner chunk arrived (stream ended empty
+                # or first-chunk watchdog fired). Surface a definite error instead
+                # of ending the turn silently (the frontend would otherwise wait
+                # forever).
+                error_type = (
+                    "interrupt_resume_first_chunk_timeout"
+                    if resume_first_chunk_timed_out
+                    else "interrupt_resume_no_output"
+                )
+                server_logger.warning(
+                    "[AgentServer] interrupt resume produced no runtime output: "
+                    "session_id=%s request_id=%s error_type=%s",
+                    session_id,
+                    rid,
+                    error_type,
+                )
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload=note_chat_payload({
+                        "event_type": "chat.error",
+                        "error": "权限确认已提交，但任务未能恢复执行（代理无响应），请重新发送该指令重试。",
+                        "error_type": error_type,
+                    }),
+                    is_complete=False,
+                )
+                emitted_chat_error = True
 
             if run_failure is not None and not emitted_chat_error:
                 error_type, error_message = run_failure
