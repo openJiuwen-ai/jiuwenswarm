@@ -817,6 +817,8 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
+        "automatic": "智能审批",
+        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
@@ -2931,6 +2933,47 @@
         "resultWords": "{{count}} words returned"
       }
     },
+    "autoReviewer": {
+      "title": "权限审查",
+      "status": {
+        "approved": "已自动允许",
+        "userApproved": "用户已允许",
+        "userRejected": "用户已拒绝",
+        "manual": "需要人工审批",
+        "denied": "已拒绝",
+        "blocked": "已阻止",
+        "hostRevalidationFailed": "主机校验失败",
+        "inProgress": "审查中",
+        "timedOut": "审查超时",
+        "fallback": "已转人工",
+        "aborted": "审查已停止"
+      },
+      "details": {
+        "source": "决策来源",
+        "sourceValues": {
+          "automatic": "智能审批",
+          "manual": "人工审批",
+          "system": "系统权限检查"
+        },
+        "risk": "风险",
+        "riskValues": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低",
+          "unknown": "未知"
+        },
+        "reason": "原因",
+        "reasonValues": {
+          "approved": "权限审查已允许此操作。",
+          "denied": "权限审查已拒绝此操作。",
+          "manual": "当前信息不足以完成智能审批，需要人工判断。",
+          "inProgress": "权限审查正在进行。"
+        },
+        "hint": "人工判断建议",
+        "manualGuidanceFallback": "请核对工具参数、操作目标和风险后再决定。"
+      }
+    },
     "teamActivity": {
       "preparing": "Agent Team 正在准备",
       "currentActivity": "{{member}} - {{summary}}",
@@ -3318,6 +3361,10 @@
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
     "skip": "跳过",
+    "toolPayload": {
+      "title": "工具参数（已脱敏）",
+      "notice": "这是用于审批展示的脱敏副本，内容可能因安全或大小限制被截断。"
+    },
     "tip": {
       "allowOnce": "仅本次授权执行",
       "allowAlways": "记住该规则，以后自动放行",

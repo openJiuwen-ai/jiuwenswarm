@@ -39,6 +39,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
+import { effectivePermissionProfile, permissionOptionsForMode } from '../../config/permissionProfiles';
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
@@ -287,7 +288,7 @@ interface InputAreaProps {
   onNavigateToAgents?: () => void;
   /** Keeps the selected Expert Team identity available to the conversation surface. */
   onAgentGroupIdentityChange?: (identity: AgentGroupIdentity | null) => void;
-  permissionsEnabled: boolean;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** 目标待设置态（"+"菜单选了「目标」）下发送时调用，取代普通 onSubmit/排队逻辑 */
   onSetGoal?: (sessionId: string, objective: string) => void;
@@ -646,7 +647,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onNavigateToSkills,
     onNavigateToAgents,
     onAgentGroupIdentityChange,
-    permissionsEnabled,
+    permissionProfile,
     onSavePermission,
     onSetGoal,
     onClearGoal,
@@ -3797,7 +3798,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                 </div>
                 {!isTeamMode && (
-                  <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+                  <PermissionSelector
+                    mode={mode}
+                    permissionProfile={permissionProfile}
+                    onSavePermission={onSavePermission}
+                  />
                 )}
 
                 {selectedAgentId && (
@@ -4675,16 +4680,18 @@ function ComposerSuggestionMenu({
 
 function PermissionSelector({
   disabled = false,
-  permissionsEnabled,
+  mode,
+  permissionProfile,
   onSavePermission,
 }: {
   disabled?: boolean;
-  permissionsEnabled: boolean;
+  mode: AgentMode;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
 }) {
   const { t } = useTranslation();
-
-  const permission: Permission = permissionsEnabled ? 'default' : 'full_access';
+  const permission = effectivePermissionProfile(permissionProfile, mode);
+  const permissionOptions = permissionOptionsForMode(mode);
 
   const [isOpen, setIsOpen] = useState(false);
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
@@ -4710,7 +4717,7 @@ function PermissionSelector({
       if (value === 'full_access') {
         setPendingPermission('full_access');
       } else {
-        onSavePermission({ permissions_enabled: 'true' });
+        onSavePermission({ permissions_profile: value });
       }
     },
     [permission, onSavePermission],
@@ -4718,7 +4725,7 @@ function PermissionSelector({
 
   const handleConfirm = useCallback(() => {
     if (pendingPermission) {
-      onSavePermission({ permissions_enabled: 'false' });
+      onSavePermission({ permissions_profile: pendingPermission });
     }
     setPendingPermission(null);
   }, [pendingPermission, onSavePermission]);
@@ -4791,7 +4798,7 @@ function PermissionSelector({
                   : { position: 'fixed', top: menuAnchor.bottom + 10, left: menuAnchor.left, zIndex: 9999 }
               }
             >
-              {PERMISSION_OPTIONS.map((opt) => (
+              {PERMISSION_OPTIONS.filter((opt) => permissionOptions.includes(opt.value)).map((opt) => (
                 <button
                   type="button"
                   key={opt.value}
