@@ -35,6 +35,13 @@ from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 
 parse_dotenv_early("jiuwenswarm-gateway")
 
+# 统一日志目录须先于其余 jiuwenswarm/openjiuwen import 钉死：import 链上的
+# 注册类模块（connector/parser 等）import 期即按默认配置创建文件 logger，
+# 晚了会在 CWD 下留下 logs/logs 双层空目录。
+from jiuwenswarm.common.utils import configure_agent_core_log_dir
+
+configure_agent_core_log_dir()
+
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from jiuwenswarm.gateway.routing.agent_request_timeout import coerce_client_timeout_ms
@@ -42,6 +49,7 @@ from jiuwenswarm.common.security.ws_origin import get_header_value
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
+    configure_agent_core_log_dir,
     ensure_builtin_skills_installed,
     get_cron_jobs_path,
     get_env_file,
@@ -78,6 +86,10 @@ else:
     # Reduce openjiuwen internal logs (keep Gateway logs)
     for _lg in LogManager.get_all_loggers().values():
         _lg.set_level(logging.CRITICAL)
+
+# 桌面端统一日志目录：注入 JIUWENSWARM_LOG_DIR 时，agent-core 日志
+# 同样落到统一目录（见 utils.configure_agent_core_log_dir）。
+configure_agent_core_log_dir()
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()

@@ -1204,7 +1204,7 @@ def _setup_logger(logs_root: Path, log_level: str) -> logging.Logger:
         lg.removeHandler(h)
 
     formatter = logging.Formatter(
-        fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
 

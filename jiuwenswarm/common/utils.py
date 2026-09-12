@@ -1285,7 +1285,10 @@ def prepare_workspace(
     agent_root = workspace_dir / "agent"
     agent_sessions = agent_root / "sessions"
     (agent_root / ".checkpoint").mkdir(parents=True, exist_ok=True)
-    (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
+    # 桌面端注入统一日志目录（JIUWENSWARM_LOG_DIR）时，日志不落
+    # agent/.logs，工作区不再预建该目录（避免遗留空文件夹）。
+    if not os.getenv("JIUWENSWARM_LOG_DIR", "").strip():
+        (agent_root / ".logs").mkdir(parents=True, exist_ok=True)
 
     # ----- DeepAgent workspace (standard DeepAgents schema) -----
     deepagent_workspace = agent_root / "workspace"
@@ -1909,11 +1912,19 @@ def _migrate_legacy_checkpoint_and_logs() -> None:
     workspace = get_user_workspace_dir()
     agent_root = workspace / "agent"
 
+    env_log_dir = os.getenv("JIUWENSWARM_LOG_DIR", "").strip()
     for name in (".checkpoint", ".logs"):
         legacy = workspace / name
-        new_path = agent_root / name
+        # 统一日志目录注入时，legacy .logs 仅在统一目录尚不存在时整体
+        # 改名迁入（move rename 语义，文件直接落统一目录根）；统一目录
+        # 已存在（桌面端 spawn 前预建）则跳过，不在 agent/ 下新建 .logs。
+        # checkpoint 迁移行为不受影响。
+        if name == ".logs" and env_log_dir:
+            new_path = Path(env_log_dir).expanduser()
+        else:
+            new_path = agent_root / name
         if legacy.exists() and not new_path.exists():
-            agent_root.mkdir(parents=True, exist_ok=True)
+            new_path.parent.mkdir(parents=True, exist_ok=True)
             shutil.move(str(legacy), str(new_path))
 
 
@@ -1923,8 +1934,112 @@ def get_checkpoint_dir() -> Path:
 
 
 def get_logs_dir() -> Path:
+    """jiuwenswarm 自身日志目录。
+
+    优先读环境变量 ``JIUWENSWARM_LOG_DIR``（桌面端注入，统一落
+    ``<dataRoot>/logs/jiuwenswarm``）；未设置时保持 ``<root>/agent/.logs``。
+    """
     _migrate_legacy_checkpoint_and_logs()
+    env_log_dir = os.getenv("JIUWENSWARM_LOG_DIR", "").strip()
+    if env_log_dir:
+        return Path(env_log_dir).expanduser()
     return get_agent_root_dir() / ".logs"
+
+
+def get_bootstrap_log_dir() -> Path:
+    """启动期诊断日志目录（exe error / win setup 等）。
+
+    与 ``scripts/jiuwenswarm_exe_entry.py`` 的 fallback 规则保持一致：
+    优先 ``JIUWENSWARM_LOG_DIR``（桌面端统一注入），否则
+    ``<JIUWENSWARM_DATA_DIR>/logs``。exe_entry 在包 import 之前运行，
+    无法复用本函数，两处规则需同步维护。
+    """
+    env_log_dir = os.getenv("JIUWENSWARM_LOG_DIR", "").strip()
+    if env_log_dir:
+        return Path(env_log_dir).expanduser()
+    return Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+
+
+def configure_agent_core_log_dir() -> bool:
+    """把 agent-core（openjiuwen）日志统一到独立 core 子目录。
+
+    优先 ``JIUWENSWARM_CORE_LOG_DIR``（桌面端注入
+    ``logs/jiuwenswarm/<uidKey>/core``，与 jiuwenswarm 本体日志分离），
+    未设置时回退 ``JIUWENSWARM_LOG_DIR``（兼容旧注入布局）。此处将
+    agent-core 的 default 日志后端 ``log_path`` 钉死为该目录的**绝对
+    路径**（相对路径会随 CWD 漂移并出现 ``logs/logs`` 双层目录）。仅当
+    当前后端为 ``default`` 时覆盖，保留其余字段（level/backup_count 等）。
+    成功返回 True；未注入、后端非 default 或配置失败返回 False（调用方
+    维持原有行为）。
+    """
+    env_core_log_dir = os.getenv("JIUWENSWARM_CORE_LOG_DIR", "").strip()
+    env_log_dir = os.getenv("JIUWENSWARM_LOG_DIR", "").strip()
+    env_log_dir = env_core_log_dir or env_log_dir
+    if not env_log_dir:
+        return False
+    try:
+        from openjiuwen.core.common.logging.log_config import (
+            configure_log_config,
+            get_log_config_snapshot,
+        )
+
+        snapshot = get_log_config_snapshot()
+        backend = str(snapshot.get("backend", "default")).strip().lower()
+        if backend != "default":
+            return False
+        log_dir = Path(env_log_dir).expanduser()
+        # 幂等：已钉到同一目录时直接返回。入口模块在 import 早期与日志块后
+        # 各调用一次，二次 configure 会 reset LogManager 重建全部 logger，
+        # 使业务模块已持有的实例脱离管理（重复 handler/丢运行时级别）。
+        _current = str(snapshot.get("log_path", "") or "").strip()
+        if _current and os.path.normcase(os.path.abspath(_current)) == os.path.normcase(str(log_dir)):
+            return True
+        log_dir.mkdir(parents=True, exist_ok=True)
+        # configure_log_config 会 reset LogManager：先记录已注册 logger 的
+        # 运行时级别（如 gateway 对 openjiuwen 内部日志的 CRITICAL 压制），
+        # 覆盖 log_path 后按需重建并恢复，避免日志量行为变化。
+        prev_levels = _collect_agent_core_logger_levels()
+        snapshot["log_path"] = str(log_dir)
+        configure_log_config(snapshot)
+        _restore_agent_core_logger_levels(prev_levels)
+        return True
+    except Exception:  # noqa: BLE001 - 配置失败时保持默认日志行为
+        return False
+
+
+def _collect_agent_core_logger_levels() -> dict:
+    """收集 agent-core 已注册 logger 的有效级别（重建后恢复用）。"""
+    levels: dict = {}
+    try:
+        from openjiuwen.core.common.logging.manager import LogManager
+
+        # 直接读注册表，勿用 get_all_loggers()：后者会触发 initialize()
+        # 按当前（可能仍是旧相对 log_path）配置强制创建基础 logger，
+        # 在 CWD 留下 logs/ 空目录。
+        for name, lg in dict(getattr(LogManager, "_loggers", None) or {}).items():
+            inner = getattr(lg, "logger", None)
+            inner = inner() if callable(inner) else inner
+            if inner is not None and hasattr(inner, "getEffectiveLevel"):
+                levels[name] = inner.getEffectiveLevel()
+    except Exception:
+        pass
+    return levels
+
+
+def _restore_agent_core_logger_levels(levels: dict) -> None:
+    """reset 后按需重建 logger 并恢复先前级别（幂等，失败静默）。"""
+    if not levels:
+        return
+    try:
+        from openjiuwen.core.common.logging.manager import LogManager
+
+        for name, level in levels.items():
+            try:
+                LogManager.get_logger(name).set_level(level)
+            except Exception:
+                pass
+    except Exception:
+        pass
 
 
 def get_xy_tmp_dir() -> Path:
@@ -2262,7 +2377,8 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     - ``jiuwenswarm.agents.*`` 或 ``jiuwenswarm.server.*`` → agent_server.log
     - 其余 ``jiuwenswarm.*``（含 ``jiuwenswarm.app``、gateway、evolution、utils 等）→ gateway.log
 
-    所有分类日志同时写入 ``full.log``。输出目录：``~/.jiuwenswarm/agent/.logs/``。
+    所有分类日志同时写入 ``full.log``。输出目录：``~/.jiuwenswarm/agent/.logs/``
+（注入 ``JIUWENSWARM_LOG_DIR`` 时为该目录，桌面端为 ``<dataRoot>/logs/jiuwenswarm``）。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
@@ -2280,7 +2396,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
         root.removeHandler(handler)
 
     formatter = logging.Formatter(
-        fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s: %(message)s",
+        fmt="%(asctime)s.%(msecs)03d %(levelname)s %(name)s %(filename)s:%(lineno)d: %(message)s",
         datefmt="%Y-%m-%d %H:%M:%S",
     )
     privacy_filter = SensitiveDataFilter()

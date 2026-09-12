@@ -212,10 +212,18 @@ def _show_already_running_message() -> None:
 
 
 
+def _diag_log_dir() -> Path:
+    """启动期诊断日志目录：优先 ``JIUWENSWARM_LOG_DIR``（桌面端统一注入）。"""
+    env_log_dir = os.environ.get("JIUWENSWARM_LOG_DIR", "").strip()
+    if env_log_dir:
+        return Path(env_log_dir).expanduser()
+    return Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+
+
 def _write_child_error(exc: BaseException) -> None:
     """将子进程的未捕获异常写入日志文件。"""
     try:
-        log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+        log_dir = _diag_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         log_file = log_dir / "jiuwenswarm_exe_error.log"
         with open(log_file, "a", encoding="utf-8", errors="replace") as f:
@@ -259,7 +267,7 @@ def _run_win_setup() -> None:
     """安装器已提权时调用: 在本进程内跑 win_setup, 不再 ShellExecuteW(runas)."""
     # import 失败时也能确认安装器调到了这里.
     try:
-        log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+        log_dir = _diag_log_dir()
         log_dir.mkdir(parents=True, exist_ok=True)
         (log_dir / "win_setup_invoke.log").write_text(
             f"argv={sys.argv!r}\ncwd={os.getcwd()}\n", encoding="utf-8",

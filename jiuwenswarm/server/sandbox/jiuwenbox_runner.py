@@ -175,7 +175,12 @@ def _resolve_jiuwenbox_configs_dir() -> Optional[Path]:
 
 def _frozen_exe_error_log_tail(max_chars: int = 4000) -> str:
     """窗口化冻包 stderr 为空时, 读 jiuwenswarm_exe_error.log 尾部."""
-    log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
+    try:
+        from jiuwenswarm.common.utils import get_bootstrap_log_dir
+
+        log_dir = get_bootstrap_log_dir()
+    except Exception:
+        log_dir = Path(os.environ.get("JIUWENSWARM_DATA_DIR", Path.home() / ".jiuwenswarm")) / "logs"
     log_file = log_dir / "jiuwenswarm_exe_error.log"
     try:
         if not log_file.is_file():
@@ -466,7 +471,8 @@ class JiuwenBoxRunner:
                 "HOME", "LANG", "LC_ALL", "LC_CTYPE",
                 "PYTHONIOENCODING",
                 "JIUWENCLAW_DATA_DIR", "OFFICE_CLAW_DATA_DIR",
-                "JIUWENSWARM_DATA_DIR", "JIUWENSWARM_HOME",
+                "JIUWENSWARM_DATA_DIR", "JIUWENSWARM_HOME", "JIUWENSWARM_LOG_DIR",
+                "JIUWENSWARM_CORE_LOG_DIR",
                 "CLAW_PYTHON_HOME", "JIUWENCLAW_BASE_PYTHON",
             }
             if not getattr(sys, "frozen", False):
