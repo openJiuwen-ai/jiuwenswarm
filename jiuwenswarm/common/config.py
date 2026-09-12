@@ -1417,6 +1417,183 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     return entries
 
 
+def _new_business_id(prefix: str) -> str:
+    return f"{prefix}_{uuid.uuid4().hex}"
+
+
+def _ensure_model_business_ids(models: dict[str, Any]) -> bool:
+    """Add missing stable IDs in-place. Return whether anything changed."""
+    changed = False
+    for source in ("defaults", "agentos"):
+        entries = models.get(source)
+        if not isinstance(entries, list):
+            continue
+        for entry in entries:
+            if isinstance(entry, dict) and not str(entry.get("model_id") or "").strip():
+                entry["model_id"] = _new_business_id("mdl")
+                changed = True
+    groups = models.get("groups")
+    if isinstance(groups, list):
+        for group in groups:
+            if not isinstance(group, dict):
+                continue
+            if not str(group.get("model_group_id") or "").strip():
+                group["model_group_id"] = _new_business_id("mgp")
+                changed = True
+            routes = group.get("routes")
+            if isinstance(routes, list):
+                for route in routes:
+                    if isinstance(route, dict) and not str(route.get("route_id") or "").strip():
+                        route["route_id"] = _new_business_id("rte")
+                        changed = True
+    return changed
+
+
+def migrate_model_business_ids() -> bool:
+    """Idempotently add IDs and atomically persist only a valid candidate config."""
+    changed = False
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any] | None:
+        nonlocal changed
+        models = data.setdefault("models", {})
+        if not isinstance(models, dict):
+            raise ValueError("models must be an object")
+        changed = _ensure_model_business_ids(models)
+        from jiuwenswarm.common.model_config_validation import raise_if_invalid
+        raise_if_invalid(models)
+        return data if changed else None
+
+    update_config(_mutate)
+    return changed
+
+
+def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return an ID-indexed, decrypted snapshot without mutating persisted config."""
+    config = deepcopy(config if config is not None else get_config())
+    models = config.get("models") or {}
+    defaults = _decrypt_model_entries(models.get("defaults") or [])
+    agentos = get_agentos_models(config)
+    groups = deepcopy(models.get("groups") or [])
+    by_id: dict[str, dict[str, Any]] = {}
+    for source, entries in (("defaults", defaults), ("agentos", agentos)):
+        for entry in entries:
+            model_id = str(entry.get("model_id") or "").strip()
+            if model_id:
+                by_id[model_id] = {"source": source, "entry": entry}
+    return {"defaults": defaults, "agentos": agentos, "groups": groups, "by_id": by_id}
+
+
+def save_models_candidate(models: dict[str, Any]) -> dict[str, Any]:
+    """Validate and atomically replace only the models section."""
+    candidate = deepcopy(models)
+    _ensure_model_business_ids(candidate)
+    from jiuwenswarm.common.model_config_validation import raise_if_invalid
+    raise_if_invalid(candidate)
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        data["models"] = candidate
+        return data
+
+    update_config(_mutate)
+    return candidate
+
+
+def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
+    """Convert a flat frontend-style model entry into the nested config format.
+
+    If the entry already has a ``model_client_config`` dict, assume it is already
+    normalized and return as-is.  Otherwise promote flat fields into the nested
+    structure the rest of the system expects.
+    """
+    saved = deepcopy(entry)
+    if isinstance(saved.get("model_client_config"), dict):
+        return saved
+    mcc: dict[str, Any] = {}
+    mco: dict[str, Any] = {}
+    if "model_name" in saved:
+        mcc["model_name"] = str(saved.pop("model_name") or "")
+    if "api_base" in saved:
+        mcc["api_base"] = str(saved.pop("api_base") or "")
+    if "api_key" in saved:
+        mcc["api_key"] = saved.pop("api_key") or ""
+    provider = str(saved.pop("model_provider", saved.pop("client_provider", "")) or "")
+    if provider:
+        mcc["client_provider"] = provider
+    if "timeout" in saved:
+        mcc["timeout"] = saved.pop("timeout")
+    if "verify_ssl" in saved:
+        mcc["verify_ssl"] = bool(saved.pop("verify_ssl"))
+    if "endpoint_profile" in saved:
+        val = saved.pop("endpoint_profile")
+        if val:
+            mcc["endpoint_profile"] = str(val)
+    if "vendor_key" in saved:
+        val = saved.pop("vendor_key")
+        if val:
+            mcc["vendor_key"] = str(val)
+    if "plan" in saved:
+        val = saved.pop("plan")
+        if val:
+            mcc["plan"] = str(val)
+    temp = saved.pop("temperature", None)
+    if temp is not None:
+        mco["temperature"] = float(temp)
+    rl = saved.pop("reasoning_level", None)
+    if rl is not None and str(rl).strip():
+        mco["reasoning_level"] = str(rl).strip()
+    if mcc:
+        saved["model_client_config"] = mcc
+    if mco:
+        saved["model_config_obj"] = mco
+    return saved
+
+
+def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
+    candidate = deepcopy((get_config_raw().get("models") or {}))
+    defaults = candidate.setdefault("defaults", [])
+    saved = _normalize_model_entry(entry)
+    saved.setdefault("model_id", _new_business_id("mdl"))
+    for index, current in enumerate(defaults):
+        if isinstance(current, dict) and current.get("model_id") == saved["model_id"]:
+            defaults[index] = saved
+            break
+    else:
+        defaults.append(saved)
+    save_models_candidate(candidate)
+    return saved
+
+
+def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
+    candidate = deepcopy((get_config_raw().get("models") or {}))
+    groups = candidate.setdefault("groups", [])
+    saved = deepcopy(group)
+    saved.setdefault("model_group_id", _new_business_id("mgp"))
+    for route in saved.get("routes") or []:
+        if isinstance(route, dict):
+            route.setdefault("route_id", _new_business_id("rte"))
+    for index, current in enumerate(groups):
+        if isinstance(current, dict) and current.get("model_group_id") == saved["model_group_id"]:
+            groups[index] = saved
+            break
+    else:
+        groups.append(saved)
+    save_models_candidate(candidate)
+    return saved
+
+
+def delete_model_resource(resource_type: str, resource_id: str) -> bool:
+    candidate = deepcopy((get_config_raw().get("models") or {}))
+    key = "groups" if resource_type == "model_group" else "defaults"
+    id_key = "model_group_id" if resource_type == "model_group" else "model_id"
+    entries = candidate.get(key) or []
+    filtered = [entry for entry in entries if not isinstance(entry, dict) or entry.get(id_key) != resource_id]
+    if len(filtered) == len(entries):
+        return False
+    candidate[key] = filtered
+    save_models_candidate(candidate)
+    return True
+
+
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """获取默认模型列表，兼容新旧格式。
 
