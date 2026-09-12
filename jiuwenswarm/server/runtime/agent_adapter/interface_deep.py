@@ -297,6 +297,7 @@ from jiuwenswarm.common.stage_timer import StageTimer
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool, unregister_tool
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
 from jiuwenswarm.server.utils.utils import is_team_params  # noqa: E402
+from jiuwenswarm.agents.harness.common.rails.step_back_rail import StepBackRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
     setup_permission_context,
@@ -1786,6 +1787,7 @@ class JiuWenSwarmDeepAdapter:
         )
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
+        self._step_back_rail: StepBackRail | None = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
@@ -8165,6 +8167,29 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    @staticmethod
+    def _build_step_back_rail(config_base: dict[str, Any]) -> StepBackRail | None:
+        """Build StepBackRail: rethink the approach after consecutive shell failures.
+
+        Only added to the rail set when ``step_back.enabled`` is true (see
+        ``_build_agent_rails``). Reads ``step_back_after`` (default 3). After
+        that many consecutive shell/tool failures the rail injects a directive
+        telling the agent to stop, re-read the task, and design a new strategy
+        instead of making another marginal fix.
+        """
+        try:
+            _sb_cfg = config_base.get("step_back") or {}
+            _step_back_after = max(1, parse_int(_sb_cfg.get("step_back_after"), 3))
+            rail = StepBackRail(_step_back_after)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] StepBackRail attached (step_back_after=%d)",
+                _step_back_after,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach StepBackRail: %s", exc)
+            return None
+
     def _auto_permission_capability_enabled(self) -> bool:
         """Only a session-owned Deep runtime may install Smart permission rails."""
         return self._is_session_scoped_adapter and self._auto_permission_profile_supported()
@@ -8281,6 +8306,19 @@ class JiuWenSwarmDeepAdapter:
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
             ),
         ]
+
+        # Step-back prompt: rethink the approach after consecutive shell failures.
+        # Disabled by default — only inserted when enabled so the registry's
+        # "build returned None" warning is not spammed on every normal build.
+        _sb_cfg = config_base.get("step_back") or {}
+        if bool(_sb_cfg.get("enabled", False)):
+            rail_infos.append(
+                _RailBuildInfo(
+                    "_step_back_rail",
+                    self._build_step_back_rail,
+                    {"config_base": config_base},
+                )
+            )
 
         # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
@@ -8966,6 +9004,26 @@ class JiuWenSwarmDeepAdapter:
 
         if self._heartbeat_rail is None:
             self._heartbeat_rail = self._build_heartbeat_rail()
+
+        # Rebuild the step-back rail from the current config snapshot so
+        # step_back.enabled / .step_back_after changes take effect on hot
+        # reload. Its type appearing in the returned list makes _hot_reload_rails
+        # cycle the old instance out (uninit removes the section). When
+        # disabled, the previous instance is still listed so it is torn down,
+        # and the property is cleared.
+        _sb_cfg = (config_base or self._config_base_cache or {}).get(
+            "step_back"
+        ) or {}
+        _sb_enabled = bool(_sb_cfg.get("enabled", False))
+        _old_sb_rail = getattr(self, "_step_back_rail", None)
+        if _sb_enabled:
+            self._step_back_rail = self._build_step_back_rail(
+                config_base or self._config_base_cache or {}
+            )
+        else:
+            self._step_back_rail = None
+        _sb_reload_rail = self._step_back_rail or _old_sb_rail
+
         rails_list = []
         if self._skill_rail is not None:
             rails_list.append(self._skill_rail)
@@ -8983,6 +9041,8 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
+        if _sb_reload_rail is not None:
+            rails_list.append(_sb_reload_rail)
         return rails_list
 
     def _tool_owner_id(self) -> str:
