@@ -59,53 +59,23 @@ def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
 
 def _build_windows_exec_env(
     env: dict[str, str] | None,
-    tool_paths=None,
 ) -> dict[str, str]:
-    """为 Windows 沙箱子进程补 PATH, 使裸名 ``bash``/``python``/``cmd`` 可解析.
+    """为 Windows 沙箱子进程补 PATH, 使裸名 ``python``/``cmd``/``powershell`` 可解析.
 
-    docs §4.0: jbx-sandbox 子进程的 PATH 默认空 (LOGON_WITH_PROFILE 加载的
-    profile 无 PATH), agent-core 送的 ``command[0]`` 是裸名 (``bash``/``python``
-    /``cmd``), 靠子进程 PATH 解析。本函数把等价 PATH 塞进 env:
-      tool_paths 展开的目录    # bash/git/node/python 真实安装目录 (D:\\Files\\Git 等)
-                               # 必须用 policy 的 tool_paths, 不能写死 %ProgramFiles%\\Git\\bin
-                               # — Git 装在 D:\\Files\\Git 时前者解析到不存在路径 → 0xC0000142
-                               # (实测: install 预装了 D:\\Files\\Git 的读 ACL 但 PATH 没含它,
-                               #  预装白费, bash 裸名解析失败). 含 git_dir 的 usr/bin + bin 子目录.
-      <venv>\\Scripts          # python/pip 裸名解析到 venv (G3 落点, 见 docs §4.3)
-      %SystemRoot%\\System32    # cmd/powershell + 系统 dll 裸名解析 (默认 ACL 已允许读)
-      %SystemRoot%\\WindowsPowerShell\\v1.0
-      <打包 python 目录>        # python 裸名兜底
-
-    tool_paths 由 policy.windows.filesystem.tool_paths 传入 (exec 调用方
-    self.policy 取). venv 目录与打包 python 目录由 agent-server 经 env 注入
-    (``JIUWENBOX_VENV_DIR`` / ``JIUWENBOX_BUNDLED_PYTHON``, 见 docs §4.3),
-    缺失则跳过对应段。PATH 放最前, 覆盖 profile 任何残留。
+    jbx-sandbox 子进程的 PATH 默认空, 本函数把 venv Scripts、System32、
+    System32\\WindowsPowerShell\\v1.0、打包 python 目录塞进 env. venv / 打包
+    python 由 ``JIUWENBOX_VENV_DIR`` / ``JIUWENBOX_BUNDLED_PYTHON`` 注入.
     """
     base = dict(env) if env else {}
     parts: list[str] = []
-    # tool_paths 展开 (和 _create_windows 给 runner 的 PATH 一致, 确保 exec
-    # 子进程能解析到与预装 ACL 匹配的工具可执行). git_dir 含 usr/bin + bin.
-    if tool_paths is not None:
-        _tp = tool_paths
-        for i, _attr in enumerate(("git_dir", "node_dir", "python_dir")):
-            _d = (getattr(_tp, _attr, "") or "").strip()
-            if _d:
-                parts.append(_d)
-                if _attr == "git_dir":
-                    parts.append(f"{_d}\\usr\\bin")
-                    parts.append(f"{_d}\\bin")
-        _bash_p = (getattr(_tp, "bash_path", "") or "").strip()
-        if _bash_p:
-            _parent = os.path.dirname(_bash_p)
-            if _parent:
-                parts.append(_parent)
     venv_dir = (os.environ.get("JIUWENBOX_VENV_DIR") or "").strip()
     if venv_dir:
         parts.append(f"{venv_dir}\\Scripts")
     system_root = (os.environ.get("SystemRoot") or "").strip()
     if system_root:
         parts.append(f"{system_root}\\System32")
-        parts.append(f"{system_root}\\WindowsPowerShell\\v1.0")
+        # powershell.exe 在 System32\WindowsPowerShell\v1.0, 不是 Windows\WindowsPowerShell.
+        parts.append(f"{system_root}\\System32\\WindowsPowerShell\\v1.0")
     bundled_python = (os.environ.get("JIUWENBOX_BUNDLED_PYTHON") or "").strip()
     if bundled_python:
         parts.append(bundled_python)
@@ -144,6 +114,13 @@ from jiuwenbox.models.sandbox import (
     validate_custom_job_id,
     validate_custom_sandbox_id,
 )
+from jiuwenbox.server.access import (
+    AccessAclError,
+    AccessDeniedError,
+    ResolvedAccessContext,
+    extra_enforced,
+    resolve_access_context,
+)
 from jiuwenbox.server.audit_logger import AuditLogger
 from jiuwenbox.server.policy_engine import PolicyEngine
 from jiuwenbox.server.policy_reader import PolicyReader
@@ -167,6 +144,9 @@ class SandboxExecRequest:
     env: dict[str, str] | None = None
     stdin_data: bytes | None = None
     timeout: float | None = None
+    extra: object | None = None
+    require_extra: bool = True
+    grant_write: bool = True
 
 
 @dataclass(frozen=True)
@@ -176,6 +156,9 @@ class SandboxBackgroundExecRequest:
     workdir: str | None = None
     env: dict[str, str] | None = None
     stdin_data: bytes | None = None
+    extra: object | None = None
+    require_extra: bool = True
+    grant_write: bool = True
 
 
 @dataclass(frozen=True)
@@ -185,6 +168,8 @@ class SandboxListRequest:
     max_depth: int | None = None
     include_files: bool = True
     include_dirs: bool = True
+    extra: object | None = None
+    require_extra: bool = True
 
 
 class SandboxNotFoundError(Exception):
@@ -767,6 +752,104 @@ class SandboxManager:
             self._policies.pop(sandbox_id, None)
             self._delete_state(sandbox_id)
 
+    async def _deny_write_rules(self, sandbox_id: str) -> list[str]:
+        policy = await self.get_policy(sandbox_id)
+        fs = getattr(getattr(policy, "windows", None), "filesystem", None) if policy else None
+        return [r for r in list(getattr(fs, "deny_write", None) or []) if r]
+
+    async def _workspace_write_roots(self, sandbox_id: str) -> list[str]:
+        policy = await self.get_policy(sandbox_id)
+        fs = getattr(getattr(policy, "windows", None), "filesystem", None) if policy else None
+        return [r for r in list(getattr(fs, "workspace", None) or []) if r]
+
+    async def _build_access_context(
+        self,
+        sandbox_id: str,
+        *,
+        extra: object,
+        actual_paths: list[str],
+        op: str,
+        require_extra: bool,
+        grant_write: bool,
+    ) -> ResolvedAccessContext:
+        deny_write = await self._deny_write_rules(sandbox_id) if extra_enforced() else []
+        workspace_roots = (
+            await self._workspace_write_roots(sandbox_id) if extra_enforced() else []
+        )
+        ctx = resolve_access_context(
+            sandbox_id=sandbox_id,
+            extra=extra,
+            actual_paths=actual_paths,
+            op=op,
+            required=require_extra,
+            grant_write=grant_write,
+            deny_write=deny_write,
+            workspace_roots=workspace_roots,
+        )
+        if extra_enforced() and actual_paths:
+            await self._enforce_path_policy(
+                sandbox_id,
+                actual_paths[0],
+                op="write" if grant_write else "read",
+                extra_roots=list(ctx.extra_roots),
+            )
+            if grant_write:
+                await self._reconcile_windows_write_roots(sandbox_id, list(ctx.write_roots))
+                await self._ensure_windows_access_acl(
+                    list(actual_paths) + list(ctx.extra_roots) + list(ctx.write_roots),
+                )
+        elif extra_enforced() and grant_write:
+            await self._reconcile_windows_write_roots(sandbox_id, list(ctx.write_roots))
+            await self._ensure_windows_access_acl(
+                list(ctx.extra_roots) + list(ctx.write_roots),
+            )
+        return ctx
+
+    async def _ensure_windows_access_acl(self, actual_paths: list[str]) -> None:
+        """后台整树 ACE 未完成时, 给要访问的对象/目录先打非递归写 ACE."""
+        if sys.platform != "win32":
+            return
+        from jiuwenbox.supervisor import win_acl
+
+        seen: set[str] = set()
+        for raw in actual_paths:
+            if not raw:
+                continue
+            key = os.path.normcase(raw)
+            if key in seen:
+                continue
+            seen.add(key)
+            await asyncio.to_thread(win_acl.ensure_access_acl_ready, raw)
+
+    async def _reconcile_windows_write_roots(
+        self, sandbox_id: str, extra_roots: list[str],
+    ) -> None:
+        runtime = self.runtime
+        remember = getattr(runtime, "remember_windows_write_roots", None)
+        live_fn = getattr(runtime, "windows_live_write_roots", None)
+        sid_fn = getattr(runtime, "windows_sandbox_user_sid", None)
+        if remember:
+            remember(sandbox_id, extra_roots)
+        live = list(live_fn()) if live_fn else list(extra_roots)
+        from jiuwenbox.supervisor import win_acl
+
+        user_sid = sid_fn(sandbox_id) if sid_fn else None
+        deny_write = await self._deny_write_rules(sandbox_id)
+        try:
+            failed = await asyncio.to_thread(
+                win_acl.reconcile_live_write_roots,
+                live,
+                sandbox_user_sid=user_sid,
+                deny_write=deny_write,
+                required_roots=extra_roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            raise AccessAclError(f"reconcile write ACLs failed: {exc}") from exc
+        if failed:
+            forget = getattr(runtime, "forget_windows_write_roots", None)
+            if forget:
+                forget(failed)
+
     async def exec_in_sandbox(
         self,
         sandbox_id: str,
@@ -780,6 +863,15 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
+        ctx = await self._build_access_context(
+            sandbox_id,
+            extra=request.extra,
+            actual_paths=[request.workdir] if request.workdir else [],
+            op="exec",
+            require_extra=request.require_extra,
+            grant_write=request.grant_write,
+        )
+
         # One audit row per exec, emitted **after** the runtime returns so
         # the payload covers both intent (command/workdir) and outcome
         # (exit_code, stdout/stderr tail, duration, error). The earlier
@@ -791,10 +883,7 @@ class SandboxManager:
         # 见 docs §4.3)。Linux 不动 (R5)。
         exec_env = request.env
         if sys.platform == "win32":
-            exec_env = _build_windows_exec_env(
-                request.env,
-                tool_paths=self.policy.windows.filesystem.tool_paths,
-            )
+            exec_env = _build_windows_exec_env(request.env)
             # P2-19: 日志不含完整 command (可能含 prompt/API key/敏感路径) 和完整 PATH.
             # 仅打 command[0] (可执行名) + 参数数量, 便于定位又不泄露. PATH 含工具目录
             # 路径且极长, 不打. 旧版 INFO 全量打 request.command 且 debug 上调 info, 凭据
@@ -811,7 +900,9 @@ class SandboxManager:
             env=exec_env,
             stdin_data=request.stdin_data,
             timeout=request.timeout,
+            write_cap_sids=list(ctx.write_cap_sids),
         )
+        paths_with_permission = list(ctx.extra_roots)
         try:
             result = await self.runtime.exec(sandbox_id, runtime_request)
             if _is_daemon_ipc_exec_failure(result):
@@ -829,6 +920,7 @@ class SandboxManager:
                 sandbox_id,
                 command=request.command,
                 workdir=request.workdir,
+                paths_with_permission=paths_with_permission,
                 ok=False,
                 error=repr(exc),
                 duration_ms=int((time.monotonic() - start) * 1000),
@@ -839,6 +931,7 @@ class SandboxManager:
             sandbox_id,
             command=request.command,
             workdir=request.workdir,
+            paths_with_permission=paths_with_permission,
             ok=result.exit_code == 0,
             exit_code=result.exit_code,
             stdout=_truncate_for_audit(result.stdout),
@@ -860,6 +953,15 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
+        ctx = await self._build_access_context(
+            sandbox_id,
+            extra=request.extra,
+            actual_paths=[request.workdir] if request.workdir else [],
+            op="exec",
+            require_extra=request.require_extra,
+            grant_write=request.grant_write,
+        )
+
         job_id = (
             generate_job_id()
             if request.job_id is None or request.job_id.strip() == ""
@@ -872,6 +974,7 @@ class SandboxManager:
             )
 
         start = time.monotonic()
+        paths_with_permission = list(ctx.extra_roots)
         try:
             result = await self.runtime.exec_background(
                 sandbox_id,
@@ -881,6 +984,7 @@ class SandboxManager:
                     workdir=request.workdir,
                     env=request.env,
                     stdin_data=request.stdin_data,
+                    write_cap_sids=list(ctx.write_cap_sids),
                 ),
             )
         except Exception as exc:
@@ -889,6 +993,7 @@ class SandboxManager:
                 sandbox_id,
                 command=request.command,
                 workdir=request.workdir,
+                paths_with_permission=paths_with_permission,
                 background=True,
                 ok=False,
                 error=repr(exc),
@@ -900,6 +1005,7 @@ class SandboxManager:
             sandbox_id,
             command=request.command,
             workdir=request.workdir,
+            paths_with_permission=paths_with_permission,
             background=True,
             ok=result.started,
             started=result.started,
@@ -986,6 +1092,8 @@ class SandboxManager:
         sandbox_id: str,
         sandbox_path: str,
         content: bytes,
+        extra: object | None = None,
+        require_extra: bool = True,
     ) -> None:
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
@@ -995,10 +1103,15 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
-        # Code-level policy enforcement: ACL fallback for paths where
-        # SetNamedSecurityInfo failed (e.g. D:/agent when ACL is intact this
-        # is a no-op; when ACL failed this is the only defense).
-        await self._enforce_path_policy(sandbox_id, sandbox_path, op="write")
+        ctx = await self._build_access_context(
+            sandbox_id,
+            extra=extra,
+            actual_paths=[sandbox_path],
+            op="write",
+            require_extra=require_extra,
+            grant_write=True,
+        )
+        paths_with_permission = list(ctx.extra_roots)
 
         # One audit row per upload, emitted after the call returns so the
         # payload covers both intent (path/size) and outcome (ok, error,
@@ -1006,16 +1119,17 @@ class SandboxManager:
         # dropped (see ``exec_in_sandbox`` for the same rationale).
         start = time.monotonic()
 
-        def _emit_result(ok: bool, **extra) -> None:
+        def _emit_result(ok: bool, **details) -> None:
             self.audit.log(
                 AuditEventType.FILE_TRANSFER,
                 sandbox_id,
                 direction="upload",
                 sandbox_path=sandbox_path,
+                paths_with_permission=paths_with_permission,
                 size=len(content),
                 ok=ok,
                 duration_ms=int((time.monotonic() - start) * 1000),
-                **extra,
+                **details,
             )
 
         # Fast path: tell the in-sandbox daemon to write the file in its
@@ -1045,7 +1159,9 @@ class SandboxManager:
             # per-transfer summary is one greppable line regardless of
             # whether IPC or the fallback ran.
             try:
-                await self._upload_via_exec_fallback(sandbox_id, sandbox_path, content)
+                await self._upload_via_exec_fallback(
+                    sandbox_id, sandbox_path, content, extra=extra,
+                )
             except Exception as exc:
                 _emit_result(False, error=repr(exc), path="exec_fallback")
                 raise
@@ -1063,6 +1179,7 @@ class SandboxManager:
         sandbox_id: str,
         sandbox_path: str,
         content: bytes,
+        extra: object | None = None,
     ) -> None:
         """Legacy ``bash + cat`` upload path used only when the IPC fast
         path is unavailable (e.g. an older runtime adapter, or a sandbox
@@ -1106,6 +1223,9 @@ class SandboxManager:
                     sandbox_path,
                 ],
                 stdin_data=content,
+                extra=extra,
+                require_extra=False,
+                grant_write=True,
             ),
         )
         if result.exit_code != 0:
@@ -1120,6 +1240,8 @@ class SandboxManager:
         self,
         sandbox_id: str,
         sandbox_path: str,
+        extra: object | None = None,
+        require_extra: bool = True,
     ) -> bytes:
         async with self._lock:
             ref = self._get_sandbox(sandbox_id)
@@ -1129,27 +1251,32 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
-        # Code-level policy enforcement: ACL fallback for deny_read paths
-        # (e.g. D:/software where SetNamedSecurityInfo WinError 5 left no
-        # Deny ACE on the folder; without this check the daemon happily
-        # reads the file since the sandbox uid has Authenticated Users read).
-        await self._enforce_path_policy(sandbox_id, sandbox_path, op="read")
+        ctx = await self._build_access_context(
+            sandbox_id,
+            extra=extra,
+            actual_paths=[sandbox_path],
+            op="read",
+            require_extra=require_extra,
+            grant_write=False,
+        )
 
         # Mirror of ``upload_file_to_sandbox``: a single post-result row
         # carrying intent + outcome. ``size`` is filled in on success
         # (from the actual bytes returned), 0 otherwise.
         start = time.monotonic()
+        paths_with_permission = list(ctx.extra_roots)
 
-        def _emit_result(ok: bool, size: int = 0, **extra) -> None:
+        def _emit_result(ok: bool, size: int = 0, **details) -> None:
             self.audit.log(
                 AuditEventType.FILE_TRANSFER,
                 sandbox_id,
                 direction="download",
                 sandbox_path=sandbox_path,
+                paths_with_permission=paths_with_permission,
                 size=size,
                 ok=ok,
                 duration_ms=int((time.monotonic() - start) * 1000),
-                **extra,
+                **details,
             )
 
         # Fast path: ask the daemon to read the file directly. The daemon
@@ -1191,7 +1318,9 @@ class SandboxManager:
             # the per-transfer summary is one greppable line regardless
             # of which transport landed it.
             try:
-                content = await self._download_via_exec_fallback(sandbox_id, sandbox_path)
+                content = await self._download_via_exec_fallback(
+                    sandbox_id, sandbox_path, extra=extra,
+                )
             except Exception as exc:
                 _emit_result(False, error=repr(exc), path="exec_fallback")
                 raise
@@ -1208,6 +1337,7 @@ class SandboxManager:
         self,
         sandbox_id: str,
         sandbox_path: str,
+        extra: object | None = None,
     ) -> bytes:
         """Legacy bash+base64 download path used only when the IPC fast
         path is unavailable."""
@@ -1227,6 +1357,9 @@ class SandboxManager:
                     "jiuwenbox-download",
                     sandbox_path,
                 ],
+                extra=extra,
+                require_extra=False,
+                grant_write=False,
             ),
         )
         if result.exit_code == 44:
@@ -1258,13 +1391,14 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
-        # Code-level policy enforcement: deny_read fallback. The HTTP API
-        # endpoint ``GET /sandboxes/{id}/files?sandbox_path=...`` walks the
-        # directory in-process via the daemon, which inherits the sandbox
-        # token. If the Deny Read ACE failed to apply (D:/software case),
-        # the daemon still has directory-list permission via Authenticated
-        # Users - this check blocks the listing at the API layer.
-        await self._enforce_path_policy(sandbox_id, request.sandbox_path, op="read")
+        await self._build_access_context(
+            sandbox_id,
+            extra=request.extra,
+            actual_paths=[request.sandbox_path],
+            op="read",
+            require_extra=request.require_extra,
+            grant_write=False,
+        )
 
         # Fast path: ask the daemon to walk the directory in-process.
         # Saves the python3 cold start and the fork+exec that the legacy
@@ -1370,6 +1504,9 @@ class SandboxManager:
                     "1" if request.include_files else "0",
                     "1" if request.include_dirs else "0",
                 ],
+                extra=request.extra,
+                require_extra=False,
+                grant_write=False,
             ),
         )
         if result.exit_code == 44:
@@ -1390,13 +1527,17 @@ class SandboxManager:
         sandbox_path: str,
         pattern: str,
         exclude_patterns: list[str] | None = None,
+        extra: object | None = None,
+        require_extra: bool = True,
     ) -> list[dict[str, object]]:
-        # Code-level policy enforcement: deny_read fallback (mirrors
-        # ``list_files_in_sandbox``). ``search_files_in_sandbox`` delegates
-        # to ``exec_in_sandbox`` running an in-sandbox python3 walker, which
-        # inherits the sandbox token - if Deny Read ACE failed to apply on
-        # the search root, the walker would still enumerate the subtree.
-        await self._enforce_path_policy(sandbox_id, sandbox_path, op="read")
+        ctx = await self._build_access_context(
+            sandbox_id,
+            extra=extra,
+            actual_paths=[sandbox_path],
+            op="read",
+            require_extra=require_extra,
+            grant_write=False,
+        )
 
         script = textwrap.dedent(
             """
@@ -1459,6 +1600,9 @@ class SandboxManager:
                     pattern,
                     json.dumps(exclude_patterns or []),
                 ],
+                extra=extra,
+                require_extra=False,
+                grant_write=False,
             ),
         )
         if result.exit_code == 44:
@@ -1469,7 +1613,17 @@ class SandboxManager:
             raise SandboxStateError(
                 f"Failed to search files in '{sandbox_path}': {result.stderr or result.stdout}"
             )
-        return json.loads(result.stdout or "[]")
+        items = json.loads(result.stdout or "[]")
+        if extra_enforced() and ctx.extra_roots:
+            from jiuwenbox.server.access import path_in_roots
+
+            kept = []
+            for item in items:
+                item_path = str(item.get("path") or "")
+                if item_path and path_in_roots(item_path, list(ctx.extra_roots)):
+                    kept.append(item)
+            items = kept
+        return items
 
     async def get_logs(self, sandbox_id: str) -> str:
         async with self._lock:
@@ -1507,6 +1661,7 @@ class SandboxManager:
         sandbox_id: str,
         sandbox_path: str,
         op: str,
+        extra_roots: list[str] | None = None,
     ) -> None:
         """代码层路径策略校验 (ACL/Landlock 失效时的 fallback 防御).
 
@@ -1514,6 +1669,8 @@ class SandboxManager:
         ``deny_write`` 列表, 在 HTTP API 入口对 ``sandbox_path`` 做权限判定.
         ACL 设置失败时 (典型: ``D:/software`` owner 不是当前用户,
         ``SetNamedSecurityInfo`` WinError 5), 这层校验仍能拦截.
+
+        Windows 上若提供 ``extra_roots``, 额外校验路径落在 extra.paths 内.
 
         仅校验 ``deny_*`` 黑名单规则 (用户需求: deny_read / deny_write 拦截).
         不做 ``allow_*`` 白名单检查 — ACL 语义中 ``allow_read`` 是叠加在预装系统
@@ -1523,12 +1680,17 @@ class SandboxManager:
 
         - 命中 ``deny_*`` → 拒绝 (raise CodePolicyDenialError → HTTP 403)
         - 其余放行 (留给 ACL/Landlock 决定, 与现有行为一致)
-
-        含 ``{{ workspace }}`` 等占位符的规则跳过 (workspace per-sandbox 路径
-        此处不可得, workspace 是用户自有目录, ACL 通常生效, 不需要代码层兜底).
         """
         if op not in ("read", "write"):
             raise ValueError(f"invalid op {op!r}, must be 'read' or 'write'")
+
+        if extra_enforced() and extra_roots is not None and sandbox_path:
+            from jiuwenbox.server.access import path_in_roots
+
+            if extra_roots and not path_in_roots(sandbox_path, extra_roots):
+                raise AccessDeniedError(
+                    f"path {sandbox_path!r} is outside extra.paths (sandbox={sandbox_id})"
+                )
 
         policy = await self.get_policy(sandbox_id)
         if policy is None:
@@ -1544,8 +1706,7 @@ class SandboxManager:
         else:
             deny_rules = list(getattr(fs, "deny_write", None) or [])
 
-        # 含占位符的规则跳过 (workspace per-sandbox 路径此处不可得, ACL 兜底)
-        deny_rules = [r for r in deny_rules if r and "{{" not in r]
+        deny_rules = [r for r in deny_rules if r]
         if not deny_rules:
             return  # 无可校验规则
 

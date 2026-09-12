@@ -21,29 +21,19 @@ windows:
     # 一次性预装读 ACL 的路径 (安装阶段, 需提权). 只预装 jbx-sandbox 默认读不了且沙箱运行必需的目录.
     # 不预装系统/用户大目录 (USERPROFILE/SystemRoot/ProgramFiles/ProgramData 的默认 DACL 已给 BUILTIN\Users 组授 GR/GE 且继承, jbx-sandbox 在 Users 组能读);
     # 且 USERPROFILE 巨型目录递归 grant ACE 极慢会卡死 install, 沙箱要读的 workspace/venv/产物由会话时 apply_sandbox_acl 精确授权.
-    # 实际预装只有 tool_paths 展开的工具目录 (D:\Files\Git 等, owner=Administrators 不在系统目录下, 默认 ACL 不放行 Users → 需预装; 目录小递归快).
-    # 由 collect_preinstall_paths 自动合并 read_acl_preinstall + tool_paths, 故这里留空即可.
     read_acl_preinstall: []
-    # 沙箱可写路径 (合成 SID 授 Allow Write+Execute+Delete). 第一个路径作为沙箱 workspace 根.
-    allow_write:
-      - "{{ workspace }}"
-    # 沙箱可读路径 (合成 SID + 真实 SID 授 Allow Read+Execute).
-    # 不再单独授 skills: 可读范围由 allow_write + claw-desktop 数据目录 ACL 覆盖.
+    # 默认工作区: 与 allow_write 一样打写 ACE, 且每次 exec 的受限 token 都带上
+    # 这些根的 cap SID. 沙箱默认可写, 不依赖 extra.paths / HITL.
+    # 会话工作区 / 项目目录由 sysop_builder 以真实路径 append 进来.
+    workspace: []
+    # 写白名单: 目录打 (OI)(CI) Allow Write 并传播到已有子树.
+    # 只打 ACE, 不默认进入受限 token (写这些路径仍要 extra.paths).
+    # apply_sandbox_acl 不再有「allow_write 为空则回退 [workspace]」的隐式分支.
+    allow_write: []
+    # 读: 黑名单. Users 默认可读的不必列; 本列表只补默认读不到的路径. 空 = 不额外授读.
     allow_read: []
-    # 在 allow 范围内精细化封锁 (Deny Write).
-    deny_write:
-      - "{{ workspace }}/.git"
-      - "{{ workspace }}/.env"
-    # 非默认安装路径的工具目录/可执行. 受限 token 默认读不了 → CreateProcessAsUserW 返回 WinError 2/5.
-    # 配置后: ① 加进 read ACL 预装 (含 Execute) ② 拼进子进程 PATH. 全部留空则跳过, 依赖系统 PATH + 默认预装目录.
-    # 运行时自动检测 (policy_reader._resolve_tool_paths): 留空字段在 load_policy 时用 sys.executable 反推 —
-    # OfficeAce 预制 python 跑时 (tools/python/python.exe) 反推 tools 目录填 python_dir/node_dir; git_dir/bash_path 从 PATH 检测.
-    # 开发环境: sys.executable 指向 .venv\Scripts\python.exe. 显式填写的字段不被覆盖.
-    tool_paths:
-      git_dir: ''        # 自动检测; OfficeAce 包未带 git 时留空
-      node_dir: ''       # 自动检测 (OfficeAce tools/node)
-      python_dir: ''     # 自动检测 (sys.executable 反推)
-      bash_path: ''      # git_dir 解析后自动拼 usr/bin/bash.exe
+    # 写白名单内的 Deny, 或对其它路径的明确禁写.
+    deny_write: []
 
   network:
     # wfp_loopback_proxy: WFP Block 所有出站 + Permit loopback:port_range. disabled: 不装 WFP filter, 沙箱可直接访问外网.

@@ -1251,7 +1251,7 @@ def main() -> None:
     # Read defaults from environment variables (for multi-instance support)
     # FRONTEND_PORT is used for this HTTP static server
     # WEB_PORT is the WebChannel websocket endpoint that this server proxies to
-    default_host = os.getenv("FRONTEND_HOST", "localhost")
+    default_host = os.getenv("FRONTEND_HOST", "127.0.0.1")
     default_port = int(os.getenv("FRONTEND_PORT", "5173"))
     web_port = os.getenv("WEB_PORT", "19000")  # WebChannel websocket port (proxy target)
     default_proxy = os.getenv("GATEWAY_URL", f"http://127.0.0.1:{web_port}")
