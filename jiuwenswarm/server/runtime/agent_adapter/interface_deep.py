@@ -8423,6 +8423,7 @@ class JiuWenSwarmDeepAdapter:
             session_id=session_id
         )
         if self._permission_rail is not None:
+            self._sync_permission_workspace(self._permission_rail)
             self._permission_rail.update_config(permission_config)
             logger.info("[JiuWenSwarmDeepAdapter] _permission_rail config hot-updated")
         elif permission_config.get("enabled", False):
@@ -8436,6 +8437,7 @@ class JiuWenSwarmDeepAdapter:
                 if isinstance(config_base, dict)
                 else "gpt-4",
                 permission_config=self._agent_permissions_body,
+                resolve_workspace_dir=self._permission_workspace_dir,
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -8485,6 +8487,33 @@ class JiuWenSwarmDeepAdapter:
         """
         return self._resolve_permission_config_for_agent(session_id="")
 
+    def _permission_workspace_dir(self) -> Path:
+        user_ws = getattr(self, "_user_workspace_dir", None)
+        if user_ws is not None:
+            return collapse_nested_agent_workspace_dir(
+                Path(user_ws) / "agent" / "jiuwenclaw_workspace"
+            )
+        ws = getattr(self, "_workspace_dir", None)
+        if ws:
+            return collapse_nested_agent_workspace_dir(ws)
+        return collapse_nested_agent_workspace_dir(get_agent_workspace_dir())
+
+    def _sync_permission_workspace(self, rail: Any | None) -> None:
+        """把 file_guard.workspace 绑到本 Agent 工作区，不重建。
+
+        重建由随后的 ``update_config`` / ``set_trusted_dirs`` 完成。
+        """
+        if rail is None:
+            return
+        workspace = self._permission_workspace_dir()
+        host = getattr(rail, "_host", None)
+        if host is not None:
+            host.resolve_workspace_dir = self._permission_workspace_dir
+        engine = getattr(rail, "_engine", None)
+        if engine is None:
+            return
+        engine._workspace_root = workspace
+
     def _build_permission_rail_for_agent(
         self,
         config: dict[str, Any] | None = None,
@@ -8497,6 +8526,7 @@ class JiuWenSwarmDeepAdapter:
             llm=llm if llm is not None else self._model,
             model_name=model_name,
             permission_config=self._agent_permissions_body,
+            resolve_workspace_dir=self._permission_workspace_dir,
         )
 
     def _bind_agent_permissions_base(self) -> Any:
@@ -10669,6 +10699,7 @@ class JiuWenSwarmDeepAdapter:
         permission_rail = getattr(self, "_permission_rail", None)
         if permission_rail is not None and bind_request:
             try:
+                self._sync_permission_workspace(permission_rail)
                 permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
             except Exception:
                 logger.debug(
