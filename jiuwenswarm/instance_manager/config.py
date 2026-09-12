@@ -159,6 +159,26 @@ def _resolved_base_port(port_type: str) -> int:
     return BASE_PORTS.get(port_type, 10000)
 
 
+def pinned_port_types() -> set[str]:
+    """Return port types whose base is set via ``JIUWENSWARM_<TYPE>_PORT``.
+
+    Only values ``_resolved_base_port`` honors count: it ignores a malformed one
+    and uses the default, so treating it as pinned would fail startup over a port
+    nobody chose. Pins the base; the effective port stays ``base + index * 1000``.
+    """
+    pinned: set[str] = set()
+    for port_type, env_key in PORT_ENV_OVERRIDES.items():
+        raw = os.getenv(env_key)
+        if not raw:
+            continue
+        try:
+            int(raw)
+        except ValueError:
+            continue
+        pinned.add(port_type)
+    return pinned
+
+
 def compute_auto_port(port_type: str, index: int) -> int:
     """Compute auto-allocated port for an instance.
 

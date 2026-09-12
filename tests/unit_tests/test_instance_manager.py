@@ -60,6 +60,7 @@ from jiuwenswarm.instance_manager import (
     PORT_ENV_NAMES,
     PORT_ENV_OVERRIDES,
     STALE_LOCK_TIMEOUT,
+    pinned_port_types,
 )
 from jiuwenswarm.instance_manager.config import (
     _format_url_hint,
@@ -2140,3 +2141,145 @@ class TestIssue2788SafeStop:
         write_pid.assert_called_once()
         assert write_pid.call_args.args == (config, os.getpid(), 123.5, {"schema_version": 2})
         metadata.assert_called_once_with({"app": process}, 123.5)
+
+
+class TestPinnedPortTypes:
+    """``pinned_port_types`` must agree with what ``_resolved_base_port`` honours."""
+
+    @staticmethod
+    def test_nothing_pinned_by_default(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        assert pinned_port_types() == set()
+
+    @staticmethod
+    def test_valid_values_are_pinned(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "19000")
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "19001")
+        assert pinned_port_types() == {"web", "gateway"}
+
+    @staticmethod
+    def test_malformed_value_is_not_pinned(monkeypatch):
+        """_resolved_base_port ignores a non-int and uses the default, so this
+        must not count as pinned -- otherwise startup hard-fails over a port the
+        operator never actually chose."""
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "not-a-port")
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "")
+        assert pinned_port_types() == set()
+
+
+class TestPinnedPortConflictsAbort:
+    """A pinned port that is taken must stop startup, never relocate silently."""
+
+    @staticmethod
+    def _clear(monkeypatch):
+        for env_key in PORT_ENV_OVERRIDES.values():
+            monkeypatch.delenv(env_key, raising=False)
+
+    @staticmethod
+    def test_pinned_conflict_aborts_without_scanning(monkeypatch):
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["gateway"], "19001")
+
+        scanned = []
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.find_available_ports",
+            lambda **kw: scanned.append(kw) or (calculate_instance_ports(1), 1),
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+        conflicts = [("gateway", 19001)]
+
+        rc = start_services._resolve_ports_with_fallback(cmd, conflicts=conflicts)
+
+        assert rc == 1
+        assert scanned == [], "a pinned group must never be relocated"
+        # Ports left untouched, so nothing downstream can bind a shifted group.
+        assert cmd.config.ports["gateway"] == 19001
+
+    @staticmethod
+    def test_unpinned_conflict_still_scans(monkeypatch, tmp_path):
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        cfg_env = tmp_path / "config" / ".env"
+        cfg_env.parent.mkdir(parents=True, exist_ok=True)
+        cfg_env.write_text("API_KEY=sk-keep\n", encoding="utf-8")
+        monkeypatch.setattr("jiuwenswarm.start_services.get_env_file", lambda: cfg_env)
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.collect_all_ports",
+            lambda exclude_name=None: [],
+        )
+        occupied = set(calculate_instance_ports(0).values())
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.config.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+
+        rc = start_services._resolve_ports_with_fallback(
+            cmd, conflicts=[("gateway", 19001)]
+        )
+
+        assert rc is None
+        assert cmd.config.ports["gateway"] == 20001
+
+    @staticmethod
+    def test_only_the_conflicting_type_matters(monkeypatch, tmp_path):
+        """Pinning web while gateway (auto-allocated) conflicts still scans."""
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["web"], "19000")
+        cfg_env = tmp_path / "config" / ".env"
+        cfg_env.parent.mkdir(parents=True, exist_ok=True)
+        cfg_env.write_text("API_KEY=sk-keep\n", encoding="utf-8")
+        monkeypatch.setattr("jiuwenswarm.start_services.get_env_file", lambda: cfg_env)
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.collect_all_ports",
+            lambda exclude_name=None: [],
+        )
+        occupied = set(calculate_instance_ports(0).values())
+        monkeypatch.setattr(
+            "jiuwenswarm.instance_manager.config.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.start_services.is_port_available",
+            lambda host, port: port not in occupied,
+        )
+
+        cmd = start_services.InstanceCommand("default")
+        assert cmd.validate_and_load() is None
+
+        rc = start_services._resolve_ports_with_fallback(
+            cmd, conflicts=[("gateway", 19001)]
+        )
+
+        assert rc is None
+
+    @staticmethod
+    def test_reject_helper_is_selective(monkeypatch):
+        from jiuwenswarm import start_services
+
+        TestPinnedPortConflictsAbort._clear(monkeypatch)
+        monkeypatch.setenv(PORT_ENV_OVERRIDES["frontend"], "5173")
+
+        assert start_services._reject_pinned_port_conflicts([]) is None
+        assert (
+            start_services._reject_pinned_port_conflicts([("gateway", 19001)]) is None
+        )
+        assert start_services._reject_pinned_port_conflicts([("frontend", 5173)]) == 1
