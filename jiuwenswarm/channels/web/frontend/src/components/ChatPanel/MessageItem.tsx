@@ -326,6 +326,7 @@ export const MessageItem = memo(function MessageItem({
     commandInput,
     commandOutput,
     agentTemplateName,
+    crossSession,
   } = message;
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
@@ -814,6 +815,18 @@ export const MessageItem = memo(function MessageItem({
               <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta" data-testid="chat-panel-message-goal-badge">
                 <Target className="w-3 h-3" strokeWidth={2} />
                 {t('goal.badge')}
+              </span>
+            )}
+
+            {isUser && crossSession && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta"
+                data-testid="chat-panel-message-cross-session-badge"
+                title={crossSession.sourceSessionId}
+              >
+                {t('crossSession.messageBadge', {
+                  title: crossSession.sourceTitle || crossSession.sourceSessionId,
+                })}
               </span>
             )}
 

@@ -32,7 +32,10 @@ from jiuwenswarm.common.utils import (
     get_config_file,
     mask_sensitive,
 )
-from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+)
 from jiuwenswarm.common.todo_snapshot import load_todo_snapshot_for_frontend
 from jiuwenswarm.common.e2a.agent_compat import e2a_to_agent_request
 from jiuwenswarm.common.e2a.constants import (
@@ -846,8 +849,6 @@ def _is_restorable_history_record(record: Any) -> bool:
 def _todo_snapshot_session_fields(session_id: str) -> dict[str, str | None]:
     """Read locked session fields that decide where ``todo.json`` lives."""
     try:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         metadata = get_session_metadata(session_id, enable_writeback=False) or {}
     except Exception:
         metadata = {}
@@ -3028,10 +3029,6 @@ class AgentWebSocketServer:
                 metadata=request.metadata,
             )
         else:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
             meta = get_session_metadata(
                 sid,
                 cache_bust=True,
@@ -3286,10 +3283,6 @@ class AgentWebSocketServer:
         data = params.get("data") if isinstance(params.get("data"), dict) else {}
         effective_user_id = str(request.user_id or "").strip()
         if not effective_user_id and request.session_id:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                get_session_metadata,
-            )
-
             effective_user_id = str(
                 (get_session_metadata(request.session_id) or {}).get("user_id") or ""
             ).strip()
@@ -3503,12 +3496,14 @@ class AgentWebSocketServer:
         )
         mode = deprecate_mode(metadata.get("mode")) if metadata else ""
         channel_id = str(metadata.get("channel_id") or "").strip().lower()
-        if (
+        # metadata 缺失 / 非单 Agent 模式 / 渠道不支持 / cron 会话，均视为目标不可用
+        target_unsupported = (
             not metadata
             or not is_single_agent_mode(mode)
             or channel_id not in {"web", "tui"}
-            or str(metadata.get("cron_id") or "").strip()
-        ):
+            or bool(str(metadata.get("cron_id") or "").strip())
+        )
+        if target_unsupported:
             return SessionMessageExecutionResult(
                 status="failed",
                 error_code="UNSUPPORTED_TARGET",
@@ -3562,7 +3557,47 @@ class AgentWebSocketServer:
             user_id=stored_user_id,
         )
 
+        public_cross_session = {
+            **cross_session,
+            "content": record.content,
+        }
+
+        def _with_cross_session_marker(
+            payload: dict[str, Any],
+            *,
+            request_id: str,
+        ) -> dict[str, Any]:
+            return {
+                **payload,
+                # ask_user 等事件的 request_id 是交互关联 ID，不能覆盖；
+                # 后台轮自身的稳定身份单独使用 turn_request_id。
+                "request_id": payload.get("request_id") or request_id,
+                "turn_request_id": request_id,
+                "message_origin": SESSION_MESSAGE_ORIGIN,
+                "session_message_id": record.message_id,
+                "cross_session": public_cross_session,
+            }
+
+        await self.send_push(
+            build_server_push_message(
+                session_id=record.target_session_id,
+                request_id=request.request_id,
+                payload=_with_cross_session_marker(
+                    {
+                        "event_type": "chat.processing_status",
+                        "session_id": record.target_session_id,
+                        "is_processing": True,
+                        "is_complete": False,
+                        "content": record.content,
+                    },
+                    request_id=request.request_id,
+                ),
+                fallback_channel_id=channel_id,
+            )
+        )
+
         outcome_tracker = _TurnOutcomeTracker()
+        processing_finished = False
         runtime_stream = self._execution_runtime().stream(
             request,
             trigger_hook=False,
@@ -3617,6 +3652,18 @@ class AgentWebSocketServer:
                         outcome_tracker.fail(
                             "Failed to persist user-question correlation"
                         )
+                if isinstance(payload, dict):
+                    payload = _with_cross_session_marker(
+                        payload,
+                        request_id=event.request_id or request.request_id,
+                    )
+                    processing_finished = (
+                        processing_finished
+                        or (
+                            payload.get("event_type") == "chat.processing_status"
+                            and payload.get("is_processing") is False
+                        )
+                    )
                 push = build_server_push_message(
                     session_id=record.target_session_id,
                     request_id=event.request_id or request.request_id,
@@ -3626,7 +3673,26 @@ class AgentWebSocketServer:
                 push["is_complete"] = event.is_complete
                 await self.send_push(push)
         finally:
-            await runtime_stream.aclose()
+            try:
+                await runtime_stream.aclose()
+            finally:
+                if not processing_finished:
+                    await self.send_push(
+                        build_server_push_message(
+                            session_id=record.target_session_id,
+                            request_id=request.request_id,
+                            payload=_with_cross_session_marker(
+                                {
+                                    "event_type": "chat.processing_status",
+                                    "session_id": record.target_session_id,
+                                    "is_processing": False,
+                                    "is_complete": True,
+                                },
+                                request_id=request.request_id,
+                            ),
+                            fallback_channel_id=channel_id,
+                        )
+                    )
 
         outcome = outcome_tracker.outcome()
         terminal_status = {
@@ -4190,7 +4256,6 @@ class AgentWebSocketServer:
             find_or_create_code_project_for_tui_params,
         )
         from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
             rebind_session_project,
         )
 
@@ -4532,8 +4597,6 @@ class AgentWebSocketServer:
 
 
     async def _find_team_session_ids(self, team_name: str) -> list[str]:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         sessions_dir = get_agent_sessions_dir()
         if not sessions_dir.exists():
             return []
@@ -4712,7 +4775,6 @@ class AgentWebSocketServer:
             return None
 
         from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata,
             update_session_metadata,
         )
 
@@ -4834,8 +4896,6 @@ class AgentWebSocketServer:
 
     @staticmethod
     def _legacy_team_bindings_from_sessions(known_team_names: set[str]) -> list[dict[str, Any]]:
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
-
         sessions_dir = get_agent_sessions_dir()
         if not sessions_dir.exists():
             return []
@@ -5989,7 +6049,6 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import (
             TeamMonitorHandler,
         )
-        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
 
         params = request.params if isinstance(request.params, dict) else {}
         session_id = str(params.get("session_id") or request.session_id or "").strip()

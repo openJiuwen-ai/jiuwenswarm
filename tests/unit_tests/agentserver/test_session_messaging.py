@@ -53,6 +53,30 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
 )
 
 
+async def _wait_for_status(
+    store: SessionMessageStore,
+    message_id: str,
+    status: str,
+    *,
+    timeout: float = 5.0,
+) -> None:
+    """轮询等待消息状态到位（时间封顶）。
+
+    worker 的 transition_status 走 asyncio.to_thread，事件循环里的
+    sleep(0) 轮询迭代数封顶在慢机器上等不到线程池往返；改为真实
+    小步 sleep + wait_for 超时兜底。
+    """
+
+    async def _check() -> None:
+        while True:
+            record = store.get(message_id)
+            if record is not None and record.status == status:
+                return
+            await asyncio.sleep(0.01)
+
+    await asyncio.wait_for(_check(), timeout=timeout)
+
+
 def _enqueue(store: SessionMessageStore, *, key: str, content: str = "check"):
     return store.enqueue(
         owner_scope_id="user-1",
@@ -216,14 +240,10 @@ async def test_service_persists_while_disconnected_then_runs_target_fifo(
 
     allow_first.set()
     await asyncio.wait_for(all_finished.wait(), timeout=1)
-    for _ in range(20):
-        if store.get(second["message_id"]).status == "succeeded":
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, first["message_id"], "succeeded")
+    await _wait_for_status(store, second["message_id"], "succeeded")
 
     assert executed == ["first", "second"]
-    assert store.get(first["message_id"]).status == "succeeded"
-    assert store.get(second["message_id"]).status == "succeeded"
     await service.stop()
 
 
@@ -252,10 +272,7 @@ async def test_uncertain_execution_blocks_later_messages_without_replay(
         _source("uncertain-2"), target_session_id="target-1", message="second"
     )
     await asyncio.wait_for(attempted.wait(), timeout=1)
-    for _ in range(20):
-        if store.get(first["message_id"]).status == "unknown":
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, first["message_id"], "unknown")
 
     assert store.get(first["message_id"]).status == "unknown"
     assert store.get(second["message_id"]).status == "queued"
@@ -415,10 +432,7 @@ async def test_failed_target_delete_resumes_queued_consumer(
 
     await service.abort_target_delete("target-1")
     await asyncio.wait_for(executed.wait(), timeout=1)
-    for _ in range(20):
-        if store.get(sent["message_id"]).status == "succeeded":
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, sent["message_id"], "succeeded")
 
     assert store.get(sent["message_id"]).status == "succeeded"
     await service.stop()
@@ -667,10 +681,7 @@ async def test_transient_sqlite_claim_error_retries_without_dropping_message(
     )
 
     await asyncio.wait_for(executed.wait(), timeout=1)
-    for _ in range(20):
-        if store.get(sent["message_id"]).status == "succeeded":
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, sent["message_id"], "succeeded")
 
     assert attempts == 2
     assert store.get(sent["message_id"]).status == "succeeded"
@@ -713,10 +724,7 @@ async def test_exhausted_claim_retry_keeps_message_queued_for_next_worker_loop(
     )
 
     await asyncio.wait_for(executed.wait(), timeout=1)
-    for _ in range(20):
-        if store.get(sent["message_id"]).status == "succeeded":
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, sent["message_id"], "succeeded")
 
     assert attempts == 4
     assert store.get(sent["message_id"]).status == "succeeded"
@@ -864,10 +872,7 @@ async def test_resume_completion_wins_race_with_original_waiting_result(
         failed=False,
     ) is True
     allow_original_return.set()
-    for _ in range(20):
-        if not service._workers:
-            break
-        await asyncio.sleep(0)
+    await _wait_for_status(store, sent["message_id"], "succeeded")
 
     assert store.get(sent["message_id"]).status == "succeeded"
     await service.stop()
@@ -1317,7 +1322,22 @@ async def test_agentserver_executes_claimed_message_in_target_runtime(
         record.message_id
     )
     assert "input_mode" not in request.params
-    assert pushed[0]["session_id"] == "target-1"
+    assert [push["payload"]["event_type"] for push in pushed] == [
+        "chat.processing_status",
+        "chat.final",
+        "chat.processing_status",
+    ]
+    for push in pushed:
+        payload = push["payload"]
+        assert push["session_id"] == "target-1"
+        assert payload["request_id"] == "execution-1"
+        assert payload["turn_request_id"] == "execution-1"
+        assert payload["message_origin"] == "cross_session_agent"
+        assert payload["session_message_id"] == record.message_id
+        assert payload["cross_session"]["source_session_id"] == "source-1"
+        assert payload["cross_session"]["content"] == "check"
+    assert pushed[0]["payload"]["is_processing"] is True
+    assert pushed[-1]["payload"]["is_processing"] is False
 
 
 @pytest.mark.asyncio
@@ -1382,7 +1402,9 @@ async def test_agentserver_persists_question_correlation_before_push(
     result = await server.execute_internal_session_message(record)
 
     assert result.status == "waiting_user"
-    assert ordering[0] == (
+    assert ordering[0][0] == "push"
+    assert ordering[0][1]["payload"]["event_type"] == "chat.processing_status"
+    assert ordering[1] == (
         "persist",
         record.message_id,
         {
@@ -1390,7 +1412,10 @@ async def test_agentserver_persists_question_correlation_before_push(
             "interrupt_source": "ask_user_interrupt",
         },
     )
-    assert ordering[1][0] == "push"
+    assert ordering[2][0] == "push"
+    assert ordering[2][1]["payload"]["event_type"] == "chat.ask_user_question"
+    assert ordering[2][1]["payload"]["request_id"] == "tool-call-1"
+    assert ordering[2][1]["payload"]["turn_request_id"] == "execution-1"
 
 
 @pytest.mark.asyncio
@@ -2071,11 +2096,8 @@ async def test_rearmed_mailbox_worker_waits_for_active_user(tmp_path) -> None:
 
         await admission.end_user("target-1")
         await asyncio.wait_for(successor_started.wait(), timeout=1)
-        for _ in range(20):
-            record = store.get(successor.message_id)
-            if record is not None and record.status == "succeeded":
-                break
-            await asyncio.sleep(0)
+        await _wait_for_status(store, successor.message_id, "succeeded")
+        record = store.get(successor.message_id)
         assert record is not None
         assert record.status == "succeeded"
     finally:
@@ -2198,12 +2220,9 @@ async def test_execution_watchdog_moves_wedged_execution_to_unknown(
         sent = await service.send_message(
             _source("watchdog"), target_session_id="target-1", message="stuck"
         )
-        for _ in range(200):
-            record = store.get(sent["message_id"])
-            if record is not None and record.status == "unknown":
-                break
-            await asyncio.sleep(0.02)
+        await _wait_for_status(store, sent["message_id"], "unknown")
 
+        record = store.get(sent["message_id"])
         assert record is not None
         assert record.status == "unknown"
         assert record.last_error_code == "EXECUTION_WATCHDOG_TIMEOUT"
