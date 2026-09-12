@@ -1,5 +1,8 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
+import json
+import re
+
 from jiuwenswarm.server.runtime.a2ui.prompt_instructions import (
     build_a2ui_autonomy_instruction,
     build_a2ui_browser_workflow_instruction,
@@ -9,6 +12,7 @@ from jiuwenswarm.server.runtime.a2ui.runtime.prompt import (
     build_a2ui_client_event_prompt,
     build_a2ui_prompt_section,
 )
+from jiuwenswarm.server.runtime.agent_adapter.user_turn import envelope_clock_fields
 
 
 def test_a2ui_prompt_discourages_icon_ligature_dependency():
@@ -148,3 +152,26 @@ def test_a2ui_zh_client_event_prompt_is_readable():
     assert "张三" in prompt
     assert "submit_form" in prompt
     assert "浣犳敹" not in prompt
+
+
+def test_a2ui_client_event_prompt_carries_the_envelope_clock():
+    # ``UserTurn.render`` returns an A2UI client-event prompt before its own
+    # envelope is built, so this payload is the only place the turn can state a
+    # date. Without one it reaches the model with no clock at any position --
+    # and the system prompt deliberately holds none, because a value that ticks
+    # between calls at the head of the context invalidates the KV-cache prefix.
+    prompt = build_a2ui_client_event_prompt(
+        {
+            "type": "a2ui.client_event",
+            "event": {"userAction": {"name": "submit_form", "context": {}}},
+        },
+        channel="web",
+        language="en",
+    )
+
+    payload = json.loads(prompt[prompt.index("{"):])
+
+    # Same field names and same zone as the ordinary envelope, so a client event
+    # and a typed message are never read against two different clocks.
+    assert payload["timezone"] == envelope_clock_fields()["timezone"]
+    assert re.fullmatch(r"\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}", payload["timestamp"])
