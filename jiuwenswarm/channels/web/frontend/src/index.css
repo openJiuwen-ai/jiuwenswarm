@@ -20,6 +20,10 @@ html {
   overflow-y: hidden;
 }
 
+html.electron-desktop {
+  min-width: 920px;
+}
+
 body {
   margin: 0;
   font: 400 var(--font-size-base)/1.55 var(--font-body);

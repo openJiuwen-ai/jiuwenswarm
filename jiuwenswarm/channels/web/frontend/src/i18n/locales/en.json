@@ -424,7 +424,10 @@
         "title": "Enable RSI",
         "description": "Show the Experiments entry in the sidebar for Harness optimization and artifact optimization (papers and programs). Turn it off to hide the entry."
       },
-      "trajectory_ui_enabled": { "title": "Enable trajectory UI", "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path." },
+      "trajectory_ui_enabled": {
+        "title": "Enable trajectory UI",
+        "description": "Show Chat and Trajectory switching in Agent and Team modes and enable the trajectory observability data path."
+      },
       "task_full_duplex_enabled": {
         "title": "Enable Full-duplex in task chat",
         "description": "Show a Full-duplex action when the composer is empty; it shares the entire screen and continuously listens to the microphone."
@@ -473,7 +476,6 @@
     "validation": {
       "required": "This field is required",
       "integerRange": "Enter an integer from {{min}} to {{max}}"
-
     }
   },
   "trajectory": {
@@ -1648,6 +1650,16 @@
   "browser": {
     "errors": {
       "loadPath": "Failed to load browser settings"
+    },
+    "pane": {
+      "tabLabel": "Browser",
+      "closeTab": "Close browser",
+      "back": "Back",
+      "forward": "Forward",
+      "reload": "Reload",
+      "stop": "Stop",
+      "addressPlaceholder": "Enter URL or search",
+      "unavailable": "Built-in browser unavailable"
     }
   },
   "logsPanel": {
@@ -1823,15 +1835,15 @@
       "autoCollectLabel": "Auto fetch",
       "autoCollectHint": "Fetch automatically at the chosen frequency",
       "timeRangeLabel": "Time Range",
-    "timeRangeWeek": "Last Week",
-    "timeRangeMonth": "Last Month",
-    "timeRangeQuarter": "Last Quarter",
-    "timeRangeCustom": "Custom",
-    "dateRangeTitle": "Select Date Range",
-    "dateRangePlaceholder": "Select a date range",
-    "dateRangeRequired": "Select a custom date range",
-    "addUrl": "+ Add",
-    "frequencyLabel": "Auto fetch frequency",
+      "timeRangeWeek": "Last Week",
+      "timeRangeMonth": "Last Month",
+      "timeRangeQuarter": "Last Quarter",
+      "timeRangeCustom": "Custom",
+      "dateRangeTitle": "Select Date Range",
+      "dateRangePlaceholder": "Select a date range",
+      "dateRangeRequired": "Select a custom date range",
+      "addUrl": "+ Add",
+      "frequencyLabel": "Auto fetch frequency",
       "frequencyHour": "Every {{n}} hour(s)",
       "frequencyDay": "Every {{n}} day(s)",
       "frequencyEvery": "Every",
@@ -1842,7 +1854,7 @@
       "advancedConfig": "Advanced Settings",
       "maxItemsRangeError": "Max items must be 1-10000, or empty for default",
       "previousStep": "Previous",
-    "submit": "Add",
+      "submit": "Add",
       "save": "Save",
       "notConfigured": "Personal context is not configured. Enable it in Settings first.",
       "providerUnauthorized": "Not authorized. Authorize it in Settings first.",
@@ -2645,7 +2657,11 @@
       "createViaChatPrompt": "Help me create an xxx Expert who is good at xxx",
       "back": "Back"
     },
-    "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}", "moreTagsTooltip": "More tags: {{tags}}" },
+    "card": {
+      "open": "Open {{name}} details",
+      "actions": "Actions for {{name}}",
+      "moreTagsTooltip": "More tags: {{tags}}"
+    },
     "states": {
       "installed": "Installed",
       "loadError": "Unable to load the Expert list. Try again.",
@@ -3710,8 +3726,14 @@
     "schedule": {
       "tab": { "interval": "Interval", "cron": "Cron expression", "once": "Once" },
       "interval": { "label": "Every", "unit": "minutes, return to this session" },
-      "cron": { "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)." },
-      "once": { "hint": "Pick a date and time; the job fires once at that moment and is then marked completed", "dateLabel": "Date", "timeLabel": "Time" },
+      "cron": {
+        "hint": "Supports 5 fields (minute hour day month weekday) or the same 7-field format used by Cron tasks (second minute hour day month weekday year)."
+      },
+      "once": {
+        "hint": "Pick a date and time; the job fires once at that moment and is then marked completed",
+        "dateLabel": "Date",
+        "timeLabel": "Time"
+      },
       "summary": {
         "interval": "Return to this session every {{minutes}} min",
         "cron": "{{expr}} ({{timezone}}), return to this session",

@@ -166,6 +166,8 @@ def test_browser_runtime_environment_tracks_mode_and_chrome_path(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _TestableJiuWenSwarmDeepAdapter()
+    monkeypatch.delenv("PLAYWRIGHT_MCP_TARGET_ID", raising=False)
+    monkeypatch.delenv("PLAYWRIGHT_MCP_TARGET_RESOLVER", raising=False)
     monkeypatch.setenv("BROWSER_MANAGED_BINARY", "C:\\stale\\chrome.exe")
     monkeypatch.setattr(
         deep_interface_module,
@@ -239,6 +241,32 @@ def test_browser_runtime_bundle_remains_lazy_when_disabled(
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_LAUNCH_SOURCE" not in os.environ
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_COMMAND" not in os.environ
     assert "JIUWENSWARM_PLAYWRIGHT_MCP_MANAGED_ARGS" not in os.environ
+
+
+def test_browser_runtime_environment_preserves_electron_target_args(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = _TestableJiuWenSwarmDeepAdapter()
+    target_args = json.dumps(
+        [
+            "-y",
+            "--package",
+            "@playwright/mcp@0.0.78",
+            "node",
+            "/electron/target_mcp_wrapper.cjs",
+        ],
+        separators=(",", ":"),
+    )
+    monkeypatch.setenv("PLAYWRIGHT_MCP_TARGET_ID", "sideview-target")
+    monkeypatch.setenv("PLAYWRIGHT_MCP_ARGS", target_args)
+    monkeypatch.setenv("BROWSER_MANAGED_ARGS", "--headless=new")
+
+    adapter._sync_browser_runtime_environment(
+        {"browser": {"chrome_path": "", "headless": True}}
+    )
+
+    assert os.environ["PLAYWRIGHT_MCP_ARGS"] == target_args
+    assert "BROWSER_MANAGED_ARGS" not in os.environ
 
 
 def test_deep_adapter_subagents_includes_browser_by_default_when_runtime_enabled(

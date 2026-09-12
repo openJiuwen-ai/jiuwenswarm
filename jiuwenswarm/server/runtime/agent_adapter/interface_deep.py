@@ -4297,34 +4297,45 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         """Synchronize browser launch settings before browser runtimes are built."""
         headless = self._resolve_headless_from_config(config_base)
-        browser_runtime_enabled = (
-            self._browser_runtime_enabled()
-            if runtime_enabled is None
-            else runtime_enabled
-        )
-        if browser_runtime_enabled:
-            launch = resolve_playwright_mcp_launch()
-            mcp_args = [arg for arg in launch.args if arg != "--headless"]
-            if headless:
-                mcp_args.append("--headless")
-            serialized_args = serialize_playwright_mcp_args(mcp_args)
-            os.environ["PLAYWRIGHT_MCP_COMMAND"] = launch.command
-            os.environ["PLAYWRIGHT_MCP_ARGS"] = serialized_args
-            record_managed_launch_environment(os.environ, launch, serialized_args)
-            logger.info(
-                "[%s] Playwright MCP launch: source=%s, version=%s, runtime=%s",
-                type(self).__name__,
-                launch.source,
-                launch.version,
-                launch.runtime_display_path or "external",
-            )
-        else:
-            clear_managed_launch_environment(os.environ)
-
-        if headless:
-            os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
-        else:
+        electron_target_id = (os.getenv("PLAYWRIGHT_MCP_TARGET_ID") or "").strip()
+        electron_target_resolver = (os.getenv("PLAYWRIGHT_MCP_TARGET_RESOLVER") or "").strip()
+        if electron_target_id or electron_target_resolver:
+            # Electron 内置浏览器必需，不可还原：Electron 传入 JSON argv 数组以
+            # 启动 target-aware 适配器（target_mcp_wrapper.cjs），且 sideview 由
+            # Electron 自持可见窗口，managed-browser 的 headless 参数既无意义也
+            # 不能追加到该命令，否则浏览器 Agent 会脱离 Electron 的精确 target。
+            # TARGET_ID 为静态绑定（旧契约）；TARGET_RESOLVER 为每会话隔离模式，
+            # 由 browser subagent 构建时按会话注入 TargetID。
             os.environ.pop("BROWSER_MANAGED_ARGS", None)
+        else:
+            browser_runtime_enabled = (
+                self._browser_runtime_enabled()
+                if runtime_enabled is None
+                else runtime_enabled
+            )
+            if browser_runtime_enabled:
+                launch = resolve_playwright_mcp_launch()
+                mcp_args = [arg for arg in launch.args if arg != "--headless"]
+                if headless:
+                    mcp_args.append("--headless")
+                serialized_args = serialize_playwright_mcp_args(mcp_args)
+                os.environ["PLAYWRIGHT_MCP_COMMAND"] = launch.command
+                os.environ["PLAYWRIGHT_MCP_ARGS"] = serialized_args
+                record_managed_launch_environment(os.environ, launch, serialized_args)
+                logger.info(
+                    "[%s] Playwright MCP launch: source=%s, version=%s, runtime=%s",
+                    type(self).__name__,
+                    launch.source,
+                    launch.version,
+                    launch.runtime_display_path or "external",
+                )
+            else:
+                clear_managed_launch_environment(os.environ)
+
+            if headless:
+                os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
+            else:
+                os.environ.pop("BROWSER_MANAGED_ARGS", None)
         chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
         if chrome_path:
             os.environ["BROWSER_MANAGED_BINARY"] = chrome_path

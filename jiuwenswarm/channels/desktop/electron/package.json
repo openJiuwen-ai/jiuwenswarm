@@ -1,0 +1,23 @@
+{
+  "name": "jiuwenswarm-electron",
+  "version": "0.2.5.beta1",
+  "private": true,
+  "description": "Electron desktop shell for JiuwenSwarm",
+  "main": "main.cjs",
+  "scripts": {
+    "build:web": "npm --prefix ../../web/frontend run build",
+    "start": "node launch.cjs",
+    "dev": "node launch.cjs --vite-dev",
+    "dev:build": "npm run build:web && node launch.cjs",
+    "check": "node --check launch.cjs && node --check main.cjs && node --check preload.cjs && node --check target_mcp_wrapper.cjs",
+    "electron:build": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1",
+    "electron:build:test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test",
+    "electron:build:frontend-test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test -FrontendOnly",
+    "electron:build:mac": "bash ../../../../scripts/build-electron-exe.sh",
+    "electron:build:mac:test": "bash ../../../../scripts/build-electron-exe.sh --test",
+    "electron:build:mac:frontend-test": "bash ../../../../scripts/build-electron-exe.sh --test --frontend-only"
+  },
+  "devDependencies": {
+    "electron": "^43.5.1"
+  }
+}

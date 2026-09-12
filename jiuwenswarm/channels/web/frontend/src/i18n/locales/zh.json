@@ -364,7 +364,10 @@
         "placeholder": "例如：FunAudioLLM/SenseVoiceSmall"
       },
       "skill_evolution": { "title": "本地技能自动演进与沉淀", "description": "控制本地技能的自动演进和沉淀" },
-      "skill_retrieval_enabled": { "title": "技能自动检索", "description": "基于已安装技能数量，动态选择智能体的技能发现策略" },
+      "skill_retrieval_enabled": {
+        "title": "技能自动检索",
+        "description": "基于已安装技能数量，动态选择智能体的技能发现策略"
+      },
       "skill_retrieval_index_enabled": {
         "title": "技能索引",
         "description": "启用已安装技能的树状目录，增强智能体的结构化技能发现能力（*可能消耗额外 Token）"
@@ -393,20 +396,29 @@
       "video_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
       "video_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
       "video_gen_model": { "title": "模型名称", "placeholder": "例如 bytedance/seedance-2.0-fast" },
-      "video_gen_enabled": { "title": "视频生成", "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。" },
+      "video_gen_enabled": {
+        "title": "视频生成",
+        "description": "启用视频生成工具（文生视频）；关闭后仍保留已保存的模型配置。"
+      },
       "visual_gen_provider": { "title": "模型提供商" },
       "visual_gen_protocol": { "title": "协议" },
       "visual_gen_api_base": { "title": "API 地址", "placeholder": "例如 https://openrouter.ai/api/v1" },
       "visual_gen_api_key": { "title": "API 密钥", "placeholder": "例如 sk-..." },
       "visual_gen_model": { "title": "模型名称", "placeholder": "例如 google/gemini-3.1-flash-image" },
-      "visual_gen_enabled": { "title": "图像生成", "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。" },
+      "visual_gen_enabled": {
+        "title": "图像生成",
+        "description": "启用图像生成工具（文生图）；关闭后仍保留已保存的模型配置。"
+      },
       "permissions_mode": { "title": "全局权限模式", "description": "为普通 Agent 与 Team 选择统一的安全护栏模式。" },
       "a2ui_enabled": { "title": "启用 A2UI", "description": "允许将支持的结果渲染成交互式界面。" },
       "rsi_enabled": {
         "title": "启用 RSI",
         "description": "显示侧边栏「实验」入口，可创建并查看 Harness 优化和产物优化（论文、程序）实验；关闭后隐藏该入口。"
       },
-      "trajectory_ui_enabled": { "title": "启用轨迹界面", "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。" },
+      "trajectory_ui_enabled": {
+        "title": "启用轨迹界面",
+        "description": "在单 Agent 和集群模式中显示对话与轨迹切换，并启用轨迹观测数据链路。"
+      },
       "task_full_duplex_enabled": {
         "title": "启用任务对话全双工入口",
         "description": "输入框为空时显示全双工按钮；点击后共享整个屏幕并持续使用麦克风。"
@@ -455,7 +467,6 @@
     "validation": {
       "required": "此字段为必填项",
       "integerRange": "请输入 {{min}}–{{max}} 之间的整数"
-
     }
   },
   "trajectory": {
@@ -1630,6 +1641,16 @@
   "browser": {
     "errors": {
       "loadPath": "加载浏览器配置失败"
+    },
+    "pane": {
+      "tabLabel": "浏览器",
+      "closeTab": "关闭浏览器",
+      "back": "后退",
+      "forward": "前进",
+      "reload": "刷新",
+      "stop": "停止",
+      "addressPlaceholder": "输入网址或搜索",
+      "unavailable": "内置浏览器不可用"
     }
   },
   "logsPanel": {
@@ -1805,15 +1826,15 @@
       "autoCollectLabel": "自动采集",
       "autoCollectHint": "开启后按频率自动采集",
       "timeRangeLabel": "采集时间",
-    "timeRangeWeek": "最近一周",
-    "timeRangeMonth": "最近一个月",
-    "timeRangeQuarter": "最近三个月",
-    "timeRangeCustom": "自定义",
-    "dateRangeTitle": "选择日期范围",
-    "dateRangePlaceholder": "请选择日期范围",
-    "dateRangeRequired": "请选择自定义时间范围",
-    "addUrl": "+ 添加",
-    "frequencyLabel": "自动采集频率",
+      "timeRangeWeek": "最近一周",
+      "timeRangeMonth": "最近一个月",
+      "timeRangeQuarter": "最近三个月",
+      "timeRangeCustom": "自定义",
+      "dateRangeTitle": "选择日期范围",
+      "dateRangePlaceholder": "请选择日期范围",
+      "dateRangeRequired": "请选择自定义时间范围",
+      "addUrl": "+ 添加",
+      "frequencyLabel": "自动采集频率",
       "frequencyHour": "每 {{n}} 小时",
       "frequencyDay": "每 {{n}} 天",
       "frequencyEvery": "每",
@@ -1824,7 +1845,7 @@
       "advancedConfig": "高级配置",
       "maxItemsRangeError": "单次采集条数须在 1~10000 之间，或留空使用默认",
       "previousStep": "上一步",
-    "submit": "添加",
+      "submit": "添加",
       "save": "保存",
       "notConfigured": "尚未配置个人上下文，请先在设置页开启",
       "providerUnauthorized": "未授权，请先去设置页授权",
@@ -3692,7 +3713,11 @@
       "tab": { "interval": "按间隔", "cron": "Cron 表达式", "once": "单次" },
       "interval": { "label": "每隔", "unit": "分钟回到当前会话" },
       "cron": { "hint": "支持 5 段（分 时 日 月 周）或与普通 Cron 任务相同的 7 段格式（秒 分 时 日 月 周 年）。" },
-      "once": { "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成", "dateLabel": "日期", "timeLabel": "时间" },
+      "once": {
+        "hint": "选择具体日期和时间，到点后回到当前会话触发一次，之后自动标记为已完成",
+        "dateLabel": "日期",
+        "timeLabel": "时间"
+      },
       "summary": {
         "interval": "每 {{minutes}} 分钟回到当前会话",
         "cron": "{{expr}}（{{timezone}}）回到当前会话",

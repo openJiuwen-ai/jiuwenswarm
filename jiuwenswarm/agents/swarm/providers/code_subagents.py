@@ -44,6 +44,7 @@ from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
+from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 from jiuwenswarm.agents.swarm.providers.code_rails import (
     code_runtime_language,
@@ -232,6 +233,12 @@ def build_swarm_browser_agent(factory_kwargs: dict[str, Any], ctx: SwarmBuildCon
     # per-key BrowserInstanceConfig) into spec.factory_kwargs; preserve it and
     # only add the workspace flag.
     spec.factory_kwargs = {**(spec.factory_kwargs or {}), "auto_create_workspace": False}
+    # Electron 每会话隔离：把本会话 sideview 的 CDP TargetID 注入该成员的 MCP
+    # env（resolver 不可用时返回原 settings，回退 openjiuwen 默认行为）。
+    if inp.session_id.strip() and (spec.factory_kwargs or {}).get("settings") is not None:
+        spec.factory_kwargs["settings"] = apply_session_sideview_target(
+            spec.factory_kwargs["settings"], inp.session_id
+        )
     logger.info(
         "[swarm.browser_agent] member_name=%r role=%r browser_key=%r",
         inp.member_name, inp.role, browser_key,

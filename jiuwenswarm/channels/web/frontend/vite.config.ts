@@ -1515,7 +1515,10 @@ const frontendPort = portFromEnv('FRONTEND_PORT', 5173)
 const webPort = portFromEnv('WEB_PORT', 19000)
 const webTarget = `http://127.0.0.1:${webPort}`
 
+const isElectronBuild = process.env.ELECTRON === 'true'
+
 export default defineConfig({
+  base: isElectronBuild ? './' : '/',
   plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   optimizeDeps: {
     include: ['exceljs', 'jszip', 'saxes', 'ssf'],
