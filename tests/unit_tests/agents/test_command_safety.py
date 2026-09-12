@@ -52,6 +52,12 @@ def test_blocks_pkill_on_jiuwenclaw_backend() -> None:
     assert reason is not None
 
 
+def test_does_not_block_engine_owned_patterns() -> None:
+    assert _check_command_safety("rm -rf /tmp/x") is None
+    assert _check_command_safety("shutdown -h now") is None
+    assert _check_command_safety("Remove-Item -Recurse -Force C:\\temp\\build") is None
+
+
 # ── jiuwenswarm-tui spawn 护栏 ────────────────────────────────
 
 

@@ -797,6 +797,7 @@ def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
 _PERMISSION_INTERRUPT_MARKERS = (
     "需要授权才能执行",
     "需要授权后才能使用",
+    "需要确认后才能执行",
     "检测到受保护的文件路径访问",
     "检测到需确认的网络访问",
     "检测到需确认的命令执行",
