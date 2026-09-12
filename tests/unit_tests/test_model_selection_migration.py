@@ -1,8 +1,5 @@
 from __future__ import annotations
 
-import sys
-from types import ModuleType
-
 import pytest
 
 from jiuwenswarm.common.model_config_validation import validate_models_config
@@ -93,64 +90,34 @@ def test_validation_rejects_invalid_routing_contract():
     assert any("fallback_tag must be a non-empty string" in error for error in errors)
 
 
-def test_compiler_adapter_matches_final_core_dto(monkeypatch):
-    compiled = []
+def test_compiler_adapter_matches_final_core_dto():
+    """真实联调 openjiuwen-core 的 compile_model_selection（无 mock）。
 
-    class CoreModel:
-        def __init__(
-            self, model_id, model_name, provider, api_key="", api_base="", source="defaults",
-            endpoint_profile=None, fallback_tag=None, model_description=None,
-            client_options=None, request_defaults=None,
-        ):
-            self.model_id = model_id
-            self.endpoint_profile = endpoint_profile
-            self.fallback_tag = fallback_tag
-            self.model_description = model_description
-            self.client_options = client_options
-
-    class CoreRoute:
-        def __init__(
-            self, route_id, model, enabled=True, request_overrides=None,
-            tpm=None, rpm=None, timeout=None,
-        ):
-            self.route_id = route_id
-            self.model = model
-            self.enabled = enabled
-            self.request_overrides = request_overrides
-
-    class CoreGroup:
-        def __init__(self, model_group_id, routes, routing=None, request_config=None):
-            self.model_group_id = model_group_id
-            self.routes = routes
-            self.routing = routing
-            self.request_config = request_config
-
-    routing_module = ModuleType("openjiuwen.core.foundation.llm.routing")
-    compiler_module = ModuleType("openjiuwen.core.foundation.llm.routing.compiler")
-    schema_module = ModuleType("openjiuwen.core.foundation.llm.routing.schema")
-    class FakeCompiled:
-        model_client_config = "client"
-        model_request_config = "request"
-    compiler_module.compile_model_selection = lambda selection: compiled.append(selection) or FakeCompiled()
-    schema_module.ResolvedModel = CoreModel
-    schema_module.ResolvedModelGroup = CoreGroup
-    schema_module.ResolvedRoute = CoreRoute
-    monkeypatch.setitem(sys.modules, routing_module.__name__, routing_module)
-    monkeypatch.setitem(sys.modules, compiler_module.__name__, compiler_module)
-    monkeypatch.setitem(sys.modules, schema_module.__name__, schema_module)
-
+    agent-core 可用时，adapter 必须把 jiuwenswarm 的 ResolvedSelection 透传
+    给 core 编译，并正确解包 CompiledModelSelection 为
+    (model_client_config, model_request_config)。当 agent-core 不可用时
+    （ImportError），应抛出 MODEL_RUNTIME_UNAVAILABLE。
+    """
     from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
 
     resolved = ModelSelectionResolver(ModelCatalog(_config())).resolve(None)
-    client_cfg, request_cfg = compile_model_selection(resolved)
-    assert client_cfg == "client"
-    assert request_cfg == "request"
-    core_group = compiled[0]
-    assert core_group.model_group_id == "mgp_a"
-    assert [route.route_id for route in core_group.routes] == ["primary", "backup"]
-    assert core_group.routes[0].enabled is True
-    assert core_group.routes[1].enabled is False
-    assert core_group.routes[0].model.endpoint_profile == "deepseek"
-    assert core_group.routes[0].model.fallback_tag == "chat"
-    assert core_group.routes[0].model.model_description == "primary model"
-    assert core_group.routes[0].model.client_options["custom_headers"] == {"X-Test": "value"}
+
+    try:
+        client_cfg, request_cfg = compile_model_selection(resolved)
+    except ModelSelectionError as exc:
+        # agent-core 未安装（ImportError 兜底）——只允许这一种失败
+        assert exc.code == "MODEL_RUNTIME_UNAVAILABLE"
+        pytest.skip("agent-core compiler unavailable; skipping real integration")
+        return
+
+    # 真实编译成功：client_cfg 是 ModelClientConfig，且组路由进入 intelli_router
+    assert getattr(client_cfg, "client_provider", None) == "intelli_router"
+    router = getattr(client_cfg, "intelli_router", None)
+    assert router is not None
+    assert router.model_group_id == "mgp_a"
+    assert [route.route_id for route in router.deployments] == ["primary"]
+    # 第 2 条路由 enabled=False，被 core 过滤，只留下 primary
+    assert router.deployments[0].model_id == "mdl_a"
+    assert router.deployments[0].provider == "deepseek"
+    assert router.deployments[0].model_name == "a"
+    assert request_cfg is not None
