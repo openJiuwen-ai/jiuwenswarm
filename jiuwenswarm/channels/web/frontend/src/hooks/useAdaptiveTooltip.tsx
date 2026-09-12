@@ -1,10 +1,12 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode, type RefObject } from 'react';
 import { createPortal } from 'react-dom';
 
 const VIEWPORT_MARGIN = 8;
 const TOOLTIP_GAP = 6;
 
 type TooltipPlacement = 'top' | 'bottom';
+
+type TooltipAlign = 'center' | 'left' | 'right';
 
 type TooltipState = {
   text: string;
@@ -21,9 +23,18 @@ type TooltipHandlers = {
 
 interface UseAdaptiveTooltipOptions {
   offsetX?: number;
+  /** 垂直偏移（px），正值为向下，默认 0 */
+  offsetY?: number;
+  /** 水平对齐：默认 'center'（居中于触发元素），'left'（tooltip 左缘对齐锚点左缘），'right'（tooltip 右缘对齐锚点右缘）。
+   *  仅 'center' 时 offsetX 生效；left/right 忽略 offsetX，仍受视口边界约束。 */
+  align?: TooltipAlign;
   placement?: TooltipPlacement;
   /** 最大宽度（px），不传时用 .adaptive-tooltip 的默认 320px */
   maxWidth?: number;
+  /** 用此 ref 指向的元素的 rect 作为定位锚点（替代事件触发元素）。
+   *  典型场景：hover 子元素（被截断的标题 span）时，tooltip 相对于稳定行容器定位。
+   *  data-tooltip 文本仍然从事件触发元素读取。 */
+  anchorRef?: RefObject<HTMLElement | null>;
 }
 
 /**
@@ -44,8 +55,11 @@ interface UseAdaptiveTooltipOptions {
  */
 export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { tooltip: ReactNode; handlers: TooltipHandlers } {
   const offsetPct = options?.offsetX ?? 0;
+  const offsetY = options?.offsetY ?? 0;
+  const align: TooltipAlign = options?.align ?? 'center';
   const placement = options?.placement ?? 'bottom';
   const maxWidth = options?.maxWidth;
+  const anchorRef = options?.anchorRef;
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
@@ -54,14 +68,15 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     const el = event.currentTarget as HTMLElement | null;
     const text = el?.getAttribute('data-tooltip') ?? '';
     if (!el || !text) return;
-    const rect = el.getBoundingClientRect();
+    const anchor = anchorRef?.current ?? el;
+    const rect = anchor.getBoundingClientRect();
     setPosition(null);
     setState({
       text,
       buttonRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
       placement,
     });
-  }, [placement]);
+  }, [placement, anchorRef]);
 
   const hide = useCallback(() => {
     setState(null);
@@ -79,17 +94,7 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
     const height = el.offsetHeight;
     const { left, right, top, bottom } = state.buttonRect;
     const buttonWidth = right - left;
-    const shift = (buttonWidth * offsetPct) / 100;
-    const centered = left + buttonWidth / 2 - width / 2 - shift;
     const maxLeft = window.innerWidth - VIEWPORT_MARGIN - width;
-    let finalLeft: number;
-    if (centered < VIEWPORT_MARGIN) {
-      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left - shift, maxLeft));
-    } else if (centered > maxLeft) {
-      finalLeft = Math.min(Math.max(right - width - shift, VIEWPORT_MARGIN), maxLeft);
-    } else {
-      finalLeft = centered;
-    }
     const viewportHeight = window.innerHeight;
     let finalTop: number;
     if (state.placement === 'top') {
@@ -101,8 +106,25 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       const spaceAbove = top - TOOLTIP_GAP;
       finalTop = bottomPos + height <= viewportHeight - VIEWPORT_MARGIN ? bottomPos : (spaceAbove >= height ? top - TOOLTIP_GAP - height : bottomPos);
     }
-    setPosition({ top: finalTop, left: finalLeft, visible: true });
-  }, [state, offsetPct]);
+
+    let finalLeft: number;
+    if (align === 'left') {
+      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left, maxLeft));
+    } else if (align === 'right') {
+      finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(right - width, maxLeft));
+    } else {
+      const shift = (buttonWidth * offsetPct) / 100;
+      const centered = left + buttonWidth / 2 - width / 2 - shift;
+      if (centered < VIEWPORT_MARGIN) {
+        finalLeft = Math.max(VIEWPORT_MARGIN, Math.min(left - shift, maxLeft));
+      } else if (centered > maxLeft) {
+        finalLeft = Math.min(Math.max(right - width - shift, VIEWPORT_MARGIN), maxLeft);
+      } else {
+        finalLeft = centered;
+      }
+    }
+    setPosition({ top: finalTop + offsetY, left: finalLeft, visible: true });
+  }, [state, offsetPct, offsetY, align]);
 
   useEffect(() => {
     if (!state) return;

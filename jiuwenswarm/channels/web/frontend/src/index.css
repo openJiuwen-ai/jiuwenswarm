@@ -1899,15 +1899,15 @@ body.workspace-resize-active iframe {
 
   .completed-work-chip__icon {
     display: inline-flex;
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
     flex-shrink: 0;
     color: var(--color-text-meta);
   }
 
   .completed-work-chip__icon svg {
-    width: 16px;
-    height: 16px;
+    width: 14px;
+    height: 14px;
   }
 
   .completed-work-chip__label {
