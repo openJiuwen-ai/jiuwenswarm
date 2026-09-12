@@ -32,6 +32,7 @@ from jiuwenswarm.common.mcp_config import (
 logger = logging.getLogger(__name__)
 
 # 周期扫描仅覆盖 remote HTTP MCP（§6.3 / D4）；playwright / openapi 不扫。
+# 扫描超时固定 30s（方案 §6.3 / R2），与旧路径 invoke/发现默认 300s 分开。
 _REMOTE_SCAN_CLIENT_TYPES = frozenset({"sse", "streamable-http"})
 _MCP_SCAN_TIMEOUT_S = 30.0
 _PER_REQUEST_ENV_MARKERS = (
@@ -131,6 +132,19 @@ def get_mcp_registry_settings() -> McpRegistrySettings:
 def config_fingerprint(config: Mapping[str, Any]) -> str:
     payload = json.dumps(dict(config or {}), sort_keys=True, ensure_ascii=False, default=str)
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def cached_tools_equal(left: list[dict[str, Any]], right: list[dict[str, Any]]) -> bool:
+    """工具 schema 是否等价：按 name 排序后 deep-equal，忽略 list_tools 返回顺序。"""
+
+    def _canon(tools: list[dict[str, Any]]) -> list[str]:
+        ordered = sorted(tools, key=lambda item: str(item.get("name") or ""))
+        return [
+            json.dumps(item, sort_keys=True, ensure_ascii=False, default=str)
+            for item in ordered
+        ]
+
+    return _canon(left) == _canon(right)
 
 
 def is_remote_mcp_config(config: Mapping[str, Any]) -> bool:
@@ -454,6 +468,45 @@ class McpServerRegistry:
                 "last_error": cached.last_error if cached is not None else "",
             }
 
+    def _invoke_connect_params_locked(self, name: str) -> dict[str, Any]:
+        """Invoke 以 registry 为权威。必须持有 ``self._lock``。
+
+        §6.2 的「在途不受影响」指工具快照 / allowlist 不在 CRUD 时被撕掉；
+        不授权 remove/update 关掉 worker 之后再用登记时的旧 ``_params`` 把进程拉起来。
+        """
+
+        entry = self._registry.get(name)
+        cached = self._cache.get(name)
+        if entry is None or cached is None or not cached.connect_params:
+            raise UnknownMcpServerError(name)
+        if not entry.enabled:
+            raise DisabledMcpServerError(name)
+        return copy.deepcopy(cached.connect_params)
+
+    async def acquire_worker(
+        self,
+        server_name: str,
+        *,
+        force_rebuild: bool = False,
+    ) -> _PooledMcpWorker:
+        """全局池 acquire：server 须仍在册且 enabled，连接参数取当前缓存。"""
+
+        name = str(server_name or "").strip()
+        async with self._lock:
+            params = self._invoke_connect_params_locked(name)
+        worker = await self.worker_pool.acquire(name, params, force_rebuild=force_rebuild)
+        async with self._lock:
+            try:
+                self._invoke_connect_params_locked(name)
+            except McpRegistryChatError as exc:
+                stale_error: McpRegistryChatError | None = exc
+            else:
+                stale_error = None
+        if stale_error is not None:
+            await self.worker_pool.close_server(name)
+            raise stale_error
+        return worker
+
     async def snapshot_for_chat(
         self, names: list[str]
     ) -> list[tuple[str, list[dict[str, Any]], dict[str, Any]]]:
@@ -540,7 +593,7 @@ class McpServerRegistry:
                                 error,
                             )
                         return
-                    if current is not None and current.tools == tools:
+                    if current is not None and cached_tools_equal(current.tools, tools):
                         current.last_scan_at = now
                         current.last_scan_ok = True
                         current.last_error = ""

@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -18,6 +19,7 @@ from jiuwenswarm.common.mcp_config import (
     is_request_scoped_mcp_tool_id,
 )
 from jiuwenswarm.common.mcp_server_registry import (
+    DisabledMcpServerError,
     McpRegistryChatError,
     McpRegistrySettings,
     McpServerRegistry,
@@ -35,6 +37,14 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _FORWARD_NO_LOCAL_HANDLER_METHODS,
     _FORWARD_REQ_METHODS,
 )
+
+
+async def _wait_until(predicate, *, turns: int = 20) -> None:
+    for _ in range(turns):
+        if predicate():
+            return
+        await asyncio.sleep(0)
+    raise AssertionError("timed out waiting for worker task to start")
 
 
 def _stdio_cfg(name: str = "chrome-devtools") -> dict:
@@ -397,6 +407,109 @@ async def test_global_pool_ttl_reap() -> None:
         assert registry.worker_pool._workers == {}
 
 
+@pytest.mark.asyncio
+async def test_invoke_after_remove_does_not_rebuild_worker(monkeypatch) -> None:
+    """remove 关掉 worker 后，已分发工具不得凭旧 params 再拉起进程。"""
+
+    registry = reset_mcp_server_registry_for_tests()
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    await registry.add_servers([_stdio_cfg()])
+    card = ToolCard(
+        id=f"{MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX}abc.chrome-devtools.t",
+        name="t",
+        description="",
+        input_params={},
+    )
+    tool = RequestScopedOfficeClawMcpTool(
+        card,
+        {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        "req",
+        "chrome-devtools",
+        use_global_pool=True,
+    )
+    started: list[dict] = []
+
+    async def fake_run(params, worker):
+        started.append(dict(params))
+        await worker.queue.get()
+
+    with patch("jiuwenswarm.common.mcp_server_registry._run_mcp_worker", fake_run):
+        first = await tool._acquire_mcp_session()
+        assert first is not None
+        await _wait_until(lambda: len(started) == 1)
+        await registry.remove_servers(["chrome-devtools"])
+        assert registry.worker_pool._workers == {}
+        with pytest.raises(UnknownMcpServerError):
+            await tool._acquire_mcp_session()
+        assert registry.worker_pool._workers == {}
+        assert len(started) == 1
+
+
+@pytest.mark.asyncio
+async def test_invoke_disabled_server_refuses(monkeypatch) -> None:
+    registry = reset_mcp_server_registry_for_tests()
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    await registry.add_servers([_stdio_cfg()])
+    registry._registry["chrome-devtools"].enabled = False
+    with pytest.raises(DisabledMcpServerError):
+        await registry.acquire_worker("chrome-devtools")
+    assert registry.worker_pool._workers == {}
+
+
+@pytest.mark.asyncio
+async def test_invoke_after_update_uses_new_connect_params(monkeypatch) -> None:
+    """update 关掉旧 worker 后，invoke 必须用新缓存连接参数，不能连回旧端点。"""
+
+    registry = reset_mcp_server_registry_for_tests()
+
+    async def discover(name, config):
+        args = list(config.get("args") or [])
+        return (
+            [{"name": "t", "description": "", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": args},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    await registry.add_servers([_stdio_cfg()])
+    card = ToolCard(
+        id=f"{MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX}abc.chrome-devtools.t",
+        name="t",
+        description="",
+        input_params={},
+    )
+    tool = RequestScopedOfficeClawMcpTool(
+        card,
+        {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        "req",
+        "chrome-devtools",
+        use_global_pool=True,
+    )
+    seen_args: list[list] = []
+
+    async def fake_run(params, worker):
+        seen_args.append(list(params.get("args") or []))
+        await worker.queue.get()
+
+    with patch("jiuwenswarm.common.mcp_server_registry._run_mcp_worker", fake_run):
+        await tool._acquire_mcp_session()
+        await _wait_until(lambda: seen_args == [["mcp.js"]])
+        await registry.update_servers(
+            [{"name": "chrome-devtools", "command": "node", "args": ["other.js"]}]
+        )
+        await tool._acquire_mcp_session()
+        await _wait_until(lambda: seen_args == [["mcp.js"], ["other.js"]])
+        await registry.worker_pool.close_all()
+
+
 def test_tool_global_pool_flag() -> None:
     card = ToolCard(id="office-claw-request-abc.chrome.t", name="t", description="", input_params={})
     tool = RequestScopedOfficeClawMcpTool(card, {"command": "node"}, "req", "chrome", use_global_pool=True)
@@ -689,3 +802,65 @@ async def test_scanner_start_stop_lifecycle() -> None:
     assert not registry._scanner_task.done()
     await registry.stop_scanner()
     assert registry._scanner_task is None
+
+
+def test_cached_tools_equal_ignores_order() -> None:
+    from jiuwenswarm.common.mcp_server_registry import cached_tools_equal
+
+    a = [
+        {"name": "beta", "description": "b", "input_params": {}},
+        {"name": "alpha", "description": "a", "input_params": {"x": 1}},
+    ]
+    b = [
+        {"name": "alpha", "description": "a", "input_params": {"x": 1}},
+        {"name": "beta", "description": "b", "input_params": {}},
+    ]
+    assert cached_tools_equal(a, b) is True
+    c = [
+        {"name": "alpha", "description": "changed", "input_params": {"x": 1}},
+        {"name": "beta", "description": "b", "input_params": {}},
+    ]
+    assert cached_tools_equal(a, c) is False
+
+
+@pytest.mark.asyncio
+async def test_scan_does_not_bump_version_when_only_tool_order_changes(
+    registry: McpServerRegistry, monkeypatch
+) -> None:
+    calls = {"n": 0}
+
+    async def discover(name, config):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            tools = [
+                {"name": "a", "description": "", "input_params": {}},
+                {"name": "b", "description": "", "input_params": {}},
+            ]
+        else:
+            tools = [
+                {"name": "b", "description": "", "input_params": {}},
+                {"name": "a", "description": "", "input_params": {}},
+            ]
+        return tools, {"_mcp_client_type": "streamable-http", "server_path": "https://example.com/mcp"}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    await registry.add_servers([_remote_cfg()])
+    first = await registry.get_server("qichacha")
+    assert first is not None
+    version_after_add = first["version"]
+    await registry.scan_once()
+    second = await registry.get_server("qichacha")
+    assert second is not None
+    assert second["version"] == version_after_add
+
+
+def test_registry_scan_timeout_stays_30s() -> None:
+    from jiuwenswarm.common.mcp_server_registry import _MCP_SCAN_TIMEOUT_S
+    from jiuwenswarm.common import mcp_config
+
+    assert _MCP_SCAN_TIMEOUT_S == 30.0
+    assert mcp_config._MCP_CALL_TOOL_TIMEOUT_S == 300.0
+    assert mcp_config._MCP_CONNECTOR_DISCOVERY_TIMEOUT_S == 300.0
