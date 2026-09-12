@@ -229,14 +229,19 @@ web_deploy_process() {
     fi
 }
 
-# systemd 模式停止,不禁用开机自启(与 gateway 一致)
+# systemd 模式停止：disable --now + 删除 unit 文件与 drop-in + daemon-reload（与 gateway 一致）。
+# 与 uninstall 对称，避免 down/uninstall 后 web unit 残留并保持开机自启，
+# 重启机器后 jiuwenswarm-web 自动拉起但 pip 包已卸载 → ExecStart 二进制不存在，systemd 反复重启失败。
+# down 删 unit 不影响后续 up：web_start_systemd 会重新生成 unit 文件。
 web_stop_systemd() {
     local master_host="$1"
     local svc_name
     svc_name=$(web_service_name)
-    info "Stopping web server service on ${master_host}..."
-    exec_on_host "${master_host}" "systemctl stop ${svc_name} 2>/dev/null || true"
-    success "Web server service stopped on ${master_host}"
+    info "Stopping and disabling web server service on ${master_host}..."
+    exec_on_host "${master_host}" "systemctl disable --now ${svc_name} 2>/dev/null || true"
+    exec_on_host "${master_host}" "rm -f /etc/systemd/system/${svc_name}.service; rm -rf /etc/systemd/system/${svc_name}.service.d"
+    exec_on_host "${master_host}" "systemctl daemon-reload 2>/dev/null || true"
+    success "Web server service stopped and disabled on ${master_host}"
 }
 
 # nohup 模式停止
