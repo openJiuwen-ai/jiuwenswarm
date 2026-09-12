@@ -7,8 +7,10 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.errors import JiuwenError
 
-class TeamError(Exception):
+
+class TeamError(JiuwenError):
     """Team 基础异常类."""
     pass
 
