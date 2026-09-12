@@ -249,6 +249,7 @@ models:
         custom_headers: {}
       model_config_obj:
         temperature: 0.95
+        top_p: 0.9
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -273,6 +274,7 @@ models:
         verify_ssl: true
       model_config_obj:
         temperature: 0.95
+        top_p: 0.9
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -283,6 +285,7 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
+        top_p: 0.9
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -293,6 +296,7 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
+        top_p: 0.9
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -303,6 +307,7 @@ models:
         timeout: 1800
       model_config_obj:
         temperature: 0.95
+        top_p: 0.9
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。
@@ -338,6 +343,7 @@ models:
   #       timeout: 1800
   #     model_config_obj:
   #       temperature: 0.95
+  #       top_p: 0.9
   #       context_window: 131072
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。

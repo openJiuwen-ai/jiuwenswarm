@@ -125,6 +125,7 @@ models:
       custom_headers: {}
     model_config_obj:
       temperature: 0.95
+      top_p: 0.9
   video:
     model_client_config:
       api_base: ${VIDEO_API_BASE}
@@ -135,6 +136,7 @@ models:
       verify_ssl: false
     model_config_obj:
       temperature: 0.95
+      top_p: 0.9
   audio:
     model_client_config:
       api_base: ${AUDIO_API_BASE}
@@ -145,6 +147,7 @@ models:
       timeout: 1800
     model_config_obj:
       temperature: 0.95
+      top_p: 0.9
   vision:
     model_client_config:
       api_base: ${VISION_API_BASE}
@@ -155,6 +158,7 @@ models:
       timeout: 1800
     model_config_obj:
       temperature: 0.95
+      top_p: 0.9
   image_gen:
     model_client_config:
       api_base: ${IMAGE_GEN_API_BASE}
@@ -165,6 +169,7 @@ models:
       timeout: 1800
     model_config_obj:
       temperature: 0.95
+      top_p: 0.9
 
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）

@@ -143,6 +143,11 @@ def _build_model_request_kwargs(
     model_config_obj: Any,
 ) -> dict[str, Any]:
     request_kwargs = _model_config_to_dict(model_config_obj)
+    # Keep generation defaults owned by jiuwenswarm so every provider uses the
+    # same values, including AgentOS entries that do not declare either field.
+    # Explicit per-model values continue to take precedence.
+    request_kwargs.setdefault("temperature", 0.95)
+    request_kwargs.setdefault("top_p", 0.9)
     is_agentos = request_kwargs.get("_source") == "agentos"
     # Backward compatibility: older AgentOS configs used ``max_tokens`` for
     # the model context-window size.  In core, however, ``max_tokens`` means
