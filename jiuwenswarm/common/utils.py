@@ -2219,35 +2219,63 @@ def resolve_gateway_cron_jobs_path(
     )
 
 
-def resolve_tenant_agent_root_dir(workspace_key: str | None = None) -> Path:
+def resolve_tenant_agent_root_dir(
+    workspace_key: str | None = None,
+    *,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> Path:
     """Resolve ``<tenant_root>/agent``.
 
-    企业版 ``tenant_root`` 为 ``workspace_{key}``；个人版为固定
-    ``service_default/agent_default``。
+    企业版 ``tenant_root`` 为 ``workspace_{key}``；个人版为
+    ``service_{service_id}/agent_{agent_id}``。
 
-    When ``workspace_key`` is omitted: bound agent root (request context) >
+    When all scope fields are omitted: bound agent root (request context) >
     bound ``workspace_key`` > ``default``.
     """
-    try:
-        from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
+    if workspace_key is None and service_id is None and agent_id is None:
+        try:
+            from jiuwenswarm.server.runtime.tenant_context import get_bound_agent_root
 
-        bound = get_bound_agent_root()
-        if bound is not None and workspace_key is None:
-            return bound
-    except ImportError:
-        pass
+            bound = get_bound_agent_root()
+            if bound is not None:
+                return bound
+        except ImportError:
+            pass
     wk = _effective_workspace_key(workspace_key)
-    return get_multi_tenant_user_workspace_dir(wk) / "agent"
+    return get_multi_tenant_user_workspace_dir(
+        wk,
+        service_id=service_id,
+        agent_id=agent_id,
+    ) / "agent"
 
 
-def resolve_tenant_agent_workspace_dir(workspace_key: str | None = None) -> Path:
+def resolve_tenant_agent_workspace_dir(
+    workspace_key: str | None = None,
+    *,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> Path:
     """Resolve ``<tenant_root>/agent/jiuwenclaw_workspace``."""
-    return resolve_tenant_agent_root_dir(workspace_key) / "jiuwenclaw_workspace"
+    return resolve_tenant_agent_root_dir(
+        workspace_key,
+        service_id=service_id,
+        agent_id=agent_id,
+    ) / "jiuwenclaw_workspace"
 
 
-def resolve_tenant_sessions_dir(workspace_key: str | None = None) -> Path:
+def resolve_tenant_sessions_dir(
+    workspace_key: str | None = None,
+    *,
+    service_id: str | None = None,
+    agent_id: str | None = None,
+) -> Path:
     """Resolve ``<tenant_root>/agent/sessions``."""
-    return resolve_tenant_agent_root_dir(workspace_key) / "sessions"
+    return resolve_tenant_agent_root_dir(
+        workspace_key,
+        service_id=service_id,
+        agent_id=agent_id,
+    ) / "sessions"
 
 
 def resolve_cron_tenant_scope(

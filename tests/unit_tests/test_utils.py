@@ -515,6 +515,14 @@ class TestAdditionalHardcodedPaths:
             agent_id="office",
         ) == (tmp_path / "service_default" / "agent_office")
 
+        assert utils.resolve_tenant_sessions_dir(
+            "shared-workspace",
+            service_id="svc-a",
+            agent_id="agentteam",
+        ) == (
+            tmp_path / "service_svc-a" / "agent_agentteam" / "agent" / "sessions"
+        )
+
         monkeypatch.setattr(
             "jiuwenswarm.common.utils.is_enterprise",
             lambda: True,
@@ -522,6 +530,11 @@ class TestAdditionalHardcodedPaths:
         assert get_multi_tenant_user_workspace_dir("abc") == (
             tmp_path / "workspace_abc"
         )
+        assert utils.resolve_tenant_sessions_dir(
+            "office",
+            service_id="svc-a",
+            agent_id="agentteam",
+        ) == (tmp_path / "workspace_office" / "agent" / "sessions")
 
     @staticmethod
     def test_rail_manager_path_structure():

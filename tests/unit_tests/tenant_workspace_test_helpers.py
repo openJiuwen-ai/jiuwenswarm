@@ -68,12 +68,18 @@ def patch_multi_tenant_workspace_dirs(monkeypatch, tmp_path: Path) -> None:
     def _mock_user_workspace_dir() -> Path:
         return tmp_path
 
-    def _mock_multi_tenant(workspace_key: str, agent_id: str | None = None) -> Path:
-        # New API: one workspace_key. Old API: (service_id, agent_id).
-        if agent_id is not None:
-            wk = tenant_workspace_key(workspace_key, agent_id)
-        else:
-            wk = str(workspace_key or "default").strip() or "default"
+    def _mock_multi_tenant(
+        workspace_key: str | None = None,
+        *,
+        service_id: str | None = None,
+        agent_id: str | None = None,
+    ) -> Path:
+        # Personal-style explicit tenant ids take precedence in path tests.
+        if service_id is not None or agent_id is not None:
+            sid = str(service_id or "default").strip() or "default"
+            aid = str(agent_id or "default").strip() or "default"
+            return tmp_path / f"service_{sid}" / f"agent_{aid}"
+        wk = str(workspace_key or "default").strip() or "default"
         return tmp_path / f"workspace_{wk}"
 
     targets = [

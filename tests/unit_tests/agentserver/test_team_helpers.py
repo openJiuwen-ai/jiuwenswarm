@@ -1320,6 +1320,68 @@ def test_sync_team_identity_metadata_keeps_existing_conflicting_team(monkeypatch
     assert updates == []
 
 
+def test_sync_team_identity_metadata_keeps_reconciled_template_team_name(monkeypatch):
+    updates: list[dict[str, object]] = []
+    runtime_team_name = (
+        "oc_team_preset-software-dev_officeclaw_1a08f65aea0_d7bfe3d56f01"
+    )
+
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda session_id, **kwargs: {
+            "team_name": "oc_team_preset-software-dev",
+            "runtime_team_name": runtime_team_name,
+        },
+    )
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: updates.append(kwargs))
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="officeclaw",
+        session_id="officeclaw_1a08f65aea0_d7bfe3d56f01",
+        mode="team",
+        ready_team_name=runtime_team_name,
+        activation_kind="create",
+    )
+
+    assert updates == []
+
+
+def test_sync_team_identity_metadata_honors_explicit_sessions_root(
+    tmp_path,
+    monkeypatch,
+):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _METADATA_QUEUE,
+        init_session_metadata,
+    )
+
+    correct_root = tmp_path / "agent_agentteam_sessions"
+    wrong_root = tmp_path / "agent_default_sessions"
+    correct_root.mkdir(parents=True)
+    wrong_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        lambda: wrong_root,
+    )
+
+    init_session_metadata(session_id="sess-sync-root", sessions_root=correct_root)
+    _METADATA_QUEUE.join()
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="officeclaw",
+        session_id="sess-sync-root",
+        mode="team",
+        ready_team_name="oc_team_demo_officeclaw_sess-sync-root",
+        activation_kind="create",
+        sessions_root=correct_root,
+    )
+    _METADATA_QUEUE.join()
+
+    assert (correct_root / "sess-sync-root" / "metadata.json").is_file()
+    assert not (wrong_root / "sess-sync-root" / "metadata.json").exists()
+
+
 @pytest.mark.anyio
 async def test_consume_monitor_events_only_broadcasts_monitor_events(monkeypatch):
     broadcasted: list[dict[str, object]] = []

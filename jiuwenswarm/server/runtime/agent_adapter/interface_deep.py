@@ -17258,7 +17258,11 @@ class JiuWenSwarmDeepAdapter:
                 )
                 team_stream_kwargs = {
                     "config_base": self._config_base_cache,
-                    "sessions_root": resolve_tenant_sessions_dir(workspace_key),
+                    "sessions_root": resolve_tenant_sessions_dir(
+                        workspace_key,
+                        service_id=_tenant_service_id,
+                        agent_id=_tenant_agent_id,
+                    ),
                 }
                 if (
                     evolution_slash_command_name(str(inputs.get("query") or ""))
