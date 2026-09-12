@@ -41,6 +41,14 @@ from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
 
+class _ManagedHeartbeatServer:
+    def get_runtime(self):
+        return self
+
+    async def run_heartbeat(self, _request, operation):
+        await operation()
+
+
 def test_heartbeat_injection_preserves_work_and_code_adapter_initializer_state() -> None:
     for adapter in (JiuWenSwarmDeepAdapter(), JiuwenSwarmCodeAdapter()):
         assert adapter._last_models_config_fingerprint is None
@@ -296,7 +304,7 @@ async def test_session_delete_quiesce_breaks_real_manager_retention_cycle(
     manager = AgentManager()
     run_started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         def get_agent_manager(self):
             return manager
 
@@ -440,7 +448,7 @@ async def test_agentserver_maps_runtime_not_ready_to_service_unavailable() -> No
 async def test_execution_uses_local_agentserver_and_exact_completion() -> None:
     completed: list[tuple[str, str, str]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             assert request.req_method.value == "chat.send"
             assert request.session_id == "s1"
@@ -486,7 +494,7 @@ async def test_execution_uses_local_agentserver_and_exact_completion() -> None:
 async def test_execution_cancel_is_exact() -> None:
     started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             await asyncio.Event().wait()
@@ -527,7 +535,7 @@ async def test_user_request_preempts_active_heartbeat(team_request: bool) -> Non
     cancelled = asyncio.Event()
     completed: list[tuple[str, str, str, str | None, bool]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             try:
@@ -579,7 +587,7 @@ async def test_heartbeat_execution_timeout_releases_session() -> None:
     cancelled = asyncio.Event()
     completed: list[tuple[str, str, str, str | None]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             try:
                 await asyncio.Event().wait()
@@ -664,7 +672,7 @@ async def test_user_preemption_requires_admission_release() -> None:
 async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
     started = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             started.set()
             await asyncio.Event().wait()
@@ -697,7 +705,7 @@ async def test_concurrent_users_share_one_heartbeat_preemption() -> None:
 async def test_cancel_before_execution_task_starts_releases_admission() -> None:
     completed: list[tuple[str, str, str]] = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             await asyncio.Event().wait()
 
@@ -811,7 +819,7 @@ async def test_active_heartbeat_prevents_session_adapter_cleanup() -> None:
 
 
 async def test_completion_hook_failure_does_not_escape_execution_task() -> None:
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             return None
 

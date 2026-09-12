@@ -55,7 +55,8 @@ class SessionExecutionRegistry:
         if handle.state.terminal:
             return
         handle.state = SessionExecutionState.WAITING_FOR_CONTROL
-        handle.task = None
+        if not handle.retain_task_while_waiting:
+            handle.task = None
 
     @staticmethod
     def resume_waiting(handle: SessionExecutionHandle) -> None:
@@ -73,12 +74,14 @@ class SessionExecutionRegistry:
         if not state.terminal:
             raise ValueError("terminal state required")
         if handle.state.terminal:
+            handle.terminal_event.set()
             return
         handle.state = state
         handle.finished_at = time.monotonic()
         if error is not None:
             handle.error = str(error)
         handle.task = None
+        handle.terminal_event.set()
         self._terminal.append(handle.execution_id)
         self._evict_terminal()
 

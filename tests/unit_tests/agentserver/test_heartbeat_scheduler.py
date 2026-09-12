@@ -43,6 +43,14 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.store import (
 )
 
 
+class _ManagedHeartbeatServer:
+    def get_runtime(self):
+        return self
+
+    async def run_heartbeat(self, _request, operation):
+        await operation()
+
+
 class _FakeExecution:
     """Record AgentServer-local dispatches without a Gateway dependency."""
 
@@ -655,7 +663,7 @@ async def test_two_real_heartbeats_share_sixty_second_busy_deadline(
     release_first = asyncio.Event()
     requests = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             requests.append(request)
             await release_first.wait()
@@ -712,7 +720,7 @@ async def test_real_execution_timeout_finishes_persisted_run(
 ) -> None:
     cancelled = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             try:
                 await asyncio.Event().wait()
@@ -1132,7 +1140,7 @@ async def test_cancel_consumed_once_with_real_execution(tmp_path: Path) -> None:
     """Exercise the actual task cancellation, admission release and finally callback."""
     entered = asyncio.Event()
 
-    class Server:  # pylint: disable=too-few-public-methods
+    class Server(_ManagedHeartbeatServer):
         """Keep execution active until its real task receives cancellation."""
 
         async def execute_internal_heartbeat(self, _request) -> None:
