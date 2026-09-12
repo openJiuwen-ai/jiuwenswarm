@@ -50,9 +50,9 @@ class CeliaMcpPromptRail(DeepAgentRail):
         self._inject_prompt()
 
     def _inject_prompt(self) -> None:
-        # Mode changes replace the builder. Re-add by section name, without duplicates.
+        # Restore fixed rules after a builder rebuild; ordinary calls reuse them.
         builder = getattr(self._agent, "system_prompt_builder", None)
-        if builder is not None:
+        if builder is not None and not builder.has_section(SectionName.EXTERNAL_MEMORY):
             section = build_external_memory_section(
                 load_celia_agent_prompt(), language=getattr(builder, "language", "cn")
             )

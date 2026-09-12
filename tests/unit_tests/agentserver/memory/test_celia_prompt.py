@@ -6,6 +6,7 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.harness.prompts import SystemPromptBuilder
 from openjiuwen.harness.prompts.sections import SectionName
 
 from jiuwenswarm.agents.harness.common.memory.celia import prompt as prompt_module
@@ -82,6 +83,9 @@ async def test_celia_rail_owns_prompt_injection_and_removal(monkeypatch):
         def add_section(self, section):
             self.added.append(section)
 
+        def has_section(self, name):
+            return any(section.name == name for section in self.added)
+
         def remove_section(self, name):
             self.removed.append(name)
 
@@ -107,7 +111,38 @@ async def test_celia_rail_owns_prompt_injection_and_removal(monkeypatch):
     assert len(builder.added) == 1
     assert builder.added[0].priority == 57
 
+    await rail.before_model_call(None)
+    await rail.before_model_call(None)
+    assert len(builder.added) == 1
+    assert len(captured) == 1
+
     rail.uninit(agent)
     await asyncio.sleep(0)
 
     assert SectionName.EXTERNAL_MEMORY in builder.removed
+
+
+@pytest.mark.asyncio
+async def test_celia_fixed_rules_restored_after_builder_rebuild_or_section_removal(monkeypatch):
+    prompt_text = "## Memory\nFixed Celia rules."
+    monkeypatch.setattr(prompt_module, "load_celia_agent_prompt", lambda: prompt_text)
+    agent = SimpleNamespace(
+        system_prompt_builder=SystemPromptBuilder(language="en"),
+        prompt_attachment_manager=None,
+    )
+    rail = prompt_module.CeliaMcpPromptRail()
+    rail.init(agent)
+    first_section = agent.system_prompt_builder.get_section(SectionName.EXTERNAL_MEMORY)
+    await rail.before_model_call(None)
+    assert agent.system_prompt_builder.get_section(SectionName.EXTERNAL_MEMORY) is first_section
+
+    for language in ("cn", "en"):
+        agent.system_prompt_builder = SystemPromptBuilder(language=language)
+        await rail.before_model_call(None)
+        assert agent.system_prompt_builder.build().count(prompt_text) == 1
+        agent.system_prompt_builder.remove_section(SectionName.EXTERNAL_MEMORY)
+        await rail.before_model_call(None)
+        assert agent.system_prompt_builder.build().count(prompt_text) == 1
+
+    rail.uninit(agent)
+    assert not agent.system_prompt_builder.has_section(SectionName.EXTERNAL_MEMORY)

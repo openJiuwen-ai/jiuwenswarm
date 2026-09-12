@@ -7,7 +7,7 @@ import pytest
 from openjiuwen.core.context_engine.base import ContextWindow
 from openjiuwen.core.foundation.llm import UserMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
-from openjiuwen.harness.prompts import SystemPromptBuilder
+from openjiuwen.harness.prompts import PromptSection, SystemPromptBuilder
 
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import RuntimePromptRail
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -54,6 +54,8 @@ def test_extension_prompt_context_is_replaced_and_cleared_per_session():
 @pytest.mark.asyncio
 async def test_runtime_rail_separates_extension_policy_memory_and_user_query():
     builder = SystemPromptBuilder(language="cn")
+    builder.add_section(PromptSection(name="test.skills", content={"cn": "Skills"}, priority=56))
+    builder.add_section(PromptSection(name="test.memory", content={"cn": "固定规则"}, priority=57))
     agent = _FakeAgent(builder)
     runtime_rail = RuntimePromptRail(language="cn", channel="web")
     runtime_rail.init(agent)
@@ -67,13 +69,22 @@ async def test_runtime_rail_separates_extension_policy_memory_and_user_query():
     set_extension_prompt_context(
         "sess1",
         system_prompt_blocks=["GaussPD 固定记忆策略"],
-        reference_context_blocks=["<gausspd_memory>固定加载内容</gausspd_memory>"],
+        reference_context_blocks=[
+            "<celia_memory>本轮召回内容</celia_memory>",
+            "其他扩展参考资料",
+        ],
     )
 
     try:
         await runtime_rail.before_model_call(callback_ctx)
+        await runtime_rail.before_model_call(callback_ctx)
 
-        assert "GaussPD 固定记忆策略" in builder.build()
+        prompt = builder.build()
+        assert "GaussPD 固定记忆策略" in prompt
+        memory = "<celia_memory>本轮召回内容</celia_memory>"
+        assert prompt.count(memory) == 1
+        assert prompt.index("Skills") < prompt.index("固定规则") < prompt.index(memory)
+        assert "其他扩展参考资料" not in prompt
         assert len(context._window_mutators) == 1
         window = ContextWindow(
             context_messages=[
@@ -84,7 +95,7 @@ async def test_runtime_rail_separates_extension_policy_memory_and_user_query():
         updated = await context._window_mutators[0](context, window)
         assert [message.content for message in updated.context_messages] == [
             "历史问题",
-            "<gausspd_memory>固定加载内容</gausspd_memory>",
+            "其他扩展参考资料",
             "当前用户问题",
         ]
         assert updated.context_messages[1].metadata[
@@ -110,7 +121,7 @@ async def test_runtime_rail_clears_stale_extension_prompt_context():
     set_extension_prompt_context(
         "sess1",
         system_prompt_blocks=["上一轮策略"],
-        reference_context_blocks=["上一轮记忆"],
+        reference_context_blocks=["<celia_memory>上一轮记忆</celia_memory>", "其他参考"],
     )
     await runtime_rail.before_model_call(callback_ctx)
     clear_extension_prompt_context("sess1")
@@ -118,7 +129,53 @@ async def test_runtime_rail_clears_stale_extension_prompt_context():
     await runtime_rail.before_model_call(callback_ctx)
 
     assert "上一轮策略" not in builder.build()
+    assert "上一轮记忆" not in builder.build()
     assert context._window_mutators == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("last_status", ["empty", "degraded", "not_ready"])
+async def test_new_request_replaces_recall_and_clears_system_memory_when_unavailable(monkeypatch, last_status):
+    memory = "<celia_memory>旧摘要</celia_memory>"
+
+    class FakeRegistry:
+        async def trigger(self, _event, context):
+            # Old snapshots must be cleared before extensions attempt recall.
+            assert not get_extension_prompt_context(context.session_id).reference_context_blocks
+            if memory:
+                context.reference_context_blocks.append(memory)
+            context.params["_gausspd_recall_status"] = "ok" if memory else last_status
+
+    monkeypatch.setattr(ExtensionRegistry, "get_instance", classmethod(lambda cls: FakeRegistry()))
+    server = SimpleNamespace(
+        _should_trigger_before_chat_request_hook=AgentWebSocketServer._should_trigger_before_chat_request_hook,
+    )
+    builder = SystemPromptBuilder(language="cn")
+    agent = _FakeAgent(builder)
+    rail = RuntimePromptRail(language="cn", channel="web")
+    rail.init(agent)
+    context = SimpleNamespace(_window_mutators=[])
+    callback = AgentCallbackContext(agent=agent, session=_FakeSession(), context=context, extra={})
+    try:
+        for index, memory in enumerate((memory, "<celia_memory>新摘要</celia_memory>", "")):
+            request = AgentRequest(
+                request_id=f"recall-{index}", channel_id="web", session_id="sess1",
+                req_method=ReqMethod.CHAT_SEND, params={"query": "当前问题"},
+            )
+            await AgentWebSocketServer._trigger_before_chat_request_hook(server, request)
+            await rail.before_model_call(callback)
+            await rail.before_model_call(callback)
+            prompt = builder.build()
+            assert prompt.count("<celia_memory>") == int(bool(memory))
+            if memory:
+                assert memory in prompt
+            if index > 0:
+                assert "旧摘要" not in prompt
+            if not memory:
+                assert "新摘要" not in prompt
+            assert context._window_mutators == []
+    finally:
+        clear_extension_prompt_context("sess1")
 
 
 @pytest.mark.asyncio

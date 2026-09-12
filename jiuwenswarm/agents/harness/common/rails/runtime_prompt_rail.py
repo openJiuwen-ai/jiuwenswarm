@@ -28,9 +28,15 @@ from openjiuwen.harness.prompts.workspace_content.workspace_header import (
 
 from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
-from jiuwenswarm.agents.harness.common.prompt.prompt_builder import _runtime_env_message_rules_text
+from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
+    PromptPriority,
+    _runtime_env_message_rules_text,
+)
 
-from jiuwenswarm.common.config import get_sandbox_runtime
+from jiuwenswarm.common.config import get_config, get_sandbox_runtime
+from jiuwenswarm.agents.harness.common.memory.external_memory_config import (
+    is_legacy_workspace_memory_enabled,
+)
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
     get_runtime_state_path,
@@ -41,6 +47,7 @@ from jiuwenswarm.extensions.prompt_context import get_extension_prompt_context
 
 
 _EXTENSION_SYSTEM_POLICY_SECTION = "runtime.extension_system_policy"
+_CELIA_MEMORY_REFERENCE_SECTION = "runtime.celia_memory_context"
 _EXTENSION_REFERENCE_MESSAGE_MARKER = "jiuwenswarm_extension_reference_context"
 _EXTENSION_REFERENCE_MUTATOR_MARKER = "_jiuwenswarm_extension_reference_mutator"
 
@@ -311,9 +318,16 @@ class RuntimePromptRail(DeepAgentRail):
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
         session_id = self._resolve_callback_session_id(ctx)
         extension_context = get_extension_prompt_context(session_id)
+        memory_blocks = []
+        reference_blocks = []
+        for block in extension_context.reference_context_blocks:
+            if block.startswith("<celia_memory>") and block.endswith("</celia_memory>"):
+                memory_blocks.append(block)
+            else:
+                reference_blocks.append(block)
         self._sync_extension_reference_context(
             ctx,
-            extension_context.reference_context_blocks,
+            tuple(reference_blocks),
         )
         if not self.system_prompt_builder:
             return
@@ -325,8 +339,19 @@ class RuntimePromptRail(DeepAgentRail):
             "env",
             "tui_current_project_policy",
             "trusted_dirs_policy",
+            _CELIA_MEMORY_REFERENCE_SECTION,
             _EXTENSION_SYSTEM_POLICY_SECTION):
             self.system_prompt_builder.remove_section(name)
+
+        # The request hook owns recall freshness. Render its current snapshot
+        # verbatim and remove the previous section even when recall is empty.
+        if memory_blocks:
+            memory = "\n\n".join(memory_blocks)
+            self.system_prompt_builder.add_section(PromptSection(
+                name=_CELIA_MEMORY_REFERENCE_SECTION,
+                content={"cn": memory, "en": memory},
+                priority=PromptPriority.MEMORY + 1,
+            ))
 
         if extension_context.system_prompt_blocks:
             policy = "\n\n".join(extension_context.system_prompt_blocks)
@@ -652,6 +677,13 @@ class RuntimePromptRail(DeepAgentRail):
             is_cn = not self._force_english and self._language == "cn"
             lang_key = "cn" if is_cn else "en"
             important_files = IMPORTANT_FILES.get(lang_key, IMPORTANT_FILES["cn"])
+            if not is_legacy_workspace_memory_enabled(get_config()):
+                important_files = "\n".join(
+                    line for line in important_files.splitlines()
+                    if not any(path in line for path in (
+                        "`USER.md`", "`memory/MEMORY.md`", "`memory/daily_memory/",
+                    ))
+                )
             project_label = (
                 f"`{project_dir}`" if has_project
                 else ("未设置" if is_cn else "not set")
