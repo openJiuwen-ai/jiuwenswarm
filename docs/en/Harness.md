@@ -88,6 +88,7 @@ Common Rails can be grouped by capability:
 - Execution control: `TaskPlanningRail`, `TaskCompletionRail`, `AgentModeRail`.
 - Tools and system operations: `SysOperationRail`, `ProgressiveToolRail`, `LspRail`, `McpRail`.
 - Safety and permissions: `SafetyPromptRail`, `PermissionInterruptRail`, `VerificationRail`.
+- Team quality assurance: `TeamVerificationRail` (Agent Team mode only).
 - Context and memory: `ContextAssembleRail`, `ContextProcessorRail`, `MemoryRail`, `CodingMemoryRail`, `ExternalMemoryRail`.
 - Skills and evolution: `SkillUseRail`, `EvolutionRail`, `SkillCreateRail`, `SkillEvolutionRail`.
 - Sub-agents: `SubagentRail`, `VerificationContractRail`.
