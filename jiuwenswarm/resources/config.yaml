@@ -1570,3 +1570,58 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
+
+# Per-session agent profiles (template). A session selects a profile via the
+# relay signal (params.agent_kind / metadata.agent_kind) or the agent_id
+# breed_map. When no signal is present, the global react config applies
+# unchanged. One sidecar serves both normal and flash sessions, each in its
+# own child adapter + DeepAgent, no restart. Override in the user-dir config.
+agent_profiles:
+  # Config-baked default profile kind, applied when a request carries no
+  # agent_kind signal and no breed_map hit. Lets one sidecar default to a
+  # profile with zero relay/frontend change. null (default) => no profile
+  # activation (use global react config); `normal` => normal profile;
+  # `flash` => flash profile. User override wins over this template default.
+  default: null
+  normal:
+    react:
+      enable_task_loop: true
+      evolution:
+        skill_create: false
+        review_trigger: false
+  flash:
+    react:
+      enable_task_loop: false
+      evolution:
+        # skill_evolution is read by get_evolution_enabled, which gates the
+        # free-roaming SkillEvolutionRail (registered via configure_skill_evolution_runtime,
+        # NOT via the _build_agent_rails keep/drop list). Setting it false here is the
+        # only way to keep SkillEvolutionRail out of flash mode — the keep/drop
+        # list cannot reach it.
+        skill_evolution: false
+        skill_create: false
+        review_trigger: false
+    rails:
+      keep:
+        - _runtime_prompt_rail
+        - _response_prompt_rail
+        - _stream_event_rail
+        - _task_planning_rail
+        - _security_rail
+        - _heartbeat_rail
+        - _subagent_rail
+        - _permission_rail
+        - _context_processor_rail
+        - _ask_user_rail
+        - _filesystem_rail        # SysOperationRail: registers ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash tools in init(); dropping it leaves the agent with NO file/shell tools
+        - _progressive_tool_rail   # ProgressiveToolRail: progressive tool guidance/navigation in the system prompt
+  # breed_map maps agent_id -> profile kind (normal/flash). It is an active key
+  # (not just a comment) so migrate_config_from_template keeps it across restarts;
+  # user-dir values override this empty default. NOTE: agent_id is only set in
+  # enterprise deployments (self._agent_id is None otherwise), so breed_map only
+  # has effect there — for non-enterprise use `default` or a per-request agent_kind.
+  breed_map: {}
+  # breed_map example (override in user-dir config):
+  #   breed_map:
+  #     agent-normal: normal
+  #     agent-flash: flash

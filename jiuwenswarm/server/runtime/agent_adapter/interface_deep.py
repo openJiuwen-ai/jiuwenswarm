@@ -2282,6 +2282,11 @@ class JiuWenSwarmDeepAdapter:
         self._reload_lock = asyncio.Lock()
         self._working_checker: Callable[[], bool] | None = None
         self._session_instance_config: dict[str, Any] | None = None
+        # Per-session agent profile kind ("normal" | "flash" | None). Resolved
+        # at create_instance from the request signal (params.agent_kind /
+        # metadata) or the agent_id breed_map; persisted across reload so a
+        # flash session isn't flipped back to normal by a hot reload.
+        self._active_agent_kind: str | None = None
         self._session_instance_mode: str = "agent"
         self._session_instance_sub_mode: str | None = None
         # Fail closed after a rewrite checkpoint rollback cannot be proven
@@ -8301,6 +8306,7 @@ class JiuWenSwarmDeepAdapter:
             )
         )
 
+        rail_infos = self._filter_rail_infos_by_profile(rail_infos, config_base)
         return self._instantiate_rails(rail_infos, config_base)
 
     @staticmethod
@@ -8344,6 +8350,238 @@ class JiuWenSwarmDeepAdapter:
                 )
             return True
         return configured_value
+
+    # Per-profile rail filtering. PROTECTED rails are always built even under a
+    # keep-whitelist (dropping them would orphan a dependent that reuses an
+    # engine they build, leaving it half-built). DENY_CASCADE: dropping the key
+    # also drops the listed dependents, so neither is left half-built.
+    _PROFILE_PROTECTED_RAILS = frozenset({
+        "_permission_rail",
+    })
+    _RAIL_DENY_CASCADE = {
+        "_permission_rail": ("_skill_authorization_rail",),
+    }
+
+    def _resolve_agent_kind(
+        self,
+        request: Any,
+        config_base: dict[str, Any] | None,
+    ) -> str | None:
+        """Resolve the per-session agent profile kind from the request signal.
+
+        Sources, in priority order:
+          1. request.params.agent_kind / request.metadata.agent_kind
+             (single-breed + per-request field relay approach)
+          2. agent_profiles.breed_map[agent_id] (two-breed relay approach where
+             the breed name carries the kind, no relay code change needed)
+          3. agent_profiles.default (config-baked default; lets one sidecar
+             default to flash/normal without any request signal — no relay or
+             frontend change needed)
+
+        Returns "normal" | "flash" | None (None => no profile; use global config).
+        """
+        raw: Any = None
+        if request is not None:
+            params = getattr(request, "params", None)
+            if isinstance(params, dict):
+                raw = params.get("agent_kind") or params.get("agentKind")
+            if not raw:
+                md = getattr(request, "metadata", None)
+                if isinstance(md, dict):
+                    raw = md.get("agent_kind") or md.get("agentKind")
+        if isinstance(raw, str) and raw.strip():
+            k = raw.strip().lower()
+            if k in ("normal", "flash"):
+                return k
+        profiles = (config_base or {}).get("agent_profiles", {})
+        if isinstance(profiles, dict):
+            breed_map = profiles.get("breed_map", {})
+            if isinstance(breed_map, dict) and breed_map:
+                # breed_map keys on agent_id, which is only set in enterprise
+                # deployments (self._agent_id is None otherwise). Surface the
+                # silent no-op so non-enterprise users can diagnose a miss.
+                if self._agent_id is None:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] agent_profiles.breed_map is "
+                        "configured but _agent_id is None (non-enterprise "
+                        "deployment); breed_map signal cannot match. Use the "
+                        "`default` profile or a per-request agent_kind signal "
+                        "instead.",
+                    )
+                else:
+                    mapped = breed_map.get(self._agent_id)
+                    if isinstance(mapped, str) and mapped.strip().lower() in ("normal", "flash"):
+                        return mapped.strip().lower()
+            default_kind = profiles.get("default")
+            if isinstance(default_kind, str) and default_kind.strip().lower() in ("normal", "flash"):
+                return default_kind.strip().lower()
+        return None
+
+    def _active_profile_spec(self, config_base: dict[str, Any] | None) -> dict[str, Any]:
+        """Return the named profile dict for self._active_agent_kind (or {}).
+
+        ``_active_agent_kind`` is set in ``create_instance`` (and
+        re-applied on reload); paths that bypass ``__init__`` (e.g. unit tests
+        constructing the adapter via ``object.__new__``) never set it. Read
+        defensively so that a missing attribute degrades to "no profile
+        active" (returns ``{}``, i.e. no keep/drop filtering) rather than
+        raising.
+        """
+        kind = getattr(self, "_active_agent_kind", None)
+        if not kind:
+            return {}
+        profiles = (config_base or {}).get("agent_profiles", {})
+        if not isinstance(profiles, dict):
+            return {}
+        spec = profiles.get(kind, {})
+        return spec if isinstance(spec, dict) else {}
+
+    def _apply_active_profile(
+        self, config_base: dict[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """Merge the active profile's react/evolution overrides into config_base.
+
+        Only the react section (incl. nested sub-trees like evolution) is
+        overlaid; models, routing, etc. are untouched. Returns config_base
+        unchanged when no profile is active. Force-revive safe: the merge runs
+        before _resolve_enable_task_loop so a flash profile's
+        evolution.skill_create=false keeps task_loop=false.
+
+        The merge is recursive: a profile sub-tree (e.g. ``react.evolution``)
+        is deep-merged into the base rather than wholesale-replacing it, so
+        global deep keys under a partially-overridden sub-tree are not silently
+        lost. Non-dict values (scalars/lists) replace outright, matching the
+        intent of an explicit override.
+        """
+        spec = self._active_profile_spec(config_base)
+        if not spec:
+            return config_base
+        react_ov = spec.get("react", {})
+        if not isinstance(react_ov, dict) or not react_ov:
+            return config_base
+        out = copy.deepcopy(config_base) if isinstance(config_base, dict) else {}
+        base_react = out.get("react")
+        if not isinstance(base_react, dict):
+            base_react = {}
+            out["react"] = base_react
+        for k, v in react_ov.items():
+            base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
+        return out
+
+    @staticmethod
+    def _deep_merge_react_value(base: Any, override: Any) -> Any:
+        """Deep-merge ``override`` onto ``base`` for the profile react overlay.
+
+        Two dicts => recurse so a partially-overridden sub-tree keeps the base's
+        sibling keys (e.g. overriding react.evolution.skill_create keeps the
+        base's react.evolution.review_trigger). Anything else => the override
+        replaces the base (deepcopy so the merged config owns its own copy and
+        later mutation never leaks back into the profile spec).
+        """
+        if isinstance(base, dict) and isinstance(override, dict):
+            merged = {k: copy.deepcopy(v) for k, v in base.items()}
+            for k, v in override.items():
+                merged[k] = JiuWenSwarmDeepAdapter._deep_merge_react_value(
+                    merged.get(k), v
+                )
+            return merged
+        return copy.deepcopy(override)
+
+    def _filter_rail_infos_by_profile(
+        self,
+        rail_infos: list["_RailBuildInfo"],
+        config_base: dict[str, Any] | None,
+    ) -> list["_RailBuildInfo"]:
+        """Filter the declared rail set by the active profile's keep/drop list.
+
+        keep: whitelist (attr_names); only these plus PROTECTED are built.
+        drop: blacklist (attr_names); these are skipped (PROTECTED always kept).
+        Both empty => no filtering (full set, e.g. normal profile).
+
+        keep/drop must be lists of strings. A scalar (common YAML typo like
+        ``keep: _filesystem_rail``) would be split per-character by set(),
+        whitelisting nothing real and dropping every non-PROTECTED rail — so
+        reject non-list values with a warning and fall back to no filtering
+        rather than silently stripping the agent's tools.
+        """
+        spec = self._active_profile_spec(config_base)
+        rc = spec.get("rails", {}) if isinstance(spec, dict) else {}
+        if not isinstance(rc, dict):
+            rc = {}
+        keep_raw = rc.get("keep", [])
+        drop_raw = rc.get("drop", [])
+        keep = self._coerce_rail_name_list(keep_raw, "keep")
+        drop = self._coerce_rail_name_list(drop_raw, "drop")
+        if not keep and not drop:
+            return rail_infos
+        for d in list(drop):
+            drop.update(self._RAIL_DENY_CASCADE.get(d, ()))
+        out: list["_RailBuildInfo"] = []
+        dropped: list[str] = []
+        for info in rail_infos:
+            name = info.attr_name
+            if name in self._PROFILE_PROTECTED_RAILS:
+                out.append(info)
+                continue
+            if keep:
+                if name in keep:
+                    out.append(info)
+                else:
+                    dropped.append(name)
+            elif name in drop:
+                dropped.append(name)
+            else:
+                out.append(info)
+        if dropped:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] profile=%s dropped rails: %s",
+                getattr(self, "_active_agent_kind", None),
+                dropped,
+            )
+        return out
+
+    @staticmethod
+    def _coerce_rail_name_list(
+        raw: Any, field_name: str
+    ) -> set[str]:
+        """Coerce a profile ``rails.keep``/``drop`` value into a set of names.
+
+        Accepts a list/tuple/set of strings. A bare string is a common YAML
+        typo (``keep: _filesystem_rail``) that ``set(str)`` would split
+        per-character, whitelisting nothing and dropping every non-PROTECTED
+        rail — so reject it (warn + empty set) rather than risk that. An empty
+        set means "no filter on this field", which the caller handles.
+        """
+        if raw is None:
+            return set()
+        if isinstance(raw, str):
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] profile rails.%s is a scalar string "
+                "(%r), expected a list of rail attr_names; ignoring it to avoid "
+                "per-character splitting. Use a YAML list, e.g. %s: [%s].",
+                field_name, raw, field_name, raw,
+            )
+            return set()
+        if isinstance(raw, (list, tuple, set)):
+            names: set[str] = set()
+            skipped = 0
+            for item in raw:
+                if isinstance(item, str) and item.strip():
+                    names.add(item.strip())
+                else:
+                    skipped += 1
+            if skipped:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] profile rails.%s skipped %d "
+                    "non-string/empty entries; kept: %s",
+                    field_name, skipped, sorted(names),
+                )
+            return names
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] profile rails.%s has unsupported type %s; "
+            "ignoring it.", field_name, type(raw).__name__,
+        )
+        return set()
 
     def _make_deep_agent_config(
         self,
@@ -9124,6 +9362,16 @@ class JiuWenSwarmDeepAdapter:
                 await self._load_enterprise_config(bootstrap_request)
             config_base = merge_memory_config_into_config(config_base)
             config_base = self._merge_enterprise_models_into_config(config_base)
+            # Per-session agent profile: resolve the kind from the bootstrap
+            # request (params.agent_kind / metadata) or the agent_id breed_map,
+            # then merge the named profile's react/evolution overrides into
+            # config_base BEFORE _resolve_enable_task_loop and _build_agent_rails
+            # read them. This is what lets one sidecar serve both normal and
+            # flash sessions, each in its own child adapter + DeepAgent.
+            kind = self._resolve_agent_kind(bootstrap_request, config_base)
+            if kind is not None:
+                self._active_agent_kind = kind
+            config_base = self._apply_active_profile(config_base)
             # 与模型槽位一致：Agent 级 permissions 模板在构建 rail 前绑定到 Task
             token_perm_agent = self._bind_agent_permissions_base()
             try:
@@ -9690,6 +9938,18 @@ class JiuWenSwarmDeepAdapter:
                 )
 
             config_base = await self._apply_reload_config_snapshot(config_base, env_overrides)
+            # Reload has no request, so reuse the persisted _active_agent_kind
+            # (set at cold start) and re-merge the profile. Without this,
+            # _apply_reload_config_snapshot resets both _config_base_cache and
+            # _config_cache to the global react (no profile), which would flip a
+            # normal (task_loop=true) session back to flash on hot reload.
+            # Read defensively (getattr) for parity with _active_profile_spec:
+            # paths that bypass __init__ (e.g. unit-test object.__new__) never
+            # set the attribute and must not raise here.
+            if getattr(self, "_active_agent_kind", None) is not None:
+                config_base = self._apply_active_profile(config_base)
+                self._config_base_cache = config_base.copy()
+                self._config_cache = config_base.get("react", {}).copy()
             config = self._config_cache.copy()
 
             model = self._create_model(config_base)
