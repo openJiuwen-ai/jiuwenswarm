@@ -443,7 +443,7 @@ class AgentWebSocketServer:
 
     # ---------- 生命周期 ----------
 
-    async def start(self) -> None:
+    async def start(self, *, listen: bool = True) -> None:
         """启动 WebSocket 服务端，开始监听连接。优先使用 legacy.server.serve 以与 Gateway 的 legacy client 握手兼容.
 
         注: persistent checkpointer 的初始化历史在 ``legacy_serve`` 之前同步 await,
@@ -460,31 +460,34 @@ class AgentWebSocketServer:
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 
-        try:
-            from websockets.legacy.server import serve as legacy_serve
-            self._server = await legacy_serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+        if listen:
+            try:
+                from websockets.legacy.server import serve as legacy_serve
+                self._server = await legacy_serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            except ImportError:
+                import websockets
+                self._server = await websockets.serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            logger.info(
+                "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
             )
-        except ImportError:
-            import websockets
-            self._server = await websockets.serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
-        logger.info(
-            "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
-        )
+        else:
+            logger.info("[AgentServer] handler initialized without an unauthenticated WS listener")
         # 启动端到端预热：interface_deep import → checkpointer → 临时 DeepAgent → query。
         # 拆成两个 task：
         #   - _startup_warmup_task 承载阶段1/2（import+checkpointer），快速有界，
@@ -1527,4 +1530,3 @@ class AgentWebSocketServer:
                 "[AgentServer] Built model cache with %d models, default=%s",
                 len(self._model_cache), first_name
             )
-

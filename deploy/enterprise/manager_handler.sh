@@ -45,6 +45,9 @@ render_manager_files() {
     render_secret_configmap
     ensure_available_port "MANAGER_SERVER_NODE_PORT" "MANAGER_WEB_NODE_PORT"
     gen_manager_server_file
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" != off ]]; then
+        link_mtls_render manager "${CONFIG[MANAGER_SERVER_FILE]}"
+    fi
     gen_identity_file
 
     local manager_web_template_file="${CONFIG["MANAGER_WEB_TEMPLATE_FILE"]}"

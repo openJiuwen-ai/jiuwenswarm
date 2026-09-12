@@ -19,6 +19,8 @@ dependencies = [
     "loguru>=0.7.3",
     "markdown>=3.4,<4",
     "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
+    # Gateway/AgentServer share the reviewed Runtime foundation implementation.
+    "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
     "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
@@ -117,6 +119,7 @@ shell-ast = []
 test = [
     "a2a-sdk[http-server]==1.0.0",
     "asyncssh>=2.14.0,<2.24",
+    "pywebview>=5.4",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-html>=4.1.1",
@@ -196,6 +199,7 @@ jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
 test = [
     "a2a-sdk[http-server]==1.0.0",
     "asyncssh>=2.14.0,<2.24",
+    "pywebview>=5.4",
     "pytest>=8.3.5",
     "pytest-asyncio>=1.0.0",
     "pytest-html>=4.1.1",

@@ -79,6 +79,10 @@ render_runtime_files() {
     gen_runtime_file
     render_patch_file
     render_agentserver_env_configmap
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" != off ]]; then
+        link_mtls_render runtime "${CONFIG[RUNTIME_FILE]}"
+        link_mtls_render agentserver "${CONFIG[AS_JSON_FILE]}"
+    fi
 
     # agentserver 由 runtime 动态创建并挂载内置 PVC，PVC 渲染归属 runtime
     if [[ "${mount_type}" == "pvc" && "${is_external_pvc}" == "false" ]]; then

@@ -12,6 +12,12 @@ wait_http_ready() {
     local port="$2"
     local path="$3"
     local module="${4:-service}"
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" == enforce ]]; then
+        local role=gateway
+        [[ "$module" != agent-runtime* ]] || role=runtime
+        link_mtls_call wait "$role" "$path"
+        return
+    fi
     local elapsed=0
     local code="000"
     [ -n "${port}" ] || error "${module} NodePort is empty; cannot check readiness"
@@ -37,6 +43,12 @@ post_and_validate() {
     local url="$1"
     local data="$2"
     local module="${3:-}"
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" == enforce ]]; then
+        local path="${url#*://}"
+        path="/${path#*/}"
+        link_mtls_request "$module" "$path" "$data"
+        return
+    fi
     local resp_file="$(mktemp)"
     local code=$(curl -s --max-time 20 -o "${resp_file}" -w "%{http_code}" \
         -X POST "${url}" -H "Content-Type: application/json" -d "${data}" 2>/dev/null) || code="000"

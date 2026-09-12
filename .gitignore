@@ -40,6 +40,8 @@ pnpm-debug.log*
 # Environment files
 .env
 .env_personal
+/deploy/enterprise/.env.custom
+/deploy/enterprise/.link-mtls-test/
 !.env.example
 
 # Apple code signing & notarization secrets — NEVER commit (contains private keys!)
