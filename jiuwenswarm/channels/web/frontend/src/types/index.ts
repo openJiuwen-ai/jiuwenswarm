@@ -53,11 +53,13 @@ export interface Session {
 }
 
 export type AgentMode =
-  // 旧 UI 基础模式（localStorage 兼容期保留）
+  // UI 基础模式
   | 'agent'
+  | 'agent.plan'
   | 'team'
+  | 'auto'
   | 'auto_harness'
-  // 新三段命名 canonical（与 TUI ClientMode 对齐，前端 normalizeAgentMode 仍归一到基础三态）
+  // 新三段命名 canonical（与 TUI ClientMode 对齐，前端仍归一到基础模式）
   | 'agent.work.normal'
   | 'agent.work.plan'
   | 'agent.code.normal'

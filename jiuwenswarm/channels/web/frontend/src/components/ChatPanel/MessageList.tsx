@@ -775,6 +775,11 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
   const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
   const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const lastMacroRoutedMode = useSessionStore(
+    (s) => s.runtimes[activeSessionId ?? '']?.lastMacroRoutedMode ?? null,
+  );
+  const effectiveMode =
+    mode === 'auto' && lastMacroRoutedMode ? lastMacroRoutedMode : mode;
   const executions = useMemo(
     () => toolExecutionOrder
       .map((toolCallId) => toolExecutions.get(toolCallId))
@@ -786,7 +791,7 @@ export function MessageList({ messages, renderAfterMessage }: MessageListProps) 
     <ChatTimelineList
       messages={messages}
       executions={executions}
-      mode={mode}
+      mode={effectiveMode}
       renderAfterMessage={renderAfterMessage}
     />
   );

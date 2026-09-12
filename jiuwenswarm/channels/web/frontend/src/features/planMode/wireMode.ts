@@ -23,17 +23,18 @@
  * profile 解析。现在 profile 由调用方传入，agent / team 两条路径都能产出。
  */
 
-/** UI 层的基础模式。agent 与 team 都支持 Plan。 */
-export type PlanBaseMode = 'agent' | 'team' | 'auto_harness';
+/** UI 层的基础模式。agent / team 支持 Plan；auto / auto_harness 仅透传。 */
+export type PlanBaseMode = 'agent' | 'team' | 'auto' | 'auto_harness';
 
 /** Web profile 取值：`work` 走普通 Deep 通道，`code` 走 CodeAdapter。 */
 export type PlanWorkProfile = 'work' | 'code';
 
 /**
- * Plan 对单 agent 与集群均开放。
+ * Plan 对单 agent 与集群均开放；Auto / auto_harness 不提供 Plan 入口。
  *
- * 集群 Plan 由 Leader 先产出计划、经用户审批再执行，和单 agent 的 Plan 流程
- * 看齐；profile（Deep / Code）由 work_mode 决定，映射到
+ * MACRO 的调度 lane 仅为 agent / team；Auto 是每次请求重新分类的用户选择，
+ * 不参与 Plan mode 的 wire 组合。集群 Plan 由 Leader 先产出计划、经用户审批再执行；
+ * profile（Deep / Code）映射到
  * `team.work.plan` / `team.code.plan`。
  */
 export function supportsPlanMode(mode: PlanBaseMode | string | undefined): boolean {
