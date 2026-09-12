@@ -498,6 +498,13 @@ class XiaoyiChannel(BaseChannel):
             getattr(config, "team_ws_keepalive_interval", 20) or 20
         )
         self._ws_keepalive_task: asyncio.Task | None = None
+        # 任务进行中的周期状态保活间隔（秒）。注意：**必须小于客户端的"静默对账"阈值**
+        # （小艺Work 桌面端 claw_desktop: RUN_STREAM_FRESH_MS = 45s），否则长静默期
+        # 客户端判定事件流失活、用历史草稿把仍在跑的轮次误标「已完成」。
+        # 默认 20s：即使丢一帧（40s）仍小于阈值；30s 丢一帧就会踩线。
+        self._status_update_interval: float = float(
+            getattr(config, "status_update_interval", 20) or 20
+        )
         # V2: push 合并窗口缓冲 push_id → [(ts, content, summary)]，避免短时多条 push 轰炸
         self._push_merge_buffers: dict[str, list[tuple[float, str, str]]] = {}
         # V2: push 延迟 flush 任务 push_id → asyncio.Task，窗口到期统一发送
@@ -2756,12 +2763,14 @@ class XiaoyiChannel(BaseChannel):
         self._clear_task_timeout(session_id, task_id)
         self._task_timeout_tasks[task_key] = asyncio.create_task(task_timeout_handler())
 
-        # Start 60-second periodic timeout for status updates
+        # 任务进行中的周期状态保活：向手机/镜像侧持续推 status-update（working，带文案）。
+        # 间隔必须小于客户端静默对账阈值（桌面端 45s），否则长静默期（如后台装依赖、
+        # 长工具）客户端会误判完成。默认 20s，可用 config.status_update_interval 覆盖。
         async def periodic_timeout_handler():
-            """60-second periodic timeout for status updates."""
+            """任务期间的周期状态保活（默认 20s，见 _status_update_interval）。"""
             try:
                 while (session_id, task_id) in self._active_tasks:
-                    await asyncio.sleep(60)
+                    await asyncio.sleep(self._status_update_interval)
                     if (session_id, task_id) not in self._active_tasks:
                         break
                     # Skip if already waiting for push (1-hour timeout triggered)
@@ -3062,6 +3071,18 @@ class XiaoyiChannel(BaseChannel):
                 },
             },
         }
+        # 与 _send_status_update_with_state 对齐补一条诊断日志：周期保活帧同样带文案与
+        # state，排障时不应看起来像"空帧"（此前该函数无日志，容易被误判为空文案保活）。
+        logger.info(
+            "[GUI_AGENT_DIAG] phase=XIAOYI_STATUS_RESPONSE_BUILT "
+            "session_id=%s task_id=%s connection=%s state=working final=False "
+            "text=%r response=%r",
+            session_id,
+            task_id,
+            "*",
+            message,
+            response,
+        )
         # Send to all active connections
         for url_key in list(self._ws_connections.keys()):
             await self._send_agent_response(session_id, task_id, response, url_key)
