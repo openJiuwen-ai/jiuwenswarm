@@ -69,3 +69,16 @@ def test_validate_mcp_entry_rejects_unknown_transport() -> None:
                 "url": "http://example.com/mcp",
             }
         )
+
+
+def test_validate_mcp_entry_rejects_stdio() -> None:
+    validate_mcp_entry = _import_template_schemas().validate_mcp_entry
+    with pytest.raises(ValueError, match="mcp_entry.transport must be one of"):
+        validate_mcp_entry(
+            {
+                "name": "local",
+                "transport": "stdio",
+                "command": "node",
+                "args": ["server.js"],
+            }
+        )

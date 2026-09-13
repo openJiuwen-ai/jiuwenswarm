@@ -211,8 +211,8 @@ class SkillPrebuiltTemplateCreateRequest(SkillPrebuiltTemplateUpdateRequest):
 
 
 # 入参可写别名；存盘归一到 SDK 注册名（见 _CANONICAL_MCP_TRANSPORT）。
+# 企业模板仅允许远程 MCP；本地 stdio 不在用户可配入口开放。
 _VALID_MCP_TRANSPORTS = frozenset({
-    "stdio",
     "sse",
     "http",
     "streamable-http",
@@ -247,14 +247,9 @@ def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
             + ", ".join(sorted(_VALID_MCP_TRANSPORTS))
         )
     transport = _MCP_TRANSPORT_ALIASES.get(transport, transport)
-    if transport == "stdio":
-        command = str(normalized.get("command", "")).strip()
-        if not command:
-            raise ValueError("mcp_entry.command is required for stdio transport")
-    else:
-        url = str(normalized.get("url", "")).strip()
-        if not url:
-            raise ValueError("mcp_entry.url is required for remote MCP transport")
+    url = str(normalized.get("url", "")).strip()
+    if not url:
+        raise ValueError("mcp_entry.url is required for remote MCP transport")
     normalized["name"] = name
     normalized["transport"] = transport
     return normalized

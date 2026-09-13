@@ -23,14 +23,14 @@ def test_apply_enterprise_mcp_replaces_local_servers() -> None:
             "servers": [
                 {
                     "name": "local-only",
-                    "transport": "stdio",
-                    "command": "echo",
+                    "transport": "sse",
+                    "url": "http://127.0.0.1:8000/sse",
                     "enabled": True,
                 },
                 {
                     "name": "local-demo",
-                    "transport": "stdio",
-                    "command": "echo",
+                    "transport": "http",
+                    "url": "http://127.0.0.1:8001/mcp",
                     "enabled": True,
                 },
             ]
@@ -79,8 +79,8 @@ def test_apply_enterprise_mcp_clears_local_when_slot_empty() -> None:
             "servers": [
                 {
                     "name": "local-demo",
-                    "transport": "stdio",
-                    "command": "echo",
+                    "transport": "sse",
+                    "url": "http://127.0.0.1:8000/sse",
                     "enabled": True,
                 }
             ]
@@ -117,7 +117,7 @@ def test_clear_local_mcp_servers() -> None:
     )
 
     merged = clear_local_mcp_servers(
-        {"mcp": {"servers": [{"name": "x", "transport": "stdio", "command": "c"}]}}
+        {"mcp": {"servers": [{"name": "x", "transport": "sse", "url": "http://127.0.0.1/sse"}]}}
     )
     assert merged["mcp"]["servers"] == []
 

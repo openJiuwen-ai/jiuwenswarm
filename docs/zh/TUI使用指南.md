@@ -339,8 +339,7 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 #### `/mcp`
 
 - 子命令：`list`、`show`、`add`、`update`、`enable`、`disable`、`remove`（`delete` 同 `remove`）。
-- `stdio`：需 `--command`，可选 `--args`、`--cwd`、`--env`。
-- `sse`：需 `--url`，可选 `--headers`、`--timeout_s`。
+- 仅支持远程传输：`sse` / `http`（`streamable-http`），需 `--url`，可选 `--headers`、`--timeout_s`。
 - 详见 [Slash命令表.md](Slash命令表.md) 与 `mcp.ts`。
 
 #### `/skills` 与 `/teamskills`
