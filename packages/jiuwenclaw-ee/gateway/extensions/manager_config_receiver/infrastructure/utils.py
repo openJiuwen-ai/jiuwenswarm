@@ -52,19 +52,6 @@ def get_gateway_register_identity() -> dict[str, str]:
     return out
 
 
-KNOWN_SLOT_KEYS = frozenset({
-    "default_model",
-    "video_model",
-    "audio_model",
-    "vision_model",
-    "embedding_model",
-    "skill_whitelist",
-    "extension_config",
-    "mcp",
-    "permissions",
-})
-
-
 def utc_now() -> datetime:
     """返回当前 UTC 时间（带 ``timezone.utc`` 的 aware ``datetime``）。"""
     return datetime.now(timezone.utc)
@@ -93,7 +80,7 @@ def parse_iso_datetime(value: Any) -> Any:
 
 
 def normalize_template_ref(value: Any) -> dict[str, list[str]]:
-    """将 ``template_ref`` 规范为 ``{slot: [ref_string, ...]}``；空值键省略。"""
+    """将 ``template_ref`` 规范为 ``{slot: [ref_string, ...]}``；空值键省略，同槽位去重保序。"""
     if value is None:
         return {}
     if not isinstance(value, dict):
@@ -105,11 +92,16 @@ def normalize_template_ref(value: Any) -> dict[str, list[str]]:
             continue
         if not isinstance(raw, list):
             raise ValueError(f"template_ref[{slot!r}] must be a list")
-        refs = [
-            str(item).strip()
-            for item in raw
-            if item is not None and str(item).strip()
-        ]
+        refs: list[str] = []
+        seen: set[str] = set()
+        for item in raw:
+            if item is None:
+                continue
+            text = str(item).strip()
+            if not text or text in seen:
+                continue
+            seen.add(text)
+            refs.append(text)
         if refs:
             out[slot] = refs
     return out

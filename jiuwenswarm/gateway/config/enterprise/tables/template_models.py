@@ -2,7 +2,7 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026-2026. All rights reserved
 
 """模板表：model_template、embedding_template、extension_config_template、
-skill_whitelist_template、permissions_template（与企业级数据模型对齐）。
+skill_prebuilt_template、mcp_template、permissions_template（与企业级数据模型对齐）。
 """
 
 from __future__ import annotations
@@ -105,8 +105,8 @@ EXTENSION_CONFIG_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
 )
 
-SKILL_WHITELIST_TEMPLATE_TABLE_DEF = TableDefinition(
-    table_name="skill_whitelist_template",
+SKILL_PREBUILT_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="skill_prebuilt_template",
     columns=[
         ColumnDefinition(
             "id",
@@ -119,8 +119,33 @@ SKILL_WHITELIST_TEMPLATE_TABLE_DEF = TableDefinition(
         ColumnDefinition("template_name", "string", length=128, nullable=False),
         ColumnDefinition("description", "string", length=512, nullable=True),
         ColumnDefinition("skill_id", "string", length=512, nullable=False),
-        ColumnDefinition("skill_version", "string", length=64, nullable=False),
-        ColumnDefinition("skill_source", "string", length=2048, nullable=False),
+        ColumnDefinition("package_url", "string", length=2048, nullable=True),
+        ColumnDefinition("source_id", "string", length=64, nullable=True),
+        ColumnDefinition("version_id", "string", length=128, nullable=True),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[
+        IndexDefinition(["template_id"], unique=True),
+    ],
+)
+
+MCP_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="mcp_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("mcp_entry", "json", nullable=False),
         ColumnDefinition("enabled", "boolean", nullable=False, default=True),
         ColumnDefinition("data", "json", nullable=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
@@ -202,4 +227,59 @@ AGENT_TEMPLATE_TABLE_DEF = TableDefinition(
     indexes=[
         IndexDefinition(["template_id"], unique=True),
     ],
+)
+
+A2A_OUTBOUND_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_outbound_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("a2a_tags", "json", nullable=True),
+        ColumnDefinition("source_url", "string", length=2048, nullable=False),
+        ColumnDefinition("card_path", "string", length=512, nullable=False),
+        ColumnDefinition("agent_card", "json", nullable=False),
+        ColumnDefinition("card_fingerprint", "string", length=128, nullable=False),
+        ColumnDefinition("card_revision", "integer", nullable=False),
+        ColumnDefinition("selected_interface", "json", nullable=False),
+        ColumnDefinition("credential_ref", "string", length=512, nullable=True),
+        ColumnDefinition("connect_timeout_seconds", "float", nullable=False),
+        ColumnDefinition("sync_wait_seconds", "float", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["template_id"], unique=True)],
+)
+
+A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_access_policy_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("policy_id", "string", length=100, nullable=False),
+        ColumnDefinition("policy_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("mode", "string", length=16, nullable=False),
+        ColumnDefinition("member_template_ids", "json", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("revision", "integer", nullable=False),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["policy_id"], unique=True)],
 )

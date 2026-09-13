@@ -129,7 +129,7 @@ def _resolve_shared_dir(shared_dir: str | Path | None = None) -> Path | None:
 
     Prefer an explicit ``shared_dir`` (enterprise multi-tenant workspace).
     Otherwise mount ``get_agent_root_dir()`` (e.g. ``~/.jiuwenswarm/agent``)
-    rather than only ``agent/workspace``, so sibling download paths remain writable.
+    rather than only ``agent/jiuwenclaw_workspace``, so sibling download paths remain writable.
     """
     try:
         if shared_dir is not None and str(shared_dir).strip():

@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
@@ -10,7 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
-from jiuwenswarm.gateway.cron.cron_expr import normalize_cron_expr
+from jiuwenswarm.gateway.cron.cron_expr import is_oneshot_cron_expr, normalize_cron_expr
 from jiuwenswarm.gateway.cron.store import CronJobStore, _PROACTIVE_TICK_MODE
 from jiuwenswarm.gateway.cron.scheduler import _cron_next_push_dt, CronSchedulerService
 from jiuwenswarm.gateway.cron.models import (
@@ -258,14 +259,14 @@ class CronTools:
             extract_routing_triple,
             routing_triple_complete,
         )
-        from jiuwenswarm.server.runtime.enterprise_config import gateway_db
+        from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
         identity = self._routing_identity_payload()
         g, b, u = extract_routing_triple(identity)
         if not routing_triple_complete(g, b, u):
             raise ValueError("enterprise cron list requires group_id, bot_id and user_id")
         filters: dict[str, Any] = {"group_id": g, "bot_id": b, "user_id": u}
-        rows = await gateway_db.list_records("cron_job", filters=filters, order_by="updated_at DESC")
+        rows = await db_queries.list_records("cron_job", filters=filters, order_by="updated_at DESC")
         out: list[dict[str, Any]] = []
         for row in rows:
             job = _row_to_job(row)
@@ -416,9 +417,17 @@ class CronTools:
 
     async def create_job(self, params: dict[str, Any]) -> Any:
         normalized = dict(params or {})
+        # 幂等：id 在 AgentServer 侧生成一次，随 push 下发（企业版）或直接写入
+        # 本地 store（个人版）。Gateway 收到同一 id 时靠 already-exists 检查去重，
+        # 避免多副本扇出导致重复落库。与个人版"id 在 AgentServer 生成"保持一致。
+        job_id = str(normalized.get("id") or "").strip() or uuid.uuid4().hex
         normalized.pop("session_id", None)
         normalized["targets"] = self._normalize_targets_param(normalized.get("targets"))
         normalized["cron_expr"] = normalize_cron_expr(str(normalized.get("cron_expr") or "").strip())
+        # 与手动创建规格对齐：LLM 工具 schema 无 delete_after_run 字段，未显式传入时
+        # 按 cron_expr 推断「单次」任务（年份为固定值），保证对话创建与手动创建一致。
+        if "delete_after_run" not in normalized:
+            normalized["delete_after_run"] = is_oneshot_cron_expr(normalized["cron_expr"])
         targets_str = normalized["targets"]
         logger.info(
             "[CronTools] create_job: route(channel=%s session=%s request=%s) input.targets=%s normalized.targets=%s",
@@ -485,7 +494,7 @@ class CronTools:
         if self._enterprise_ready():
             push_payload = {
                 **normalized,
-                "id": str(normalized.get("id") or "").strip() or None,
+                "id": job_id,
                 "project_id": resolved_project_id,
                 "work_mode": work_mode,
                 **session_kw,
@@ -497,7 +506,7 @@ class CronTools:
             return push_payload
 
         job = await self._local_store.create_job(
-            job_id=str(normalized.get("id") or "").strip() or None,
+            job_id=job_id,
             name=str(normalized.get("name") or "").strip(),
             cron_expr=str(normalized.get("cron_expr") or "").strip(),
             timezone=str(normalized.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai",

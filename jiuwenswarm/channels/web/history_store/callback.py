@@ -36,6 +36,15 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
     pending: dict[str, dict[str, Any]] = {}
     assistant_buf: dict[str, str] = {}
 
+    def _identity_from_params(params: dict[str, Any]) -> dict[str, Any]:
+        """从 browser 帧 params 提取身份/归属（由 WS/HTTP 入口注入的连接级权威值）。"""
+        fields: dict[str, Any] = {}
+        for key in ("group_id", "bot_id", "project_id", "cron_id", "work_mode"):
+            value = params.get(key)
+            if isinstance(value, str) and value.strip():
+                fields[key] = value.strip()
+        return fields
+
     async def _handle_browser(data: dict[str, Any]) -> None:
         if data.get("type") != "req":
             return
@@ -55,13 +64,17 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
             user = None
         else:
             user = user.strip()
+        identity = _identity_from_params(params)
         ts = time.time()
         if isinstance(session_id, str) and session_id:
             await store.record_user(
                 request_id=request_id, session_id=session_id, query=query, ts=ts, user=user,
+                **identity,
             )
         else:
-            pending[request_id] = {"query": query, "ts": ts, "method": method, "user": user}
+            pending[request_id] = {
+                "query": query, "ts": ts, "method": method, "user": user, **identity,
+            }
             logger.debug(
                 "[history] 暂存 pending user(无 sid): rid=%s method=%s pending=%d",
                 request_id, method, len(pending),
@@ -110,6 +123,9 @@ def make_history_callback(store: "ChatHistoryStore") -> FrameCallback:
             await store.record_user(
                 request_id=request_id, session_id=session_id,
                 query=p["query"], ts=p["ts"], user=p.get("user"),
+                group_id=p.get("group_id"), bot_id=p.get("bot_id"),
+                project_id=p.get("project_id"), cron_id=p.get("cron_id"),
+                work_mode=p.get("work_mode"),
             )
             logger.info("[history] pending 回填 user: rid=%s sid=%s", request_id, session_id)
         await store.record_assistant(

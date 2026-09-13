@@ -18,7 +18,7 @@ _TOOL_NAMES = ("a2a_find_agents", "a2a_dispatch_task", "a2a_get_dispatch")
 
 
 class A2AOutboundToolkitRail(DeepAgentRail):
-    """Keep the three narrow tools visible across Gateway connection timing."""
+    """Expose A2A tools only while a Gateway reverse-RPC owner is available."""
 
     priority = 45
 
@@ -27,10 +27,12 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         *,
         backend_provider: Callable[[], A2AOutboundToolBackend | None] | None = None,
         runtime_route: Callable[[], tuple[str, str]] | None = None,
+        runtime_resource_id: Callable[[], str] | None = None,
     ) -> None:
         super().__init__()
         self._backend_provider = backend_provider or GatewayA2AOutboundToolBackend
         self._runtime_route = runtime_route
+        self._runtime_resource_id = runtime_resource_id
         self._registered: list[str] = []
         self._prompt_builder: Any = None
         self._agent: Any = None
@@ -41,19 +43,21 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         self._try_register(agent)
 
     def _try_register(self, agent: Any) -> None:
-        if self._registered:
-            return
         backend = self._backend_provider()
-        if backend is None:
+        if backend is None or not backend.ready:
+            self._unregister_tools(agent)
+            return
+        if self._registered:
             return
         ability_manager = getattr(agent, "ability_manager", None)
         if ability_manager is None:
             return
-        toolkit = (
-            A2AOutboundToolkit(backend, runtime_route=self._runtime_route)
-            if self._runtime_route is not None
-            else A2AOutboundToolkit(backend)
-        )
+        toolkit_kwargs: dict[str, Any] = {}
+        if self._runtime_route is not None:
+            toolkit_kwargs["runtime_route"] = self._runtime_route
+        if self._runtime_resource_id is not None:
+            toolkit_kwargs["runtime_resource_id"] = self._runtime_resource_id
+        toolkit = A2AOutboundToolkit(backend, **toolkit_kwargs)
         tools = toolkit.get_tools()
         for tool in tools:
             ability_manager.add_ability(tool.card, tool)
@@ -61,6 +65,11 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         self._sync_prompt()
 
     def uninit(self, agent: Any) -> None:
+        self._unregister_tools(agent)
+        self._prompt_builder = None
+        self._agent = None
+
+    def _unregister_tools(self, agent: Any) -> None:
         ability_manager = getattr(agent, "ability_manager", None)
         if ability_manager is not None:
             for name in reversed(self._registered):
@@ -69,12 +78,10 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         builder = getattr(agent, "system_prompt_builder", None) or self._prompt_builder
         if builder is not None:
             builder.remove_section(_SECTION_NAME)
-        self._prompt_builder = None
-        self._agent = None
 
     async def before_model_call(self, ctx: Any) -> None:
         live_agent = getattr(ctx, "agent", None) or self._agent
-        if not self._registered and live_agent is not None:
+        if live_agent is not None:
             self._try_register(live_agent)
         if not self._registered:
             return

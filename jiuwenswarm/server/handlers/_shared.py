@@ -218,7 +218,7 @@ def _sessions_dir_for_request(request: AgentRequest) -> Path:
 
 
 def _agent_workspace_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``workspace_{key}/agent/workspace`` for a request."""
+    """Resolve tenant ``workspace_{key}/agent/jiuwenclaw_workspace`` for a request."""
     _agent_id, _service_id, workspace_key = TenantAgentPool.extract_ids(request)
     return resolve_tenant_agent_workspace_dir(workspace_key)
 

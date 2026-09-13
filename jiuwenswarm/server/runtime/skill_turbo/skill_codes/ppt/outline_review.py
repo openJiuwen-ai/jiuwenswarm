@@ -5,6 +5,11 @@ from collections.abc import AsyncIterator
 from typing import Any
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError, PlanNode
+from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.content_plan import (
+    ContentPlanError,
+    _validate_notes_leakage,
+    _validate_outline_markdown_basic,
+)
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
 
 logger = logging.getLogger(__name__)
@@ -35,7 +40,8 @@ class OutlineReviewNode(PlanNode):
                 "   - 确认 → 保持 outline.md 不变，结束本节点\n"
                 "   - 直接编辑 preview 文本 → 规则写回 outline.md，结束本节点\n"
                 "   - NL 改稿 → 调用 LLM 修订 outline.md，结束本节点\n"
-                "4. 失败兜底：工具调用失败或超时时，沿用当前 outline.md 继续\n"
+                "4. 改稿后复验 ✅ 页数门禁与备注泄漏；NL 失败可再修 1 次\n"
+                "5. 失败兜底：工具调用失败或超时时，沿用当前 outline.md 继续\n"
                 "\n"
                 "### 关键约束\n"
                 "- preview 字段必须传入 outline.md 的完整内容，禁止任何形式的摘要、改写、格式转换或省略\n"
@@ -76,6 +82,15 @@ class OutlineReviewNode(PlanNode):
         if user_action == _OUTLINE_USE_EDITED_ID:
             edited_text = self._extract_edited_text(ask_result, outline_text)
             if edited_text:
+                gate_err = self._check_outline_gates(edited_text, inputs)
+                if gate_err:
+                    logger.warning("[P5] 用户直接编辑未过门禁（保留写回）: %s", gate_err)
+                    await self._write_outline(outline_path, edited_text)
+                    return {
+                        "p5_review_status": "edited_with_gate_warning",
+                        "p5_review_message": f"用户修改了大纲，但门禁告警：{gate_err}",
+                        "p5_gate_warning": gate_err,
+                    }
                 await self._write_outline(outline_path, edited_text)
                 logger.info("[P5] 用户修改了大纲（直接编辑preview），已写回")
                 return {"p5_review_status": "edited", "p5_review_message": "用户修改了大纲（直接编辑preview），已写回"}
@@ -84,7 +99,24 @@ class OutlineReviewNode(PlanNode):
             if user_nl_input:
                 revised = await self._llm_revise_outline(outline_text, user_nl_input)
                 if revised:
+                    gate_err = self._check_outline_gates(revised, inputs)
+                    if gate_err:
+                        logger.info("[P5] NL 改稿未过门禁，再修 1 次: %s", gate_err)
+                        revised2 = await self._llm_revise_outline(
+                            revised,
+                            f"请修复以下大纲门禁问题后重新输出完整大纲：{gate_err}",
+                        )
+                        if revised2:
+                            revised = revised2
+                            gate_err = self._check_outline_gates(revised, inputs)
                     await self._write_outline(outline_path, revised)
+                    if gate_err:
+                        logger.warning("[P5] NL 改稿写回但仍有门禁告警: %s", gate_err)
+                        return {
+                            "p5_review_status": "nl_revised_with_gate_warning",
+                            "p5_review_message": f"用户NL改稿已写回，但门禁告警：{gate_err}",
+                            "p5_gate_warning": gate_err,
+                        }
                     logger.info("[P5] 用户NL改稿，LLM修订大纲已写回")
                     return {"p5_review_status": "nl_revised", "p5_review_message": "用户NL改稿，LLM修订大纲已写回"}
 
@@ -93,6 +125,27 @@ class OutlineReviewNode(PlanNode):
 
         logger.info("[P5] 未识别的用户操作，沿用当前大纲")
         return {"p5_review_status": "skipped_unknown_action", "p5_review_message": "未识别的用户操作，沿用当前大纲"}
+
+    def _check_outline_gates(self, text: str, inputs: dict[str, Any]) -> str:
+        """复验 ✅ 页数 + 备注泄漏；失败返回原因，通过返回空串。"""
+        try:
+            _validate_outline_markdown_basic(
+                text,
+                topic=str(inputs.get("topic") or "").strip(),
+                page_count=inputs.get("page_count"),
+                structural_page_request=str(inputs.get("structural_page_request") or "none"),
+                structural_page_count=inputs.get("structural_page_count"),
+                expand_page_mode=PptCommon.is_expand_page_mode(inputs),
+            )
+            _validate_notes_leakage(text)
+            return ""
+        except ContentPlanError as exc:
+            return str(exc)
+        except Exception as exc:
+            if isinstance(exc, AbortError):
+                raise
+            logger.warning("[P5] 门禁复验异常，跳过: %s", exc)
+            return ""
 
     async def _execute_stream(self, inputs: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         result = await self._execute(inputs)
@@ -103,6 +156,8 @@ class OutlineReviewNode(PlanNode):
             "confirmed": "ok",
             "edited": "ok",
             "nl_revised": "ok",
+            "edited_with_gate_warning": "warning",
+            "nl_revised_with_gate_warning": "warning",
             "skipped_not_guided": "ok",
             "skipped_no_tool": "ok",
             "skipped_no_outline": "warning",

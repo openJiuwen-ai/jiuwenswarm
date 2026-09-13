@@ -30,6 +30,7 @@ from openjiuwen.core.single_agent.rail.base import (
     ToolCallInputs,
 )
 from openjiuwen.harness.rails.base import DeepAgentRail
+from openjiuwen.harness.rails.skills.skill_use_rail import get_current_skill_name
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.tools import TodoListTool
 from openjiuwen.harness.workspace.workspace import WorkspaceNode
@@ -39,6 +40,10 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
 )
 from jiuwenswarm.agents.harness.common.prompt.user_prompt_builder import (
     strip_image_content_from_model_context,
+)
+from jiuwenswarm.agents.harness.common.tools.todo_resume import (
+    get_stale_todo_ids,
+    get_pre_invoke_todo_ids,
 )
 from jiuwenswarm.agents.harness.common.rails.symphony import (
     SymphonyToolStreamHandler,
@@ -52,6 +57,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
     extract_effective_project_dir,
+    overlay_serial_todo_statuses,
 )
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
@@ -74,6 +80,21 @@ def _early_checkpoint_disabled_by_env() -> bool:
 # non-enterprise runs. Enterprise deploy normally sets the env (e.g. 500).
 _DEFAULT_TOOL_RESULT_DISPLAY_MAX_CHARS = 60000
 _TOOL_RESULT_DISPLAY_MAX_CHARS_LIMIT = 100_000
+
+
+def _resolve_source_skill(session: Any = None) -> str:
+    """Return active skill name for tool-call attribution, or empty string.
+
+    Prefer session-backed binding (set by skill_tool); ContextVar alone does
+    not propagate across tool execution contexts — same issue as skill_turbo
+    request_metadata rebinding below.
+    """
+    try:
+        name = get_current_skill_name(session)
+    except Exception:
+        logger.debug("resolve source_skill failed", exc_info=True)
+        return ""
+    return str(name or "").strip()
 
 
 def _resolve_tool_result_display_max_chars() -> int:
@@ -1359,15 +1380,10 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                         _skill_turbo_tic.tool_call.id if _skill_turbo_tic.tool_call else "?",
                         ctx.inputs.tool_call.id if isinstance(ctx.inputs, ToolCallInputs) else "?",
                     )
-                    # 主路径必须主动 emit：外层 tool_name 是 skill_acceleration_exec，
-                    # _emit_ask_user_question_if_interrupted 不会命中；也不能只依赖
-                    # harness __interaction__（同 tool_call_id 二次 HITL 时常哑火）。
-                    await self._emit_skill_turbo_ask_user_question(
-                        session,
-                        outer_tool_call=ctx.inputs.tool_call,
-                        skill_turbo_tic=_skill_turbo_tic,
-                    )
-                    return  # 跳过 _emit_tool_result；ask_user 已在上方强制发出
+                    # 卡片由 harness __interaction__ 转换统一发出（外层
+                    # tool_call_id，harness 恢复按同一 id 对齐）；此处不再主动
+                    # emit，避免同一次中断发出两张 ask_user 卡片。
+                    return  # 跳过 _emit_tool_result：中断态无结果可发
             except Exception:
                 logger.debug(
                     "[StreamEventRail] skill_turbo HITL rewrite failed",
@@ -1457,6 +1473,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             if display_name:
                 tool_call_payload["display_name"] = display_name
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_call_payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_call",
@@ -1493,6 +1512,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 if error_state:
                     tool_result_payload["status"] = "error"
                     tool_result_payload["is_error"] = True
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                tool_result_payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_result",
@@ -1504,62 +1526,6 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
         except Exception:
             logger.debug("tool_result emit failed", exc_info=True)
-
-    @staticmethod
-    async def _emit_skill_turbo_ask_user_question(
-        session: Session,
-        *,
-        outer_tool_call: Any,
-        skill_turbo_tic: Any,
-    ) -> None:
-        """Emit chat.ask_user_question for SkillTurbo nested ask_user HITL.
-
-        request_id is the inner ask_user tool_call.id (unique per ask_user),
-        NOT the outer skill_acceleration_exec id. This ensures sequential
-        ask_user cards within the same skill_acceleration_exec have distinct
-        request_ids, so the frontend shows each as a separate card.
-
-        SkillTurbo resume (_resume_user_input_from_raw) extracts the user's
-        answer via ``next(iter(user_inputs.values()))`` — it ignores the key,
-        so using the inner ask_user id does not break resume.
-        """
-        inner_tc = getattr(skill_turbo_tic, "tool_call", None)
-        payload = _ask_user_question_payload_from_interrupt(
-            inner_tc or outer_tool_call,
-            skill_turbo_tic,
-        )
-        if not payload:
-            logger.debug(
-                "[StreamEventRail] SkillTurbo HITL ask_user payload unavailable"
-            )
-            return
-        inner_request_id = str(payload.get("request_id") or "").strip()
-        if not inner_request_id:
-            logger.warning(
-                "[StreamEventRail] SkillTurbo HITL ask_user skipped: "
-                "inner ask_user request_id unavailable; harness_id=%s",
-                getattr(outer_tool_call, "id", ""),
-            )
-            return
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="chat.ask_user_question",
-                    index=0,
-                    payload=payload,
-                )
-            )
-            logger.info(
-                "[StreamEventRail] SkillTurbo HITL emitted chat.ask_user_question "
-                "request_id=%s harness_id=%s",
-                inner_request_id,
-                getattr(outer_tool_call, "id", ""),
-            )
-        except Exception:
-            logger.debug(
-                "[StreamEventRail] SkillTurbo HITL ask_user emit failed",
-                exc_info=True,
-            )
 
     @staticmethod
     async def _emit_ask_user_question_if_interrupted(
@@ -1592,17 +1558,21 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
     @staticmethod
     async def _emit_tool_update(session: Session, tool_call: Any, *, status: str) -> None:
         try:
+            update_payload: dict[str, Any] = {
+                "tool_name": getattr(tool_call, "name", "") if tool_call else "",
+                "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
+                "arguments": getattr(tool_call, "arguments", {}) if tool_call else {},
+                "status": str(status or "").strip() or "in_progress",
+            }
+            source_skill = _resolve_source_skill(session)
+            if source_skill:
+                update_payload["source_skill"] = source_skill
             await session.write_stream(
                 OutputSchema(
                     type="tool_update",
                     index=0,
                     payload={
-                        "tool_update": {
-                            "tool_name": getattr(tool_call, "name", "") if tool_call else "",
-                            "tool_call_id": getattr(tool_call, "id", "") if tool_call else "",
-                            "arguments": getattr(tool_call, "arguments", {}) if tool_call else {},
-                            "status": str(status or "").strip() or "in_progress",
-                        }
+                        "tool_update": update_payload,
                     },
                 )
             )
@@ -1624,8 +1594,44 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             )
             return
 
+        # skip 窗口内（prepare hook 清理了跨请求残留 todo）过滤掉同一批旧 id：
+        # todo.updated 是全量快照旁路，不过滤会把旧任务的 completed 条目重新
+        # 弹回前端（task.update 通道的 _stale_todo_ids 过滤管不到这条旁路）。
+        try:
+            stale_ids = get_stale_todo_ids(session)
+        except Exception:
+            stale_ids = set()
+        if stale_ids:
+            # 仅过滤 stale 集中仍处于终态（cancelled/completed）的旧残留项。
+            # 本轮 LLM 通过 todo_create/todo_modify 重建的同 ID 项状态为
+            # pending/in_progress，不会被过滤。
+            # 额外排除本轮新建的同 ID 项：若 id 不在磁盘快照（pre_invoke_todo_ids）
+            # 中，说明是本轮 LLM 新建的，即使 id 与 stale 集合重合也不应过滤。
+            pre_invoke_ids = get_pre_invoke_todo_ids(session)
+            _DONE_STATUSES = frozenset({"cancelled", "completed"})  # pylint: disable=huawei-invalid-name
+            before = len(todos_data)
+            todos_data = [
+                t for t in todos_data
+                if not (  # pylint: disable=complicate-comprehension
+                    str(getattr(t, "id", "")) in stale_ids  # pylint: disable=complicate-comprehension
+                    and str(getattr(t, "status", "")).lower() in _DONE_STATUSES
+                    and (not pre_invoke_ids or str(getattr(t, "id", "")) in pre_invoke_ids)
+                )
+            ]
+            logger.info(
+                "[StreamEventRail] todo.updated filtered stale todos: "
+                "session_id=%s stale_ids=%d before=%d after=%d",
+                session_id,
+                len(stale_ids),
+                before,
+                len(todos_data),
+            )
+
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
+        # Serial overlay is applied after format (same helper as task.update)
+        # so todo.updated cannot leak a later completed row while an earlier
+        # item is still open.
         if not self._member_name:
             from jiuwenswarm.perf.guard import run_perf_safe
             from jiuwenswarm.perf.todo_tracker import (
@@ -1642,7 +1648,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ),
             )
 
-        todos = self._format_todos_for_frontend(todos_data)
+        todos = overlay_serial_todo_statuses(
+            self._format_todos_for_frontend(todos_data)
+        )
 
         try:
             await session.write_stream(

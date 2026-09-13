@@ -1761,6 +1761,10 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
         "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
         lambda _session_id, cache_bust=False: {},
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(find_by_session=lambda _session_id: None),
+    )
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
     monkeypatch.setattr(
@@ -1775,6 +1779,109 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
     )
 
     assert spec.team_name == "template_team_sess-legacy"
+
+
+def test_lookup_bound_team_identity_recovers_binding_from_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="oc_team_user4", template_id="oc_team_user4")
+    store.bind_session(team_name="oc_team_user4", session_id="officeclaw_test_sid")
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    sessions_root = tmp_path / "sessions"
+
+    recovered = TeamManager._recover_torn_team_binding(
+        "officeclaw_test_sid",
+        sessions_root=sessions_root,
+    )
+
+    assert recovered is not None
+    team_name, runtime_team_name, template_id = recovered
+    assert team_name == "oc_team_user4"
+    assert template_id == "oc_team_user4"
+    assert runtime_team_name == TeamManager.build_session_scoped_team_name(
+        "oc_team_user4",
+        "officeclaw_test_sid",
+    )
+    metadata_path = sessions_root / "officeclaw_test_sid" / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_user4"
+    assert payload["runtime_team_name"] == runtime_team_name
+    assert payload["team_template_id"] == "oc_team_user4"
+
+
+def test_recover_torn_team_binding_returns_none_without_store_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    sessions_root = tmp_path / "sessions"
+
+    recovered = TeamManager._recover_torn_team_binding(
+        "officeclaw_test_sid",
+        sessions_root=sessions_root,
+    )
+
+    assert recovered is None
+    assert not (sessions_root / "officeclaw_test_sid" / "metadata.json").exists()
+
+
+def test_lookup_bound_team_identity_skips_recovery_when_metadata_has_team(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    recovery_calls: list[str] = []
+
+    def fake_recover(session_id: str, *, sessions_root=None):
+        recovery_calls.append(session_id)
+        return None
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {
+            "team_name": "custom_team",
+            "team_template_id": "beta_template",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get=lambda _team_name: None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity",
+        lambda **_kwargs: None,
+    )
+    monkeypatch.setattr(TeamManager, "_recover_torn_team_binding", staticmethod(fake_recover))
+
+    team_name, runtime_team_name, template_id, template_snapshot = (
+        TeamManager._lookup_bound_team_identity("sess-bound")
+    )
+
+    assert team_name == "custom_team"
+    # resolve_session_runtime_team_name falls back to team_name when the
+    # runtime_team_name key is absent from session metadata.
+    assert runtime_team_name == "custom_team"
+    assert template_id == "beta_template"
+    assert template_snapshot is None
+    assert recovery_calls == []
 
 
 def test_register_workflow_handler() -> None:

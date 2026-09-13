@@ -26,7 +26,7 @@ def require_enterprise_repository(store_name: str) -> EnterpriseRecordRepository
         raise RuntimeError(
             f"EnterpriseRecordRepository {store_name!r} is not wired; "
             "ensure setup_gateway_storage_repositories / "
-            "wire_enterprise_manager_ws_store_async ran at Gateway startup"
+            "wire_enterprise_persistent_repositories_async ran at Gateway startup"
         )
     return repo
 
@@ -42,7 +42,7 @@ def require_cron_job_enterprise_repository() -> EnterpriseRecordRepository:
         return repo
     raise RuntimeError(
         "Enterprise cron_job repository is not wired; "
-        "ensure wire_enterprise_manager_ws_store_async ran at Gateway startup"
+        "ensure wire_enterprise_persistent_repositories_async ran at Gateway startup"
     )
 
 

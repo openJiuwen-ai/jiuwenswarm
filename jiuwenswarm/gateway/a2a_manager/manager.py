@@ -10,6 +10,7 @@ from collections import deque
 from collections.abc import Callable
 from typing import Any, Protocol
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.protocol.a2a.a2a_connect import (
     A2AChannel,
     A2ADependencyMissingError,
@@ -98,13 +99,14 @@ class A2AManager:
             outbound_settings_repository or A2AOutboundSettingsRepository()
         )
         outbound_settings = self._outbound_settings_repository.load()
-        allow_loopback_http = bool(outbound_settings.get("allow_loopback_http", False))
+        allow_loopback = bool(outbound_settings.get("allow_loopback", False))
+        allow_http = bool(outbound_settings.get("allow_http", False))
         self._outbound = outbound_registry
         if self._outbound is None and outbound_repository is not None:
             self._outbound = A2AOutboundRegistry(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback_http=allow_loopback_http
+                    allow_loopback=allow_loopback, allow_http=allow_http
                 ),
             )
         self._outbound_dispatcher = outbound_dispatcher
@@ -112,10 +114,10 @@ class A2AManager:
             self._outbound_dispatcher = A2AOutboundDispatcher(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback_http=allow_loopback_http
+                    allow_loopback=allow_loopback, allow_http=allow_http
                 ),
             )
-        self._apply_outbound_settings(allow_loopback_http)
+        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
 
     @property
     def channel(self) -> _ManagedA2AChannel | None:
@@ -144,28 +146,52 @@ class A2AManager:
         return dict(self._outbound_settings_repository.load())
 
     async def outbound_update_settings(
-        self, *, allow_loopback_http: bool
+        self, *, allow_loopback: bool, allow_http: bool
     ) -> dict[str, bool]:
-        if not isinstance(allow_loopback_http, bool):
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
-        self._outbound_settings_repository.save(allow_loopback_http=allow_loopback_http)
-        self._apply_outbound_settings(allow_loopback_http)
-        return {"allow_loopback_http": allow_loopback_http}
+        self._outbound_settings_repository.save(allow_loopback=allow_loopback, allow_http=allow_http)
+        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+        return {"allow_loopback": allow_loopback, "allow_http": allow_http}
 
-    def _apply_outbound_settings(self, allow_loopback_http: bool) -> None:
+    def _apply_outbound_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
         for target in (self._outbound, self._outbound_dispatcher):
-            setter = getattr(target, "set_allow_loopback_http", None)
+            setter = getattr(target, "set_network_settings", None)
             if callable(setter):
-                setter(allow_loopback_http)
+                setter(allow_loopback=allow_loopback, allow_http=allow_http)
 
     async def outbound_register(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._require_outbound().register(params)
 
-    async def outbound_list(self) -> dict[str, Any]:
-        return await self._require_outbound().list_agents()
+    async def outbound_list(
+        self, *, source_resource_id: str | None = None
+    ) -> dict[str, Any]:
+        outbound = self._require_outbound()
+        result = await outbound.list_agents()
+        allowed = await self._resolve_authorized_a2a_agent_ids(source_resource_id)
+        if allowed is None:
+            return result
+        items = [
+            item
+            for item in result.get("items", [])
+            if str(item.get("agent_id") or "").strip() in allowed
+        ]
+        return {"items": items, "total": len(items)}
 
     async def outbound_get(self, agent_id: str) -> dict[str, Any]:
         return await self._require_outbound().get_agent(agent_id)
+
+    async def outbound_set_user_enabled(
+        self,
+        agent_id: str,
+        *,
+        enabled: bool,
+        source_resource_id: str | None = None,
+    ) -> dict[str, Any]:
+        allowed = await self._resolve_authorized_a2a_agent_ids(source_resource_id)
+        if allowed is not None and str(agent_id or "").strip() not in allowed:
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+        return await self._require_outbound().set_user_enabled(agent_id, enabled)
 
     async def outbound_edit(self, agent_id: str) -> dict[str, Any]:
         return await self._require_outbound().edit_agent(agent_id)
@@ -190,11 +216,41 @@ class A2AManager:
     async def outbound_delete(self, agent_id: str) -> dict[str, Any]:
         return await self._require_outbound().delete_agent(agent_id)
 
-    async def outbound_dispatch_get(self, dispatch_id: str) -> dict[str, Any]:
+    async def outbound_dispatch_get(
+        self,
+        dispatch_id: str,
+        *,
+        source_session_id: str | None = None,
+        source_resource_id: str | None = None,
+        source_user_id: str | None = None,
+    ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
+        if is_enterprise() and not str(source_resource_id or "").strip():
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+        if source_resource_id is not None:
+            return await self._require_outbound_dispatcher().query_dispatch(
+                dispatch_id,
+                source_session_id=str(source_session_id or ""),
+                source_resource_id=source_resource_id,
+                source_user_id=source_user_id,
+            )
         return await self._require_outbound().get_dispatch(dispatch_id)
 
-    async def outbound_dispatch_list(self, *, limit: int = 200) -> dict[str, Any]:
-        return await self._require_outbound().list_dispatches(limit=limit)
+    @staticmethod
+    def _history_user_id(user_id: str | None) -> str | None:
+        if not is_enterprise():
+            return None
+        normalized = str(user_id or "").strip()
+        if not normalized:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        return normalized
+
+    async def outbound_dispatch_list(
+        self, *, limit: int = 200, source_user_id: str | None = None
+    ) -> dict[str, Any]:
+        return await self._require_outbound().list_dispatches(
+            limit=limit, source_user_id=self._history_user_id(source_user_id)
+        )
 
     async def outbound_find_agents(
         self,
@@ -202,11 +258,14 @@ class A2AManager:
         query: str = "",
         required_skills: list[str] | None = None,
         limit: int = 5,
+        source_resource_id: str | None = None,
     ) -> dict[str, Any]:
+        allowed = await self._resolve_effective_a2a_agent_ids(source_resource_id)
         return await self._require_outbound_dispatcher().find_agents(
             query=query,
             required_skills=required_skills,
             limit=limit,
+            allowed_agent_ids=allowed,
         )
 
     async def outbound_dispatch_task(
@@ -216,23 +275,77 @@ class A2AManager:
         task: str,
         mode: str,
         source_session_id: str,
+        source_resource_id: str | None = None,
+        source_user_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
+        await self._require_a2a_agent_authorized(source_resource_id, agent_id)
         return await self._require_outbound_dispatcher().dispatch(
             agent_id=agent_id,
             task=task,
             mode=mode,
             source_session_id=source_session_id,
+            source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
             reason=reason,
         )
 
     async def outbound_get_dispatch(
-        self, *, dispatch_id: str, source_session_id: str
+        self,
+        *,
+        dispatch_id: str,
+        source_session_id: str,
+        source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
+        if is_enterprise() and not str(source_resource_id or "").strip():
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         return await self._require_outbound_dispatcher().query_dispatch(
             dispatch_id,
             source_session_id=source_session_id,
+            source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
         )
+
+    async def _resolve_effective_a2a_agent_ids(
+        self, resource_id: str | None
+    ) -> frozenset[str] | None:
+        outbound = self._outbound
+        if outbound is None:
+            return None
+        return await outbound.resolve_effective_a2a_agent_ids(
+            str(resource_id or "").strip()
+        )
+
+    async def _resolve_authorized_a2a_agent_ids(
+        self, resource_id: str | None
+    ) -> frozenset[str] | None:
+        outbound = self._outbound
+        if outbound is None:
+            return None
+        resolver = getattr(outbound, "resolve_authorized_a2a_agent_ids", None)
+        if not callable(resolver):
+            return None
+        return await resolver(str(resource_id or "").strip())
+
+    async def _require_a2a_agent_authorized(
+        self, resource_id: str | None, agent_id: str
+    ) -> None:
+        allowed = await self._resolve_effective_a2a_agent_ids(resource_id)
+        normalized_agent_id = str(agent_id or "").strip()
+        if allowed is None or normalized_agent_id in allowed:
+            return
+        authorized = await self._resolve_authorized_a2a_agent_ids(resource_id)
+        if authorized is not None and normalized_agent_id not in authorized:
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+        projected = await self._require_outbound().get_agent(normalized_agent_id)
+        if projected.get("manager_enabled") is False:
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_MANAGER_DISABLED)
+        if projected.get("user_enabled") is False:
+            raise A2AOutboundError(A2AOutboundErrorCode.AGENT_USER_DISABLED)
+        raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
 
     def snapshot(self) -> A2AIngressSnapshot:
         config = self._config
@@ -362,6 +475,7 @@ class A2AManager:
 
     async def start_from_config(self) -> A2AIngressSnapshot:
         """Start during Gateway boot without delaying boot on A2A failures."""
+        self._require_ingress_available()
         async with self._lock:
             if self._channel is not None:
                 return self.snapshot()
@@ -375,6 +489,7 @@ class A2AManager:
     async def update(
         self, patch: dict[str, Any], *, apply: bool = False
     ) -> A2AIngressSnapshot:
+        self._require_ingress_available()
         async with self._lock:
             next_config = self._config.with_patch(patch)
             self._persist_locked(next_config)
@@ -386,6 +501,7 @@ class A2AManager:
             return self.snapshot()
 
     async def enable(self) -> A2AIngressSnapshot:
+        self._require_ingress_available()
         async with self._lock:
             if not self._config.enabled:
                 self._persist_locked(self._config.with_patch({"enabled": True}))
@@ -405,6 +521,7 @@ class A2AManager:
             return self.snapshot()
 
     async def reload(self) -> A2AIngressSnapshot:
+        self._require_ingress_available()
         async with self._lock:
             if not self._config.enabled:
                 await self._disable_locked()
@@ -428,6 +545,7 @@ class A2AManager:
         self._last_error = None
 
     async def _create_and_start_locked(self, *, wait: bool) -> None:
+        self._require_ingress_available()
         effective_config = self._config
         channel = self._channel_factory(
             effective_config.to_channel_config(), self._router
@@ -458,6 +576,14 @@ class A2AManager:
         task.add_done_callback(self._on_start_done)
         if wait:
             await self._await_start_locked(task)
+
+    @staticmethod
+    def _require_ingress_available() -> None:
+        if is_enterprise():
+            raise A2AIngressError(
+                "A2A_INGRESS_DISABLED",
+                "A2A ingress is unavailable in enterprise edition",
+            )
 
     async def _await_start_locked(self, task: asyncio.Task[None]) -> None:
         try:

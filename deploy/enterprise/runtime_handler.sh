@@ -69,19 +69,36 @@ gen_runtime_file() {
 }
 
 render_runtime_files() {
+    local pvc_template_file="${CONFIG["CLAW_PVC_TEMPLATE_FILE"]}"
+    local pvc_file="${CONFIG["CLAW_PVC_FILE"]}"
+    local mount_type="${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}"
+    local is_external_pvc="${DEPLOY_VARS["ENABLE_EXTERNAL_PVC"]}"
+
     render_secret_configmap
     ensure_available_port "AGENT_RUNTIME_NODE_PORT"
     gen_runtime_file
     render_patch_file
     render_agentserver_env_configmap
+
+    # agentserver 由 runtime 动态创建并挂载内置 PVC，PVC 渲染归属 runtime
+    if [[ "${mount_type}" == "pvc" && "${is_external_pvc}" == "false" ]]; then
+        render_config_template "${pvc_template_file}" "${pvc_file}" "DEPLOY_VARS"
+    fi
 }
 
 deploy_runtime() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local name="${DEPLOY_VARS["AGENT_RUNTIME_NAME"]}"
     local file="${CONFIG["RUNTIME_FILE"]}"
+    local pvc_file="${CONFIG["CLAW_PVC_FILE"]}"
+    local mount_type="${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}"
+    local is_external_pvc="${DEPLOY_VARS["ENABLE_EXTERNAL_PVC"]}"
 
     ensure_secret_configmap
+    # PVC 先于 runtime 部署：后续 config_sync 创建的 agentserver pod 会挂载它
+    if [[ "${mount_type}" == "pvc" && "${is_external_pvc}" == "false" && -f "${pvc_file}" ]]; then
+        exec_cmd kubectl apply -f "${pvc_file}"
+    fi
     exec_cmd kubectl apply -f ${file}
     wait_k8s_resource_ready "deployment" "${name}" "${namespace}"
     create_agentserver_env_configmap
@@ -92,6 +109,8 @@ uninstall_runtime() {
     local namespace="${DEPLOY_VARS["NAMESPACE"]}"
     local name="${DEPLOY_VARS["AGENT_RUNTIME_NAME"]}"
     local file="${CONFIG["RUNTIME_FILE"]}"
+    local pvc_file="${CONFIG["CLAW_PVC_FILE"]}"
+    local mount_type="${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}"
 
     # 先删 Deployment（保持 ServiceAccount 不删），等 Pod 优雅退出
     # runtime.yaml 含 ServiceAccount / Role / Deployment 等同文件资源。
@@ -116,4 +135,11 @@ uninstall_runtime() {
     uninstall_secret_configmap
     ensure_redis_down
     delete_agentserver_env_configmap
+
+    # 仅在内置 PVC 时删（外部 PVC 不动）。必须在孤儿 agentserver pod 清理之后执行：
+    # PVC 带 pvc-protection finalizer，agentserver pod 释放挂载前删除此 PVC 
+    # 会一直阻塞
+    if [[ "${mount_type}" == "pvc" && -z "${DEPLOY_VARS["CLAW_PVC"]:-}" && -f "${pvc_file}" ]]; then
+        exec_cmd kubectl delete -f "${pvc_file}" --ignore-not-found=true
+    fi
 }

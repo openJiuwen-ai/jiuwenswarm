@@ -186,9 +186,11 @@ class WebSocketAgentServerClient(AgentServerClient):
         try:
             from websockets.legacy.client import connect as legacy_connect
             connect_fn = legacy_connect
+            header_kwargs = {"extra_headers": {"X-Jiuwen-Push-Consumer": "gateway"}}
         except ImportError:
             import websockets
             connect_fn = websockets.connect
+            header_kwargs = {"additional_headers": {"X-Jiuwen-Push-Consumer": "gateway"}}
         self._ws = await connect_fn(
             uri,
             origin=origin,
@@ -196,6 +198,7 @@ class WebSocketAgentServerClient(AgentServerClient):
             ping_timeout=self._ping_timeout,
             close_timeout=5.0,
             max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+            **header_kwargs,
         )
         logger.info("[WebSocketAgentServerClient] 已连接: %s", uri)
 

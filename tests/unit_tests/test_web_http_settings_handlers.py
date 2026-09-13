@@ -65,6 +65,12 @@ class _FakeCron:
             raise KeyError(job_id)
         return {"run_id": f"run-{job_id}", "session_id": f"sess-{job_id}"}
 
+    async def run_now_with_session(self, job_id, **kwargs):
+        if job_id not in self.jobs:
+            raise KeyError(job_id)
+        self.run_calls.append(job_id)
+        return {"run_id": f"run-{job_id}", "session_id": f"sess-{job_id}"}
+
     async def run_now(self, job_id, **kwargs):
         if job_id not in self.jobs:
             raise KeyError(job_id)

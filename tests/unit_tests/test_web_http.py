@@ -149,6 +149,55 @@ def test_bind_http_session_chat_keeps_session_id():
     assert sid.startswith("webhttp_")
 
 
+def test_is_sse_end_frame_enterprise_ignores_foreign_processing_false(monkeypatch):
+    monkeypatch.setattr(outbound_mod, "is_enterprise", lambda: True)
+    foreign = {
+        "type": "event",
+        "event": "chat.processing_status",
+        "payload": {"is_processing": False, "request_id": "chat-old"},
+    }
+    own = {
+        "type": "event",
+        "event": "chat.processing_status",
+        "payload": {"is_processing": False, "request_id": "chat-new"},
+    }
+    assert outbound_mod._is_sse_end_frame(foreign, "chat-new") is False
+    assert outbound_mod._is_sse_end_frame(own, "chat-new") is True
+
+
+def test_http_sse_outbound_enterprise_keeps_open_on_foreign_processing_false(monkeypatch):
+    monkeypatch.setattr(outbound_mod, "is_enterprise", lambda: True)
+
+    async def _run():
+        peer = outbound_mod.HttpSseOutbound()
+        await peer.send(json.dumps({
+            "type": "res", "id": "chat-new", "ok": True, "payload": {"accepted": True},
+        }))
+        await peer.send(json.dumps({
+            "type": "event",
+            "event": "chat.processing_status",
+            "payload": {"is_processing": False, "request_id": "chat-old"},
+        }))
+        await peer.send(json.dumps({
+            "type": "event",
+            "event": "chat.delta",
+            "payload": {"content": "hi", "request_id": "chat-new"},
+        }))
+        await peer.send(json.dumps({
+            "type": "event",
+            "event": "chat.processing_status",
+            "payload": {"is_processing": False, "request_id": "chat-new"},
+        }))
+        events = []
+        async for f in peer.iter_sse_frames("chat-new", timeout=2):
+            events.append(f)
+        assert any(e.get("event") == "chat.delta" for e in events)
+        assert events[-1].get("event") == "chat.processing_status"
+        assert events[-1]["payload"]["request_id"] == "chat-new"
+
+    asyncio.run(_run())
+
+
 def test_http_json_outbound_wait_response():
     async def _run():
         peer = outbound_mod.HttpJsonOutbound()

@@ -15,6 +15,7 @@ from .errors import safe_error_summary
 from .locks import KeyedLockPool
 from .models import (
     A2AOutboundAgent,
+    A2AOutboundAvailability,
     A2AOutboundDispatch,
     A2AOutboundDispatchStatus,
     TERMINAL_DISPATCH_STATUSES,
@@ -194,6 +195,16 @@ class A2AOutboundRepository:
                 key,
             )
 
+    async def update_runtime_state(
+        self,
+        agent_id: str,
+        availability: A2AOutboundAvailability | str,
+        *,
+        error_code: str | None = None,
+    ) -> None:
+        """Persist runtime health when the repository provides a separate store."""
+        del agent_id, availability, error_code
+
     async def get_dispatch(self, dispatch_id: str) -> A2AOutboundDispatch | None:
         row = await self._store.get(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
@@ -206,21 +217,29 @@ class A2AOutboundRepository:
         *,
         limit: int | None = None,
         offset: int = 0,
+        source_user_id: str | None = None,
     ) -> list[A2AOutboundDispatch]:
         rows = await self._store.list(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
-            filters=self._codec.list_filters(),
+            filters=self._dispatch_filters(source_user_id),
             order_by="created_at DESC",
             limit=None if limit is None else max(0, int(limit)),
             offset=max(0, int(offset)),
         )
         return [self._codec.dispatch_from_record(row) for row in rows]
 
-    async def count_dispatches(self) -> int:
+    def _dispatch_filters(self, source_user_id: str | None) -> dict[str, Any]:
+        # None is reserved for system-wide maintenance and personal history.
+        filters = dict(self._codec.list_filters() or {})
+        if source_user_id is not None:
+            filters["source_user_id"] = source_user_id
+        return filters
+
+    async def count_dispatches(self, *, source_user_id: str | None = None) -> int:
         """Return the total matching record count, skipping row decoding."""
         rows = await self._store.list(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
-            filters=self._codec.list_filters(),
+            filters=self._dispatch_filters(source_user_id),
         )
         return len(rows)
 

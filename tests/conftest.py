@@ -168,6 +168,11 @@ def _install_missing_openjiuwen_runtime_db_utils_stub() -> None:
         pass
 
     utils = _ensure_module("openjiuwen_runtime.foundation.db.utils")
+    # 标记父包，避免后续 ``from ...db.handler import ...`` 报
+    # ``'openjiuwen_runtime.foundation.db' is not a package``。
+    db_pkg = sys.modules.get("openjiuwen_runtime.foundation.db")
+    if db_pkg is not None and not hasattr(db_pkg, "__path__"):
+        db_pkg.__path__ = []  # type: ignore[attr-defined]
     if getattr(utils, "_jiuwenswarm_db_utils_stubbed", False):
         return
 

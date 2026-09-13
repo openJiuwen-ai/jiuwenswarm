@@ -122,6 +122,126 @@ class TestLocalEnvConfig:
     def test_code_coauthor_header_switch_is_spawn_shared(self):
         assert "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED" in SPAWN_ENV_KEYS
 
+    def test_set_os_environ_patches_bound_overlay_for_same_request_reads(self):
+        """Enterprise vision apply writes tip under seal; readers must see it."""
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            build_effective_env_overlay,
+            clear_agent_env_ns,
+            replace_active_env,
+            reset_agent_env_ns,
+        )
+        from jiuwenswarm.agents.harness.common.tools.multimodal_config import (
+            apply_vision_model_config_from_yaml,
+        )
+
+        sid, aid = "overlay-svc", "overlay-agent"
+        clear_agent_env_ns(sid, aid)
+        replace_active_env({}, service_id=sid, agent_id=aid)
+        ns = bind_agent_env_ns(sid, aid)
+        overlay = build_effective_env_overlay(None, service_id=sid, agent_id=aid)
+        assert "VISION_API_KEY" not in overlay
+        ot = bind_task_env_overlay(overlay)
+        try:
+            apply_vision_model_config_from_yaml(
+                {
+                    "models": {
+                        "vision": {
+                            "model_client_config": {
+                                "api_key": "vk-live",
+                                "api_base": "http://vision.example/v1",
+                                "model_name": "Qwen3.7-Plus",
+                                "client_provider": "OpenAI",
+                            }
+                        }
+                    }
+                }
+            )
+            assert read_env("VISION_API_KEY") == "vk-live"
+            assert read_env("VISION_API_BASE") == "http://vision.example/v1"
+            assert read_env("VISION_MODEL_NAME") == "Qwen3.7-Plus"
+        finally:
+            reset_task_env_overlay(ot)
+            reset_agent_env_ns(ns)
+            clear_agent_env_ns(sid, aid)
+
+    def test_set_os_environ_none_removes_from_bound_overlay(self):
+        """Delete path must pop canonical (+ product legacy) keys from seal."""
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            build_effective_env_overlay,
+            clear_agent_env_ns,
+            read_env_if_set,
+            replace_active_env,
+            reset_agent_env_ns,
+        )
+
+        sid, aid = "overlay-svc", "overlay-agent"
+        clear_agent_env_ns(sid, aid)
+        replace_active_env(
+            {
+                "VISION_API_KEY": "stale",
+                "JIUWENSWARM_DISABLED_SKILLS": "skill-a",
+            },
+            service_id=sid,
+            agent_id=aid,
+        )
+        ns = bind_agent_env_ns(sid, aid)
+        overlay = build_effective_env_overlay(None, service_id=sid, agent_id=aid)
+        overlay["VISION_API_KEY"] = "sealed-old"
+        overlay["JIUWENSWARM_DISABLED_SKILLS"] = "sealed-canon"
+        overlay["JIUWENCLAW_DISABLED_SKILLS"] = "sealed-legacy"
+        ot = bind_task_env_overlay(overlay)
+        try:
+            set_os_environ("VISION_API_KEY", None)
+            assert read_env("VISION_API_KEY") == ""
+            assert read_env_if_set("VISION_API_KEY") is None
+
+            set_os_environ("JIUWENSWARM_DISABLED_SKILLS", None)
+            assert read_env("JIUWENSWARM_DISABLED_SKILLS") == ""
+            assert read_env("JIUWENCLAW_DISABLED_SKILLS") == ""
+            assert read_env_if_set("JIUWENSWARM_DISABLED_SKILLS") is None
+        finally:
+            reset_task_env_overlay(ot)
+            reset_agent_env_ns(ns)
+            clear_agent_env_ns(sid, aid)
+
+    def test_set_os_environ_cross_ns_does_not_patch_bound_overlay(self):
+        """Explicit foreign ns writes tip only; current seal must stay untouched."""
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            build_effective_env_overlay,
+            clear_agent_env_ns,
+            effective_tip,
+            replace_active_env,
+            reset_agent_env_ns,
+        )
+
+        sid_b, aid_b = "svc-b", "agent-b"
+        sid_a, aid_a = "svc-a", "agent-a"
+        clear_agent_env_ns(sid_a, aid_a)
+        clear_agent_env_ns(sid_b, aid_b)
+        replace_active_env({}, service_id=sid_b, agent_id=aid_b)
+        replace_active_env({}, service_id=sid_a, agent_id=aid_a)
+        ns = bind_agent_env_ns(sid_b, aid_b)
+        overlay = build_effective_env_overlay(None, service_id=sid_b, agent_id=aid_b)
+        ot = bind_task_env_overlay(overlay)
+        try:
+            set_os_environ(
+                "VISION_API_KEY",
+                "key-of-a",
+                service_id=sid_a,
+                agent_id=aid_a,
+            )
+            assert "VISION_API_KEY" not in overlay
+            assert read_env("VISION_API_KEY") == ""
+            assert effective_tip(sid_a, aid_a).get("VISION_API_KEY") == "key-of-a"
+        finally:
+            reset_task_env_overlay(ot)
+            reset_agent_env_ns(ns)
+            clear_agent_env_ns(sid_a, aid_a)
+            clear_agent_env_ns(sid_b, aid_b)
+
     def test_export_spawn_environ_keeps_process_path_without_tenant_credentials(self):
         from jiuwenswarm.common.local_env_config import export_spawn_environ
 

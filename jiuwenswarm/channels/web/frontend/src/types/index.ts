@@ -37,6 +37,7 @@ export interface Session {
   // ---- session.list 扩展字段 ----
   channel_id?: string;         // 渠道ID
   user_id?: string;            // 创建人ID
+  cron_id?: string;            // 定时任务ID（cron 会话非空；普通会话为空）
   last_message_at?: number;    // 最近对话时间(Unix时间戳)
   last_user_message_at?: number; // 最后一条用户消息时间(Unix时间戳)
 }

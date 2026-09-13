@@ -116,6 +116,42 @@ def test_deep_adapter_builds_usage_reporting_task_planning_rail():
 
 
 @pytest.mark.asyncio
+async def test_invalid_deepresearch_report_type_fails_before_session_child_spawn():
+    adapter = object.__new__(interface_deep_module.JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = False
+    adapter._get_or_create_session_adapter = AsyncMock(
+        side_effect=AssertionError("session child must not be spawned")
+    )
+    request = AgentRequest(
+        request_id="request-invalid-report-type",
+        channel_id="officeclaw",
+        session_id="session-invalid-report-type",
+        params={
+            "query": "research topic",
+            "mode": "agent",
+            "report_type": "Brief",
+        },
+    )
+
+    chunks = [
+        chunk
+        async for chunk in adapter.process_message_stream_impl(
+            request,
+            {"query": "research topic"},
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].payload == {
+        "event_type": "chat.error",
+        "error_code": "invalid_request",
+        "error": "params.report_type must be one of: professional, brief",
+    }
+    assert chunks[0].is_complete is True
+    adapter._get_or_create_session_adapter.assert_not_awaited()
+
+
+@pytest.mark.asyncio
 async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_terminal_todos():
     from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
     from openjiuwen.harness.schema.task import TaskPlan, TodoItem, TodoStatus

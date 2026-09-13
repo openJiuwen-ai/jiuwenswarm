@@ -5,8 +5,11 @@
     export AGENT_EXTRA_RAILS=examples.custom_extension_rail
     # 然后启动 AgentServer
 
-本模块实现了一个简单的自定义 Rail，用于消费 extension_config 中的配置，
-并在 before_tool_call 时根据配置决定是否拦截或修改工具调用。
+    # 可选：开启内置 ExtensionConfigDebugRail（默认关闭）
+    # export AGENT_EXTENSION_CONFIG_DEBUG_RAIL=1
+
+本模块演示如何从 run_context.extra 读取 extension_config 并打日志。
+示例只验证「能读到配置」，不真正拦截工具。
 """
 
 from __future__ import annotations
@@ -17,11 +20,15 @@ from typing import Any
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.rails.extension_config_util import (
+    get_extension_config_from_ctx,
+)
+
 logger = logging.getLogger(__name__)
 
 
 class CustomExtensionConfigRail(DeepAgentRail):
-    """示例：自定义 Rail，消费 extension_config 并执行业务逻辑。
+    """示例：自定义 Rail，消费 extension_config（只读日志，不拦截）。
 
     假设 extension_config 包含如下结构::
 
@@ -37,8 +44,6 @@ class CustomExtensionConfigRail(DeepAgentRail):
                 }
             }
         ]
-
-    本 Rail 在 before_tool_call 时检查当前工具是否在允许列表内。
     """
 
     priority = 50  # 在 ExtensionConfigDebugRail (45) 之后，TaskExecutionRail (85) 之前
@@ -46,30 +51,10 @@ class CustomExtensionConfigRail(DeepAgentRail):
     @staticmethod
     def _get_extension_config(ctx: AgentCallbackContext) -> list[dict[str, Any]] | None:
         """从 AgentCallbackContext 提取 extension_config。"""
-        # 兼容两种 ctx.inputs 形态：InvokeInputs（含 run_context）或原始 dict
-        inputs = getattr(ctx, "inputs", None)
-        if inputs is None:
-            return None
-
-        # 1) InvokeInputs / dataclass 路径：框架将 inputs["run"]["context"] 映射到 InvokeInputs.run_context
-        run_context = getattr(inputs, "run_context", None)
-        if run_context is not None:
-            extra = getattr(run_context, "extra", None)
-            if isinstance(extra, dict):
-                ext_config = extra.get("extension_config")
-                if isinstance(ext_config, list):
-                    return ext_config
-
-        # 2) 原始 dict 路径（兜底，兼容框架未封装 InvokeInputs 的场景）
-        if isinstance(inputs, dict):
-            ext_config = inputs.get("extension_config")
-            if isinstance(ext_config, list):
-                return ext_config
-
-        return None
+        return get_extension_config_from_ctx(ctx)
 
     async def before_invoke(self, ctx: AgentCallbackContext) -> None:
-        """invoke 开始时执行初始化逻辑。"""
+        """invoke 开始时打印已加载的扩展配置。"""
         ext_config = self._get_extension_config(ctx)
         if ext_config:
             logger.info(
@@ -77,32 +62,36 @@ class CustomExtensionConfigRail(DeepAgentRail):
                 len(ext_config),
             )
             for cfg in ext_config:
-                hook_config = cfg.get("hook_config", {})
-                params = hook_config.get("params", {})
+                hook_config = cfg.get("hook_config", {}) if isinstance(cfg, dict) else {}
+                params = hook_config.get("params", {}) if isinstance(hook_config, dict) else {}
                 logger.info(
                     "[CustomExtensionConfigRail]   - handler=%s params=%s",
-                    hook_config.get("handler"), params,
+                    hook_config.get("handler") if isinstance(hook_config, dict) else None,
+                    params,
                 )
         else:
             logger.debug("[CustomExtensionConfigRail] before_invoke: no extension_config")
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
-        """工具调用前执行权限检查等业务逻辑。"""
+        """工具调用前打印配置摘要（演示读取，不拦截）。"""
         ext_config = self._get_extension_config(ctx)
         if not ext_config:
             return
 
-        # 示例：从 extension_config 中提取 allowed_tools 并检查
         for cfg in ext_config:
+            if not isinstance(cfg, dict):
+                continue
             hook_config = cfg.get("hook_config", {})
+            if not isinstance(hook_config, dict):
+                continue
             params = hook_config.get("params", {})
+            if not isinstance(params, dict):
+                continue
             allowed_tools = params.get("allowed_tools")
             if allowed_tools:
-                # 实际业务逻辑：检查当前 tool_name 是否在 allowed_tools 中
-                # 这里仅打印日志演示
                 logger.info(
                     "[CustomExtensionConfigRail] before_tool_call: "
-                    "allowed_tools=%s",
+                    "allowed_tools=%s (demo log only)",
                     allowed_tools,
                 )
 

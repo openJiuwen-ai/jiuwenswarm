@@ -595,6 +595,13 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     args = tool_config.get("args", [])
     env = tool_config.get("env")
     cwd = tool_config.get("cwd")
+    # timeout_s 兼容两种下发形状：顶层（config.yaml 风格）与嵌套 params.timeout_s
+    # （relay buildMcpRequestFields 下发的 {"params": {"timeout_s": N}}）。
+    timeout_s = tool_config.get("timeout_s")
+    if timeout_s is None:
+        nested_params = tool_config.get("params")
+        if isinstance(nested_params, dict):
+            timeout_s = nested_params.get("timeout_s")
 
     if not tool_name:
         raise ValueError("工具配置缺少 'name' 字段")
@@ -602,6 +609,10 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     url = _pick_mcp_url(tool_config)
     client_type = _normalize_mcp_client_type(tool_config.get("type"))
     params = {}
+    # 前端（Relay/officeAce）下发的单连接器调用超时（秒）：透传到 params，
+    # 供 _run_mcp_worker 按 call_tool 超时使用；非法值忽略，回落到默认 300s。
+    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and timeout_s > 0:
+        params["timeout_s"] = timeout_s
     if isinstance(env, dict) and env:
         params["env"] = {
             str(k): str(v) for k, v in env.items() if k is not None and v is not None
@@ -830,8 +841,8 @@ class OfficeClawMcpRegistration:
 # （cancel 关闭 stdio 进程/浏览器）。
 
 # stdio MCP 无 apply_mcp_call_timeout_patch 兜底（仅覆盖 HTTP），故此处对 call_tool/discovery 各加超时。
-_MCP_CALL_TOOL_TIMEOUT_S = 30.0
-_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 30.0
+_MCP_CALL_TOOL_TIMEOUT_S = 300.0
+_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 300.0
 
 
 class _McpCallRequest:
@@ -895,6 +906,16 @@ async def _run_mcp_worker(
     """
 
     client_type = str(params.get("_mcp_client_type") or "").lower() or "stdio"
+    # 单连接器调用超时：前端（Relay/officeAce）下发的 timeout_s 经 create_mcp_tool
+    # 透传进 params；未下发或非法时回落到 300s 默认值。
+    _timeout_raw = params.get("timeout_s")
+    call_timeout_s = (
+        float(_timeout_raw)
+        if isinstance(_timeout_raw, (int, float))
+        and not isinstance(_timeout_raw, bool)
+        and _timeout_raw > 0
+        else _MCP_CALL_TOOL_TIMEOUT_S
+    )
 
     async with AsyncExitStack() as stack:
         try:
@@ -932,10 +953,10 @@ async def _run_mcp_worker(
                     if client_type in ("sse", "streamable-http"):
                         result = await asyncio.wait_for(
                             session.call_tool(req.tool_name, arguments=req.arguments),
-                            timeout=_MCP_CALL_TOOL_TIMEOUT_S,
+                            timeout=call_timeout_s,
                         )
                     else:
-                        with anyio.fail_after(_MCP_CALL_TOOL_TIMEOUT_S):
+                        with anyio.fail_after(call_timeout_s):
                             result = await session.call_tool(
                                 req.tool_name, arguments=req.arguments
                             )
@@ -948,7 +969,7 @@ async def _run_mcp_worker(
                         "server=%s tool=%s timeout=%.0fs",
                         worker.server_name,
                         req.tool_name,
-                        _MCP_CALL_TOOL_TIMEOUT_S,
+                        call_timeout_s,
                     )
                     # remote transport（sse/streamable-http）：SseClient/StreamableHttpClient
                     # 的 _submit 把调用转发到其内部 owner_task 串行执行；外层 cancel 只取消
@@ -1032,6 +1053,17 @@ async def _enter_remote_mcp_session(
 
     rebuild_cfg = _build_remote_mcp_config(params.get("server_name") or "", params, client_type)
     client = client_cls(rebuild_cfg)
+    # mcp_call_timeout_patch 把 SseClient/StreamableHttpClient 的 call_tool/list_tools
+    # 包了内层 anyio.fail_after：不经 ToolMgr._create_client 自建的 client 不会被打
+    # _jws_call_timeout，内层按 300s 默认先掐断，令 params["timeout_s"] 失效。按
+    # _run_mcp_worker 的口径（下发合法值直接生效）在此补打。
+    _stamp_raw = params.get("timeout_s")
+    if (
+        isinstance(_stamp_raw, (int, float))
+        and not isinstance(_stamp_raw, bool)
+        and _stamp_raw > 0
+    ):
+        setattr(client, "_jws_call_timeout", float(_stamp_raw))
     connected = await client.connect(timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S)
     if not connected:
         raise RuntimeError(
@@ -1744,6 +1776,17 @@ async def list_request_mcp_server_tools(
         )
         return [], {}
 
+    # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
+    # （npx 冷启动首次 initialize/list_tools 可远超 300s；下发值过小则仍以 300s 兜底）。
+    _discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
+    _timeout_raw = params.get("timeout_s")
+    if (
+        isinstance(_timeout_raw, (int, float))
+        and not isinstance(_timeout_raw, bool)
+        and _timeout_raw > _discovery_timeout
+    ):
+        _discovery_timeout = float(_timeout_raw)
+
     stack = AsyncExitStack()
     try:
         read, write = await stack.enter_async_context(
@@ -1755,7 +1798,7 @@ async def list_request_mcp_server_tools(
         # 防护 connector 启动卡死（用户配置的连接器是任意命令，不像可信的 office-claw）。
         # 同样用 anyio.fail_after 而非 asyncio.wait_for（破坏 stdio cancel-scope 不变量）。
         try:
-            with anyio.fail_after(_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S):
+            with anyio.fail_after(_discovery_timeout):
                 await session.initialize()
                 response = await session.list_tools()
         except TimeoutError:
@@ -1763,7 +1806,7 @@ async def list_request_mcp_server_tools(
                 "request-scoped MCP connector '%s' discovery timed out after "
                 "%.0fs (initialize/list_tools hung)",
                 server_name,
-                _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+                _discovery_timeout,
             )
             return [], {}
         tool_defs = _extract_mcp_tool_defs(response)
@@ -1802,6 +1845,9 @@ async def _list_remote_mcp_connector_tools(
         )
         return [], {}
 
+    # timeout_s 由 create_mcp_tool 透传进 params，提升到顶层供 _run_mcp_worker
+    # 按连接器超时调用 call_tool（与 stdio 分支的顶层 params 语义一致）。
+    _connector_params = dict(getattr(server_cfg, "params", {}) or {})
     connect_params: dict[str, Any] = {
         "_mcp_client_type": client_type,
         "server_name": str(getattr(server_cfg, "server_name", "") or server_name),
@@ -1809,12 +1855,35 @@ async def _list_remote_mcp_connector_tools(
         "server_path": str(getattr(server_cfg, "server_path", "") or ""),
         "auth_headers": dict(getattr(server_cfg, "auth_headers", {}) or {}),
         "auth_query_params": dict(getattr(server_cfg, "auth_query_params", {}) or {}),
-        "params": dict(getattr(server_cfg, "params", {}) or {}),
+        "params": _connector_params,
     }
+    _connector_timeout = _connector_params.get("timeout_s")
+    if (
+        isinstance(_connector_timeout, (int, float))
+        and not isinstance(_connector_timeout, bool)
+        and _connector_timeout > 0
+    ):
+        connect_params["timeout_s"] = _connector_timeout
+
+    # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
+    # （与 stdio 分支的发现超时语义一致）。
+    discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
+    if (
+        isinstance(_connector_timeout, (int, float))
+        and not isinstance(_connector_timeout, bool)
+        and _connector_timeout > discovery_timeout
+    ):
+        discovery_timeout = float(_connector_timeout)
 
     # _run_mcp_worker 用 connect_params 字段经 _build_remote_mcp_config 重建 client。
     rebuild_cfg = _build_remote_mcp_config(server_name, connect_params, client_type)
     client = client_cls(rebuild_cfg)
+    # 同 _enter_remote_mcp_session：自建 client 不经 ToolMgr._create_client，需补打
+    # _jws_call_timeout，否则 mcp_call_timeout_patch 的内层 300s 默认会先掐断长调用。
+    if isinstance(_connector_timeout, (int, float)) and not isinstance(
+        _connector_timeout, bool
+    ) and _connector_timeout > 0:
+        setattr(client, "_jws_call_timeout", float(_connector_timeout))
     connected = False
     try:
         try:
@@ -1826,15 +1895,15 @@ async def _list_remote_mcp_connector_tools(
             # 改用 asyncio.wait_for：在新 task 里跑协程，scope 隔离，与 SseClient
             # 内部超时机制（同样用 asyncio.wait_for）一致。
             connected = await asyncio.wait_for(
-                client.connect(timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S),
-                timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+                client.connect(timeout=discovery_timeout),
+                timeout=discovery_timeout,
             )
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning(
                 "request-scoped MCP connector '%s' discovery timed out after "
                 "%.0fs (connect/list_tools hung)",
                 server_name,
-                _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+                discovery_timeout,
             )
             return [], {}
         if not connected:
@@ -1850,14 +1919,14 @@ async def _list_remote_mcp_connector_tools(
             # StreamableHttpClient.list_tools 的 timeout 参数当前未生效（直接调
             # session.list_tools 无超时），必须靠这层 asyncio.wait_for 兜底防卡死。
             tools = await asyncio.wait_for(
-                client.list_tools(timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S),
-                timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+                client.list_tools(timeout=discovery_timeout),
+                timeout=discovery_timeout,
             )
         except (asyncio.TimeoutError, TimeoutError):
             logger.warning(
                 "request-scoped MCP connector '%s' list_tools timed out after %.0fs",
                 server_name,
-                _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+                discovery_timeout,
             )
             return [], {}
         tool_defs = [

@@ -1416,6 +1416,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"bot_id": "cron-resource"},
     )
     inputs = {"query": "/evolve_list demo-skill"}
 
@@ -1444,6 +1445,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert captured_spec
     assert captured_context[0]["config_base"] == {"models": {"defaults": []}}
     assert captured_context[0]["sessions_root"] == tmp_path / "tenant-sessions"
+    assert captured_context[0]["request_metadata"]["routing"]["bot_id"] == "cron-resource"
 
 
 @pytest.mark.anyio
@@ -4584,6 +4586,10 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
 
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
+
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
         team_helpers,
@@ -4677,6 +4683,10 @@ async def test_broadcast_team_state_snapshot_task_event_carries_title_content_an
         @staticmethod
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(

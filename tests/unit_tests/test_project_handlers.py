@@ -782,7 +782,7 @@ class TestEmptyPathProject:
         assert resp["payload"]["project_id"].startswith("proj_")
         # work_mode 改造后默认工作区按 work_mode 分桶:Web 通道默认 work 模式
         # → workspace/work/{name}
-        expected_path = str(get_agent_root_dir() / "workspace" / "work" / "空项目A")
+        expected_path = str(get_agent_root_dir() / "jiuwenclaw_workspace" / "work" / "空项目A")
         assert resp["payload"]["project_dir"] == expected_path
         assert os.path.isdir(expected_path)
         assert resp["payload"]["restored"] is False

@@ -12,6 +12,12 @@ from typing import TYPE_CHECKING, Any, Callable
 from zoneinfo import ZoneInfo
 
 from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
+from jiuwenswarm.gateway.routing.session_index import is_remote_storage
+from jiuwenswarm.gateway.cron.calc import (
+    cron_next_push_dt as _cron_next_push_dt,
+    cron_prev_push_dt,
+    is_croniter_no_next_date,
+)
 from jiuwenswarm.gateway.cron.dingtalk_routing import (
     is_usable_dingtalk_staff_id,
     resolve_dingtalk_push_metadata,
@@ -246,25 +252,6 @@ def _format_cron_broadcast_text(*, job_name: str, text: str, is_placeholder: boo
     # Result body, in-progress placeholders, and [cron] status text are all
     # delivered as-is — no job-name prefix is prepended.
     return str(text or "").strip()
-
-
-def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
-    # Lazy import so the rest of the system can still run without cron enabled.
-    from croniter import croniter  # type: ignore
-
-    # Support Quartz 7-field format: second minute hour day month dow year
-    # croniter default is minute hour day month dow second year
-    field_count = len(cron_expr.strip().split())
-    second_at_beginning = field_count == 7
-
-    it = croniter(cron_expr, base_dt, second_at_beginning=second_at_beginning)
-    nxt = it.get_next(datetime)
-    if not isinstance(nxt, datetime):
-        raise RuntimeError("croniter returned invalid datetime")
-    if nxt.tzinfo is None:
-        # Keep tz-consistent; base_dt is tz-aware in our usage.
-        return nxt.replace(tzinfo=base_dt.tzinfo)
-    return nxt
 
 
 @dataclass(frozen=True, order=True)
@@ -757,7 +744,9 @@ class CronSchedulerService:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
 
-    async def trigger_run_now_info(self, job_id: str) -> dict[str, str]:
+    async def trigger_run_now_info(
+        self, job_id: str, *, preallocate: bool = False
+    ) -> dict[str, str]:
         job_id = str(job_id or "").strip()
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
@@ -768,6 +757,30 @@ class CronSchedulerService:
         wake_dt = now
         run_id = f"{job.id}:{int(push_dt.timestamp())}"
         channel_id, exec_session_id = self._make_execution_context(job)
+        # 非 team 模式：web「立即执行」需要返回真实执行会话给前端跳转。
+        # 否则前端跳到占位 ``cron_<ts>_<job.id>``，该会话从未真正 session.create，
+        # 打开显示"没有可恢复的消息"，且不在 cron 轮询列表里，不会自动刷新。
+        # 仅 web 路径（preallocate=True）提前创建真实会话，_on_wake 检测到
+        # session_preallocated 后复用，避免重复创建。创建失败降级为占位 id，
+        # run_now 仍会调度，执行时再兜底创建。
+        session_preallocated = False
+        if preallocate:
+            mode = str(job.mode or CRON_JOB_DEFAULT_MODE).strip() or CRON_JOB_DEFAULT_MODE
+            if not is_team_cron_mode(mode):
+                try:
+                    exec_project_dir = self._resolve_cron_project_dir(job)
+                    exec_session_id = await self._allocate_single_agent_session(
+                        job,
+                        mode=mode,
+                        project_dir=exec_project_dir,
+                        run_id=run_id,
+                    )
+                    session_preallocated = True
+                except Exception as prealloc_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[Cron] run_now preallocate session failed job=%s run_id=%s: %s",
+                        job.id, run_id, prealloc_exc,
+                    )
         state = CronRunState(
             run_id=run_id,
             job_id=job.id,
@@ -781,6 +794,7 @@ class CronSchedulerService:
             exec_channel_id=channel_id,
             exec_session_id=exec_session_id,
             manual_trigger=True,
+            session_preallocated=session_preallocated,
         )
         await self._assign_run(run_id, state)
         self._schedule_event(wake_dt, "wake", job.id, run_id)
@@ -798,6 +812,23 @@ class CronSchedulerService:
                 message_handler=self._message_handler,
             )
         return "__cron__", f"cron_{ts}_{job.id}"
+
+    @staticmethod
+    def _resolve_cron_project_dir(job: CronJob) -> str:
+        """解析 job.project_id 对应的项目目录，供 session.create 归属。
+
+        与 ``_on_wake`` 共享同一解析逻辑，避免 run_now 预分配会话与正常触发
+        两处各写一份。解析失败返回空串（AgentServer 侧按默认目录兜底）。
+        """
+        try:
+            from jiuwenswarm.server.runtime.session import project_store as _ps
+
+            return _ps.get_project_dir_by_id(job.project_id) or ""
+        except Exception as pdir_exc:  # noqa: BLE001
+            logger.warning(
+                "[Cron] resolve project_dir failed job=%s: %s", job.id, pdir_exc,
+            )
+            return ""
 
     async def _allocate_single_agent_session(
         self,
@@ -897,24 +928,15 @@ class CronSchedulerService:
         except Exception as original_exc:
             if not self._is_croniter_no_next_date(original_exc):
                 raise original_exc
-            from croniter import croniter
-            field_count = len(job.cron_expr.strip().split())
-            second_at_beginning = field_count == 7
-            it = croniter(job.cron_expr, base, second_at_beginning=second_at_beginning)
-            prev_dt = it.get_prev(datetime)
-            if prev_dt is not None and isinstance(prev_dt, datetime):
-                if prev_dt.tzinfo is None:
-                    prev_dt = prev_dt.replace(tzinfo=tz)
-                elapsed = (base.timestamp() - prev_dt.timestamp())
-                if elapsed <= self._MISSED_TRIGGER_WINDOW_SECONDS:
-                    logger.info(
-                        "[Cron] one-shot job=%s missed trigger by %.1fs (within %ss window), "
-                        "scheduling immediate execution instead of marking expired",
-                        job.id, elapsed, self._MISSED_TRIGGER_WINDOW_SECONDS,
-                    )
-                    push_dt = prev_dt
-                else:
-                    raise original_exc
+            prev_dt = cron_prev_push_dt(job.cron_expr, base)
+            elapsed = (base.timestamp() - prev_dt.timestamp())
+            if elapsed <= self._MISSED_TRIGGER_WINDOW_SECONDS:
+                logger.info(
+                    "[Cron] one-shot job=%s missed trigger by %.1fs (within %ss window), "
+                    "scheduling immediate execution instead of marking expired",
+                    job.id, elapsed, self._MISSED_TRIGGER_WINDOW_SECONDS,
+                )
+                push_dt = prev_dt
             else:
                 raise original_exc
         # proactive.tick 无视 wake_offset——到点就执行，不提前 wake。
@@ -931,10 +953,7 @@ class CronSchedulerService:
     @staticmethod
     def _is_croniter_no_next_date(exc: Exception) -> bool:
         """croniter 找不到下一次日期（通常为单次 year 固定为过去）时视为过期。"""
-        return (
-            exc.__class__.__name__ == "CroniterBadDateError"
-            or "failed to find next date" in str(exc)
-        )
+        return is_croniter_no_next_date(exc)
 
     @staticmethod
     def _use_db_schedule() -> bool:
@@ -1350,35 +1369,38 @@ class CronSchedulerService:
                     state.exec_channel_id = channel_id
                     state.exec_session_id = exec_session_id
                 # 解析 project_dir 供 AgentServer 写入会话归属（与 project_id 联动）
-                try:
-                    from jiuwenswarm.server.runtime.session import project_store as _ps
-                    exec_project_dir = _ps.get_project_dir_by_id(job.project_id)
-                except Exception as pdir_exc:  # noqa: BLE001
-                    logger.warning(
-                        "[Cron] resolve project_dir failed job=%s: %s", job.id, pdir_exc,
-                    )
-                    exec_project_dir = ""
+                exec_project_dir = self._resolve_cron_project_dir(job)
                 if not is_team_cron_mode(mode):
-                    _log_cron_run_phase(
-                        "run_agent_before_session_create",
-                        run_id=run_id,
-                        job_id=job.id,
-                        mode=mode,
-                    )
-                    exec_session_id = await self._allocate_single_agent_session(
-                        job,
-                        mode=mode,
-                        project_dir=exec_project_dir,
-                        run_id=run_id,
-                    )
-                    state.exec_channel_id = "__cron__"
-                    state.exec_session_id = exec_session_id
-                    _log_cron_run_phase(
-                        "run_agent_after_session_create",
-                        run_id=run_id,
-                        job_id=job.id,
-                        exec_session_id=exec_session_id,
-                    )
+                    if state.session_preallocated and state.exec_session_id:
+                        # run_now 已提前创建真实会话，直接复用，避免重复 session.create。
+                        exec_session_id = state.exec_session_id
+                        _log_cron_run_phase(
+                            "run_agent_reuse_preallocated_session",
+                            run_id=run_id,
+                            job_id=job.id,
+                            exec_session_id=exec_session_id,
+                        )
+                    else:
+                        _log_cron_run_phase(
+                            "run_agent_before_session_create",
+                            run_id=run_id,
+                            job_id=job.id,
+                            mode=mode,
+                        )
+                        exec_session_id = await self._allocate_single_agent_session(
+                            job,
+                            mode=mode,
+                            project_dir=exec_project_dir,
+                            run_id=run_id,
+                        )
+                        state.exec_channel_id = "__cron__"
+                        state.exec_session_id = exec_session_id
+                        _log_cron_run_phase(
+                            "run_agent_after_session_create",
+                            run_id=run_id,
+                            job_id=job.id,
+                            exec_session_id=exec_session_id,
+                        )
                 cron_meta = {
                     "job_id": job.id,
                     "job_name": job.name,
@@ -1518,7 +1540,11 @@ class CronSchedulerService:
                 # a job the user has removed.
                 if not state.result_text and state.error and not is_cancelled_ghost:
                     state.result_text = f"[cron] 任务执行失败: {state.error}"
-                if state.result_text and not ok and not is_cancelled_ghost:
+                # 仅在 local 模式写 gateway 本地磁盘兜底历史；remote 模式下会话
+                # 数据由 AgentServer 持久化，本地写入会污染 gateway 磁盘并被
+                # project.get_sessions 误读为普通会话(cron_id 丢失)。
+                local_fallback_ok = not is_cancelled_ghost and not is_remote_storage()
+                if state.result_text and not ok and local_fallback_ok:
                     query = ""
                     if envelope is not None and isinstance(envelope.params, dict):
                         query = str(

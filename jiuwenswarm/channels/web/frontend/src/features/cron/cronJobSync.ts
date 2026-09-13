@@ -2,18 +2,16 @@
  * Cron job run-state sync (Pull transport).
  *
  * Compares successive `cron.job.list` snapshots and detects new executions via
- * `last_run_at` / `last_session_id`. Used by HTTP mode when server push is unavailable.
+ * `last_session_id`. Used by HTTP mode when server push is unavailable.
  */
 
 export interface CronJobRunFingerprint {
   jobId: string;
-  lastRunAt: number | null;
   lastSessionId: string | null;
 }
 
 export interface CronJobRunListItem {
   id: string;
-  last_run_at?: unknown;
   last_session_id?: unknown;
 }
 
@@ -23,23 +21,6 @@ export interface CronJobRunUpdateResult {
 }
 
 export const CRON_JOB_SYNC_INTERVAL_MS = 30_000;
-
-function normalizeRunAt(raw: unknown): number | null {
-  if (typeof raw === 'number' && Number.isFinite(raw)) {
-    return raw;
-  }
-  if (typeof raw === 'string') {
-    const trimmed = raw.trim();
-    if (!trimmed) {
-      return null;
-    }
-    const parsed = Number(trimmed);
-    if (Number.isFinite(parsed)) {
-      return parsed;
-    }
-  }
-  return null;
-}
 
 function normalizeSessionId(raw: unknown): string | null {
   if (typeof raw !== 'string') {
@@ -52,7 +33,6 @@ function normalizeSessionId(raw: unknown): string | null {
 export function fingerprintFromCronJob(job: CronJobRunListItem): CronJobRunFingerprint {
   return {
     jobId: job.id,
-    lastRunAt: normalizeRunAt(job.last_run_at),
     lastSessionId: normalizeSessionId(job.last_session_id),
   };
 }
@@ -75,13 +55,10 @@ function fingerprintChanged(
   previous: CronJobRunFingerprint,
   next: CronJobRunFingerprint
 ): boolean {
-  if (previous.lastRunAt !== next.lastRunAt) {
-    return true;
-  }
-  if (previous.lastSessionId !== next.lastSessionId) {
-    return true;
-  }
-  return false;
+  // 蓝点只应在新结果产生时提示。last_run_at 在 claim 认领那一刻就写库（此时 agent
+  // 尚未执行、结果为空），不能作为"有新消息"的信号；last_session_id 在执行完成后
+  // 由调度器回写，才是"这一趟跑完、产生了新会话"的权威标志。
+  return previous.lastSessionId !== next.lastSessionId;
 }
 
 /**

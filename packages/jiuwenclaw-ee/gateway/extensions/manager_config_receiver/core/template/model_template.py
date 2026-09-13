@@ -15,7 +15,7 @@ from ...infrastructure.utils import parse_iso_datetime, utc_now
 from ...schemas.template_schemas import ModelTemplateUpdateRequest
 
 _TABLE = MODEL_TEMPLATE_TABLE_DEF.table_name
-_ALLOWED_MODEL_TYPES = frozenset({"default", "video", "audio", "vision"})
+_ALLOWED_MODEL_TYPES = frozenset({"default", "video", "audio", "vision", "image_gen"})
 logger = logging.getLogger(__name__)
 
 

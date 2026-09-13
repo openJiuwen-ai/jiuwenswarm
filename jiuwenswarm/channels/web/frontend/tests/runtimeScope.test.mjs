@@ -11,9 +11,10 @@ test('runtime scope is parsed and added to websocket query', () => {
   const scope = parseRuntimeScope(
     '?user_id=%20u1%20&group_id=g1&bot_id=b1&gateway_id=gw1&ignored=x'
   );
-  assert.deepEqual(scope, { userId: 'u1', groupId: 'g1', botId: 'b1', gatewayId: 'gw1' });
+  // 用户面忽略 URL 中的 gateway_id（遗留参数）。
+  assert.deepEqual(scope, { userId: 'u1', groupId: 'g1', botId: 'b1' });
   const query = appendRuntimeScopeQuery(new URLSearchParams('provider=p'), scope);
-  assert.equal(query.toString(), 'provider=p&user_id=u1&group_id=g1&bot_id=b1&gateway_id=gw1');
+  assert.equal(query.toString(), 'provider=p&user_id=u1&group_id=g1&bot_id=b1');
 });
 
 test('runtime scope takes precedence in HTTP identity headers', () => {
@@ -26,14 +27,13 @@ test('runtime scope takes precedence in HTTP identity headers', () => {
         bot_id: 'payload-bot',
         session_id: 'session-1',
       },
-      { userId: 'u1', groupId: 'g1', botId: 'b1', gatewayId: 'gw1' }
+      { userId: 'u1', groupId: 'g1', botId: 'b1' }
     ),
     {
       'X-Request-Id': 'req-1',
       'X-User-Id': 'u1',
       'X-Group-Id': 'g1',
       'X-Bot-Id': 'b1',
-      'X-Gateway-Id': 'gw1',
       'X-Session-Id': 'session-1',
     }
   );

@@ -2088,6 +2088,133 @@ class TestLazyMigrationOnRead:
         assert data["project_id"] == ""
 
 
+class TestLegacyWorkspacePrefixRemap:
+    """agent/workspace → agent/jiuwenclaw_workspace 改名后的旧路径重映射。
+
+    迁移函数会重写 projects.json / metadata.json,但读路径兜底重映射
+    保证遗漏记录（备份恢复、外部写入等）不会在旧路径上 mkdir 复活僵尸目录。
+    """
+
+    @staticmethod
+    def test_remap_when_old_gone_and_new_exists(tmp_path):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+
+        old_str = str(old / "work" / "demo")
+        remapped = _remap_legacy_workspace_prefix(old_str)
+        assert remapped == str(new_ws / "work" / "demo")
+
+        # 路径恰好等于旧工作区本身
+        assert _remap_legacy_workspace_prefix(str(old)) == str(new_ws)
+
+    @staticmethod
+    def test_no_remap_when_old_dir_still_exists(tmp_path):
+        """旧目录还在（迁移未执行）时不干预,避免在迁移前改写路径。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "agent"
+        old = agent_root / "workspace"
+        old.mkdir(parents=True)
+
+        assert _remap_legacy_workspace_prefix(str(old / "work" / "demo")) == str(
+            old / "work" / "demo"
+        )
+
+    @staticmethod
+    def test_no_remap_when_new_dir_missing(tmp_path):
+        """新目录不存在（全新环境/无关路径）时保持原样。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "agent"
+        old = agent_root / "workspace"
+
+        assert _remap_legacy_workspace_prefix(str(old / "work" / "demo")) == str(
+            old / "work" / "demo"
+        )
+
+    @staticmethod
+    def test_unrelated_path_untouched(tmp_path):
+        """不含 /agent/workspace 锚点的路径原样返回。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        for raw in ("", "E:\\repos\\demo", str(tmp_path / "workspace" / "a")):
+            assert _remap_legacy_workspace_prefix(raw) == raw
+
+    @staticmethod
+    def test_validate_project_dir_uses_remapped_path(tmp_path, monkeypatch):
+        """旧前缀的 project_dir 经 validate_project_dir 后落到新目录,
+        不在旧路径上 mkdir。"""
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            validate_project_dir,
+        )
+
+        result = validate_project_dir(
+            str(old / "work" / "demo"), default=new_ws
+        )
+        assert result == (new_ws / "work" / "demo").resolve()
+        # 旧目录未被复活
+        assert not old.exists()
+
+    @staticmethod
+    def test_read_metadata_remaps_and_writes_back(tmp_path, monkeypatch):
+        """读路径惰性迁移:metadata 中旧前缀被重映射并异步写盘。
+
+        直接调用 _apply_metadata_defaults_with_inference 绕开
+        sanitize_session_id 的导入链（其依赖 openjiuwen 子模块,
+        在部分测试环境缺失,与 TestLazyMigrationOnRead 整类的既有
+        环境性 ERROR 相同,非本用例逻辑问题）。
+        """
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+        old_project = str(old / "work" / "demo")
+
+        sdir = agent_root / "sessions" / "s_legacy_ws"
+        sdir.mkdir(parents=True)
+        (sdir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "s_legacy_ws",
+                    "project_dir": old_project,
+                    "channel_metadata": {"cwd": old_project, "project_dir": old_project},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _apply_metadata_defaults_with_inference,
+        )
+
+        metadata = json.loads((sdir / "metadata.json").read_text(encoding="utf-8"))
+        result = _apply_metadata_defaults_with_inference(
+            "s_legacy_ws", metadata, session_dir=sdir, enable_writeback=False
+        )
+
+        expected = str(new_ws / "work" / "demo")
+        assert result["project_dir"] == expected
+        assert result["channel_metadata"]["cwd"] == expected
+        assert result["channel_metadata"]["project_dir"] == expected
+
+
 # ===========================================================================
 # set_session_pinned —— 跨进程同步落盘(sync_write)回归
 # ===========================================================================

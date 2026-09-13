@@ -53,7 +53,7 @@ def bind_http_session(
     return envelope, out
 
 
-def _is_sse_end_frame(frame: dict[str, Any]) -> bool:
+def _is_sse_end_frame(frame: dict[str, Any], req_id: str = "") -> bool:
     ev = str(frame.get("event") or "")
     if ev == "chat.error":
         return True
@@ -65,7 +65,14 @@ def _is_sse_end_frame(frame: dict[str, Any]) -> bool:
         return False
     payload = frame.get("payload") if isinstance(frame.get("payload"), dict) else {}
     if ev == "chat.processing_status" and payload.get("is_processing") is False:
-        return is_enterprise()
+        if not is_enterprise():
+            return False
+        # cancel-replace 时旧 rid 的 false 可能落到新 SSE；只结束本连接自己的流。
+        frame_rid = str(payload.get("request_id") or "").strip()
+        sse_rid = str(req_id or "").strip()
+        if sse_rid and frame_rid and frame_rid != sse_rid:
+            return False
+        return True
     return ev == "history.message" and payload.get("status") == "done"
 
 
@@ -324,7 +331,7 @@ class HttpSseOutbound(_HttpOutboundBase):
                 continue
             if ftype == "event":
                 yield frame
-                if _is_sse_end_frame(frame):
+                if _is_sse_end_frame(frame, req_id):
                     return
 
     async def close(self) -> None:

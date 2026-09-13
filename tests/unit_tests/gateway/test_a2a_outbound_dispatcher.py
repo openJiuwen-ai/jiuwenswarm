@@ -234,6 +234,52 @@ async def _dispatcher(client: _FakeClient):
 
 
 @pytest.mark.asyncio
+async def test_dispatch_client_applies_template_network_policy(monkeypatch):
+    import httpx
+    from jiuwenswarm.gateway.a2a_manager.outbound import dispatcher as module
+
+    async def resolver(host, port):
+        return ["192.168.1.27"]
+
+    pinned = []
+    clients = []
+
+    def transport(addresses):
+        pinned.append(addresses)
+        return httpx.MockTransport(lambda request: httpx.Response(200))
+
+    class Factory:
+        def __init__(self, config):
+            clients.append(config.httpx_client)
+
+        def create(self, card):
+            return _FakeClient()
+
+    monkeypatch.setattr(module, "create_pinned_transport", transport)
+    monkeypatch.setattr(module, "ClientFactory", Factory)
+    agent = _agent()
+    interface = A2ACompatibleInterface("JSONRPC", "1.0.0", "http://weather.example.com/a2a")
+    agent = replace(agent, selected_interface=interface, network_policy={
+        "allow_http": True, "allow_private_network": True,
+    }, agent_card={**agent.agent_card, "version": "1.0.0", "capabilities": {},
+                   "url": interface.url, "preferredTransport": "JSONRPC", "protocolVersion": "1.0.0"})
+    dispatcher = A2AOutboundDispatcher(
+        A2AOutboundRepository(InMemoryPersistentBackend()),
+        discovery_service=A2AOutboundDiscoveryService(address_resolver=resolver),
+    )
+    try:
+        await dispatcher._build_client(agent)
+        assert pinned == [{"weather.example.com": "192.168.1.27"}]
+        with pytest.raises(A2AOutboundError) as error:
+            await dispatcher._build_client(replace(agent, network_policy={}))
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED
+        assert len(pinned) == 1
+    finally:
+        for client in clients:
+            await client.aclose()
+
+
+@pytest.mark.asyncio
 async def test_find_agents_returns_only_callable_minimal_catalog() -> None:
     client = _FakeClient()
     dispatcher, repository = await _dispatcher(client)
@@ -255,6 +301,17 @@ async def test_find_agents_returns_only_callable_minimal_catalog() -> None:
     assert (await dispatcher.find_agents(required_skills=["search"], limit=5))[
         "items"
     ] == []
+
+
+@pytest.mark.asyncio
+async def test_find_agents_applies_enterprise_allowed_set_before_counting() -> None:
+    dispatcher, _ = await _dispatcher(_FakeClient())
+
+    result = await dispatcher.find_agents(allowed_agent_ids=frozenset())
+
+    assert result["items"] == []
+    assert result["total"] == 0
+    assert result["total_matches"] == 0
 
 
 @pytest.mark.asyncio
@@ -501,7 +558,7 @@ async def test_real_http_stream_can_outlive_connect_timeout_within_sync_budget()
     await repository.create_agent(agent)
     dispatcher = A2AOutboundDispatcher(
         repository,
-        discovery_service=A2AOutboundDiscoveryService(allow_loopback_http=True),
+        discovery_service=A2AOutboundDiscoveryService(allow_loopback=True, allow_http=True),
     )
     try:
         result = await dispatcher.dispatch(
@@ -829,9 +886,14 @@ async def test_cancellation_uses_remote_cancel_result_when_available() -> None:
 @pytest.mark.asyncio
 async def test_dispatch_query_is_scoped_to_originating_session() -> None:
     client = _FakeClient([_task_event(TaskState.TASK_STATE_SUBMITTED)])
-    dispatcher, _ = await _dispatcher(client)
+    dispatcher, repository = await _dispatcher(client)
     accepted = await dispatcher.dispatch(
-        agent_id="agent-1", task="work", mode="async", source_session_id="s1"
+        agent_id="agent-1",
+        task="work",
+        mode="async",
+        source_session_id="s1",
+        source_resource_id="resource-1",
+        source_user_id="user-1",
     )
 
     with pytest.raises(A2AOutboundError) as error:
@@ -840,12 +902,140 @@ async def test_dispatch_query_is_scoped_to_originating_session() -> None:
         )
     assert error.value.code is A2AOutboundErrorCode.DISPATCH_NOT_FOUND
 
+    repository.manager_owned = True
+    with pytest.raises(A2AOutboundError) as error:
+        await dispatcher.query_dispatch(
+            accepted["dispatch_id"], source_session_id="s1", source_user_id="user-1"
+        )
+    assert error.value.code is A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED
+
+    with pytest.raises(A2AOutboundError) as error:
+        await dispatcher.query_dispatch(
+            accepted["dispatch_id"],
+            source_session_id="s1", source_user_id="user-1",
+            source_resource_id="resource-2",
+        )
+    assert error.value.code is A2AOutboundErrorCode.DISPATCH_NOT_FOUND
+
+
+@pytest.mark.asyncio
+async def test_enterprise_dispatch_requires_user_and_hides_other_and_legacy_records():
+    client = _FakeClient([_task_event(TaskState.TASK_STATE_SUBMITTED)])
+    dispatcher, repository = await _dispatcher(client)
+    repository.manager_owned = True
+    with pytest.raises(A2AOutboundError) as error:
+        await dispatcher.dispatch(
+            agent_id="agent-1",
+            task="work",
+            mode="async",
+            source_session_id="s1",
+            source_resource_id="r1",
+        )
+    assert error.value.code is A2AOutboundErrorCode.USER_IDENTITY_REQUIRED
+    assert client.sent_requests == []
+    assert await repository.count_dispatches() == 0
+    accepted = await dispatcher.dispatch(
+        agent_id="agent-1",
+        task="work",
+        mode="async",
+        source_session_id="s1",
+        source_resource_id="r1",
+        source_user_id="alice",
+    )
+    record = await repository.get_dispatch(accepted["dispatch_id"])
+    assert record.source_user_id == "alice"
+    await repository.create_dispatch(
+        replace(record, dispatch_id="legacy", source_user_id=None)
+    )
+    await repository.transition_dispatch(
+        record.dispatch_id, A2AOutboundDispatchStatus.COMPLETED
+    )
+    for method in (dispatcher.query_dispatch, dispatcher.cancel_dispatch):
+        for dispatch_id, user in [(record.dispatch_id, "bob"), ("legacy", "alice")]:
+            with pytest.raises(A2AOutboundError) as error:
+                await method(
+                    dispatch_id,
+                    source_session_id="s1",
+                    source_resource_id="r1",
+                    source_user_id=user,
+                )
+            assert error.value.code is A2AOutboundErrorCode.DISPATCH_NOT_FOUND
+        with pytest.raises(A2AOutboundError) as error:
+            await method(
+                record.dispatch_id, source_session_id="s1", source_resource_id="r1"
+            )
+        assert error.value.code is A2AOutboundErrorCode.USER_IDENTITY_REQUIRED
+    own = await dispatcher.query_dispatch(
+        record.dispatch_id,
+        source_session_id="s1",
+        source_resource_id="r1",
+        source_user_id="alice",
+    )
+    assert own["dispatch_id"] == record.dispatch_id
+    assert client.get_requests == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [A2A_TOOL_DISPATCH_TASK, A2A_TOOL_GET_DISPATCH])
+@pytest.mark.parametrize("fallback", [False, True])
+async def test_enterprise_reverse_rpc_uses_context_user_not_tool_params(
+    monkeypatch, method, fallback
+):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    calls, replies = [], []
+
+    class Manager:
+        async def outbound_dispatch_task(self, **kwargs):
+            calls.append(kwargs)
+            return {}
+
+        outbound_get_dispatch = outbound_dispatch_task
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = Manager()
+    handler._active_a2a_outbound_tool_tasks = {}
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    chunk = SimpleNamespace(
+        channel_id="web",
+        payload={
+            "id": "rpc-user",
+            "method": method,
+            "params": {"resource_id": "r1", "user_id": "bob", "source_user_id": "bob"},
+        },
+    )
+    metadata = {"user_id": "alice", "routing": {"bot_id": "r1"}}
+    handler._stream_sessions = {"active": "s1"}
+    handler._stream_channels = {"active": "web"}
+    handler._stream_metadata = {"active": metadata}
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk, session_id="s1", request_metadata=None if fallback else metadata
+    )
+    assert calls[-1]["source_user_id"] == "alice"
+    metadata.pop("user_id")
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk, session_id="s1", request_metadata=None if fallback else metadata
+    )
+    assert len(calls) == 1
+    assert (
+        replies[-1].params["response"]["error"]["data"]["code"]
+        == "A2A_USER_IDENTITY_REQUIRED"
+    )
+
 
 class _Backend:
     ready = True
 
     async def call(self, method, params, *, session_id, channel_id):
-        return {"method": method, "session_id": session_id, "channel_id": channel_id}
+        return {
+            "method": method,
+            "params": params,
+            "session_id": session_id,
+            "channel_id": channel_id,
+        }
 
 
 class _AbilityManager:
@@ -895,7 +1085,7 @@ def test_rail_registers_three_tools_and_cleans_up() -> None:
     assert agent.system_prompt_builder.sections == {}
 
 
-def test_rail_keeps_tools_visible_when_gateway_proxy_is_not_ready() -> None:
+def test_rail_hides_tools_and_prompt_when_gateway_proxy_is_not_ready() -> None:
     backend = _Backend()
     backend.ready = False
     agent = _Agent(_AbilityManager(), _PromptBuilder())
@@ -903,11 +1093,8 @@ def test_rail_keeps_tools_visible_when_gateway_proxy_is_not_ready() -> None:
 
     rail.init(agent)
 
-    assert set(agent.ability_manager.tools) == {
-        "a2a_find_agents",
-        "a2a_dispatch_task",
-        "a2a_get_dispatch",
-    }
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
 
 
 @pytest.mark.asyncio
@@ -933,19 +1120,86 @@ async def test_rail_registers_on_first_model_call_after_gateway_becomes_ready() 
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+async def test_rail_tracks_real_owner_lifecycle_without_channel_assumptions(monkeypatch, channel):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.transports import push_registry
+
+    registry = push_registry.PushRegistry()
+    monkeypatch.setattr(push_registry, "_REGISTRY", registry)
+    monkeypatch.setattr(get_acp_output_manager(), "_send_push_callback", AsyncMock())
+    agent = _Agent(_AbilityManager(), _PromptBuilder())
+    rail = A2AOutboundToolkitRail(runtime_route=lambda: ("opaque-session", channel))
+    rail.init(agent)  # Startup/prewarm before any subscriber connects.
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
+
+    sink = SimpleNamespace(send_wire=AsyncMock(return_value=True))
+    registry.register("node", sink)
+    await rail.before_model_call(SimpleNamespace(agent=agent))
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
+
+    for _ in range(2):  # Late Gateway connection, loss, and reconnection.
+        registry.register("gateway", sink, reverse_rpc_capable=True)
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+        assert len(agent.ability_manager.tools) == 3
+        assert "a2a_outbound_usage" in agent.system_prompt_builder.sections
+        registry.unregister("gateway")
+        await rail.before_model_call(SimpleNamespace(agent=agent))
+        assert agent.ability_manager.tools == {}
+        assert agent.system_prompt_builder.sections == {}
+    rail.uninit(agent)
+
+
+@pytest.mark.parametrize("kind", ["deep", "code", "leader", "teammate"])
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+def test_real_agent_builders_expose_no_a2a_tools_without_gateway(monkeypatch, kind, channel):
+    from jiuwenswarm.server.transports import push_registry
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "community")
+    monkeypatch.setattr(push_registry, "_REGISTRY", push_registry.PushRegistry())
+    if kind in {"deep", "code"}:
+        from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+        adapter = (JiuWenSwarmDeepAdapter if kind == "deep" else JiuwenSwarmCodeAdapter)()
+        # No request/config route, as with root/prewarm construction.
+        rail = adapter._build_a2a_outbound_toolkit_rail()
+    else:
+        from jiuwenswarm.agents.swarm.context import SwarmBuildContext
+        from jiuwenswarm.agents.swarm.providers.member_rails import _build_a2a_outbound_toolkit_rail
+
+        rail = _build_a2a_outbound_toolkit_rail({}, SwarmBuildContext(
+            channel=channel, channel_id=channel, role=kind, mode="team",
+        ))
+    assert rail is not None  # Retain only the lifecycle hook for late connections.
+    agent = _Agent(_AbilityManager(), _PromptBuilder())
+    rail.init(agent)
+    assert agent.ability_manager.tools == {}
+    assert agent.system_prompt_builder.sections == {}
+
+
+@pytest.mark.asyncio
 async def test_toolkit_binds_session_and_exposes_no_url_or_credentials() -> None:
-    toolkit = A2AOutboundToolkit(_Backend(), runtime_route=lambda: ("session-1", "web"))
+    toolkit = A2AOutboundToolkit(
+        _Backend(),
+        runtime_route=lambda: ("session-1", "web"),
+        runtime_resource_id=lambda: "resource-1",
+    )
     result = await toolkit.dispatch_task("agent-1", "task", "sync")
     tools = {tool.card.name: tool for tool in toolkit.get_tools()}
     find_tool = tools["a2a_find_agents"]
     dispatch_tool = tools["a2a_dispatch_task"]
 
     assert result["session_id"] == "session-1"
+    assert result["params"]["resource_id"] == "resource-1"
     assert "query only ranks candidates" in find_tool.card.description
     assert find_tool.card.input_params["properties"]["query"]["default"] == ""
     assert find_tool.card.input_params["properties"]["required_skills"]["default"] == []
     assert find_tool.card.input_params["additionalProperties"] is False
     properties = dispatch_tool.card.input_params["properties"]
+    assert "resource_id" not in properties
     assert not ({"url", "headers", "credential", "timeout"} & set(properties))
 
 
@@ -1006,6 +1260,32 @@ async def test_gateway_backend_leaves_operation_timeout_to_manager(
     assert result == {"ok": True}
     assert calls[0][2]["timeout"] is None
     assert calls[0][2]["cancel_method"] == A2A_TOOL_CANCEL_CALL
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [
+    A2A_TOOL_FIND_AGENTS, A2A_TOOL_DISPATCH_TASK, A2A_TOOL_GET_DISPATCH,
+])
+@pytest.mark.parametrize("channel", ["officeclaw", "web"])
+async def test_node_stale_tool_fails_without_sending_reverse_rpc(monkeypatch, method, channel):
+    from unittest.mock import AsyncMock
+    from jiuwenswarm.server.transports import push_registry
+
+    send = AsyncMock()
+    monkeypatch.setattr(get_acp_output_manager(), "send_jsonrpc_request", send)
+    monkeypatch.setattr(get_acp_output_manager(), "_send_push_callback", AsyncMock())
+    registry = push_registry.PushRegistry()
+    registry.register("node", SimpleNamespace(send_wire=AsyncMock(return_value=True)))
+    monkeypatch.setattr(push_registry, "_REGISTRY", registry)
+    result = await asyncio.wait_for(
+        GatewayA2AOutboundToolBackend().call(
+            method, {}, session_id="opaque-session", channel_id=channel,
+        ),
+        timeout=0.5,
+    )
+    assert result["ok"] is False
+    assert result["error_code"] == A2AOutboundErrorCode.MANAGER_UNAVAILABLE.value
+    send.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -1124,6 +1404,89 @@ async def test_gateway_bridge_handles_canonical_acp_output_request_wire() -> Non
     assert handled is True
     assert calls == [{"query": "weather", "required_skills": None, "limit": 5}]
     assert replies[0].params["response"]["result"]["total"] == 1
+
+
+@pytest.mark.asyncio
+async def test_enterprise_gateway_bridge_binds_trusted_resource_id(monkeypatch) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    calls = []
+
+    class _Manager:
+        async def outbound_find_agents(self, **kwargs):
+            calls.append(kwargs)
+            return {"items": [], "total": 0}
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = _Manager()
+    replies = []
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    chunk = SimpleNamespace(
+        payload={
+            "jsonrpc": "2.0",
+            "id": "rpc-enterprise",
+            "method": A2A_TOOL_FIND_AGENTS,
+            "params": {"resource_id": "resource-1"},
+        },
+        channel_id="web",
+    )
+
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk,
+        session_id="session-1",
+        request_metadata={"routing": {"bot_id": "resource-1"}},
+    )
+
+    assert calls[0]["source_resource_id"] == "resource-1"
+    assert replies[0].params["response"]["result"]["total"] == 0
+
+
+@pytest.mark.asyncio
+async def test_enterprise_gateway_bridge_rejects_mismatched_resource_id(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    diagnostics = []
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.message_handler.message_handler.logger.warning",
+        lambda message, *args: diagnostics.append(message % args),
+    )
+
+    class _Manager:
+        async def outbound_find_agents(self, **kwargs):
+            raise AssertionError(kwargs)
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = _Manager()
+    replies = []
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    chunk = SimpleNamespace(
+        payload={
+            "jsonrpc": "2.0",
+            "id": "rpc-enterprise",
+            "method": A2A_TOOL_FIND_AGENTS,
+            "params": {"resource_id": "resource-other"},
+        },
+        channel_id="web",
+    )
+
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=chunk,
+        session_id="session-1",
+        request_metadata={"routing": {"bot_id": "resource-1"}},
+    )
+
+    error = replies[0].params["response"]["error"]
+    assert error["data"]["code"] == A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED.value
+    assert "gateway_bot_id='resource-1'" in diagnostics[0]
+    assert "tool_resource_id='resource-other'" in diagnostics[0]
 
 
 @pytest.mark.asyncio
@@ -1617,3 +1980,83 @@ async def test_gateway_cancel_call_cancels_only_same_session_active_rpc() -> Non
     with pytest.raises(asyncio.CancelledError):
         await dispatch_call
     assert replies[-1].params["response"]["result"]["canceled"] is True
+
+
+@pytest.mark.asyncio
+async def test_enterprise_cancel_call_binds_identity_via_active_calls(
+    monkeypatch,
+) -> None:
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    started = asyncio.Event()
+
+    class _Manager:
+        async def outbound_dispatch_task(self, **kwargs):
+            started.set()
+            await asyncio.Event().wait()
+
+    handler = object.__new__(MessageHandler)
+    handler._a2a_outbound_tool_manager = _Manager()
+    handler._active_a2a_outbound_tool_tasks = {}
+    replies = []
+
+    async def publish(message):
+        replies.append(message)
+
+    handler.publish_user_messages = publish
+    metadata = {"user_id": "user-1", "routing": {"bot_id": "resource-1"}}
+    dispatch_chunk = SimpleNamespace(
+        payload={
+            "id": "rpc-dispatch",
+            "method": A2A_TOOL_DISPATCH_TASK,
+            "params": {
+                "agent_id": "agent-1",
+                "task": "work",
+                "mode": "sync",
+                "resource_id": "resource-1",
+            },
+        },
+        channel_id="web",
+    )
+    dispatch_call = asyncio.create_task(
+        handler._handle_a2a_outbound_tool_push(
+            chunk=dispatch_chunk, session_id="s1", request_metadata=metadata
+        )
+    )
+    await started.wait()
+
+    other_resource = SimpleNamespace(
+        payload={
+            "id": "rpc-cancel-other",
+            "method": A2A_TOOL_CANCEL_CALL,
+            "params": {"jsonrpc_id": "rpc-dispatch"},
+        },
+        channel_id="web",
+    )
+    await handler._handle_a2a_outbound_tool_push(
+        chunk=other_resource,
+        session_id="s1",
+        request_metadata={"routing": {"bot_id": "resource-other"}},
+    )
+    try:
+        assert dispatch_call.done() is False
+        assert replies[-1].params["response"]["result"]["canceled"] is False
+
+        same_resource = SimpleNamespace(
+            payload={
+                "id": "rpc-cancel-own",
+                "method": A2A_TOOL_CANCEL_CALL,
+                "params": {"jsonrpc_id": "rpc-dispatch"},
+            },
+            channel_id="web",
+        )
+        await handler._handle_a2a_outbound_tool_push(
+            chunk=same_resource, session_id="s1", request_metadata=metadata
+        )
+        with pytest.raises(asyncio.CancelledError):
+            await asyncio.wait_for(dispatch_call, timeout=0.5)
+        assert replies[-1].params["response"]["result"]["canceled"] is True
+    finally:
+        if not dispatch_call.done():
+            dispatch_call.cancel()
+            with pytest.raises(asyncio.CancelledError):
+                await dispatch_call

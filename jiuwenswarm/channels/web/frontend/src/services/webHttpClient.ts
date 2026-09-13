@@ -11,6 +11,10 @@ import {
 } from '../types';
 import { getGatewayHttpBase } from '../utils/env';
 import { isEnterprise } from '../edition';
+import {
+  hasManagerSessionCredentials,
+  managerAuthenticatedFetch,
+} from '../auth/manager/authSession';
 import i18n from '../i18n';
 import { buildRuntimeIdentityHeaders } from './runtimeScope';
 import { PauseBufferHook, PAUSABLE_STREAM_EVENTS } from './webClient';
@@ -76,6 +80,9 @@ const ROUTES: Record<string, RouteRow> = {
   'chat.user_answer': { verb: 'POST', path: '/chat/{session_id}/actions/answer', kind: 'unary' },
   'config.get': { verb: 'GET', path: '/config', kind: 'unary' },
   'models.list': { verb: 'GET', path: '/models', kind: 'unary' },
+  'a2a.outbound.list': { verb: 'GET', path: '/a2a/outbound/agents', kind: 'unary' },
+  'a2a.outbound.enabled.update': { verb: 'PATCH', path: '/a2a/outbound/agents/{agent_id}/enabled', kind: 'unary' },
+  'a2a.outbound.dispatch.list': { verb: 'GET', path: '/a2a/outbound/dispatches', kind: 'unary' },
   'locale.get_conf': { verb: 'GET', path: '/locale', kind: 'unary' },
   'locale.set_conf': { verb: 'PUT', path: '/locale', kind: 'unary' },
   'cron.job.list': { verb: 'GET', path: '/cron/jobs', kind: 'unary' },
@@ -459,14 +466,11 @@ function isSseContentType(contentType: string | null | undefined): boolean {
 }
 
 function isChatSseTerminal(event: WsEvent): boolean {
-  if (event.event === 'chat.error') {
-    return true;
-  }
   // 仅企业版使用任务级 SSE 生命周期：chat.final 只是回复段结束，
   // 必须继续读到 processing_status(false)，避免工具状态停在 pending。
   // 个人版保持原有 chat.final 即结束的协议，避免改变个人版行为。
   if (!isEnterprise()) {
-    return event.event === 'chat.final';
+    return event.event === 'chat.final' || event.event === 'chat.error';
   }
   return (
     event.event === 'chat.processing_status' &&
@@ -673,7 +677,7 @@ export class WebHttpClient {
       if (assembled.jsonBody) {
         headers['Content-Type'] = 'application/json';
       }
-      const response = await fetch(appendQuery(assembled.url, assembled.query), {
+      const response = await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers,
         body: assembled.jsonBody ? JSON.stringify(assembled.jsonBody) : undefined,
@@ -799,7 +803,7 @@ export class WebHttpClient {
     this.connectAbort = new AbortController();
     const url = `${getGatewayHttpBase().replace(/\/+$/, '')}/connection/status`;
     try {
-      const response = await fetch(url, {
+      const response = await this.authenticatedFetch(url, {
         method: 'GET',
         headers: this.identityHeaders(requestId, {}),
         signal: this.connectAbort.signal,
@@ -855,9 +859,21 @@ export class WebHttpClient {
     }
     const decoder = new TextDecoder();
     let buffer = '';
+    let sawChatError = false;
+    let sawTaskEnd = false;
+    let readAborted = false;
+    const dispatchFrame = (frame: SseFrame): boolean => {
+      const event = sseFrameToWsEvent(frame);
+      if (!event) return false;
+      sawChatError ||= event.event === 'chat.error';
+      this.dispatchEvent(event);
+      sawTaskEnd ||= event.event === 'chat.processing_status' && event.payload.is_processing === false;
+      return kind === 'sse' ? isChatSseTerminal(event) : isHistorySseDone(event.payload);
+    };
     try {
       while (!controller.signal.aborted) {
         const { done, value } = await reader.read();
+        if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
         if (done) {
           break;
         }
@@ -865,16 +881,8 @@ export class WebHttpClient {
         const consumed = consumeSseBuffer(buffer);
         buffer = consumed.rest;
         for (const frame of consumed.frames) {
-          const event = sseFrameToWsEvent(frame);
-          if (!event) {
-            continue;
-          }
-          this.dispatchEvent(event);
-          if (kind === 'sse' && isChatSseTerminal(event)) {
-            await reader.cancel().catch(() => undefined);
-            return;
-          }
-          if (kind === 'history-stream' && isHistorySseDone(event.payload)) {
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) {
             await reader.cancel().catch(() => undefined);
             return;
           }
@@ -882,18 +890,47 @@ export class WebHttpClient {
       }
       if (buffer.trim()) {
         for (const frame of consumeSseBuffer(`${buffer}\n\n`).frames) {
-          const event = sseFrameToWsEvent(frame);
-          if (event) {
-            this.dispatchEvent(event);
-          }
+          if (controller.signal.aborted || this.sseSuperseded.has(requestId)) return;
+          if (dispatchFrame(frame)) return;
         }
       }
-    } catch {
-      // abort / 断流：hook 靠现有 on(chat.error) 或 inflight 归零
+    } catch (error) {
+      readAborted = error instanceof Error && error.name === 'AbortError';
+      if (!readAborted && !controller.signal.aborted && !this.sseSuperseded.has(requestId)) {
+        console.warn('[WebHttpClient] SSE read/dispatch failed', requestId, error);
+      }
     } finally {
-      this.inflight.delete(requestId);
-      this.sseInflight.delete(requestId);
-      this.sseSuperseded.delete(requestId);
+      try {
+        // 错误流正常结束或读流失败均收尾；主动取消/替换仍由对应请求处理。
+        if (
+          kind === 'sse' &&
+          isEnterprise() &&
+          sawChatError &&
+          !sawTaskEnd &&
+          sessionId &&
+          !readAborted &&
+          !controller.signal.aborted &&
+          !this.sseSuperseded.has(requestId)
+        ) {
+          this.dispatchEvent({
+            type: 'event',
+            event: 'chat.processing_status',
+            request_id: requestId,
+            payload: {
+              session_id: sessionId,
+              request_id: requestId,
+              is_processing: false,
+              source: 'http_error_eof',
+            },
+          });
+        }
+      } catch (error) {
+        console.warn('[WebHttpClient] Failed to settle errored SSE', requestId, error);
+      } finally {
+        this.inflight.delete(requestId);
+        this.sseInflight.delete(requestId);
+        this.sseSuperseded.delete(requestId);
+      }
     }
   }
 
@@ -907,7 +944,7 @@ export class WebHttpClient {
       if (!assembled) {
         return;
       }
-      await fetch(appendQuery(assembled.url, assembled.query), {
+      await this.authenticatedFetch(appendQuery(assembled.url, assembled.query), {
         method: assembled.verb,
         headers: {
           ...this.identityHeaders(requestId, { session_id: sessionId }),
@@ -960,12 +997,27 @@ export class WebHttpClient {
     return buildRuntimeIdentityHeaders(requestId, params);
   }
 
+  private authenticatedFetch(input: RequestInfo | URL, init: RequestInit): Promise<Response> {
+    if (isEnterprise() && hasManagerSessionCredentials()) {
+      return managerAuthenticatedFetch(input, init);
+    }
+    return fetch(input, init);
+  }
+
   private dispatchEvent(event: WsEvent): void {
     if (this.streamEventFilter && !this.streamEventFilter(event)) {
       return;
     }
     const hook = this.pauseBufferHook;
     if (hook?.isActive()) {
+      // 企业版错误与终态按序回放；恢复时不能只剩 final 而丢失失败收尾。
+      if (
+        isEnterprise() &&
+        (event.event === 'chat.error' || (event.event === 'chat.processing_status' && event.payload.is_processing === false))
+      ) {
+        hook.onBuffer(event);
+        return;
+      }
       if (event.event === 'chat.processing_status') {
         return;
       }

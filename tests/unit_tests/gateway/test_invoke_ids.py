@@ -10,8 +10,6 @@ import sys
 import types
 from pathlib import Path
 
-import pytest
-
 _EXT_DIR = (
     Path(__file__).resolve().parents[3]
     / "packages"
@@ -43,28 +41,23 @@ def _load(name: str):
 
 _invoke_mod = _load("invoke_ids")
 _default_invoke_ids = _invoke_mod._default_invoke_ids
-_routing_bot_id = _invoke_mod._routing_bot_id
 _default_workspace_key = _invoke_mod._default_workspace_key
 coalesce_invoke_ids = _invoke_mod.coalesce_invoke_ids
 _md5_invoke_id = _invoke_mod._md5_invoke_id
 apply_invoke_ids_to_envelope = _invoke_mod.apply_invoke_ids_to_envelope
 
 
-def test_default_invoke_ids_concatenates_group_bot_user(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
+def test_default_invoke_ids_concatenates_group_bot_user() -> None:
     svc, ag = _default_invoke_ids("grp", "bot", "user")
     assert svc == "grpbot"
     assert ag == "grpbotuser"
 
 
-def test_default_workspace_key_concatenates_raw_bot(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_BOT_ID_GROUP_NUM", "4")
-    # workspace 不做 bot hash 分桶
+def test_default_workspace_key_concatenates_raw_bot() -> None:
     assert _default_workspace_key("grp", "bot-1", "user") == "grpbot-1user"
 
 
-def test_coalesce_and_hash_invoke_ids(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
+def test_coalesce_and_hash_invoke_ids() -> None:
     svc, ag, ws = coalesce_invoke_ids(group_id="g", bot_id="b", user_id="u")
     assert (svc, ag, ws) == ("gb", "gbu", "gbu")
     hs, ha, hw = _md5_invoke_id(svc), _md5_invoke_id(ag), _md5_invoke_id(ws)
@@ -79,9 +72,8 @@ def test_coalesce_and_hash_invoke_ids(monkeypatch) -> None:
     ) != (hs, ha, hw)
 
 
-def test_coalesce_keeps_literal_default_when_explicit(monkeypatch) -> None:
+def test_coalesce_keeps_literal_default_when_explicit() -> None:
     """顶层显式 agent_id=default 视为已配置（不再当占位覆盖）。"""
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
     svc, ag, ws = coalesce_invoke_ids(
         group_id="__none__",
         bot_id="bot-1",
@@ -95,8 +87,7 @@ def test_coalesce_keeps_literal_default_when_explicit(monkeypatch) -> None:
     assert ws == "default"
 
 
-def test_coalesce_fills_only_empty_ids(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
+def test_coalesce_fills_only_empty_ids() -> None:
     svc, ag, ws = coalesce_invoke_ids(
         group_id="g",
         bot_id="b",
@@ -108,8 +99,7 @@ def test_coalesce_fills_only_empty_ids(monkeypatch) -> None:
     assert (svc, ag, ws) == ("custom-svc", "custom-ag", "custom-wk")
 
 
-def test_apply_invoke_ids_to_envelope_sets_workspace(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
+def test_apply_invoke_ids_to_envelope_sets_workspace() -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.message import ReqMethod
@@ -133,8 +123,7 @@ def test_apply_invoke_ids_to_envelope_sets_workspace(monkeypatch) -> None:
     assert env.workspace_key == hashlib.md5(b"grpbotuser").hexdigest()
 
 
-def test_apply_invoke_ids_keeps_explicit_envelope_agent_id(monkeypatch) -> None:
-    monkeypatch.delenv("AGENT_BOT_ID_GROUP_NUM", raising=False)
+def test_apply_invoke_ids_keeps_explicit_envelope_agent_id() -> None:
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
     from jiuwenswarm.common.request_identity import apply_routing_metadata
     from jiuwenswarm.common.schema.message import ReqMethod
@@ -158,18 +147,6 @@ def test_apply_invoke_ids_keeps_explicit_envelope_agent_id(monkeypatch) -> None:
     assert env.service_id == hashlib.md5(b"__none__bot-1").hexdigest()
     assert env.agent_id == hashlib.md5(b"custom-ag").hexdigest()
     assert env.workspace_key == hashlib.md5(b"__none__bot-1user1").hexdigest()
-
-
-def test_routing_bot_id_buckets_when_group_num_set(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_BOT_ID_GROUP_NUM", "4")
-    routed = _routing_bot_id("bot-1")
-    assert routed.startswith("b")
-    assert routed in {f"b{i}" for i in range(4)}
-
-
-def test_routing_bot_id_invalid_group_num_falls_back(monkeypatch) -> None:
-    monkeypatch.setenv("AGENT_BOT_ID_GROUP_NUM", "not-a-number")
-    assert _routing_bot_id("bot-1") == "bot-1"
 
 
 def test_installed_skill_resolve_uses_invoke_ids_extension(monkeypatch) -> None:

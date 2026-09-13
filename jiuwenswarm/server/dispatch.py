@@ -114,6 +114,7 @@ HANDLERS: dict[ReqMethod, HandlerSpec] = {
     ReqMethod.TEAM_MQ_PUBLISH: HandlerSpec(fn=team_handlers.handle_team_mq_publish),
     ReqMethod.TEAM_HISTORY_GET: HandlerSpec(fn=team_handlers.handle_team_history_get),
     ReqMethod.TEAM_MEMBERS_GET: HandlerSpec(fn=team_handlers.handle_team_members_get),
+    ReqMethod.TEAM_TASKS_DEPENDENCIES: HandlerSpec(fn=team_handlers.handle_team_tasks_dependencies),
     # --- 命令 ---
     # 整域实现在 handlers/commands.py。
     ReqMethod.COMMAND_WORKFLOWS: HandlerSpec(fn=commands_handlers.handle_command_workflows),

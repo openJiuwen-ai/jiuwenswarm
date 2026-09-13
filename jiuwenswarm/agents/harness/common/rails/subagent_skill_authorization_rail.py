@@ -19,6 +19,7 @@ import logging
 from dataclasses import replace
 from typing import Any, Callable
 
+from openjiuwen.core.session.stream import OutputSchema
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 
 from openjiuwen.harness.security.skill_authorization import (
@@ -121,10 +122,16 @@ async def emit_subagent_approval(
     }
     if isinstance(card, dict):
         event_payload[SKILL_APPROVAL_CARD_EXTENSION_KEY] = card
-    await session.write_stream({
-        "type": "chat.ask_user_question",
-        "payload": event_payload,
-    })
+    # Must include ``index`` (or pass OutputSchema). A bare
+    # ``{"type", "payload"}`` dict is normalized by AgentSession.write_stream
+    # into ``type="message"``, so the frontend never sees the approval card.
+    await session.write_stream(
+        OutputSchema(
+            type="chat.ask_user_question",
+            index=0,
+            payload=event_payload,
+        )
+    )
 
 
 async def emit_subagent_approval_expired(
@@ -141,10 +148,13 @@ async def emit_subagent_approval_expired(
         "agent_scope_id": request.agent_scope_id,
         "reason": reason,
     }
-    await session.write_stream({
-        "type": "chat.ask_user_question_expired",
-        "payload": event_payload,
-    })
+    await session.write_stream(
+        OutputSchema(
+            type="chat.ask_user_question_expired",
+            index=0,
+            payload=event_payload,
+        )
+    )
 
 
 def build_context_approval_sender() -> ApprovalSender:

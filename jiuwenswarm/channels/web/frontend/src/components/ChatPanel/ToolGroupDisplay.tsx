@@ -78,13 +78,18 @@ export function isToolExecutionFailed(execution: ToolExecution): boolean {
 function getExecutionLabel(
   execution: ToolExecution,
   sessionCompletedLabel: string,
-  t: (key: string) => string
+  t: (key: string, options?: Record<string, unknown>) => string
 ) {
   if (execution.toolCall.name === 'session') {
     return execution.toolCall.formatted_args || sessionCompletedLabel;
   }
 
-  return describeToolCall(execution.toolCall, t);
+  const label = describeToolCall(execution.toolCall, t);
+  const sourceSkill = execution.toolCall.source_skill?.trim();
+  if (!sourceSkill || isSkillToolName(execution.toolCall.name)) {
+    return label;
+  }
+  return t('chatUi.toolResult.sourceSkillInline', { label, skill: sourceSkill });
 }
 
 function isSkillToolName(name: string): boolean {
@@ -157,6 +162,7 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
   const resultSuccess = Boolean(result) && !failed;
   const hasArguments = Object.keys(toolCall.arguments).length > 0;
   const toolNameLabel = toolCall.name?.trim() || result?.toolName || 'tool';
+  const sourceSkill = toolCall.source_skill?.trim();
 
   return (
     <div className="tool-tree-item__detail">
@@ -168,6 +174,17 @@ function ToolExecutionDetails({ execution }: { execution: ToolExecution }) {
           {toolNameLabel}
         </pre>
       </div>
+
+      {sourceSkill && (
+        <div className="tool-tree-item__detail-block">
+          <div className="tool-tree-item__detail-label">
+            {t('chatUi.toolResult.sourceSkill')}
+          </div>
+          <pre className="tool-tree-item__detail-pre tool-tree-item__detail-pre--name">
+            {sourceSkill}
+          </pre>
+        </div>
+      )}
 
       {hasArguments && (
         <div className="tool-tree-item__detail-block">

@@ -127,7 +127,7 @@ async def commit_install(
     reject = _reject_for_decision(decision, name, channel=source)
     if reject is not None:
         # BLOCKED：本次 force 落盘可能写入未知类型冲突目录，允许回滚删盘。
-        # PREBUILT：勿删，目录可能仍属预制。
+        # PREBUILT：勿删，目录可能仍属预置。
         if decision == DECISION_BLOCKED and remove_skill_dir is not None:
             remove_skill_dir(name)
         return reject

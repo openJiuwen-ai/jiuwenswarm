@@ -225,7 +225,10 @@ async def handle_session_list(ctx: RequestContext) -> None:
     offset = max(0, _coerce_int(params.get("offset"), 0))
 
     try:
-        sessions, total = get_all_sessions_metadata(limit=limit, offset=offset)
+        sessions_root = _sessions_dir_for_request(ctx.request)
+        sessions, total = get_all_sessions_metadata(
+            limit=limit, offset=offset, sessions_root=sessions_root,
+        )
     except Exception as exc:  # noqa: BLE001 - 与原实现一致：失败降级为空列表
         logger.warning("[handlers.session] 获取会话列表失败: %s", exc)
         sessions, total = [], 0

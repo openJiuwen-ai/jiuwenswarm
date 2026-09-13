@@ -26,6 +26,7 @@ from jiuwenswarm.server.handlers._shared import (
     _request_query_text,
     _session_team_binding_lock,
     _sessions_dir_for_request,
+    _uses_tenant_pool,
     resolve_agent_request_mode,
     resolve_request_project_dir,
 )
@@ -104,6 +105,89 @@ def _build_team_interrupt_response(
         },
         metadata=request.metadata,
     )
+
+
+def _find_tenant_pool_agent_owning_session(
+    tenant_manager: Any,
+    session_id: str | None,
+) -> Any | None:
+    """在租户 AgentManager 中定位持有该 session 的 JiuWenSwarm。
+
+    cancel 请求不带 project_dir，按 (channel, mode, project) 缓存键查会查不到
+    或命中其它会话的 agent。agent 本身按 project 键缓存、session adapter 按
+    session_id 缓存在其根 adapter 的 ``_session_adapters`` 里，因此按 session
+    归属定位才能把 cancel 送到正确的 ``process_interrupt``。
+    """
+    target_sid = str(session_id or "").strip()
+    if not target_sid:
+        return None
+    for channel_agents in getattr(tenant_manager, "agents", {}).values():
+        if not isinstance(channel_agents, dict):
+            continue
+        for agent in channel_agents.values():
+            adapter = getattr(agent, "_adapter", None)
+            session_adapters = getattr(adapter, "_session_adapters", None)
+            if isinstance(session_adapters, dict) and target_sid in session_adapters:
+                return agent
+    return None
+
+
+async def _handle_tenant_pool_cancel(
+    ctx: RequestContext,
+    request: AgentRequest,
+    *,
+    send_response: bool,
+) -> AgentResponse | None:
+    """officeclaw/租户池请求的 cancel 路由：按 session 定位租户 agent 并走其
+    ``process_message`` → ``_process_interrupt`` → adapter ``process_interrupt``。
+
+    Returns:
+        已处理的 AgentResponse；未找到持有该 session 的 agent 或租户池
+        解析链路异常时返回 None（调用方回退到后续默认逻辑，不影响 cancel
+        响应返回）。
+    """
+    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+    try:
+        pool = ctx.services.tenant_pool()
+        agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
+        agent_id, service_id = pool.resolve_control_rpc_tenant(
+            request, agent_id, service_id
+        )
+        tenant_manager = await pool.get_agent_manager(
+            agent_id, service_id, workspace_key
+        )
+    except Exception:
+        logger.warning(
+            "[AgentWebSocketServer] cancel(tenant pool): failed to resolve tenant "
+            "manager session=%s channel_id=%s",
+            request.session_id,
+            request.channel_id,
+            exc_info=True,
+        )
+        return None
+    agent = _find_tenant_pool_agent_owning_session(tenant_manager, request.session_id)
+    if agent is None:
+        logger.info(
+            "[AgentWebSocketServer] cancel(tenant pool): no agent owns session=%s "
+            "channel_id=%s",
+            request.session_id,
+            request.channel_id,
+        )
+        return None
+    logger.info(
+        "[AgentWebSocketServer] cancel(tenant pool): routed to session-owned agent "
+        "session=%s channel_id=%s",
+        request.session_id,
+        request.channel_id,
+    )
+    resp = await agent.process_message(request)
+    if getattr(resp, "agent_ref", None) is None:
+        resp.agent_ref = request.agent_ref
+    if send_response:
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        await ctx.sink.send_wire(wire)
+    return resp
 
 
 async def _handle_cancel(
@@ -191,6 +275,19 @@ async def _handle_cancel(
     # 1. 尝试按 params 中的 mode 查找已有 agent
     project_dir = resolve_request_project_dir(request)
     mode_param = request.params.get("mode", "")
+
+    # 0. 租户池（officeclaw/E2A）：流式 agent 注册在 TenantAgentPool 的租户
+    # AgentManager 里，不在 ctx.services.agent_manager 中；且 cancel 请求不带
+    # project_dir，按缓存键查也会 miss。必须按 session 归属定位租户 agent，
+    # 否则 cancel 永远到不了 adapter.process_interrupt——round 不终止、
+    # interaction output lease 不释放，后续消息全部被 ACK-only 丢弃。
+    if _uses_tenant_pool(request):
+        tenant_resp = await _handle_tenant_pool_cancel(
+            ctx, request, send_response=send_response
+        )
+        if tenant_resp is not None:
+            return tenant_resp
+
     if mode_param:
         mode, sub_mode, _canonical = resolve_agent_request_mode(mode_param)
         agent_mode = "agent" if mode == "auto_harness" else mode

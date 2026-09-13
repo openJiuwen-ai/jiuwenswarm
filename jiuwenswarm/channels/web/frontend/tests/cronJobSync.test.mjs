@@ -7,7 +7,7 @@ import {
   fingerprintFromCronJob,
 } from '../node_modules/.cache/cron-job-sync/cronJobSync.mjs';
 
-test('fingerprintFromCronJob normalizes last_run_at and last_session_id', () => {
+test('fingerprintFromCronJob normalizes last_session_id (ignores last_run_at)', () => {
   assert.deepEqual(
     fingerprintFromCronJob({
       id: 'job-1',
@@ -16,7 +16,6 @@ test('fingerprintFromCronJob normalizes last_run_at and last_session_id', () => 
     }),
     {
       jobId: 'job-1',
-      lastRunAt: 1735689600,
       lastSessionId: 'cron_abc_job-1',
     }
   );
@@ -29,14 +28,25 @@ test('detectCronJobRunUpdates seeds baseline without unread on first sight', () 
   assert.deepEqual(result.nextFingerprints, buildCronJobFingerprintMap(jobs));
 });
 
-test('detectCronJobRunUpdates marks last_run_at changes', () => {
+test('detectCronJobRunUpdates marks last_session_id changes', () => {
   const previous = buildCronJobFingerprintMap([
     { id: 'job-1', last_run_at: 100, last_session_id: 'cron_a' },
   ]);
   const result = detectCronJobRunUpdates(previous, [
-    { id: 'job-1', last_run_at: 200, last_session_id: 'cron_b' },
+    { id: 'job-1', last_run_at: 100, last_session_id: 'cron_b' },
   ]);
   assert.deepEqual(result.updatedJobIds, ['job-1']);
+});
+
+test('detectCronJobRunUpdates ignores last_run_at-only changes', () => {
+  // claim 认领那一刻 last_run_at 即写库，此时结果还未产生，不应亮蓝点
+  const previous = buildCronJobFingerprintMap([
+    { id: 'job-1', last_run_at: 100, last_session_id: 'cron_a' },
+  ]);
+  const result = detectCronJobRunUpdates(previous, [
+    { id: 'job-1', last_run_at: 200, last_session_id: 'cron_a' },
+  ]);
+  assert.deepEqual(result.updatedJobIds, []);
 });
 
 test('detectCronJobRunUpdates ignores unchanged snapshots', () => {

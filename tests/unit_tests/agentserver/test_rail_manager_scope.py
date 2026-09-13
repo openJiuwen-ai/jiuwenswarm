@@ -54,8 +54,8 @@ def test_rail_manager_pool_isolates_tenants(monkeypatch, tmp_path):
     mgr_b = get_rail_manager(scope_b)
 
     assert mgr_a is not mgr_b
-    assert mgr_a.extensions_dir == tmp_path / "tenant-a" / "agent" / "workspace" / "extensions"
-    assert mgr_b.extensions_dir == tmp_path / "tenant-b" / "agent" / "workspace" / "extensions"
+    assert mgr_a.extensions_dir == tmp_path / "tenant-a" / "agent" / "jiuwenclaw_workspace" / "extensions"
+    assert mgr_b.extensions_dir == tmp_path / "tenant-b" / "agent" / "jiuwenclaw_workspace" / "extensions"
 
     assert get_rail_manager(scope_a) is mgr_a
     assert get_rail_manager(

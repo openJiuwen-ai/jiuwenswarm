@@ -1,39 +1,30 @@
-ARG BASE_IMAGE
-FROM ${BASE_IMAGE}
+ARG NODE_IMAGE=node:20-alpine
+ARG NGINX_IMAGE=nginx:1.27-alpine
 
-ARG AGENT_RUNTIME_REPOS
-ARG AGENT_RUNTIME_BRANCH
-ARG PIP_EXTRA_ARGS
-ARG VITE_PRODUCT_NAME=JiuwenSwarm
-ENV VITE_PRODUCT_NAME=${VITE_PRODUCT_NAME}
+# ---------- 阶段1:前端构建 ----------
+FROM ${NODE_IMAGE} AS web-builder
 
-# 创建 app 用户
-RUN useradd --create-home --shell /bin/bash app
-RUN mkdir -p /app
+ARG NPM_REGISTRY=https://registry.npmmirror.com
+ENV NPM_CONFIG_REGISTRY=${NPM_REGISTRY}
 
-# 拷贝代码（所有权直接给 app）
-COPY --chown=app:app . /app/jiuwenswarm/
-
-# 先用 ROOT 全局安装 Python 包
-WORKDIR /app/jiuwenswarm
-RUN sed -i '/openjiuwen_runtime_foundation/d' pyproject.toml
-RUN sed -i '/openjiuwen_runtime_management/d' packages/jiuwenclaw-ee/gateway/extensions/runtime_management_extension/pyproject.toml
-
-RUN pip install -e . \
-    git+${AGENT_RUNTIME_REPOS}@${AGENT_RUNTIME_BRANCH}#subdirectory=foundation \
-    --no-cache-dir \
-    ${PIP_EXTRA_ARGS}
-
-# 切换成 app 用户，再执行 npm 构建
-USER app
-WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
+WORKDIR /build/jiuwenswarm/channels/web/frontend
+COPY jiuwenswarm/channels/web/frontend/package.json \
+     jiuwenswarm/channels/web/frontend/package-lock.json ./
 RUN npm install
+
+COPY jiuwenswarm/channels/web/frontend/ ./
+COPY jiuwenswarm/scripts/ /build/jiuwenswarm/scripts/
+COPY jiuwenswarm/resources/ /build/jiuwenswarm/resources/
 RUN npm run build
 
-# 配置环境变量
-WORKDIR /app/jiuwenswarm
-ENV PATH=$PATH:/home/app/.local/bin
+# ---------- 阶段2:nginx 运行 ----------
+FROM ${NGINX_IMAGE}
 
-# 暴露端口 + 启动
+COPY docker/web.nginx.conf.template /etc/nginx/templates/default.conf.template
+COPY docker/web-optional-upstreams.sh /docker-entrypoint.d/40-optional-upstreams.sh
+RUN chmod +x /docker-entrypoint.d/40-optional-upstreams.sh \
+    && mkdir -p /etc/nginx/optional-upstreams
+COPY --from=web-builder /build/jiuwenswarm/channels/web/frontend/dist \
+     /app/jiuwenswarm/jiuwenswarm/channels/web/frontend/dist
+
 EXPOSE 5173
-CMD ["jiuwenswarm-start", "web"]

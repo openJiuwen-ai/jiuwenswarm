@@ -117,10 +117,35 @@ def resolve_subagent_approval(
         kind = SubagentApprovalKind.TOOL_PERMISSION
     else:
         return False
-    return get_subagent_approval_registry().resolve(
+    registry = get_subagent_approval_registry()
+    scope = str(agent_scope_id or "").strip()
+    # Relay/OfficeClaw resume often omits agent_scope_id; fill from pending when
+    # the approval_id uniquely identifies the wait (older registry builds still
+    # require a non-empty scope).
+    if not scope:
+        for pending in registry.pending_requests():
+            if (
+                pending.approval_id == request_id
+                and pending.session_id == str(session_id or "").strip()
+                and pending.kind == kind
+            ):
+                scope = pending.agent_scope_id
+                break
+    ok = registry.resolve(
         session_id=session_id,
         approval_id=request_id,
         kind=kind,
         answer=answers,
-        agent_scope_id=agent_scope_id,
+        agent_scope_id=scope,
     )
+    if not ok:
+        logger.warning(
+            "[skill_authorization] subagent approval resolve miss "
+            "session=%s approval_id=%s kind=%s scope=%s pending=%s",
+            session_id,
+            request_id,
+            kind.value,
+            scope or "<empty>",
+            [p.approval_id for p in registry.pending_requests()],
+        )
+    return ok

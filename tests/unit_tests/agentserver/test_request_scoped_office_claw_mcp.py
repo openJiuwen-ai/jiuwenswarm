@@ -642,6 +642,158 @@ def test_carrier_stores_on_ability_manager_and_rebinds() -> None:
                 )
 
 
+def _request_with_connectors(
+        config: object | None = None,
+        *,
+        connectors: dict[str, dict[str, object]] | None = None,
+        request_id: str = "req-123",
+        session_id: str = "session-456",
+) -> AgentRequest:
+    params: dict[str, object] = {"query": "读文件"}
+    if config is not None:
+        params["office_claw_mcp"] = config
+    if connectors is not None:
+        params["request_mcp_servers"] = {"mcpServers": connectors}
+    return AgentRequest(
+        request_id=request_id,
+        channel_id="officeclaw",
+        session_id=session_id,
+        params=params,
+    )
+
+
+@pytest.mark.asyncio
+async def test_connector_builtin_name_conflict_downgrades_per_tool(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connector tool whose short name collides with a *built-in* agent tool
+    (e.g. ``filesystem.read_file`` vs the agent's ``read_file``) must be skipped
+    in place — the rest of the connector's tools and the overall registration
+    must survive. Previously this raised ``RuntimeError`` which propagated to the
+    outer ``except`` and rolled back the entire registration, leaving
+    ``tools_search`` with 0 matches and the LLM falling back to web_search."""
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(
+        interface_deep,
+        "list_office_claw_mcp_tools",
+        AsyncMock(return_value=[]),
+    )
+
+    async def _fake_list_request_mcp_server_tools(server_name, config):
+        # filesystem connector exposes read_file (shadows built-in) + a unique
+        # list_dir tool that should register fine.
+        return (
+            [
+                {
+                    "name": "read_file",
+                    "description": "fs read_file",
+                    "input_params": {"type": "object"},
+                },
+                {
+                    "name": "list_dir",
+                    "description": "fs list_dir",
+                    "input_params": {"type": "object"},
+                },
+            ],
+            {"command": "node", "args": ["fs.js"], "cwd": "."},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list_request_mcp_server_tools),
+    )
+
+    adapter = _bare_session_adapter()
+    # Pre-seed the ability manager with a *built-in* read_file — its id does NOT
+    # carry the request-scoped ``office-claw-request-`` prefix.
+    builtin_read_file = ToolCard(
+        id="read_file_jiuwenswarm_s_officeclaw_sid",
+        name="read_file",
+        description="built-in read_file",
+        input_params={},
+    )
+    adapter._instance.ability_manager.cards["read_file"] = builtin_read_file
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"filesystem": {"command": "node", "args": ["fs.js"]}}
+        )
+    )
+
+    # Registration succeeds (not rolled back to None).
+    assert registration is not None
+    # Only list_dir made it into the registration — read_file was skipped.
+    assert registration.tool_names == ("list_dir",)
+    # The built-in read_file mapping is untouched.
+    assert (
+            adapter._instance.ability_manager.get("read_file") is builtin_read_file
+    )
+    # No orphaned resource entry for the skipped read_file tool.
+    skipped_id = next(
+        (tid for tid in registration.tool_ids if tid.endswith(".read_file")),
+        None,
+    )
+    assert skipped_id is None
+
+
+@pytest.mark.asyncio
+async def test_connector_foreign_short_name_conflict_still_fails_closed(monkeypatch: pytest.MonkeyPatch) -> None:
+    """A connector tool whose short name collides with a *foreign* request-scoped
+    tool (different request scope, id carries the ``office-claw-request-``
+    prefix) must still fail closed — the downgrade is only for collisions with
+    genuine built-in tools, not for cross-request races."""
+
+    for key, value in _startup_env().items():
+        monkeypatch.setenv(key, value)
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    monkeypatch.setattr(
+        interface_deep,
+        "list_office_claw_mcp_tools",
+        AsyncMock(return_value=[]),
+    )
+
+    async def _fake_list_request_mcp_server_tools(server_name, config):
+        return (
+            [
+                {
+                    "name": "office_claw_multi_mention",
+                    "description": "foreign-shadow",
+                    "input_params": {"type": "object"},
+                }
+            ],
+            {"command": "node", "args": ["x.js"], "cwd": "."},
+        )
+
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=_fake_list_request_mcp_server_tools),
+    )
+
+    adapter = _bare_session_adapter()
+    foreign = ToolCard(
+        id="office-claw-request-foreign.office-claw.office_claw_multi_mention",
+        name="office_claw_multi_mention",
+        description="foreign",
+        input_params={},
+    )
+    adapter._instance.ability_manager.cards["office_claw_multi_mention"] = foreign
+
+    registration = await adapter.register_request_scoped_office_claw_mcp(
+        _request_with_connectors(
+            connectors={"amap": {"command": "node", "args": ["amap.js"]}}
+        )
+    )
+
+    # Fail-closed: registration rolled back, foreign card preserved.
+    assert registration is None
+    assert (adapter._instance.ability_manager.get("office_claw_multi_mention") is foreign)
+
+
 def test_clear_agent_office_claw_tool_ids_unbinds() -> None:
     """Clearing the allowlist makes subsequent invokes fail closed as unbound."""
     tool_id = "office-claw-request-aaa.office-claw.office_claw_multi_mention"

@@ -1170,7 +1170,9 @@ class JiuWenSwarm:
         user_ws = getattr(self, "_user_workspace_dir", None)
         if user_ws is not None:
             return str(
-                collapse_nested_agent_workspace_dir(Path(user_ws) / "agent" / "workspace")
+                collapse_nested_agent_workspace_dir(
+                    Path(user_ws) / "agent" / "jiuwenclaw_workspace"
+                )
             )
         return str(collapse_nested_agent_workspace_dir(get_agent_workspace_dir()))
 
@@ -1545,6 +1547,12 @@ class JiuWenSwarm:
             )
             if answers or is_explicit_ask_user_response:
                 request_id = params.get("request_id", "")
+                # ask_user 卡片序号后缀（{call_id}#{n}，区分同一外层调用的第 n 次
+                # 中断）在此剥掉，恢复 harness 原始 tool_call id 用于对齐
+                if isinstance(request_id, str):
+                    _m = re.search(r"^(?P<base>.+)#\d+$", request_id.strip())
+                    if _m and _m.group("base").strip():
+                        request_id = _m.group("base").strip()
                 raw_original_request = params.get("original_request") if source == "ask_user_interrupt" else ""
                 original_request = raw_original_request.strip() if isinstance(raw_original_request, str) else ""
                 interactive_input = self._build_interactive_input_from_answers(
@@ -2582,20 +2590,62 @@ class JiuWenSwarm:
         tenant_tokens, mem_token = self._bind_tenant_request_context()
         try:
             await self._materialize_enterprise_attachments(request, session_id)
-            # 兜底：注入上一轮 SkillTurbo 中断时保存的节点产物摘要，让 LLM 知道
-            # 「已完成的工作」而非盲目从头重跑。失败不阻断主流程。
-            # dev-stable 无 plan_pause / interrupt_resume prepare 链，此处只做最小子集。
-            prepare_interrupt_artifacts = getattr(
-                adapter, "prepare_interrupt_artifacts_for_request", None
-            )
-            if callable(prepare_interrupt_artifacts):
+            # 中断恢复 prepare hook 链
+            permission_key = _permission_response_key(request)
+            hook_adapter = adapter
+            if (
+                getattr(adapter, "_instance", None) is None
+                and callable(getattr(adapter, "_get_or_create_session_adapter", None))
+                and session_id
+            ):
                 try:
-                    await prepare_interrupt_artifacts(request)
+                    hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
+                        session_id, request=request
+                    )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarm] prepare_interrupt_artifacts failed "
-                        "session_id=%s: %s", session_id, exc, exc_info=True,
+                        "[JiuWenClaw] resolve session-scoped hook_adapter failed "
+                        "session_id=%s: %s (falling back to root adapter)",
+                        session_id, exc, exc_info=True,
                     )
+                    hook_adapter = adapter
+            _adapter_instance = getattr(hook_adapter, "_instance", None)
+            logger.info(
+                "[JiuWenClaw] prepare-hook loop: session_id=%s permission_key=%s "
+                "hook_adapter=%s _instance=%s",
+                session_id,
+                "none" if permission_key is None else "non-none",
+                type(hook_adapter).__name__,
+                "None" if _adapter_instance is None else "bound",
+            )
+            if permission_key is None:
+                for hook_name, log_name in (
+                    ("prepare_plan_pause_for_request", "prepare_plan_pause"),
+                    ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
+                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
+                    ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
+                ):
+                    hook = getattr(hook_adapter, hook_name, None)
+                    if not callable(hook):
+                        logger.debug(
+                            "[JiuWenClaw] prepare-hook %s: not callable on %s",
+                            log_name, type(hook_adapter).__name__,
+                        )
+                        continue
+                    try:
+                        logger.debug("[JiuWenClaw] prepare-hook %s: calling session_id=%s", log_name, session_id)
+                        await hook(request)
+                        logger.debug("[JiuWenClaw] prepare-hook %s: ok session_id=%s", log_name, session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenClaw] prepare-hook %s failed session_id=%s: %s",
+                            log_name, session_id, exc, exc_info=True,
+                        )
+            else:
+                logger.debug(
+                    "[JiuWenClaw] prepare-hook loop SKIPPED (permission continuation) session_id=%s",
+                    session_id,
+                )
             try:
                 inputs, memory_mode, raw_query = self._build_inputs(request)
             except _TeamPlanApprovalPayloadError as exc:
@@ -2621,7 +2671,6 @@ class JiuWenSwarm:
                 memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
                 inputs["memory_block"] = memory_block
 
-            permission_key = _permission_response_key(request)
             permission_reservation = None
             if permission_key is not None:
                 permission_reservation = self._permission_response_ledger.reserve(
@@ -2879,20 +2928,62 @@ class JiuWenSwarm:
         cid = request.channel_id
         await self._materialize_enterprise_attachments(request, session_id)
         try:
-            # 兜底：注入上一轮 SkillTurbo 中断时保存的节点产物摘要，让 LLM 知道
-            # 「已完成的工作」而非盲目从头重跑。失败不阻断主流程。
-            # dev-stable 无 plan_pause / interrupt_resume prepare 链，此处只做最小子集。
-            prepare_interrupt_artifacts = getattr(
-                adapter, "prepare_interrupt_artifacts_for_request", None
-            )
-            if callable(prepare_interrupt_artifacts):
+            # 中断恢复 prepare hook 链
+            stream_permission_key = _permission_response_key(request)
+            hook_adapter = adapter
+            if (
+                getattr(adapter, "_instance", None) is None
+                and callable(getattr(adapter, "_get_or_create_session_adapter", None))
+                and session_id
+            ):
                 try:
-                    await prepare_interrupt_artifacts(request)
+                    hook_adapter = await adapter._get_or_create_session_adapter(  # pylint: disable=protected-access
+                        session_id, request=request
+                    )
                 except Exception as exc:
                     logger.warning(
-                        "[JiuWenSwarm] prepare_interrupt_artifacts failed "
-                        "session_id=%s: %s", session_id, exc, exc_info=True,
+                        "[JiuWenClaw] resolve session-scoped hook_adapter failed "
+                        "session_id=%s: %s (falling back to root adapter)",
+                        session_id, exc, exc_info=True,
                     )
+                    hook_adapter = adapter
+            _adapter_instance = getattr(hook_adapter, "_instance", None)
+            logger.info(
+                "[JiuWenClaw] stream prepare-hook loop: session_id=%s permission_key=%s "
+                "hook_adapter=%s _instance=%s",
+                session_id,
+                "none" if stream_permission_key is None else "non-none",
+                type(hook_adapter).__name__,
+                "None" if _adapter_instance is None else "bound",
+            )
+            if stream_permission_key is None:
+                for hook_name, log_name in (
+                    ("prepare_plan_pause_for_request", "prepare_plan_pause"),
+                    ("prepare_interrupt_resume_for_request", "prepare_interrupt_resume"),
+                    ("prepare_interrupt_artifacts_for_request", "prepare_interrupt_artifacts"),
+                    ("prepare_stale_todo_cleanup_for_new_request", "prepare_stale_todo_cleanup"),
+                ):
+                    hook = getattr(hook_adapter, hook_name, None)
+                    if not callable(hook):
+                        logger.debug(
+                            "[JiuWenClaw] prepare-hook %s: not callable on %s",
+                            log_name, type(hook_adapter).__name__,
+                        )
+                        continue
+                    try:
+                        logger.debug("[JiuWenClaw] prepare-hook %s: calling session_id=%s", log_name, session_id)
+                        await hook(request)
+                        logger.debug("[JiuWenClaw] prepare-hook %s: ok session_id=%s", log_name, session_id)
+                    except Exception as exc:
+                        logger.warning(
+                            "[JiuWenClaw] prepare-hook %s failed session_id=%s: %s",
+                            log_name, session_id, exc, exc_info=True,
+                        )
+            else:
+                logger.debug(
+                    "[JiuWenClaw] stream prepare-hook loop SKIPPED (permission continuation) session_id=%s",
+                    session_id,
+                )
             inputs, memory_mode, raw_query = self._build_inputs(request)
         except _TeamPlanApprovalPayloadError as exc:
             yield AgentResponseChunk(

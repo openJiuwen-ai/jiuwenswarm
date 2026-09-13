@@ -27,7 +27,7 @@ async def require_persistent_store() -> PersistentStore:
         raise RuntimeError(
             "PersistentStore is not wired; "
             "ensure setup_gateway_storage_repositories / "
-            "wire_enterprise_manager_ws_store_async ran at Gateway startup"
+            "wire_enterprise_persistent_repositories_async ran at Gateway startup"
         )
     await store.ensure_ready()
     return store

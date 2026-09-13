@@ -676,6 +676,11 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
                 reverse_rpc_capable=reverse_rpc_capable,
             )
             try:
+                if reverse_rpc_capable:
+                    yield {
+                        "event": "gateway.push_ready",
+                        "data": json.dumps({"event_type": "gateway.push_ready"}),
+                    }
                 while True:
                     item = await sink.queue.get()
                     if item is STREAM_DONE:

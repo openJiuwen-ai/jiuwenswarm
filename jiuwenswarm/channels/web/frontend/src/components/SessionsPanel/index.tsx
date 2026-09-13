@@ -339,7 +339,7 @@ export function SessionsPanel({
         const rows = await fetchDirEntries(rootDir, 0);
 
         // Check for todo.json in DeepAgent workspace todo directory
-        const todoPath = `agent/workspace/todo/${sessionId}/todo.json`;
+        const todoPath = `agent/jiuwenclaw_workspace/todo/${sessionId}/todo.json`;
         try {
           const todoResp = await fetch(`/file-api/file-content?path=${encodeURIComponent(todoPath)}`, { cache: 'no-store' });
           if (todoResp.ok) {

@@ -86,7 +86,7 @@
 
 #### 概念说明
 
-- **系统默认工作空间（workspace）**：固定路径 `~/.jiuwenswarm/agent/jiuwenswarm_workspace`，始终可用
+- **系统默认工作空间（workspace）**：固定路径 `~/.jiuwenswarm/agent/jiuwenclaw_workspace`，始终可用
 - **可信目录（trusted_dirs）**：用户授权的可访问目录，由 TUI 管理，传递给后端 Agent
 
 #### 控制逻辑
@@ -216,7 +216,7 @@
 
 按轮次 diff 基于 `.agent_history/file_ops_jiuwenswarm*.json` 日志计算，而非 git。服务从多个位置读取并合并文件操作日志：
 
-1. Agent 工作区（`~/.jiuwenswarm/agent/jiuwenswarm_workspace/.agent_history/`）
+1. Agent 工作区（`~/.jiuwenswarm/agent/jiuwenclaw_workspace/.agent_history/`）
 2. 用户工作区 `.agent_history/`
 3. 项目目录 `.agent_history/`（含 session 专属文件和全局文件）
 
@@ -535,7 +535,7 @@
 - **市场源（Marketplace source）**：托管可用技能的远程 Git 仓库，每个源包含名称、URL 和启用/禁用状态。
 - **规格标识（Spec）**：安装时使用的标识格式，支持以下几种：`<技能名>@builtin`（内置）、`<slug>@clawhub`（ClawHub）、`<技能名>@<市场源名>`（Git 市场源）；裸名不带 `@` 时系统会自动检测是否为内置技能。
 - **本地安装（Local install）**：通过 `/skills install <path>` 将本地目录（需包含 `SKILL.md`）或远程归档 URL 安装为自定义技能；路径/URL 会自动识别并走本地导入流程。
-- **安装位置（Install location）**：技能安装后的存储目录（`~/.jiuwenswarm/agent/jiuwenswarm_workspace/skills/`）。
+- **安装位置（Install location）**：技能安装后的存储目录（`~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/`）。
 - **来源标签（Source tag）**：列表中每项技能标注来源，`[builtin]` 表示内置、`[local]` 表示本地导入、`[clawhub]` 表示从 ClawHub 安装、`[project]` 或市场源名表示其他来源。
 
 #### 列表分组展示

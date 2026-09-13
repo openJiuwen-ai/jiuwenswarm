@@ -16,13 +16,13 @@ logger = logging.getLogger(__name__)
 def resolve_public_endpoint(cfg: Settings | None = None) -> str:
     """Manager 回调用的 Gateway Config Receiver Base URL（无尾斜杠）。
 
-    由 ``GATEWAY_CONFIG_PUBLIC_HOST`` + ``GATEWAY_CONFIG_HTTP_PORT`` 拼接；
-    host 未配置时默认 ``127.0.0.1``。
+    由 ``GATEWAY_CONFIG_PUBLIC_SCHEME``、``GATEWAY_CONFIG_PUBLIC_HOST`` 和
+    ``GATEWAY_CONFIG_HTTP_PORT`` 拼接；host 未配置时默认 ``127.0.0.1``。
     """
     cfg = cfg or get_settings()
     port = int(cfg.gateway_config_http_port or 8775)
     host = (cfg.gateway_config_public_host or "").strip() or "127.0.0.1"
-    return f"http://{host}:{port}"
+    return f"{cfg.gateway_config_public_scheme}://{host}:{port}"
 
 
 def resolve_manager_http_base(cfg: Settings | None = None) -> str:
@@ -31,18 +31,18 @@ def resolve_manager_http_base(cfg: Settings | None = None) -> str:
 
 
 class InstanceService:
-    """启动时确保 GatewayDb 连接可用。"""
+    """启动时确保企业库连接可用。"""
 
     def __init__(self, cfg: Settings | None = None) -> None:
         self._cfg = cfg or get_settings()
 
     async def start(self) -> None:
         try:
-            from ..enterprise_config.gateway_db import GatewayDb
+            from jiuwenswarm.infrastructure.db.database import Database
 
-            GatewayDb.current()
+            Database.current()
         except Exception:  # noqa: BLE001
-            logger.debug("[InstanceService] GatewayDb.current failed", exc_info=True)
+            logger.debug("[InstanceService] Database.current failed", exc_info=True)
             return
         logger.info(
             "[InstanceService] endpoint=%s (Manager health-probes this Gateway)",

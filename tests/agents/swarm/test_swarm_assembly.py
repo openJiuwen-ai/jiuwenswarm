@@ -19,6 +19,8 @@ touching a real LLM, the network, or a live ``DeepAgent``:
 from __future__ import annotations
 
 import inspect
+import asyncio
+import contextvars
 import json
 import logging
 import types
@@ -144,11 +146,46 @@ def test_team_a2a_outbound_rail_uses_live_route_when_context_session_is_empty(
     assert rail._runtime_route() == ("live-session", "live-channel")
 
 
-def test_team_a2a_outbound_rail_is_excluded_from_enterprise_runtime(monkeypatch) -> None:
+def test_team_a2a_outbound_rail_keeps_enterprise_resource(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    context = SwarmBuildContext(session_id="session-a2a", channel="web")
+    context = SwarmBuildContext(session_id="session-a2a", channel="web", request_metadata={"routing": {"bot_id": "resource-1"}})
 
-    assert member_rails._build_a2a_outbound_toolkit_rail({}, context) is None
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, context)
+    assert contextvars.Context().run(rail._runtime_resource_id) == "resource-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+async def test_team_a2a_tools_keep_resource_in_empty_context(mode):
+    context = SwarmBuildContext(session_id="session-a2a", channel="web", mode=mode,
+        request_metadata={"routing": {"bot_id": "resource-1"}})
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, context)
+    tools = {}
+    async def call(method, params, **route):
+        return {"params": params, **route}
+    rail._backend_provider = lambda: SimpleNamespace(ready=True, call=call)
+    rail.init(SimpleNamespace(ability_manager=SimpleNamespace(
+        add_ability=lambda card, tool: tools.update({card.name: tool})), system_prompt_builder=None))
+    for name, params in (
+        ("a2a_find_agents", {}),
+        ("a2a_dispatch_task", {"agent_id": "weather", "task": "weather", "mode": "sync"}),
+        ("a2a_get_dispatch", {"dispatch_id": "dispatch-1"}),
+    ):
+        result = await asyncio.create_task(tools[name].invoke(params), context=contextvars.Context())
+        assert result["session_id"] == "session-a2a"
+        assert result["params"]["resource_id"] == "resource-1"
+
+
+def test_team_a2a_live_session_does_not_borrow_build_identity():
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, SwarmBuildContext(
+        session_id="old", request_metadata={"routing": {"bot_id": "old-resource"}}))
+    def check():
+        interface_deep._CRON_TOOL_SESSION_ID.set("new")
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("")
+        assert rail._runtime_resource_id() == ""
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("new-resource")
+        assert rail._runtime_resource_id() == "new-resource"
+    contextvars.Context().run(check)
 
 # Rail provider names shared by both roles (no role-specific evolution rails).
 # Harness todo planning is teammate-only; leaders use the team task board instead.
@@ -338,7 +375,7 @@ async def test_team_skill_storage_policy_rail_resolves_and_injects_paths(tmp_pat
     its identity, so this rail must not carry it in any lane.
     """
     register_swarm_providers()
-    global_skills_dir = str(tmp_path / "agent" / "workspace" / "skills")
+    global_skills_dir = str(tmp_path / "agent" / "jiuwenclaw_workspace" / "skills")
     team_ws_root = str(tmp_path / ".agent_teams" / "unit" / "team-workspace")
     team_skills_dir = str(tmp_path / ".agent_teams" / "unit" / "team-workspace" / "skills")
     member_workspace_root = str(
@@ -385,7 +422,7 @@ async def test_team_shared_skill_link_refresh_rail_resolves_and_refreshes(
 ) -> None:
     """The shared skill link refresh rail should refresh after global skill writes."""
     register_swarm_providers()
-    global_skills_dir = tmp_path / "agent" / "workspace" / "skills"
+    global_skills_dir = tmp_path / "agent" / "jiuwenclaw_workspace" / "skills"
     skill_dir = global_skills_dir / "new-skill"
     skill_dir.mkdir(parents=True)
     skill_file = skill_dir / "SKILL.md"

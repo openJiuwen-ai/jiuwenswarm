@@ -45,7 +45,7 @@ class MemoryConfigRepository:
         *,
         source: str = "manager",
     ) -> SectionDocument:
-        """Manager WS upsert：整段替换 body 并递增 revision。"""
+        """企业配置 upsert：整段替换 body 并递增 revision。"""
         existing = await self.get()
         document = SectionDocument(
             body=dict(body),

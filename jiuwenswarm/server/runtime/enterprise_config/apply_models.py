@@ -15,6 +15,7 @@ SLOT_TO_CONFIG_KEY: dict[TemplateRefSlot, str] = {
     TemplateRefSlot.VISION_MODEL: "vision",
     TemplateRefSlot.AUDIO_MODEL: "audio",
     TemplateRefSlot.VIDEO_MODEL: "video",
+    TemplateRefSlot.IMAGE_GEN_MODEL: "image_gen",
 }
 
 

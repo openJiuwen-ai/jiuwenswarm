@@ -62,6 +62,12 @@ import {
   useCronStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
+import {
+  MAIN_NAV_STORAGE_KEY,
+  parseStoredMainNav,
+  resolveMainNavAfterRoute,
+  type MainNavKey,
+} from './features/mainNavigationState';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
 import { DeleteDialog } from './multi-session/dialogs/Dialogs';
 import {
@@ -107,8 +113,6 @@ function isTeamMode(mode: string): boolean {
 function shouldPreviewModelSetupGuide(): boolean {
   return PREVIEW_MODEL_SETUP_GUIDE;
 }
-
-type MainNavKey = 'chat' | 'skills' | 'agents' | 'teams' | 'sessions' | 'history' | 'cron' | 'channels' | 'extensions' | 'configpanel' | 'browserpanel' | 'updatepanel' | 'a2aingress';
 
 type LoadedHistoryPage = {
   pageIdx: number;
@@ -273,6 +277,10 @@ const HISTORY_PRELOAD_MAX_WAIT_MS = 1500;
 function AppContent() {
   const { t, i18n } = useTranslation();
   const { route, navigate } = useChatRoute();
+  const routeKey = route.kind === 'chat-session'
+    ? `chat-session:${route.sessionId}`
+    : route.kind;
+  const previousRouteKeyRef = useRef(routeKey);
   const tRef = useRef(t);
   // 优先使用存储的会话 ID，避免每次刷新创建新会话
   const [sessionId, setSessionId] = useState<string>(() => {
@@ -284,7 +292,18 @@ function AppContent() {
   const cronJobPullSyncEnabled = enterpriseMode && getWebTransport() === 'http';
   useCronJobSync(cronJobPullSyncEnabled);
   const enterpriseBlockedNav = new Set<MainNavKey>(ENTERPRISE_HIDDEN_NAV_ITEMS);
-  const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const [activeNav, setActiveNav] = useState<MainNavKey>(() => {
+    let stored: string | null = null;
+    try {
+      stored = window.sessionStorage.getItem(MAIN_NAV_STORAGE_KEY);
+    } catch {
+      // Storage may be unavailable in private/locked-down browser contexts.
+    }
+    return parseStoredMainNav(stored, {
+      blocked: enterpriseMode ? ENTERPRISE_HIDDEN_NAV_ITEMS : [],
+      updaterEnabled: FEATURE_APP_UPDATER_UI,
+    });
+  });
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const [configError, setConfigError] = useState<string | null>(null);
   const [initialDataLoaded, setInitialDataLoaded] = useState(false);
@@ -301,8 +320,8 @@ function AppContent() {
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
-  const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
-  const [hasVisitedChannels, setHasVisitedChannels] = useState(false);
+  const [hasVisitedSkills, setHasVisitedSkills] = useState(activeNav === 'skills');
+  const [hasVisitedChannels, setHasVisitedChannels] = useState(activeNav === 'channels');
   const [sidebarMorePanelOpen, setSidebarMorePanelOpen] = useState(false);
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
   const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
@@ -319,6 +338,14 @@ function AppContent() {
   useEffect(() => {
     tRef.current = t;
   }, [t]);
+
+  useEffect(() => {
+    try {
+      window.sessionStorage.setItem(MAIN_NAV_STORAGE_KEY, activeNav);
+    } catch {
+      // Keep navigation functional when storage is unavailable.
+    }
+  }, [activeNav]);
 
   useEffect(() => {
     if (activeNav !== 'configpanel') {
@@ -344,7 +371,10 @@ function AppContent() {
   useEffect(() => {
     const handler = (e: Event) => {
       const nav = (e as CustomEvent<MainNavKey>).detail;
-      if (nav && !(enterpriseMode && enterpriseBlockedNav.has(nav))) setActiveNav(nav);
+      if (!nav || (enterpriseMode && enterpriseBlockedNav.has(nav))) return;
+      setActiveNav(nav);
+      if (nav === 'skills') setHasVisitedSkills(true);
+      if (nav === 'channels') setHasVisitedChannels(true);
     };
     window.addEventListener('jiuwen:nav', handler);
     return () => window.removeEventListener('jiuwen:nav', handler);
@@ -419,10 +449,16 @@ function AppContent() {
   } = useTeamPanelState();
 
   useEffect(() => {
+    const previousRouteKey = previousRouteKeyRef.current;
+    previousRouteKeyRef.current = routeKey;
+    setActiveNav(current => resolveMainNavAfterRoute(current, {
+      previousRouteKey,
+      routeKey,
+      routeKind: route.kind,
+    }));
     if (route.kind === 'chat-session') {
       sessionIdRef.current = route.sessionId;
       setSessionId(route.sessionId);
-      setActiveNav('chat');
     } else if (route.kind === 'chat-new') {
       if (window.location.pathname !== '/chat/new') navigate({ kind: 'chat-new' }, { replace: true });
       if (preserveSelectedProjectOnChatNewRef.current) {
@@ -432,10 +468,9 @@ function AppContent() {
       }
       sessionIdRef.current = 'new';
       setSessionId('new');
-      setActiveNav('chat');
       setTeamAreaExpanded(false);
     }
-  }, [navigate, route, setTeamAreaExpanded]);
+  }, [navigate, route, routeKey, setTeamAreaExpanded]);
 
   useEffect(() => {
     ensureSessionRuntimes(sessionId);
@@ -1522,6 +1557,20 @@ function AppContent() {
     startBackgroundHistoryPrefetch,
   ]);
 
+  // 轮询兜底刷新：企业版 HTTP 无 cron 结果 push，立即执行跳转后 skipHistoryLoad，
+  // syncJobRuns 检测到「当前正打开会话 == 新 last_session_id」时投递刷新请求，
+  // 这里消费并触发一次完整的历史恢复（与首次点击激活会话的时机一逻辑一致）。
+  const pendingActiveHistoryRefresh = useCronStore((s) => s.pendingActiveHistoryRefresh);
+  useEffect(() => {
+    if (!pendingActiveHistoryRefresh) return;
+    // consume 物先置空再判断，保证 effect 幂等、不会因同一值重复触发
+    const sid = useCronStore.getState().consumeActiveHistoryRefresh();
+    if (!sid) return;
+    // 仅当该会话仍是当前激活会话时刷新，避免竞态下刷新到已切走的会话
+    if (useChatStore.getState().activeSessionId !== sid) return;
+    startHistoryRestore(sid);
+  }, [pendingActiveHistoryRefresh, startHistoryRestore]);
+
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
     if (!isConnected || !sessionId || sessionId === NEW_CONVERSATION_ID) return;
@@ -1852,8 +1901,10 @@ function AppContent() {
     status?: UserAnswerStatus,
   ) => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
-    void sendUserAnswer(currentSessionId, requestId, answers, source, status);
+    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
+      return Promise.resolve();
+    }
+    return sendUserAnswer(currentSessionId, requestId, answers, source, status);
   }, [sendUserAnswer]);
 
   const handleLoadMoreHistory = useCallback(async () => {
@@ -2292,7 +2343,7 @@ function AppContent() {
       ) : null}
 
       {/* Main Content */}
-      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
+      <main className={`content ${activeNav === 'chat' ? 'content--chat' : ''} ${activeNav === 'a2aingress' ? 'content--a2a' : ''} ${isTeamAreaExpanded ? 'content--team-expanded' : ''}`}>
         {configError && (
           <div className="card mb-4">
             <div className="text-sm text-text-muted">
@@ -2489,7 +2540,7 @@ function AppContent() {
           </div>
         )}
         {activeNav === 'a2aingress' && (
-          <div className="app-section">
+          <div className="app-section min-h-0">
             <A2AIngressPanel isConnected={isConnected} request={request} />
           </div>
         )}

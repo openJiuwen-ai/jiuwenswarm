@@ -332,5 +332,5 @@ export function isTrustedDir(path: string): boolean {
  * Get the default workspace path.
  */
 export function getDefaultWorkspacePath(): string {
-  return resolve(homedir(), ".jiuwenswarm/agent/workspace");
+  return resolve(homedir(), ".jiuwenswarm/agent/jiuwenclaw_workspace");
 }

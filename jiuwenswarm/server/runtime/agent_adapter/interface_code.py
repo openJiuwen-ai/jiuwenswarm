@@ -67,7 +67,6 @@ from jiuwenswarm.agents.harness.common.rails import (
     StructuredAskUserRail,
 )
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_memory_enabled
-from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.agents.harness.common.tools import (
     SkillToolkit,
 )
@@ -79,7 +78,7 @@ from jiuwenswarm.agents.harness.common.tools.harness_named_web_tools import (
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.tool_ownership import mark_stateless, register_tool
 from jiuwenswarm.common.coding_memory_paths import (
-    resolve_project_coding_memory_dir,
+    prepare_project_coding_memory_dir,
     resolve_project_coding_memory_workspace_path,
 )
 from jiuwenswarm.server.runtime.agent_adapter.code_agent_rail import CodeAgentRail
@@ -241,18 +240,6 @@ _TOOL_BUILD_NAMES: dict[str, str] = {
 }
 
 
-def _resolve_coding_memory_dir(
-    *,
-    project_dir: str | None,
-    agent_workspace_dir: str,
-) -> str:
-    """Resolve the app-owned CodingMemory directory scoped by project."""
-    return resolve_project_coding_memory_dir(
-        agent_workspace_dir=agent_workspace_dir,
-        project_dir=project_dir,
-    )
-
-
 def _build_coding_memory_directory_node(
     coding_memory_path: str,
     *,
@@ -322,10 +309,29 @@ def create_coding_memory_rail(
             "registering tools with memory fallback provider"
         )
 
-    coding_memory_dir = _resolve_coding_memory_dir(
+    migration = prepare_project_coding_memory_dir(
         project_dir=project_dir,
         agent_workspace_dir=agent_workspace_dir,
     )
+    coding_memory_dir = migration.target_dir
+    if migration.failed or migration.index_truncated:
+        logger.warning(
+            "[JiuwenSwarmCodeAdapter] Coding Memory legacy migration needs attention; "
+            "continuing with the new directory",
+            extra={
+                "user_visible": "progress",
+                "coding_memory_migration": {
+                    "target": migration.target_dir,
+                    "sources": migration.source_paths,
+                    "sources_found": migration.sources_found,
+                    "sources_migrated": migration.sources_migrated,
+                    "copied": migration.copied,
+                    "duplicates": migration.duplicates,
+                    "renamed": migration.renamed,
+                    "index_truncated": migration.index_truncated,
+                },
+            },
+        )
     os.makedirs(coding_memory_dir, exist_ok=True)
 
     return CodingMemoryRail(
@@ -676,7 +682,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         # already owns a Code session.  Sub-mode is the reliable profile key:
         # normal/plan are single-Agent, while Team profiles are assembled by
         # the declarative swarm provider and must not register this rail twice.
-        if normalized_sub_mode in {"normal", "plan"} and not is_enterprise():
+        if normalized_sub_mode in {"normal", "plan"}:
             # Append, don't insert at a fixed index, to avoid silent misplacement.
             rail_infos.append(
                 _RailBuildInfo(

@@ -29,6 +29,8 @@ spec:
       labels:
         app: <<IDENTITY_NAME>>
     spec:
+      securityContext:
+        fsGroup: 1000
       containers:
       - name: <<IDENTITY_NAME>>
         image: <<IDENTITY_IMAGE>>

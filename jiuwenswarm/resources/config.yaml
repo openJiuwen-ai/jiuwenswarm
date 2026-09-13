@@ -12,6 +12,14 @@ setup_guide:
 auto_recap:
   enabled: true
 
+# 沙箱
+sandbox:
+  enabled: false
+  startup_mode: internal
+  url: http://127.0.0.1:8321
+  type: jiuwenbox
+  policy_file: windows-policy.yaml
+
 a2ui:
   enabled: false
   protocol_version: "0.8"
@@ -1339,7 +1347,7 @@ file_transfer:
   chunk_size: 65536
   max_file_size: 104857600
   transfer_timeout: 300
-  received_files_dir: "agent/workspace/received_files"
+  received_files_dir: "agent/jiuwenclaw_workspace/received_files"
   cleanup_interval: 3600
   cleanup_age: 86400
   max_concurrent_transfers: 5

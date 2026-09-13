@@ -23,10 +23,9 @@ globalThis.window = {
 
 const {
   EnterpriseEntry,
-  buildRequestedDebugContext,
-  chooseAgent,
+  buildCustomContext,
+  chooseAgentContext,
   isDebugContext,
-  orderedContextCandidates,
 } = await import('../node_modules/.cache/user-web-entry/EnterpriseEntry.mjs');
 const {
   isAuthEntryPath,
@@ -66,7 +65,7 @@ test('enterprise edition redirects unauthenticated users instead of rendering Us
 test('enterprise edition loads and validates an authorized context before rendering User Web', () => {
   resetBrowserState();
   localStorage.setItem('openjiuwen_access_token', 'manager-token');
-  window.location.search = '?user_id=user-1&group_id=group-1&bot_id=bot-1&gateway_id=gateway-1';
+  window.location.search = '?user_id=user-1&group_id=group-1&bot_id=bot-1';
 
   const html = renderEntry('enterprise');
 
@@ -79,19 +78,17 @@ test('simulated enterprise login uses local defaults without an access token', (
   const context = buildSimulatedEnterpriseContext('');
 
   assert.equal(context.user.user_id, 'default');
-  assert.equal(context.org.group_id, 'default');
-  assert.equal(context.gateway.jiuwenclaw_id, 'debug-gateway');
-  assert.equal(context.selectedBot, 'default');
+  assert.equal(context.selected.group_id, 'default');
+  assert.equal(context.selected.bot_id, 'default');
   assert.doesNotMatch(renderEntry('enterprise', true), /正在前往登录页/);
 });
 
 test('simulated enterprise login accepts URL tuple overrides', () => {
-  const context = buildSimulatedEnterpriseContext('?user_id=u1&group_id=g1&gateway_id=gw1&bot_id=b1');
+  const context = buildSimulatedEnterpriseContext('?user_id=u1&group_id=g1&bot_id=b1');
 
   assert.equal(context.user.user_id, 'u1');
-  assert.equal(context.org.group_id, 'g1');
-  assert.equal(context.gateway.jiuwenclaw_id, 'gw1');
-  assert.equal(context.selectedBot, 'b1');
+  assert.equal(context.selected.group_id, 'g1');
+  assert.equal(context.selected.bot_id, 'b1');
 });
 
 test('LOGIN_AUTH_SIMULATE accepts only booleans and defaults to true', () => {
@@ -107,51 +104,31 @@ test('auth entry path guard stops User Web from redirecting /auth to itself', ()
   assert.equal(isAuthEntryPath('/chat/'), false);
 });
 
-test('context candidates prefer URL values but retain every authorized combination', () => {
-  const gateways = [
-    { jiuwenclaw_id: 'gateway-1', jiuwenclaw_name: 'Gateway 1', gateway_endpoint: null },
-    { jiuwenclaw_id: 'gateway-2', jiuwenclaw_name: 'Gateway 2', gateway_endpoint: null },
-  ];
-  const orgs = [
-    { group_id: 'group-1', name: 'Group 1' },
-    { group_id: 'group-2', name: 'Group 2' },
+test('agent context selection prefers an exact URL tuple and otherwise falls back', () => {
+  const contexts = [
+    { bot_id: 'agent-1', group_id: 'group-1', user_id: 'user-1', jiuwenclaw_id: 'gw-1', agent_name: 'Agent 1', group_name: 'Group 1' },
+    { bot_id: 'agent-2', group_id: 'group-2', user_id: 'user-1', jiuwenclaw_id: 'gw-2', agent_name: 'Agent 2', group_name: 'Group 2' },
   ];
 
-  const candidates = orderedContextCandidates(gateways, orgs, 'gateway-2', 'group-2');
-
-  assert.deepEqual(
-    candidates.map(({ gateway, org }) => [gateway.jiuwenclaw_id, org.group_id]),
-    [
-      ['gateway-2', 'group-2'],
-      ['gateway-2', 'group-1'],
-      ['gateway-1', 'group-2'],
-      ['gateway-1', 'group-1'],
-    ],
+  assert.equal(
+    chooseAgentContext(contexts, { botId: 'agent-2', groupId: 'group-2', userId: 'user-1' })?.bot_id,
+    'agent-2',
   );
-});
-
-test('agent selection accepts a still-authorized URL agent and otherwise falls back to the first agent', () => {
-  const agents = [
-    { template_id: 'template-1', template_name: 'Agent 1', resource_id: 'agent-1' },
-    { template_id: 'template-2', template_name: 'Agent 2', resource_id: 'agent-2' },
-  ];
-
-  assert.equal(chooseAgent(agents, 'agent-2')?.resource_id, 'agent-2');
-  assert.equal(chooseAgent(agents, 'removed-agent')?.resource_id, 'agent-1');
-  assert.equal(chooseAgent([], 'agent-2'), null);
+  assert.equal(chooseAgentContext(contexts, { botId: 'agent-2' })?.group_id, 'group-2');
+  assert.equal(chooseAgentContext(contexts, { botId: 'removed-agent' })?.bot_id, 'agent-1');
+  assert.equal(chooseAgentContext([], { botId: 'agent-2' }), null);
 });
 
 test('debug context preserves explicitly entered routing identifiers', () => {
-  const debugContext = buildRequestedDebugContext(
-    [{ group_id: 'group-1', name: 'Group 1' }],
-    [{ jiuwenclaw_id: 'gateway-1', jiuwenclaw_name: 'Gateway 1', gateway_endpoint: null }],
-    [],
-    { groupId: 'debug-group', gatewayId: 'debug-gateway', botId: 'debug-bot' },
+  const debugContext = buildCustomContext(
+    { userId: 'debug-user', groupId: 'debug-group', botId: 'debug-bot' },
+    'resolved-gateway',
   );
 
   assert.equal(isDebugContext('?debug_context=1'), true);
   assert.equal(isDebugContext('?debug_context=0'), false);
-  assert.equal(debugContext?.org.group_id, 'debug-group');
-  assert.equal(debugContext?.gateway.jiuwenclaw_id, 'debug-gateway');
-  assert.equal(debugContext?.selectedBot, 'debug-bot');
+  assert.equal(debugContext?.group_id, 'debug-group');
+  assert.equal(debugContext?.jiuwenclaw_id, 'resolved-gateway');
+  assert.equal(debugContext?.bot_id, 'debug-bot');
+  assert.equal(debugContext?.user_id, 'debug-user');
 });

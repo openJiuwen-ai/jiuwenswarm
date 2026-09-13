@@ -8,30 +8,41 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from jiuwenswarm.gateway.a2a_manager.outbound.discovery import A2AOutboundDiscoveryService
+from jiuwenswarm.gateway.a2a_manager.outbound.errors import A2AOutboundError
+
+from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateService
+from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
 from ..core.template.embedding_template import EmbeddingTemplateService
 from ..core.template.extension_config_template import ExtensionConfigTemplateService
 from ..core.template.mcp_template import McpTemplateService
 from ..core.template.model_template import ModelTemplateService
 from ..core.template.permissions_template import PermissionsTemplateService
-from ..core.template.skill_whitelist_template import SkillWhitelistTemplateService
+from ..core.template.skill_prebuilt_template import SkillPrebuiltTemplateService
 from ..schemas.common_schemas import ResponseModel
 from ..schemas.sync_schemas import SyncEnvelopeOnlyBody, make_sync_body
 from ..schemas.template_schemas import (
+    A2AAccessPolicyTemplateCreateRequest,
+    A2AAccessPolicyTemplateUpdateRequest,
+    A2AOutboundTemplateCreateRequest,
+    A2AOutboundTemplateUpdateRequest,
     AgentTemplateCreateRequest,
     AgentTemplateUpdateRequest,
     EmbeddingTemplateCreateRequest,
     EmbeddingTemplateUpdateRequest,
     ExtensionConfigTemplateCreateRequest,
     ExtensionConfigTemplateUpdateRequest,
+    McpTemplateCreateRequest,
+    McpTemplateUpdateRequest,
     ModelTemplateCreateRequest,
     ModelTemplateUpdateRequest,
     McpTemplateCreateRequest,
     McpTemplateUpdateRequest,
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
-    SkillWhitelistTemplateCreateRequest,
-    SkillWhitelistTemplateUpdateRequest,
+    SkillPrebuiltTemplateCreateRequest,
+    SkillPrebuiltTemplateUpdateRequest,
 )
 from .deps import build_sync_context, sync_write_data
 from .runtime_notify import trigger_runtime_config_update
@@ -45,6 +56,31 @@ def _http_exc(exc: ValueError) -> HTTPException:
     detail = str(exc)
     status = 404 if "not found" in detail else 400
     return HTTPException(status_code=status, detail=detail)
+
+
+async def _require_secure_a2a_credential_transport(
+    request: Request,
+    tag: str,
+    business: dict[str, Any],
+) -> None:
+    credential = business.get("credential")
+    # G.CTL.03: if 内布尔条件不超过 3 个，isinstance 判断前置
+    if tag != "a2a_outbound" or not isinstance(credential, dict):
+        return
+    if credential.get("operation") != "replace":
+        return
+    data = business.get("data") or {}
+    policy = data.get("network_policy") if isinstance(data, dict) else None
+    policy = policy if isinstance(policy, dict) else {}
+    try:
+        await A2AOutboundDiscoveryService().validate_network_target(
+            str(request.url), network_policy=policy,
+        )
+    except A2AOutboundError as exc:
+        raise HTTPException(
+            status_code=400,
+            detail="A2A credential sync blocked by network access settings",
+        ) from exc
 
 
 def _add_template_crud(
@@ -62,6 +98,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
+        await _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             result = await svc_factory().create(
                 sync.business
@@ -79,6 +116,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
+        await _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             await svc_factory().update(
                 template_id, sync.business
@@ -129,6 +167,20 @@ def _add_template_crud(
 
 
 _add_template_crud(
+    "/a2a-outbound-templates",
+    A2AOutboundTemplateService,
+    "a2a_outbound",
+    A2AOutboundTemplateCreateRequest,
+    A2AOutboundTemplateUpdateRequest,
+)
+_add_template_crud(
+    "/a2a-access-policies",
+    A2AAccessPolicyTemplateService,
+    "a2a_access_policy",
+    A2AAccessPolicyTemplateCreateRequest,
+    A2AAccessPolicyTemplateUpdateRequest,
+)
+_add_template_crud(
     "/model-templates",
     ModelTemplateService,
     "model",
@@ -150,11 +202,11 @@ _add_template_crud(
     ExtensionConfigTemplateUpdateRequest,
 )
 _add_template_crud(
-    "/skill-whitelist-templates",
-    SkillWhitelistTemplateService,
-    "skill_whitelist",
-    SkillWhitelistTemplateCreateRequest,
-    SkillWhitelistTemplateUpdateRequest,
+    "/skill-prebuilt-templates",
+    SkillPrebuiltTemplateService,
+    "skill_prebuilt",
+    SkillPrebuiltTemplateCreateRequest,
+    SkillPrebuiltTemplateUpdateRequest,
 )
 _add_template_crud(
     "/permissions-templates",

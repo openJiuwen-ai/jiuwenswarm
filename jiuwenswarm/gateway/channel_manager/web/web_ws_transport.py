@@ -10,6 +10,7 @@ import json
 import logging
 import os
 import secrets
+import threading
 import time
 import uuid
 from dataclasses import dataclass
@@ -50,11 +51,13 @@ _WEB_CONNECTION_USER_ID_ATTR = "_web_connection_user_id"
 _HANDLER_BEFORE_CALLBACK_METHODS = frozenset({ReqMethod.CHAT_SEND.value})
 
 # 带了 ws_id 但 peer 已不在时，这些事件不得按 session 兜底到其它连接，
-# 否则旧 HTTP SSE abort 后残余 chat.delta 会打进同会话新 outbound，前端粘泡。
+# 否则旧 HTTP SSE abort 后残余 chat.delta / processing_status(false) 会打进
+# 同会话新 outbound（粘泡或企业版 SSE 被误结束）。
 _REQUEST_SCOPED_STREAM_EVENTS = frozenset({
     EventType.CHAT_DELTA.value,
     EventType.CHAT_REASONING.value,
     EventType.CHAT_FINAL.value,
+    EventType.CHAT_PROCESSING_STATUS.value,
 })
 
 _STREAM_COALESCE_EVENT_TYPES = frozenset({"chat.delta", "chat.reasoning"})
@@ -78,6 +81,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "context.usage",
         "context.compression_state",
         "chat.ask_user_question",
+        "chat.ask_user_question_expired",
         "chat.subtask_update",
         "chat.symphony_status",
         "chat.notice",
@@ -170,6 +174,8 @@ class WebWsTransport(BaseWsChannel):
         self._ws_sessions: dict[int, set[str]] = {}
         # session_id -> is_processing
         self._session_busy: dict[str, bool] = {}
+        # req_id -> (ws, title): session.create 转发主路径的成功响应拦截落行用
+        self._pending_session_creates: dict[str, tuple[Any, str]] = {}
 
     @staticmethod
     def _coalescible_stream_frame(
@@ -388,17 +394,19 @@ class WebWsTransport(BaseWsChannel):
         self._owner.rpc.record_history_frame(direction, data)
 
     def _inject_user_id_into_frame(self, ws: Any, raw: str) -> str:
-        """注入连接 user_id 到 browser 帧的 params，供 history 回调按用户落库。
+        """注入连接级身份到 browser 帧的 params，供 history 回调落库归属。
 
-        前端发送的 WS 帧不含 user_id（它在握手 query/Header 里）；history 回调从
-        ``params.user/user_id`` 取值，缺失时回退 guest，导致落库 user 与查询时的
-        user_id 不一致。这里在提交前把连接级 user_id 无条件覆盖进 params——
-        客户端伪造的 user/user_id 不能覆盖连接级身份（防冒充，影响 session 列表
-        过滤、历史读取、session_index 写入等多用户隔离场景）。
+        前端发送的 WS 帧不含 user_id/group_id/bot_id（它们在握手 query/Header 里）；
+        history 回调从 ``params.user/user_id`` 取用户、``params.group_id/bot_id`` 取
+        身份 scope，缺失时 user 回退 guest、身份列留空（NULL=通配）。这里在提交前把
+        连接级权威身份无条件覆盖进 params——客户端伪造的 user/user_id/group_id/bot_id
+        不能覆盖连接级身份（防冒充，影响 session 列表过滤、历史读取、置顶顺序、
+        PG 会话行身份归属等多用户隔离场景）。
         """
         try:
             uid = WebWsTransport.connection_user_id(ws)
-            if not uid:
+            routing = getattr(ws, "_web_routing", None)
+            if not uid and not isinstance(routing, dict):
                 return raw
             data = json.loads(raw)
             if not isinstance(data, dict):
@@ -407,14 +415,21 @@ class WebWsTransport(BaseWsChannel):
             if not isinstance(params, dict):
                 params = {}
                 data["params"] = params
-            params["user_id"] = uid
-            params["user"] = uid
+            if uid:
+                params["user_id"] = uid
+                params["user"] = uid
+            if isinstance(routing, dict):
+                for field in ("group_id", "bot_id"):
+                    value = str(routing.get(field) or "").strip()
+                    if value:
+                        params[field] = value
             return json.dumps(data, ensure_ascii=False)
         except Exception:  # noqa: BLE001
             return raw
 
     def _enqueue_send(self, ws: Any, data: Any) -> None:
         self._record_history_frame("uplink", data)
+        self._capture_session_create_row(ws, data)
         if getattr(ws, "is_http_outbound", False):
             from jiuwenswarm.gateway.channel_manager.web.outbound import _normalize_frame
 
@@ -426,6 +441,61 @@ class WebWsTransport(BaseWsChannel):
                 accept(frame)
             return
         super()._enqueue_send(ws, data)
+
+    def _capture_session_create_row(self, ws: Any, data: Any) -> None:
+        """session.create 成功响应即落 web 库会话行（remote 转发主路径）。
+
+        remote 模式 session.create 主路径转发 AgentServer、不经过本地 handler，
+        这里在下行响应统一拦截（WS 帧与 HTTP outbound 共用 ``_enqueue_send``）：
+        web 库是会话面元数据唯一事实源，create 时点写入连接级身份与标题/
+        项目归属。ensure 幂等（行已存在仅补空缺列）；失败不阻塞——首条消息
+        record_user 会兜底建行（身份来自帧注入）。
+        """
+        try:
+            if not isinstance(data, dict) or data.get("type") != "res" or not data.get("ok"):
+                return
+            rid = data.get("id")
+            if not isinstance(rid, str) or not rid:
+                return
+            pending = self._pending_session_creates.pop(rid, None)
+            if pending is None:
+                return
+            create_ws, title = pending
+            payload = data.get("payload") if isinstance(data.get("payload"), dict) else {}
+            sid = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+            if not sid:
+                return
+            from jiuwenswarm.channels.web.history_store.api import ensure_session_row_sync
+
+            routing = getattr(create_ws, "_web_routing", None)
+            routing = routing if isinstance(routing, dict) else {}
+            uid = self.connection_user_id(create_ws) \
+                or str(routing.get("user_id") or "").strip() \
+                or "guest"
+
+            def _ensure_row() -> None:
+                try:
+                    ensure_session_row_sync(
+                        sid,
+                        None,
+                        user=uid,
+                        group_id=str(routing.get("group_id") or "").strip() or None,
+                        bot_id=str(routing.get("bot_id") or "").strip() or None,
+                        project_id=str(payload.get("projectId") or payload.get("project_id") or "").strip() or None,
+                        work_mode=str(payload.get("workMode") or payload.get("work_mode") or "").strip() or None,
+                        title=title or None,
+                        ts=time.time(),
+                    )
+                except Exception:
+                    logger.warning(
+                        "[WebChannel] session.create 落 web 库会话行失败（首条消息兜底）: session_id=%s",
+                        sid,
+                        exc_info=True,
+                    )
+
+            threading.Thread(target=_ensure_row, daemon=True, name="web-create-row").start()
+        except Exception:
+            logger.debug("[WebChannel] session.create 落行拦截异常", exc_info=True)
 
     @staticmethod
     def _extract_query_user_id(flat_query: dict[str, str]) -> str | None:
@@ -1217,6 +1287,16 @@ class WebWsTransport(BaseWsChannel):
             return
         if not isinstance(params, dict):
             params = {}
+
+        # remote 模式 session.create 走转发主路径（本地 _session_create 仅是
+        # 转发未生效时的 fallback）：登记请求，成功响应在 _enqueue_send 拦截后
+        # 落 web 库会话行（连接级身份 + 标题）。req_type/req_id/params 已在
+        # 上方校验归一，此处只剩方法名与非空 id 两个条件。
+        if method == "session.create" and req_id:
+            if len(self._pending_session_creates) >= 512:
+                self._pending_session_creates.clear()
+            create_title = str(params.get("title") or "").strip()
+            self._pending_session_creates[req_id] = (ws, create_title)
 
         # ── V2: session_id 解析 ──
         # 请求自带 session_id（如 chat.send）→ 用它更新 ws 路由注册。

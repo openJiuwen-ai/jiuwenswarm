@@ -11,7 +11,7 @@ from jiuwenswarm.gateway.config.enterprise.repository import EnterpriseRecordRep
 from jiuwenswarm.gateway.config.enterprise.tables.application_config_models import LOG_MASKING_RULE_TABLE_DEF
 from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
 from ...infrastructure.repository_access import require_enterprise_repository
-from ...infrastructure.utils import format_ts, utc_now
+from ...infrastructure.utils import format_ts, parse_iso_datetime, utc_now
 from ...schemas.application_config_schemas import (
     LogMaskingRuleCreateRequest,
     LogMaskingRuleUpdateRequest,
@@ -39,10 +39,11 @@ def _rule_row_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-async def _create_log_masking_rule_record(
+async def _upsert_log_masking_rule_from_sync(
     repo: EnterpriseRecordRepository,
     request: LogMaskingRuleCreateRequest,
 ) -> dict[str, Any]:
+    """按 ``rule_id`` upsert（对齐 agent_template；全量同步 POST 幂等）。"""
     from jiuwenswarm.infrastructure.log_masking.engine import (
         normalize_replacement,
         normalize_rule_id,
@@ -51,10 +52,6 @@ async def _create_log_masking_rule_record(
     )
 
     rule_id = normalize_rule_id(request.rule_id)
-    dup = await repo.get(rule_id=rule_id)
-    if dup is not None:
-        raise ValueError(f"rule_id already exists: {rule_id!r}")
-
     source = normalize_source(request.source)
     now = utc_now()
     row_data: dict[str, Any] = {
@@ -75,8 +72,26 @@ async def _create_log_masking_rule_record(
         "created_at": now,
         "updated_at": now,
     }
-    record = await repo.create(row_data)
-    return _rule_row_to_dict(record)
+
+    existing = await repo.get(rule_id=rule_id)
+    if existing is None:
+        record = await repo.create(row_data)
+        return _rule_row_to_dict(record)
+
+    created_at = existing.get("created_at")
+    if created_at is not None:
+        # existing 可能是 ISO 字符串；asyncpg 要求 datetime
+        row_data["created_at"] = parse_iso_datetime(created_at) or now
+    updates = {
+        key: value
+        for key, value in row_data.items()
+        if key not in ("rule_id",)
+    }
+    updates["updated_at"] = utc_now()
+    updated = await repo.update({"rule_id": rule_id}, updates)
+    if updated is None:
+        raise ValueError(f"failed to upsert log masking rule id={rule_id!r}")
+    return _rule_row_to_dict(updated)
 
 
 async def _update_log_masking_rule_record(
@@ -138,15 +153,16 @@ class LogMaskingRuleService:
         self,
         rule: dict[str, Any],
     ) -> dict[str, Any]:
+        """POST create：按 ``rule_id`` upsert（全量同步幂等）。"""
         if not isinstance(rule, dict):
             raise ValueError("log_masking_rule.create requires rule object")
         req = LogMaskingRuleCreateRequest.model_validate(rule)
         repo = require_enterprise_repository(_TABLE)
-        row = await _create_log_masking_rule_record(repo, req)
+        row = await _upsert_log_masking_rule_from_sync(repo, req)
         await LogMaskingEngine.reload_log_masking_rule(db_authoritative=True)
         result = {"rule_id": row["rule_id"]}
         logger.info(
-            "[ManagerConfigReceiver] log_masking_rule create rule_id=%s",
+            "[ManagerConfigReceiver] log_masking_rule upsert rule_id=%s",
             result["rule_id"],
         )
         return result

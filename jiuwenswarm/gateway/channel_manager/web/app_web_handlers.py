@@ -1523,6 +1523,8 @@ async def _fetch_all_sessions_from_agent(
     *,
     user_id: str | None = None,
     channel_id: str = "web",
+    group_id: str | None = None,
+    bot_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Remote 模式下从 AgentServer ``session.list`` 分页拉取全量会话 metadata。"""
     from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
@@ -1536,6 +1538,14 @@ async def _fetch_all_sessions_from_agent(
     total: int | None = None
     authenticated_user_id = str(user_id or "").strip() or None
 
+    # 复用 apply_invoke_ids_to_envelope：把 routing 三元组带进信封，
+    # 让 AgentServer 按 bot/group/user 定位到正确的 workspace_{key}。
+    routing: dict[str, str] = {}
+    if str(group_id or "").strip():
+        routing["group_id"] = str(group_id).strip()
+    if str(bot_id or "").strip():
+        routing["bot_id"] = str(bot_id).strip()
+
     while True:
         env = e2a_from_agent_fields(
             request_id=f"session-list-{uuid.uuid4().hex[:12]}",
@@ -1545,6 +1555,7 @@ async def _fetch_all_sessions_from_agent(
             is_stream=False,
             timestamp=time.time(),
             user_id=authenticated_user_id,
+            metadata={"routing": routing} if routing else None,
         )
         try:
             response = await agent_client.send_request(env)
@@ -1617,6 +1628,50 @@ def _attribute_session_project(
     if s_work_mode == "code":
         return DEFAULT_PROJECT_ID_CODE
     return DEFAULT_PROJECT_ID_WORK
+
+
+def _ws_identity_scope(ws: Any) -> tuple[str | None, str | None]:
+    """读连接级身份 scope ``(group_id, bot_id)``（WS 握手 / HTTP 头注入的权威值）。
+
+    缺失返回 ``(None, None)``——history_store 侧退化为仅按 user 过滤，
+    不会因身份缺失隐藏已有会话。
+    """
+    routing = getattr(ws, "_web_routing", None)
+    if not isinstance(routing, dict):
+        return None, None
+    group_id = str(routing.get("group_id") or "").strip() or None
+    bot_id = str(routing.get("bot_id") or "").strip() or None
+    return group_id, bot_id
+
+
+def _pg_row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
+    """PG sessions 行 → 会话元数据投影（供 project.get_sessions 复用
+    ``_attribute_session_project`` / ``_to_session_info`` 流水线）。
+
+    PG 行即 web 会话事实源：channel_id 恒为 web、project/cron/work_mode 用行值、
+    last_user_message_at 缺失时以 updated_at 兜底。
+    """
+    updated = float(row.get("updated_at") or 0)
+    lum = row.get("last_user_message_at")
+    lum_f = float(lum) if isinstance(lum, (int, float)) and not isinstance(lum, bool) else updated
+    return {
+        "session_id": str(row.get("session_id") or ""),
+        "title": str(row.get("title") or ""),
+        "created_at": float(row.get("created_at") or 0),
+        "last_message_at": updated,
+        "message_count": int(row.get("message_count") or 0),
+        "mode": "web",
+        "team_name": "",
+        "pinned": bool(row.get("pinned")),
+        "pin_order": int(row.get("pin_order") or 0),
+        "project_dir": "",
+        "project_id": str(row.get("project_id") or ""),
+        "cron_id": str(row.get("cron_id") or ""),
+        "channel_id": "web",
+        "last_user_message_at": lum_f,
+        "model": "",
+        "work_mode": str(row.get("work_mode") or ""),
+    }
 
 
 def _project_info_payload(
@@ -1841,13 +1896,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _a2a_ingress_reload(ws, req_id, params, session_id):
         await _send_a2a_snapshot(ws, req_id, lambda: a2a_manager.reload())
 
-    channel.register_method("a2a.ingress.get", _a2a_ingress_get)
-    channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
-    channel.register_method("a2a.ingress.history", _a2a_ingress_history)
-    channel.register_method("a2a.ingress.update", _a2a_ingress_update)
-    channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
-    channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
-    channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
+    if not is_enterprise():
+        channel.register_method("a2a.ingress.get", _a2a_ingress_get)
+        channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
+        channel.register_method("a2a.ingress.history", _a2a_ingress_history)
+        channel.register_method("a2a.ingress.update", _a2a_ingress_update)
+        channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
+        channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
+        channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
 
     async def _send_a2a_outbound(ws, req_id, operation) -> None:
         if a2a_manager is None or not a2a_manager.outbound_available:
@@ -1894,13 +1950,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(ws, req_id, a2a_manager.outbound_get_settings)
 
     async def _a2a_outbound_settings_update(ws, req_id, params, session_id):
-        enabled = params.get("allow_loopback_http")
-        if not isinstance(enabled, bool):
+        allow_loopback = params.get("allow_loopback")
+        allow_http = params.get("allow_http")
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error="allow_loopback_http must be a boolean",
+                error="allow_loopback and allow_http must be booleans",
                 code="A2A_CONFIG_INVALID",
             )
             return
@@ -1908,7 +1965,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws,
             req_id,
             lambda: a2a_manager.outbound_update_settings(
-                allow_loopback_http=enabled
+                allow_loopback=allow_loopback, allow_http=allow_http
             ),
         )
 
@@ -1918,7 +1975,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
     async def _a2a_outbound_list(ws, req_id, params, session_id):
-        await _send_a2a_outbound(ws, req_id, lambda: a2a_manager.outbound_list())
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_list(
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                )
+            ),
+        )
 
     async def _a2a_outbound_get(ws, req_id, params, session_id):
         await _send_a2a_outbound(
@@ -1935,6 +2000,29 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         agent_id = str(payload.pop("agent_id", ""))
         await _send_a2a_outbound(
             ws, req_id, lambda: a2a_manager.outbound_update(agent_id, payload)
+        )
+
+    async def _a2a_outbound_enabled_update(ws, req_id, params, session_id):
+        user_enabled = params.get("user_enabled")
+        if not isinstance(user_enabled, bool):
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="user_enabled must be a boolean",
+                code="A2A_OUTBOUND_STORE_INVALID",
+            )
+            return
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_set_user_enabled(
+                str(params.get("agent_id") or ""),
+                enabled=user_enabled,
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
+            ),
         )
 
     async def _a2a_outbound_refresh(ws, req_id, params, session_id):
@@ -1973,14 +2061,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_delete(str(params.get("agent_id") or ""))
         )
 
-    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id, user_id=None):
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_get(str(params.get("dispatch_id") or "")),
+            lambda: a2a_manager.outbound_dispatch_get(
+                str(params.get("dispatch_id") or ""),
+                source_user_id=user_id,
+                source_session_id=(session_id if is_enterprise() else None),
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
+            ),
         )
 
-    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id, user_id=None):
         try:
             limit = int(params.get("limit", 200))
         except (TypeError, ValueError):
@@ -1996,7 +2091,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_list(limit=limit),
+            lambda: a2a_manager.outbound_dispatch_list(
+                limit=limit, source_user_id=user_id
+            ),
         )
 
     channel.register_method("a2a.outbound.settings.get", _a2a_outbound_settings_get)
@@ -2007,6 +2104,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("a2a.outbound.get", _a2a_outbound_get)
     channel.register_method("a2a.outbound.edit", _a2a_outbound_edit)
     channel.register_method("a2a.outbound.update", _a2a_outbound_update)
+    channel.register_method("a2a.outbound.enabled.update", _a2a_outbound_enabled_update)
     channel.register_method("a2a.outbound.refresh", _a2a_outbound_refresh)
     channel.register_method(
         "a2a.outbound.confirm_revision", _a2a_outbound_confirm_revision
@@ -2031,6 +2129,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
+        if is_enterprise():
+            return
 
         async def _sync() -> None:
             try:
@@ -3387,6 +3487,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 仅作为 PG 不可用时的兜底。
             db_sessions: list[dict[str, Any]] | None = None
             db_total: int | None = None
+            # 身份口径：与 pod workspace_{key} 的 (user, group, bot) 三元组对齐，
+            # 切换 group/bot 后 PG 过滤结果与 pod 目录同步"清空"。
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
             try:
                 from jiuwenswarm.channels.web.history_store.api import (
                     count_sessions_sync,
@@ -3396,13 +3499,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 # count 先行：store/DB 不可用时抛异常（list 失败只会返回空列表），
                 # 据此让下方"PG 不可用回退 session_index"真正可达，同时把 PG 故障
                 # 与"确实没有会话"区分开；total 用真实全量数而非本页行数。
-                db_total = await asyncio.to_thread(count_sessions_sync, None, user=_raw_uid)
+                db_total = await asyncio.to_thread(
+                    count_sessions_sync, None, user=_raw_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
+                )
                 db_sessions = await asyncio.to_thread(
                     list_sessions_sync,
                     None,
                     limit=limit,
                     offset=offset,
                     user=_raw_uid,
+                    group_id=_scope_group,
+                    bot_id=_scope_bot,
                 )
             except Exception:  # noqa: BLE001
                 logger.warning(
@@ -3505,8 +3613,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         get_session_detail_sync,
                     )
 
+                    _scope_group, _scope_bot = _ws_identity_scope(ws)
                     detail = await asyncio.to_thread(
                         get_session_detail_sync, sid, None, user=_uid,
+                        group_id=_scope_group, bot_id=_scope_bot,
                     )
                 except Exception:  # noqa: BLE001
                     logger.debug(
@@ -3525,11 +3635,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "pinned": bool(detail.get("pinned")),
                         "pin_order": int(detail.get("pin_order") or 0),
                         "project_dir": "",
-                        "project_id": "",
-                        "cron_id": "",
+                        "project_id": str(detail.get("project_id") or ""),
+                        "cron_id": str(detail.get("cron_id") or ""),
                         "channel_id": "web",
-                        "last_user_message_at": detail.get("updated_at") or 0,
+                        "last_user_message_at": detail.get("last_user_message_at") or detail.get("updated_at") or 0,
                         "model": "",
+                        "work_mode": str(detail.get("work_mode") or ""),
                     }
         if not meta:
             await channel.send_response(
@@ -3609,6 +3720,36 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             )
             return
         payload = dict(response.payload or {}) if isinstance(response.payload, dict) else {}
+        if response.ok:
+            # 本地 fallback 路径（remote 主路径转发 AgentServer，落行在 transport
+            # 的响应拦截 _capture_session_create_row）：行写入带身份三元组 + 项目
+            # 归属绑定；失败不阻塞（首条消息 record_user 兜底建行，身份来自帧注入）。
+            _new_sid = str(payload.get("session_id") or payload.get("sessionId") or "").strip()
+            if _new_sid:
+                _create_uid = authenticated_user_id or "guest"
+                _scope_group, _scope_bot = _ws_identity_scope(ws)
+                try:
+                    from jiuwenswarm.channels.web.history_store.api import ensure_session_row_sync
+
+                    await asyncio.to_thread(
+                        ensure_session_row_sync,
+                        _new_sid,
+                        None,
+                        user=_create_uid,
+                        group_id=_scope_group,
+                        bot_id=_scope_bot,
+                        project_id=str(create_params.get("project_id") or "").strip() or None,
+                        cron_id=str(create_params.get("cron_id") or "").strip() or None,
+                        work_mode=str(create_params.get("work_mode") or "").strip() or None,
+                        title=str(create_params.get("title") or "").strip() or None,
+                        ts=time.time(),
+                    )
+                except Exception:  # noqa: BLE001
+                    logger.warning(
+                        "[session.create] web 库会话行写入失败（首条消息落库兜底）: session_id=%s",
+                        _new_sid,
+                        exc_info=True,
+                    )
         await channel.send_response(
             ws,
             req_id,
@@ -3618,17 +3759,76 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             code=None if response.ok else str(payload.get("code") or "SESSION_CREATE_FAILED"),
         )
 
-    async def _session_rename(ws, req_id, params, session_id):
-        """重命名会话标题(查询/设置/清除三种语义),复用 apply_session_rename。
+    async def _session_rename(ws, req_id, params, session_id, user_id=None):
+        """重命名会话标题(查询/设置/清除三种语义)。
 
-        与 list/create/delete 同走本地路径,不转发 AgentServer。
+        remote(PG) 模式下 Gateway 本地没有会话目录（元数据在按会话拉起的
+        AgentServer pod 上），此前误走本地 apply_session_rename 会在 Gateway
+        本地凭空 init 出 metadata 目录（改名不生效 + 幽灵空会话 + 已删会话
+        复活）。标题持久化到 Web 历史库 sessions 行，与 session.list 的
+        remote 读取同源，不转发 AgentServer（与 session.pin 同理，避免占用
+        scope route）；本地模式沿用 apply_session_rename。
         title 不传→查询、空串/纯空白→清除、非空→设置(截断 200 字符)。
         """
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
+            )
+            return
+        sid = str(params.get("session_id") or session_id or "").strip()
+        if not sid:
+            await channel.send_response(
+                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
+            )
+            return
+        from jiuwenswarm.server.runtime.session.session_rename import _RENAME_TITLE_MAX_LEN
+
+        raw_title = params.get("title")
+        new_title = (
+            str(raw_title).strip()[:_RENAME_TITLE_MAX_LEN] if raw_title is not None else None
+        )
+
+        from jiuwenswarm.gateway.routing.session_index import is_remote_storage
+
+        if is_remote_storage():
+            from jiuwenswarm.channels.web.history_store.api import rename_session_sync
+
+            # 与读路径对齐：user_id 缺失时按 guest 校验归属（可能是匿名连接）；
+            # 身份 scope 与 session.list 可见口径一致，跨组织越权按不存在处理。
+            _uid = (str(user_id).strip() if isinstance(user_id, str) and user_id.strip() else "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
+            try:
+                result = await asyncio.to_thread(
+                    rename_session_sync, sid, new_title, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
+                )
+            except Exception:  # noqa: BLE001
+                logger.exception("[session.rename] remote(PG) 改名失败: session_id=%s", sid)
+                await channel.send_response(
+                    ws, req_id, ok=False,
+                    error="session rename failed: history store unavailable", code="INTERNAL_ERROR",
+                )
+                return
+            if result is None:
+                await channel.send_response(
+                    ws, req_id, ok=False, error="session not found", code="NOT_FOUND",
+                )
+                return
+            await channel.send_response(
+                ws, req_id, ok=True,
+                payload={
+                    "session_id": sid,
+                    "title": str(result.get("title") or ""),
+                    "previous_title": str(result.get("previous_title") or ""),
+                },
+            )
+            return
+
         from jiuwenswarm.server.runtime.session.session_rename import apply_session_rename
 
         ok, payload, err, code = apply_session_rename(
-            params if isinstance(params, dict) else {},
-            session_id,
+            params,
+            sid,
             init_channel_id=channel.channel_id,
         )
         if ok:
@@ -3671,8 +3871,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             from jiuwenswarm.channels.web.history_store.api import set_session_pinned_sync
 
             _uid = (str(user_id).strip() if isinstance(user_id, str) and user_id.strip() else "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
             try:
-                result = await asyncio.to_thread(set_session_pinned_sync, sid, raw_pinned, user=_uid)
+                result = await asyncio.to_thread(
+                    set_session_pinned_sync, sid, raw_pinned, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("[session.pin] remote(PG) 置顶失败: session_id=%s", sid)
                 await channel.send_response(
@@ -3773,11 +3977,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "（可能是匿名连接）",
                     )
                     _del_uid = "guest"
+                # 身份 scope 与 session.list 可见口径一致，跨组织越权拒绝删除。
+                _del_group, _del_bot = _ws_identity_scope(ws)
                 history_store_deleted = await asyncio.to_thread(
                     delete_session_sync,
                     session_id_to_delete,
                     None,
                     user=_del_uid,
+                    group_id=_del_group,
+                    bot_id=_del_bot,
                 )
             except Exception:  # noqa: BLE001
                 logger.exception(
@@ -4082,40 +4290,47 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         def _belongs(meta: dict[str, Any]) -> bool:
             return _attribute_session_project(meta, visible_by_id) == project_id
 
-        sessions = collect_all_sessions_metadata()
-        # remote(PG)模式：PG sessions 表没有 pinned/cron_id/channel_id/project_id 等字段，
-        # 企业版会话历史存在 PG，session_metadata 本地文件不含这些会话。
-        # 从 PG 读全量会话并补默认字段，让下面的过滤逻辑统一处理。
+        # remote 模式：会话行以 web 库为事实源（含身份 scope 与项目归属列），
+        # 归属过滤复用 _attribute_session_project；web 库不可用时回退 AgentServer
+        # session.list 拉取（原路径保留，保证降级可用）。
         if is_remote_storage():
-            _raw_uid = str(user_id or "").strip() or "guest"
+            sessions: list[dict[str, Any]] | None = None
+            _uid = (str(params.get("user_id") or user_id or "").strip() or "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
             try:
-                from jiuwenswarm.channels.web.history_store.api import (
-                    count_sessions_sync,
-                    list_sessions_sync,
-                )
+                from jiuwenswarm.channels.web.history_store.api import list_all_sessions_sync
 
-                # count 先行（库不可用时抛异常）：PG 故障时不把空列表混入结果，
-                # 与 session.list 的回退语义保持一致。
-                await asyncio.to_thread(count_sessions_sync, None, user=_raw_uid)
-                db_sessions = await asyncio.to_thread(
-                    list_sessions_sync,
-                    None,
-                    limit=500,
-                    offset=0,
-                    user=_raw_uid,
+                rows = await asyncio.to_thread(
+                    list_all_sessions_sync, None, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
                 )
+                if rows is not None:
+                    sessions = [_pg_row_to_session_meta(r) for r in rows]
             except Exception:  # noqa: BLE001
-                logger.warning(
-                    "[project.sessions] PG 会话历史库不可用，跳过 PG 会话", exc_info=True,
+                logger.warning("[project.get_sessions] web 库读取失败，回退 pod 拉取", exc_info=True)
+                sessions = None
+            if sessions is None:
+                ac = _resolve(agent_client)
+                if ac is None:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error="AgentServer is unavailable",
+                        code="SERVICE_UNAVAILABLE",
+                    )
+                    return
+                sessions = await _fetch_all_sessions_from_agent(
+                    ac,
+                    channel_id=channel.channel_id,
+                    user_id=str(params.get("user_id") or user_id or "").strip() or None,
+                    group_id=str(params.get("group_id") or "").strip() or None,
+                    bot_id=str(params.get("bot_id") or "").strip() or None,
                 )
-                db_sessions = []
-            for s in db_sessions:
-                s.setdefault("pinned", False)
-                s.setdefault("cron_id", "")
-                s.setdefault("channel_id", "web")
-                s.setdefault("project_id", "")
-                s.setdefault("last_user_message_at", s.get("updated_at", 0))
-            sessions = db_sessions + sessions
+        else:
+            from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
+
+            sessions = collect_all_sessions_metadata()
         # 仅非置顶普通会话(cron_id 为空) + 归属匹配 + web 渠道
         # cron 会话由 get_cron_sessions 返回
         matched = [
@@ -4206,6 +4421,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             sessions = await _fetch_all_sessions_from_agent(
                 ac,
                 channel_id=channel.channel_id,
+                user_id=str(params.get("user_id") or "").strip() or None,
+                group_id=str(params.get("group_id") or "").strip() or None,
+                bot_id=str(params.get("bot_id") or "").strip() or None,
             )
         else:
             from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
@@ -4244,7 +4462,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """创建项目,指定工作目录。
 
         ``project_dir`` 为可选:传则指定工作目录绝对路径;不传或空串则在默认工作区
-        (``~/.jiuwenswarm/agent/workspace/{work|code}``)下按项目名自动新建文件夹作为工作目录。
+        (``~/.jiuwenswarm/agent/jiuwenclaw_workspace/{work|code}``)下按项目名自动新建文件夹作为工作目录。
         ``work_mode`` 为可选:``"code"`` / ``"work"``,默认按通道推断(Web→work,TUI→code)。
         项目名含文件系统非法字符(``<>:"/\\|?*`` 等)时返回 ``BAD_REQUEST``。
         自动恢复: 若 ``project_dir`` 命中已隐藏(``hidden:true``)**且同 work_mode**的项目,置
@@ -4721,8 +4939,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             from jiuwenswarm.channels.web.history_store.api import list_pinned_sessions_sync
 
             _uid = (str(user_id).strip() if isinstance(user_id, str) and user_id.strip() else "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
             try:
-                rows = await asyncio.to_thread(list_pinned_sessions_sync, user=_uid)
+                rows = await asyncio.to_thread(
+                    list_pinned_sessions_sync, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
+                )
             except Exception:  # noqa: BLE001
                 logger.exception("[project.pinned_sessions] remote(PG) 读取失败")
                 rows = []
@@ -5819,27 +6041,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                                              "available_mb": available_mb})
 
     async def _chat_send(ws, req_id, params, session_id, user_id=None):
-        # remote 模式下维护会话索引：chat.send 时写入最近一条用户消息预览
-        if session_id:
-            try:
-                from jiuwenswarm.gateway.routing.session_index import is_remote_storage, upsert_async
-                if is_remote_storage():
-                    content = ""
-                    if isinstance(params, dict):
-                        content = str(params.get("content") or params.get("query") or "")
-                    # user_id 缺失时回退 "guest"（与 history_store 一致），避免写空串
-                    # 到索引 user 字段、后续按用户过滤匹配不到而破坏多用户隔离。
-                    _raw_uid = str(user_id or "").strip()
-                    if not _raw_uid:
-                        logger.warning(
-                            "[chat.send] remote 模式缺少 user_id，索引 user 回退为 guest",
-                        )
-                        _raw_uid = "guest"
-                    await upsert_async(
-                        session_id, "user", content, time.time(), user=_raw_uid,
-                    )
-            except Exception:
-                logger.debug("[chat.send] session_index upsert skipped", exc_info=True)
+        # remote 模式不再写 session_index.json：web 库是会话面元数据的唯一
+        # 事实源，session_index 只是 gateway 本地易失副本，继续写入会形成
+        # 第三处数据源且不携带身份口径。本地模式不受影响；session.list 的
+        # remote 兜底读索引路径保留，仅在 web 库不可用时短暂生效。
         await channel.send_response(
             ws,
             req_id,
@@ -7000,8 +7205,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if job is None:
                 await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
                 return
-            run_info = await cc.run_now_info(job_id)
-            await cc.run_now(job_id, group_id=g, bot_id=b, user_id=u)
+            run_info = await cc.run_now_with_session(
+                job_id, group_id=g, bot_id=b, user_id=u
+            )
             await channel.send_response(
                 ws, req_id, ok=True,
                 payload={

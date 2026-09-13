@@ -187,6 +187,16 @@ class PPTGenRootNode(PlanNode):
         for subplan in self._tail_plans:
             await self._run_subplan(subplan, inputs, results)
 
+        # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
+        if str(inputs.get("delivery_status") or "").strip() == "failed":
+            return {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
+
         return {
             "node": self.plan_name,
             "status": "ok",
@@ -233,6 +243,29 @@ class PPTGenRootNode(PlanNode):
         _merge_subplan_result(inputs, last_chunk)
         _append_subplan_step(results, subplan, last_chunk)
 
+    def _stage_progress_banner(
+        self,
+        subplan: PlanNode,
+        *,
+        index: int,
+        total_steps: int,
+        done: bool,
+    ) -> dict[str, Any]:
+        verb = "完成执行" if done else "开始执行"
+        return {
+            "node": self.plan_name,
+            "status": "progress",
+            "message": f"{verb} {subplan.plan_name}（{index}/{total_steps}）",
+            "current_node": subplan.plan_name,
+            "step": index,
+            "total_steps": total_steps,
+            # 横幅属于主回答气泡，不属于 stage taskRuns。Executor 识别该标记后
+            # 立即发送，并把 task.start 推迟到横幅之后，避免双协程排空时
+            # task.start 反超横幅、左下气泡停滞在旧 Stage。
+            "_bubble_progress": True,
+            "_bubble_progress_done": bool(done),
+        }
+
     async def _run_subplan_stream(
         self,
         subplan: PlanNode,
@@ -249,31 +282,27 @@ class PPTGenRootNode(PlanNode):
                 yield chunk
             return
 
+        # 横幅刻意放在 task.start 之前、task.complete 之后：它们应进入左下
+        # 主回答气泡，而 stage 内部输出仍由 task 上下文路由到左上任务区域。
         if not await self.should_suppress_subplan_start_banner(subplan, inputs):
-            yield {
-                "node": self.plan_name,
-                "status": "progress",
-                "message": f"开始执行 {subplan.plan_name}（{index}/{total_steps}）",
-                "current_node": subplan.plan_name,
-                "step": index,
-                "total_steps": total_steps,
-            }
+            yield self._stage_progress_banner(
+                subplan, index=index, total_steps=total_steps, done=False
+            )
 
         last_chunk: Any = None
-        async for chunk in self.execute_subplan_stream(subplan, inputs):
-            last_chunk = chunk
-            yield chunk
+        stream = self.execute_subplan_stream(subplan, inputs)
+        try:
+            async for chunk in stream:
+                last_chunk = chunk
+                yield chunk
+        finally:
+            await stream.aclose()
 
         _merge_subplan_result(inputs, last_chunk)
         _append_subplan_step(results, subplan, last_chunk)
-        yield {
-            "node": self.plan_name,
-            "status": "progress",
-            "message": f"完成执行 {subplan.plan_name}（{index}/{total_steps}）",
-            "current_node": subplan.plan_name,
-            "step": index,
-            "total_steps": total_steps,
-        }
+        yield self._stage_progress_banner(
+            subplan, index=index, total_steps=total_steps, done=True
+        )
 
     async def _skip_p3_subplan_stream(
         self,
@@ -290,36 +319,31 @@ class PPTGenRootNode(PlanNode):
                 yield chunk
             return
 
-        if not await self.should_suppress_subplan_start_banner(self._p3, inputs):
-            yield {
-                "node": self.plan_name,
-                "status": "progress",
-                "message": f"开始执行 {self._p3.plan_name}（{index}/{total_steps}）",
-                "current_node": self._p3.plan_name,
-                "step": index,
-                "total_steps": total_steps,
-            }
-
-        last_chunk: Any = None
-        async for chunk in self.skip_subplan_stream(
-            self._p3,
-            inputs,
-            message=_P3_SKIP_MESSAGE,
-            extra=_P3_SKIP_FIELDS,
-        ):
-            last_chunk = chunk
-            yield chunk
-
-        _merge_subplan_result(inputs, last_chunk)
-        _append_subplan_step(results, self._p3, last_chunk)
-        yield {
-            "node": self.plan_name,
-            "status": "progress",
-            "message": f"完成执行 {self._p3.plan_name}（{index}/{total_steps}）",
-            "current_node": self._p3.plan_name,
-            "step": index,
-            "total_steps": total_steps,
+        skip_result: dict[str, Any] = {
+            "node": self._p3.plan_name,
+            "status": "ok",
+            "message": _P3_SKIP_MESSAGE,
+            "skipped": True,
+            **_P3_SKIP_FIELDS,
         }
+        if not await self.should_suppress_subplan_start_banner(self._p3, inputs):
+            yield self._stage_progress_banner(
+                self._p3, index=index, total_steps=total_steps, done=False
+            )
+
+        if self._before_subplan_execute is not None:
+            await self._before_subplan_execute(self._p3, inputs)
+        try:
+            yield skip_result
+        finally:
+            if self._after_subplan_execute is not None:
+                await self._after_subplan_execute(self._p3, inputs, skip_result)
+
+        _merge_subplan_result(inputs, skip_result)
+        _append_subplan_step(results, self._p3, skip_result)
+        yield self._stage_progress_banner(
+            self._p3, index=index, total_steps=total_steps, done=True
+        )
 
     async def _run_p3_and_p2_stream(
         self,
@@ -394,6 +418,26 @@ class PPTGenRootNode(PlanNode):
             ):
                 yield chunk
 
+        # 交付总结骨架不在此处流式发出：
+        # 1) 此时 P10 after_subplan 已清空 task_id，骨架会与「PPT生成任务流执行完成」等
+        #    无 stream_source_id 的过程尾落入同一缓冲桶，主气泡第一行变成过程尾；
+        # 2) 该 chat.delta 早于外层 skill_acceleration_exec 的 tool_result，进不了
+        #    RelayClaw 的 pptTurboSummary 收集窗口（tool_result 时还会被清空）。
+        # 骨架由 P10 写入 artifact → skill_turbo_tools 挂 ContextVar →
+        # SkillTurboDeliverySummaryRail 在外层 tool_result 之后再发 llm_output。
+        # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
+        # 与 skill_turbo_tools.visible_ppt_turbo_finish_text 的失败路径对齐。
+        # message 用固定中性文案（与非流式路径一致）：该消息会进入任务列表/主气泡
+        # 等用户可见链路，不透传 summary 等动态内容，避免暴露内部执行细节。
+        if str(inputs.get("delivery_status") or "").strip() == "failed":
+            yield {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
+            return
         yield {
             "node": self.plan_name,
             "status": "ok",

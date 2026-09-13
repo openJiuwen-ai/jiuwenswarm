@@ -5,7 +5,6 @@ from __future__ import annotations
 import asyncio
 import logging
 
-import uvicorn
 from uvicorn import Config, Server
 
 from ..infrastructure.config import get_settings
@@ -38,6 +37,8 @@ class ConfigReceiverServer:
             loop="asyncio",
             log_config=None,
             access_log=False,
+            # Proxy headers are handled by create_app() with the configured trust list.
+            proxy_headers=False,
         )
         self._server = Server(config)
 

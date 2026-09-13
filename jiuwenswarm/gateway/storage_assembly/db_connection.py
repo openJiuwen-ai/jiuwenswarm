@@ -44,7 +44,7 @@ def assert_replicas_db_compat() -> None:
 
 
 class GatewayDbConnection:
-    """绑定 EE GatewayDb 进程内单例。建表只在首次 ``ensure_ready`` 执行。"""
+    """绑定 ``Database`` 进程内单例。建表只在首次 ``ensure_ready`` 执行。"""
 
     def __init__(self) -> None:
         self._db_obj: Any | None = None
@@ -52,10 +52,9 @@ class GatewayDbConnection:
         self._lock = asyncio.Lock()
 
     def _bind_database(self) -> Any:
-        from jiuwenswarm.infrastructure.module_importer import import_manager_config_receiver_module
+        from jiuwenswarm.infrastructure.db.database import Database
 
-        gateway_db_mod = import_manager_config_receiver_module("core.enterprise_config.gateway_db")
-        db = gateway_db_mod.GatewayDb.current()
+        db = Database.current()
         self._db_obj = db
         return db
 

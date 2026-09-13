@@ -1871,7 +1871,7 @@ export class AppScreen implements Component, Focusable {
       {
         label: "No, use default workspace",
         value: "no",
-        description: "Only ~/.jiuwenswarm/agent/workspace will be accessible",
+        description: "Only ~/.jiuwenswarm/agent/jiuwenclaw_workspace will be accessible",
       },
     ];
     this.startupPromptList = new SelectList(items, 2, selectListTheme, {

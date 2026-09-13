@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock, patch
@@ -66,6 +67,7 @@ async def _invoke(
     model=None,
     query="研究智能家电竞争格局",
     file_name="智能家电报告",
+    requested_report_type=None,
 ):
     saved: list[dict] = []
     token = de.bind_deepresearch_execution_context(
@@ -74,6 +76,7 @@ async def _invoke(
         user_input=user_input,
         model=model,
         save_state=lambda value: saved.append(dict(value)),
+        requested_report_type=requested_report_type,
     )
     try:
         result = await de.deepresearch_execute._func(query=query, file_name=file_name)
@@ -146,6 +149,25 @@ async def test_new_query_starts_sdk_directly():
 
 
 @pytest.mark.asyncio
+async def test_new_query_persists_request_report_type_before_sdk_start():
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        _, saved = await _invoke(requested_report_type="brief")
+
+    assert saved[0]["phase"] == "starting"
+    assert saved[0]["requested_report_type"] == "brief"
+    assert stream.await_args.kwargs["report_type"] == "brief"
+
+
+@pytest.mark.asyncio
 async def test_invalid_option_generation_retries_then_keeps_free_text_questions():
     questions = ["重点研究哪些品类？", "覆盖哪些市场？"]
     outcome = {
@@ -166,6 +188,40 @@ async def test_invalid_option_generation_retries_then_keeps_free_text_questions(
     assert [item["question"] for item in result["interaction"]["questions"]] == questions
     assert [item["options"] for item in result["interaction"]["questions"]] == [[], []]
     assert model.invoke.await_count == 2
+
+
+@pytest.mark.asyncio
+async def test_option_generation_timeout_keeps_free_text_questions():
+    questions = ["重点研究哪些品类？", "覆盖哪些市场？"]
+    outcome = {
+        "status": "interrupted",
+        "conversation_id": "conversation-1",
+        "node_id": "feedback_handler",
+        "marker": {"questions": "\n".join(questions)},
+    }
+
+    async def never_returns(*_args, **_kwargs):
+        await asyncio.Event().wait()
+
+    model = SimpleNamespace(invoke=never_returns)
+    with (
+        patch.object(
+            de,
+            "_OPTIONS_GENERATION_TIMEOUT_SECONDS",
+            0.01,
+        ),
+        patch.object(
+            de,
+            "_call_deepresearch_stream_impl",
+            new=AsyncMock(return_value=json.dumps(outcome, ensure_ascii=False)),
+        ),
+    ):
+        result, saved = await asyncio.wait_for(_invoke(model=model), timeout=0.2)
+
+    assert result["kind"] == "interaction"
+    assert [item["question"] for item in result["interaction"]["questions"]] == questions
+    assert [item["options"] for item in result["interaction"]["questions"]] == [[], []]
+    assert saved[-1]["phase"] == "wait_feedback"
 
 
 @pytest.mark.asyncio
@@ -383,6 +439,7 @@ async def test_feedback_answer_resumes_once_and_returns_direct_completion():
         "file_name": "智能家电报告",
         "conversation_id": "conversation-1",
         "questions": ["重点研究哪些品类？"],
+        "requested_report_type": "brief",
         "revision": 3,
     }
     answer = {
@@ -406,7 +463,11 @@ async def test_feedback_answer_resumes_once_and_returns_direct_completion():
         "_call_deepresearch_stream_impl",
         new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
     ) as stream:
-        result, saved = await _invoke(state=state, user_input=answer)
+        result, saved = await _invoke(
+            state=state,
+            user_input=answer,
+            requested_report_type="professional",
+        )
 
     assert result["kind"] == "completed"
     assert "12,345" in result["content"]
@@ -417,7 +478,43 @@ async def test_feedback_answer_resumes_once_and_returns_direct_completion():
     assert stream.await_count == 1
     assert stream.await_args.kwargs["action"] == "resume"
     assert stream.await_args.kwargs["node"] == "feedback_handler"
+    assert stream.await_args.kwargs["report_type"] == "brief"
     assert "空调与冰箱" in stream.await_args.kwargs["feedback"]
+
+
+@pytest.mark.asyncio
+async def test_legacy_feedback_state_resumes_with_native_auto_report_type():
+    state = {
+        "schema_version": 1,
+        "phase": "wait_feedback",
+        "query": "q",
+        "file_name": "r",
+        "conversation_id": "conversation-1",
+        "questions": ["继续吗？"],
+        "revision": 3,
+    }
+    answer = {
+        "status": "answered",
+        "answers": [{"question": "继续吗？", "selected_options": ["继续"]}],
+    }
+    completed = {
+        "status": "completed",
+        "conversation_id": "conversation-1",
+        "report_delivered": True,
+    }
+
+    with patch.object(
+        de,
+        "_call_deepresearch_stream_impl",
+        new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
+    ) as stream:
+        await _invoke(
+            state=state,
+            user_input=answer,
+            requested_report_type="brief",
+        )
+
+    assert stream.await_args.kwargs["report_type"] is None
 
 
 @pytest.mark.asyncio
@@ -565,6 +662,7 @@ async def test_outline_is_presented_once_then_confirmed_without_main_agent():
         "file_name": "智能家电报告",
         "conversation_id": "conversation-1",
         "questions": ["重点研究哪些品类？"],
+        "requested_report_type": "professional",
         "revision": 3,
     }
     outline = "## 页面规划\n\n### P1: 市场格局"
@@ -606,13 +704,16 @@ async def test_outline_is_presented_once_then_confirmed_without_main_agent():
         new=AsyncMock(return_value=json.dumps(completed, ensure_ascii=False)),
     ) as stream:
         result, saved = await _invoke(
-            state=interaction["state"], user_input=outline_answer
+            state=interaction["state"],
+            user_input=outline_answer,
+            requested_report_type="brief",
         )
 
     assert result["kind"] == "completed"
     assert "1. 市场格局" in result["content"]
     assert saved[0]["phase"] == "resuming_outline"
     assert stream.await_args.kwargs["node"] == "outline_interaction"
+    assert stream.await_args.kwargs["report_type"] == "professional"
     assert "accepted" in stream.await_args.kwargs["feedback"]
 
 

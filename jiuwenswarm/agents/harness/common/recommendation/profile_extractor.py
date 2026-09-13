@@ -4,7 +4,7 @@
 
 只存引擎运行态——冷却记录 + 推荐历史。用户画像已废弃（所有推荐基于当前对话）。
 
-Storage: ``~/.jiuwenswarm/agent/workspace/recommendation.json``
+Storage: ``~/.jiuwenswarm/agent/jiuwenclaw_workspace/recommendation.json``
 """
 
 from __future__ import annotations

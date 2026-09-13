@@ -48,7 +48,7 @@ def test_coerce_int_matches_legacy_rules(raw: object, expected: int) -> None:
 def test_limit_defaults_to_20(monkeypatch) -> None:
     captured = {}
 
-    def fake(limit: int, offset: int):
+    def fake(limit: int, offset: int, sessions_root=None):
         captured.update(limit=limit, offset=offset)
         return [], 0
 
@@ -68,7 +68,7 @@ def test_limit_is_clamped(monkeypatch, given: int, clamped: int) -> None:
     captured = {}
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda limit, offset: (captured.update(limit=limit) or ([], 0)),
+        lambda limit, offset, sessions_root=None: (captured.update(limit=limit) or ([], 0)),
     )
     ctx, _ = _ctx({"limit": given})
     _run(ctx)
@@ -79,7 +79,7 @@ def test_negative_offset_clamped_to_zero(monkeypatch) -> None:
     captured = {}
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda limit, offset: (captured.update(offset=offset) or ([], 0)),
+        lambda limit, offset, sessions_root=None: (captured.update(offset=offset) or ([], 0)),
     )
     ctx, _ = _ctx({"offset": -3})
     _run(ctx)
@@ -90,7 +90,7 @@ def test_negative_offset_clamped_to_zero(monkeypatch) -> None:
 def test_response_payload_shape(monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda limit, offset: ([{"session_id": "s1"}], 42),
+        lambda limit, offset, sessions_root=None: ([{"session_id": "s1"}], 42),
     )
     ctx, sink = _ctx({"limit": 5, "offset": 10})
     _run(ctx)
@@ -108,7 +108,7 @@ def test_response_payload_shape(monkeypatch) -> None:
 
 def test_metadata_store_failure_degrades_to_empty(monkeypatch) -> None:
 
-    def boom(limit: int, offset: int):
+    def boom(limit: int, offset: int, sessions_root=None):
         raise RuntimeError("store down")
 
     monkeypatch.setattr(
@@ -125,7 +125,7 @@ def test_metadata_store_failure_degrades_to_empty(monkeypatch) -> None:
 def test_non_dict_params_tolerated(monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
-        lambda limit, offset: ([], 0),
+        lambda limit, offset, sessions_root=None: ([], 0),
     )
     request = AgentRequest(
         request_id="r1", channel_id="web", req_method=ReqMethod.SESSION_LIST, params="not-a-dict"

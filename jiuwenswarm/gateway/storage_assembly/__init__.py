@@ -6,10 +6,6 @@ from jiuwenswarm.gateway.storage_assembly.db_connection import (
     assert_replicas_db_compat,
 )
 from jiuwenswarm.gateway.storage_assembly.layouts import build_gateway_store_registry
-from jiuwenswarm.gateway.storage_assembly.manager_ws_bridge import (
-    clear_manager_ws_table_store,
-    wire_manager_ws_table_store,
-)
 from jiuwenswarm.gateway.storage_assembly.setup import (
     create_a2a_outbound_repository,
     create_a2ui_config_repository,
@@ -36,8 +32,8 @@ from jiuwenswarm.gateway.storage_assembly.setup import (
     setup_session_map_repository,
     teardown_gateway_storage_repositories,
     teardown_session_map_repository,
-    wire_enterprise_manager_ws_store,
-    wire_enterprise_manager_ws_store_async,
+    wire_enterprise_persistent_repositories,
+    wire_enterprise_persistent_repositories_async,
 )
 
 __all__ = [
@@ -45,7 +41,6 @@ __all__ = [
     "assert_replicas_db_compat",
     "build_gateway_store_registry",
     "create_a2a_outbound_repository",
-    "clear_manager_ws_table_store",
     "create_a2ui_config_repository",
     "create_browser_config_repository",
     "create_channel_config_repository",
@@ -66,7 +61,6 @@ __all__ = [
     "setup_session_map_repository",
     "teardown_gateway_storage_repositories",
     "teardown_session_map_repository",
-    "wire_enterprise_manager_ws_store",
-    "wire_enterprise_manager_ws_store_async",
-    "wire_manager_ws_table_store",
+    "wire_enterprise_persistent_repositories",
+    "wire_enterprise_persistent_repositories_async",
 ]

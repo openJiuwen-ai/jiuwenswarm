@@ -115,7 +115,7 @@ def apply_routing_metadata(
 
 
 def web_routing_identity(metadata: Mapping[str, Any] | None) -> dict[str, str]:
-    """读完整身份：顶层 ``user_id`` + ``metadata.routing`` 三字段（不读 ``routing.user_id``）。"""
+    """读完整身份：顶层 ``user_id`` + ``metadata.routing`` 三字段。"""
     if not isinstance(metadata, Mapping):
         return {}
     identity: dict[str, str] = {}

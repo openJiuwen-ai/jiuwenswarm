@@ -57,8 +57,8 @@ fi
 
 cat <<EOF
 
-GATEWAY_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-gateway-${ARCH}:${VERSION}"
-AGENT_SERVER_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-agentserver-${ARCH}:${VERSION}"
+GATEWAY_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-core-${ARCH}:${VERSION}"
+AGENT_SERVER_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-core-${ARCH}:${VERSION}"
 WEB_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-web-${ARCH}:${VERSION}"
 EOF
 
@@ -140,11 +140,6 @@ MODEL_PROVIDER=""
 MODEL_NAME=""
 API_BASE=""
 API_KEY=""
-
-"
-
-# Please configure an available pipy source
-PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple"
 
 #LOG_MASK_ENABLED=false
 APPLY_PATCH=true

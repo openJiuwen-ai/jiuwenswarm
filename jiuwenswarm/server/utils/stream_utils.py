@@ -4,10 +4,54 @@
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+def serialize_tool_result_value(result_info: Any) -> Any:
+    """Preserve explicit results and JSON-encode a missing-result envelope."""
+    if not isinstance(result_info, dict):
+        return str(result_info)
+    if "result" in result_info:
+        return result_info["result"]
+    return json.dumps(result_info, ensure_ascii=False, default=str)
+
+
+def build_tool_result_payload(result_info: Any) -> dict[str, Any]:
+    """Build the common ``chat.tool_result`` payload for every adapter path."""
+    result_payload = {"result": serialize_tool_result_value(result_info)}
+    if not isinstance(result_info, dict):
+        return result_payload
+
+    result_payload["tool_name"] = result_info.get("tool_name") or result_info.get("name")
+    result_payload["tool_call_id"] = result_info.get("tool_call_id") or result_info.get(
+        "toolCallId"
+    )
+
+    raw_output = result_info.get("raw_output")
+    if raw_output is None:
+        raw_output = result_info.get("rawOutput")
+    if raw_output is not None:
+        result_payload["raw_output"] = raw_output
+
+    for key in (
+        "status",
+        "success",
+        "is_error",
+        "error",
+        "summary",
+        "score_status",
+        "score_build",
+        "direct_display",
+        "display_format",
+        "mermaid",
+    ):
+        if key in result_info:
+            result_payload[key] = result_info[key]
+    return result_payload
 
 
 def _propagate_stream_source_id(src_payload: Any) -> dict[str, Any]:
@@ -228,8 +272,6 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
         inner_val = (
             getattr(inner_t, "value", inner_t) if inner_t is not None else None
         )
-        if inner_val == "task_completion":
-            return None
         if inner_val == "task_failed":
             data = getattr(payload, "data", None)
             if data is None and isinstance(payload, dict):
@@ -252,10 +294,23 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
                     "任务执行失败",
                 )
             return {"event_type": "chat.error", "error": error}
+        # Close the enum: do not stringify ControllerOutputPayload as visible text.
+        if inner_val not in (
+            "task_completion",
+            "task_interaction",
+            "processing",
+            "all_tasks_processed",
+        ):
+            logger.debug(
+                "[stream_utils] drop unhandled controller_output type=%r",
+                inner_val,
+            )
+        return None
 
     if chunk_type == "llm_output":
+        # openjiuwen streams payload.output; SkillTurbo uses payload.content.
         content = (
-            payload.get("content", "")
+            (payload.get("content", "") or payload.get("output", ""))
             if isinstance(payload, dict)
             else str(payload)
         )
@@ -359,38 +414,7 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     if chunk_type == "tool_result":
         if isinstance(payload, dict):
             result_info = payload.get("tool_result", payload)
-            result_payload = {
-                "result": (
-                    result_info.get("result", str(result_info))
-                    if isinstance(result_info, dict)
-                    else str(result_info)
-                ),
-            }
-            if isinstance(result_info, dict):
-                result_payload["tool_name"] = (
-                    result_info.get("tool_name") or result_info.get("name")
-                )
-                result_payload["tool_call_id"] = (
-                    result_info.get("tool_call_id") or result_info.get("toolCallId")
-                )
-                raw_output = result_info.get("raw_output")
-                if raw_output is None:
-                    raw_output = result_info.get("rawOutput")
-                if raw_output is not None:
-                    result_payload["raw_output"] = raw_output
-                for key in (
-                    "success",
-                    "status",
-                    "is_error",
-                    "summary",
-                    "score_status",
-                    "score_build",
-                    "direct_display",
-                    "display_format",
-                    "mermaid",
-                ):
-                    if key in result_info:
-                        result_payload[key] = result_info.get(key)
+            result_payload = build_tool_result_payload(result_info)
         else:
             result_payload = {"result": str(payload)}
         return {

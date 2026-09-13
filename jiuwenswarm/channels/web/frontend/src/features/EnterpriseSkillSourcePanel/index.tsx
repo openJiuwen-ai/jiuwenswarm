@@ -12,10 +12,11 @@ import { getSkillAvatar } from '../../utils/skillAvatar';
 import { Pagination } from '../../components/common/Pagination';
 import { ConfirmDialog } from '../../components/common/ConfirmDialog';
 import { useToast } from '../../components/common/useToast';
+import { buildSourcePresentationParams, sourceSkillIdentity, isSourceSkillInstalled } from './installMetadata';
 
-const PAGE_SIZE = 20;
+const PAGE_SIZE_DEFAULT = 20;
 
-type LoadState = 'idle' | 'loading' | 'success' | 'error';
+type LoadState = 'idle' | 'loading' | 'success' | 'error' | 'empty';
 
 type SourceDescriptor = {
   source_id: string;
@@ -59,6 +60,8 @@ type UpdateStatus = {
 
 interface EnterpriseSkillSourcePanelProps {
   sessionId: string;
+  installedSkillOrigins?: ReadonlySet<string>;
+  installedStateLoaded?: boolean;
   viewMode?: 'list' | 'grid';
   /** 外层搜索框传入的关键词；提供时隐藏面板内置搜索框，关键词变化自动搜索 */
   externalSearchQuery?: string;
@@ -101,11 +104,34 @@ function isFresh(at: number): boolean {
   return Date.now() - at < MOUNT_CACHE_TTL_MS;
 }
 
-function searchCacheKey(sessionId: string, sourceId: string, q: string, page: number): string {
-  return `${sessionId}|${sourceId}|${q}|${page}`;
+function searchCacheKey(sessionId: string, sourceId: string, q: string, page: number, pageSize: number): string {
+  return `${sessionId}|${sourceId}|${q}|${page}|${pageSize}`;
 }
 
-export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', externalSearchQuery, onInstalled }: EnterpriseSkillSourcePanelProps) {
+/**
+ * 拉取当前可用技能源（模块级缓存，供 SkillPanel 判断"无源时隐藏入口"）。
+ * 请求失败时回退缓存快照；仍无缓存返回 null，避免把瞬态故障误判成“确认无源”。
+ */
+export async function fetchEnterpriseSkillSources(sessionId: string): Promise<SourceDescriptor[] | null> {
+  const cached = providersCache.get(sessionId);
+  if (cached && isFresh(cached.at)) return cached.sources;
+  try {
+    const data = await webRequest<{
+      success: boolean;
+      providers?: SourceDescriptor[];
+    }>('skills.source.providers', { session_id: sessionId });
+    if (!data.success) return providersCache.get(sessionId)?.sources ?? null;
+    const enabled = (data.providers || []).filter(
+      item => item.enabled !== false && (item.capabilities || []).includes('search'),
+    );
+    providersCache.set(sessionId, { at: Date.now(), sources: enabled });
+    return enabled;
+  } catch {
+    return providersCache.get(sessionId)?.sources ?? null;
+  }
+}
+
+export function EnterpriseSkillSourcePanel({ sessionId, installedSkillOrigins, installedStateLoaded = false, viewMode = 'list', externalSearchQuery, onInstalled }: EnterpriseSkillSourcePanelProps) {
   const { t } = useTranslation();
   const [sources, setSources] = useState<SourceDescriptor[]>([]);
   const [sourceId, setSourceId] = useState('');
@@ -113,13 +139,14 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
   const [results, setResults] = useState<SkillCandidate[]>([]);
   const [total, setTotal] = useState(0);
   const [page, setPage] = useState(1);
+  const [pageSize, setPageSize] = useState(PAGE_SIZE_DEFAULT);
   const [loadState, setLoadState] = useState<LoadState>('idle');
   const { toast, showToast, clearToast } = useToast();
   const [installingId, setInstallingId] = useState<string | null>(null);
   const [updateStatuses, setUpdateStatuses] = useState<Map<string, UpdateStatus>>(new Map());
   const [pendingConfirm, setPendingConfirm] = useState<SkillCandidate | null>(null);
 
-  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / PAGE_SIZE)), [total]);
+  const totalPages = useMemo(() => Math.max(1, Math.ceil(total / pageSize)), [total, pageSize]);
 
   const withSession = useCallback((params?: Record<string, unknown>) => ({ ...(params || {}), session_id: sessionId }), [sessionId]);
 
@@ -130,7 +157,7 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
       if (cancelled) return;
       setSources(enabled);
       if (enabled.length > 0) setSourceId(enabled[0].source_id);
-      else setLoadState('error');
+      else setLoadState('empty');
     };
     const cached = providersCache.get(sessionId);
     if (cached && isFresh(cached.at)) {
@@ -166,13 +193,13 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
     };
   }, [sessionId, showToast, t, withSession]);
 
-  // 2) 已安装技能的更新状态（按 source_id:name 作为已装判定；挂载走缓存，安装/更新后强制刷新）
+  // 2) 使用来源与技能 ID 匹配更新状态，市场名称与包内名称可以不同。
   const loadUpdates = useCallback(
     async (targetSourceId: string, force = false) => {
       if (!targetSourceId) return;
       const cacheKey = `${sessionId}|${targetSourceId}`;
       const applyItems = (items: UpdateStatus[]) => {
-        setUpdateStatuses(new Map(items.map(item => [`${item.source_id}:${item.name}`, item])));
+        setUpdateStatuses(new Map(items.map(item => [sourceSkillIdentity(item), item])));
       };
       const cached = updatesCache.get(cacheKey);
       if (!force && cached && isFresh(cached.at)) {
@@ -195,17 +222,12 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
     [sessionId, withSession],
   );
 
-  useEffect(() => {
-    if (!sourceId) return;
-    void loadUpdates(sourceId);
-  }, [sourceId, loadUpdates]);
-
   // 3) 搜索（preferCache 仅用于挂载/来源切换的自动加载；失败时回退缓存快照不清空列表）
   const runSearch = useCallback(
     async (targetPage: number, options?: { preferCache?: boolean }) => {
       if (!sourceId) return;
       const q = query.trim();
-      const cacheKey = searchCacheKey(sessionId, sourceId, q, targetPage);
+      const cacheKey = searchCacheKey(sessionId, sourceId, q, targetPage, pageSize);
       if (options?.preferCache) {
         const cached = searchCache.get(cacheKey);
         if (cached && isFresh(cached.at)) {
@@ -230,7 +252,7 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
             source_id: sourceId,
             q,
             page: targetPage,
-            page_size: PAGE_SIZE,
+            page_size: pageSize,
           }),
         );
         if (!data.success) throw new Error(data.error_message || t('skills.source.errors.searchFailed'));
@@ -256,14 +278,22 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
         showToast('error', error instanceof Error ? error.message : t('skills.source.errors.searchFailed'));
       }
     },
-    [query, sessionId, showToast, sourceId, t, withSession],
+    [pageSize, query, sessionId, showToast, sourceId, t, withSession],
   );
 
   useEffect(() => {
-    if (sourceId) {
-      setPage(1);
-      void runSearch(1, { preferCache: true });
-    }
+    if (!sourceId) return;
+    let cancelled = false;
+    setPage(1);
+    void (async () => {
+      // 串行：先主内容搜索，再补更新状态徽章，避免挂载/来源切换时 search 与
+      // updates.check 并发请求，打满后端 scope 队列（SCOPE_FULL_TIMEOUT）。
+      await runSearch(1, { preferCache: true });
+      if (!cancelled) void loadUpdates(sourceId);
+    })();
+    return () => {
+      cancelled = true;
+    };
     // sourceId 变化时触发；内部模式 query 变化由搜索按钮/回车触发，外部模式由下面 query effect 触发
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [sourceId]);
@@ -283,6 +313,15 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [query, isExternalQuery]);
 
+  const handlePageSizeChange = useCallback(
+    (nextSize: number) => {
+      setPageSize(nextSize);
+      setPage(1);
+      if (sourceId) void runSearch(1);
+    },
+    [runSearch, sourceId],
+  );
+
   const handleInstall = useCallback(
     async (item: SkillCandidate, force = false) => {
       if (installingId) return;
@@ -300,8 +339,7 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
             source_id: item.source_id || sourceId,
             skill_id: item.skill_id,
             version_id: item.version_id,
-            // 市场展示名透传落盘，安装后「我的技能」与技能广场同名显示
-            ...(item.display_name ? { display_name: item.display_name } : {}),
+            ...buildSourcePresentationParams(item),
             force,
           }),
         );
@@ -352,12 +390,13 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
             skill_id: item.skill_id,
             target_version_id: targetVersionId,
             expected_current_version_id: status.current_version_id,
+            ...buildSourcePresentationParams(item, status.latest_version || item.version),
           }),
         );
         if (!data.success) throw new Error(data.error_message || t('skills.source.errors.updateFailed'));
         setUpdateStatuses(previous => {
           const next = new Map(previous);
-          next.set(`${item.source_id}:${item.name}`, {
+          next.set(sourceSkillIdentity(item, sourceId), {
             ...status,
             current_version_id: targetVersionId,
             latest_version_id: targetVersionId,
@@ -379,8 +418,9 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
   );
 
   const renderAction = (item: SkillCandidate) => {
-    const status = updateStatuses.get(`${item.source_id}:${item.name}`);
-    const isInstalled = Boolean(status);
+    const identity = sourceSkillIdentity(item, sourceId);
+    const status = updateStatuses.get(identity);
+    const isInstalled = isSourceSkillInstalled(identity, installedSkillOrigins, installedStateLoaded, Boolean(status));
     const isInstalling = installingId === itemKey(item, sourceId);
     if (isInstalled && status?.has_update) {
       return (
@@ -419,7 +459,7 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
     const avatar = getSkillAvatar(item.name);
     const displayName = item.display_name || item.name;
     const tags = (item.labels || []).map(labelText).filter(Boolean).slice(0, 4);
-    const status = updateStatuses.get(`${item.source_id}:${item.name}`);
+    const status = updateStatuses.get(sourceSkillIdentity(item, sourceId));
     return (
       <div
         key={`${item.source_id}:${item.name}:${item.version_id}`}
@@ -529,12 +569,23 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
               >
                 {loadState === 'loading' ? t('common.loading') : t('skills.teamskillshub.search')}
               </button>
+              <button
+                type="button"
+                onClick={() => sourceId && void loadUpdates(sourceId, true)}
+                disabled={!sourceId}
+                className={`px-4 py-1.5 rounded-2xl text-sm border border-gray-400 hover:border-gray-600 hover:bg-secondary/50 ${
+                  !sourceId ? 'text-text-muted cursor-not-allowed' : 'text-text'
+                }`}
+              >
+                {t('skills.source.checkUpdates')}
+              </button>
             </>
           )}
         </div>
       )}
 
       {loadState === 'loading' && <div className="flex items-center justify-center flex-1 text-text-muted">{t('common.loading')}</div>}
+      {loadState === 'empty' && <div className="mt-4 text-sm text-text-muted">{t('skills.source.noSources')}</div>}
       {loadState === 'error' && <div className="mt-4 text-sm text-text-muted">{t('skills.source.errors.searchFailed')}</div>}
       {loadState === 'success' && (
         <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === 'grid' ? 'flex flex-wrap gap-4 content-start' : 'space-y-3'}`}>
@@ -542,7 +593,17 @@ export function EnterpriseSkillSourcePanel({ sessionId, viewMode = 'list', exter
         </div>
       )}
 
-      {loadState === 'success' && <Pagination page={page} totalPages={totalPages} total={total} onPageChange={p => void runSearch(p)} className="mt-3" />}
+      {loadState === 'success' && (
+        <Pagination
+          page={page}
+          totalPages={totalPages}
+          total={total}
+          pageSize={pageSize}
+          onPageSizeChange={handlePageSizeChange}
+          onPageChange={p => void runSearch(p)}
+          className="mt-3"
+        />
+      )}
       {pendingConfirm && (
         <ConfirmDialog
           title={t('skills.source.replaceConfirmTitle')}
