@@ -4,20 +4,18 @@
 Why this exists: ``MCPTool.invoke`` calls ``call_tool`` without a ``timeout``,
 and the stock ``StreamableHttpClient.call_tool`` / ``list_tools`` await
 ``self._session.call_tool(...)`` / ``self._session.list_tools()`` with no
-``asyncio.wait_for`` around them. When a remote streamable-http MCP server
-process is killed mid-session, the underlying SSE read is governed by the MCP
-SDK's ``sse_read_timeout`` (default 300s), so the call hangs for minutes —
-neither failing nor timing out, which surfaces as an forever-spinning TUI
-spinner and the agent repeatedly retrying the tool.
+deadline. When a remote tool is slow or the server dies mid-session, the call
+hangs on the MCP SDK's ``sse_read_timeout`` (default 300s).
 
 This patch is applied once at process startup (from
 ``JiuWenSwarmDeepAdapter.__init__``):
 
   A. Wrap ``call_tool`` / ``list_tools`` on the HTTP transports with
-     ``anyio.fail_after``. On timeout we ``disconnect()`` so the dead session
-     is torn down and the very next call fails fast (the stock client raises
-     "Not connected" once ``self._session`` is None) instead of waiting out
-     the full timeout again.
+     ``anyio.fail_after``. On timeout we tear down the dead session and
+     **force-invalidate** local state even if ``disconnect()`` raises
+     (e.g. ``Attempted to exit cancel scope in a different task``). The next
+     call auto-reconnects on a fresh ``AsyncExitStack`` so the same session
+     can keep using other tools (TC_MCP_CALL_014).
 
      NB: must use ``anyio.fail_after`` (a cancel scope), *not*
      ``asyncio.wait_for``. The MCP SDK runs its streamable-http transport
@@ -27,16 +25,17 @@ This patch is applied once at process startup (from
      then start failing with "Not connected". ``anyio.fail_after`` cancels
      within the current task, so it stays compatible with the SDK's scopes.
   B. Monkeypatch ``ToolMgr._create_client`` so ``config.params["timeout_s"]``
-     (i.e. ``/mcp add ... --timeout_s N``) is stamped onto the client instance
-     as ``_jws_call_timeout`` and honored by (A). Falls back to
-     ``DEFAULT_CALL_TIMEOUT`` when unset.
+     is stamped onto the client instance as ``_jws_call_timeout`` and honored
+     by (A). Falls back to ``DEFAULT_CALL_TIMEOUT`` when unset.
 
 Both transforms are idempotent: a module-level ``_PATCHED`` guard makes the
 whole function a no-op on repeat calls.
 """
 from __future__ import annotations
 
+from contextlib import AsyncExitStack
 from typing import Any
+
 import anyio
 
 from openjiuwen.core.common.logging import logger
@@ -49,7 +48,28 @@ _wrapped_methods: set[tuple[type, str]] = set()
 #: Fallback per-call timeout (seconds) when ``--timeout_s`` is not supplied.
 DEFAULT_CALL_TIMEOUT = 30.0
 
-__all__ = ["apply_mcp_call_timeout_patch", "DEFAULT_CALL_TIMEOUT"]
+__all__ = [
+    "DEFAULT_CALL_TIMEOUT",
+    "apply_mcp_call_timeout_patch",
+    "force_invalidate_mcp_client",
+]
+
+
+def force_invalidate_mcp_client(client: Any) -> None:
+    """丢弃半死会话状态，换上新的 AsyncExitStack，供后续 ``connect()`` 重连。
+
+    SDK ``StreamableHttpClient.disconnect`` 在 aclose 失败时往往不清 ``_session``，
+    且成功 aclose 后旧 stack 也不能再 enter。超时路径必须无条件调用本函数。
+    """
+    for attr in ("_session", "_client", "_read", "_write"):
+        if hasattr(client, attr):
+            setattr(client, attr, None)
+    if hasattr(client, "_is_disconnected"):
+        setattr(client, "_is_disconnected", True)
+    if hasattr(client, "_exit_stack"):
+        setattr(client, "_exit_stack", AsyncExitStack())
+    if hasattr(client, "_auth_provider"):
+        setattr(client, "_auth_provider", None)
 
 
 def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) -> None:
@@ -76,6 +96,47 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             return float(stamped)
         return default_timeout
 
+    async def _ensure_connected(client: Any) -> None:
+        """上一轮超时后会话可能半死；下次调用前强制重连。"""
+        session = getattr(client, "_session", None)
+        disconnected = bool(getattr(client, "_is_disconnected", False))
+        if session is not None and not disconnected:
+            return
+        force_invalidate_mcp_client(client)
+        connect = getattr(client, "connect", None)
+        if not callable(connect):
+            raise RuntimeError("MCP client has no connect() for post-timeout recovery")
+        ok = await connect()
+        if not ok:
+            raise RuntimeError(
+                "MCP client reconnect after timeout failed: "
+                f"{getattr(client, '_server_path', '?')}"
+            )
+
+    async def _teardown_after_timeout(
+        client: Any, *, cls_name: str, method: str, timeout: float
+    ) -> None:
+        try:
+            await client.disconnect()
+        except Exception as exc:
+            logger.warning(
+                "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
+                cls_name,
+                method,
+                exc,
+            )
+        finally:
+            # disconnect 成功也要换新 stack；失败更要清掉残留 _session（TC_MCP_CALL_014）。
+            force_invalidate_mcp_client(client)
+            logger.warning(
+                "[mcp-timeout] %s.%s session invalidated after %.1fs timeout "
+                "(next call will reconnect): %s",
+                cls_name,
+                method,
+                timeout,
+                getattr(client, "_server_path", "?"),
+            )
+
     def _wrap_with_timeout(cls: type, name: str) -> None:
         if (cls, name) in _wrapped_methods:
             return
@@ -84,6 +145,8 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
         async def wrapped(self, *args, **kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
+            # 同会话续聊：上一轮超时后自动恢复连接，避免永久 execute invoke failed。
+            await _ensure_connected(self)
             try:
                 # anyio.fail_after (cancel scope) — NOT asyncio.wait_for: the
                 # latter runs the coroutine in a separate asyncio Task, which
@@ -93,24 +156,19 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     return await orig(self, *args, **kwargs)
             except TimeoutError:
                 logger.warning(
-                    "[mcp-timeout] %s.%s timed out after %.1fs, disconnecting client: %s",
+                    "[mcp-timeout] %s.%s timed out after %gs, disconnecting client: %s",
                     cls.__name__,
                     name,
                     timeout,
                     getattr(self, "_server_path", "?"),
                 )
-                # Tear down the dead session so the next call fails fast rather
-                # than burning another full timeout window on a half-open conn.
-                try:
-                    await self.disconnect()
-                except Exception as exc:
-                    logger.warning(
-                        "[mcp-timeout] %s.%s disconnect after timeout also failed: %r",
-                        cls.__name__,
-                        name,
-                        exc,
-                    )
-                raise
+                await _teardown_after_timeout(
+                    self, cls_name=cls.__name__, method=name, timeout=timeout
+                )
+                # 空 TimeoutError 会导致 SSE error=''；给出可识别文案。
+                raise TimeoutError(
+                    f"MCP {cls.__name__}.{name} timed out after {timeout:g}s"
+                ) from None
 
         setattr(cls, name, wrapped)
 

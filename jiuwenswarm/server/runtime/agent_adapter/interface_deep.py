@@ -2145,9 +2145,9 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         # Apply the MCP per-call timeout patch once per process: wraps
         # StreamableHttpClient/SseClient.call_tool & list_tools in
-        # asyncio.wait_for and honors config ``timeout_s`` (--timeout_s), so a
-        # killed remote MCP server fails fast instead of hanging on the MCP
-        # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
+        # anyio.fail_after and honors config ``timeout_s`` (--timeout_s). On
+        # timeout the session is force-invalidated so the next call can
+        # reconnect (TC_MCP_CALL_014). Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
