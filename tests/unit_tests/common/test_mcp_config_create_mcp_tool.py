@@ -39,6 +39,9 @@ class TestNormalizeMcpClientType:
             ("streamable_http", "streamable-http"),
             ("streamable-http", "streamable-http"),
             ("StreamableHTTP", "streamable-http"),
+            # TC_MCP_CALL_005：模板 transport=http 是 Streamable HTTP 别名
+            ("http", "streamable-http"),
+            ("HTTP", "streamable-http"),
             ("playwright", "playwright"),
             ("openapi", "openapi"),
         ],
@@ -751,7 +754,26 @@ class TestBuildMcpServerConfigAuthHeaders:
             }
         )
         assert cfg is not None
+        # http 别名须归一为 SDK 注册名，否则 ResourceMgr 报 Unsupported MCP client type
+        assert cfg.client_type == "streamable-http"
         assert cfg.auth_query_params == {"token": "abc"}
+
+    def test_http_alias_maps_to_streamable_http(self):
+        """对齐 TC_MCP_CALL_005：transport=http 不得原样传给 SDK。"""
+        for alias in ("http", "HTTP", "streamable_http"):
+            cfg = build_mcp_server_config(
+                {
+                    "name": "qa-streamable-http",
+                    "transport": alias,
+                    "url": "http://192.168.1.96:18016/mcp",
+                    "timeout_s": 10,
+                    "enabled": True,
+                },
+                server_id_scope="jiuwenswarm",
+            )
+            assert cfg is not None, alias
+            assert cfg.client_type == "streamable-http", alias
+            assert cfg.params.get("timeout_s") == 10
 
     def test_non_dict_headers_ignored(self):
         cfg = build_mcp_server_config(

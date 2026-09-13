@@ -68,7 +68,7 @@ def test_apply_enterprise_mcp_replaces_local_servers() -> None:
     by_name = {item["name"]: item for item in servers}
     assert "local-only" not in by_name
     assert by_name["local-demo"]["transport"] == "sse"
-    assert by_name["remote-tools"]["transport"] == "http"
+    assert by_name["remote-tools"]["transport"] == "streamable-http"
     assert set(by_name) == {"local-demo", "remote-tools"}
 
 
@@ -158,7 +158,30 @@ def test_mcp_entity_ignores_entry_enabled_and_forces_true() -> None:
     assert entry is not None
     assert entry["name"] == "x"
     assert entry["enabled"] is True
+    assert entry["transport"] == "streamable-http"
     assert "enabled" in entry
+
+
+def test_http_transport_alias_registers_as_streamable_http() -> None:
+    """TC_MCP_CALL_005：模板 transport=http 经企业合并后须可被 SDK 注册。"""
+    entity = {
+        "template_id": "sds-24af77be869a-mcp",
+        "enabled": True,
+        "mcp_entry": {
+            "name": "qa-streamable-http",
+            "transport": "http",
+            "url": "http://192.168.1.96:18016/mcp",
+            "timeout_s": 10,
+        },
+    }
+    entry = mcp_entity_to_server_entry(entity)
+    assert entry is not None
+    assert entry["transport"] == "streamable-http"
+
+    cfg = build_mcp_server_config(entry, server_id_scope="jiuwenswarm")
+    assert cfg is not None
+    assert cfg.client_type == "streamable-http"
+    assert cfg.server_name == "qa-streamable-http"
 
 
 _WARN = "jiuwenswarm.server.runtime.enterprise_config.apply_mcp.logger.warning"

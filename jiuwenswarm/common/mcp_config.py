@@ -112,9 +112,17 @@ def build_mcp_server_config(
     name = str(entry.get("name", "")).strip()
     if not name:
         return None
-    transport = str(entry.get("transport", "")).strip().lower()
-    if transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
+    raw_transport = str(entry.get("transport", "")).strip().lower()
+    if raw_transport not in {
+        "stdio",
+        "sse",
+        "http",
+        "streamable-http",
+        "streamable_http",
+    }:
         return None
+    # 别名归一后再交给 SDK（http → streamable-http），避免 Unsupported MCP client type
+    transport = _normalize_mcp_client_type(raw_transport)
 
     payload: dict[str, Any] = {
         "server_name": name,
@@ -292,16 +300,24 @@ def _normalize_stdio_command_kind(command: str) -> str:
 
 
 def _normalize_mcp_client_type(raw_type: object) -> str:
+    """归一 MCP transport / client_type 到 SDK 注册名。
+
+    Gateway 模板与 config.yaml 允许别名 ``http`` / ``streamable_http``；
+    openjiuwen ResourceMgr 只认 ``streamable-http``（见 StreamableHttpClient.__client_name__）。
+    未归一时会出现：模板保存成功 → chat 注册报 ``Unsupported MCP client type: http``。
+    """
     if raw_type is None:
         return "stdio"
     s = str(raw_type).strip().lower().replace("_", "-")
-    if "streamable" in s:
+    if not s:
+        return "stdio"
+    if s in {"http", "streamable-http", "streamablehttp"} or "streamable" in s:
         return "streamable-http"
     if s == "sse":
         return "sse"
     if s == "stdio":
         return "stdio"
-    return s if s else "stdio"
+    return s
 
 
 def _pick_mcp_url(tool_config: dict) -> str:
