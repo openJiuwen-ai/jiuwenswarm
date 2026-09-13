@@ -1,11 +1,17 @@
 # coding: utf-8
-"""Inject a per-call timeout into openjiuwen's MCP HTTP clients.
+"""Inject a per-call timeout + dead-session recovery into openjiuwen MCP HTTP clients.
 
 Why this exists: ``MCPTool.invoke`` calls ``call_tool`` without a ``timeout``,
 and the stock ``StreamableHttpClient.call_tool`` / ``list_tools`` await
 ``self._session.call_tool(...)`` / ``self._session.list_tools()`` with no
 deadline. When a remote tool is slow or the server dies mid-session, the call
 hangs on the MCP SDK's ``sse_read_timeout`` (default 300s).
+
+Additionally, ToolMgr keeps one long-lived MCP client per server for the whole
+AgentServer process. Chat sessions A/B share that client. When the remote
+Streamable HTTP service restarts, the protocol session id is stale and calls
+fail with ``Session terminated`` / HTTP 404 — including brand-new chat
+sessions — until AS rebuilds the MCP connection (field TC after mock restart).
 
 This patch is applied once at process startup (from
 ``JiuWenSwarmDeepAdapter.__init__``):
@@ -14,8 +20,13 @@ This patch is applied once at process startup (from
      ``anyio.fail_after``. On timeout we tear down the dead session and
      **force-invalidate** local state even if ``disconnect()`` raises
      (e.g. ``Attempted to exit cancel scope in a different task``). The next
-     call auto-reconnects on a fresh ``AsyncExitStack`` so the same session
-     can keep using other tools (TC_MCP_CALL_014).
+     call auto-reconnects on a fresh ``AsyncExitStack`` so the same chat
+     session can keep using other tools (TC_MCP_CALL_014).
+
+     On retryable dead-session errors (``Session terminated``, connection
+     closed, …) we invalidate, reconnect once, and retry the same call so
+     both the original chat and a newly created chat recover after MCP
+     service restart (without requiring AS restart).
 
      NB: must use ``anyio.fail_after`` (a cancel scope), *not*
      ``asyncio.wait_for``. The MCP SDK runs its streamable-http transport
@@ -48,10 +59,28 @@ _wrapped_methods: set[tuple[type, str]] = set()
 #: Fallback per-call timeout (seconds) when ``--timeout_s`` is not supplied.
 DEFAULT_CALL_TIMEOUT = 30.0
 
+# MCP 对端重启 / 半死连接时 SDK 常见报错（对齐 browser-move 补丁口径）。
+_RETRYABLE_DEAD_SESSION_MARKERS: tuple[str, ...] = (
+    "session terminated",
+    "closedresourceerror",
+    "brokenresourceerror",
+    "endofstream",
+    "stream closed",
+    "connection closed",
+    "remoteprotocolerror",
+    "readerror",
+    "writeerror",
+    "not connected",
+    "broken pipe",
+    "server error 404",
+    "404 not found",
+)
+
 __all__ = [
     "DEFAULT_CALL_TIMEOUT",
     "apply_mcp_call_timeout_patch",
     "force_invalidate_mcp_client",
+    "is_retryable_mcp_dead_session_error",
 ]
 
 
@@ -59,7 +88,8 @@ def force_invalidate_mcp_client(client: Any) -> None:
     """丢弃半死会话状态，换上新的 AsyncExitStack，供后续 ``connect()`` 重连。
 
     SDK ``StreamableHttpClient.disconnect`` 在 aclose 失败时往往不清 ``_session``，
-    且成功 aclose 后旧 stack 也不能再 enter。超时路径必须无条件调用本函数。
+    且成功 aclose 后旧 stack 也不能再 enter。超时 / Session terminated 路径必须
+    无条件调用本函数。
     """
     for attr in ("_session", "_client", "_read", "_write"):
         if hasattr(client, attr):
@@ -70,6 +100,13 @@ def force_invalidate_mcp_client(client: Any) -> None:
         setattr(client, "_exit_stack", AsyncExitStack())
     if hasattr(client, "_auth_provider"):
         setattr(client, "_auth_provider", None)
+
+
+def is_retryable_mcp_dead_session_error(error: BaseException) -> bool:
+    """对端重启或传输层半死后，值得作废本地会话并重连重试一次的错误。"""
+    name = error.__class__.__name__.lower()
+    text = str(error).lower()
+    return any(marker in name or marker in text for marker in _RETRYABLE_DEAD_SESSION_MARKERS)
 
 
 def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) -> None:
@@ -96,22 +133,39 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             return float(stamped)
         return default_timeout
 
+    async def _connect_fresh(client: Any, *, reason: str) -> None:
+        """作废旧协议会话后重新 connect（进程级客户端，跨聊天会话共享）。"""
+        try:
+            await client.disconnect()
+        except Exception as exc:
+            logger.warning(
+                "[mcp-timeout] disconnect before reconnect (%s) failed: %r",
+                reason,
+                exc,
+            )
+        force_invalidate_mcp_client(client)
+        connect = getattr(client, "connect", None)
+        if not callable(connect):
+            raise RuntimeError("MCP client has no connect() for session recovery")
+        ok = await connect()
+        if not ok:
+            raise RuntimeError(
+                f"MCP client reconnect failed ({reason}): "
+                f"{getattr(client, '_server_path', '?')}"
+            )
+        logger.warning(
+            "[mcp-timeout] MCP client reconnected after %s: %s",
+            reason,
+            getattr(client, "_server_path", "?"),
+        )
+
     async def _ensure_connected(client: Any) -> None:
-        """上一轮超时后会话可能半死；下次调用前强制重连。"""
+        """上一轮超时 / 作废后会话可能为空；下次调用前强制重连。"""
         session = getattr(client, "_session", None)
         disconnected = bool(getattr(client, "_is_disconnected", False))
         if session is not None and not disconnected:
             return
-        force_invalidate_mcp_client(client)
-        connect = getattr(client, "connect", None)
-        if not callable(connect):
-            raise RuntimeError("MCP client has no connect() for post-timeout recovery")
-        ok = await connect()
-        if not ok:
-            raise RuntimeError(
-                "MCP client reconnect after timeout failed: "
-                f"{getattr(client, '_server_path', '?')}"
-            )
+        await _connect_fresh(client, reason="missing-session")
 
     async def _teardown_after_timeout(
         client: Any, *, cls_name: str, method: str, timeout: float
@@ -129,7 +183,7 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             # disconnect 成功也要换新 stack；失败更要清掉残留 _session（TC_MCP_CALL_014）。
             force_invalidate_mcp_client(client)
             logger.warning(
-                "[mcp-timeout] %s.%s session invalidated after %.1fs timeout "
+                "[mcp-timeout] %s.%s session invalidated after %gs timeout "
                 "(next call will reconnect): %s",
                 cls_name,
                 method,
@@ -147,13 +201,17 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
             # 同会话续聊：上一轮超时后自动恢复连接，避免永久 execute invoke failed。
             await _ensure_connected(self)
-            try:
+
+            async def _invoke_once():
                 # anyio.fail_after (cancel scope) — NOT asyncio.wait_for: the
                 # latter runs the coroutine in a separate asyncio Task, which
                 # breaks anyio's cancel-scope invariants inside the MCP SDK
                 # transport and corrupts the session on healthy calls.
                 with anyio.fail_after(timeout):
                     return await orig(self, *args, **kwargs)
+
+            try:
+                return await _invoke_once()
             except TimeoutError:
                 logger.warning(
                     "[mcp-timeout] %s.%s timed out after %gs, disconnecting client: %s",
@@ -169,6 +227,37 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                 raise TimeoutError(
                     f"MCP {cls.__name__}.{name} timed out after {timeout:g}s"
                 ) from None
+            except Exception as exc:
+                # MCP 服务重启后协议会话失效：进程级客户端仍持有旧 session id，
+                # 新旧聊天会话都会 Session terminated / 404。作废后重连并重试一次。
+                if not is_retryable_mcp_dead_session_error(exc):
+                    raise
+                logger.warning(
+                    "[mcp-timeout] %s.%s hit dead session (%s), reconnecting once: %s",
+                    cls.__name__,
+                    name,
+                    exc,
+                    getattr(self, "_server_path", "?"),
+                )
+                try:
+                    await _connect_fresh(self, reason="dead-session")
+                except Exception as reconnect_exc:
+                    logger.warning(
+                        "[mcp-timeout] %s.%s reconnect after dead session failed: %r",
+                        cls.__name__,
+                        name,
+                        reconnect_exc,
+                    )
+                    raise exc from reconnect_exc
+                try:
+                    return await _invoke_once()
+                except TimeoutError:
+                    await _teardown_after_timeout(
+                        self, cls_name=cls.__name__, method=name, timeout=timeout
+                    )
+                    raise TimeoutError(
+                        f"MCP {cls.__name__}.{name} timed out after {timeout:g}s"
+                    ) from None
 
         setattr(cls, name, wrapped)
 
