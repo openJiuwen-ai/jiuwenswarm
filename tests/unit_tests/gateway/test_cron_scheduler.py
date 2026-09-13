@@ -218,6 +218,11 @@ class FailingAgentClient(FakeAgentClient):
         self.unary_requests.append(envelope)
         raise RuntimeError("agent unavailable")
 
+    async def send_request_stream(self, envelope):
+        self.stream_requests.append(envelope)
+        raise RuntimeError("agent unavailable")
+        yield  # pragma: no cover - keeps this failure stub an async generator
+
 
 class FakeMessageHandler:
     """Stub MessageHandler that records published messages."""
@@ -1008,11 +1013,40 @@ class TestTeamModeWake:
         assert len(handler.published) == 2
 
     @pytest.mark.asyncio
-    async def test_agent_wake_uses_unary_cron_channel(self, tmp_path):
+    async def test_agent_wake_streams_tool_events_for_single_agent_cron(self, tmp_path):
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
         job = _make_job(description="simple reminder", targets="tui")
 
-        agent = FakeAgentClient()
+        class ToolCallingStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                for payload in (
+                    {
+                        "event_type": "chat.tool_call",
+                        "tool_call": {
+                            "tool_name": "read_file",
+                            "arguments": {"path": "a.txt"},
+                        },
+                    },
+                    {
+                        "event_type": "chat.tool_result",
+                        "tool_result": {
+                            "tool_name": "read_file",
+                            "result": "contents",
+                            "status": "success",
+                        },
+                    },
+                    {"event_type": "chat.final", "content": "done"},
+                    {"is_complete": True},
+                ):
+                    yield AgentResponseChunk(
+                        request_id=envelope.request_id or "",
+                        channel_id=envelope.channel or "",
+                        payload=payload,
+                        is_complete=bool(payload.get("is_complete")),
+                    )
+
+        agent = ToolCallingStreamClient()
         handler = FakeMessageHandler()
         svc = _make_scheduler(store, handler, agent_client=agent)
 
@@ -1022,18 +1056,64 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        assert len(agent.unary_requests) == 2
-        assert len(agent.stream_requests) == 0
-        create_env, env = agent.unary_requests
+        assert len(agent.unary_requests) == 1
+        assert len(agent.stream_requests) == 1
+        create_env = agent.unary_requests[0]
+        env = agent.stream_requests[0]
         assert create_env.method == "session.create"
         assert "session_id" not in create_env.params
-        assert env.is_stream is False
+        assert env.is_stream is True
         assert env.channel == "__cron__"
         assert env.session_id == "cron_agentserver_allocated"
+        assert [msg.payload.get("event_type") for msg in handler.published] == [
+            "chat.tool_call",
+            "chat.tool_result",
+            "chat.final",
+        ]
+        assert all(msg.session_id == "cron_agentserver_allocated" for msg in handler.published)
 
         state = svc.runs[run_id]
         assert state.status == "succeeded"
         assert state.result_text == "done"
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_forwards_model_error_to_cron_session(self, tmp_path):
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="simple reminder", targets="tui")
+
+        class ModelUnavailableStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={
+                        "event_type": "chat.error",
+                        "error": "configured model is unavailable",
+                    },
+                )
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={"is_complete": True},
+                    is_complete=True,
+                )
+
+        agent = ModelUnavailableStreamClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        assert [msg.payload.get("event_type") for msg in handler.published] == ["chat.error"]
+        assert handler.published[0].session_id == "cron_agentserver_allocated"
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert state.result_text == "configured model is unavailable"
 
     @pytest.mark.asyncio
     async def test_agent_wake_passes_model_as_model_name(self, tmp_path):
@@ -1050,7 +1130,7 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        env = agent.unary_requests[1]
+        env = agent.stream_requests[0]
         assert env.params["model_name"] == "fast-model"
         assert "model" not in env.params
 

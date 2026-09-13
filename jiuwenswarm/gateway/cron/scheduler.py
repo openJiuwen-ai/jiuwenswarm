@@ -1467,7 +1467,13 @@ class CronSchedulerService:
                         timeout_seconds=timeout_seconds,
                     )
                 else:
-                    envelope.is_stream = False
+                    # A scheduled single-agent task must use the same streaming
+                    # execution path as an interactive chat.  The AgentServer
+                    # persists tool calls/results and chat.error events while it
+                    # streams; a unary request only returns the final text, which
+                    # made successful tool work and model failures invisible when
+                    # the cron session was opened in the Web UI.
+                    envelope.is_stream = True
                     timeout_seconds = resolve_cron_job_timeout_seconds(job)
                     _log_cron_run_phase(
                         "run_agent_before_chat_send",
@@ -1476,8 +1482,10 @@ class CronSchedulerService:
                         exec_session_id=exec_session_id,
                         timeout_seconds=timeout_seconds,
                     )
-                    text, ok = await self._run_unary_cron_job(
+                    text, ok = await self._run_single_agent_stream_job(
                         envelope=envelope,
+                        exec_session_id=exec_session_id,
+                        cron_meta=cron_meta,
                         timeout_seconds=timeout_seconds,
                         state=state,
                     )
@@ -1668,6 +1676,102 @@ class CronSchedulerService:
                 exec_session_id,
                 exc,
             )
+
+    async def _run_single_agent_stream_job(
+        self,
+        *,
+        envelope: Any,
+        exec_session_id: str,
+        cron_meta: dict[str, Any],
+        timeout_seconds: float,
+        state: CronRunState,
+    ) -> tuple[str, bool]:
+        """Run a single-agent cron job through the durable stream contract.
+
+        The stream is consumed for the notification text and forwarded through
+        MessageHandler for durable history.  This preserves intermediate chat
+        events (tool calls/results and errors) in the generated cron session.
+        """
+        rid = str(getattr(envelope, "request_id", "") or "")
+        sid = str(getattr(envelope, "session_id", "") or "")
+        _log_cron_run_phase(
+            "chat_send_stream_begin",
+            run_id=state.run_id,
+            job_id=state.job_id,
+            exec_session_id=sid,
+            request_id=rid,
+            timeout_seconds=timeout_seconds,
+        )
+        stream_gen = self._agent_client.send_request_stream(envelope)
+        request_metadata = dict(envelope.channel_context or {})
+        request_metadata.setdefault("source", "cron")
+        request_metadata.setdefault("cron", cron_meta)
+
+        async def _consume() -> tuple[str, bool]:
+            final_text = ""
+            delta_parts: list[str] = []
+            error_text = ""
+            publish_chunk = getattr(self._message_handler, "publish_stream_chunk", None)
+            if publish_chunk is None:
+                logger.warning(
+                    "[Cron] message_handler.publish_stream_chunk unavailable; "
+                    "single-agent stream chunks will not be forwarded request_id=%s",
+                    rid,
+                )
+            try:
+                async for chunk in stream_gen:
+                    if callable(publish_chunk):
+                        await publish_chunk(
+                            chunk,
+                            session_id=exec_session_id,
+                            request_metadata=request_metadata,
+                        )
+                    payload = chunk.payload if isinstance(chunk.payload, dict) else {}
+                    event_type = str(payload.get("event_type") or "").strip()
+                    if event_type == "chat.error":
+                        error_text = str(payload.get("error") or "").strip()
+                    elif event_type == "chat.final":
+                        final_text = str(payload.get("content") or "")
+                    elif event_type == "chat.delta":
+                        content = str(payload.get("content") or "")
+                        if content:
+                            delta_parts.append(content)
+                    if chunk.is_complete:
+                        break
+            finally:
+                try:
+                    await stream_gen.aclose()
+                except Exception:
+                    pass
+
+            if error_text:
+                return error_text, False
+            text = final_text or "".join(delta_parts)
+            if not text:
+                return "[cron] 任务执行完成但未返回结果内容", False
+            return text, True
+
+        try:
+            text, ok = await asyncio.wait_for(_consume(), timeout=timeout_seconds)
+            _log_cron_run_phase(
+                "chat_send_stream_done",
+                run_id=state.run_id,
+                job_id=state.job_id,
+                exec_session_id=sid,
+                request_id=rid,
+                ok=ok,
+                result_text_len=len(text or ""),
+            )
+            return text, ok
+        except asyncio.TimeoutError:
+            timeout_min = max(1, int(timeout_seconds // 60))
+            logger.warning(
+                "[Cron] single-agent stream timed out after %ss request_id=%s",
+                timeout_seconds,
+                rid,
+            )
+            await self._cancel_agent_session(state, reason="timeout")
+            return f"[cron] 任务执行超时（>{timeout_min}min）", False
 
     async def _run_unary_cron_job(
         self,
