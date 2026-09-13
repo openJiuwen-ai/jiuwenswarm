@@ -7,7 +7,7 @@ import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversatio
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/compact、/plan、/persist）。
+ * 斜杠命令注册表（/new、/compact、/plan、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -21,6 +21,7 @@ export type SlashCommandContext = {
   inputLine: string;
   addMessage: (sessionId: string, message: Message) => void;
   submitMessage?: (content: string) => void;
+  startNewConversation: () => void;
 };
 
 export interface SlashCommand {
@@ -116,6 +117,15 @@ function commandResultMessage(inputLine: string, output: string): Message {
   };
 }
 
+/** /new —— 复用 App 的新建会话入口；真实 session 在首条消息发送时再创建。 */
+const newCommand: SlashCommand = {
+  name: 'new',
+  requiresSession: false,
+  execute: async (ctx) => {
+    ctx.startNewConversation();
+  },
+};
+
 /** /compact —— 压缩对话历史为摘要；token 计数刷新由 context.* 事件监听处理。 */
 const compactCommand: SlashCommand = {
   name: 'compact',
@@ -209,6 +219,7 @@ const persistCommand: SlashCommand = {
 };
 
 export const SLASH_COMMANDS: SlashCommand[] = [
+  newCommand,
   compactCommand,
   planCommand,
   persistCommand,

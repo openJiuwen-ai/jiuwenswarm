@@ -89,6 +89,7 @@ export interface ChatHistoryPagerProps {
 interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onNewSession: () => void;
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (
     content: string,
@@ -929,6 +930,7 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
 export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
+  onNewSession,
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
@@ -1790,6 +1792,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   ref={inputAreaRef}
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
+                  onNewSession={onNewSession}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -1860,6 +1863,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             ref={inputAreaRef}
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
+            onNewSession={onNewSession}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}

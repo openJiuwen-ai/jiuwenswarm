@@ -11,21 +11,37 @@ const NEW_CONVERSATION_ID = 'new';
 function createContext(sessionId, inputLine) {
   const messages = [];
   const submissions = [];
+  const newConversations = [];
   return {
     messages,
     submissions,
+    newConversations,
     context: {
       sessionId,
       mode: 'agent',
       inputLine,
       addMessage: (_sessionId, message) => messages.push(message),
       submitMessage: (content) => submissions.push(content),
+      startNewConversation: () => newConversations.push(true),
     },
   };
 }
 
 test('/btw is not registered by the Web frontend', () => {
   assert.equal(findSlashCommand('btw'), undefined);
+});
+
+test('/new is registered and delegates to the existing new-conversation path', async () => {
+  const command = findSlashCommand('new');
+  assert.ok(command);
+  assert.equal(command.requiresSession, false);
+
+  const state = createContext('existing-session', '/new');
+  await command.execute(state.context, '');
+
+  assert.deepEqual(state.newConversations, [true]);
+  assert.deepEqual(state.submissions, []);
+  assert.deepEqual(state.messages, []);
 });
 
 test('/persist is registered and delegates new-session creation to the existing submit path', async () => {

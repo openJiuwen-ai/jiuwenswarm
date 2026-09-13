@@ -3511,6 +3511,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                       <ChatPanel
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
+                        onNewSession={handleNewSession}
                         onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}

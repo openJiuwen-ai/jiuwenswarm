@@ -482,6 +482,19 @@ FIRST_BATCH_REGISTRY: tuple[SlashCommandEntry, ...] = (
 
 BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
     {
+        "name": "new",
+        "description": "新建一个空白会话",
+        "usage": "/new",
+        "example": None,
+        "kind": "built-in",
+        "takesArgs": False,
+        "scope": "client",
+        "execution": "client",
+        # 仅切换到新会话占位页，真实 session 随首条消息懒创建
+        "requires_session": False,
+        "available_modes": None,
+    },
+    {
         "name": "compact",
         "description": "压缩对话历史，保留摘要以节省上下文",
         "usage": "/compact",

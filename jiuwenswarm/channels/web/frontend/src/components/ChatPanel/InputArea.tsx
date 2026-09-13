@@ -57,7 +57,6 @@ import {
   hasUnfinishedGoal as isUnfinishedGoal,
   isSlashCommandDisabledByGoal,
   shouldExecuteRegisteredSlashCommand,
-  supportsWebSlashCommands,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
@@ -273,6 +272,7 @@ function isDefaultProject(project: ProjectInfo): boolean {
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onNewSession: () => void;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -636,6 +636,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   {
     onSubmit,
     onEnsureSession,
+    onNewSession,
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
@@ -1850,8 +1851,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const richContent = extractRichContent();
     const trimmedBase = richContent.trim();
 
-    // 单 Agent 下拦截斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 下不拦截，以普通文本发送，不会触发 command.compact 等 RPC。
+    // 拦截当前模式支持的斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
+    // Team 仅支持全局 /new，其余注册命令仍以普通文本发送。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
@@ -1873,6 +1874,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               inputLine: trimmedBase,
               addMessage: useChatStore.getState().addMessage,
               submitMessage: onSubmit,
+              startNewConversation: onNewSession,
             },
             args,
           );
@@ -1966,6 +1968,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     composerDisabled,
     isInterruptible,
     onSubmit,
+    onNewSession,
     onInterrupt,
     mode,
     isAgentMode,
@@ -2105,13 +2108,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         const slashSid = useChatStore.getState().activeSessionId;
         const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
-        if (!supportsWebSlashCommands(slashMode)) {
+        const slashCmd = findSlashCommand(value);
+        if (!slashCmd || !shouldExecuteRegisteredSlashCommand(value, '', slashMode)) {
           setComposerSuggestion(null);
           return;
         }
-        const slashCmd = findSlashCommand(value);
-        // 无参命令（/plan、/compact）：选中即执行，不插入文本、不再等回车。
-        // `/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
+        // 无参命令（/new、/plan、/compact）：选中即执行，不插入文本、不再等回车。
+        // `/new hi`、`/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
         if (slashCmd && slashTakesArgs === false) {
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
@@ -2123,7 +2126,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
           }
-          if (slashSid) useChatStore.getState().setInputValue(slashSid, extractPlainText());
+          if (slashCmd.name === 'new') {
+            if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
+            setAttachments([]);
+            setAttachmentAlerts([]);
+            el.innerHTML = '';
+          } else if (slashSid) {
+            useChatStore.getState().setInputValue(slashSid, extractPlainText());
+          }
           setComposerSuggestion(null);
           el.focus();
           // requiresSession=false 的命令（如 /plan 纯本地开关）无需真实会话，欢迎页也能用
@@ -2136,6 +2146,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 inputLine: `/${value}`,
                 addMessage: useChatStore.getState().addMessage,
                 submitMessage: onSubmit,
+                startNewConversation: onNewSession,
               },
               '',
             );
@@ -2271,7 +2282,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       setComposerSuggestion(null);
       el.focus();
     },
-    [executeSlashCommand, extractPlainText, getCurrentComposerTrigger, mode, onSubmit, setRangeStartByTextOffset],
+    [
+      executeSlashCommand,
+      extractPlainText,
+      getCurrentComposerTrigger,
+      mode,
+      onNewSession,
+      onSubmit,
+      setRangeStartByTextOffset,
+    ],
   );
 
   const notifyKVCInputIntent = useCallback(() => {
@@ -3070,7 +3089,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={isTeamMode}
+                slashSkillsOnly={false}
               />
             )}
             <div
@@ -4078,7 +4097,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={isTeamMode}
+                  slashSkillsOnly={false}
                   placement="below"
                 />
               )}

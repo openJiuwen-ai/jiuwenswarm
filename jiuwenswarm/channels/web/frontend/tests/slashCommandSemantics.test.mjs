@@ -20,16 +20,24 @@ test('plan with arguments remains an ordinary chat message', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', 'open', 'agent'), false);
 });
 
+test('new executes only as a standalone command', () => {
+  assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('NEW', '   ', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'agent'), false);
+});
+
 test('other registered slash commands keep their existing argument behavior', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'agent'), true);
 });
 
-test('team mode neither exposes nor executes web slash commands', () => {
-  const commands = [{ name: 'compact' }, { name: 'plan' }, { name: 'persist' }];
+test('team mode exposes and executes only the global new command', () => {
+  const commands = [{ name: 'new' }, { name: 'compact' }, { name: 'plan' }, { name: 'persist' }];
 
   assert.equal(supportsWebSlashCommands('team'), false);
-  assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), []);
+  assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), [{ name: 'new' }]);
+  assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'team'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'team'), false);
