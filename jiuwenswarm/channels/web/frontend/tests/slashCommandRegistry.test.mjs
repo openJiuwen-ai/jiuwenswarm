@@ -12,10 +12,12 @@ function createContext(sessionId, inputLine) {
   const messages = [];
   const submissions = [];
   const newConversations = [];
+  const forkedConversations = [];
   return {
     messages,
     submissions,
     newConversations,
+    forkedConversations,
     context: {
       sessionId,
       mode: 'agent',
@@ -23,6 +25,7 @@ function createContext(sessionId, inputLine) {
       addMessage: (_sessionId, message) => messages.push(message),
       submitMessage: (content) => submissions.push(content),
       startNewConversation: () => newConversations.push(true),
+      forkConversation: async (sourceSessionId) => forkedConversations.push(sourceSessionId),
     },
   };
 }
@@ -42,6 +45,34 @@ test('/new is registered and delegates to the existing new-conversation path', a
   assert.deepEqual(state.newConversations, [true]);
   assert.deepEqual(state.submissions, []);
   assert.deepEqual(state.messages, []);
+});
+
+test('/fork is registered and delegates the current session to the App fork path', async () => {
+  const command = findSlashCommand('fork');
+  assert.ok(command);
+  assert.notEqual(command.requiresSession, false);
+
+  const state = createContext('existing-session', '/fork');
+  await command.execute(state.context, '');
+
+  assert.deepEqual(state.forkedConversations, ['existing-session']);
+  assert.deepEqual(state.submissions, []);
+  assert.deepEqual(state.messages, []);
+});
+
+test('/fork reports a command result when the App fork path fails', async () => {
+  const command = findSlashCommand('fork');
+  assert.ok(command);
+  const state = createContext('existing-session', '/fork');
+  state.context.forkConversation = async () => {
+    throw new Error('fork failed');
+  };
+
+  await command.execute(state.context, '');
+
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].commandName, 'fork');
+  assert.match(state.messages[0].commandOutput, /分叉会话失败/);
 });
 
 test('/persist is registered and delegates new-session creation to the existing submit path', async () => {

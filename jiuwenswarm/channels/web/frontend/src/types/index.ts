@@ -27,6 +27,8 @@ export interface Session {
   display_title?: string | null;
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
+  /** Direct parent session when this conversation was created by fork. */
+  forked_from?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;

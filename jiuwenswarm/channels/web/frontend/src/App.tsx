@@ -70,7 +70,14 @@ import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
-import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session } from './types';
+import {
+  AgentMode,
+  MediaItem,
+  UserAnswer,
+  ModelEntry,
+  type MessageForkPoint,
+  type Session,
+} from './types';
 import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
@@ -679,6 +686,13 @@ function AppContent({
       : sessions.find((s) => s.session_id === sessionId);
     const raw = session?.title?.trim() ?? '';
     return toDisplaySessionTitle(raw);
+  }, [currentSession, sessions, sessionId]);
+  const continuedFromSessionId = useMemo(() => {
+    const session = currentSession?.session_id === sessionId
+      ? currentSession
+      : sessions.find((item) => item.session_id === sessionId);
+    const sourceSessionId = session?.forked_from?.trim() ?? '';
+    return sourceSessionId && sourceSessionId !== sessionId ? sourceSessionId : null;
   }, [currentSession, sessions, sessionId]);
   const sessionProjectName = useMemo(() => {
     const session = currentSession?.session_id === sessionId
@@ -3195,6 +3209,55 @@ function AppContent({
     [performSessionRestore],
   );
 
+  const handleOpenContinuedFromSession = useCallback(
+    (sourceSessionId: string): void => {
+      const sessionStore = useSessionStore.getState();
+      const sourceSession = sessionStore.sessions.find((session) => session.session_id === sourceSessionId);
+      void handleRestoreSession(sourceSessionId, sourceSession?.mode, sourceSession);
+    },
+    [handleRestoreSession],
+  );
+
+  const handleForkSession = useCallback(
+    async (
+      sourceSessionId: string,
+      forkPoint?: MessageForkPoint,
+    ): Promise<void> => {
+      if (!sourceSessionId || sourceSessionId === NEW_CONVERSATION_ID) {
+        throw new Error('A persisted session is required to fork');
+      }
+
+      const sourceSessionStore = useSessionStore.getState();
+      const sourceSession = sourceSessionStore.sessions.find((session) => session.session_id === sourceSessionId);
+      const sourceMode = sourceSession?.mode ?? sourceSessionStore.getRuntime(sourceSessionId)?.mode ?? mode;
+      const result = await request<{ session_id?: string }>(
+        'session.fork',
+        {
+          session_id: sourceSessionId,
+          source_session_id: sourceSessionId,
+          mode: sourceMode,
+          ...(forkPoint
+            ? {
+                fork_point: {
+                  message_id: forkPoint.messageId,
+                  role: forkPoint.role,
+                  content: forkPoint.content,
+                  timestamp: forkPoint.timestamp,
+                },
+              }
+            : {}),
+        },
+        { timeoutMs: 60_000 },
+      );
+      const forkSessionId = typeof result.session_id === 'string' ? result.session_id.trim() : '';
+      if (!forkSessionId) {
+        throw new Error('session.fork did not return a session id');
+      }
+      await handleRestoreSession(forkSessionId, sourceMode);
+    },
+    [handleRestoreSession, mode, request],
+  );
+
   const requestSessionNavigation = useCallback((target: Session | 'new', options?: NewConversationOptions) => {
     if (target === 'new') { enterNewConversation(mode, options); return; }
     if (isMobile) {
@@ -3512,6 +3575,9 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onSendMessage={handleSendMessage}
                         onEnsureSession={ensureApplicationPluginSession}
                         onNewSession={handleNewSession}
+                        onForkSession={handleForkSession}
+                        continuedFromSessionId={continuedFromSessionId}
+                        onOpenContinuedFromSession={handleOpenContinuedFromSession}
                         onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}

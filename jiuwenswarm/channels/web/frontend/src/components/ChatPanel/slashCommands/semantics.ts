@@ -34,8 +34,8 @@ export function isSlashCommandDisabledByGoal(name: string, unfinishedGoal: boole
 }
 
 /**
- * `/new` 和 `/plan` 是输入面板上的即时操作。只有独立命令才执行；
- * 带有其他文本时（如 `/new hi`）应保留原文并按普通消息发送。
+ * `/new`、`/fork` 和 `/plan` 是输入面板上的即时操作。只有独立命令才执行；
+ * 带有其他文本时（如 `/fork title`）应保留原文并按普通消息发送。
  * Team 模式仅执行与 Agent 类型无关的 `/new`。
  *
  * 调用方已先确认 name 存在于命令注册表中。
@@ -43,5 +43,5 @@ export function isSlashCommandDisabledByGoal(name: string, unfinishedGoal: boole
 export function shouldExecuteRegisteredSlashCommand(name: string, args: string, mode: string): boolean {
   const normalizedName = name.toLowerCase();
   if (!supportsWebSlashCommands(mode) && normalizedName !== 'new') return false;
-  return !['new', 'plan'].includes(normalizedName) || args.trim().length === 0;
+  return !['new', 'fork', 'plan'].includes(normalizedName) || args.trim().length === 0;
 }

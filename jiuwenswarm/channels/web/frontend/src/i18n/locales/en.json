@@ -826,6 +826,8 @@
     },
     "historyLoading": "Loading conversation history…",
     "historyLoadMore": "Load more history",
+    "continuedFromChat": "Continued from chat",
+    "openSourceChat": "Open source chat",
     "config": {
       "mode": {
         "cluster": "Cluster",
@@ -2844,6 +2846,8 @@
     "copied": "Copied",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
+    "forkFromMessage": "Create a conversation branch from this message",
+    "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",

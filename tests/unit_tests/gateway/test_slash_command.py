@@ -377,19 +377,22 @@ def test_first_batch_registry_ids() -> None:
 
 def test_web_slash_picker_command_contract() -> None:
     commands = list_builtin_commands({"work_mode": "code.normal"})["commands"]
-    assert [command["name"] for command in commands] == ["new", "compact", "plan", "persist"]
+    assert [command["name"] for command in commands] == ["new", "fork", "compact", "plan", "persist"]
     assert commands[0]["usage"] == "/new"
     assert commands[0]["execution"] == "client"
     assert commands[0]["requires_session"] is False
-    assert commands[1]["req_method"] == "command.compact"
-    assert commands[2]["execution"] == "chat.send_with_mode"
-    assert commands[2]["takesArgs"] is False
-    assert commands[2]["usage"] == "/plan"
-    assert commands[2]["example"] is None
-    assert commands[2]["plan_entry_source"] == "slash_command"
-    assert commands[3]["usage"] == "/persist <任务>"
-    assert commands[3]["execution"] == "session.create"
-    assert commands[3]["requires_session"] is False
+    assert commands[1]["usage"] == "/fork"
+    assert commands[1]["req_method"] == "session.fork"
+    assert commands[1]["requires_session"] is True
+    assert commands[2]["req_method"] == "command.compact"
+    assert commands[3]["execution"] == "chat.send_with_mode"
+    assert commands[3]["takesArgs"] is False
+    assert commands[3]["usage"] == "/plan"
+    assert commands[3]["example"] is None
+    assert commands[3]["plan_entry_source"] == "slash_command"
+    assert commands[4]["usage"] == "/persist <任务>"
+    assert commands[4]["execution"] == "session.create"
+    assert commands[4]["requires_session"] is False
 
 
 def test_exit_parse_rejects_short_form_requires_full_team_session_ref() -> None:

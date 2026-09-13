@@ -808,6 +808,8 @@
     },
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "continuedFromChat": "从原会话继续",
+    "openSourceChat": "打开原会话",
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -2825,6 +2827,8 @@
     "copied": "已复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
+    "forkFromMessage": "从此消息新建会话分支",
+    "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",

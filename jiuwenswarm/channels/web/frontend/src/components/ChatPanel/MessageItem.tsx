@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import {
   Check,
   Copy,
+  GitFork,
   Info,
   Square,
   Target,
@@ -336,6 +337,7 @@ interface MessageItemProps {
   teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
   /** Selected Expert Team identity for the top-level conversation surface. */
   teamGroupIdentityOverride?: AgentGroupIdentity | null;
+  onForkFromMessage?: (message: Message) => Promise<void>;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -347,6 +349,7 @@ export const MessageItem = memo(function MessageItem({
   enableAssistantAvatar = false,
   teamLeaderIdentityOverride,
   teamGroupIdentityOverride,
+  onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
   const {
@@ -373,6 +376,7 @@ export const MessageItem = memo(function MessageItem({
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
   const activeSessionId = useChatStore((state) => state.activeSessionId);
@@ -474,6 +478,18 @@ export const MessageItem = memo(function MessageItem({
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
   }, [content, role]);
+
+  const handleForkFromMessage = useCallback(async () => {
+    if (!onForkFromMessage || isForking) return;
+    setIsForking(true);
+    try {
+      await onForkFromMessage(message);
+    } catch {
+      window.alert(t('chatUi.forkFromMessageFailed'));
+    } finally {
+      setIsForking(false);
+    }
+  }, [isForking, message, onForkFromMessage, t]);
 
   // 自动朗读新消息（仅助手消息，由父组件通过 autoSpeak 控制）
   useEffect(() => {
@@ -738,6 +754,12 @@ export const MessageItem = memo(function MessageItem({
   const hasBubbleContent = isUser
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
+  const showFork = Boolean(
+    onForkFromMessage &&
+      !isStreaming &&
+      (role === 'user' || role === 'assistant') &&
+      hasBubbleContent
+  );
 
   const withAssistantAvatar = !isUser && enableAssistantAvatar;
 
@@ -923,6 +945,27 @@ export const MessageItem = memo(function MessageItem({
                   ) : (
                     <Volume2 className="w-4 h-4" strokeWidth={1.5} />
                   )}
+                </button>
+                {tooltip}
+              </div>
+            )}
+
+            {showFork && (
+              <div className="relative" data-testid="chat-panel-message-fork">
+                <button
+                  type="button"
+                  data-testid="chat-panel-message-fork-btn"
+                  data-tooltip={t('chatUi.forkFromMessage')}
+                  aria-label={t('chatUi.forkFromMessage')}
+                  {...tooltipHandlers}
+                  onClick={() => void handleForkFromMessage()}
+                  disabled={isForking}
+                  className={clsx(
+                    'p-1.5 rounded-md hover:text-accent hover:bg-secondary',
+                    isForking && 'cursor-wait opacity-50'
+                  )}
+                >
+                  <GitFork className="w-4 h-4" strokeWidth={1.5} />
                 </button>
                 {tooltip}
               </div>

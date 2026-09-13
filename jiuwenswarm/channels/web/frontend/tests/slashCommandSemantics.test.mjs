@@ -26,6 +26,12 @@ test('new executes only as a standalone command', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'agent'), false);
 });
 
+test('fork executes only as a standalone command', () => {
+  assert.equal(shouldExecuteRegisteredSlashCommand('fork', '', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('FORK', '   ', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('fork', 'custom title', 'agent'), false);
+});
+
 test('other registered slash commands keep their existing argument behavior', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'agent'), true);
@@ -38,6 +44,7 @@ test('team mode exposes and executes only the global new command', () => {
   assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), [{ name: 'new' }]);
   assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'team'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'team'), false);
+  assert.equal(shouldExecuteRegisteredSlashCommand('fork', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'team'), false);

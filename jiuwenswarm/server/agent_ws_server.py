@@ -10974,6 +10974,9 @@ class AgentWebSocketServer:
             source = str(params.get("source_session_id") or "").strip()
             target = str(params.get("target_session_id") or "").strip()
             fork_title = str(params.get("title") or "").strip()
+            fork_point = params.get("fork_point")
+            if not isinstance(fork_point, dict):
+                fork_point = {}
             channel_id = request.channel_id or "default"
 
             if not source:
@@ -10990,6 +10993,12 @@ class AgentWebSocketServer:
                     source_session_id=source,
                     target_session_id=target or None,
                     title=fork_title,
+                    cutoff_message_id=str(
+                        fork_point.get("message_id") or ""
+                    ).strip(),
+                    cutoff_role=str(fork_point.get("role") or "").strip(),
+                    cutoff_content=str(fork_point.get("content") or ""),
+                    cutoff_timestamp=fork_point.get("timestamp"),
                 )
             )
             result = await runtime.commit_session_provision(

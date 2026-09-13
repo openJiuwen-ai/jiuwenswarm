@@ -14,6 +14,7 @@ import {
   Copy,
   Code2,
   FileText,
+  GitFork,
   Image as ImageIcon,
   Info,
   LoaderCircle,
@@ -26,7 +27,15 @@ import {
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type Permission, type ProjectInfo } from '../../types';
+import {
+  AgentMode,
+  MediaItem,
+  Message,
+  UserAnswer,
+  type MessageForkPoint,
+  type Permission,
+  type ProjectInfo,
+} from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
@@ -90,6 +99,12 @@ interface ChatPanelProps {
   onSendMessage: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
   onNewSession: () => void;
+  onForkSession: (
+    sourceSessionId: string,
+    forkPoint?: MessageForkPoint,
+  ) => Promise<void>;
+  continuedFromSessionId?: string | null;
+  onOpenContinuedFromSession?: (sourceSessionId: string) => void;
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (
     content: string,
@@ -931,6 +946,9 @@ export const ChatPanel = React.memo(function ChatPanel({
   onSendMessage,
   onEnsureSession,
   onNewSession,
+  onForkSession,
+  continuedFromSessionId = null,
+  onOpenContinuedFromSession,
   onInputIntent,
   onPersistMedia,
   onPersistDocuments,
@@ -1175,6 +1193,72 @@ export const ChatPanel = React.memo(function ChatPanel({
       turnChangeError,
       turnChangeOperation,
     ],
+  );
+
+  const forkBoundaryMessageKey = useMemo(() => {
+    if (!continuedFromSessionId) return null;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      if (message.forkedFromSessionId === continuedFromSessionId) {
+        return message.renderKey ?? message.id;
+      }
+    }
+    return null;
+  }, [continuedFromSessionId, messages]);
+
+  const renderAfterMessage = useCallback(
+    (message: Message) => {
+      const codeChanges = renderCodeChangesAfterMessage(message);
+      const messageKey = message.renderKey ?? message.id;
+      if (
+        !forkBoundaryMessageKey ||
+        messageKey !== forkBoundaryMessageKey ||
+        !continuedFromSessionId ||
+        !onOpenContinuedFromSession
+      ) {
+        return codeChanges;
+      }
+      return (
+        <>
+          {codeChanges}
+          <button
+            type="button"
+            className="chat-fork-origin"
+            data-testid="chat-panel-continued-from-chat"
+            title={t('chat.openSourceChat')}
+            aria-label={t('chat.openSourceChat')}
+            onClick={() => onOpenContinuedFromSession(continuedFromSessionId)}
+          >
+            <span className="chat-fork-origin__label" data-testid="chat-panel-continued-from-chat-label">
+              <GitFork size={14} strokeWidth={1.75} aria-hidden="true" />
+              {t('chat.continuedFromChat')}
+            </span>
+          </button>
+        </>
+      );
+    },
+    [
+      continuedFromSessionId,
+      forkBoundaryMessageKey,
+      onOpenContinuedFromSession,
+      renderCodeChangesAfterMessage,
+      t,
+    ],
+  );
+
+  const handleForkFromMessage = useCallback(
+    (message: Message) => {
+      if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) {
+        return Promise.reject(new Error('A persisted session is required to fork'));
+      }
+      return onForkSession(activeSessionId, {
+        messageId: message.id,
+        role: message.role,
+        content: message.content,
+        timestamp: message.completedAt ?? message.timestamp,
+      });
+    },
+    [activeSessionId, onForkSession],
   );
 
   // 跟踪用户是否正在查看历史消息（不在底部）
@@ -1727,10 +1811,11 @@ export const ChatPanel = React.memo(function ChatPanel({
                 <>
                   <MessageList
                     messages={messages}
-                    renderAfterMessage={renderCodeChangesAfterMessage}
+                    renderAfterMessage={renderAfterMessage}
                     canLoadOlderHistory={canRequestOlderHistory}
                     onLoadOlderHistory={historyOnLoadMore}
                     teamGroupIdentityOverride={teamGroupIdentity}
+                    onForkFromMessage={handleForkFromMessage}
                   />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
@@ -1793,6 +1878,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onSubmit={handleSendMessage}
                   onEnsureSession={onEnsureSession}
                   onNewSession={onNewSession}
+                  onForkSession={onForkSession}
                   onInputIntent={onInputIntent}
                   onPersistMedia={onPersistMedia}
                   onPersistDocuments={onPersistDocuments}
@@ -1864,6 +1950,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onSubmit={handleSendMessage}
             onEnsureSession={onEnsureSession}
             onNewSession={onNewSession}
+            onForkSession={onForkSession}
             onInputIntent={onInputIntent}
             onPersistMedia={onPersistMedia}
             onPersistDocuments={onPersistDocuments}

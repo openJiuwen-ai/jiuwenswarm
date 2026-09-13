@@ -3170,6 +3170,11 @@ def test_web_exposes_graph_methods_and_rejects_legacy_symphony_methods():
     assert legacy_symphony_methods.isdisjoint(app_web_handlers._FORWARD_REQ_METHODS)
 
 
+def test_web_forwards_session_fork_without_a_local_handler():
+    assert "session.fork" in app_web_handlers._FORWARD_REQ_METHODS
+    assert "session.fork" in app_web_handlers._FORWARD_NO_LOCAL_HANDLER_METHODS
+
+
 def test_web_forwards_only_canonical_personal_context_rpc_methods():
     methods = {
         "personal_context.runtime.status",

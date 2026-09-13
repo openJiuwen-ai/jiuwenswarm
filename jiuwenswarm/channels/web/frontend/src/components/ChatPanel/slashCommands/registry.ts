@@ -7,7 +7,7 @@ import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversatio
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/new、/compact、/plan、/persist）。
+ * 斜杠命令注册表（/new、/fork、/compact、/plan、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -22,6 +22,7 @@ export type SlashCommandContext = {
   addMessage: (sessionId: string, message: Message) => void;
   submitMessage?: (content: string) => void;
   startNewConversation: () => void;
+  forkConversation: (sourceSessionId: string) => Promise<void>;
 };
 
 export interface SlashCommand {
@@ -126,6 +127,18 @@ const newCommand: SlashCommand = {
   },
 };
 
+/** /fork —— 复制当前会话，并复用 App 的会话恢复流程切换到副本。 */
+const forkCommand: SlashCommand = {
+  name: 'fork',
+  execute: async (ctx) => {
+    try {
+      await ctx.forkConversation(ctx.sessionId);
+    } catch {
+      ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, '分叉会话失败，请稍后再试。'));
+    }
+  },
+};
+
 /** /compact —— 压缩对话历史为摘要；token 计数刷新由 context.* 事件监听处理。 */
 const compactCommand: SlashCommand = {
   name: 'compact',
@@ -220,6 +233,7 @@ const persistCommand: SlashCommand = {
 
 export const SLASH_COMMANDS: SlashCommand[] = [
   newCommand,
+  forkCommand,
   compactCommand,
   planCommand,
   persistCommand,
