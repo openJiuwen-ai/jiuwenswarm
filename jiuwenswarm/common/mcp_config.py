@@ -63,6 +63,36 @@ def extract_enabled_mcp_server_entries(
     return result
 
 
+def _coerce_str_dict(raw: Any) -> dict[str, str] | None:
+    """将 JSON 对象规范为 ``dict[str, str]``；非 dict 返回 ``None``。"""
+    if not isinstance(raw, dict):
+        return None
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _resolve_remote_mcp_auth(
+    entry: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """把配置条目里的鉴权字段映射到 SDK ``McpServerConfig`` 顶层字段。
+
+    openjiuwen 的 SSE / Streamable HTTP 客户端只读 ``auth_headers`` /
+    ``auth_query_params``，不读 ``params.headers``。
+
+    字段别名（后者为兼容名）：
+    - headers ←→ auth_headers（企业 MCP 模板 / config.yaml 多用 ``headers``）
+    - query_params ←→ auth_query_params
+
+    同组两个键都有时，以 SDK 标准名（``auth_*``）为准。
+    """
+    auth_headers = _coerce_str_dict(entry.get("auth_headers"))
+    if not auth_headers:
+        auth_headers = _coerce_str_dict(entry.get("headers"))
+    auth_query = _coerce_str_dict(entry.get("auth_query_params"))
+    if not auth_query:
+        auth_query = _coerce_str_dict(entry.get("query_params"))
+    return auth_headers or {}, auth_query or {}
+
+
 def build_mcp_server_config(
     entry: dict[str, Any],
     *,
@@ -74,6 +104,10 @@ def build_mcp_server_config(
         entry: One config entry under ``mcp.servers``.
         server_id_scope: Optional scope used to derive a stable ``server_id``.
             When omitted, openjiuwen's default random id behavior is preserved.
+
+    Note:
+        Remote MCP 的 Bearer 等鉴权必须进 ``auth_headers``（SDK 建连字段），
+        不能只塞进 ``params.headers``——否则客户端不带凭证，服务端会 401。
     """
     name = str(entry.get("name", "")).strip()
     if not name:
@@ -114,10 +148,12 @@ def build_mcp_server_config(
         if not url:
             return None
         payload["server_path"] = url
+        auth_headers, auth_query = _resolve_remote_mcp_auth(entry)
+        if auth_headers:
+            payload["auth_headers"] = auth_headers
+        if auth_query:
+            payload["auth_query_params"] = auth_query
         params: dict[str, Any] = {}
-        headers = entry.get("headers")
-        if isinstance(headers, dict):
-            params["headers"] = {str(k): str(v) for k, v in headers.items()}
         timeout_s = entry.get("timeout_s")
         if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
             params["timeout_s"] = int(timeout_s)

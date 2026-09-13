@@ -19,6 +19,7 @@ from jiuwenswarm.common.mcp_config import (
     _trusted_cat_cafe_stdio_roots,
     _validate_cat_cafe_request_scoped_stdio,
     _validate_request_scoped_remote_mcp,
+    build_mcp_server_config,
     create_mcp_tool,
 )
 from openjiuwen.core.foundation.tool import McpServerConfig
@@ -701,3 +702,65 @@ class TestCreateMcpToolDefaultType:
         })
         result = create_mcp_tool(cfg)
         assert result.client_type == "stdio"
+
+
+class TestBuildMcpServerConfigAuthHeaders:
+    """企业模板 headers / 连接器 auth_headers → SDK auth_headers。"""
+
+    def test_enterprise_headers_map_to_auth_headers(self):
+        cfg = build_mcp_server_config(
+            {
+                "name": "qa-bearer-streamable-http",
+                "transport": "streamable-http",
+                "url": "http://192.168.1.96:18016/mcp",
+                "headers": {"Authorization": "Bearer sds-dev-mcp-bearer-token"},
+                "timeout_s": 10,
+                "enabled": True,
+            },
+            server_id_scope="jiuwenswarm",
+        )
+        assert cfg is not None
+        assert cfg.auth_headers == {
+            "Authorization": "Bearer sds-dev-mcp-bearer-token",
+        }
+        assert "headers" not in (cfg.params or {})
+        assert cfg.params.get("timeout_s") == 10
+
+    def test_auth_headers_alias_preferred_over_headers(self):
+        cfg = build_mcp_server_config(
+            {
+                "name": "prefer-auth",
+                "transport": "sse",
+                "url": "http://192.168.1.96:18015/sse",
+                "headers": {"Authorization": "Bearer from-headers"},
+                "auth_headers": {"Authorization": "Bearer from-auth-headers"},
+            }
+        )
+        assert cfg is not None
+        assert cfg.auth_headers == {
+            "Authorization": "Bearer from-auth-headers",
+        }
+
+    def test_query_params_map_to_auth_query_params(self):
+        cfg = build_mcp_server_config(
+            {
+                "name": "qa-query",
+                "transport": "http",
+                "url": "http://example.com/mcp",
+                "query_params": {"token": "abc"},
+            }
+        )
+        assert cfg is not None
+        assert cfg.auth_query_params == {"token": "abc"}
+
+    def test_non_dict_headers_ignored(self):
+        cfg = build_mcp_server_config(
+            {
+                "name": "bad-headers",
+                "transport": "sse",
+                "url": "http://example.com/sse",
+                "headers": "not-a-dict",
+            }
+        )
+        assert cfg is not None
+        assert cfg.auth_headers == {}

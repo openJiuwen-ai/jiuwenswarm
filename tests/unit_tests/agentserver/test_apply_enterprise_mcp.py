@@ -5,6 +5,7 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+from jiuwenswarm.common.mcp_config import build_mcp_server_config
 from jiuwenswarm.server.runtime.enterprise_config.apply_mcp import (
     apply_enterprise_mcp_to_config,
     mcp_entity_to_server_entry,
@@ -244,3 +245,54 @@ def test_apply_enterprise_mcp_warns_for_non_dict_entity() -> None:
     warn.assert_called_once()
     message = warn.call_args[0][0] % warn.call_args[0][1:]
     assert "not a dict" in message
+
+
+def test_enterprise_mcp_template_headers_map_to_sdk_auth_headers() -> None:
+    """企业模板 ``mcp_entry.headers`` 必须进 SDK ``auth_headers``，否则 AS→MCP 401。
+
+    对齐现场 TC_MCP_CALL_002：Bearer 写在模板 headers，不放在 chat 请求头。
+    """
+    entity = {
+        "template_id": "sds-8f1d60f974d1-mcp",
+        "enabled": True,
+        "mcp_entry": {
+            "name": "qa-bearer-streamable-http",
+            "transport": "streamable-http",
+            "url": "http://192.168.1.96:18016/mcp",
+            "headers": {
+                "Authorization": "Bearer sds-dev-mcp-bearer-token",
+            },
+            "timeout_s": 10,
+        },
+    }
+    entry = mcp_entity_to_server_entry(entity)
+    assert entry is not None
+    assert entry["headers"]["Authorization"] == "Bearer sds-dev-mcp-bearer-token"
+
+    cfg = build_mcp_server_config(entry, server_id_scope="jiuwenswarm")
+    assert cfg is not None
+    assert cfg.client_type == "streamable-http"
+    assert cfg.auth_headers == {
+        "Authorization": "Bearer sds-dev-mcp-bearer-token",
+    }
+    # 不得再只塞进 params.headers（SDK 客户端不读该字段）
+    assert "headers" not in (cfg.params or {})
+    assert cfg.params.get("timeout_s") == 10
+
+    enterprise = EffectiveEnterpriseConfig(
+        routing=RoutingContext(
+            group_id="sds-8f1d60f974d1-group",
+            bot_id="sds-8f1d60f974d1-resource",
+            user_id="sds-8f1d60f974d1-user",
+        ),
+        mcp=[entity],
+    )
+    merged, applied = apply_enterprise_mcp_to_config({"mcp": {"servers": []}}, enterprise)
+    assert applied is True
+    built = build_mcp_server_config(
+        merged["mcp"]["servers"][0], server_id_scope="jiuwenswarm"
+    )
+    assert built is not None
+    assert built.auth_headers.get("Authorization") == (
+        "Bearer sds-dev-mcp-bearer-token"
+    )
