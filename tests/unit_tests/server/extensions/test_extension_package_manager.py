@@ -1195,3 +1195,135 @@ class TestListShowAndFileRead:
             catalog.read_agent_template_file("alpha", "../secret.txt")
         with pytest.raises((ValueError, RuntimeError)):
             catalog.read_agent_template_file("alpha", "model.json")
+
+
+class TestUninstallConverges:
+    """Uninstall reaches "not installed" even from a drifted state: a marketplace
+    record whose backing workspace directory is already gone (manual removal,
+    a local copy retired in favor of a shipped builtin) clears by record alone
+    instead of failing with "not found"."""
+
+    def test_template_record_without_directory_uninstalls_clean(
+        self, extension_workspace
+    ):
+        catalog.upsert_agent_template_marketplace_entry(
+            "ghost-pkg", installed=True, source="local"
+        )
+        catalog.uninstall_agent_template({"id": "ghost-pkg"})
+        assert not any(
+            e.get("id") == "ghost-pkg"
+            for e in catalog.read_agent_template_marketplace_entries()
+        )
+
+    def test_group_record_without_directory_uninstalls_clean(
+        self, extension_workspace
+    ):
+        catalog.upsert_agent_group_marketplace_entry(
+            "ghost-group", installed=True, source="local"
+        )
+        catalog.uninstall_agent_group({"id": "ghost-group"})
+        assert not any(
+            e.get("id") == "ghost-group"
+            for e in catalog.read_agent_group_marketplace_entries()
+        )
+
+    def test_conflict_still_raises_not_converges(self, extension_workspace):
+        ws = extension_workspace
+        for under in ("local", "built_in"):
+            pkg = ws / "plugins" / AGENT_TEMPLATES / under / "both-pkg"
+            pkg.mkdir(parents=True)
+            (pkg / "manifest.json").write_text(
+                json.dumps({"package_type": "agent_template"}), encoding="utf-8"
+            )
+        with pytest.raises(ValueError, match="conflict"):
+            catalog.uninstall_agent_template({"id": "both-pkg"})
+
+
+class TestCoScribeRetirement:
+    """Co-scribe is an application plugin now, so it must not also stand in the
+    plugin market. The seed package is gone from the shipped resources; this is
+    what happens to a deployment that already installed it."""
+
+    def _capture(self, monkeypatch):
+        import jiuwenswarm.common.config as cfgmod
+
+        state = {"clouddoc": {"connections": [{"credentials_file": "k"}]}}
+
+        def fake_update(mutate):
+            mutate(state)
+
+        monkeypatch.setattr(cfgmod, "update_config", fake_update)
+        return state
+
+    def _installed(self, package_id: str) -> bool:
+        return any(
+            entry.get("id") == package_id and entry.get("installed")
+            for entry in catalog.read_plugin_marketplace_entries()
+        )
+
+    def test_the_seed_package_is_gone_from_the_shipped_resources(self):
+        # Upstream has since moved every built-in plugin package to the hub, so
+        # the shelf may be absent altogether; either way, no co-scribe seed.
+        resources = catalog.get_equipment_resources_plugin_packages_dir()
+        assert resources is None or not (resources / "co-scribe").exists(), (
+            "co-scribe is an application plugin; it must not ship a marketplace "
+            "package as well"
+        )
+
+    def test_retirement_removes_the_leftover_card(
+        self, extension_workspace, monkeypatch, tmp_path
+    ):
+        point_resources_shelf(monkeypatch, tmp_path, plugins=["co-scribe"])
+        catalog.install_plugin_package({"id": "co-scribe"})
+        built_in = extension_workspace / "plugins" / PLUGIN_PACKAGES / "built_in" / "co-scribe"
+        assert built_in.is_dir() and self._installed("co-scribe")
+
+        catalog.retire_co_scribe_plugin_package()
+
+        assert not built_in.exists()
+        assert not any(
+            entry.get("id") == "co-scribe"
+            for entry in catalog.read_plugin_marketplace_entries()
+        )
+
+    def test_retirement_leaves_the_feature_flag_alone(
+        self, extension_workspace, monkeypatch, tmp_path
+    ):
+        """clouddoc.enabled is the single authority, and a deployment that turned
+        the feature on by installing the package must not be switched off by an
+        upgrade that folds the package away."""
+        state = self._capture(monkeypatch)
+        point_resources_shelf(monkeypatch, tmp_path, plugins=["co-scribe"])
+        catalog.install_plugin_package({"id": "co-scribe"})
+        state["clouddoc"]["enabled"] = True
+
+        catalog.retire_co_scribe_plugin_package()
+
+        assert state["clouddoc"]["enabled"] is True
+        assert state["clouddoc"]["connections"], "retiring the package must not drop connections"
+
+    def test_retirement_is_idempotent_and_touches_nothing_else(
+        self, extension_workspace, monkeypatch, tmp_path
+    ):
+        point_resources_shelf(monkeypatch, tmp_path, plugins=["some-guard"])
+        catalog.install_plugin_package({"id": "some-guard"})
+
+        catalog.retire_co_scribe_plugin_package()
+        catalog.retire_co_scribe_plugin_package()
+
+        assert self._installed("some-guard")
+        assert (
+            extension_workspace / "plugins" / PLUGIN_PACKAGES / "built_in" / "some-guard"
+        ).is_dir()
+
+    def test_installing_a_plugin_no_longer_writes_the_feature_flag(
+        self, extension_workspace, monkeypatch, tmp_path
+    ):
+        """The card's switch is the only writer now; nothing keys on a package id."""
+        state = self._capture(monkeypatch)
+        point_resources_shelf(monkeypatch, tmp_path, plugins=["co-scribe"])
+        catalog.install_plugin_package({"id": "co-scribe"})
+        assert "enabled" not in state["clouddoc"]
+
+        catalog.uninstall_equipment_with_notice("plugin_packages", {"id": "co-scribe"})
+        assert "enabled" not in state["clouddoc"]

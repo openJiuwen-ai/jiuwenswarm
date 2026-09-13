@@ -71,7 +71,46 @@ from jiuwenswarm.common.tool_display import (
     inject_call_goal_schema,
 )
 from jiuwenswarm.common.utils import logger
+
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
+
+# Tools whose displayed line must be a **receipt of what happened**, not the model's own
+# account of it. These change a shared cloud document, where the displayed line is often
+# all the user has to tell which document was touched -- and a model that misreports the
+# work (observed: claimed a draft was written, wrote nothing) would otherwise author that
+# line too. Derived from the arguments instead, so it names the doc_id actually operated on.
+_RECEIPT_ONLY_TOOLS = frozenset({
+    "clouddoc_batch_edit",
+    "clouddoc_write_region",
+    "clouddoc_add_page",
+    "clouddoc_apply_for_comment",
+    "clouddoc_reply_comment",
+})
+
+
+def _normalize_tool_name(name: str) -> str:
+    """Strip the per-session suffix the ability manager appends (``foo_jiuwenswarm_s_...``)."""
+    base = (name or "").strip()
+    marker = "_jiuwenswarm_s_"
+    return base.split(marker)[0] if marker in base else base
+
+
+def resolve_tool_display_name(name: str, model_display_name: str | None, arguments: Any) -> str:
+    """The line shown for one tool call.
+
+    Normally the model's own ``call_goal`` wins -- it reads better than anything a rule
+    can assemble. **For the tools that change a shared cloud document it does not**, and
+    the name is derived from the arguments instead: that line is often all the user has
+    to tell which document was touched, and letting the model author it means the same
+    model that misreports its work also writes the record of it.
+
+    A separate function rather than an inline branch so the choice is testable on its
+    own; as an inline branch the only thing a test could reach was the constant, which
+    stays true no matter what the caller does with it.
+    """
+    if _normalize_tool_name(name) in _RECEIPT_ONLY_TOOLS:
+        return build_tool_display_name(name, arguments)
+    return (model_display_name or "").strip() or build_tool_display_name(name, arguments)
 
 _TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
 _TERMINAL_PROJECTION_STATE_ATTRIBUTE = "_jiuwenswarm_terminal_projection_v1"
@@ -1127,9 +1166,13 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 "tool_call_id": getattr(tool_call, "id", ""),
             }
             # 优先用主模型随 tool_call 产出的目标文案；未填时再规则兜底。
-            display_name = (model_display_name or "").strip() or build_tool_display_name(
-                name, arguments
-            )
+            # Exception: tools that change a shared cloud document do not use the
+            # model's own wording. call_goal is written by the model, yet this line is
+            # often the only thing telling the reader which document was touched. For
+            # those tools the name is derived from the arguments instead: doc_id names
+            # the document actually operated on, so the line is a receipt rather than a
+            # restatement of what the model said it did.
+            display_name = resolve_tool_display_name(name, model_display_name, arguments)
             if display_name:
                 tool_call_payload["display_name"] = display_name
             await session.write_stream(

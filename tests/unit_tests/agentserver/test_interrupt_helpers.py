@@ -822,14 +822,114 @@ def _scene_hook_input(normalized_tool_name: str, user_input):
     )
 
 
-def _permission_scene_hook(permission_config=None):
+def _permission_scene_hook(permission_config=None, unattended_clouddoc=None):
     rail = build_permission_rail(
-        {"permissions": permission_config or {"enabled": True}}
+        {"permissions": permission_config or {"enabled": True}},
+        unattended_clouddoc=unattended_clouddoc,
     )
     assert rail is not None
     hook = rail._host.permission_scene_hook
     assert hook is not None
     return hook
+
+
+# ---------------------------------------------------------------- clouddoc co-scribe
+#
+# Every test below leaves the request contextvars **unbound**, because that is the
+# production condition: the hook runs while a tool is executing, one task removed from
+# the request that bound them. Deciding the turn from ``is_unattended_clouddoc_turn()``
+# there answered False, so ``clouddoc_apply_for_comment`` (permission tier ``ask``)
+# raised an approval interrupt with nobody to answer it and the turn came back empty.
+
+
+def test_scene_hook_approves_a_closed_set_tool_with_no_contextvars_bound():
+    """The regression: the write tool must be approved from the caller's snapshot."""
+    hook = _permission_scene_hook(unattended_clouddoc=lambda: {"doc_id": "d1", "mode": "apply_scoped"})
+
+    outcome = asyncio.run(
+        hook(_scene_hook_input("clouddoc_apply_for_comment", None))
+    )
+
+    assert outcome == ("approve",)
+
+
+def test_scene_hook_refuses_a_tool_outside_the_closed_set():
+    """Refusal has to be a decision, not an interrupt: the model gets a tool result it
+    can act on, instead of a turn that stalls."""
+    hook = _permission_scene_hook(unattended_clouddoc=lambda: {"doc_id": "d1", "mode": "apply_scoped"})
+
+    outcome = asyncio.run(hook(_scene_hook_input("bash", None)))
+
+    assert outcome[0] == "reject"
+    assert "bash" in outcome[1]
+
+
+def test_scene_hook_refuses_ask_user_on_an_unattended_turn():
+    """ask_user is approved unconditionally further down; reaching that line on a turn
+    with no reader is a wait for an answer that never comes."""
+    hook = _permission_scene_hook(unattended_clouddoc=lambda: {"doc_id": "d1", "mode": "apply_scoped"})
+
+    outcome = asyncio.run(hook(_scene_hook_input("ask_user", None)))
+
+    assert outcome[0] == "reject"
+
+
+def test_scene_hook_honours_the_watch_level():
+    """The hook grants exactly what the turn's mode does, never more.
+
+    The reply_only half of this test is deleted with the tier: it checked that a
+    reply-level watch still got the reply tool, and there is no such level any
+    more. What is left is the direction that matters -- the one live level gets
+    its own tools, and anything else gets none.
+    """
+    hook = _permission_scene_hook(unattended_clouddoc=lambda: {"doc_id": "d1", "mode": "apply_scoped"})
+
+    assert asyncio.run(
+        hook(_scene_hook_input("clouddoc_reply_comment", None))
+    ) == ("approve",)
+    assert asyncio.run(
+        hook(_scene_hook_input("clouddoc_apply_for_comment", None))
+    ) == ("approve",)
+    assert asyncio.run(
+        hook(_scene_hook_input("bash", None))
+    )[0] == "reject"
+
+
+def test_scene_hook_rejects_every_tool_for_a_retired_or_unknown_mode():
+    """A turn carrying a mode the mechanism no longer has gets **no** tools.
+
+    The watcher refuses to dispatch such a turn at all, so this is the backstop
+    behind the gate, not the working path. It must not fall back to some narrower
+    family: every tool below apply is one the agent can already use without a
+    mandate, so a "narrower family" fallback authorises the turn itself.
+    """
+    for mode in ("reply_only", "", None, "bogus"):
+        hook = _permission_scene_hook(unattended_clouddoc=lambda m=mode: {"doc_id": "d1", "mode": m})
+        for tool in ("clouddoc_reply_comment", "clouddoc_read",
+                     "clouddoc_apply_for_comment"):
+            assert asyncio.run(hook(_scene_hook_input(tool, None)))[0] == "reject", (
+                f"{mode!r}/{tool}"
+            )
+
+
+def test_scene_hook_leaves_a_chat_turn_alone():
+    """The snapshot is emptied on every non-clouddoc turn. Reading an empty one as
+    unattended would refuse every tool in an ordinary chat session."""
+    hook = _permission_scene_hook(unattended_clouddoc=lambda: {})
+
+    assert asyncio.run(hook(_scene_hook_input("bash", None))) is None
+
+
+def test_scene_hook_does_not_stall_when_the_snapshot_resolver_fails():
+    """A raising resolver is caught by the rail and falls through to the tiered engine,
+    which for a write tool means the interrupt this hook exists to prevent."""
+
+    def boom():
+        raise RuntimeError("snapshot unavailable")
+
+    hook = _permission_scene_hook(unattended_clouddoc=boom)
+
+    assert asyncio.run(hook(_scene_hook_input("bash", None))) is None
 
 
 def test_scene_hook_approves_ask_user_on_resume():

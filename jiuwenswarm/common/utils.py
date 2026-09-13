@@ -385,6 +385,7 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
         initialized: If True, skip cache reset (use when paths are already initialized elsewhere).
     """
     global _user_home, _initialized, _config_dir, _workspace_dir, _root_dir
+    global _workspace_base_dir
     _user_home = Path(path)
     if initialized:
         return
@@ -392,6 +393,13 @@ def set_user_home(path: Path, initialized: bool = False) -> None:
     _config_dir = None
     _workspace_dir = None
     _root_dir = None
+    # _workspace_base_dir caches ``<home>/.jiuwenswarm`` and is filled on the first path
+    # lookup -- which happens at import time, from the *real* home, via setup_logger().
+    # Leaving it set made the promise above false: get_user_workspace_dir() returns the
+    # cached value before it ever consults get_user_home(), so a test that redirected the
+    # home still resolved to the developer's own workspace, and a force init deleted the
+    # real ~/.jiuwenswarm/config subdirectories.
+    _workspace_base_dir = None
 
 
 def get_user_workspace_dir() -> Path:
@@ -732,6 +740,18 @@ def _install_default_builtin_skills(
     - xlsx: 电子表格创建/读取/分析/编辑/修复（零格式损失，中文/CJK 友好）
     - pdf-extraction: PDF 文本/表格/元数据提取
     - pptx-generator: PowerPoint 演示文稿生成与编辑
+    - co-scribe-collab: the cloud-doc co-writing protocol (contributed by the
+      co-scribe application plugin)
+
+    An application plugin (``package_type: application``) has no skill
+    contribution point of its own: the SDK offers only the frontend, websocket
+    and RPC contributions, and the ``skills`` entry in a plugin package's
+    ``manifest.json`` is bound by ``load_plugin`` only when a session puts that
+    package name into ``plugin_names``. An application plugin never appears in
+    the extension picker, so it never reaches that path -- and an unattended
+    turn has no picker at all. That is why an application plugin's skills land
+    here instead: the skills library is the one root directory every session
+    scans, the watcher's unattended turns included.
 
     Args:
         builtin_dir: 内置技能目录路径
@@ -754,6 +774,7 @@ def _install_default_builtin_skills(
         "xlsx",
         "pdf-extraction",
         "pptx-generator",
+        "co-scribe-collab",
     ]
 
     if not builtin_dir.exists() or not builtin_dir.is_dir():
@@ -828,6 +849,11 @@ def ensure_default_builtin_skills() -> None:
         "xlsx",
         "pdf-extraction",
         "pptx-generator",
+        # co-scribe's co-writing protocol. It belongs on the backfill list so
+        # that an existing workspace picks it up after an upgrade -- the skills
+        # library is not refreshed by the upgrade itself, and this backfill,
+        # which runs on every start, is the only path that reaches it.
+        "co-scribe-collab",
     ]
 
     user_skills_dir.mkdir(parents=True, exist_ok=True)
@@ -1517,6 +1543,24 @@ def prepare_runtime_workspace(*, cleanup_stale_descs: bool = True) -> None:
 
     ensure_config_migrated_from_template(workspace_dir)
     ensure_default_builtin_skills()
+    _retire_co_scribe_plugin_package()
+
+
+def _retire_co_scribe_plugin_package() -> None:
+    """Drop the co-scribe plugin-package leftovers on an upgraded deployment.
+
+    Imported inside the call: the package manager imports this module, so a
+    module-level import would close the cycle. Failure is swallowed there --
+    a stale marketplace card is not worth refusing to start over.
+    """
+    try:
+        from jiuwenswarm.server.runtime.extension_package_manager import (
+            retire_co_scribe_plugin_package,
+        )
+    except Exception:  # noqa: BLE001
+        logger.debug("co-scribe package retirement unavailable", exc_info=True)
+        return
+    retire_co_scribe_plugin_package()
 
 
 def _close_log_handlers() -> None:

@@ -71,7 +71,11 @@ const personalContextNavIcon = (
   </svg>
 );
 
-const mainNavItems: NavItem[] = [
+// The rail is in two bands. Above the rule: what every deployment ships with.
+// Below it: what an application plugin contributes, one entry per page in the
+// manifest, each with the plugin's own mark. The rule is what says "these came
+// from somewhere else" -- disable the plugin and its entry goes.
+const systemNavItems: NavItem[] = [
   { key: 'chat', labelKey: 'nav.work', icon: <WorkIcon aria-hidden /> },
   { key: 'skills', labelKey: 'nav.skills', icon: <SkillDesignIcon aria-hidden /> },
   { key: 'agents', labelKey: 'nav.agent', icon: <AgentDesignIcon aria-hidden /> },
@@ -111,14 +115,46 @@ export function SessionSidebar({
       key: plugin.nav_key as MainNavKey,
       labelKey: plugin.title_i18n_key,
       label: plugin.title,
-      icon: <PluginIcon aria-hidden />,
+      // The plugin's own mark when it ships one: below the rule these entries
+      // are contributed, and a plugin is easier to find by the icon it uses
+      // everywhere else than by a generic puzzle piece.
+      // Painted as a mask rather than drawn as an image: every built-in entry
+      // uses fill="currentColor" and follows the theme, and an <img> cannot.
+      // The plugin supplies a monochrome mark; the rail decides its colour.
+      icon: plugin.icon
+        ? (
+          <span
+            aria-hidden
+            className="icon-rail-nav-item__mark"
+            style={{ maskImage: `url("${plugin.icon}")`, WebkitMaskImage: `url("${plugin.icon}")` }}
+          />
+        )
+        : <PluginIcon aria-hidden />,
     }));
-  const visibleMainNavItems = [...mainNavItems, ...applicationPluginItems]
+  const visibleSystemNavItems = systemNavItems
+    .filter((item) => !hiddenNavItems.includes(item.key));
+  const visiblePluginNavItems = applicationPluginItems
     .filter((item) => !hiddenNavItems.includes(item.key));
   // 定时任务（cron）是"任务"区内与会话同级的视图，没有独立的导航图标，
   // 因此进入定时任务时"任务"导航项也应保持选中态
   const isNavItemActive = (item: NavItem) =>
     activeNav === item.key || (item.key === 'chat' && activeNav === 'cron');
+
+  const renderNavItems = (items: NavItem[]) => items.map((item) => (
+    <button
+      key={item.key}
+      className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
+      onClick={() => handleNavClick(item.key)}
+      data-testid="session-sidebar-nav-item"
+      data-variant={item.key}
+      data-model-setup-guide-target={item.key === 'settings' ? 'settings' : undefined}
+    >
+      <span className="icon-rail-nav-item__icon">{item.icon}</span>
+      <span className={`icon-rail-nav-item__label${item.key === 'personalContext' ? ' icon-rail-nav-item__label--multiline' : ''}`}>
+        {getNavItemLabel(item)}
+      </span>
+    </button>
+  ));
 
   return (
     <aside className="sidebar sidebar--icon-rail" data-testid="session-sidebar-rail">
@@ -139,21 +175,13 @@ export function SessionSidebar({
         </button>
       )}
 
-      {visibleMainNavItems.map((item) => (
-        <button
-          key={item.key}
-          className={`icon-rail-nav-item${isNavItemActive(item) ? ' icon-rail-nav-item--active' : ''}`}
-          onClick={() => handleNavClick(item.key)}
-          data-testid="session-sidebar-nav-item"
-          data-variant={item.key}
-          data-model-setup-guide-target={item.key === 'settings' ? 'settings' : undefined}
-        >
-          <span className="icon-rail-nav-item__icon">{item.icon}</span>
-          <span className={`icon-rail-nav-item__label${item.key === 'personalContext' ? ' icon-rail-nav-item__label--multiline' : ''}`}>
-            {getNavItemLabel(item)}
-          </span>
-        </button>
-      ))}
+      {renderNavItems(visibleSystemNavItems)}
+
+      {visiblePluginNavItems.length > 0 && (
+        <div className="icon-rail-divider" data-testid="session-sidebar-plugin-divider" />
+      )}
+
+      {renderNavItems(visiblePluginNavItems)}
 
       <div className="icon-rail-spacer" />
     </aside>

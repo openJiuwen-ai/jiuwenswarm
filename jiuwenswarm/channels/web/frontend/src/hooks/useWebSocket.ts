@@ -4087,6 +4087,10 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // 重连补投的审批提示（session.switch 触发后端 republish）可能赶在该会话
+        // runtime 创建之前到达；setPendingQuestion 对不存在的 runtime 是静默
+        // no-op，会把好不容易补投回来的提示再次丢掉。先确保 runtime 存在。
+        ensureSessionRuntimes(sessionId);
         const questionPayload = payload as Record<string, unknown>;
         const evolutionMeta =
           questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'

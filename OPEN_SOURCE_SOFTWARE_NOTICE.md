@@ -53,7 +53,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### License: Apache License V2.0
 
-**Software:** @playwright/mcp, playwright, playwright-core, tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers
+**Software:** @playwright/mcp, playwright, playwright-core, tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers, google-api-python-client, google-auth
 
 **Apache License**
 **Version 2.0, January 2004**

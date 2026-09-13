@@ -1,0 +1,69 @@
+/* 文档工作台：左（图标栏由 App 提供）| 主列（标签栏 / 主界面 / 聊天条）| 右栏 */
+.doc-workbench { display: flex; flex: 1; min-width: 0; min-height: 0; background: var(--color-surface-elevated); }
+.doc-workbench__main { display: flex; flex-direction: column; flex: 1; min-width: 0; min-height: 0; position: relative; }
+.doc-workbench__tabbar { display: flex; align-items: stretch; height: 48px; min-height: 48px; border-bottom: 1px solid var(--color-border-default); background: var(--color-surface-page); }
+.doc-workbench__tab { display: inline-flex; align-items: center; gap: 7px; height: 48px; padding: 0 14px; font-size: 13px; white-space: nowrap; color: var(--color-text-secondary); border: 0; border-bottom: 2px solid transparent; background: transparent; cursor: pointer; }
+.doc-workbench__tab:hover { color: var(--color-text-primary); }
+.doc-workbench__tab--active { background: var(--color-surface-elevated); color: var(--color-text-primary); border-bottom-color: var(--color-action-primary); }
+.doc-workbench__tab-dot { width: 6px; height: 6px; border-radius: 9999px; }
+.doc-workbench__tab-close { display: inline-flex; align-items: center; justify-content: center; width: 16px; height: 16px; border-radius: 4px; color: var(--color-text-secondary); }
+.doc-workbench__tab-close:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+/* The tabs take the leftover width and scroll inside it. min-width:0 is the load
+   bearing half: a flex item defaults to min-width:auto, so a row of nowrap tabs
+   refuses to shrink and overflows its container instead. */
+.doc-workbench__tabs { display: flex; align-items: stretch; flex: 1 1 auto; min-width: 0; overflow-x: auto; overflow-y: hidden; scrollbar-width: none; }
+.doc-workbench__tabs::-webkit-scrollbar { display: none; }
+.doc-workbench__tab { flex: 0 0 auto; }
+/* Never shrink, never wrap: these are the only way out of the workbench. */
+.doc-workbench__actions { display: flex; align-items: center; gap: 6px; padding: 0 10px; margin-left: auto; flex: 0 0 auto; white-space: nowrap; }
+.doc-workbench__icon-btn { display: inline-flex; align-items: center; justify-content: center; width: 32px; height: 32px; border-radius: 6px; border: 0; background: transparent; color: var(--color-text-secondary); cursor: pointer; }
+.doc-workbench__icon-btn:hover { background: var(--color-surface-hover); color: var(--color-text-primary); }
+.doc-workbench__icon-btn--on { background: var(--color-tool-tab-active-bg); color: var(--color-text-primary); }
+.doc-workbench__text-btn { display: inline-flex; align-items: center; gap: 6px; padding: 5px 10px; border-radius: 6px; border: 1px solid var(--color-border-default); background: var(--color-surface-elevated); font-size: 12px; color: var(--color-text-primary); cursor: pointer; }
+.doc-workbench__text-btn:hover { background: var(--color-surface-hover); }
+.doc-workbench__body { display: flex; flex-direction: column; flex: 1; min-height: 0; background: var(--color-surface-muted); position: relative; }
+.doc-workbench__frame { display: block; flex: 1; width: 100%; min-height: 0; border: 0; background: var(--color-surface-card); }
+.doc-workbench__statusbar { display: flex; align-items: center; gap: 10px; height: 28px; min-height: 28px; padding: 0 16px; background: var(--color-surface-elevated); border-top: 1px solid var(--color-border-default); font-size: 11px; color: var(--color-text-meta); }
+.doc-workbench__statusbar a { color: var(--color-text-link); cursor: pointer; }
+.doc-workbench__dot { width: 7px; height: 7px; border-radius: 9999px; }
+.doc-workbench__fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--color-surface-muted) 92%, transparent); }
+.doc-workbench__chat { display: flex; flex-direction: column; gap: 4px; padding: 6px 12px 8px; border-top: 1px solid var(--color-border-default); background: var(--color-surface-page); }
+.doc-workbench__chat-last { display: flex; align-items: flex-start; gap: 8px; min-height: 20px; font-size: 12.5px; color: var(--color-text-chat); }
+.doc-workbench__chat-avatar { width: 20px; height: 20px; border-radius: 9999px; object-fit: cover; flex: none; }
+.doc-workbench__chat-doc { display: inline-flex; align-items: center; max-width: 220px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 1px 8px; border-radius: 9999px; background: var(--color-tag-info-surface); color: var(--color-tag-info-text); font-size: 11px; flex: none; }
+/* 工作台里的输入区收矮一档：隐藏项目目录一行，压缩外框留白。 */
+.doc-workbench__chat .chat-work-context-wrapper { display: none; }
+.doc-workbench__chat .chat-input-frame { margin: 0; }
+/* The composer sits ~20% shorter here than in the chat view: the document is the
+   subject on this screen, the composer is the aside. The editor's own height
+   variable is what the chat view sizes it by, so scoping the variable is enough
+   -- no per-element overrides that would drift from the shared composer. */
+.doc-workbench__chat .chat-input-container { --chat-input-textarea-min-height: 77px; }
+.doc-workbench__chat .chat-input-editor { padding-top: 10px; padding-bottom: 8px; }
+.doc-workbench__chat .chat-input-toolbar { padding-top: 4px; padding-bottom: 6px; }
+/* The reply is shown whole, not clipped to one line: a truncated answer sends
+   the reader to the rail for something the strip could have said. It wraps and
+   scrolls past a few lines so the composer never gets pushed off screen. */
+.doc-workbench__chat-last-text { flex: 1; min-width: 0; max-height: 6.4em; overflow-y: auto; white-space: pre-wrap; word-break: break-word; line-height: 1.6; }
+.doc-workbench__chat-pill { position: absolute; left: 16px; bottom: 40px; display: inline-flex; align-items: center; gap: 8px; height: 36px; padding: 0 14px; border-radius: 18px; background: var(--color-surface-elevated); border: 1px solid var(--color-chat-card-border); box-shadow: var(--effect-shadow-md); font-size: 12px; cursor: pointer; z-index: 2; }
+/* Its own width: --tool-panel-width is shared with the other tool panels, whose
+   contents are wider than a receipt list. */
+.doc-workbench__rail { display: flex; flex-direction: column; width: var(--doc-workbench-rail-width, 258px); min-width: var(--doc-workbench-rail-width, 258px); border-left: 1px solid var(--color-border-default); background: var(--color-surface-elevated); min-height: 0; }
+.doc-workbench__rail-tabs { display: flex; align-items: center; gap: 12px; height: 40px; min-height: 40px; padding: 0 12px; border-bottom: 1px solid var(--color-border-default); }
+.doc-workbench__rail-tab { display: inline-flex; align-items: center; gap: 6px; height: 40px; padding: 0 4px; font-size: 13px; color: var(--color-text-secondary); border: 0; border-bottom: 2px solid transparent; background: transparent; cursor: pointer; }
+.doc-workbench__rail-tab--active { color: var(--color-text-primary); font-weight: 600; border-bottom-color: var(--color-text-primary); }
+.doc-workbench__rail-body { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; padding: 12px; overflow: auto; }
+.doc-workbench__rail-foot { display: flex; flex-direction: column; gap: 6px; padding: 12px 14px; border-top: 1px solid var(--color-border-default); background: var(--color-settings-card-subtle); font-size: 12px; color: var(--color-text-secondary); }
+.doc-workbench__elsewhere { display: flex; align-items: center; gap: 8px; padding: 8px 10px; border-radius: 8px; background: var(--color-tag-info-surface); font-size: 12px; color: var(--color-tag-info-text); }
+.doc-workbench__md { display: flex; flex: 1; min-height: 0; }
+.doc-workbench__md-editor { flex: 1; min-width: 0; resize: none; border: 0; border-right: 1px solid var(--color-border-default); padding: 12px 14px; font: 12.5px/1.75 var(--font-mono); color: var(--color-text-primary); background: var(--color-surface-elevated); outline: none; }
+.doc-workbench__md-preview { flex: 1; min-width: 0; overflow: auto; padding: 20px 28px; background: var(--color-settings-card-subtle); }
+.doc-workbench__md-toolbar { display: flex; align-items: center; gap: 10px; height: 36px; min-height: 36px; padding: 0 16px; border-bottom: 1px solid var(--color-border-default); background: var(--color-surface-elevated); font-size: 12px; color: var(--color-text-meta); }
+.doc-workbench__seg { display: inline-flex; border: 1px solid var(--color-border-default); border-radius: 6px; overflow: hidden; }
+.doc-workbench__seg button { padding: 3px 10px; border: 0; background: transparent; font-size: 12px; color: var(--color-text-secondary); cursor: pointer; }
+.doc-workbench__seg button + button { border-left: 1px solid var(--color-border-default); }
+.doc-workbench__seg button.is-on { background: var(--color-tool-tab-active-bg); color: var(--color-text-primary); }
+.doc-workbench__md-lines { font: 12.5px/1.75 var(--font-mono); white-space: pre; padding: 12px 0; overflow: auto; flex: 1; min-width: 0; background: var(--color-surface-elevated); }
+.doc-workbench__md-line { display: flex; gap: 14px; padding: 0 10px; }
+.doc-workbench__md-line--hit { background: var(--color-surface-highlight); }
+.doc-workbench__md-gutter { width: 28px; text-align: right; color: var(--color-border-hover); user-select: none; }

@@ -217,6 +217,19 @@ def _read_agent_template_persona(pkg_dir: Path) -> str:
     return ""
 
 
+def _read_readme_details_en(pkg_dir: Path) -> str:
+    """Return README_EN.md text, or empty string. The zh/en README pair follows
+    the *_EN.md convention the workspace templates already use; a package with
+    only README.md shows that text in every UI language, as before."""
+    readme = pkg_dir / "README_EN.md"
+    if not readme.is_file():
+        return ""
+    try:
+        return readme.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError):
+        return ""
+
+
 def _parse_skill_frontmatter_text(text: str) -> dict[str, Any]:
     """Parse SKILL.md YAML frontmatter text for name/description (best-effort)."""
     match = re.match(r"^---\s*\n(.*?)\n---\s*\n?", text, re.DOTALL)
@@ -575,6 +588,7 @@ def _build_show_card(
         "avatar": _resolve_package_avatar(pkg_dir, manifest),
         "version": version if isinstance(version, str) else "",
         "details": details,
+        "details_en": _read_readme_details_en(pkg_dir),
         "tags": tags if isinstance(tags, list) else [],
         "skills": _map_skills(pkg_dir, manifest),
         "tools": _map_class_entries(manifest, "tools"),
@@ -2582,6 +2596,29 @@ def read_agent_group_file(name: str, rel_path: str) -> dict:
     return {"path": rel, "content": content}
 
 
+def list_plugin_package_files(name: str) -> list[dict]:
+    """Return the previewable file tree for one plugin package."""
+    pkg_dir = resolve_plugin_dir(name)
+    return _build_file_tree(pkg_dir, pkg_dir)
+
+
+def read_plugin_package_file(name: str, rel_path: str) -> dict:
+    """Read one previewable file from a plugin package."""
+    pkg_dir = resolve_plugin_dir(name)
+    rel = str(rel_path or "").strip().replace("\\", "/")
+    if not _is_previewable_file(rel):
+        raise ValueError(f"file not previewable: {rel}")
+    full_path = _reject_preview_path_symlink(pkg_dir, rel)
+    size = full_path.stat().st_size
+    if size > _MAX_PREVIEW_FILE_BYTES:
+        raise ValueError(f"file too large: {rel} ({size} bytes)")
+    try:
+        content = full_path.read_text(encoding="utf-8")
+    except UnicodeDecodeError:
+        content = f"[二进制文件，大小 {size} bytes]"
+    return {"path": rel, "content": content}
+
+
 def create_agent_template(params: dict) -> None:
     """Create a local expert package."""
     if not isinstance(params, dict):
@@ -3195,6 +3232,39 @@ def install_agent_group(params: dict) -> None:
     )
 
 
+def retire_co_scribe_plugin_package() -> None:
+    """Fold away the co-scribe plugin package left on an upgraded deployment.
+
+    Co-scribe is an application plugin: it carries its own identity, its own
+    switch on the Application plugins page, and its skill now lives in the skills
+    library.
+    The marketplace seed is gone from the shipped resources, but a deployment
+    that installed it still holds the copy under ``plugin_packages/built_in``
+    and its ``marketplace.json`` entry -- which would keep offering an
+    installable card for a feature that no longer arrives that way.
+
+    ``clouddoc.enabled`` is deliberately untouched. It is the single authority
+    for whether co-scribe is on, and a deployment that turned the feature on by
+    installing this package must stay on across the upgrade; one that never
+    installed it keeps its own answer and can flip it from the card.
+
+    Only the ``built_in`` copy is folded away: that directory can only have been
+    written by installing our own shipped seed. Anything a user imported into
+    ``local`` is theirs and is left alone.
+    """
+    built_in_dir = _built_in_root(_PLUGIN_PACKAGE_KIND) / "co-scribe"
+    try:
+        if built_in_dir.is_dir():
+            _rmtree(built_in_dir)
+        if any(
+            entry.get("id") == "co-scribe"
+            for entry in read_plugin_marketplace_entries()
+        ):
+            _remove_marketplace_entry(_PLUGIN_PACKAGE_KIND, "co-scribe")
+    except Exception:  # noqa: BLE001 - a stale card must never block startup
+        logger.exception("[co-scribe] retiring the plugin package failed")
+
+
 def install_plugin_package(params: dict) -> None:
     """Install a plugin package."""
     package_id = _lifecycle_package_id(params, "plugin")
@@ -3208,8 +3278,8 @@ def install_plugin_package(params: dict) -> None:
 
 
 def _locate_user_package_dir(
-    package_id: str, *, kind: str, kind_label: str
-) -> Path:
+    package_id: str, *, kind: str, kind_label: str, allow_missing: bool = False
+) -> Path | None:
     local_dir = _local_root(kind) / package_id
     built_in_dir = _built_in_root(kind) / package_id
     local_exists = local_dir.is_dir()
@@ -3222,6 +3292,8 @@ def _locate_user_package_dir(
         return local_dir
     if built_in_exists:
         return built_in_dir
+    if allow_missing:
+        return None
     raise ValueError(f"{kind_label} package not found: {package_id}")
 
 
@@ -3239,15 +3311,23 @@ def _rmtree(path: Path, *, retries: int = 6, delay: float = 0.5) -> None:
 
 
 def uninstall_agent_template(params: dict) -> None:
-    """Uninstall an expert package."""
+    """Uninstall an expert package.
+
+    Uninstall converges: when the marketplace record points at a workspace
+    directory that no longer exists (drift, manual removal), the record alone
+    is cleared -- "not installed" is the state the caller asked for, and it
+    must be reachable from a broken one. The local/built_in conflict still
+    raises: that one needs a human decision, not a silent pick."""
     requested_id = _lifecycle_package_id(params, "agent_template")
     store = _hub_install_state_store(_AGENT_TEMPLATE_KIND)
     record = store.get(requested_id) or store.get_by_package_id(requested_id)
     package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
-        package_id, kind=_AGENT_TEMPLATE_KIND, kind_label="agent_template"
+        package_id, kind=_AGENT_TEMPLATE_KIND, kind_label="agent_template",
+        allow_missing=True,
     )
-    _rmtree(pkg_dir)
+    if pkg_dir is not None:
+        _rmtree(pkg_dir)
     remove_agent_template_marketplace_entry(package_id)
     store.remove(record.asset_id if record is not None else requested_id)
 
@@ -3259,8 +3339,10 @@ def uninstall_agent_group(params: dict) -> None:
         package_id,
         kind=_AGENT_GROUP_KIND,
         kind_label="agent_group",
+        allow_missing=True,
     )
-    _rmtree(pkg_dir)
+    if pkg_dir is not None:
+        _rmtree(pkg_dir)
     remove_agent_group_marketplace_entry(package_id)
 
 
@@ -3271,9 +3353,11 @@ def uninstall_plugin_package(params: dict) -> None:
     record = store.get(requested_id) or store.get_by_package_id(requested_id)
     package_id = record.package_id if record is not None else requested_id
     pkg_dir = _locate_user_package_dir(
-        package_id, kind=_PLUGIN_PACKAGE_KIND, kind_label="plugin"
+        package_id, kind=_PLUGIN_PACKAGE_KIND, kind_label="plugin",
+        allow_missing=True,
     )
-    _rmtree(pkg_dir)
+    if pkg_dir is not None:
+        _rmtree(pkg_dir)
     remove_plugin_marketplace_entry(package_id)
     store.remove(record.asset_id if record is not None else requested_id)
 

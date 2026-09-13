@@ -404,7 +404,12 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               toolResultDedupDropped: 0,
             },
             taskQueue: [],
-            pendingQuestions: [],
+            // pendingQuestions 有意不在这里清空：重新挂载会话时，后端在
+            // session.switch 上重推仍未回答的审批提示（parked ToolInterruptionState
+            // 重建），而该推送可能赶在 history restore 的事件挂起窗口之前到达——若在
+            // 这里清空，restore 收尾会把刚重推的提示抹掉，工具调用继续无声等待。
+            // 队列的真正清空点是 consumePendingQuestion / clearPendingQuestions /
+            // 新消息发送 / clearCurrentTurnData。
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1095,6 +1100,15 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
       const existingExecution = runtime.toolExecutions.get(incomingToolCallId);
 
       if (!existingExecution) {
+        // The ask for this call is already on screen: a failure arriving now is
+        // the interrupt's synthetic result, not an outcome. Keep it out of the
+        // orphan map so the resumed run's tool call starts clean.
+        if (
+          runtime.pendingQuestions.some((q) => q.request_id === incomingToolCallId) &&
+          !toolResult.pending
+        ) {
+          return state;
+        }
         const nextOrphanResults = new Map(runtime.orphanResults);
         const duplicatedOrphan = nextOrphanResults.get(incomingToolCallId);
         if (
@@ -1138,7 +1152,17 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         existingExecution.result,
         toolResult
       );
-      const nextStatus = resolveExecutionStatus(mergedToolResult);
+      // A permission ask for this very call is still unanswered: the host's
+      // resilience rail turns the propagating interrupt into a synthetic
+      // failed result, which reaches here before the resumed run does. The call
+      // has not failed -- it is waiting on the person -- so it stays pending
+      // instead of flashing "失败" until the real outcome arrives.
+      const awaitingPermission =
+        runtime.pendingQuestions.some((q) => q.request_id === incomingToolCallId) &&
+        !mergedToolResult.pending;
+      const nextStatus = awaitingPermission
+        ? 'pending'
+        : resolveExecutionStatus(mergedToolResult);
 
       if (
         shouldDropToolResult(
@@ -1494,6 +1518,25 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
     set((state) => {
       const runtime = state.runtimes[sessionId];
       if (!runtime) return state;
+      // The mirror of the guard in setToolResult, for the other ordering: the
+      // synthetic failed result may land before the ask that explains it. An
+      // execution marked failed under the ask's own id is really waiting.
+      let toolExecutions = runtime.toolExecutions;
+      let orphanResults = runtime.orphanResults;
+      const askId = question?.request_id ?? '';
+      const parked = askId ? toolExecutions.get(askId) : undefined;
+      if (parked && (parked.status === 'error' || parked.status === 'timeout')) {
+        toolExecutions = new Map(toolExecutions);
+        toolExecutions.set(askId, { ...parked, status: 'pending', result: undefined });
+      }
+      // The usual shape: the interrupt fires before the tool-call event, so the
+      // synthetic failure arrives as an orphan result. Dropping it here keeps the
+      // resumed run's tool call from adopting a failure that never happened.
+      const orphan = askId ? orphanResults.get(askId) : undefined;
+      if (orphan && !orphan.pending) {
+        orphanResults = new Map(orphanResults);
+        orphanResults.delete(askId);
+      }
       const pendingQuestions = enqueuePendingQuestions(runtime.pendingQuestions, question);
       return {
         runtimes: {
@@ -1501,6 +1544,8 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           [sessionId]: {
             ...runtime,
             pendingQuestions,
+            toolExecutions,
+            orphanResults,
           },
         },
       };

@@ -70,6 +70,7 @@ XIAOYI_PHONE = _tools.XIAOYI_PHONE
 SYMPHONY_TOOLKIT = _tools.SYMPHONY_TOOLKIT
 CRON_TOOLS = _runtime_tools.CRON_TOOLS
 SEND_FILE = _runtime_tools.SEND_FILE
+CLOUDDOC_TOOLS = _runtime_tools.CLOUDDOC_TOOLS
 MEMBER_SKILL_TOOLKIT = _skills.MEMBER_SKILL_TOOLKIT
 # Generic tools provided + registered by openjiuwen (referenced by bare name).
 WEB_SEARCH = _OJ_WEB_SEARCH
@@ -185,6 +186,7 @@ def register_swarm_providers() -> None:
 __all__ = [
     "PERSONAL_CONTEXT",
     "register_swarm_providers",
+    "CLOUDDOC_TOOLS",
     "SKILL_TOOLKIT",
     "SKILL_RETRIEVAL",
     "USER_TODOS",

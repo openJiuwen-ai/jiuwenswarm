@@ -104,3 +104,8 @@ report/index.html
 /sub_agents/
 /context/
 /.plans/
+# Per-session runtime state written beside the packaged resources by a test whose
+# config dir resolved there; never source.
+jiuwenswarm/resources/runtime_state/
+# Media-capability lock the app writes beside whatever .env it resolved; never source.
+*.media-capability.lock

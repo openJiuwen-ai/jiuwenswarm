@@ -2,6 +2,7 @@
 
 """Pytest configuration and shared fixtures."""
 
+import logging
 import os
 import sys
 import tempfile
@@ -9,6 +10,29 @@ from pathlib import Path
 from typing import Generator
 
 import pytest
+
+
+@pytest.fixture(autouse=True)
+def _jiuwenswarm_logs_reach_caplog() -> Generator[None, None, None]:
+    """Let ``caplog`` see records from the ``jiuwenswarm`` logger tree.
+
+    ``jiuwenswarm.common.utils`` calls ``setup_logger()`` at import time, which sets
+    ``propagate = False`` on the ``jiuwenswarm`` logger and attaches its own handlers.
+    ``caplog`` installs its handler on the *root* logger, so nothing ever reaches it
+    and every ``caplog.records`` assertion sees an empty list — the warning is emitted
+    and visible on stderr, yet the test fails.
+
+    A test asserting on what was warned about should not be hostage to how the
+    deployment configures logging, so propagation is restored for the duration of the
+    test and put back afterwards.
+    """
+    logger = logging.getLogger("jiuwenswarm")
+    previous = logger.propagate
+    logger.propagate = True
+    try:
+        yield
+    finally:
+        logger.propagate = previous
 
 
 @pytest.fixture

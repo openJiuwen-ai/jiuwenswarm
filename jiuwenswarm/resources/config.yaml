@@ -281,6 +281,17 @@ models:
         stream_first_chunk_timeout: 300
         # 流式：分片之间的最大空闲等待时间（秒）
         stream_idle_timeout: 120
+        # 流式：整个回合的墙钟上限（秒），0 表示不限。
+        #
+        # 与上面两个不是一回事：它们量的是「静默多久」，而一个不停输出推理的模型
+        # 从不静默——实测有一个回合连吐 13 分钟、9500 个推理块、其间不再调用任何
+        # 工具，上面两个超时都不会触发，请求超时也不会，因为那是一条一直没结束的
+        # 流。这一条量的是整轮时长。
+        #
+        # 放宽是有意的：真实回合读大文档、思考、再写入，几分钟很正常，掐断一个
+        # 正在干活的回合比让卡住的多跑一会儿更糟。可用环境变量
+        # JIUWEN_STREAM_TURN_CEILING_S 覆盖。
+        stream_turn_ceiling: 1200
         verify_ssl: true
         custom_headers: {}
       model_config_obj:
@@ -812,6 +823,77 @@ health_check:
     start: 08:00
     end: 22:00
 
+# 云文档协同（co-scribe）：agent 作为协作者加入共享文档，人 @ 它、它提议、人批准、watcher 落地。
+# 默认关闭；开启前需要一个具备**编辑权**的服务账号——仅评论权会让 revisionId 消失，
+# 并发保护随之静默蒸发（纳管准入会拒绝这种文档）。
+clouddoc:
+  enabled: false
+  # 连接 = 厂商 × 账号，一个连接一个服务账号。「文档」面板的增删直接写回这里。
+  # 同一篇文档只能属于一个连接：两个身份盯同一篇，每条 @ 会收到两份回应，启动时
+  # 会跳过重复项并告警。
+  # 旧的单连接写法（顶层 credentials_file + documents）仍然可用，等价于只有一个
+  # 连接；从面板做任何增删后会被升级成下面这个形状。
+  connections: []
+  # - credentials_file: ""      # 服务账号 JSON 密钥路径；留空则该连接不启动
+  #   documents: []             # 纳管的文档，接受文档 id 或完整链接
+  # 轮询间隔（秒）。Drive 没有评论的推送通道,只能轮询。
+  poll_interval_seconds: 30
+  # 单轮作业超时（秒）。传输层硬上限 600s,本值启动时被钳到 540（=600×0.9）——
+  # 取满 600 会与传输层竞态且异常类型不确定,取更大则本侧的 wait_for 成为死代码。
+  turn_timeout_seconds: 540
+  # 一个文档会话跑满这么多轮后换新会话。不换会让上下文无界增长,最终每轮都在重放
+  # 几百条历史评论。
+  session_max_turns: 50
+  # 约定标记与两个词表两两不得相等、不得互为前缀,启动时校验。
+  # 触发词已移除:它不带身份,一条以它开头的评论会触发**所有**盯着该文档的部署。
+  # 现在只有在批注或其回复里 @ 该 agent 的地址才触发；平台的「指派」字段不读。
+  # 纳管策略（D2，二值）：off = 纳管与委托分离（默认，零派发）；
+  # apply_scoped = 纳管即自动签发「操作权」watch
+  # （写这一行本身就是你的批量签字，面板设置时会再要一次确认）。
+  # 自动签发的 watch 与手动开的同权同显同审计。
+  # 只有这两个取值；其它值（含已退役的 reply_only）一律按 off 处理并告警——
+  # 认不出的档位只能落到「不派发」，不能落到唯一还在的、也更宽的那一档。
+  # 共享文档的定期发现。共享即纳管的语义不变,变的只是触发时机:此前唯一的
+  # 调用方是「Docs 面板被打开」,纯聊天渠道的部署可能从不打开 Web UI,共享给
+  # 服务账号的文档就一直进不来。关掉则退回只在面板打开时纳管。
+  # 纳管后的档位仍由上面的 auto_watch_on_adopt 决定(默认 off = 零派发)。
+  auto_discover_shared: true
+  # 一轮发现要列出该连接的整个 Drive 面,比评论轮询贵得多,故用慢节奏。
+  # 低于 60 秒按 60 秒处理。
+  discover_interval_seconds: 300
+  auto_watch_on_adopt: "off"
+  # Model for unattended turns. Empty = the deployment default (the is_default
+  # entry under models). Must be a name registered under models; the Settings
+  # page sets it and the next dispatched turn picks it up.
+  model_name: ""
+  # D21 tier: mandate (default, the full harness) / direct (bare editing: no
+  # receipts, no unattended dispatch). The Docs page switches it.
+  mode: mandate
+  # 工作方式文件（部署级风格约定，§4.8/D4）。留空用默认位置
+  # （工作空间 config/clouddoc-workmode.md）；缺失时回退内置模板。每次派发重读。
+  workmode_file: ""
+  conventions_marker: "co-scribe 约定"
+  # 其它 agent 的 open_id 名册。此平台的批注载荷只带裸 user_id、无身份类型,凭
+  # 检查分不出 bot 与人;名册补上这个事实,使「agent 写的不触发」这条防回环轨在
+  # 飞书生效——尤其在「@ 即触发」的平台上,防止 agent 用 @ 招募 agent。
+  # Google 的服务账号地址自带 iam.gserviceaccount.com 后缀,凭地址就认得出 agent,
+  # 不需要名册;飞书需要。
+  agent_roster: []
+  # 活性刹车:每篇文档在滚动窗口内的派发次数上限,防 A@B、B@A 指针边成环把
+  # 当日额度瞬间烧空。是部署级安全底线,不是按篇可调的策略。默认宽松到活跃
+  # 文档不会误触、紧到失控回环一个轮次内即停。
+  dispatch_rate_max: 10
+  dispatch_rate_window_seconds: 120
+  # 范围轨：代码强制,不是提示词
+  rail:
+    # D23 后已退役为授权量：授权窗=选区按结构档位扩展，不再默认外扩。字段保留仅为配置兼容。
+    adjacent_budget: 200
+    # 引用上限。Drive 实测在 ~418 字符处截断并以省略号收尾,截断是可检测的,
+    # 这个值只是兜底。
+    max_quote_chars: 400
+    max_insert_chars: 2000
+    max_edits: 10
+
 # 执行护栏：工具循环检测与主动中断
 execution_guard:
   # 模型异常检测护栏：重复输出/流式帧超时重试，以及连续相同工具调用压缩
@@ -1085,6 +1167,25 @@ permissions:
     cron_toggle_job: allow
     cron_preview_job: allow
     acp_chat: ask
+    # 云文档协同（co-scribe）。这里的取值必须与 UNATTENDED_ALLOWLIST 对齐:
+    # 无人值守轮次上 ask 会被默认拒绝分支判成拒绝(不是挂起),所以 watcher 路径
+    # 需要的四个工具只能是 allow,否则开启权限后整条链路直接失效。
+    # 另外两个在 watcher 路径上根本不注册,故这里的取值只作用于有人在场的聊天路径。
+    # 六个工具必须逐个登记:未登记的工具在权限层落到 level is None 分支,判成 deny
+    # 而不是放行——开启权限后 agent 会连自己纳管了哪篇文档都查不到,退回问用户要链接。
+    clouddoc_read: allow
+    clouddoc_list_comments: allow
+    clouddoc_reply_comment: allow
+    clouddoc_list_documents: allow
+    clouddoc_batch_edit: ask
+    clouddoc_write_region: ask
+    clouddoc_add_page: ask
+    clouddoc_create_document: ask
+    clouddoc_share_document: ask
+    clouddoc_trash_document: ask
+    clouddoc_apply_for_comment: ask  # 仅无人值守闭集实际可用；聊天路径工具自身拒绝
+    clouddoc_workmode_get: allow
+    clouddoc_workmode_edit: ask      # 改工作方式需确认；无人值守由 UNATTENDED_DENYLIST 在注册层拒绝
 
   rules:
     - id: shell_allow_dir

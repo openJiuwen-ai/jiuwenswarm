@@ -14,6 +14,7 @@ import asyncio
 from dataclasses import replace
 import inspect
 import logging
+import os
 import re
 import shutil
 import tempfile
@@ -930,6 +931,8 @@ _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.AGENT_TEMPLATES_UNINSTALL: "uninstall_agent_template",
     ReqMethod.PLUGIN_PACKAGES_LIST: "list_plugin_packages",
     ReqMethod.PLUGIN_PACKAGES_SHOW: "show_plugin_package",
+    ReqMethod.PLUGIN_PACKAGES_FILE_LIST: "list_plugin_package_files",
+    ReqMethod.PLUGIN_PACKAGES_FILE_READ: "read_plugin_package_file",
     ReqMethod.PLUGIN_PACKAGES_CREATE: "create_plugin_package",
     ReqMethod.PLUGIN_PACKAGES_IMPORT_LOCAL: "import_plugin_package",
     ReqMethod.PLUGIN_PACKAGES_INSTALL: "install_plugin_package",
@@ -944,6 +947,68 @@ _SKILL_COMMAND_REGEX = re.compile(
 # 用户输入 "/statusline <描述>" → 让父代理调用内置 statusline-setup 子代理
 # 排除已知子命令（set, padding, clear, help, json）——这些由 TUI 前端本地处理，
 # 但如果消息经过 Gateway 传到 AgentServer，后端也需要区分。
+# The wall-clock ceiling on one streamed turn, in seconds.
+#
+# Not an idle timeout: a model that reasons without ever stopping produces a stream
+# that is never idle, and neither the 120s idle timeout nor the 420s request timeout
+# can end it. Measured live, a turn ran thirteen minutes and 9,500 reasoning chunks
+# before it was killed by hand.
+#
+# Twenty minutes, because a genuine turn that reads a large document, thinks and writes
+# can take several, and ending a working turn early is the worse mistake. Configurable
+# through JIUWEN_STREAM_TURN_CEILING_S for a deployment whose turns are longer still;
+# zero disables it, which is what a debugging session wants and a production one does
+# not.
+_STREAM_TURN_CEILING_DEFAULT_S = 1200.0
+
+
+def _stream_turn_ceiling() -> float:
+    """The ceiling, from config with an environment override.
+
+    Config first, because that is where a deployment looks for the sibling timeouts and
+    where this one belongs next to them. The environment variable stays as the override
+    a debugging session reaches for without editing a file.
+
+    Read on each turn rather than cached: editing config.yaml fires no event, and a
+    value that only takes effect after a restart is one people give up on changing.
+    """
+    raw = os.environ.get("JIUWEN_STREAM_TURN_CEILING_S")
+    if raw is None:
+        try:
+            from jiuwenswarm.common.config import get_config
+
+            models = (get_config() or {}).get("models") or {}
+            # ``defaults`` is a **list** of model entries, not a mapping: a deployment
+            # can declare several and mark one is_default. The default entry is the one
+            # whose ceiling applies; failing that, the first that names one.
+            entries = models.get("defaults") or []
+            if isinstance(entries, dict):  # tolerate the older single-entry shape
+                entries = [entries]
+            cfg = None
+            for entry in sorted(
+                entries, key=lambda e: not (isinstance(e, dict) and e.get("is_default"))
+            ):
+                if not isinstance(entry, dict):
+                    continue
+                found = (entry.get("model_client_config") or {}).get("stream_turn_ceiling")
+                if found is not None:
+                    cfg = found
+                    break
+            raw = str(cfg) if cfg is not None else None
+        except Exception:  # noqa: BLE001 - an unreadable config must not remove the bound
+            raw = None
+    try:
+        value = float(raw) if raw is not None else _STREAM_TURN_CEILING_DEFAULT_S
+    except (TypeError, ValueError):
+        value = _STREAM_TURN_CEILING_DEFAULT_S
+    # Zero disables it, which a debugging session wants and a production one does not.
+    return float("inf") if value <= 0 else value
+
+
+# Kept as a module attribute for the tests that pin the default and for anything that
+# wants the value without a config read.
+_STREAM_TURN_CEILING_S = _stream_turn_ceiling()
+
 _STATUSLINE_KNOWN_SUBCOMMANDS = {"set", "padding", "clear", "help", "json", "get"}
 _STATUSLINE_PROMPT_REGEX = re.compile(
     r"^/statusline\s+(?P<description>.+)$"
@@ -2352,6 +2417,14 @@ class JiuWenSwarm:
                 if card is None:
                     raise ValueError(f"plugin not found: {name!r}")
                 payload = {"package": card}
+            elif method == ReqMethod.PLUGIN_PACKAGES_FILE_LIST:
+                payload = {
+                    "tree": package_manager.list_plugin_package_files(str(name or ""))
+                }
+            elif method == ReqMethod.PLUGIN_PACKAGES_FILE_READ:
+                payload = package_manager.read_plugin_package_file(
+                    str(name or ""), str(params.get("path", ""))
+                )
             elif method == ReqMethod.AGENT_TEMPLATES_INSTALL:
                 ok, payload = await package_manager.install_equipment_from_hub_gated(
                     "agent_templates", params
@@ -3346,10 +3419,40 @@ class JiuWenSwarm:
             nonlocal producer_cancellation
             logger.info("[JiuWenSwarm] run_stream_task started: request_id=%s session_id=%s", rid, session_id)
             _put_count = 0
+            # **A ceiling on the whole turn, not on silence between chunks.**
+            #
+            # The idle timeout cannot catch a model that reasons without stopping,
+            # because such a stream is never idle: measured live, one turn emitted
+            # 9,500 reasoning chunks over thirteen minutes, called no tool after the
+            # first two, and was still going when the process was killed by hand. The
+            # request timeout does not apply either -- the HTTP request is one long
+            # stream that never completes.
+            #
+            # So the bound is wall-clock across the turn. It is deliberately generous:
+            # a real turn that reads a document, thinks, and writes takes minutes, and
+            # cutting a working turn short is a worse failure than letting a stuck one
+            # run a little longer. What matters is that it ends, and that the person is
+            # told why rather than watching a spinner.
+            _ceiling = _stream_turn_ceiling()
+            _deadline = time.monotonic() + _ceiling
             producer_stream: AsyncIterator[AgentResponseChunk] | None = None
             try:
                 producer_stream = adapter.process_message_stream_impl(request, inputs)
                 async for chunk in producer_stream:
+                    if time.monotonic() > _deadline:
+                        logger.warning(
+                            "[JiuWenSwarm] 回合超过 %ss 上限仍未结束，已中止："
+                            "request_id=%s session_id=%s chunks=%s",
+                            _ceiling, rid, session_id, _put_count,
+                        )
+                        await stream_queue.put((
+                            "error",
+                            TimeoutError(
+                                f"这一轮超过 {int(_ceiling / 60)} 分钟仍未得出结论，已中止。"
+                                "模型可能陷入了反复推理；请换一种问法，或把任务拆小一些。"
+                            ),
+                        ))
+                        break
                     _put_count += 1
                     if _put_count <= 3:
                         _pl = getattr(chunk, "payload", None) or {}

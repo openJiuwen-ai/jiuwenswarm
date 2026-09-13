@@ -228,6 +228,10 @@ _COMMON_TOOL_NAMES: frozenset[str] = frozenset(
         registry.XIAOYI_PHONE,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
+        # Co-scribe. Declared for every member; the factory gates itself on
+        # clouddoc.enabled and on a configured connection, so a deployment that does
+        # not use it builds nothing.
+        registry.CLOUDDOC_TOOLS,
     }
 )
 
@@ -2210,6 +2214,9 @@ def test_code_capability_specs_rail_and_tool_names(mode: str) -> None:
         registry.CODE_EXTRA_TOOLS,
         registry.CRON_TOOLS,
         registry.SEND_FILE,
+        # Co-scribe, in the code profile too: a coding team reviews design documents in
+        # the same shared docs a chat team does.
+        registry.CLOUDDOC_TOOLS,
     }
 
 

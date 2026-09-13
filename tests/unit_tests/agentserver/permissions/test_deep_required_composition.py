@@ -126,9 +126,12 @@ def test_parent_composition_preserves_order_and_wiring(
         "_multimodal_image_rail "
         "_stream_event_rail _task_planning_rail _security_rail "
         "_model_anomaly_detection_rail _heartbeat_rail _circuit_breaker_rail _avatar_rail "
-        "_memory_forbidden_rail _subagent_rail _permission_rail "
+        # co-scribe's two host rails: the file guard sits in the build table after
+        # the memory-forbidden rail; the report-ledger rail is the standing one
+        # _instantiate_rails attaches after the table.
+        "_memory_forbidden_rail _clouddoc_file_guard_rail _subagent_rail _permission_rail "
         "_root_permission_completion_rail _context_processor_rail _eternal_conversation_rail "
-        "_ask_user_rail _work_agent_mode_rail _work_plan_approval_rail"
+        "_ask_user_rail _work_agent_mode_rail _work_plan_approval_rail _report_ledger_rail"
     ).split()
     expected_profile_rails = [
         getattr(adapter, attr)

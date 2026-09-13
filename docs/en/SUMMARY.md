@@ -43,6 +43,7 @@
   - [IDE Plugins](ide/jetbrains/JetBrains.md)
     - [JetBrains Guide](ide/jetbrains/JetBrainsGuide.md)
     - [VS Code Guide](ide/vscode/VSCodeGuide.md)
+  - [Cloud-document co-editing](CloudDoc.md)
   - [MCP Configuration](MCPConfiguration.md)
   - [Packaging desktop executables](PackExeGuide.md)
   - [ACP Plugin Usage](ACP_Client_Config.md)

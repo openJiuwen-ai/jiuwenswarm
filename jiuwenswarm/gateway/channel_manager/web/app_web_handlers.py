@@ -818,6 +818,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "agent_templates.uninstall",
     "plugin_packages.list",
     "plugin_packages.show",
+    "plugin_packages.file.list",
+    "plugin_packages.file.read",
     "plugin_packages.create",
     "plugin_packages.import_local",
     "plugin_packages.install",
@@ -990,6 +992,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "agent_templates.uninstall",
     "plugin_packages.list",
     "plugin_packages.show",
+    "plugin_packages.file.list",
+    "plugin_packages.file.read",
     "plugin_packages.create",
     "plugin_packages.import_local",
     "plugin_packages.install",
@@ -2506,6 +2510,7 @@ class WebHandlersBindParams:
     cron_controller: Any = None
     heartbeat_controller: Any = None
     updater_service: UpdaterService | None = None
+    clouddoc_panel: Any = None
 
 
 _CONTAINER_FILE_API_METHODS = (
@@ -2846,6 +2851,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel_manager = bind.channel_manager
     on_config_saved = bind.on_config_saved
     heartbeat_service = bind.heartbeat_service
+    clouddoc_panel = bind.clouddoc_panel
     cron_controller = bind.cron_controller
     heartbeat_controller = bind.heartbeat_controller
     updater_service = bind.updater_service
@@ -6651,6 +6657,177 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         except Exception as e:  # noqa: BLE001
             await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
 
+
+    # ── clouddoc.* handlers for the Docs panel; the service layer is in
+    #    gateway/clouddoc/panel.py ──
+
+    async def _clouddoc_call(ws, req_id, op, *args):
+        """One shell for every call: a disabled panel answers with a structured payload
+        the frontend renders as its guidance state, and exceptions are normalized."""
+        panel = _resolve(clouddoc_panel)
+        if panel is None:
+            await channel.send_response(ws, req_id, ok=True, payload={"enabled": False})
+            return
+        try:
+            payload = await getattr(panel, op)(*args)
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as e:  # noqa: BLE001 - an RPC boundary: every exception becomes a response
+            logger.exception("[clouddoc.%s] %s", op, e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _clouddoc_get_conf(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "get_conf")
+
+    # ── PR2b/c panel ops: the standing-mandate registry and receipts ──
+
+    async def _clouddoc_watch_list(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "watch_list")
+
+    async def _clouddoc_watch_usage(ws, req_id, params, session_id):
+        p = params or {}
+        await _clouddoc_call(ws, req_id, "watch_usage", str(p.get("doc_id") or ""))
+
+    async def _clouddoc_set_mode(ws, req_id, params, session_id):
+        p = params or {}
+        await _clouddoc_call(ws, req_id, "set_mode", str(p.get("mode") or ""))
+
+    async def _clouddoc_set_model(ws, req_id, params, session_id):
+        p = params or {}
+        await _clouddoc_call(ws, req_id, "set_model", str(p.get("model_name") or ""))
+
+    async def _clouddoc_set_poll_interval(ws, req_id, params, session_id):
+        """How often the watcher looks. Sits beside the watch controls because it is
+        the half of first-response time a deployment can actually choose."""
+        p = params or {}
+        await _clouddoc_call(ws, req_id, "set_poll_interval", p.get("seconds"))
+
+    async def _clouddoc_set_doc_model(ws, req_id, params, session_id):
+        """The per-document pin. The deployment-wide one above stays as the default."""
+        p = params or {}
+        await _clouddoc_call(
+            ws, req_id, "set_doc_model",
+            str(p.get("doc_id") or ""), str(p.get("model_name") or ""),
+        )
+
+    async def _clouddoc_watch_set(ws, req_id, params, session_id):
+        p = params or {}
+        panel = _resolve(clouddoc_panel)
+        if panel is None:
+            await channel.send_response(ws, req_id, ok=True, payload={"enabled": False})
+            return
+        try:
+            payload = await panel.watch_set(
+                str(p.get("doc_id") or ""), str(p.get("mode") or ""),
+                expires_at=p.get("expires_at"),
+                permanent=bool(p.get("permanent")),
+                budget=p.get("budget"),
+            )
+            await channel.send_response(ws, req_id, ok=True, payload=payload)
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[clouddoc.watch_set] %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _clouddoc_watch_revoke(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "watch_revoke", str((params or {}).get("doc_id") or ""))
+
+    async def _clouddoc_watch_revoke_all(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "watch_revoke_all")
+
+    async def _clouddoc_watch_set_many(ws, req_id, params, session_id):
+        p = params or {}
+        raw = p.get("doc_ids")
+        ids = [str(x) for x in raw if str(x or "")] if isinstance(raw, list) else []
+        await _clouddoc_call(ws, req_id, "watch_set_many", ids, str(p.get("mode") or ""))
+
+    async def _clouddoc_watch_revoke_many(ws, req_id, params, session_id):
+        raw = (params or {}).get("doc_ids")
+        ids = [str(x) for x in raw if str(x or "")] if isinstance(raw, list) else []
+        await _clouddoc_call(ws, req_id, "watch_revoke_many", ids)
+
+    async def _clouddoc_watch_audit(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "watch_audit", int((params or {}).get("limit") or 100))
+
+
+    async def _clouddoc_receipts(ws, req_id, params, session_id):
+        # Derived per doc: the history view's receipt feed.
+        p = params or {}
+        panel = _resolve(clouddoc_panel)
+        if panel is None:
+            await channel.send_response(ws, req_id, ok=True, payload={"enabled": False})
+            return
+        try:
+            from jiuwenswarm.extensions.co_scribe.backend.toolkit.receipts import ReceiptStore
+
+            items = ReceiptStore().list_for(str(p.get("doc_id") or ""), limit=int(p.get("limit") or 50))
+            await channel.send_response(ws, req_id, ok=True, payload={"receipts": items})
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[clouddoc.receipts] %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _clouddoc_unhighlight(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "unhighlight", str((params or {}).get("receipt_id") or ""))
+
+    async def _clouddoc_list_docs(ws, req_id, params, session_id):
+        panel = _resolve(clouddoc_panel)
+        if panel is None:
+            await channel.send_response(ws, req_id, ok=True, payload={"enabled": False, "docs": []})
+            return
+        try:
+            docs = await panel.list_docs()
+            await channel.send_response(ws, req_id, ok=True, payload={"enabled": True, "docs": docs})
+        except Exception as e:  # noqa: BLE001
+            logger.exception("[clouddoc.list_docs] %s", e)
+            await channel.send_response(ws, req_id, ok=False, error=str(e), code="INTERNAL_ERROR")
+
+    async def _clouddoc_sync_shared_docs(ws, req_id, params, session_id):
+        p = params if isinstance(params, dict) else {}
+        await _clouddoc_call(ws, req_id, "sync_shared_docs", p.get("connection_id"))
+
+    async def _clouddoc_sync_all_shared_docs(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "sync_all_shared_docs")
+
+    async def _clouddoc_add_doc(ws, req_id, params, session_id):
+        p = params if isinstance(params, dict) else {}
+        url = p.get("url", "")
+        if not url:
+            await channel.send_response(ws, req_id, ok=False, error="params.url required", code="BAD_REQUEST")
+            return
+        await _clouddoc_call(ws, req_id, "add_doc", url, p.get("connection_id"))
+
+    async def _clouddoc_list_keys(ws, req_id, params, session_id):
+        await _clouddoc_call(ws, req_id, "list_keys")
+
+    async def _clouddoc_delete_key(ws, req_id, params, session_id):
+        p = params if isinstance(params, dict) else {}
+        if not p.get("filename"):
+            await channel.send_response(ws, req_id, ok=False,
+                                        error="params.filename required", code="BAD_REQUEST")
+            return
+        await _clouddoc_call(ws, req_id, "delete_key", p.get("filename"))
+
+    async def _clouddoc_add_connection(ws, req_id, params, session_id):
+        p = params if isinstance(params, dict) else {}
+        if not p.get("credentials_path") and not p.get("credentials_json"):
+            await channel.send_response(ws, req_id, ok=False,
+                                        error="credentials_path or credentials_json required", code="BAD_REQUEST")
+            return
+        await _clouddoc_call(ws, req_id, "add_connection",
+                             p.get("credentials_path"), p.get("credentials_json"), p.get("filename"))
+
+    async def _clouddoc_remove_connection(ws, req_id, params, session_id):
+        conn_id = (params or {}).get("connection_id", "") if isinstance(params, dict) else ""
+        if not conn_id:
+            await channel.send_response(ws, req_id, ok=False, error="params.connection_id required", code="BAD_REQUEST")
+            return
+        await _clouddoc_call(ws, req_id, "remove_connection", conn_id)
+
+    async def _clouddoc_update_doc(ws, req_id, params, session_id):
+        doc_id = (params or {}).get("doc_id", "") if isinstance(params, dict) else ""
+        if not doc_id:
+            await channel.send_response(ws, req_id, ok=False, error="params.doc_id required", code="BAD_REQUEST")
+            return
+        await _clouddoc_call(ws, req_id, "update_doc", doc_id)
+
     channel.register_method("external_cli.detect", _external_cli_detect)
     channel.register_method("external_cli.codex_install_status", _external_cli_codex_install_status)
     channel.register_method("external_cli.install_status", _external_cli_install_status)
@@ -6790,6 +6967,41 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("commands.list", _commands_list)
 
     channel.register_method("chat.send", _chat_send)
+    channel.register_method("clouddoc.get_conf", _clouddoc_get_conf)
+    channel.register_method("clouddoc.list_docs", _clouddoc_list_docs)
+    channel.register_method("clouddoc.sync_shared_docs", _clouddoc_sync_shared_docs)
+    channel.register_method("clouddoc.sync_all_shared_docs", _clouddoc_sync_all_shared_docs)
+    channel.register_method("clouddoc.list_keys", _clouddoc_list_keys)
+    channel.register_method("clouddoc.delete_key", _clouddoc_delete_key)
+    channel.register_method("clouddoc.add_doc", _clouddoc_add_doc)
+    channel.register_method("clouddoc.update_doc", _clouddoc_update_doc)
+    channel.register_method("clouddoc.add_connection", _clouddoc_add_connection)
+    channel.register_method("clouddoc.remove_connection", _clouddoc_remove_connection)
+    channel.register_method("clouddoc.watch_list", _clouddoc_watch_list)
+    channel.register_method("clouddoc.watch_usage", _clouddoc_watch_usage)
+    if clouddoc_panel is not None:
+        # Receipts land from other processes; the gateway watches the shared ledger
+        # file and pushes, so the workbench does not have to poll (see the module).
+        from jiuwenswarm.extensions.co_scribe.backend.host.panel.receipts_watch import watch_receipts_file
+
+        asyncio.create_task(
+            watch_receipts_file(channel.broadcast_event),
+            name="clouddoc.receipts_watch",
+        )
+    channel.register_method("clouddoc.set_mode", _clouddoc_set_mode)
+    channel.register_method("clouddoc.set_model", _clouddoc_set_model)
+    channel.register_method("clouddoc.set_doc_model", _clouddoc_set_doc_model)
+    channel.register_method("clouddoc.set_poll_interval", _clouddoc_set_poll_interval)
+    channel.register_method("clouddoc.watch_set", _clouddoc_watch_set)
+    channel.register_method("clouddoc.watch_revoke", _clouddoc_watch_revoke)
+    channel.register_method("clouddoc.watch_revoke_all", _clouddoc_watch_revoke_all)
+    # The panel acts on a selection: what is being turned on or off is on screen
+    # while it is decided, which the deployment-wide switches never were.
+    channel.register_method("clouddoc.watch_set_many", _clouddoc_watch_set_many)
+    channel.register_method("clouddoc.watch_revoke_many", _clouddoc_watch_revoke_many)
+    channel.register_method("clouddoc.watch_audit", _clouddoc_watch_audit)
+    channel.register_method("clouddoc.receipts", _clouddoc_receipts)
+    channel.register_method("clouddoc.unhighlight", _clouddoc_unhighlight)
     channel.register_method("media.persist", _media_persist)
     channel.register_method("document.persist", _document_persist)
     channel.register_method("document.formats", _document_formats)

@@ -103,6 +103,12 @@ harmony = [
 ]
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
+# 云文档协同（co-scribe）。可选：不装这两个包时 clouddoc.enabled 会在启动期
+# 被判为不可用并跳过,不影响其余功能。
+clouddoc = [
+    "google-api-python-client>=2.190.0",
+    "google-auth>=2.40.0",
+]
 desktop = ["pywebview>=5.4,<7"]
 dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
 tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
@@ -168,6 +174,13 @@ jiuwenswarm = [
     "extensions/**/*.yaml",
     "extensions/**/*.yml",
     "extensions/**/*.md",
+    # An application plugin's identity assets: the host inlines the icon it
+    # declares in its frontend contribution straight out of the wheel.
+    "extensions/**/*.png",
+    "extensions/**/*.svg",
+    "extensions/**/*.jpg",
+    "extensions/**/*.jpeg",
+    "extensions/**/*.webp",
 ]
 jiuwenbox = [
     "configs/**/*",

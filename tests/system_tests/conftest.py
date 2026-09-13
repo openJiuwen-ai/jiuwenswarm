@@ -48,10 +48,18 @@ def clean_environment(temp_home: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     # Clear any cached configuration
     monkeypatch.delenv("JIUWENSWARM_CONFIG_DIR", raising=False)
 
-    # Use set_user_home to set custom home directory
-    utils_module.set_user_home(temp_home)
-
-    # Reset cache variables
+    # Redirect the home and drop every cache derived from it. These go through
+    # monkeypatch rather than set_user_home(): that function assigns the module globals
+    # directly, so nothing restored them afterwards and the temporary home -- by then a
+    # deleted directory -- leaked into every later test in the session.
+    #
+    # _workspace_base_dir is the one that matters most. It caches ``<home>/.jiuwenswarm``
+    # and get_user_workspace_dir() returns it *before* consulting get_user_home(), so
+    # leaving it set kept every path pointing at the developer's real workspace. A test
+    # calling run_init(force=True) then wiped the real ~/.jiuwenswarm/config -- including
+    # clouddoc-keys/ and config.yaml -- and still passed.
+    monkeypatch.setattr(utils_module, "_user_home", temp_home)
+    monkeypatch.setattr(utils_module, "_workspace_base_dir", None)
     monkeypatch.setattr(utils_module, "_initialized", False)
     monkeypatch.setattr(utils_module, "_config_dir", None)
     monkeypatch.setattr(utils_module, "_workspace_dir", None)

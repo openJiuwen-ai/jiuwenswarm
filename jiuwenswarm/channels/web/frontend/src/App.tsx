@@ -16,6 +16,10 @@ import CronPanel from './components/CronPanel';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
+import { DocWorkbench } from '../../../../extensions/co_scribe/frontend/DocWorkbench';
+import { CO_SCRIBE_PLUGIN_ID } from '../../../../extensions/co_scribe/frontend/pluginId';
+import { useDocWorkbenchStore } from '../../../../extensions/co_scribe/frontend/stores/docWorkbenchStore';
+import { OPEN_DOC_EVENT, consumePendingOpenDoc } from '../../../../extensions/co_scribe/frontend/features/clouddoc/openDocSignal';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
 import { SettingsPage } from './features/settings/SettingsPage';
@@ -752,6 +756,7 @@ function AppContent({
   const settleHistoricalToolExecutions = useChatStore((s) => s.settleHistoricalToolExecutions);
   const prependMessages = useChatStore((s) => s.prependMessages);
   const isProcessing = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
+  const docWorkbenchOpen = useDocWorkbenchStore((s) => s.open && s.tabs.length > 0);
   const isPaused = useChatStore((s) => s.runtimes[sessionId]?.isPaused ?? false);
   const hasPendingQuestion = useChatStore((s) => Boolean(s.runtimes[sessionId]?.pendingQuestions[0]));
   const setProcessing = useChatStore((s) => s.setProcessing);
@@ -935,6 +940,8 @@ function AppContent({
     },
     onDisconnect: () => {
       console.log('Disconnected');
+
+
     },
     onError: (error) => {
       console.error('WebSocket error:', error);
@@ -960,6 +967,16 @@ function AppContent({
       }
     },
   });
+
+  // The workbench keeps one set of tabs per session. Each session's documents are
+  // parked when it goes off screen and restored when it comes back, and a new task
+  // begins on an empty workbench; the "new conversation" placeholder is not a session
+  // and owns no tabs.
+  useEffect(() => {
+    useDocWorkbenchStore.getState().setSession(
+      sessionId && sessionId !== NEW_CONVERSATION_ID ? sessionId : null,
+    );
+  }, [sessionId]);
   const applicationPluginState = useApplicationPlugins(isConnected);
   const applicationPlugins = applicationPluginState.plugins;
   const visibleApplicationPlugins = enabledApplicationPlugins(applicationPlugins);
@@ -1524,6 +1541,96 @@ function AppContent({
       window.clearTimeout(timeoutId);
     };
   }, [isConnected, request]);
+
+  useEffect(() => {
+    const onOpenDoc = () => {
+      // Opening a document lands in the workbench (release §14), which lives in
+      // the chat view so the session's composer is the one below the document.
+      // The row's metadata comes from the panel's own list; a document the list
+      // does not know is still opened by id, with the id as its title.
+      const pending = consumePendingOpenDoc();
+      if (!pending) return;
+      const { docId, receiptId } = pending;
+      // A locate asked for from the Docs panel's timeline: the workbench owns
+      // the machinery, so the request is left where it looks for one once the
+      // document is open.
+      const locate = () => {
+        if (receiptId) useDocWorkbenchStore.getState().requestLocate(docId, receiptId, '');
+      };
+      // **One retry, because a miss here manufactures a document that does not exist.**
+      // The deployment holds this row -- title, kind and the tenant URL -- so a tab
+      // that says "platform link unknown, paste the link again" about a document
+      // nobody ever pasted is always a lookup that failed, never a document that is
+      // short of data. Observed on a Feishu deck whose row was simply absent from one
+      // call: the tab took the bare 27-character token as its name and offered a
+      // repair the person could not perform. A missing row is therefore retried once
+      // before anything is drawn from the absence.
+      type DocRow = { doc_id: string; title?: string; kind?: string; url?: string; provider?: string; provider_name?: string };
+      const lookup = async (): Promise<DocRow | undefined> => {
+        const out = await webRequest<{ docs?: DocRow[] }>('clouddoc.list_docs');
+        return (out?.docs ?? []).find((d) => d.doc_id === docId);
+      };
+      void (async () => {
+        let found: DocRow | undefined;
+        try {
+          found = await lookup();
+          if (!found) found = await lookup();
+        } catch {
+          try {
+            found = await lookup();
+          } catch {
+            found = undefined;
+          }
+        }
+        return { docs: found ? [found] : [] };
+      })()
+        .then((out) => {
+            const row = (out?.docs ?? []).find((d) => d.doc_id === docId);
+          // A row the list does not carry still opens, but it used to open as a
+          // *document with no link* -- so a spreadsheet arrived wearing a document's
+          // icon and the frame said "platform link unknown, paste the link again"
+          // about a document whose link is arithmetic. Google addresses a file by its
+          // id and its kind; only Feishu needs a tenant domain that nothing but a
+          // pasted link carries. So the fallback computes what it can and stays quiet
+          // where it genuinely cannot.
+          const kind = row?.kind || 'document';
+          const gPath =
+            kind === 'spreadsheet' ? 'spreadsheets'
+            : kind === 'presentation' ? 'presentation'
+            : 'document';
+          const looksGoogle =
+            row?.provider === 'google' || (!row?.provider && /^1[A-Za-z0-9_-]{25,}$/.test(docId));
+          useDocWorkbenchStore.getState().openDoc({
+            docId,
+            title: row?.title || docId,
+            kind,
+            url: row?.url || (looksGoogle ? `https://docs.google.com/${gPath}/d/${docId}/edit` : ''),
+            provider: row?.provider || '',
+            providerName: row?.provider_name,
+          });
+          locate();
+          setActiveNav('chat');
+        })
+        .catch(() => {
+          // list_docs itself failed. The id is still all Google needs, so a Google-shaped
+          // id keeps its link rather than opening a frame that blames the person for a
+          // link nobody ever had to paste.
+          useDocWorkbenchStore.getState().openDoc({
+            docId,
+            title: docId,
+            kind: 'document',
+            url: /^1[A-Za-z0-9_-]{25,}$/.test(docId)
+              ? `https://docs.google.com/document/d/${docId}/edit`
+              : '',
+            provider: '',
+          });
+          locate();
+          setActiveNav('chat');
+        });
+    };
+    window.addEventListener(OPEN_DOC_EVENT, onOpenDoc);
+    return () => window.removeEventListener(OPEN_DOC_EVENT, onOpenDoc);
+  }, []);
 
   const clearRestartAutoCloseTimer = useCallback(() => {
     if (restartAutoCloseTimerRef.current != null) {
@@ -3130,6 +3237,23 @@ function AppContent({
     && missingSessionId === routeSessionId
     && isConversationMissing(routeSessionId, true, sessions);
   const showConversationNotFound = route.kind === 'not-found' || routeSessionMissing;
+  // The workbench takes the whole chat view: the conversation sidebar (the "工作"
+  // column) folds away with it, as the owner's layout has only the icon rail on
+  // the left; 退出编辑 brings the sidebar back.
+  // A new conversation counts: clicking "open in the workbench" from the new-task
+  // home used to hide the workbench silently, which reads as a dead click. The
+  // composer below the document is the session's own, and sending the first
+  // message from there promotes the new conversation exactly as the chat view
+  // does, so the workbench stays up across the promotion (verified live).
+  // Everything the workbench renders is co-scribe UI: turning the plugin off
+  // takes it away wholesale, tabs and all. The workbench is not a nav page, so
+  // it has no contribution point of its own yet -- but its enabled flag is read
+  // from the same manifest entry that decides whether the Docs page is listed,
+  // so the two can never disagree.
+  const coScribeEnabled = applicationPlugins.some(
+    (plugin) => plugin.plugin_id === CO_SCRIBE_PLUGIN_ID && plugin.enabled !== false,
+  );
+  const docWorkbenchShown = coScribeEnabled && docWorkbenchOpen && !showConversationNotFound && !!sessionId;
 const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFound && !shouldFullscreen;
   const isNewSessionPromotion = Boolean(sessionId && sessionIdsCreatedInThisPageRef.current.has(sessionId));
   const composerFocusKey = showConversationNotFound ? null : `${sessionId}:${composerFocusNonce}`;
@@ -3185,6 +3309,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {activeNav === 'chat' && (
           <>
             <div className="chat-layout flex-1 flex min-h-0 overflow-hidden">
+              {!docWorkbenchShown && (
               <ConversationSidebar
                 activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
@@ -3196,8 +3321,31 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 floating={conversationSidebarFloating}
                 onToggleCollapse={() => setConversationSidebarCollapsed((v) => !v)}
               />
+              )}
+              {docWorkbenchShown && (
+                <DocWorkbench
+                  onUserAnswer={handleUserAnswer}
+                  composer={{
+                    onSubmit: handleSendMessage,
+                    onEnsureSession: ensureApplicationPluginSession,
+                    onInputIntent: kvCacheAffinityEnabled ? handleKVCInputIntent : undefined,
+                    onPersistMedia: handlePersistMedia,
+                    onPersistDocuments: handlePersistDocuments,
+                    onInterrupt: handleInterrupt,
+                    onCancel: handleCancel,
+                    onSwitchMode: handleSwitchMode,
+                    isProcessing,
+                    permissionsEnabled: serverConfig?.permissions_enabled !== 'false',
+                    onSavePermission: savePermissionSilent,
+                    onSetGoal: setGoalObjective,
+                    onClearGoal: handleClearGoal,
+                    onDrainTaskQueueIfIdle: drainTaskQueueIfIdle,
+                  }}
+                />
+              )}
               <div
                 className={`chat-workspace flex-1 flex min-h-0 overflow-hidden ${insetTrajectoryFloatingTasks ? 'chat-workspace--trajectory-floating-tools' : ''}`}
+                style={docWorkbenchShown ? { display: 'none' } : { position: 'relative' }}
               >
                 {showConversationNotFound && (
                   <div className="flex-1 flex flex-col items-center justify-center gap-4" data-testid="app-conversation-not-found">

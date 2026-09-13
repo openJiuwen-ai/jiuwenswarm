@@ -1222,8 +1222,36 @@ const frontendPort = portFromEnv('FRONTEND_PORT', 5173)
 const webPort = portFromEnv('WEB_PORT', 19000)
 const webTarget = `http://127.0.0.1:${webPort}`
 
+/**
+ * Bare imports made by a bundled application plugin.
+ *
+ * A plugin's frontend lives outside this project root
+ * (``../../../extensions/<name>/frontend``, compiled in through
+ * ApplicationPluginOutlet's ``import.meta.glob``) and has no ``node_modules``
+ * of its own, so Node resolution from one of its files walks up past the app
+ * and finds nothing. Re-resolve every bare specifier from this directory
+ * instead -- the same single copy of each dependency the rest of the bundle
+ * uses. This is the general rule; the explicit ``react``/``lucide-react``
+ * aliases below stay because they also de-duplicate the app's own copies.
+ */
+function resolveExtensionBareImports(): Plugin {
+  const extensionsRoot = path.resolve(__dirname, '../../../extensions') + path.sep
+  const appEntry = path.resolve(__dirname, 'index.html')
+  return {
+    name: 'jiuwen-extension-bare-imports',
+    enforce: 'pre',
+    async resolveId(source, importer, options) {
+      if (!importer || !importer.startsWith(extensionsRoot)) return null
+      // Relative, absolute and virtual ids already resolve correctly.
+      if (/^[./]/.test(source) || source.startsWith('\0') || source.includes(':')) return null
+      const resolved = await this.resolve(source, appEntry, { ...options, skipSelf: true })
+      return resolved ?? null
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
+  plugins: [resolveExtensionBareImports(), suppressWsProxySocketErrors(), devWsTrafficLogger(), devFileContentApi(), react(), svgr()],
   optimizeDeps: {
     include: ['exceljs', 'jszip', 'saxes', 'ssf'],
   },

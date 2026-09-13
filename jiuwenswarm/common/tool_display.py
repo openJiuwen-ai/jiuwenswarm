@@ -47,6 +47,16 @@ _VERB_BY_TOOL: dict[str, str] = {
     "send_message": "发送消息",
     "build_team": "创建团队",
     "shutdown_member": "关闭成员", "create_task": "创建任务", "update_task": "更新任务",
+    # Co-scribe. doc_id stays out of _FILE_ARG_KEYS: those keys get the shortened
+    # filename treatment, and a doc_id is an unreadable 44-character string with nothing
+    # worth displaying.
+    "clouddoc_read": "读取云文档", "clouddoc_list_comments": "查看文档评论",
+    "clouddoc_reply_comment": "回复评论",
+    "clouddoc_batch_edit": "修改云文档", "clouddoc_write_region": "按区域写入云文档", "clouddoc_add_page": "新增工作表/幻灯片页", "clouddoc_list_documents": "列出云文档",
+    "clouddoc_create_document": "新建云文档",
+    "clouddoc_share_document": "共享云文档", "clouddoc_trash_document": "云文档移入回收站",
+    "clouddoc_workmode_get": "查看工作方式", "clouddoc_workmode_edit": "修改工作方式",
+    "clouddoc_apply_for_comment": "按批注修改",
 }
 
 _FILE_VERBS = frozenset(["写入", "读取", "编辑", "删除", "移动", "重命名", "列出", "上传", "发送文件"])
@@ -81,8 +91,35 @@ _CALL_GOAL_SCHEMA: dict[str, Any] = {
 }
 
 
+# Every verb whose line names the document it touched. The writes are here because
+# their line is a receipt (see stream_event_rail); the reads because a document
+# named on the line is what lets a reader follow which one the model was looking at.
+_CLOUDDOC_VERBS = frozenset({
+    "修改云文档", "按区域写入云文档", "新增工作表/幻灯片页", "按批注修改",
+    "回复评论", "读取云文档", "查看文档评论",
+})
+
+
+def _doc_tail(doc: str) -> str:
+    """A document id or link shortened to something a person can compare at a glance.
+
+    The full id is 44 opaque characters and a link is longer still; printed in full it
+    pushes the verb off the line and nobody reads it anyway. The tail is enough to tell
+    two documents apart, which is the only thing this line is for.
+    """
+    ref = doc.split("/document/d/")[-1].split("/")[0] if "/document/d/" in doc else doc
+    return ref if len(ref) <= 12 else f"…{ref[-8:]}"
+
+
 def _normalize(name: str) -> str:
     result = name.strip().lower()
+    # The ability manager appends a per-session suffix (``foo_jiuwenswarm_s_<session>``).
+    # Without stripping it every lookup here misses and the tool shows no name at all --
+    # which for the write tools, whose line is now a receipt, would mean the change to a
+    # shared document leaves no trace on screen.
+    marker = "_jiuwenswarm_s_"
+    if marker in result:
+        result = result.split(marker)[0]
     for ch in (" ", "-"):
         result = result.replace(ch, "_")
     while "__" in result:
@@ -253,6 +290,16 @@ def build_tool_display_name(name: str, arguments: Any) -> str:
     if verb == "关闭成员":
         member = _first_string(args, ("member_name", "display_name", "name"))
         return f"{verb} {member}" if member else verb
+
+    if verb in _CLOUDDOC_VERBS:
+        # **The doc_id is the receipt.** For the tools that change a shared document the
+        # caller shows this line instead of the model's own call_goal, so it has to name
+        # the document actually operated on. A bare verb would say "修改云文档" while
+        # leaving out the only part that matters -- which one.
+        doc = _first_string(args, ("doc_id", "document_id", "doc"))
+        if doc:
+            return f"{verb}：{_truncate(_doc_tail(doc), 44)}"
+        return verb
 
     if verb in ("创建任务", "更新任务"):
         title = _first_string(args, ("title", "content", "task", "description", "desc"))

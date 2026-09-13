@@ -11,6 +11,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import hashlib
+import functools
 import json
 import logging
 import os
@@ -1786,6 +1787,8 @@ class JiuWenSwarmDeepAdapter:
         )
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
+        self._clouddoc_file_guard_rail: Any = None
+        self._report_ledger_rail: Any = None
         self._tool_cards = None
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
@@ -1900,6 +1903,17 @@ class JiuWenSwarmDeepAdapter:
         self._dreaming_started = False
         self._dreaming_mode: str = "agent"
         self._send_file_toolkit: SendFileToolkit | None = None
+        # Co-scribe: one toolkit per session, since the adapter itself is cached per
+        # session (see _session_adapters). The provider holds a threading.local client
+        # cache, and sharing it across sessions would mix credentials and connections
+        # from different sessions together, so there is no process-level singleton.
+        self._clouddoc_toolkit: Any | None = None
+        # The session whose words the ambiguity rail reads; refreshed on every turn.
+        self._clouddoc_session_id: str | None = None
+        # This turn's cloud-document authorization snapshot. An empty dict means
+        # unbound -- the chat path -- and the tools impose no constraint on it.
+        self._clouddoc_turn: dict[str, str | None] = {}
+        self._clouddoc_progress: dict = {}
         self._runtime_state_write_task: asyncio.Task[None] | None = None
         self._channel_id: str | None = None
         self._is_cron_execution: bool = False
@@ -7796,6 +7810,21 @@ class JiuWenSwarmDeepAdapter:
             return None
 
     @staticmethod
+    def _build_clouddoc_file_guard_rail() -> Any | None:
+        """Build the guard that keeps generic file tools off co-scribe's own files."""
+        try:
+            from jiuwenswarm.agents.harness.common.rails.clouddoc_file_guard_rail import (
+                CloudDocFileGuardRail,
+            )
+
+            rail = CloudDocFileGuardRail()
+            logger.info("[JiuWenSwarmDeepAdapter] CloudDocFileGuardRail create success")
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] CloudDocFileGuardRail create failed: %s", exc)
+            return None
+
+    @staticmethod
     def _build_model_anomaly_detection_rail(
         config_base: dict[str, Any] | None = None,
     ) -> ModelAnomalyDetectionRail | None:
@@ -8103,6 +8132,22 @@ class JiuWenSwarmDeepAdapter:
             logger.warning("%s Failed to load UserHookRail: %s", log_prefix, exc)
         stage_timer.mark("user_hook_rail")
 
+        # D19 tier 2, chat half: a closing claim of document modification must
+        # reconcile with the turn's write count. Self-gating (it does nothing on a
+        # turn that never touched a clouddoc tool), so attached unconditionally.
+        try:
+            from jiuwenswarm.agents.harness.common.rails.report_ledger_rail import (
+                ReportLedgerRail,
+            )
+
+            # Held as an attribute like every other standing rail, so a rail-set
+            # rebuild (and the composition contract test) can name it.
+            self._report_ledger_rail = ReportLedgerRail()
+            rails_list.append(self._report_ledger_rail)
+        except Exception as exc:
+            self._report_ledger_rail = None
+            logger.warning("%s Failed to load ReportLedgerRail: %s", log_prefix, exc)
+
         # Observability rail: opens an agent-layer span (agent.<name>.task_iteration.<n>
         # for task-loop runs, or agent.<name>.invoke for single-round) under the root
         # run span per iteration/round. It is the only thing that creates the
@@ -8265,6 +8310,7 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
+            _RailBuildInfo("_clouddoc_file_guard_rail", self._build_clouddoc_file_guard_rail),
             _RailBuildInfo(
                 "_subagent_rail",
                 self._build_subagent_rail,
@@ -8387,6 +8433,11 @@ class JiuWenSwarmDeepAdapter:
                     "permissions_changed_notifier": self._permissions_changed_notifier,
                     "browser_runtime_security_profile": self._browser_runtime_security_profile,
                     "trusted_search_urls": None,
+                    # An unattended cloud-document turn has nobody to answer a
+                    # prompt, so the rail must not raise one: it decides from the
+                    # standing mandate instead. Passed here rather than at the call
+                    # site because this is the one place the rail is built.
+                    "unattended_clouddoc": self._unattended_clouddoc_turn,
                 },
             )
         ]
@@ -8538,6 +8589,7 @@ class JiuWenSwarmDeepAdapter:
                 .get("model_client_config", {})
                 .get("model_name", "gpt-4"),
                 session_id=session_id,
+                unattended_clouddoc=self._unattended_clouddoc_turn,
             )
             if self._permission_rail is not None:
                 logger.info("[JiuWenSwarmDeepAdapter] _permission_rail newly created on hot-reload")
@@ -8979,6 +9031,10 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._avatar_rail)
         if self._memory_forbidden_rail is not None:
             rails_list.append(self._memory_forbidden_rail)
+        if self._clouddoc_file_guard_rail is not None:
+            rails_list.append(self._clouddoc_file_guard_rail)
+        if self._report_ledger_rail is not None:
+            rails_list.append(self._report_ledger_rail)
         if not self._permission_state.permission_update_in_progress and self._permission_rail is not None:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
@@ -10573,6 +10629,314 @@ class JiuWenSwarmDeepAdapter:
                     project_dir=self._project_dir,
                     require_execution_authorization=require_send_authorization,
                 )
+
+        self._update_clouddoc_tools(session_id)
+
+
+    def _update_clouddoc_tools(self, session_id: str | None = None) -> None:
+        """Register the co-scribe tools and, on an unattended turn, **close the ability
+        set**.
+
+        Stripping works from an allowlist, not a denylist (contrast
+        ``_ACP_BLOCKED_DEFAULT_TOOL_NAMES``). A denylist fails silently the moment
+        someone adds a default tool: the new tool is available by default and nobody on
+        this path stops it. An allowlist fails toward "the agent is missing a tool"
+        rather than "the unattended agent also has bash".
+
+        Stripping touches only this session's ability_manager. The adapter is cached per
+        session and the watcher uses a separate session per document, so chat sessions
+        are unaffected.
+        """
+        # **Recorded on every call, not only when the toolkit is first built.** The
+        # toolkit is constructed once per adapter and reused for every later session,
+        # and its ``user_text`` reader used to close over the ``session_id`` of that
+        # first construction. From then on the ambiguity rail read the *first*
+        # session's history for every session that followed -- observed live with a
+        # first session that had said nothing: seven managed documents, and every
+        # document-taking call refused as "the user has not named one", while the
+        # current session's message named the deck in full. A safety rail keyed on
+        # the wrong person's words is not a rail. The reader below resolves the
+        # session at call time through this attribute.
+        self._clouddoc_session_id = session_id
+        if self._instance is None:
+            return
+
+        unattended = is_unattended_clouddoc_turn()
+
+        # **The safety boundary must come before every early return.** Each failure path
+        # below -- feature disabled, credentials missing, extras absent, provider
+        # construction failing -- used to return before stripping, so an unattended turn
+        # would run with the full default tool set, bash included. That hung the ability
+        # boundary on a feature switch, when it should hang only on whether anyone is
+        # present this turn.
+        #
+        # The authorization snapshot follows the same rule: not refreshed here, a failed
+        # construction leaves **the previous turn's doc_id** in place and the tools carry
+        # on authorized against the old document.
+        if unattended:
+            self._clouddoc_turn = {
+                "doc_id": get_clouddoc_turn_doc_id(),
+                "comment_id": get_clouddoc_turn_comment_id(),
+                # IC-1: the watch level, snapshotted with the ids. Missing resolves to
+                # the strictest family downstream -- never permissive.
+                "mode": get_clouddoc_turn_mode(),
+            }
+            # Display only, and deliberately outside the dict above: nothing reads it
+            # to decide anything, so it is snapshotted beside the authorization rather
+            # than within it.
+            self._clouddoc_progress = get_clouddoc_turn_progress()
+            self._strip_to_closed_set()
+        else:
+            self._clouddoc_turn = {}
+            self._clouddoc_progress = {}
+
+        clouddoc_cfg = get_config().get("clouddoc") or {}
+        if not clouddoc_cfg.get("enabled"):
+            return
+
+        if self._clouddoc_toolkit is None:
+            from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.provider import (
+                read_connection_specs,
+            )
+
+            specs = read_connection_specs(clouddoc_cfg)
+            if not specs:
+                return
+            # With several connections, an unattended turn picks the credentials by
+            # which connection owns this turn's document. The chat path, and any document
+            # with no owner found, take the first connection -- the same rule as
+            # registry.get(None) on the gateway side.
+            turn_doc = (self._clouddoc_turn or {}).get("doc_id")
+            credentials_file = _clouddoc_credentials_for_turn(specs, turn_doc)
+            try:
+                from jiuwenswarm.extensions.co_scribe.backend.toolkit.clouddoc_tools import (
+                    CloudDocToolkit,
+                )
+                from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.factory import (
+                    build_provider,
+                )
+            except ImportError:
+                # The clouddoc extras are absent. A missing dependency must not stop the
+                # whole agent from starting.
+                logger.warning("[clouddoc] extras 未安装，跳过工具注册")
+                return
+            try:
+                # The factory detects the vendor from the credentials file. Hardcoding
+                # GoogleDocsProvider here built a Google provider for a Feishu
+                # connection, which then failed to parse the Feishu key as a Google
+                # service-account JSON -- the unattended turn's tools reported an
+                # auth-format error and abandoned the turn. This is the one place the
+                # agentserver builds a provider, so it must route through the same
+                # vendor detection the gateway uses.
+                _roster = tuple(str(x) for x in (clouddoc_cfg.get("agent_roster") or []))
+                if turn_doc:
+                    # An unattended turn keeps its single, owning provider: its
+                    # confinement is to one document and one account.
+                    provider = build_provider(credentials_file, agent_roster=_roster)
+                else:
+                    # A chat turn reaches every connection's documents, routed by
+                    # which connection adopted each one -- built by the shared helper
+                    # so every attended host gets the same reach.
+                    from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.routing import (
+                        build_routed_provider,
+                    )
+
+                    provider, credentials_file = build_routed_provider(
+                        specs,
+                        build=build_provider,
+                        live_specs=lambda: read_connection_specs(
+                            get_config().get("clouddoc") or {}
+                        ),
+                        agent_roster=_roster,
+                        log=logger,
+                    )
+            except Exception:  # noqa: BLE001 - a corrupt key must not end session setup
+                logger.exception("[clouddoc] provider 初始化失败，跳过工具注册")
+                return
+            # The provider's format routing is process memory and the turn arrives
+            # with a bare token; the panel's store is what survives. The same seam
+            # the panel and the watcher already use -- without it an unattended turn
+            # on a spreadsheet or a deck reads it as a docx and every tool fails with
+            # the platform's document-flavored error (measured live on the first
+            # slides dispatch). It must sit here, after the provider exists: an
+            # earlier draft primed before construction and no-oped on every fresh
+            # session -- exactly the turns that need it.
+            try:
+                from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.kinds import (
+                    prime_provider_kinds,
+                )
+
+                _docs = {str(d) for sp in specs for d in sp["documents"]}
+                _turn_doc = (self._clouddoc_turn or {}).get("doc_id")
+                if _turn_doc:
+                    _docs.add(str(_turn_doc))
+                # All watched documents, not just the turn's: chat turns carry no
+                # binding yet reach any watched document by token.
+                prime_provider_kinds(provider, _docs)
+            except Exception:  # noqa: BLE001 - priming must not stop the turn
+                logger.debug("[clouddoc] turn-side kind priming skipped", exc_info=True)
+
+            def _live_specs() -> list[dict]:
+                """Re-read the connections from the config on **every** call.
+
+                Closing over the ``specs`` computed just above looks equivalent and is
+                not: ``read_connection_specs`` builds fresh dicts with copied lists, so
+                that value is a snapshot taken when the toolkit was built -- once per
+                session -- while the panel adopts documents at any moment and writes them
+                straight back into the config. A document shared mid-session stayed
+                invisible to the agent, which then told the user it had nothing to work
+                on while the panel listed that very document on screen beside the chat.
+                """
+                return read_connection_specs(get_config().get("clouddoc") or {})
+
+            _routed = provider.__class__.__name__ == "RoutingProvider"
+
+            def _watched_docs_live() -> list:
+                if _routed:
+                    # Every connection's documents, in connection order: the routing
+                    # provider reaches all of them.
+                    return [d for sp in _live_specs() for d in sp["documents"]]
+                return next(
+                    (sp["documents"] for sp in _live_specs()
+                     if sp["credentials_file"] == credentials_file),
+                    [],
+                )
+
+            def _connection_count_live() -> int:
+                # The "partial list" note exists for a toolkit bound to one connection
+                # of several; a routed toolkit lists them all.
+                return 1 if _routed else len(_live_specs())
+            # D21: the deployment's mode decides how much harness rides along.
+            # "direct" is the deliberate baseline -- no receipts, no floor -- and an
+            # unknown value falls back to mandate, never to bare.
+            harness_mode = str(clouddoc_cfg.get("mode") or "mandate").strip().lower()
+            if harness_mode not in ("mandate", "recorded", "direct"):
+                harness_mode = "mandate"
+            if harness_mode != "direct":
+                try:
+                    from jiuwenswarm.extensions.co_scribe.backend.toolkit.receipts import ReceiptStore
+
+                    provider.receipt_sink = ReceiptStore()
+                except Exception:  # noqa: BLE001
+                    # The chat path tolerates a missing sink (attended, ask-gated); the
+                    # unattended direct-apply path re-checks and refuses without one (IC-2).
+                    logger.exception("[clouddoc] receipt sink unavailable on the toolkit path")
+            self._clouddoc_toolkit = CloudDocToolkit(
+                provider,
+                harness_mode=harness_mode,
+                # **Read the snapshot, not the contextvar.** The contextvar is bound
+                # while the request is being set up, and by the time a tool actually runs
+                # that context is gone, so reading it directly yields the default and the
+                # tools see no authorized document at all. Observed: the model received
+                # "missing doc_id" and abandoned the turn. The snapshot is refreshed each
+                # turn below.
+                turn_doc_id=lambda: self._clouddoc_turn.get("doc_id"),
+                turn_comment_id=lambda: self._clouddoc_turn.get("comment_id"),
+                # The watch level the turn started with (IC-1): the pre-write
+                # checkpoint holds the registry to it, so a tier changed mid-turn
+                # intercepts the write instead of draining.
+                turn_mode=lambda: self._clouddoc_turn.get("mode"),
+                # The placeholder the watcher posted, so a tool can say what it is
+                # doing while it does it. Display only; None means say nothing.
+                turn_progress=lambda: self._clouddoc_progress,
+                # Deployment caps for the range rail (config ``clouddoc.rail``).
+                rail_overrides=clouddoc_cfg.get("rail"),
+                # The tools need to know which account they are, to tell a task assigned
+                # to them from one assigned to another agent in the same document.
+                turn_address=lambda: _clouddoc_self_address(credentials_file),
+                # The chat path gets no doc_id, so the agent needs a way to find out
+                # which documents it is allowed to work on.
+                watched_docs=_watched_docs_live,
+                # How many connections exist in total, so the tool can say out loud that
+                # its list covers only one of them.
+                connection_count=_connection_count_live,
+                # Everything the user typed this session -- the ambiguity rail's only
+                # evidence. See CloudDocToolkit._ambiguous_target.
+                user_text=lambda: _clouddoc_user_text(self._clouddoc_session_id),
+                # The working-style file (§4.8 / D4): the chat tools and the watcher
+                # must resolve the same path, so both read the same config key.
+                workmode_file=str(clouddoc_cfg.get("workmode_file") or ""),
+                workmode_prefer_zh=_workmode_prefer_zh(clouddoc_cfg),
+            )
+
+
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.clouddoc_tools import (
+            unattended_allowlist_for,
+        )
+
+        from jiuwenswarm.extensions.co_scribe.backend.clouddoc_bridge import (
+            to_openjiuwen,
+        )
+
+        tools = to_openjiuwen(list(self._clouddoc_toolkit.get_tools()))
+        if unattended:
+            # Stripping already happened at the top of the method, where it must precede
+            # the early returns; this only filters the batch about to be registered.
+            allowed = unattended_allowlist_for(self._clouddoc_turn.get("mode"))
+            tools = [t for t in tools if t.card.name in allowed]
+
+        registered = {
+            getattr(existing, "name", "")
+            for existing in (self._instance.ability_manager.list() or [])
+        }
+        for tool in tools:
+            if tool.card.name in registered:
+                continue
+            self._register_agent_owned_tool(tool, self._tool_owner_id())
+            self._instance.ability_manager.add(tool.card)
+
+    def _strip_to_closed_set(self) -> None:
+        """Narrow this session's ability set down to UNATTENDED_ALLOWLIST.
+
+        An allowlist, not a denylist (contrast ``_ACP_BLOCKED_DEFAULT_TOOL_NAMES``): a
+        denylist fails silently when someone adds a default tool, and nobody on this path
+        would stop it. An allowlist fails toward "the agent is missing a tool" rather
+        than "the unattended agent also has bash".
+
+        Touches only this session's ability_manager. The adapter is cached per session
+        and the watcher uses a separate session per document, so chat sessions are
+        unaffected.
+        """
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.clouddoc_tools import (
+            unattended_allowlist_for,
+        )
+
+        allowed = unattended_allowlist_for(self._clouddoc_turn.get("mode"))
+        before = [getattr(a, "name", "") for a in (self._instance.ability_manager.list() or [])]
+        for name in before:
+            if name and name not in allowed:
+                self._instance.ability_manager.remove(name)
+        after = [getattr(a, "name", "") for a in (self._instance.ability_manager.list() or [])]
+        # The closed set is this path's only ability boundary, so it has to be
+        # auditable: stripping emits no other signal, and after an incident this log is
+        # the only place that says which tools were actually available.
+        #
+        # ``remaining`` is what survived the strip, which is **not** the turn's tool
+        # set: the co-scribe tools are registered by the caller a few lines later, so
+        # this reads ``remaining=[]`` on every healthy turn. It said exactly that
+        # during the interrupt incident and cost a reader an hour chasing a tool set
+        # that was never missing -- hence ``allowed`` alongside it, which is the set
+        # the turn actually ends up with.
+        logger.info(
+            "[clouddoc] closed-set strip %d -> %d; remaining=%s; allowed=%s",
+            len(before), len(after), sorted(after), sorted(allowed),
+        )
+
+    def _unattended_clouddoc_turn(self) -> dict[str, Any] | None:
+        """This turn's clouddoc authorization snapshot, or None outside one.
+
+        Handed to the permission rail so its scene hook can recognise an unattended
+        turn **while a tool is running**, where the request contextvars are already
+        unbound and ``is_unattended_clouddoc_turn()`` therefore answers False. Without
+        it, ``clouddoc_apply_for_comment`` (permission tier ``ask``) raised an approval
+        interrupt that nobody could answer, and the turn ended with no text at all.
+
+        Reads the same per-session snapshot the tools read, refreshed by
+        ``_update_clouddoc_tools`` on every request -- including back to ``{}`` on a
+        chat turn, so a session cannot carry the previous turn's authority.
+        """
+        turn = getattr(self, "_clouddoc_turn", None)
+        return dict(turn) if isinstance(turn, dict) and turn else None
 
     def _refresh_acp_runtime_tools(
         self,
@@ -17732,3 +18096,258 @@ def _load_custom_subagents(
         result.append(custom_spec)
         _logger.info("loaded custom agent '%s' from %s", agent_def.name, agent_def.source)
     return result
+
+
+# ---------------------------------------------------------------- clouddoc（Co-scribe）
+
+# The channel id for an unattended cloud-document session. The watcher must stamp it on
+# **every** envelope it dispatches: the channel stored on a session is lazy, and what
+# decides the value for a turn is each request's own request.channel_id.
+# It is defined once in the provider module, which both the gateway and the agentserver
+# depend on.
+#
+# **Read lazily, never imported at module scope.** This module is the agent adapter:
+# an unguarded top-level import of a plugin makes the plugin a hard dependency of the
+# runtime, so a deployment without co-scribe cannot start. Measured behind one such
+# line elsewhere: five host modules failed to import. ``agents/swarm/providers/
+# runtime_tools`` already reads it this way; this follows that precedent.
+
+
+def get_runtime_tool_channel_id() -> str | None:
+    """This request's channel_id, or **None when nothing is bound**.
+
+    Reading the contextvar directly yields the default ``"web"``, which makes "nothing
+    was bound this turn" and "genuinely on the web channel" indistinguishable by value,
+    so ``_CRON_TOOL_BOUND`` is consulted first.
+    """
+    if not _CRON_TOOL_BOUND.get():
+        return None
+    return _CRON_TOOL_CHANNEL_ID.get()
+
+
+def get_runtime_tool_metadata() -> dict[str, Any] | None:
+    """This request's metadata, or None when nothing is bound.
+
+    **``_RuntimeCronToolContext.metadata`` is deliberately not reused**: when unbound
+    that property falls back to the previous turn's snapshot, which would have a tool
+    authorizing an operation on document B while holding document A's id.
+    """
+    if not _CRON_TOOL_BOUND.get():
+        return None
+    return _CRON_TOOL_METADATA.get()
+
+
+
+def _workmode_prefer_zh(clouddoc_cfg: dict) -> bool:
+    """Pick the builtin workmode template language from the configured conventions
+    marker -- the same rule the watcher uses (workmode.prefer_zh_from_words),
+    duplicated here only to avoid a hard gateway import at registration time."""
+    sample = str(clouddoc_cfg.get("conventions_marker") or "")
+    if not sample:
+        return True
+    return any("\u4e00" <= ch <= "\u9fff" for ch in sample)
+
+def _clouddoc_user_text(session_id: str | None) -> str:
+    """Everything the **user** typed in this session, joined; never anything the model
+    wrote.
+
+    Feeds the toolkit's ambiguity rail, which needs one thing the model cannot forge.
+    ``history.json`` stamps each record with a role, so filtering to ``user`` gives
+    exactly that -- and an ``ask_user`` answer is stored as a user record too, which is
+    what lets a refused write succeed on the retry after the model asks.
+
+    Any failure returns the empty string. That is the fail-closed direction: with no
+    evidence the user named a document, an ambiguous write is refused rather than
+    allowed.
+    """
+    if not session_id:
+        return ""
+    try:
+        import json as _json
+
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+
+        # **history.jsonl, one JSON object per line** -- not the ``history.json`` that
+        # compact_partial reads. Getting this wrong is silent and total: the file simply
+        # is not there, every lookup returns "", and the rail then refuses every document
+        # operation on the chat path forever. Observed exactly that -- the model retried
+        # a refused read nineteen times and then claimed success anyway.
+        path = get_agent_sessions_dir() / session_id / "history.jsonl"
+        if not path.exists():
+            return ""
+        records = []
+        with open(path, encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    records.append(_json.loads(line))
+                except ValueError:
+                    continue  # a torn last line while the file is being appended to
+    except Exception:  # noqa: BLE001 - a missing or corrupt history must not break tools
+        return ""
+
+    out: list[str] = []
+    for record in records:
+        if not isinstance(record, dict):
+            continue
+
+        # **An ask_user answer counts, even though the record's role is assistant.**
+        # The text came from the person -- they picked the option or typed it -- and it
+        # is the only way a refused turn can recover: the model asks which document,
+        # and the answer has to satisfy the very check that forced the question. Reading
+        # only role=="user" leaves that loop unclosable, which is a deadlock, not a
+        # boundary.
+        if record.get("tool_name") == "ask_user":
+            result = record.get("result")
+            if isinstance(result, str):
+                out.append(result)
+            continue
+
+        if record.get("role") != "user":
+            continue
+        content = record.get("content")
+        if isinstance(content, str):
+            out.append(content)
+        elif isinstance(content, list):
+            # Multimodal turns carry a parts list; only the text parts are evidence.
+            out.extend(
+                part["text"]
+                for part in content
+                if isinstance(part, dict) and isinstance(part.get("text"), str)
+            )
+    return "\n".join(out)
+
+
+def _clouddoc_credentials_for_turn(specs: list[dict], turn_doc: str | None) -> str:
+    """The credentials an unattended turn runs under: the connection that adopted
+    the turn's document, compared by exact document id.
+
+    The chat path, and a document no connection lists, take the first connection --
+    the same rule as ``registry.get(None)`` on the gateway side. Equality on the
+    canonical token, never containment: two ids sharing a prefix are two documents,
+    and a turn routed by substring could write under the wrong account.
+    """
+    from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.provider import (
+        doc_ref_token,
+    )
+
+    credentials_file = str(specs[0]["credentials_file"])
+    # Both sides through the same reduction: a configured entry may be a link, and
+    # so may the dispatched id when the config held one, since the watcher polls
+    # under exactly the value it was configured with.
+    want = doc_ref_token(turn_doc)
+    if not want:
+        return credentials_file
+    for spec in specs:
+        if any(doc_ref_token(d) == want for d in spec.get("documents") or []):
+            return str(spec["credentials_file"])
+    return credentials_file
+
+
+def _clouddoc_self_address(credentials_file: str) -> str:
+    """This connection's own address, read from its key file.
+
+    Vendor-aware: a Google key names a service-account email, a Feishu key the bot's
+    open id. The tools ask on every call, to tell their own tasks from another agent's,
+    so the read is cached by the helper on the key file's mtime.
+    """
+    try:
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.factory import (
+            credential_address,
+        )
+    except ImportError:
+        return ""
+    return credential_address(credentials_file)
+
+
+def is_unattended_clouddoc_turn() -> bool:
+    """Whether this turn is inside an unattended clouddoc session.
+
+    Decided by channel_id rather than by whether metadata exists, because the latter is
+    circular with the fail-closed rule: with metadata missing you could not tell this was
+    a clouddoc session at all, and "missing means refuse" would be unreachable.
+    """
+    try:
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.provider import (
+            CLOUDDOC_CHANNEL_ID,
+        )
+    except ImportError:  # pragma: no cover - the plugin is not installed
+        # No plugin, no unattended cloud-document turn. Answering False is not a
+        # guess: the channel it asks about is one only that plugin's watcher stamps.
+        return False
+    return get_runtime_tool_channel_id() == CLOUDDOC_CHANNEL_ID
+
+
+def get_clouddoc_turn_doc_id() -> str | None:
+    """The doc_id in this turn's authorization scope. None outside a clouddoc session,
+    where the chat path imposes no constraint."""
+    if not is_unattended_clouddoc_turn():
+        return None
+    meta = get_runtime_tool_metadata() or {}
+    payload = meta.get("clouddoc")
+    if isinstance(payload, dict):
+        doc_id = payload.get("doc_id")
+        if isinstance(doc_id, str) and doc_id:
+            return doc_id
+    # A clouddoc session with the payload missing: an absent authorization field means
+    # no authorization.
+    return ""
+
+
+def get_clouddoc_turn_mode() -> str | None:
+    """The watch level in this turn's authorization scope (IC-1). None outside a
+    clouddoc session; inside one, a missing or non-string value returns None and the
+    closed-set family resolver treats that as the strictest level -- the fail
+    direction of an absent authorization field is always refusal, never width."""
+    if not is_unattended_clouddoc_turn():
+        return None
+    meta = get_runtime_tool_metadata() or {}
+    payload = meta.get("clouddoc")
+    if isinstance(payload, dict):
+        mode = payload.get("mode")
+        if isinstance(mode, str) and mode:
+            return mode
+    return None
+
+
+def get_clouddoc_turn_progress() -> dict:
+    """The placeholder reply this turn may narrate its steps into.
+
+    Read from ``clouddoc_progress``, a **sibling** of the authorization payload rather
+    than a field inside it. The distinction is the same one ``prompt`` observes: the
+    dictionary the authorization check reads holds only what grants something, so a
+    display-only id -- which can widen nothing and gates nothing -- does not go in it.
+    Absent, empty or malformed means this turn narrates nothing, which is the whole
+    failure behaviour: a progress note is decoration on top of the work, and losing it
+    must never cost the work.
+    """
+    if not is_unattended_clouddoc_turn():
+        return {}
+    meta = get_runtime_tool_metadata() or {}
+    payload = meta.get("clouddoc_progress")
+    if isinstance(payload, dict):
+        rid = payload.get("reply_id")
+        if isinstance(rid, str) and rid:
+            return {"reply_id": rid, "lang": str(payload.get("lang") or "")}
+    return {}
+
+
+def get_clouddoc_turn_comment_id() -> str | None:
+    """The comment_id in this turn's authorization scope: replies are allowed only under
+    the comment that triggered this turn.
+
+    Like doc_id it is a server-generated opaque id, so putting it in the authorization
+    payload introduces no text anyone can write. None outside a clouddoc session, where
+    the chat path imposes no constraint.
+    """
+    if not is_unattended_clouddoc_turn():
+        return None
+    meta = get_runtime_tool_metadata() or {}
+    payload = meta.get("clouddoc")
+    if isinstance(payload, dict):
+        comment_id = payload.get("comment_id")
+        if isinstance(comment_id, str) and comment_id:
+            return comment_id
+    return ""

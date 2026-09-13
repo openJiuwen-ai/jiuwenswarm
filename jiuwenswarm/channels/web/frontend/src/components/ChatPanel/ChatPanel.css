@@ -4595,3 +4595,39 @@
   border-color: var(--color-border-default);
   box-shadow: none;
 }
+
+/* Session references: cloud-doc chips above the composer (§25.3 sixth spot). */
+.doc-refs-strip {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 16px 2px;
+  font-size: 12px;
+}
+.doc-refs-strip__label {
+  color: var(--text-tertiary, #8a8f98);
+}
+.doc-refs-strip__chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  max-width: 220px;
+  padding: 2px 10px;
+  border: 1px solid var(--border-color, #d8dce3);
+  border-radius: 999px;
+  background: var(--bg-secondary, #f6f7f9);
+  color: var(--text-secondary, #4b5563);
+  cursor: pointer;
+  font-size: 12px;
+  line-height: 18px;
+}
+.doc-refs-strip__chip:hover {
+  border-color: var(--accent-color, #4f6ef7);
+  color: var(--accent-color, #4f6ef7);
+}
+.doc-refs-strip__chip-title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

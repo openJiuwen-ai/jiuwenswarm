@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import contextlib
 import inspect
 import json
 import logging
@@ -1668,6 +1669,168 @@ def _build_route_config_map(bindings: list[GatewayRouteBinding]) -> dict[str, Ro
     }
 
 
+def _start_clouddoc_discovery(panel):
+    """Start the periodic adoption of newly shared documents, or return None.
+
+    Adoption itself is unchanged and still gated by the same admission rules; only its
+    trigger moves. Until now the sole caller was the Docs panel mounting, so a
+    deployment driven from a chat channel -- where the web UI may never be opened --
+    left documents shared with the service account outside management for as long as
+    nobody looked.
+
+    Returns the task so the caller owns its lifetime; None when the panel is absent or
+    the deployment turned discovery off.
+    """
+    if panel is None:
+        return None
+    from jiuwenswarm.common.config import get_config
+    from jiuwenswarm.extensions.co_scribe.backend.host.panel.panel import (
+        DISCOVERY_INTERVAL_SECONDS,
+        discover_shared_periodically,
+    )
+
+    cfg = (get_config().get("clouddoc") or {})
+    if not bool(cfg.get("auto_discover_shared", True)):
+        logger.info("[App] clouddoc 共享文档定期发现已按配置关闭")
+        return None
+    try:
+        interval = float(cfg.get("discover_interval_seconds") or DISCOVERY_INTERVAL_SECONDS)
+    except (TypeError, ValueError):
+        logger.warning(
+            "[App] clouddoc discover_interval_seconds 非法，改用默认值 %s",
+            DISCOVERY_INTERVAL_SECONDS,
+        )
+        interval = DISCOVERY_INTERVAL_SECONDS
+    # A round costs a full Drive listing per connection. Too short a period spends the
+    # connection's shared quota on discovery that the comment poll then cannot make.
+    interval = max(interval, 60.0)
+    task = asyncio.create_task(
+        discover_shared_periodically(panel, interval_seconds=interval),
+        name="clouddoc-discovery",
+    )
+    logger.info("[App] clouddoc 共享文档定期发现已启动，间隔 %.0f 秒", interval)
+    return task
+
+
+async def _build_clouddoc_watcher(*, agent_client):
+    """Build the connection registry from config, or return None when the feature is
+    off, unconfigured, or misconfigured.
+
+    Every check lives here because **a startup failure must be loud**: the configurable
+    strings must not collide, the credentials must be readable, the document ids must
+    parse. Discovered at run time instead, the same problems show up as a watcher
+    failing every 30 seconds with the real reason buried in a log, while all the user
+    sees is that mentioning the agent does nothing.
+
+    Returns the registry, or None. It deliberately runs **no admission checks** -- can
+    we edit, is the document link-shared -- because those need the network, and putting
+    them on the startup path would stop the gateway from coming up. The watcher does
+    them on its first tick.
+    """
+    from jiuwenswarm.common.config import get_config
+
+    cfg = (get_config().get("clouddoc") or {})
+    # **Not gated on ``enabled`` or on having connections.** The panel is the only way to
+    # add the first connection, and a None registry makes every clouddoc RPC answer
+    # "feature off" -- so a fresh install could never be configured from the UI at all.
+    # Whether to *poll* is still gated: see CloudDocConnections.start_all.
+    enabled = bool(cfg.get("enabled"))
+
+    from jiuwenswarm.extensions.co_scribe.backend.host.authority.connections import (
+        CloudDocConnections,
+        read_connection_specs,
+    )
+
+    specs = read_connection_specs(cfg)
+
+    try:
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.factory import (
+            build_provider,
+        )
+        from jiuwenswarm.extensions.co_scribe.backend.toolkit.providers.google_provider import (
+            GoogleDocsProvider,  # noqa: F401 - kept for the probe's error text
+        )
+        from jiuwenswarm.extensions.co_scribe.backend.host.watch.comment_watcher import (
+            WatcherConfig,
+        )
+        from jiuwenswarm.extensions.co_scribe.backend.host.cursor_store import CloudDocStore
+        from jiuwenswarm.extensions.co_scribe.backend.host.watch.dispatch import CloudDocDispatcher
+        from jiuwenswarm.extensions.co_scribe.backend.host.watch.triggers import (
+            TriggerConfig,
+            validate_prefixes,
+        )
+    except ImportError as exc:
+        logger.warning("[App] clouddoc extras 未安装（%s），跳过；pip install 'jiuwenswarm[clouddoc]'", exc)
+        return None
+
+    watcher_cfg = WatcherConfig(
+        poll_interval_seconds=float(cfg.get("poll_interval_seconds", 30)),
+        turn_timeout_seconds=float(cfg.get("turn_timeout_seconds", 540)),
+        workmode_file=str(cfg.get("workmode_file") or ""),
+    )
+    base_trigger = TriggerConfig(
+        sa_address="",   # differs per connection; registry.add derives it from the key
+        conventions_marker=str(cfg.get("conventions_marker", "co-scribe 约定")),
+    )
+    try:
+        validate_prefixes(base_trigger)
+    except ValueError as exc:
+        # A prefix collision makes a conventions comment read as a trigger, or the
+        # reverse. That is a configuration error, and starting with it is worse than not
+        # starting: not starting is at least visible.
+        logger.error("[App] clouddoc 触发词配置非法，功能未启动：%s", exc)
+        return None
+
+    store = CloudDocStore()
+    from jiuwenswarm.extensions.co_scribe.backend.host.watch.dispatch import make_cancel_fn
+
+    dispatcher = CloudDocDispatcher(
+        agent_client, store, watcher_cfg, now_fn=time.time,
+        session_max_turns=int(cfg.get("session_max_turns", 50)),
+        cancel_fn=make_cancel_fn(agent_client, now_fn=time.time),
+    )
+    from jiuwenswarm.extensions.co_scribe.backend.host.authority.watch_registry import (
+        DEFAULT_DISPATCH_RATE_MAX,
+        DEFAULT_DISPATCH_RATE_WINDOW_SECONDS,
+        WatchRegistry,
+    )
+
+    watch_registry = WatchRegistry(
+        rate_max=int(cfg.get("dispatch_rate_max", DEFAULT_DISPATCH_RATE_MAX)),
+        rate_window_seconds=float(
+            cfg.get("dispatch_rate_window_seconds", DEFAULT_DISPATCH_RATE_WINDOW_SECONDS)
+        ),
+    )
+    registry = CloudDocConnections(
+        store=store, dispatcher=dispatcher, watcher_cfg=watcher_cfg,
+        watch_registry=watch_registry,
+        base_trigger_cfg=base_trigger,
+        # The roster is deployment policy read here, at the host layer, and handed
+        # into the host-free factory as a plain argument.
+        provider_factory=(lambda cf, _r=tuple(
+            str(x) for x in (cfg.get("agent_roster") or [])
+        ): build_provider(cf, agent_roster=_r)),
+        now_fn=time.time,
+        enabled=enabled,
+    )
+    registry.auto_watch_policy = str(cfg.get("auto_watch_on_adopt") or "off")
+    # Built one connection at a time. A broken one -- a corrupt key, an unparseable
+    # document id -- skips only itself and does not take the others down with it;
+    # isolation is part of what several connections are for.
+    for spec in specs:
+        try:
+            provider_probe = build_provider(spec["credentials_file"])
+            doc_ids = [provider_probe.parse_doc_ref(d) for d in spec["documents"]]
+            await registry.add(spec["credentials_file"], doc_ids)
+        except Exception as exc:  # noqa: BLE001 - one bad connection must not block startup
+            logger.error("[App] clouddoc 连接构建失败（%s），跳过：%s", spec["credentials_file"], exc)
+    if not registry.list():
+        # Nothing to watch, but the registry is still returned: an empty one is exactly
+        # what a first run looks like, and the panel needs it to accept the first key.
+        logger.info("[App] clouddoc 尚无可用连接，面板可用于添加")
+    return registry
+
+
 async def _run(
         agent_server_url: str,
         web_host: str,
@@ -1798,6 +1961,23 @@ async def _run(
     # Heartbeat Store/Controller/Scheduler/Execution live in AgentServer.
     # Gateway keeps only the stable public-interface proxy wired to Web/TUI.
     heartbeat_controller = HeartbeatControllerProxy(client)
+
+    clouddoc_connections = await _build_clouddoc_watcher(agent_client=client)
+    clouddoc_panel = None
+    if clouddoc_connections is not None:
+        from jiuwenswarm.extensions.co_scribe.backend.host.panel.panel import CloudDocPanel
+
+        clouddoc_panel = CloudDocPanel(clouddoc_connections)
+        # A document dropped for a withdrawn format leaves the adoption list here,
+        # not just this process's memory -- otherwise the startup collection deletes
+        # the recorded format the drop was decided from and the next start adopts it
+        # again. Nothing is written on an ordinary start.
+        _retired = clouddoc_panel.commit_retirements()
+        if _retired:
+            logger.info(
+                "[App] clouddoc 已把 %d 篇退管文档从纳管名单中移除：%s",
+                len(_retired), ", ".join(x[:12] + "…" for x in _retired),
+            )
 
     full_cfg, health_check_cfg, channels_cfg = _load_gateway_runtime_config(
         message_handler
@@ -2093,6 +2273,7 @@ async def _run(
             channel_manager=channel_manager,
             on_config_saved=_on_config_saved,
             heartbeat_service=heartbeat_service,
+            clouddoc_panel=clouddoc_panel,
             cron_controller=cron_controller,
             heartbeat_controller=heartbeat_controller,
             updater_service=updater_service,
@@ -3044,6 +3225,20 @@ async def _run(
     except Exception as e:  # noqa: BLE001 - 兜底
         logger.warning("[App] zen free models warm failed (non-fatal): %s", e)
 
+    if clouddoc_connections is not None:
+        await clouddoc_connections.start_all()
+        logger.info(
+            "[App] clouddoc watcher started for %d document(s)",
+            len(clouddoc_connections.all_docs()),
+        )
+    # Discovery is started whatever the connection count is. It used to hang off the
+    # branch above, so a deployment that booted with no connection -- a fresh install, or
+    # one whose keys were being replaced -- got no periodic discovery at all, and adding a
+    # connection from the panel did not start one: the process had to be restarted before
+    # a shared document could ever arrive on its own. The loop reads the connection list
+    # on every pass, so starting it early costs one sleep and lets it pick up whatever is
+    # added later.
+    clouddoc_discovery_task = _start_clouddoc_discovery(clouddoc_panel)
     # 主动推荐：按 config 自动注册/删除 proactive.tick 定时 job
     try:
         from jiuwenswarm.gateway.cron.proactive_cron_sync import sync_proactive_tick_job
@@ -3377,6 +3572,18 @@ async def _run(
             _set_agentos_ssh_key_issuer(None)
 
         await cron_scheduler.stop()
+        if clouddoc_discovery_task is not None:
+            # Cancelled before the watchers: discovery only adopts, so nothing is lost
+            # by stopping it first, while a round in flight would otherwise keep a
+            # provider call alive past the watchers it feeds.
+            clouddoc_discovery_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await clouddoc_discovery_task
+        if clouddoc_connections is not None:
+            # Stopped before client.disconnect(): the watcher dispatches through
+            # agent_client, so disconnecting first would leave a turn in flight to die
+            # halfway.
+            await clouddoc_connections.stop_all()
         await channel_manager.stop_dispatch()
         await heartbeat_service.stop()
         await message_handler.stop_forwarding()

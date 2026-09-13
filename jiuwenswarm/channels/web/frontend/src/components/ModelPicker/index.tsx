@@ -120,8 +120,16 @@ export default function ModelPicker({
               <ModelProviderIcon model={selected} />
             </span>
           )}
-          <span className={clsx('chat-mode-select__label', !value && 'text-text-muted')}>
-            {selected ? selected.alias || selected.model_name : value || t('chat.modelSelector.placeholder')}
+          {/* A stored value that matches no available model is not a selection.
+              Printing it raw drew an unusable setting -- a renamed model, an
+              unexpanded ${VAR} left by a template -- as though it were in force,
+              so the reader had no way to tell a working pin from a dead one. */}
+          <span className={clsx('chat-mode-select__label', (!value || !selected) && 'text-text-muted')}>
+            {selected
+              ? selected.alias || selected.model_name
+              : value
+                ? t('chat.modelSelector.unresolved', { name: value })
+                : t('chat.modelSelector.placeholder')}
           </span>
         </span>
         {!disabled && (

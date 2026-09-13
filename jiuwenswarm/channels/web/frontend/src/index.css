@@ -18,6 +18,13 @@ body {
 html {
   min-width: 584px;
   overflow-y: hidden;
+  /* A two-finger horizontal swipe is a history gesture in Chrome and Safari, and
+     this app puts a session id in the URL -- so an accidental sideways scroll
+     navigated back to a session that had since been deleted and the workbench was
+     replaced by "对话不存在或已删除". `contain` keeps the gesture inside the page:
+     horizontally scrollable regions (the workbench tab strip, wide tables) still
+     scroll, and reaching their end no longer hands the swipe to the browser. */
+  overscroll-behavior-x: contain;
 }
 
 body {

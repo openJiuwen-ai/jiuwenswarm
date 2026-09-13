@@ -40,6 +40,8 @@ export interface PluginPackageSummary {
   source: PluginPackageSource;
   /** 是否已安装；未登记时后端按目录存在视为 true。 */
   installed: boolean;
+  /** 真实图标 data-url；list 与 show 都下发（为空则前端回退首字符色块）。 */
+  avatar?: string;
   /**
    * 插件依赖的 connector（MCP）是否就绪；v2 §3.1 list/show 都下发。`connected` 才能
    * chat.send（§1.3 硬拒绝），装了但未连接走"已装重连"（§1.6.4）。
@@ -59,6 +61,8 @@ export interface PluginPackageDetail extends PluginPackageSummary {
   avatar?: string;
   version?: string;
   details?: string;
+  /** 英文版 README（README_EN.md）；缺省时 UI 回退中文 details。 */
+  detailsEn?: string;
   tags: LocalizedText[];
   skills: PluginCapabilityRef[];
   tools: PluginCapabilityRef[];

@@ -64,6 +64,8 @@ interface RawPluginPackageSummary {
   // 原文就是这么给的，如实照抄，不擅自"统一"成驼峰再要求后端改）。
   connection_state?: PluginConnectionState;
   version?: string;
+  /** list 也下发真实图标 data-url（后端 _build 卡片统一带 avatar）。 */
+  avatar?: string;
 }
 
 function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
@@ -71,6 +73,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
     ...normalizeEquipmentIdentity(raw),
     displayName: raw.displayName,
     displayDescription: raw.displayDescription,
+    avatar: raw.avatar,
     category: raw.category ?? '',
     source: normalizeEquipmentSource(raw.source, 'local'),
     installed: raw.installed ?? false,
@@ -86,6 +89,7 @@ interface RawPluginPackageDetail extends RawPluginPackageSummary {
   avatar?: string;
   version?: string;
   details?: string;
+  details_en?: string;
   tags: LocalizedText[];
   skills: PluginCapabilityRef[];
   tools: PluginCapabilityRef[];
@@ -105,6 +109,7 @@ function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {
     avatar: raw.avatar,
     version: raw.version,
     details: raw.details,
+    detailsEn: raw.details_en,
     tags: raw.tags ?? [],
     skills: raw.skills ?? [],
     tools: raw.tools ?? [],

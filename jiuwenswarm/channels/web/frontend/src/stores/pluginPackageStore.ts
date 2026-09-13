@@ -1,5 +1,6 @@
 import { create } from 'zustand';
 import { extractRpcErrorMessage } from '../features/agentManagement/upload';
+import { announceApplicationPluginsChanged } from '../applicationPlugins/manifest';
 import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
 import type { PluginConnectionState, PluginPackageDetail, PluginPackageSummary } from '../types/pluginPackage';
 
@@ -303,6 +304,10 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     }));
     try {
       await pluginPackagesApi.install(id);
+      // A package may contribute an application plugin, and its manifest entry
+      // is what the nav rail and the Application plugins cards read. Re-read it
+      // rather than special-casing any one package id.
+      announceApplicationPluginsChanged();
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: true };
         persistLocalState({ installed: nextInstalled });
@@ -345,6 +350,10 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     set({ busyId: id, error: null, successMessage: null });
     try {
       const { notice } = await pluginPackagesApi.uninstall(id);
+      // A package may contribute an application plugin, and its manifest entry
+      // is what the nav rail and the Application plugins cards read. Re-read it
+      // rather than special-casing any one package id.
+      announceApplicationPluginsChanged();
       set((state) => {
         const nextInstalled = { ...state.installed, [id]: false };
         persistLocalState({ installed: nextInstalled });
