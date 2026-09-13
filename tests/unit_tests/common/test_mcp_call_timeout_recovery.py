@@ -198,3 +198,125 @@ async def test_session_terminated_reconnects_and_retries_same_call(
     assert result_b["ok"] is True
     assert result_b["text"] == "MCP-CALL-sds-c839d94b0b7a-fresh-after-restart"
     assert call_count["n"] == 3
+
+
+@pytest.mark.asyncio
+async def test_timeout_teardown_cancelled_error_still_reports_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SSE 超时后 disconnect 抛 CancelledError 时，须报 TimeoutError 而非用户取消。
+
+    现场：有 chat.tool_call 无 chat.tool_result，最终「工具调用被用户取消」。
+    根因是 CancelledError 逃出 MCP 补丁，MCPTool.invoke 捕不到（非 Exception）。
+    """
+    import asyncio
+
+    async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
+        del self, tool_name, arguments, timeout
+        await anyio.sleep(5)
+        return {"unreachable": True}
+
+    async def fake_disconnect(self, *, timeout=-1):
+        del self, timeout
+        raise asyncio.CancelledError()
+
+    client, _, _ = _install_fake_streamable_client(
+        monkeypatch,
+        fake_call_tool=fake_call_tool,
+        fake_disconnect=fake_disconnect,
+        default_timeout=0.05,
+    )
+
+    with pytest.raises(TimeoutError, match="timed out after") as ei:
+        await client.call_tool("qa_delay", {"seconds": 5})
+
+    assert not isinstance(ei.value, asyncio.CancelledError)
+    assert "user cancel" not in str(ei.value).lower()
+    assert client._session is None
+    assert client._is_disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_spurious_cancelled_error_reconnects_once(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """连接中断冒出的 CancelledError（非外层取消）应重连重试，而非标成用户取消。"""
+    import asyncio
+
+    call_count = {"n": 0}
+
+    async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
+        del timeout
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            raise asyncio.CancelledError()
+        return {"tool": tool_name, "arguments": arguments, "ok": True}
+
+    client, connect_count, _ = _install_fake_streamable_client(
+        monkeypatch,
+        fake_call_tool=fake_call_tool,
+        default_timeout=5.0,
+    )
+
+    result = await client.call_tool(
+        "qa_echo",
+        {"text": "MCP-CALL-sds-90b35bbefb56-after-restart"},
+    )
+    assert result["ok"] is True
+    assert call_count["n"] == 2
+    assert connect_count["n"] >= 1
+
+
+@pytest.mark.asyncio
+async def test_sse_timeout_reports_timeout_not_cancelled(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """SseClient 超时同样须抛 TimeoutError（可被 MCPTool.invoke 捕获成工具错误）。"""
+    import asyncio
+
+    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
+
+    async def fake_call_tool(self, tool_name: str, arguments: dict, *, timeout=-1):
+        del self, tool_name, arguments, timeout
+        await anyio.sleep(5)
+        return {"unreachable": True}
+
+    async def fake_disconnect(self, *, timeout=-1):
+        del self, timeout
+        raise asyncio.CancelledError()
+
+    async def fake_connect(self, *, timeout=-1):
+        del timeout
+        self._session = object()
+        self._is_disconnected = False
+        return True
+
+    async def fake_list_tools(self, *, timeout=-1):
+        del self, timeout
+        return []
+
+    monkeypatch.setattr(SseClient, "call_tool", fake_call_tool, raising=False)
+    monkeypatch.setattr(SseClient, "list_tools", fake_list_tools, raising=False)
+    monkeypatch.setattr(SseClient, "disconnect", fake_disconnect, raising=False)
+    monkeypatch.setattr(SseClient, "connect", fake_connect, raising=False)
+
+    timeout_patch._PATCHED = False
+    timeout_patch._wrapped_methods.clear()
+    timeout_patch.apply_mcp_call_timeout_patch(default_timeout=0.05)
+
+    client = object.__new__(SseClient)
+    client._server_path = "http://192.168.1.96:18013/sse"
+    client._session = object()
+    client._client = object()
+    client._read = None
+    client._write = None
+    client._is_disconnected = False
+    client._exit_stack = AsyncExitStack()
+    client._auth_provider = None
+    client._jws_call_timeout = 0.05
+    client._name = "qa-noauth-sse"
+
+    with pytest.raises(TimeoutError, match="timed out after"):
+        await client.call_tool("qa_delay", {"seconds": 5})
+
+    assert client._session is None
