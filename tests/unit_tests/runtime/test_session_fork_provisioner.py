@@ -262,6 +262,71 @@ async def test_message_fork_rebuilds_context_from_copied_prefix_without_latest_s
 
 
 @pytest.mark.asyncio
+async def test_side_fork_marks_ephemeral_context_and_skips_checkpoint_state(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.common import session_ops_service
+
+    state = _ForkState()
+    deep_agent = SimpleNamespace(card=object())
+    state.agent = SimpleNamespace(ensure_instance=AsyncMock(return_value=deep_agent))
+
+    def fork_session(**kwargs: Any) -> dict[str, Any]:
+        assert kwargs["side_conversation"] is True
+        state.events.append("fork.filesystem")
+        return {**_result(), "ephemeral": True}
+
+    async def copy_session_context(
+        selected_agent: Any,
+        source_session_id: str,
+        target_session_id: str,
+        *,
+        side_conversation: bool = False,
+    ) -> bool:
+        assert selected_agent is deep_agent
+        assert (source_session_id, target_session_id) == (
+            "fork-source",
+            "fork-target",
+        )
+        assert side_conversation is True
+        state.events.append("fork.context")
+        return True
+
+    copy_state = AsyncMock(return_value=True)
+    monkeypatch.setattr(session_ops_service, "fork_session", fork_session)
+    monkeypatch.setattr(
+        session_ops_service,
+        "copy_session_context",
+        copy_session_context,
+    )
+    monkeypatch.setattr(session_ops_service, "copy_session_state", copy_state)
+
+    runtime = _runtime(state)
+    try:
+        await runtime.start()
+        prepared = await runtime.prepare_session_fork(
+            SessionForkInput(
+                channel_id="web",
+                source_session_id="fork-source",
+                target_session_id="fork-target",
+                side_conversation=True,
+            )
+        )
+
+        assert prepared.result.ephemeral is True
+        assert state.events == [
+            "runtime.start",
+            "fork.filesystem",
+            "agent.lookup",
+            "fork.context",
+        ]
+        copy_state.assert_not_awaited()
+        await runtime.abort_session_provision(prepared)
+    finally:
+        await runtime.close()
+
+
+@pytest.mark.asyncio
 async def test_automatic_target_allocates_before_copy_and_supports_no_agent(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

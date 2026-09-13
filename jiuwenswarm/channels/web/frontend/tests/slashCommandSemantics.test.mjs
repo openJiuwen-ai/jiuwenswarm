@@ -32,19 +32,25 @@ test('fork executes only as a standalone command', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('fork', 'custom title', 'agent'), false);
 });
 
+test('side executes with or without an initial prompt', () => {
+  assert.equal(shouldExecuteRegisteredSlashCommand('side', '', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('side', 'inspect the cache path', 'agent'), true);
+});
+
 test('other registered slash commands keep their existing argument behavior', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'agent'), true);
 });
 
 test('team mode exposes and executes only the global new command', () => {
-  const commands = [{ name: 'new' }, { name: 'compact' }, { name: 'plan' }, { name: 'persist' }];
+  const commands = [{ name: 'new' }, { name: 'side' }, { name: 'compact' }, { name: 'plan' }, { name: 'persist' }];
 
   assert.equal(supportsWebSlashCommands('team'), false);
   assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), [{ name: 'new' }]);
   assert.equal(shouldExecuteRegisteredSlashCommand('new', '', 'team'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('new', 'keep this text', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('fork', '', 'team'), false);
+  assert.equal(shouldExecuteRegisteredSlashCommand('side', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'team'), false);

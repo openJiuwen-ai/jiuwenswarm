@@ -810,6 +810,16 @@
     "historyLoadMore": "加载更多历史消息",
     "continuedFromChat": "从原会话继续",
     "openSourceChat": "打开原会话",
+    "sideConversation": {
+      "title": "侧会话",
+      "from": "来自 {{title}}",
+      "empty": "在不离开主会话的情况下提问",
+      "placeholder": "发送消息到侧会话",
+      "send": "发送消息",
+      "working": "处理中…",
+      "sendFailed": "消息发送失败，请重试。",
+      "close": "关闭侧会话"
+    },
     "config": {
       "mode": {
         "cluster": "集群模式",

@@ -48,6 +48,7 @@ const EMPTY_REASONING: ReasoningSegment[] = [];
 
 interface MessageListProps {
   messages: Message[];
+  sessionId?: string;
   renderAfterMessage?: (message: Message) => ReactNode;
   canLoadOlderHistory?: boolean;
   onLoadOlderHistory?: () => void | Promise<void>;
@@ -289,6 +290,7 @@ export function TurnElapsed({
   startMs,
   endMs,
   isLastTurn,
+  isProcessing,
   showAvatar,
   agentTemplateName,
   teamLayout,
@@ -298,6 +300,7 @@ export function TurnElapsed({
   startMs: number;
   endMs: number;
   isLastTurn: boolean;
+  isProcessing: boolean;
   showAvatar?: boolean;
   agentTemplateName?: string;
   teamLayout: boolean;
@@ -305,7 +308,6 @@ export function TurnElapsed({
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
-  const isProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
   const active = isLastTurn && isProcessing;
   const now = useNow(active);
   const end = active ? now : endMs;
@@ -631,19 +633,20 @@ export function ChatTimelineList({
   onForkFromMessage,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
+  const resolvedSessionId = sessionId ?? globalActiveSessionId;
   const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
+    (s) => s.runtimes[resolvedSessionId ?? '']?.teamLeaderIdentity ?? null
   );
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
-  const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
-  const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
+  const storeIsProcessing = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isProcessing ?? false);
+  const isLoadingHistory = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isLoadingHistory ?? false);
   const historyPagerMeta = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null
+    (s) => s.runtimes[resolvedSessionId ?? '']?.historyPagerMeta ?? null
   );
   const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
+    (s) => s.runtimes[resolvedSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
@@ -1059,7 +1062,7 @@ export function ChatTimelineList({
     suppressStreakTransitionRef.current = true;
     displayedStreakFpRef.current = '';
     setDisplayedStreakState({ scope: timelineScope, streaks: new Map() });
-  }, [activeSessionId, timelineScope]);
+  }, [resolvedSessionId, timelineScope]);
 
   const wasLoadingHistoryRef = useRef(false);
   useEffect(() => {
@@ -1312,6 +1315,7 @@ export function ChatTimelineList({
               startMs={range.startMs}
               endMs={range.endMs}
               isLastTurn={item.isLastTurn}
+              isProcessing={isProcessing}
               showAvatar={item.showAvatar}
               agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               teamLayout={isTeamMode}
@@ -1337,6 +1341,7 @@ export function ChatTimelineList({
 
 export function MessageList({
   messages,
+  sessionId,
   renderAfterMessage,
   canLoadOlderHistory,
   onLoadOlderHistory,
@@ -1344,10 +1349,11 @@ export function MessageList({
   teamGroupIdentityOverride,
   onForkFromMessage,
 }: MessageListProps) {
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
-  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
+  const resolvedSessionId = sessionId ?? globalActiveSessionId;
+  const toolExecutions = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutions ?? new Map());
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutionOrder ?? []);
+  const mode = useSessionStore((s) => s.runtimes[resolvedSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),
     [toolExecutions, toolExecutionOrder]
@@ -1356,10 +1362,10 @@ export function MessageList({
   return (
     <ChatTimelineList
       messages={messages}
+      sessionId={resolvedSessionId ?? undefined}
       executions={executions}
       mode={mode}
       renderAfterMessage={renderAfterMessage}
-      sessionId={activeSessionId}
       canLoadOlderHistory={canLoadOlderHistory}
       onLoadOlderHistory={onLoadOlderHistory}
       teamLeaderIdentityOverride={teamLeaderIdentityOverride}

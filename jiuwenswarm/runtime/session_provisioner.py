@@ -173,6 +173,10 @@ class SessionForkInput:
     cutoff_role: str = ""
     cutoff_content: str = ""
     cutoff_timestamp: float | str | None = None
+    side_conversation: bool = False
+
+    def __post_init__(self) -> None:
+        _require_bool("side_conversation", self.side_conversation)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -222,6 +226,10 @@ class SessionForkResult:
     source_session_id: str
     session_id: str
     title: str
+    ephemeral: bool = False
+
+    def __post_init__(self) -> None:
+        _require_bool("ephemeral", self.ephemeral)
 
 
 SessionProvisionInput: TypeAlias = (
@@ -1198,6 +1206,7 @@ class RuntimeSessionProvisioner:
         cutoff_role = str(provision_input.cutoff_role or "").strip()
         cutoff_content = str(provision_input.cutoff_content or "")
         cutoff_timestamp = provision_input.cutoff_timestamp
+        side_conversation = provision_input.side_conversation
         has_message_cutoff = bool(
             cutoff_message_id
             or cutoff_role
@@ -1230,6 +1239,8 @@ class RuntimeSessionProvisioner:
                 "title": title,
                 "channel_id": channel_id,
             }
+            if side_conversation:
+                fork_kwargs["side_conversation"] = True
             if has_message_cutoff:
                 fork_kwargs.update(
                     {
@@ -1255,11 +1266,19 @@ class RuntimeSessionProvisioner:
                         force_history=True,
                     )
                 else:
-                    await copy_session_context(
-                        deep_agent,
-                        source_session_id,
-                        target_session_id,
-                    )
+                    if side_conversation:
+                        await copy_session_context(
+                            deep_agent,
+                            source_session_id,
+                            target_session_id,
+                            side_conversation=True,
+                        )
+                    else:
+                        await copy_session_context(
+                            deep_agent,
+                            source_session_id,
+                            target_session_id,
+                        )
             else:
                 logger.warning(
                     "session.fork: no agent for channel %s; "
@@ -1269,7 +1288,7 @@ class RuntimeSessionProvisioner:
 
             from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
-            if not has_message_cutoff:
+            if not has_message_cutoff and not side_conversation:
                 await copy_session_state(
                     source_session_id=source_session_id,
                     target_session_id=target_session_id,
@@ -1293,6 +1312,7 @@ class RuntimeSessionProvisioner:
             ),
             session_id=str(fork_result.get("session_id") or target_session_id),
             title=str(fork_result.get("title") or ""),
+            ephemeral=bool(fork_result.get("ephemeral")),
         )
         return self._stage_session_provision(
             result,

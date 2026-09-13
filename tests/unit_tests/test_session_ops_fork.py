@@ -157,6 +157,64 @@ class TestForkSessionChannelMetadata:
             "fork_session should not add an empty channel_metadata"
         )
 
+    def test_side_conversation_is_ephemeral_and_keeps_parent_history(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id = "web_parent"
+        target_id = "web_side"
+        _write_source_meta(
+            sessions_dir,
+            source_id,
+            {
+                "session_id": source_id,
+                "title": "Parent chat",
+                "message_count": 2,
+                "mode": "agent.work.normal",
+                "model": "test-model",
+                "session_equipment": {"plugin_names": ["search"]},
+            },
+        )
+        (sessions_dir / source_id / "history.jsonl").write_text("\n", encoding="utf-8")
+        records = [
+            {"id": "parent-user", "role": "user", "content": "Parent question"},
+            {
+                "id": "parent-answer",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "Parent answer",
+            },
+        ]
+        write_history = MagicMock()
+
+        with patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.history_exists",
+            return_value=True,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+            return_value=records,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.write_history_records",
+            write_history,
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+            result = fork_session(
+                source_session_id=source_id,
+                target_session_id=target_id,
+                channel_id="web",
+                side_conversation=True,
+            )
+
+        assert result["ephemeral"] is True
+        target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["ephemeral"] is True
+        assert target_meta["side_parent_session_id"] == source_id
+        assert target_meta["message_count"] == 0
+        assert target_meta["model"] == "test-model"
+        assert target_meta["session_equipment"] == {"plugin_names": ["search"]}
+        assert len(write_history.call_args.args[1]) == 2
+
     def test_channel_metadata_is_deep_copied(self, tmp_path, monkeypatch):
         """Verify channel_metadata is a deep copy, not a shared reference."""
         sessions_dir = self._setup(monkeypatch, tmp_path)

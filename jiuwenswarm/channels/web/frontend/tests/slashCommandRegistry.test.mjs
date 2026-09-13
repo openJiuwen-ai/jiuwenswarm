@@ -13,11 +13,13 @@ function createContext(sessionId, inputLine) {
   const submissions = [];
   const newConversations = [];
   const forkedConversations = [];
+  const sideConversations = [];
   return {
     messages,
     submissions,
     newConversations,
     forkedConversations,
+    sideConversations,
     context: {
       sessionId,
       mode: 'agent',
@@ -26,6 +28,7 @@ function createContext(sessionId, inputLine) {
       submitMessage: (content) => submissions.push(content),
       startNewConversation: () => newConversations.push(true),
       forkConversation: async (sourceSessionId) => forkedConversations.push(sourceSessionId),
+      startSideConversation: async (sourceSessionId, prompt) => sideConversations.push([sourceSessionId, prompt]),
     },
   };
 }
@@ -73,6 +76,33 @@ test('/fork reports a command result when the App fork path fails', async () => 
   assert.equal(state.messages.length, 1);
   assert.equal(state.messages[0].commandName, 'fork');
   assert.match(state.messages[0].commandOutput, /分叉会话失败/);
+});
+
+test('/side starts an ephemeral side conversation and forwards optional text', async () => {
+  const command = findSlashCommand('side');
+  assert.ok(command);
+  assert.notEqual(command.requiresSession, false);
+
+  const state = createContext('existing-session', '/side inspect the cache path');
+  await command.execute(state.context, 'inspect the cache path');
+
+  assert.deepEqual(state.sideConversations, [['existing-session', 'inspect the cache path']]);
+  assert.deepEqual(state.messages, []);
+});
+
+test('/side reports a command result when side conversation creation fails', async () => {
+  const command = findSlashCommand('side');
+  assert.ok(command);
+  const state = createContext('existing-session', '/side');
+  state.context.startSideConversation = async () => {
+    throw new Error('side failed');
+  };
+
+  await command.execute(state.context, '');
+
+  assert.equal(state.messages.length, 1);
+  assert.equal(state.messages[0].commandName, 'side');
+  assert.match(state.messages[0].commandOutput, /侧会话失败/);
 });
 
 test('/persist is registered and delegates new-session creation to the existing submit path', async () => {

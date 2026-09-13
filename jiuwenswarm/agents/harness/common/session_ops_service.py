@@ -81,7 +81,32 @@ def _fork_source_for_session(
     return _fork_source_from_history(history_records)
 
 
-def _mark_fork_context(messages: list[Any], source_session_id: str) -> list[Any]:
+def _side_parent_for_session(session_id: str) -> str:
+    """Return the parent id only when ``session_id`` is an ephemeral side chat."""
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+    except Exception as exc:
+        logger.debug(
+            "failed to read side conversation metadata for %s: %s",
+            session_id,
+            exc,
+        )
+        return ""
+    if not isinstance(metadata, dict) or metadata.get("ephemeral") is not True:
+        return ""
+    return str(metadata.get("side_parent_session_id") or "").strip()
+
+
+def _mark_fork_context(
+    messages: list[Any],
+    source_session_id: str,
+    *,
+    side_conversation: bool = False,
+) -> list[Any]:
     """Add model-visible fork provenance without duplicating ancestor markers."""
     from openjiuwen.core.foundation.llm.schema.message import SystemMessage
 
@@ -95,15 +120,58 @@ def _mark_fork_context(messages: list[Any], source_session_id: str) -> list[Any]
     ]
     marker = SystemMessage(
         content=(
-            "This conversation was forked from chat "
-            f"{source_session_id}. The messages that follow were inherited from "
-            "that source chat and are available as prior conversation context. "
-            "When the user refers to the previous or source chat, answer directly "
-            "from this inherited history."
+            (
+                "This is an ephemeral side conversation forked from chat "
+                f"{source_session_id}. Everything before this boundary is inherited "
+                "reference context, not an active task. Only user messages after this "
+                "boundary are active requests. Keep this side conversation focused on "
+                "lightweight exploration and do not modify files or external state unless "
+                "the user explicitly asks you to do so here. Do not spawn subagents."
+            )
+            if side_conversation
+            else (
+                "This conversation was forked from chat "
+                f"{source_session_id}. The messages that follow were inherited from "
+                "that source chat and are available as prior conversation context. "
+                "When the user refers to the previous or source chat, answer directly "
+                "from this inherited history."
+            )
         ),
         metadata={_FORK_CONTEXT_MARKER_METADATA_KEY: source_session_id},
     )
-    return [marker, *inherited_messages]
+    return [*inherited_messages, marker] if side_conversation else [marker, *inherited_messages]
+
+
+def _build_side_context_messages_from_history(
+    history_records: list[dict[str, Any]],
+    source_session_id: str,
+) -> tuple[list[Any], int]:
+    """Rebuild a side chat with its boundary between inherited and local turns."""
+    boundary = 0
+    for record in history_records:
+        marker = record.get("forked_from")
+        parent_id = marker.get("session_id") if isinstance(marker, dict) else marker
+        if str(parent_id or "").strip() != source_session_id:
+            break
+        boundary += 1
+
+    inherited, inherited_skipped = _build_context_messages_from_history(
+        history_records[:boundary]
+    )
+    local, local_skipped = _build_context_messages_from_history(
+        history_records[boundary:]
+    )
+    return (
+        [
+            *_mark_fork_context(
+                inherited,
+                source_session_id,
+                side_conversation=True,
+            ),
+            *local,
+        ],
+        inherited_skipped + local_skipped,
+    )
 
 
 def _get_context_processors(react_agent: Any) -> list[tuple[str, Any]] | None:
@@ -308,6 +376,7 @@ def fork_session(
     cutoff_role: str = "",
     cutoff_content: str = "",
     cutoff_timestamp: Any = None,
+    side_conversation: bool = False,
 ) -> dict[str, Any]:
     sessions_dir = get_agent_sessions_dir()
     source_dir = sessions_dir / source_session_id
@@ -385,7 +454,10 @@ def fork_session(
 
     source_meta = get_session_metadata(source_session_id)
 
-    if title:
+    if side_conversation:
+        source_title = str(source_meta.get("title") or "").strip()
+        final_title = f"Side from {source_title}" if source_title else "Side chat"
+    elif title:
         base_name = title
     elif source_meta.get("title"):
         base_name = source_meta["title"]
@@ -394,18 +466,19 @@ def fork_session(
         # for the status bar. First prompt like "hi" makes an ugly title.
         base_name = ""
 
-    existing_titles: set[str] = set()
-    try:
-        all_sessions = get_all_sessions_metadata(limit=500, offset=0)
-        if isinstance(all_sessions, list):
-            for s in all_sessions:
-                t = s.get("title", "")
-                if t:
-                    existing_titles.add(t)
-    except Exception as exc:
-        logger.debug("fork_session: failed to get existing titles: %s", exc)
+    if not side_conversation:
+        existing_titles: set[str] = set()
+        try:
+            all_sessions = get_all_sessions_metadata(limit=500, offset=0)
+            if isinstance(all_sessions, list):
+                for s in all_sessions:
+                    t = s.get("title", "")
+                    if t:
+                        existing_titles.add(t)
+        except Exception as exc:
+            logger.debug("fork_session: failed to get existing titles: %s", exc)
 
-    final_title = _get_unique_fork_name(base_name, existing_titles)
+        final_title = _get_unique_fork_name(base_name, existing_titles)
     source_mode = source_meta.get("mode", "code.normal")
     selected_timestamp = (
         _fork_timestamp_seconds(selected_record.get("timestamp"))
@@ -419,13 +492,17 @@ def fork_session(
         "user_id": source_meta.get("user_id", ""),
         "created_at": _current_timestamp(),
         "last_message_at": (
-            selected_timestamp
+            _current_timestamp()
+            if side_conversation
+            else selected_timestamp
             if selected_timestamp is not None
             else source_meta.get("last_message_at", 0)
         ),
         "title": final_title,
         "message_count": (
-            len(history_records)
+            0
+            if side_conversation
+            else len(history_records)
             if has_message_cutoff and history_records is not None
             else source_meta.get("message_count", 0)
         ),
@@ -435,6 +512,12 @@ def fork_session(
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
+    if side_conversation:
+        metadata["ephemeral"] = True
+        metadata["side_parent_session_id"] = source_session_id
+        for key in ("model", "session_equipment"):
+            if key in source_meta:
+                metadata[key] = copy.deepcopy(source_meta[key])
     if selected_record is not None:
         metadata["forked_at"] = {
             "message_id": str(selected_record.get("id") or ""),
@@ -450,6 +533,7 @@ def fork_session(
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
+        "ephemeral": side_conversation,
     }
 
 
@@ -1415,7 +1499,14 @@ async def warmup_session_context(
                 history_records = history_records[:index]
                 break
 
-    context_messages, skipped = _build_context_messages_from_history(history_records)
+    side_parent_session_id = _side_parent_for_session(session_id)
+    if side_parent_session_id:
+        context_messages, skipped = _build_side_context_messages_from_history(
+            history_records,
+            side_parent_session_id,
+        )
+    else:
+        context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
         logger.info(
             "warmup_session_context: no rebuildable messages in history for %s", session_id
@@ -1423,7 +1514,7 @@ async def warmup_session_context(
         return False
 
     fork_source_session_id = _fork_source_for_session(session_id, history_records)
-    if fork_source_session_id:
+    if fork_source_session_id and not side_parent_session_id:
         context_messages = _mark_fork_context(
             context_messages,
             fork_source_session_id,
@@ -1838,6 +1929,7 @@ async def copy_session_context(
     target_session_id: str,
     *,
     force_history: bool = False,
+    side_conversation: bool = False,
 ) -> bool:
     """Copy conversation context from memory, falling back to forked history.
 
@@ -1890,7 +1982,11 @@ async def copy_session_context(
             )
             return False
 
-    messages = _mark_fork_context(messages, source_session_id)
+    messages = _mark_fork_context(
+        messages,
+        source_session_id,
+        side_conversation=side_conversation,
+    )
 
     try:
         await deep_agent.create_new_context_engine(

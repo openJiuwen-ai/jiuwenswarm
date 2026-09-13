@@ -10626,6 +10626,18 @@ class AgentWebSocketServer:
         if not isinstance(raw, list):
             return None
 
+        if normalized_subagent_id is None:
+            metadata = get_session_metadata(
+                normalized_session_id,
+                enable_writeback=False,
+            )
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("ephemeral") is True
+                and metadata.get("side_parent_session_id")
+            ):
+                raw = [item for item in raw if not item.get("forked_from")]
+
         page_size = _HISTORY_PAGE_SIZE
         restorable = [
             item for item in raw
@@ -10974,6 +10986,7 @@ class AgentWebSocketServer:
             source = str(params.get("source_session_id") or "").strip()
             target = str(params.get("target_session_id") or "").strip()
             fork_title = str(params.get("title") or "").strip()
+            side_conversation = params.get("side_conversation") is True
             fork_point = params.get("fork_point")
             if not isinstance(fork_point, dict):
                 fork_point = {}
@@ -10999,6 +11012,7 @@ class AgentWebSocketServer:
                     cutoff_role=str(fork_point.get("role") or "").strip(),
                     cutoff_content=str(fork_point.get("content") or ""),
                     cutoff_timestamp=fork_point.get("timestamp"),
+                    side_conversation=side_conversation,
                 )
             )
             result = await runtime.commit_session_provision(
@@ -11014,6 +11028,7 @@ class AgentWebSocketServer:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
+                    **({"ephemeral": True} if result.ephemeral else {}),
                 },
             )
             wire = encode_agent_response_for_wire(

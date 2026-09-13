@@ -29,6 +29,10 @@ export interface Session {
   title_source?: 'auto' | 'user';
   /** Direct parent session when this conversation was created by fork. */
   forked_from?: string;
+  /** Temporary side conversations are omitted from the normal session list. */
+  ephemeral?: boolean;
+  /** Direct parent for an ephemeral side conversation. */
+  side_parent_session_id?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
