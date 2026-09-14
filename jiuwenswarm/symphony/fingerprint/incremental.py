@@ -21,8 +21,8 @@ from jiuwenswarm.symphony.fingerprint.normalize import (
     IONameVocabulary,
     SkillFingerprintNormalizer,
 )
-from jiuwenswarm.symphony.score_state import load_score_state
-from jiuwenswarm.symphony.score_storage import resolve_score_artifact_dir
+from jiuwenswarm.symphony.graph_state import load_graph_state
+from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 
 IndexedSkillFolder = tuple[int, SkillFolder]
 
@@ -37,13 +37,13 @@ class FingerprintReusePlan:
 
 
 class IncrementalFingerprintStore:
-    """Load prior Score artifacts and decide what must be re-extracted."""
+    """Load prior graph artifacts and decide what must be re-extracted."""
 
     def __init__(self, output_dir: Path, *, signature: str = "") -> None:
         self.output_dir = output_dir
         self.signature = signature
         self.cache = FingerprintResultCache(output_dir, signature=signature)
-        self.old_state = load_score_state(output_dir)
+        self.old_state = load_graph_state(output_dir)
         self.old_fingerprints = load_fingerprints(output_dir)
         self.old_fingerprints_by_id = {item.id: item for item in self.old_fingerprints}
 
@@ -114,15 +114,15 @@ class IncrementalFingerprintStore:
 class FingerprintResultCache:
     """Per-skill normalized fingerprint cache.
 
-    The cache is intentionally outside published Score artifacts. A failed build
+    The cache is intentionally outside published graph artifacts. A failed build
     may still leave valid per-skill extraction results that can be reused by the
     next build.
     """
 
-    def __init__(self, score_dir: Path, *, signature: str = "") -> None:
-        self.score_dir = Path(score_dir).resolve()
+    def __init__(self, graph_dir: Path, *, signature: str = "") -> None:
+        self.graph_dir = Path(graph_dir).resolve()
         self.signature = signature
-        self.root = self.score_dir / "cache" / "fingerprints"
+        self.root = self.graph_dir / "cache" / "fingerprints"
 
     def load(
         self,
@@ -188,7 +188,7 @@ class FingerprintResultCache:
 
 
 def load_fingerprints(output_dir: Path) -> list[Fingerprint]:
-    path = resolve_score_artifact_dir(output_dir) / "fingerprints.json"
+    path = resolve_graph_artifact_dir(output_dir) / "fingerprints.json"
     if not path.exists():
         return []
     payload = json.loads(path.read_text(encoding="utf-8"))
@@ -203,7 +203,7 @@ def load_io_name_vocabulary(
     output_dir: Path,
     normalizer: SkillFingerprintNormalizer,
 ) -> IONameVocabulary:
-    path = resolve_score_artifact_dir(output_dir) / "io_name_vocab.json"
+    path = resolve_graph_artifact_dir(output_dir) / "io_name_vocab.json"
     if not path.exists():
         return IONameVocabulary.from_config(normalizer.config)
     return IONameVocabulary.load(path, normalizer.config)

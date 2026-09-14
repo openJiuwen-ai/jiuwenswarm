@@ -13,8 +13,8 @@ def test_symphony_config_defaults_paths(monkeypatch, tmp_path):
     cfg = symphony_config.symphony_config_from_dict({})
 
     assert cfg.paths.skills_root == (tmp_path / "agent" / "jiuwenclaw_workspace" / "skills").resolve()
-    assert cfg.paths.score_dir == (
-        tmp_path / "agent" / "jiuwenclaw_workspace" / "symphony" / "score"
+    assert cfg.paths.graph_dir == (
+        tmp_path / "agent" / "jiuwenclaw_workspace" / "symphony" / "graph"
     ).resolve()
     assert cfg.fingerprint.scan.max_depth is None
     assert cfg.fingerprint.extraction.body_limit is None
@@ -25,6 +25,22 @@ def test_symphony_config_defaults_paths(monkeypatch, tmp_path):
     assert cfg.orchestration.min_edge_confidence == 0.5
     assert cfg.evolution.enabled is False
     assert cfg.enabled is False
+
+
+def test_symphony_config_does_not_accept_legacy_score_dir(monkeypatch, tmp_path):
+    monkeypatch.setattr(
+        symphony_config,
+        "get_agent_workspace_dir",
+        lambda: tmp_path / "agent" / "workspace",
+    )
+
+    cfg = symphony_config.symphony_config_from_dict(
+        {"paths": {"score_dir": str(tmp_path / "legacy-score")}}
+    )
+
+    assert cfg.paths.graph_dir == (
+        tmp_path / "agent" / "workspace" / "symphony" / "graph"
+    ).resolve()
 
 
 def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
@@ -38,7 +54,7 @@ def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
         {
             "paths": {
                 "skills_root": str(tmp_path / "skills-custom"),
-                "score_dir": str(tmp_path / "score-custom"),
+                "graph_dir": str(tmp_path / "graph-custom"),
             },
             "fingerprint": {
                 "scan": {
@@ -74,7 +90,7 @@ def test_symphony_config_normalizes_values(monkeypatch, tmp_path):
     )
 
     assert cfg.paths.skills_root == (tmp_path / "skills-custom").resolve()
-    assert cfg.paths.score_dir == (tmp_path / "score-custom").resolve()
+    assert cfg.paths.graph_dir == (tmp_path / "graph-custom").resolve()
     assert cfg.fingerprint.scan.max_depth == 6
     assert cfg.fingerprint.extraction.workers == 1
     assert cfg.fingerprint.extraction.batch_size == 4

@@ -1,4 +1,4 @@
-"""Versioned storage helpers for Symphony Score artifacts."""
+"""Versioned storage helpers for Symphony graph artifacts."""
 
 from __future__ import annotations
 
@@ -14,88 +14,101 @@ BUILD_RUNS_DIRNAME = ".build_runs"
 
 
 @dataclass(frozen=True)
-class ScorePointer:
-    """Pointer to the currently published Score version."""
+class GraphPointer:
+    """Pointer to the currently published graph version."""
 
     version: str
     path: str
 
     def to_dict(self) -> dict[str, Any]:
         return {
-            "schema_version": "Symphony-score-pointer-v1",
+            "schema_version": "1.0",
             "version": self.version,
             "path": self.path,
         }
 
     @classmethod
-    def from_dict(cls, payload: dict[str, Any]) -> "ScorePointer":
+    def from_dict(cls, payload: dict[str, Any]) -> "GraphPointer":
         version = str(payload.get("version") or "").strip()
-        path = str(payload.get("path") or "").strip()
+        path = str(payload.get("path") or payload.get("artifact") or "").strip()
+        if path.endswith("/graph.json"):
+            path = str(Path(path).parent)
         if not version or not path:
-            raise ValueError("Invalid Symphony score pointer.")
+            raise ValueError("Invalid Symphony graph pointer.")
         return cls(version=version, path=path)
 
 
-def resolve_score_artifact_dir(score_dir: str | Path) -> Path:
+def resolve_graph_artifact_dir(graph_dir: str | Path) -> Path:
     """Return the directory containing the currently readable artifacts.
 
     New builds publish versioned artifacts behind ``current.json``. Older
-    layouts stored artifacts directly in ``score_dir``; this helper keeps that
+    layouts stored artifacts directly in ``graph_dir``; this helper keeps that
     legacy layout readable.
     """
 
-    root = Path(score_dir).resolve()
+    root = Path(graph_dir).resolve()
     pointer_path = root / CURRENT_POINTER_FILENAME
     if not pointer_path.is_file():
         return root
 
-    pointer = ScorePointer.from_dict(
+    pointer = GraphPointer.from_dict(
         json.loads(pointer_path.read_text(encoding="utf-8"))
     )
     candidate = (root / pointer.path).resolve()
     if not _is_relative_to(candidate, root):
-        raise ValueError(f"Symphony score pointer escapes score_dir: {candidate}")
+        raise ValueError(f"Symphony graph pointer escapes graph_dir: {candidate}")
     return candidate
 
 
-def score_manifest_path(score_dir: str | Path) -> Path:
-    return resolve_score_artifact_dir(score_dir) / "score_manifest.json"
+def graph_manifest_path(graph_dir: str | Path) -> Path:
+    """Return the public graph artifact used as the existence marker."""
+
+    return resolve_graph_artifact_dir(graph_dir) / "graph.json"
 
 
-def score_exists(score_dir: str | Path) -> bool:
-    return score_manifest_path(score_dir).is_file()
+def graph_exists(graph_dir: str | Path) -> bool:
+    root = Path(graph_dir).resolve()
+    pointer_path = root / CURRENT_POINTER_FILENAME
+    if not pointer_path.is_file():
+        return False
+    try:
+        pointer = json.loads(pointer_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return False
+    schema_version = str(pointer.get("schema_version") or "")
+    return schema_version.startswith("1.") and graph_manifest_path(root).is_file()
 
 
-def build_runs_dir(score_dir: str | Path) -> Path:
-    return Path(score_dir).resolve() / BUILD_RUNS_DIRNAME
+def build_runs_dir(graph_dir: str | Path) -> Path:
+    return Path(graph_dir).resolve() / BUILD_RUNS_DIRNAME
 
 
-def build_run_dir(score_dir: str | Path, run_id: str) -> Path:
-    return build_runs_dir(score_dir) / run_id
+def build_run_dir(graph_dir: str | Path, run_id: str) -> Path:
+    return build_runs_dir(graph_dir) / run_id
 
 
-def build_artifact_dir(score_dir: str | Path, run_id: str) -> Path:
-    return build_run_dir(score_dir, run_id) / "artifacts"
+def build_artifact_dir(graph_dir: str | Path, run_id: str) -> Path:
+    return build_run_dir(graph_dir, run_id) / "artifacts"
 
 
 def publish_artifact_dir(
-    score_dir: str | Path,
+    graph_dir: str | Path,
     artifact_dir: str | Path,
     *,
     version: str,
 ) -> Path:
-    """Publish a fully built artifact directory as the current Score version."""
+    """Publish a fully built artifact directory as the current graph version."""
 
-    root = Path(score_dir).resolve()
+    root = Path(graph_dir).resolve()
     source = Path(artifact_dir).resolve()
     versions_dir = root / VERSIONS_DIRNAME
     versions_dir.mkdir(parents=True, exist_ok=True)
     target = versions_dir / version
     if target.exists():
-        raise FileExistsError(f"Symphony score version already exists: {target}")
+        raise FileExistsError(f"Symphony graph version already exists: {target}")
     os.replace(source, target)
 
-    pointer = ScorePointer(
+    pointer = GraphPointer(
         version=version,
         path=f"{VERSIONS_DIRNAME}/{version}",
     )
@@ -108,8 +121,8 @@ def publish_artifact_dir(
     return target
 
 
-def latest_incomplete_build(score_dir: str | Path) -> Path | None:
-    runs_root = build_runs_dir(score_dir)
+def latest_incomplete_build(graph_dir: str | Path) -> Path | None:
+    runs_root = build_runs_dir(graph_dir)
     if not runs_root.is_dir():
         return None
     candidates = []

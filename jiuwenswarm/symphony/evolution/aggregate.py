@@ -36,7 +36,7 @@ RUNTIME_WEIGHT_MAX = 2.0
 def build_overlay_from_events(
     events: list[dict[str, Any]],
     *,
-    base_score_version: str | None = None,
+    base_graph_version: str | None = None,
 ) -> dict[str, Any]:
     """Build a runtime overlay from append-only evolution events."""
 
@@ -129,7 +129,7 @@ def build_overlay_from_events(
     }
     return {
         "schema_version": OVERLAY_SCHEMA_VERSION,
-        "base_score_version": base_score_version or "",
+        "base_graph_version": base_graph_version or "",
         "generated_at": generated_at,
         "events": {
             "count": len(events),

@@ -13,11 +13,11 @@ from typing import Any
 import numpy as np
 import pytest
 
-from jiuwenswarm.symphony.experience.bank import ExperienceBank
-from jiuwenswarm.symphony.experience.cluster import ClusteredQuery, cluster_traces
-from jiuwenswarm.symphony.experience.collector import ExperienceBaseBuilder
-from jiuwenswarm.symphony.experience.retriever import ExperienceRetriever
-from jiuwenswarm.symphony.experience.models import (
+from openjiuwen.symphony.experience.bank import ExperienceBank
+from openjiuwen.symphony.experience.cluster import ClusteredQuery, cluster_traces
+from openjiuwen.symphony.experience.collector import ExperienceBaseBuilder
+from openjiuwen.symphony.experience.retriever import ExperienceRetriever
+from openjiuwen.symphony.experience.models import (
     DistilledPattern,
     ExperienceBankBuildConfig,
     ExperienceItem,
@@ -182,7 +182,7 @@ def test_build_drops_traces_with_success_false(monkeypatch) -> None:
         captured.append(list(traces))
         return [ClusteredQuery(0, "ok", [], [], [])]
 
-    import jiuwenswarm.symphony.experience.collector as collector_mod
+    import openjiuwen.symphony.experience.collector as collector_mod
     monkeypatch.setattr(collector_mod, "cluster_traces", fake_cluster_traces)
     monkeypatch.setattr(
         collector_mod, "TraceDistiller",
@@ -219,7 +219,7 @@ def test_build_drops_traces_with_empty_skills(monkeypatch) -> None:
         captured.append(list(traces))
         return [ClusteredQuery(0, "ok", [], [], [])]
 
-    import jiuwenswarm.symphony.experience.collector as collector_mod
+    import openjiuwen.symphony.experience.collector as collector_mod
     monkeypatch.setattr(collector_mod, "cluster_traces", fake_cluster_traces)
     monkeypatch.setattr(
         collector_mod, "TraceDistiller",
@@ -256,7 +256,7 @@ def test_build_returns_zero_when_all_traces_invalid(monkeypatch) -> None:
         called["cluster"] = True
         return []
 
-    import jiuwenswarm.symphony.experience.collector as collector_mod
+    import openjiuwen.symphony.experience.collector as collector_mod
     monkeypatch.setattr(collector_mod, "cluster_traces", fake_cluster_traces)
 
     builder = ExperienceBaseBuilder(
@@ -289,7 +289,7 @@ def test_build_logs_dropped_count(monkeypatch) -> None:
         captured.append(list(traces))
         return [ClusteredQuery(0, "ok", [], [], [])]
 
-    import jiuwenswarm.symphony.experience.collector as collector_mod
+    import openjiuwen.symphony.experience.collector as collector_mod
     monkeypatch.setattr(collector_mod, "cluster_traces", fake_cluster_traces)
     monkeypatch.setattr(
         collector_mod, "TraceDistiller",
@@ -313,7 +313,7 @@ def test_build_logs_dropped_count(monkeypatch) -> None:
     records: list[logging.LogRecord] = []
     handler = logging.Handler()
     handler.emit = records.append
-    logger = logging.getLogger("jiuwenswarm.symphony.experience.collector")
+    logger = logging.getLogger("openjiuwen.symphony.experience.collector")
     prev_level = logger.level
     logger.setLevel(logging.WARNING)
     logger.addHandler(handler)
@@ -427,7 +427,7 @@ def test_add_propagates_flush_exception_instead_of_dropping_pending(monkeypatch)
     builder._pattern_merge_threshold = 1.0
     builder._query_examples_count = 0
 
-    import jiuwenswarm.symphony.experience.collector as collector_mod
+    import openjiuwen.symphony.experience.collector as collector_mod
     monkeypatch.setattr(
         collector_mod, "TraceDistiller",
         lambda *a, **kw: _BoomDistiller(),

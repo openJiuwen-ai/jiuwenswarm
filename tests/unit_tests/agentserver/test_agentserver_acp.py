@@ -302,8 +302,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
         "direct_display": True,
         "display_format": "markdown",
         "mermaid": "flowchart LR\n  A --> B",
-        "score_status": {"success": True, "exists": False},
-        "score_build": {"success": False, "detail": "failed"},
+        "graph_status": {"success": True, "exists": False},
+        "graph_build": {"success": False, "detail": "failed"},
     }
     parsed = parse_stream_chunk(
         types.SimpleNamespace(
@@ -311,7 +311,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
             payload={
                 "tool_result": {
                     "tool_call_id": "call-1",
-                    "tool_name": "symphony_compose_score",
+                    "tool_name": "symphony_compose_graph",
                     "result": "failed",
                     "status": "error",
                     "success": False,
@@ -320,8 +320,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
                     "direct_display": True,
                     "display_format": "markdown",
                     "mermaid": raw_output["mermaid"],
-                    "score_status": raw_output["score_status"],
-                    "score_build": raw_output["score_build"],
+                    "graph_status": raw_output["graph_status"],
+                    "graph_build": raw_output["graph_build"],
                 }
             },
         )
@@ -330,7 +330,7 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
     assert parsed == {
         "event_type": "chat.tool_result",
         "result": "failed",
-        "tool_name": "symphony_compose_score",
+        "tool_name": "symphony_compose_graph",
         "tool_call_id": "call-1",
         "status": "error",
         "success": False,
@@ -339,8 +339,8 @@ def test_interface_deep_parse_stream_chunk_preserves_tool_result_status():
         "direct_display": True,
         "display_format": "markdown",
         "mermaid": raw_output["mermaid"],
-        "score_status": raw_output["score_status"],
-        "score_build": raw_output["score_build"],
+        "graph_status": raw_output["graph_status"],
+        "graph_build": raw_output["graph_build"],
     }
 
 
@@ -492,7 +492,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
         types.SimpleNamespace(
             type="chat.symphony_status",
             payload={
-                "source": "symphony_compose_score",
+                "source": "symphony_compose_graph",
                 "operation_id": "call-1",
                 "phase": "checking_score",
                 "content": "Symphony status",
@@ -503,7 +503,7 @@ def test_parse_stream_chunk_preserves_symphony_status_payload():
 
     assert parsed == {
         "event_type": "chat.symphony_status",
-        "source": "symphony_compose_score",
+        "source": "symphony_compose_graph",
         "operation_id": "call-1",
         "phase": "checking_score",
         "content": "Symphony status",
@@ -517,7 +517,7 @@ def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
         types.SimpleNamespace(
             type="chat.symphony_status",
             payload={
-                "source": "symphony_compose_score",
+                "source": "symphony_compose_graph",
                 "operation_id": "call-1",
                 "phase": "planning",
                 "content": "Symphony planning status",
@@ -528,7 +528,7 @@ def test_interface_deep_parse_stream_chunk_preserves_symphony_status_payload():
 
     assert parsed == {
         "event_type": "chat.symphony_status",
-        "source": "symphony_compose_score",
+        "source": "symphony_compose_graph",
         "operation_id": "call-1",
         "phase": "planning",
         "content": "Symphony planning status",

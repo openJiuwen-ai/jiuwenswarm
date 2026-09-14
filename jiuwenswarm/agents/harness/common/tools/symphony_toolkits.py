@@ -3,68 +3,56 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import logging
-from types import SimpleNamespace
 from typing import Any, Callable
 
 from openjiuwen.core.foundation.tool import LocalFunction, Tool, ToolCard
 
-from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.agents.harness.common.tool_progress_context import (
     current_tool_progress,
 )
 from jiuwenswarm.symphony.config import load_symphony_config
+from jiuwenswarm.symphony.service import (
+    SwarmSymphonyService,
+    get_swarm_symphony_service,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class SymphonyToolkit:
-    """Expose Symphony extension RPC methods as model-callable tools."""
+    """Expose the process-local Symphony service as model-callable tools."""
+
+    def __init__(self, service: SwarmSymphonyService | None = None) -> None:
+        self._service = service
 
     @staticmethod
     def _resolve_timeout_s(default_s: float = 1800.0) -> float:
         return default_s
 
-    async def _call_rpc(self, method: str, params: dict[str, Any]) -> dict[str, Any]:
+    async def _call_service(
+        self,
+        operation: str,
+        *args: Any,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
         logger.info(
-            "[SymphonyToolkit] calling RPC: method=%s params_keys=%s",
-            method,
-            sorted(params),
+            "[SymphonyToolkit] calling service: operation=%s",
+            operation,
         )
-        try:
-            registry = ExtensionRegistry.get_instance()
-        except RuntimeError as exc:
-            return {
-                "success": False,
-                "detail": f"Symphony extension RPC unavailable: {method}: {exc}",
-            }
-
-        handler = registry.get_rpc_handler(method)
-        if handler is None:
-            return {
-                "success": False,
-                "detail": f"Symphony extension RPC unavailable: {method}: handler not registered",
-            }
-
         timeout_s = self._resolve_timeout_s()
         try:
-            progress_callback = current_tool_progress()
-            request = None
-            if progress_callback is not None:
-                request = SimpleNamespace(
-                    metadata={"symphony_progress_callback": progress_callback}
-                )
-            result = handler(params, request=request)
-            payload = await asyncio.wait_for(
-                result if inspect.isawaitable(result) else _return_value(result),
-                timeout=timeout_s,
-            )
+            service = self._service or get_swarm_symphony_service()
+            handler = getattr(service, operation)
+            payload = await asyncio.wait_for(handler(*args, **kwargs), timeout=timeout_s)
         except asyncio.TimeoutError:
-            return {"success": False, "detail": f"{method}: timeout after {timeout_s}s"}
+            return {
+                "success": False,
+                "detail": f"symphony.{operation}: timeout after {timeout_s}s",
+            }
         except Exception as exc:  # noqa: BLE001
-            logger.exception("Symphony RPC failed: %s", method)
-            return {"success": False, "detail": f"{method}: {exc}"}
+            logger.exception("Symphony service failed: %s", operation)
+            return {"success": False, "detail": f"symphony.{operation}: {exc}"}
 
         return (
             payload
@@ -81,15 +69,18 @@ class SymphonyToolkit:
             "detail": "Symphony is disabled by config: symphony.enabled=false",
         }
 
-    async def score_status(self) -> dict[str, Any]:
+    async def graph_status(self) -> dict[str, Any]:
         if not self.is_enabled():
-            return self._disabled_payload("symphony.score_status")
-        return await self._call_rpc("symphony.score_status", {})
+            return self._disabled_payload("symphony_read_graph")
+        return await self._call_service("graph_status")
 
-    async def refresh_score(self) -> dict[str, Any]:
+    async def refresh_graph(self) -> dict[str, Any]:
         if not self.is_enabled():
-            return self._disabled_payload("symphony.build_score")
-        return await self._call_rpc("symphony.build_score", {})
+            return self._disabled_payload("symphony_refresh_graph")
+        return await self._call_service(
+            "refresh_graph",
+            progress=current_tool_progress(),
+        )
 
     @classmethod
     def _compact_plan_payload(cls, payload: dict[str, Any]) -> dict[str, Any]:
@@ -116,14 +107,14 @@ class SymphonyToolkit:
             if reason not in (None, ""):
                 compact["reason"] = reason
 
-        score_status = payload.get("score_status")
-        score_build = payload.get("score_build")
-        if not bool(compact["success"]) and isinstance(score_status, dict):
-            compact["score_status"] = cls._compact_score_status(score_status)
-        if isinstance(score_build, dict) and (
-            not bool(compact["success"]) or score_build.get("rebuilt") is True
+        graph_status = payload.get("graph_status")
+        graph_build = payload.get("graph_build")
+        if not bool(compact["success"]) and isinstance(graph_status, dict):
+            compact["graph_status"] = cls._compact_graph_status(graph_status)
+        if isinstance(graph_build, dict) and (
+            not bool(compact["success"]) or graph_build.get("rebuilt") is True
         ):
-            compact["score_build"] = cls._compact_score_build(score_build)
+            compact["graph_build"] = cls._compact_graph_build(graph_build)
 
         beam_search = planning_payload.get("beam_search")
         if isinstance(beam_search, dict):
@@ -143,7 +134,7 @@ class SymphonyToolkit:
         return compact
 
     @staticmethod
-    def _compact_score_status(status: dict[str, Any]) -> dict[str, Any]:
+    def _compact_graph_status(status: dict[str, Any]) -> dict[str, Any]:
         compact = _copy_compact_fields(
             status,
             (
@@ -162,7 +153,7 @@ class SymphonyToolkit:
         return compact
 
     @classmethod
-    def _compact_score_build(cls, update: dict[str, Any]) -> dict[str, Any]:
+    def _compact_graph_build(cls, update: dict[str, Any]) -> dict[str, Any]:
         compact = _copy_compact_fields(
             update,
             (
@@ -177,7 +168,7 @@ class SymphonyToolkit:
                 "relation_reused_count",
                 "relation_resolved_count",
                 "version",
-                "score_created_at",
+                "graph_created_at",
                 "llm_total_tokens",
                 "reason",
                 "detail",
@@ -378,17 +369,21 @@ class SymphonyToolkit:
         candidate_skill_ids: list[str] | None = None,
     ) -> dict[str, Any]:
         if not self.is_enabled():
-            return self._compact_plan_payload(self._disabled_payload("symphony.plan"))
-        params: dict[str, Any] = {"query": str(query or "").strip()}
+            return self._compact_plan_payload(
+                self._disabled_payload("symphony_compose_graph")
+            )
+        query_text = str(query or "").strip()
         mode_text = str(mode or "").strip()
-        if mode_text:
-            params["mode"] = mode_text
         normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
             candidate_skill_ids
         )
-        if normalized_candidate_skill_ids is not None:
-            params["candidate_skill_ids"] = normalized_candidate_skill_ids
-        payload = await self._call_rpc("symphony.plan", params)
+        payload = await self._call_service(
+            "plan",
+            query_text,
+            mode=mode_text or None,
+            candidate_skill_ids=normalized_candidate_skill_ids,
+            progress=current_tool_progress(),
+        )
         if isinstance(payload, dict):
             self._attach_followup_control(payload)
             return self._compact_plan_payload(payload)
@@ -424,19 +419,19 @@ class SymphonyToolkit:
 
         return [
             make_tool(
-                "symphony_read_score",
-                "Read whether the Symphony score exists or is stale before composing skill execution.",
+                "symphony_read_graph",
+                "Read whether the Symphony graph exists or is stale before composing skill execution.",
                 {"type": "object", "properties": {}},
-                self.score_status,
+                self.graph_status,
             ),
             make_tool(
-                "symphony_refresh_score",
-                "Extract installed skill features and refresh the Symphony score.",
+                "symphony_refresh_graph",
+                "Extract installed skill features and refresh the Symphony graph.",
                 {"type": "object", "properties": {}},
-                self.refresh_score,
+                self.refresh_graph,
             ),
             make_tool(
-                "symphony_compose_score",
+                "symphony_compose_graph",
                 (
                     "MUST call before answering when the user says to use skill(s) "
                     "or 技能, or when skill capabilities, skill chaining, skill ordering, "
@@ -444,12 +439,12 @@ class SymphonyToolkit:
                     "inspect, or recommend installed Skills that are relevant to the task, you MUST "
                     "pass their exact identifiers or names as candidate_skill_ids. Do not omit "
                     "candidate_skill_ids after selecting candidate Skills. "
-                    "This is the Symphony composition entrypoint: it reads the score, refreshes stale "
-                    "or missing scores, then composes the skill execution graph from the provided "
-                    "candidates or a default score subgraph. If no suitable candidates or a missing "
+                    "This is the Symphony composition entrypoint: it reads the graph, refreshes a stale "
+                    "or missing graph, then composes the skill execution graph from the provided "
+                    "candidates or a default graph subgraph. If no suitable candidates or a missing "
                     "capability is reported, use search_skill to discover external skills; when "
                     "installing a discovered skill is appropriate, call install_skill, then call "
-                    "symphony_refresh_score and retry this tool with the original query. "
+                    "symphony_refresh_graph and retry this tool with the original query. "
                     "After it returns, present its content result directly to the user; "
                     "do not call individual skill tools just to manually recreate the plan. "
                     "Skip only clearly ordinary tasks that do not benefit from skill capabilities."
@@ -489,10 +484,6 @@ class SymphonyToolkit:
                 self.plan,
             ),
         ]
-
-
-async def _return_value(value: Any) -> Any:
-    return value
 
 
 def _copy_compact_fields(

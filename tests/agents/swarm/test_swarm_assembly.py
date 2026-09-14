@@ -1447,7 +1447,7 @@ def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> Non
     """Symphony tools are built only for the team leader."""
     seen_configs: list[dict] = []
     fake_tool = types.SimpleNamespace(
-        card=types.SimpleNamespace(name="symphony_compose_score")
+        card=types.SimpleNamespace(name="symphony_compose_graph")
     )
 
     class FakeSymphonyToolkit:
@@ -1468,7 +1468,7 @@ def test_symphony_toolkit_is_leader_only(monkeypatch: pytest.MonkeyPatch) -> Non
 
     built = tools.build_symphony_toolkit({}, leader)
 
-    assert [tool.card.name for tool in built] == ["symphony_compose_score"]
+    assert [tool.card.name for tool in built] == ["symphony_compose_graph"]
     assert tools.build_symphony_toolkit({}, teammate) == []
     assert seen_configs == [{"symphony": {"enabled": True}}]
 

@@ -7,10 +7,7 @@ from jiuwenswarm.symphony.fingerprint import (
     Fingerprint,
     ParameterSpec,
 )
-from jiuwenswarm.symphony.graph.matcher.cache import RelationMatchCache
-from jiuwenswarm.symphony.graph.models import LLMMatch, RelationCandidate
-from jiuwenswarm.symphony.graph.registry import SkillRegistryBuilder
-from jiuwenswarm.symphony.score_state import ScoreStateBuilder
+from jiuwenswarm.symphony.graph_state import GraphStateBuilder
 
 
 def _fingerprint(**overrides):
@@ -111,60 +108,6 @@ def test_graph_identity_excludes_static_data_and_hash_is_stable():
 
     assert "static_data" not in first.graph_identity_dict()
     assert first.graph_identity_dict() == second.graph_identity_dict()
-    assert ScoreStateBuilder.fingerprint_hash(
+    assert GraphStateBuilder.fingerprint_hash(
         first
-    ) == ScoreStateBuilder.fingerprint_hash(second)
-
-
-def test_skill_registry_rejects_agent_fingerprint():
-    registry = SkillRegistryBuilder.register([_fingerprint(type="agent")])
-
-    assert registry.skills == {}
-    assert [item.code for item in registry.diagnostics] == [
-        "unsupported_fingerprint_type"
-    ]
-
-
-def test_relation_cache_ignores_static_data_changes(tmp_path):
-    candidate = RelationCandidate(
-        source_id="weather",
-        target_id="summary",
-        relation_hints=["exact_io"],
-        candidate_methods=["exact_io"],
-        priority="high",
-    )
-    match = LLMMatch(
-        source_id="weather",
-        target_id="summary",
-        relation_type="can_feed",
-        confidence=1.0,
-        method="test",
-        candidate_id=candidate.key,
-        accepted=True,
-    )
-    target = _fingerprint(
-        id="summary",
-        name="Summary",
-        static_data={"documentation": "first"},
-    )
-    cache_path = tmp_path / "relations.json"
-    first_cache = RelationMatchCache(
-        cache_path,
-        matcher_signature={"matcher": "test"},
-        fingerprints=[_fingerprint(), target],
-    )
-    first_cache.store(candidate, [match])
-    first_cache.flush()
-
-    changed_target = _fingerprint(
-        id="summary",
-        name="Summary",
-        static_data={"documentation": "second"},
-    )
-    second_cache = RelationMatchCache(
-        cache_path,
-        matcher_signature={"matcher": "test"},
-        fingerprints=[_fingerprint(), changed_target],
-    )
-
-    assert second_cache.load(candidate) == [match]
+    ) == GraphStateBuilder.fingerprint_hash(second)
