@@ -1241,6 +1241,48 @@ class TestTeamModeWake:
         assert "model" not in env.params
 
     @pytest.mark.asyncio
+    async def test_agent_wake_passes_job_mcp_as_params_mcp(self, tmp_path):
+        """会话级 MCP 选择：执行时注入 chat.send 的 mcp 字段（走 reconcile）。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(
+            description="simple reminder",
+            targets="tui",
+            mcp=["feishu-doc", "github"],
+        )
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert env.params["mcp"] == ["feishu-doc", "github"]
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_omits_mcp_when_job_has_none(self, tmp_path):
+        """未配置 mcp 的 job 保持既有行为（不注入，仅 init 全局默认集）。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="simple reminder", targets="tui")
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert "mcp" not in env.params
+
+    @pytest.mark.asyncio
     async def test_agent_wake_does_not_resolve_project_dir_in_gateway(self, tmp_path):
         """Phase 4：scheduler 触发时不再本地反查 project_id → project_dir。
 
