@@ -187,6 +187,29 @@
   min-width: 0;
 }
 
+.pc-settings__auth-body {
+  display: flex;
+  flex: 1;
+  min-width: 0;
+  flex-direction: column;
+  gap: 2px;
+}
+
+.pc-settings__auth-link {
+  color: var(--color-text-link);
+  font-size: 12px;
+}
+
+.pc-settings__auth-meta {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+}
+
+.pc-settings__auth-success {
+  color: var(--color-feedback-success);
+  font-size: 12px;
+}
+
 /* 授权按钮：#1476ff 文字 + 箭头，r999 胶囊 */
 .pc-settings__auth-action {
   display: inline-flex;
