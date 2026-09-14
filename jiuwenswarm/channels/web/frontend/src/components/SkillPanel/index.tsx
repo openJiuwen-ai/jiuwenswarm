@@ -248,6 +248,9 @@ export function SkillPanel({
   const {
     hubSkills,
     hubLoading,
+    hubMoreLoading,
+    hubTeamMore,
+    hubSkillMore,
     teamSkills,
     featuredSkills,
     selectedHubSkill,
@@ -257,6 +260,7 @@ export function SkillPanel({
     setHubDetail,
     setHubDetailState,
     fetchHubSkillDetail,
+    openHubMore,
     invalidateHubFetch,
     pauseHubFetching,
   } = useHubMarketplace({ activeTab, searchKeyword, marketplaceCategory, setMarketplaceSubView, withSession });
@@ -847,9 +851,10 @@ export function SkillPanel({
 
       invalidateHubFetch();
       setSearch('');
+      setMarketplaceSubView('list');
       setMarketplaceCategory(nextCategory);
     },
-    [marketplaceCategory, invalidateHubFetch],
+    [marketplaceCategory, invalidateHubFetch, setMarketplaceSubView],
   );
 
   const handleSearchChange = useCallback(
@@ -858,11 +863,12 @@ export function SkillPanel({
 
       if (activeTab === 'marketplace' && nextKeyword !== search.trim()) {
         invalidateHubFetch();
+        setMarketplaceSubView('list');
       }
 
       setSearch(nextSearch);
     },
-    [activeTab, search, invalidateHubFetch],
+    [activeTab, search, invalidateHubFetch, setMarketplaceSubView],
   );
 
   const handleUninstall = useCallback(
@@ -1133,14 +1139,19 @@ export function SkillPanel({
         // 只有从技能广场离开时才需要终止广场请求
         if (activeTab === 'marketplace') {
           pauseHubFetching();
+          setMarketplaceSubView('list');
         }
 
         setActiveTab('my');
       } else {
+        if (activeTab === 'marketplace') {
+          pauseHubFetching();
+          setMarketplaceSubView('list');
+        }
         setActiveTab('graph');
       }
     },
-    [activeTab, pauseHubFetching],
+    [activeTab, pauseHubFetching, setMarketplaceSubView],
   );
 
   const renderFixedHeader = () => (
@@ -1409,15 +1420,21 @@ export function SkillPanel({
       />
     ) : (
       <MarketplaceView
+        marketplaceSubView={marketplaceSubView}
         teamSkills={teamSkills}
         featuredSkills={featuredSkills}
+        hubTeamMore={hubTeamMore}
+        hubSkillMore={hubSkillMore}
         hubSkills={hubSkills}
         hubLoading={hubLoading}
+        hubMoreLoading={hubMoreLoading}
         searchKeyword={searchKeyword}
         marketplaceCategory={marketplaceCategory}
         onSelectHubSkill={handleSelectHubSkill}
         renderHubSkillAction={renderHubSkillAction}
         onCategoryChange={handleMarketplaceCategoryChange}
+        onOpenMore={openHubMore}
+        onBackFromMore={handleBackToHubDetail}
       />
     );
 
