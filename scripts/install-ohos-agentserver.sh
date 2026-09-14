@@ -506,7 +506,7 @@ install_pymilvus_stub() {
   [ -n "$_sp" ] || { log "WARN: cannot resolve site-packages for pymilvus stub"; return 0; }
   rm -rf "$_sp/pymilvus"
   cp -r "$_stub_src" "$_sp/pymilvus"
-  if runtime_imports_ok "import pymilvus; from pymilvus.client.utils import is_successful; from pymilvus import utility, connections, Collection, MilvusClient; from pymilvus.milvus_client import IndexParams; from pymilvus.client.types import LoadState"; then
+  if runtime_imports_ok "import pymilvus; from pymilvus.client.utils import is_successful; from pymilvus import utility, connections, Collection, MilvusClient; from pymilvus.milvus_client import IndexParams; from pymilvus.client.types import LoadState; from pymilvus.client.search_result import SearchResult"; then
     log "pymilvus stub installed (sitepatch/pymilvus_stub)"
   else
     die "pymilvus stub install verification failed"

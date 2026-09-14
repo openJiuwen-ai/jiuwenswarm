@@ -25,6 +25,19 @@ _ohos_detect_hnp_root() {
   done
   echo "${OHOS_HNP_ROOT:-/data/service/hnp}"
 }
+# HOME 兜底（2026-09-14 真机实测新增）：受限 shell（hdc shell）的 HOME=/root
+# 位于只读根文件系统——openjiuwen logger 初始化（makedirs 日志目录）、pip
+# 缓存等都会失败。用真实写探测（[ -w ] 测不出只读挂载，权限位仍是可写），
+# 不可写时回落到标准产品工作区。显式设置的可写 HOME 完全尊重。
+if [ -z "${HOME:-}" ] || ! ( : > "$HOME/.ohos-home-probe.$$" ) 2>/dev/null; then
+  _ohos_home_fallback=/storage/media/100/local/files/Docs
+  if [ -d "$_ohos_home_fallback" ] && ( : > "$_ohos_home_fallback/.ohos-home-probe.$$" ) 2>/dev/null; then
+    rm -f "$_ohos_home_fallback/.ohos-home-probe.$$"
+    HOME="$_ohos_home_fallback"
+    export HOME
+  fi
+  rm -f "${HOME:-/nonexistent}/.ohos-home-probe.$$" 2>/dev/null
+fi
 OHOS_HNP_ROOT=$(_ohos_detect_hnp_root)
 OHOS_HNP_BIN=${OHOS_HNP_BIN:-$OHOS_HNP_ROOT/bin}
 OHOS_HNP_LIB=${OHOS_HNP_LIB:-$OHOS_HNP_ROOT/lib}

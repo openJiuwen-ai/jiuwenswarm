@@ -11,6 +11,8 @@ only *imports* pymilvus symbols:
   in-memory path)
 - ``openjiuwen/extensions/context_evolver/core/db_connector/milvus_connector.py``
   imports ``utility`` at module level (function bodies import the rest lazily)
+- ``openjiuwen_deepsearch`` (enterprise_dev 0.2.0 wheel) imports
+  ``pymilvus.client.search_result.SearchResult`` in agent_factory/workflow
 - milvus store/retriever modules import MilvusClient & friends inside
   functions (non-startup paths)
 

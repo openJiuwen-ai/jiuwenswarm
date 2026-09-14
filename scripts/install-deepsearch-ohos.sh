@@ -127,12 +127,14 @@ log "  预检通过 (repo=$REPO_ROOT)"
 log "步骤 1/6: 安装纯 Python 依赖"
 # ============================================================================
 # 版本与本机验证过的组合一致；json-repair==0.58.0 同时满足
-# jiuwenswarm 与 deepsearch 预置 wheel 的约束
+# jiuwenswarm 与 deepsearch 预置 wheel 的约束；mathml2omml-as 是 dev-stable
+# deepsearch 的 report_export 链（word_utils 模块级 import）所需（2026-09-14
+# 真机实测缺口，dev-stable 源码装法下触发；纯 Python wheel）
 PKGS="jinja2==3.1.6 json-repair==0.58.0 networkx==3.4.2 pyvis==0.3.2 \
 aiolimiter==1.1.0 tldextract==5.3.2 requests-file==3.0.1 \
 python-dateutil==2.9.0.post0 pytz==2026.3.post1 openpyxl==3.1.5 \
 et-xmlfile==2.0.0 jsonpickle==4.1.2 ipython==9.17.1 traitlets==5.16.1 \
-prompt_toolkit==3.0.53 wcwidth==0.8.2"
+prompt_toolkit==3.0.53 wcwidth==0.8.2 mathml2omml-as==0.1.0"
 
 if ls "$DEPS_DIR"/*.whl >/dev/null 2>&1; then
     if "$VENV_PY" -m pip install --no-index --find-links="$DEPS_DIR" --no-deps \
@@ -152,34 +154,85 @@ fi
 # ============================================================================
 log "步骤 2/6: 安装 openjiuwen_deepsearch 本体"
 # ============================================================================
-if py_ok "import openjiuwen_deepsearch"; then
-    log "  已安装，跳过"
+# 血统开关（2026-09-14 真机实测）：wheels/openjiuwen_deepsearch-0.2.0 wheel 是
+# enterprise_dev 血统，与 dev-stable openjiuwen（0.1.16）存在 import 断裂——
+# 其 framework/openjiuwen/tools/search_api/harness_web_search/api_wrapper.py 引用
+# openjiuwen.harness.tools.web_tools（enterprise_dev 单模块布局），而 dev-stable
+# 已重构为 openjiuwen.harness.tools.web 包。默认 DEEPSEARCH_LINEAGE=dev-stable
+# 与主链对齐（deepsearch dev-stable 分支的 pyproject 声明
+# openjiuwen[observability] @ agent-core.git@dev-stable）；enterprise_dev 仅在
+# 显式选择时走旧 wheel（只配 harmony_dev 时代代码）。
+DEEPSEARCH_LINEAGE=${DEEPSEARCH_LINEAGE:-dev-stable}
+if [ "$DEEPSEARCH_LINEAGE" = "dev-stable" ]; then
+    # dev-stable 血统探针：workflow import 链穿过 harness.tools.web（dev-stable
+    # 布局）。enterprise_dev wheel 在此断裂（其 api_wrapper 引用已重构掉的
+    # openjiuwen.harness.tools.web_tools 单模块）→ 探针失败 → 触发重装。
+    if py_ok "import openjiuwen_deepsearch.framework.openjiuwen.agent.workflow"; then
+        log "  已安装（dev-stable import 链验证通过），跳过"
+        _ds_skip=1
+    fi
 else
+    if py_ok "import openjiuwen_deepsearch"; then
+        log "  已安装，跳过"
+        _ds_skip=1
+    fi
+fi
+if [ -z "${_ds_skip:-}" ]; then
     _done=""
-    _w=$(ls "$WHEELS"/openjiuwen_deepsearch-*.whl 2>/dev/null | head -1)
-    if [ -n "$_w" ]; then
-        if is_real_wheel "$_w"; then
-            "$VENV_PY" -m pip install --no-deps "$_w" >/dev/null 2>&1 && _done="wheel"
-        else
-            warn "  离线 wheel 是 Git LFS 指针（本机未装 git-lfs），跳过: $(basename "$_w")"
+    if [ "$DEEPSEARCH_LINEAGE" = "dev-stable" ]; then
+        # --- dev-stable 血统：本地源码优先（设备常无 git），git 兜底 ---
+        _ds_src=""
+        if [ -n "${DEEPSEARCH_SRC:-}" ] && [ -d "$DEEPSEARCH_SRC" ]; then
+            _ds_src="$DEEPSEARCH_SRC"
+        elif [ -d "$REPO_ROOT/deepsearch-devstable/deepsearch" ]; then
+            _ds_src="$REPO_ROOT/deepsearch-devstable/deepsearch"
+        elif [ -d "$REPO_ROOT/.cache/deepsearch-src/deepsearch" ] \
+            && grep -q 'agent-core.git@dev-stable' \
+                "$REPO_ROOT/.cache/deepsearch-src/deepsearch/pyproject.toml" 2>/dev/null; then
+            _ds_src="$REPO_ROOT/.cache/deepsearch-src/deepsearch"
         fi
-    fi
-    if [ -z "$_done" ] && [ -d "$REPO_ROOT/.cache/deepsearch-src/deepsearch" ]; then
-        "$VENV_PY" -m pip install --no-deps "$REPO_ROOT/.cache/deepsearch-src/deepsearch" \
-            >/dev/null 2>&1 && _done="本地源码"
-    fi
-    if [ -z "$_done" ]; then
-        log "  尝试从 gitcode 克隆源码（enterprise_dev 分支）..."
-        if command -v git >/dev/null 2>&1; then
+        if [ -z "$_ds_src" ] && command -v git >/dev/null 2>&1; then
+            log "  尝试从 gitcode 克隆 dev-stable 分支..."
             rm -rf "$REPO_ROOT/.cache/deepsearch-src"
-            git clone -b enterprise_dev https://gitcode.com/openJiuwen/deepsearch.git \
-                "$REPO_ROOT/.cache/deepsearch-src" >/dev/null 2>&1
-            if [ -d "$REPO_ROOT/.cache/deepsearch-src/deepsearch" ]; then
-                git -C "$REPO_ROOT/.cache/deepsearch-src" checkout "$DEEPSEARCH_COMMIT" \
-                    >/dev/null 2>&1 \
-                    || warn "无法锁定 commit $DEEPSEARCH_COMMIT，使用分支最新版"
-                "$VENV_PY" -m pip install --no-deps \
-                    "$REPO_ROOT/.cache/deepsearch-src/deepsearch" >/dev/null 2>&1 && _done="git 克隆"
+            git clone --depth 1 -b dev-stable https://gitcode.com/openJiuwen/deepsearch.git \
+                "$REPO_ROOT/.cache/deepsearch-src" >/dev/null 2>&1 \
+                && _ds_src="$REPO_ROOT/.cache/deepsearch-src/deepsearch"
+        fi
+        if [ -n "$_ds_src" ]; then
+            "$VENV_PY" -m pip install --no-deps --force-reinstall -i "$MIRROR" "$_ds_src" \
+                >/dev/null 2>&1 && _done="dev-stable 源码 ($_ds_src)"
+        fi
+        [ -n "$_done" ] || fail "dev-stable deepsearch 安装失败。Options:
+  1) DEEPSEARCH_SRC=/path/to/deepsearch (dev-stable 分支源码)
+  2) 复制 deepsearch dev-stable 到 $REPO_ROOT/deepsearch-devstable/
+  3) 安装 git 后重跑（脚本自动 clone dev-stable 分支）"
+    else
+        # --- enterprise_dev 血统（旧链，仅显式回退）---
+        _w=$(ls "$WHEELS"/openjiuwen_deepsearch-*.whl 2>/dev/null | head -1)
+        if [ -n "$_w" ]; then
+            if is_real_wheel "$_w"; then
+                "$VENV_PY" -m pip install --no-deps "$_w" >/dev/null 2>&1 && _done="wheel"
+            else
+                warn "  离线 wheel 是 Git LFS 指针（本机未装 git-lfs），跳过: $(basename "$_w")"
+            fi
+        fi
+        if [ -z "$_done" ] && [ -d "$REPO_ROOT/.cache/deepsearch-src/deepsearch" ]; then
+            "$VENV_PY" -m pip install --no-deps "$REPO_ROOT/.cache/deepsearch-src/deepsearch" \
+                >/dev/null 2>&1 && _done="本地源码"
+        fi
+        if [ -z "$_done" ]; then
+            log "  尝试从 gitcode 克隆源码（enterprise_dev 分支）..."
+            if command -v git >/dev/null 2>&1; then
+                rm -rf "$REPO_ROOT/.cache/deepsearch-src"
+                git clone -b enterprise_dev https://gitcode.com/openJiuwen/deepsearch.git \
+                    "$REPO_ROOT/.cache/deepsearch-src" >/dev/null 2>&1
+                if [ -d "$REPO_ROOT/.cache/deepsearch-src/deepsearch" ]; then
+                    git -C "$REPO_ROOT/.cache/deepsearch-src" checkout "$DEEPSEARCH_COMMIT" \
+                        >/dev/null 2>&1 \
+                        || warn "无法锁定 commit $DEEPSEARCH_COMMIT，使用分支最新版"
+                    "$VENV_PY" -m pip install --no-deps \
+                        "$REPO_ROOT/.cache/deepsearch-src/deepsearch" >/dev/null 2>&1 && _done="git 克隆"
+                fi
             fi
         fi
     fi
