@@ -559,6 +559,38 @@ async def test_sse_timeout_reports_timeout_not_cancelled(
 
 
 @pytest.mark.asyncio
+async def test_am_fail_after_bridge_does_not_mutate_global_anyio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AbilityManager 桥接不得改写共享 anyio.fail_after（否则 ProgressiveRail 丢 cancel_called）。"""
+    import anyio
+
+    _install_fake_transport_modules(monkeypatch)
+    timeout_patch._PATCHED = False
+    timeout_patch._wrapped_methods.clear()
+
+    # 预加载真 AbilityManager（若环境无 openjiuwen 则跳过）
+    try:
+        import openjiuwen.core.single_agent.ability_manager as am_mod
+    except Exception as exc:  # noqa: BLE001
+        pytest.skip(f"openjiuwen AbilityManager unavailable: {exc}")
+
+    real_fail_after = anyio.fail_after
+    timeout_patch.apply_mcp_call_timeout_patch(default_timeout=1.0)
+
+    # 全局 anyio.fail_after 必须仍是原对象
+    assert anyio.fail_after is real_fail_after
+    # AbilityManager 模块拿到的是代理
+    assert am_mod.anyio is not anyio
+    assert am_mod.anyio.fail_after is not real_fail_after
+
+    # ProgressiveRail 依赖的 cancel_called 仍在
+    with anyio.fail_after(1.0) as scope:
+        assert hasattr(scope, "cancel_called")
+        assert scope.cancel_called is False
+
+
+@pytest.mark.asyncio
 async def test_am_invoke_wrap_honors_contextvar_timeout() -> None:
     """AbilityManager 桥：contextvar 截止时间经 invoke 包装走 wait_for。"""
     import asyncio

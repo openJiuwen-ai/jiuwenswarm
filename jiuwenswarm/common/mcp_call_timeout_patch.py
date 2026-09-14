@@ -135,8 +135,13 @@ def force_invalidate_mcp_client(client: Any) -> None:
         setattr(client, "_auth_provider", None)
     try:
         setattr(client, "_jws_needs_reconnect", True)
-    except Exception:
-        pass
+    except Exception as exc:
+        # __slots__/代理对象可能拒绝动态属性；标记失败不阻断作废流程
+        logger.debug(
+            "[mcp-timeout] failed to set _jws_needs_reconnect on %s: %r",
+            type(client).__name__,
+            exc,
+        )
 
 
 def is_retryable_mcp_dead_session_error(error: BaseException) -> bool:
@@ -173,8 +178,13 @@ def _client_io_lock(client: Any) -> asyncio.Lock:
     lock = asyncio.Lock()
     try:
         setattr(client, "_jws_io_lock", lock)
-    except Exception:
-        pass
+    except Exception as exc:
+        # 挂不上锁时仍返回本次新建的 lock，仅本调用串行；下次再试 setattr
+        logger.debug(
+            "[mcp-timeout] failed to attach _jws_io_lock on %s: %r",
+            type(client).__name__,
+            exc,
+        )
     return lock
 
 
@@ -251,11 +261,14 @@ def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None
 
 
 def _patch_ability_manager_fail_after() -> None:
-    """把 AbilityManager 模块内的 anyio.fail_after 换成无 cancel scope 的截止时间。
+    """只替换 AbilityManager 模块命名空间里的 ``anyio``，不改全局 ``anyio.fail_after``。
 
-    若 agent-core 已改为 wait_for（源码不再调用 fail_after），本补丁仍安全：
-    只替换模块命名空间里的 fail_after，不影响已写死的 wait_for 路径。
+    注意：``am_mod.anyio.fail_after = ...`` 会改到共享的 anyio 模块属性，
+    ProgressiveToolRail 等其它 ``import anyio`` 也会中招（丢 cancel_called）。
+    正确做法：把 ``am_mod.anyio`` 换成代理对象，仅 AbilityManager 内
+    ``anyio.fail_after`` 走无 cancel-scope 桥接。
     """
+    import anyio as real_anyio
     import openjiuwen.core.single_agent.ability_manager as am_mod
 
     @contextlib.contextmanager
@@ -279,8 +292,17 @@ def _patch_ability_manager_fail_after() -> None:
         finally:
             _am_call_timeout.reset(token)
 
-    # 仅替换 AbilityManager 模块绑定的名字，避免影响 stdio MCP 等其它 fail_after 用法
-    am_mod.anyio.fail_after = _fail_after_without_cancel_scope  # type: ignore[method-assign]
+    class _AbilityManagerAnyioProxy:
+        """AbilityManager 专用 anyio 视图：fail_after 桥接，其余原样转发。"""
+
+        def fail_after(self, *args, **kwargs):
+            return _fail_after_without_cancel_scope(*args, **kwargs)
+
+        def __getattr__(self, name: str) -> Any:
+            return getattr(real_anyio, name)
+
+    # 只改 ability_manager.anyio 绑定，绝不写 real_anyio.fail_after
+    am_mod.anyio = _AbilityManagerAnyioProxy()  # type: ignore[assignment]
 
     # invoke 包装：在 AM 截止时间内用 wait_for（覆盖 MCP / 普通 Tool / 请求级工具）
     from openjiuwen.core.foundation.tool.base import Tool
@@ -303,7 +325,7 @@ def _patch_ability_manager_fail_after() -> None:
 
     logger.info(
         "[mcp-timeout] AbilityManager fail_after → wait_for bridge applied "
-        "(no cancel scope on current task)"
+        "(module-local anyio proxy; global anyio untouched)"
     )
 
 
@@ -346,8 +368,14 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
             )
         try:
             setattr(client, "_jws_needs_reconnect", False)
-        except Exception:
-            pass
+        except Exception as exc:
+            logger.debug(
+                "[mcp-timeout] failed to clear _jws_needs_reconnect on %s after "
+                "reconnect (%s): %r",
+                type(client).__name__,
+                reason,
+                exc,
+            )
         logger.warning(
             "[mcp-timeout] MCP client reconnected after %s: %s",
             reason,
