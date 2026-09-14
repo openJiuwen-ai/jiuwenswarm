@@ -23,8 +23,9 @@ def sqlite_store() -> SQLiteStore:
     yield store
     # SQLiteStore.close 为异步方法,此处直接同步关闭底层连接
     try:
-        store._conn.close()
-    except Exception:
+        store._conn.close()  # pylint: disable=protected-access
+    except AttributeError:
+        # 连接已关闭或未初始化时无需处理
         pass
 
 
