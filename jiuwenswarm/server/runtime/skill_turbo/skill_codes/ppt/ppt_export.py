@@ -267,19 +267,7 @@ class PPTExportNode(PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P9] read_file 工具不可用，无法读取文件 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            return PptCommon.parse_tool_file_content(result)
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P9] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file_with_retry(self, path, log_prefix="[P9]")
 
     async def _resolve_native_plan_arg(self, plan_path: str, output_dir: str) -> str:
         """v2 且 nativeTemplate.available=true 时返回 plan 路径，否则空串。

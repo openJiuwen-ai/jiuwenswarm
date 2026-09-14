@@ -4343,20 +4343,7 @@ class PrepareNode(PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8.0] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            content = PptCommon.parse_tool_file_content(result)
-            return content
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8.0] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file_with_retry(self, path, log_prefix="[P8.0]")
 
     async def _execute_stream(self, inputs: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         result = await self._execute(inputs)
@@ -4654,19 +4641,7 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
         }
 
     async def _read_file(self, path: str) -> str:
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8.1] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            return PptCommon.parse_tool_file_content(result)
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8.1] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file_with_retry(self, path, log_prefix="[P8.1]")
 
     async def _generate_structural_template_fill(
         self,
@@ -6109,20 +6084,7 @@ class PPTPageGenNode(DisableThinkingMixin, PlanNode):
 
     async def _read_file(self, path: str) -> str:
         """读取文件内容（PPTPageGenNode 自身用，模板分支）。"""
-        if not path:
-            return ""
-        if not self.has_tool("read_file"):
-            logger.warning("[P8-TP] read_file 工具不可用 %s", path)
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=path)
-            content = PptCommon.parse_tool_file_content(result)
-            return content
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8-TP] 读取文件失败 %s: %s", path, e)
-            return ""
+        return await PptCommon.read_file_with_retry(self, path, log_prefix="[P8-TP]")
 
     async def _write_file(
         self,

@@ -409,6 +409,45 @@ class PptCommon:
         return text
 
     @classmethod
+    async def read_file_with_retry(
+        cls,
+        node: Any,
+        path: str,
+        *,
+        log_prefix: str = "[ppt]",
+    ) -> str:
+        """读取文件内容；非 AbortError 异常时重试一次。"""
+        if not path:
+            return ""
+        if not node.has_tool("read_file"):
+            logger.warning("%s read_file 工具不可用 %s", log_prefix, path)
+            return ""
+        for attempt in (1, 2):
+            try:
+                result = await node.call_tool("read_file", file_path=path)
+                return cls.parse_tool_file_content(result)
+            except Exception as e:
+                if isinstance(e, AbortError):
+                    raise
+                if attempt < 2:
+                    logger.warning(
+                        "%s 读取文件失败(第%d次)，重试 path=%s: %s",
+                        log_prefix,
+                        attempt,
+                        path,
+                        e,
+                    )
+                    continue
+                logger.warning(
+                    "%s 读取文件失败(重试后仍失败) path=%s: %s",
+                    log_prefix,
+                    path,
+                    e,
+                )
+                return ""
+        return ""
+
+    @classmethod
     async def write_file(
         cls,
         node: Any,
