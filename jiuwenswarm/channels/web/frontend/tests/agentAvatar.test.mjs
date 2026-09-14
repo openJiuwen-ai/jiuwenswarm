@@ -17,3 +17,19 @@ test('selected Agent avatar can render its identity name', () => {
   assert.match(markup, /chat-avatar-name/);
   assert.match(markup, />expert-a<\/span>/);
 });
+
+test('Team leader override keeps the frozen display name and fallback avatar path', () => {
+  const markup = renderToStaticMarkup(
+    createElement(AgentAvatar, {
+      identityOverride: {
+        agentTemplateId: 'leader-template',
+        displayName: '专家团负责人',
+      },
+      alt: '',
+      showName: true,
+    }),
+  );
+
+  assert.match(markup, /chat-avatar-name/);
+  assert.match(markup, />专家团负责人<\/span>/);
+});

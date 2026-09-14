@@ -23,6 +23,7 @@ from jiuwenswarm.channels.process_cli.protocol import (
     WorkspaceSpec,
 )
 from jiuwenswarm.common.mode_matrix import SINGLE_AGENT_CANONICAL_MODES
+from jiuwenswarm.runtime.agent_definition import RuntimeAgentDefinition
 from jiuwenswarm.runtime.events import RuntimeEvent
 
 
@@ -46,6 +47,21 @@ def _agent() -> AgentSpec:
         skills=("review",),
         max_iterations=12,
     )
+
+
+def test_agent_spec_maps_directly_to_transport_neutral_runtime_definition() -> None:
+    protocol_agent = AgentSpec(
+        name="local_agent",
+        instructions="Keep this instruction.",
+        tools=("*",),
+    )
+
+    runtime_agent = RuntimeAgentDefinition.from_mapping(protocol_agent.to_dict())
+
+    assert runtime_agent.to_dict() == {
+        **protocol_agent.to_dict(),
+        "tools": "*",
+    }
 
 
 def test_protocol_public_surface_is_one_shot_and_single_agent_only() -> None:

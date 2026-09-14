@@ -93,9 +93,20 @@ _AUTO_REVIEWER_UI_MAX_TEXT_LENGTH = 512
 
 
 def resolve_permission_workspace_dir(session_id: str | None = None) -> Path:
-    """Default file_guard workspace: session task dir, not the whole agent workspace."""
+    """Default file_guard workspace for manual permission mode.
+
+    Prefer an already-bound projectless task root (Documents/JiuwenSwarm) so
+    file_guard matches the operational workspace used by bash and file tools.
+    Fall back to the legacy per-session directory under agent/workspace/projects.
+    """
+    from jiuwenswarm.common.projectless_workspace import (
+        get_registered_projectless_task_root,
+    )
     from jiuwenswarm.common.utils import get_default_project_session_workspace_dir
 
+    registered = get_registered_projectless_task_root(session_id)
+    if registered is not None:
+        return registered
     return get_default_project_session_workspace_dir(session_id)
 
 
@@ -198,7 +209,6 @@ def build_permission_rail(
         PermissionConfirmResponse,
         PermissionSceneHookInput,
         ToolPermissionHost,
-        build_permission_interrupt_rail,
     )
 
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
@@ -620,35 +630,36 @@ def build_permission_rail(
             return persisted
 
         effective_workspace_root = (
-            workspace_root if enable_auto_permission and workspace_root is not None
+            Path(workspace_root).resolve(strict=False)
+            if enable_auto_permission and workspace_root is not None
             else resolve_permission_workspace_dir(bound_session_id)
         )
+
+        def _resolve_host_workspace_dir() -> Path:
+            if enable_auto_permission and workspace_root is not None:
+                return Path(workspace_root).resolve(strict=False)
+            return resolve_permission_workspace_dir(bound_session_id)
+
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_installed_permissions,
             persist_allow_rule=_persist_allow_rule,
             persist_session_allow_rule=_persist_session_allow_rule,
-            resolve_workspace_dir=lambda: effective_workspace_root,
+            resolve_workspace_dir=_resolve_host_workspace_dir,
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
         )
 
-        if enable_auto_permission:
-            permission_rail = JiuwenSwarmPermissionInterruptRail(
-                config=permission_config,
-                tool_names=tool_names,
-                llm=llm,
-                model_name=model_name,
-                host=host,
-                exact_persist_callback=_persist_exact_allow_rule,
-            )
-        else:
-            permission_rail = build_permission_interrupt_rail(
-                permissions=permission_config,
-                llm=llm,
-                model_name=model_name,
-                host=host,
-            )
+        permission_rail = JiuwenSwarmPermissionInterruptRail(
+            config=permission_config,
+            tool_names=tool_names,
+            llm=llm,
+            model_name=model_name,
+            host=host,
+            exact_persist_callback=(
+                _persist_exact_allow_rule if enable_auto_permission else None
+            ),
+        )
         if enable_auto_permission:
             from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
                 normalize_auto_permission_options,
@@ -797,6 +808,7 @@ def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
 _PERMISSION_INTERRUPT_MARKERS = (
     "需要授权才能执行",
     "需要授权后才能使用",
+    "需要确认后才能执行",
     "检测到受保护的文件路径访问",
     "检测到需确认的网络访问",
     "检测到需确认的命令执行",

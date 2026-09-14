@@ -13,6 +13,10 @@ import { SkillTreePath } from './SkillTreePath';
 import { BeamSearchTree } from './BeamSearchTree';
 import { MarkdownRenderer } from '../MarkdownRenderer/MarkdownRenderer';
 import { classifyToolCall, describeToolCall, type ToolCategory } from './toolCategory';
+import {
+  resolveTeamLeaderDisplayName,
+  type TeamLeaderIdentity,
+} from '../../features/teamLeaderIdentity';
 
 interface ToolGroupDisplayProps {
   executions: ToolExecution[];
@@ -20,6 +24,7 @@ interface ToolGroupDisplayProps {
   showAvatar?: boolean;
   teamLayout?: boolean;
   agentTemplateName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
   collapseSkillTreeWhenContentStarts?: boolean;
   viewedSkillIds?: string[];
 }
@@ -391,10 +396,11 @@ export function ToolGroupDisplay({
   showAvatar = true,
   teamLayout = false,
   agentTemplateName,
+  teamLeaderIdentity,
   collapseSkillTreeWhenContentStarts = false,
   viewedSkillIds: turnViewedSkillIds = [],
 }: ToolGroupDisplayProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [openKeys, setOpenKeys] = useState<Record<string, boolean>>({});
   const toggleLine = useCallback((key: string) => {
     setOpenKeys((current) => ({ ...current, [key]: !current[key] }));
@@ -435,6 +441,13 @@ export function ToolGroupDisplay({
         <div className="pt-0.5 tool-group-frame__avatar" data-testid="chat-panel-tool-group-avatar">
           {!teamLayout && agentTemplateName ? (
             <AgentAvatar agentId={agentTemplateName} alt="" />
+          ) : teamLeaderIdentity ? (
+            <div className="flex items-center gap-3">
+              <AgentAvatar identityOverride={teamLeaderIdentity} alt="" />
+              <span className="chat-avatar-name">
+                {resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)}
+              </span>
+            </div>
           ) : (
             <TeamMemberAvatar member="team_leader" />
           )}

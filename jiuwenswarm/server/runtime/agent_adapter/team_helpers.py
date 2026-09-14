@@ -706,9 +706,14 @@ def sync_team_identity_metadata(
     session_id: str,
     ready_team_name: str,
     activation_kind: str | None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> None:
     """Persist team identity when a team runtime becomes ready."""
-    metadata = get_session_metadata(session_id)
+    metadata = (
+        get_session_metadata(session_id, cache_bust=True)
+        if team_leader_identity is not None
+        else get_session_metadata(session_id)
+    )
     existing_team_name = str(metadata.get("team_name") or "").strip()
     normalized_kind = str(activation_kind or "").strip()
 
@@ -728,11 +733,28 @@ def sync_team_identity_metadata(
     # team.work.plan / team.work.normal 盖回光杆 "team"，制造 session.plan_status
     # 等按 metadata.mode 判定 plan 的读取方读到误报 false 的空窗。会话的真实
     # mode 由 sync_session_request_metadata / append_history_record 按每轮请求维护。
-    update_session_metadata(
-        session_id=session_id,
-        channel_id=_resolve_channel_id(channel_id),
-        team_name=ready_team_name,
-    )
+    metadata_kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "channel_id": _resolve_channel_id(channel_id),
+        "team_name": ready_team_name,
+    }
+    if team_leader_identity is not None:
+        metadata_kwargs.update(
+            team_leader_identity=team_leader_identity,
+            cache_bust=True,
+            sync_write=True,
+        )
+    update_session_metadata(**metadata_kwargs)
+
+
+def _attach_team_leader_identity(
+    parsed: dict[str, Any],
+    identity: dict[str, Any] | None,
+) -> dict[str, Any]:
+    """Add the optional snapshot only to the existing runtime-ready event."""
+    if identity is not None and parsed.get("event_type") == "team.runtime_ready":
+        parsed["team_leader_identity"] = dict(identity)
+    return parsed
 
 
 def persist_workflow_runs(
@@ -2188,6 +2210,7 @@ async def _start_team_stream_round(
     source: str = "first",
     exclusive_waiter: bool = False,
     request_queue: asyncio.Queue | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> asyncio.Queue:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -2222,14 +2245,19 @@ async def _start_team_stream_round(
     if debug:
         stream_envs[_STREAM_TRACE_ENV_KEY] = "1"
     round_id = increment_session_round_count(session_id)
+    stream_kwargs: dict[str, Any] = {
+        "round_id": round_id,
+        "envs": stream_envs or None,
+    }
+    if team_leader_identity is not None:
+        stream_kwargs["team_leader_identity"] = team_leader_identity
     stream_task = asyncio.create_task(
         _consume_stream_with_query(
             channel_id,
             session_id,
             team_spec,
             query,
-            round_id=round_id,
-            envs=stream_envs or None,
+            **stream_kwargs,
         )
     )
     team_manager.register_stream_task(session_id, stream_task)
@@ -2464,6 +2492,33 @@ async def _process_team_message_stream(
             params=params_obj if isinstance(params_obj, dict) else None,
             is_first_request=is_first_request,
         )
+        team_leader_identity: dict[str, Any] | None = None
+        if agent_group_name:
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                normalize_agent_group_leader_identity,
+                resolve_agent_group_leader_identity,
+            )
+
+            stored_identity = normalize_agent_group_leader_identity(
+                get_session_metadata(session_id, cache_bust=True).get(
+                    "team_leader_identity"
+                )
+            )
+            if stored_identity is not None:
+                team_leader_identity = stored_identity
+            elif persist_agent_group or is_first_request:
+                try:
+                    team_leader_identity = resolve_agent_group_leader_identity(
+                        agent_group_name
+                    )
+                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
+                    logger.warning(
+                        "[TeamHelpers] unable to resolve AgentGroup leader identity: "
+                        "session_id=%s agent_group_name=%s error=%s",
+                        session_id,
+                        agent_group_name,
+                        identity_exc,
+                    )
         # Validate against the effective session binding before assembling a
         # Team or writing visibility, including follow-ups and cold recovery.
         team_skill_names = _resolve_team_skill_selection(
@@ -2514,13 +2569,16 @@ async def _process_team_message_stream(
                 skill_names=team_skill_names,
             )
         if persist_agent_group and agent_group_name:
-            update_session_metadata(
-                session_id=session_id,
-                agent_group_name=agent_group_name,
-                touch_last_message_at=False,
-                cache_bust=True,
-                sync_write=True,
-            )
+            metadata_kwargs = {
+                "session_id": session_id,
+                "agent_group_name": agent_group_name,
+                "touch_last_message_at": False,
+                "cache_bust": True,
+                "sync_write": True,
+            }
+            if team_leader_identity is not None:
+                metadata_kwargs["team_leader_identity"] = team_leader_identity
+            update_session_metadata(**metadata_kwargs)
         _persist_team_file_monitor_roots(session_id, team_spec)
         # Drop unreachable MCPs before the team runtime starts so one bad MCP
         # can't cancel the whole stream via openjiuwen's fail-fast raise.
@@ -2542,10 +2600,17 @@ async def _process_team_message_stream(
             )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
+        error_payload: dict[str, Any] = {
+            "event_type": "chat.error",
+            "error": str(exc),
+        }
+        error_code = getattr(exc, "code", None)
+        if isinstance(error_code, str) and error_code.startswith("AGENT_GROUP_"):
+            error_payload["code"] = error_code
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,
-            payload={"event_type": "chat.error", "error": str(exc)},
+            payload=error_payload,
             is_complete=False,
         )
         yield AgentResponseChunk(
@@ -2904,6 +2969,7 @@ async def _process_team_message_stream(
                     source=first_request_source,
                     exclusive_waiter=is_heartbeat_request,
                     request_queue=request_queue,
+                    team_leader_identity=team_leader_identity,
                 )
             except BaseException:
                 team_manager.remove_waiter(session_id, rid)
@@ -3093,6 +3159,7 @@ async def _consume_stream_with_query(
     *,
     round_id: int,
     envs: dict[str, Any] | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -3235,6 +3302,7 @@ async def _consume_stream_with_query(
                     # （leader 不在 _ROLE_FANOUT 中，落到 [godview]）。
                     parsed["role"] = TeamRole.LEADER.value
                 parsed = _truncate_team_tool_result_event(parsed)
+                parsed = _attach_team_leader_identity(parsed, team_leader_identity)
                 if parsed.get("event_type") == "team.runtime_ready":
                     ready_team_name = str(parsed.get("team_name") or team_spec.team_name)
                     activation_kind = str(parsed.get("activation_kind") or "").strip()
@@ -3243,6 +3311,7 @@ async def _consume_stream_with_query(
                         session_id=session_id,
                         ready_team_name=ready_team_name,
                         activation_kind=activation_kind,
+                        team_leader_identity=team_leader_identity,
                     )
                     tm = get_team_manager(channel_id)
                     tm.commit_runtime_ready(session_id, ready_team_name)

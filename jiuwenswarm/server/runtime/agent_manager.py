@@ -11,6 +11,7 @@ import os
 import time
 import uuid
 from contextlib import asynccontextmanager
+from copy import deepcopy
 from typing import Any, Callable, NamedTuple, TYPE_CHECKING
 from weakref import WeakValueDictionary
 
@@ -141,6 +142,21 @@ def _make_agent_cache_key(mode: str | None, sub_mode: str | None, project_dir: s
     sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
     project_key = _normalize_project_dir(project_dir)
     return f"{mode_key}:{sub_mode_key}:{project_key}"
+
+
+def _make_defined_agent_cache_key(
+    mode: str | None,
+    sub_mode: str | None,
+    project_dir: str | None,
+    definition_fingerprint: str,
+) -> str:
+    """Isolate a declared root Agent without changing default cache keys."""
+    fingerprint = str(definition_fingerprint or "").strip().lower()
+    if len(fingerprint) != 64 or any(
+        character not in "0123456789abcdef" for character in fingerprint
+    ):
+        raise ValueError("invalid Agent definition fingerprint")
+    return f"{_make_agent_cache_key(mode, sub_mode, project_dir)}:agent:{fingerprint}"
 
 
 def _build_acp_agent_config(extra_config: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -611,6 +627,9 @@ class AgentManager:
         config: dict[str, Any] | None = None,
         sub_mode: str = None,
         cache_key: str | None = None,
+        *,
+        agent_definition: dict[str, Any] | None = None,
+        agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm":
         """创建 Agent 实例.
 
@@ -654,19 +673,60 @@ class AgentManager:
         agent.set_permissions_external_input_context_builder(
             self.build_permissions_external_input_context
         )
-        await agent.create_instance(config, mode=mode_key, sub_mode=sub_mode_key or None)
+        definition_snapshot = (
+            deepcopy(agent_definition) if agent_definition is not None else None
+        )
+        create_kwargs: dict[str, Any] = {
+            "mode": mode_key,
+            "sub_mode": sub_mode_key or None,
+        }
+        if definition_snapshot is not None:
+            create_kwargs["agent_definition"] = deepcopy(definition_snapshot)
+        try:
+            await agent.create_instance(config, **create_kwargs)
+        except BaseException as create_error:
+            # A declared Agent can fail after allocating Adapter resources but
+            # before it is inserted into the manager cache.  Runtime.close()
+            # cannot discover that partial instance, so unwind it here while
+            # preserving the original construction failure.
+            if definition_snapshot is not None:
+                cleanup = getattr(agent, "cleanup", None)
+                if callable(cleanup):
+                    try:
+                        await cleanup()
+                    except BaseException as cleanup_error:
+                        logger.warning(
+                            "[AgentManager] declared Agent rollback failed "
+                            "while preserving %s: %s",
+                            type(create_error).__name__,
+                            cleanup_error,
+                            exc_info=(
+                                type(cleanup_error),
+                                cleanup_error,
+                                cleanup_error.__traceback__,
+                            ),
+                        )
+            raise
         setattr(agent, "_jiuwenswarm_agent_cache_key", agent_cache_key)
         setattr(agent, "_jiuwenswarm_agent_mode", mode_key)
         setattr(agent, "_jiuwenswarm_agent_sub_mode", sub_mode_key)
         setattr(agent, "_jiuwenswarm_agent_project_dir", project_dir)
         self.agents.setdefault(channel_key, {})[agent_cache_key] = agent
         # 记录创建参数, recreate_agent() 时可原样复用
-        self._agent_create_params.setdefault(channel_key, {})[agent_cache_key] = {
+        create_params: dict[str, Any] = {
             "mode": mode_key,
             "sub_mode": sub_mode_key or None,
             "config": dict(config or {}),
             "cache_key": agent_cache_key,
         }
+        if definition_snapshot is not None:
+            create_params["agent_definition"] = deepcopy(definition_snapshot)
+            create_params["agent_definition_fingerprint"] = (
+                agent_definition_fingerprint
+            )
+        self._agent_create_params.setdefault(channel_key, {})[
+            agent_cache_key
+        ] = create_params
         logger.info("[AgentManager] %s agent created cache_key=%s", channel_key, agent_cache_key)
         return agent
 
@@ -1162,7 +1222,10 @@ class AgentManager:
             channel_id: str = "",
             mode: str = "agent",
             project_dir: str = None,
-            sub_mode: str = None
+            sub_mode: str = None,
+            *,
+            agent_definition: dict[str, Any] | None = None,
+            agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm | None":
         """获取 Agent 实例（自动创建）.
 
@@ -1181,7 +1244,22 @@ class AgentManager:
         mode_key = _normalize_mode(mode)
         sub_mode_key = collapse_plan_sub_mode(mode_key, sub_mode)
         project_key = _normalize_project_dir(project_dir)
-        cache_key = _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        if (agent_definition is None) is not (
+            agent_definition_fingerprint is None
+        ):
+            raise ValueError(
+                "Agent definition and fingerprint must be provided together"
+            )
+        cache_key = (
+            _make_defined_agent_cache_key(
+                mode_key,
+                sub_mode_key,
+                project_key,
+                agent_definition_fingerprint or "",
+            )
+            if agent_definition is not None
+            else _make_agent_cache_key(mode_key, sub_mode_key, project_key)
+        )
         channel_agents = self.agents.get(channel_key, {})
         if cache_key in channel_agents:
             return self._borrow_agent(channel_agents[cache_key])
@@ -1205,12 +1283,18 @@ class AgentManager:
                     **config,
                     **_build_acp_agent_config()
                 }
+            create_kwargs: dict[str, Any] = {"cache_key": cache_key}
+            if agent_definition is not None:
+                create_kwargs["agent_definition"] = agent_definition
+                create_kwargs["agent_definition_fingerprint"] = (
+                    agent_definition_fingerprint
+                )
             agent = await self._create_agent(
                 channel_key,
                 mode_key,
                 config,
                 sub_mode_key or None,
-                cache_key=cache_key,
+                **create_kwargs,
             )
             return self._borrow_agent(agent)
 
@@ -1790,12 +1874,21 @@ class AgentManager:
         # 3. 立即按原参数重建
         for mode_key, params in backup_params.items():
             try:
+                create_kwargs: dict[str, Any] = {
+                    "cache_key": params.get("cache_key") or mode_key
+                }
+                agent_definition = params.get("agent_definition")
+                if agent_definition is not None:
+                    create_kwargs["agent_definition"] = agent_definition
+                    create_kwargs["agent_definition_fingerprint"] = params.get(
+                        "agent_definition_fingerprint"
+                    )
                 await self._create_agent(
                     channel_key,
                     mode=params.get("mode") or mode_key,
                     config=params.get("config"),
                     sub_mode=params.get("sub_mode"),
-                    cache_key=params.get("cache_key") or mode_key,
+                    **create_kwargs,
                 )
             except Exception as exc:  # noqa: BLE001
                 logger.error(
@@ -1817,6 +1910,8 @@ class AgentManager:
         sub_mode: str | None = None,
         project_dir: str | None = None,
         admit_request: Callable[[], str | None] | None = None,
+        agent_definition: dict[str, Any] | None = None,
+        agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm | None":
         """Admit one request and pin Auto sessions to their first owner/root."""
 
@@ -1936,11 +2031,19 @@ class AgentManager:
                 if has_auto_owner or permission_resume:
                     return owner
                 if auto_workspace is not None:
+                    get_kwargs: dict[str, Any] = {
+                        "channel_id": channel_id,
+                        "mode": selected_mode,
+                        "project_dir": auto_workspace,
+                        "sub_mode": selected_sub_mode,
+                    }
+                    if agent_definition is not None:
+                        get_kwargs["agent_definition"] = agent_definition
+                        get_kwargs["agent_definition_fingerprint"] = (
+                            agent_definition_fingerprint
+                        )
                     agent = await self.get_agent(
-                        channel_id=channel_id,
-                        mode=selected_mode,
-                        project_dir=auto_workspace,
-                        sub_mode=selected_sub_mode,
+                        **get_kwargs,
                     )
                     prepare = getattr(agent, "prepare_session", None)
                     if not callable(prepare):
@@ -1955,12 +2058,18 @@ class AgentManager:
         else:
             if admit_request is not None:
                 project_dir = admit_request()
-        return await self.get_agent(
-            channel_id=channel_id,
-            mode=selected_mode,
-            project_dir=project_dir,
-            sub_mode=selected_sub_mode,
-        )
+        get_kwargs = {
+            "channel_id": channel_id,
+            "mode": selected_mode,
+            "project_dir": project_dir,
+            "sub_mode": selected_sub_mode,
+        }
+        if agent_definition is not None:
+            get_kwargs["agent_definition"] = agent_definition
+            get_kwargs["agent_definition_fingerprint"] = (
+                agent_definition_fingerprint
+            )
+        return await self.get_agent(**get_kwargs)
 
     async def process_message(self, request: Any) -> Any:
         """处理非流式请求.

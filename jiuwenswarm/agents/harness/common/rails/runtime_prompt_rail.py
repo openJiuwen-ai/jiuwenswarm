@@ -400,11 +400,11 @@ class RuntimePromptRail(DeepAgentRail):
 
         # ── Channel: directory and file-operation boundaries ──
         # Remove both the consolidated section and legacy sections first so
-        # switching away from TUI/Web cannot leave stale directory guidance.
+        # switching to a channel without local directory guidance clears it.
         self.system_prompt_builder.remove_section("directory_boundaries")
         self.system_prompt_builder.remove_section("tui_current_project_policy")
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
-        if self._channel in ("tui", "web", "ws_client"):
+        if self._channel in ("tui", "web", "ws_client", "process_cli"):
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.

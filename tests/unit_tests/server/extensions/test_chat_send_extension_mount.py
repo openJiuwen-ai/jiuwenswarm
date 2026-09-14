@@ -419,7 +419,7 @@ class TestChatSendMountAndGates:
 
     async def test_fresh_turn_rejects_equipment_change(self, monkeypatch, deep_adapter):
         adapter = deep_adapter
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: True)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: True)
         resp = await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         )
@@ -427,15 +427,56 @@ class TestChatSendMountAndGates:
         assert "fresh" in resp.payload["error"]
         adapter._instance.load_agent_template.assert_not_called()
 
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: False)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: False)
         assert await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         ) is None
-        monkeypatch.setattr(adapter, "_is_session_live", lambda _sid: True)
+        monkeypatch.setattr(adapter, "_has_conflicting_inflight_turn", lambda _sid: True)
         adapter._instance.load_agent_template.reset_mock()
         assert await adapter._ensure_chat_extensions(
             _req({"agent_template_name": "alpha"})
         ) is None
+        adapter._instance.load_agent_template.assert_not_called()
+
+    async def test_reserved_current_task_allows_equipment_change(self, deep_adapter):
+        adapter = deep_adapter
+        adapter._register_session_agent_task("s1")
+        assert adapter._has_conflicting_inflight_turn("s1") is False
+        assert await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        ) is None
+        adapter._instance.load_agent_template.assert_awaited()
+
+    async def test_conflicting_inflight_turn_blocks_equipment_change(
+        self, monkeypatch, deep_adapter
+    ):
+        adapter = deep_adapter
+        adapter._active_session_ids["s1"] = 1
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
+        assert "fresh" in resp.payload["error"]
+        adapter._instance.load_agent_template.assert_not_called()
+
+        adapter._active_session_ids.clear()
+        other = MagicMock()
+        other.done.return_value = False
+        adapter._session_agent_tasks["s1"] = {other}
+        adapter._instance.load_agent_template.reset_mock()
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
+        adapter._instance.load_agent_template.assert_not_called()
+
+        adapter._session_agent_tasks.clear()
+        monkeypatch.setattr(adapter, "_is_deep_agent_executing_for_session", lambda _sid: True)
+        adapter._instance.load_agent_template.reset_mock()
+        resp = await adapter._ensure_chat_extensions(
+            _req({"agent_template_name": "alpha"})
+        )
+        assert resp is not None and resp.ok is False
         adapter._instance.load_agent_template.assert_not_called()
 
     @pytest.mark.parametrize("mode", ["team", "team.plan", "code.team", "auto_harness"])
@@ -633,6 +674,26 @@ class TestPackageCatalogReqMethodRouting:
         )
         assert response.ok is True
         assert response.payload == expected
+
+    async def test_agent_group_failures_expose_stable_codes(self, monkeypatch) -> None:
+        iface = _iface()
+
+        def fail(_params):
+            raise iface.package_manager.AgentGroupPackageError(
+                "duplicate agent group", "AGENT_GROUP_DUPLICATE"
+            )
+
+        monkeypatch.setattr(iface.package_manager, "create_agent_group", fail)
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "group-a"}, method=ReqMethod.AGENT_GROUPS_CREATE),
+        )
+
+        assert response.ok is False
+        assert response.payload == {
+            "error": "duplicate agent group",
+            "code": "AGENT_GROUP_DUPLICATE",
+        }
 
     @pytest.mark.parametrize(
         "method,function_name",

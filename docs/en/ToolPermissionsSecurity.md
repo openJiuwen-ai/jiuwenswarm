@@ -40,10 +40,12 @@ Unknown `severity` is treated as **HIGH**.
 
 ### 2.2 How Parameter-Level Rules "Match"
 
-- A rule must include the current **`tool_name`**, and all tools listed in the same rule must belong to the **same category** (shell / path / network); otherwise the rule is skipped.
-- **Shell category**: `pattern` matches the full `command` / `cmd` string (supports glob and `re:` regex).
+- A rule must list the current **`tool_name`**, **or** list the category token **`shell`** while the tool is in the host-injected `permissions.categories.shell` list. All names on one rule must belong to the **same category** (shell / path / network); mixed lists such as `[shell, read_file]` are skipped.
+- **Shell category**: `pattern` matches the full `command` / `cmd` string (supports glob and `re:` regex). Package builtin command rules use `tools: [shell]` and hit every name compose injects (`bash`, `cmd`, `powershell`, `mcp_exec_command`, `create_terminal`). User rules may still name concrete tools.
+- **Grep is not a command channel**: it builds a quoted `rg`/`grep` line for `execute_cmd`, but it is not in `categories.shell` and is not command-matched.
 - **Path category**: `pattern` matches path-like strings extracted from `tool_args` (common key names + path-like values); `re:` patterns normalize `\` → `/` before matching.
 - **Network category**: Currently not matched by parameter rules per product design (see code comments).
+- Local `execute_cmd` / `mcp_exec_command` **no longer** hard-block overlapping items such as `rm -rf` or `shutdown` at the execution layer (Engine ASK/DENY owns those). Product self-protect still blocks `pkill`/`killall`/`kill` targeting `jiuwenswarm` / `jiuwenclaw`.
 - A single call can **match multiple** parameter rules; the **strictest** result wins (see §2.4).
 
 ### 2.3 `evaluate_tiered_policy` Step-by-Step (Core Logic)
@@ -89,8 +91,8 @@ On the `check_permission` path, tiered results are typically computed **without*
 
 ## 3. Built-in Security Rules `builtin_rules.yaml`
 
-- **Package default**: `jiuwenswarm/resources/builtin_rules.yaml`.
-- **User override**: A `builtin_rules.yaml` in the **same directory** as `config.yaml` (i.e. `JIUWENSWARM_CONFIG_DIR` or default `~/.jiuwenswarm/config/`) takes **priority** if it exists.
+- **Package default (evaluation source)**: agent-core `openjiuwen/harness/resources/builtin_rules.yaml` (command rules + `sensitive_paths` + `net_urls`). Compose injects it by default; the Engine also backfills it for legacy hosts.
+- **Host switch**: `permissions.package_builtin_rules` (Global / host config only). Missing or invalid values mean **true**. Set **false** to skip the package floor; User / Session cannot override it. Product `rules` / `file_guard.paths` / `net_guard.urls` in `config.yaml` still apply.
 
 Built-in rules mostly cover **shell high-risk commands** (deletion, formatting, download-and-execute, privilege escalation, etc.), some with explicit `action: deny`. User `rules` cannot override built-in denials (built-in deny returns first).
 

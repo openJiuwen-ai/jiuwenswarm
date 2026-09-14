@@ -676,6 +676,16 @@
     "welcomeLogoAlt": "WorkSwarm logo",
     "welcomeBubbleText": "Hi~ I'm your personal desktop smart buddy.",
     "welcomeHeading": "Hi, I'm WorkSwarm. Nice to meet you!",
+    "groupCreateWelcomeBrand": "JiuwenSwarm",
+    "groupCreateWelcomeSuffix": "makes every work problem easier!",
+    "groupCreateBannerAlt": "JiuwenSwarm Expert Team creation",
+    "groupCreateCapabilities": {
+      "web": "Web",
+      "document": "Documents",
+      "slides": "Slides",
+      "spreadsheet": "Spreadsheets",
+      "imageGeneration": "Image generation"
+    },
     "welcomeSuggestions": {
       "journey": "Let's begin a brand-new journey!",
       "skills": "Can you tell me what skills you have?"
@@ -754,6 +764,7 @@
     "skillsAdd": "Add to composer",
     "skillsRemove": "Remove",
     "agent": "Experts",
+    "agentGroup": "Expert Teams",
     "agentToggle": "Choose an installed Expert",
     "agentSearchPlaceholder": "Enter keywords to search",
     "agentNoInstalled": "No installed Experts",
@@ -761,6 +772,15 @@
     "agentAdd": "Add to composer",
     "agentRemove": "Remove Expert",
     "agentMore": "More",
+    "agentGroupSearchPlaceholder": "Search by keyword",
+    "agentGroupNoInstalled": "No installed Expert Teams",
+    "agentGroupNoMatches": "No matching Expert Teams found",
+    "agentGroupRemove": "Remove Expert Team",
+    "agentGroupSkillsLocked": "An Expert Team is selected; additional Expert Team skills are unavailable",
+    "agentGroupBinding": "This conversation is bound to an Expert Team and cannot be changed",
+    "agentGroupFirstBuildOnly": "Expert Teams can only be selected when a Team is first created",
+    "agentOnlyInSingleAgentMode": "Experts can only be selected in single-Agent mode",
+    "agentGroupOnlyInTeamMode": "Expert Teams can only be selected in Team mode",
     "extension": "Extensions",
     "extensionSearchPlaceholder": "Search by keyword",
     "extensionEmpty": "No results",
@@ -908,6 +928,9 @@
   },
   "persistSession": {
     "textRequired": "Enter a task after /persist"
+  },
+  "crossSession": {
+    "messageBadge": "From session: {{title}}"
   },
   "goal": {
     "formSubmit": "Confirm",
@@ -2519,7 +2542,7 @@
     "title": "Expert Management",
     "subtitle": "Create and manage reusable Expert assets",
     "tabsLabel": "Expert management categories",
-    "tabs": { "catalog": "Expert marketplace", "mine": "My Experts" },
+    "tabs": { "catalog": "Expert marketplace", "teams": "Expert Team marketplace", "mine": "My Experts", "mineAgent": "Experts", "mineGroup": "Expert Teams", "mineLabel": "My asset type" },
     "source": { "builtin": "Official", "local": "Mine", "hub": "Hub" },
     "categoryLabel": "Expert categories",
     "categoryAll": "All",
@@ -2529,7 +2552,9 @@
     "mineSubtitle": "Manage Experts you created or installed",
     "searchLabel": "Search Experts",
     "searchCatalog": "Search Experts",
+    "searchTeams": "Search Expert Teams",
     "searchMine": "Search my Experts",
+    "searchMineGroup": "Search my Expert Teams",
     "unknownDescription": "No capability description",
     "categories": {
       "IndustryConsultant": "Industry",
@@ -2588,7 +2613,7 @@
       "uploadMissingReadme": "The Expert package is missing README.md.",
       "uploadMissingPersona": "The Expert package is missing the persona directory, or it contains no .md files.",
       "newVersion": "This Expert has a new version available",
-      "teamUnavailable": "Team Expert management is not available yet",
+      "teamUnavailable": "Expert Team management is not available yet",
       "featureUnavailable": "This feature is outside this milestone",
       "catalogEmpty": "No Experts to show",
       "mineEmpty": "You do not have any Experts yet",
@@ -2714,6 +2739,92 @@
         "descriptionRequired": "Enter a capability description",
         "personaRequired": "Enter a persona"
       }
+    },
+    "group": {
+      "actions": {
+        "createFirst": "Create manually",
+        "createByChat": "Create via chat",
+        "createByUpload": "Create from file",
+        "createViaChatPrompt": "Help me create an XXX Expert or Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "install": "Install",
+        "installing": "Installing…",
+        "use": "Use",
+        "uninstall": "Uninstall",
+        "uninstalling": "Uninstalling…",
+        "delete": "Delete",
+        "saving": "Saving…"
+      },
+      "card": { "open": "Open {{name}} details", "actions": "Actions for {{name}}" },
+      "states": {
+        "loadError": "Unable to load the Expert Team list. Try again.",
+        "detailError": "Unable to load Expert Team details. Try again.",
+        "actionError": "The Expert Team action could not be completed. Try again.",
+        "duplicateName": "An Expert Team with this name already exists. Choose a different name and try again.",
+        "unavailable": "This Expert Team package is no longer available.",
+        "definitionUnavailable": "This Expert Team definition is incomplete and cannot be used.",
+        "membersInvalid": "The Expert Team members are invalid. Choose a leader and distinct members.",
+        "memberUnavailable": "A selected Expert is unavailable or not Team-compatible.",
+        "createSuccess": "Expert Team package {{id}} was created.",
+        "uploadSuccess": "Expert Team package {{id}} was imported. Review it in My Expert Teams.",
+        "uploadError": "Unable to import the Expert Team package. Check the file and try again.",
+        "catalogEmpty": "No Expert Teams to show",
+        "mineEmpty": "You do not have any Expert Teams yet",
+        "noMatch": "No matching Expert Teams found"
+      },
+      "detail": {
+        "membersTitle": "Expert Team members",
+        "leader": "Leader",
+        "tabsLabel": "Expert Team detail content",
+        "contentTab": "Details",
+        "filesTab": "File preview",
+        "noDetails": "No additional details",
+        "filesUnavailable": "Install the Expert Team to view its files."
+      },
+      "files": { "loadError": "Unable to load Expert Team files. Try again.", "readError": "Unable to read the Expert Team file. Try again." },
+      "form": {
+        "title": "Create manually",
+        "createAgentTab": "Create Expert",
+        "createGroupTab": "Create Expert Team",
+        "basic": "Basic information",
+        "nameLabel": "Expert Team name",
+        "namePlaceholder": "Enter a display name",
+        "descriptionLabel": "Capability description",
+        "descriptionPlaceholder": "Describe what this Expert Team can do",
+        "tagLabel": "Domain tags (optional)",
+        "tagPlaceholder": "Choose domain tags",
+        "teamIntro": "Expert Team introduction",
+        "teamConfig": "Expert Team configuration",
+        "personaLabel": "Expert Team introduction",
+        "personaPlaceholder": "Describe the Expert Team",
+        "leaderFieldLabel": "Leader",
+        "leaderLabel": "Choose leader",
+        "changeLeader": "Change leader",
+        "membersFieldLabel": "Members",
+        "addMember": "Add member",
+        "removeMember": "Remove member {{name}}",
+        "skillsLabel": "Expert Team skill configuration (optional)",
+        "chooseSkills": "Choose skills",
+        "removeSkill": "Remove skill {{name}}",
+        "skillsError": "Unable to load the skill list. Try again.",
+        "skillsEmpty": "No skills available",
+        "promptsLabel": "Try asking me (optional)",
+        "promptPlaceholder": "Enter a suggested question",
+        "removePrompt": "Remove suggested question",
+        "addPrompt": "Add question",
+        "saveError": "The Expert Team could not be created. Check the form and try again.",
+        "uploadKindLabel": "Category",
+        "uploadGroupTab": "Expert Team",
+        "uploadAgentTab": "Expert",
+        "uploadHint": "Supports .zip, .tar and .tar.gz files; once extracted, the folder must include manifest.json, an agents directory and README.md, and the .json file must declare package_type.",
+        "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
+        "errors": {
+          "nameRequired": "Enter an Expert Team name",
+          "descriptionRequired": "Enter an Expert Team description",
+          "personaRequired": "Enter an Expert Team introduction",
+          "leaderRequired": "Choose a leader Expert"
+        }
+      },
+      "picker": { "leaderTitle": "Choose a leader", "memberTitle": "Choose members", "empty": "No matching Experts", "selectedCount": "{{count}} selected" }
     }
   },
   "fileViewer": {

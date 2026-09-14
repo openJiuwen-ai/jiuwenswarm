@@ -18,6 +18,7 @@ from jiuwenswarm.gateway.cron.models import (
     cron_job_metadata,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
     validate_cron_model,
@@ -226,6 +227,10 @@ class CronController:
         else:
             mode = None
         model_name = validate_cron_model(params.get("model_name"))
+        # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
+        # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
+        # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
+        mcp = normalize_cron_job_mcp(params.get("mcp"))
 
         targets = self._normalize_targets(raw_targets)
 
@@ -310,6 +315,7 @@ class CronController:
             timeout_seconds=timeout_seconds,
             project_id=resolved_project_id,
             model_name=model_name,
+            mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
@@ -327,6 +333,9 @@ class CronController:
             patch["mode"] = normalize_cron_job_mode(patch.get("mode"))
         if "model_name" in patch:
             patch["model_name"] = validate_cron_model(patch.get("model_name"))
+        if "mcp" in patch:
+            # 显式传 null/[] 归 None（清除选择，执行时回到全局默认集）。
+            patch["mcp"] = normalize_cron_job_mcp(patch.get("mcp"))
         if "targets" in patch:
             patch["targets"] = self._normalize_targets(patch["targets"])
         existing = await self._store.get_job(job_id)
@@ -457,6 +466,7 @@ class CronController:
         mode: str | None = None,
         timeout_seconds: int | None = None,
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         project_dir: str | None = None,
         project_id: str | None = None,
         work_mode: str | None = None,
@@ -477,6 +487,8 @@ class CronController:
             params["timeout_seconds"] = timeout_seconds
         if model_name is not None and str(model_name).strip():
             params["model_name"] = validate_cron_model(model_name)
+        if mcp is not None:
+            params["mcp"] = mcp
         if project_dir is not None:
             params["project_dir"] = str(project_dir).strip()
         if project_id is not None and str(project_id).strip():
@@ -648,6 +660,15 @@ class CronController:
                                 "If omitted, uses the AgentServer default model."
                             ),
                         },
+                        "mcp": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Session-scoped MCP server names to enable when "
+                                "the job runs. Omit to inherit the creating "
+                                "session's MCP selection; pass [] for none."
+                            ),
+                        },
                         "project_dir": {
                             "type": "string",
                             "description": (
@@ -682,7 +703,7 @@ class CronController:
                 description=(
                     "Update an existing cron job. Pass job_id and a patch dict with fields to update "
                     "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, project_dir, project_id). "
+                    "targets, mode, model_name, mcp, project_dir, project_id). "
                     f"name max {CRON_JOB_NAME_MAX_LENGTH} characters, "
                     f"description max {CRON_JOB_DESCRIPTION_MAX_LENGTH} characters."
                 ),
@@ -695,7 +716,7 @@ class CronController:
                             "description": (
                                 "Fields to update (name, enabled, cron_expr, timezone, "
                                 "description, wake_offset_seconds, targets, mode, model_name, "
-                                "project_dir, project_id). work_mode is not accepted as an "
+                                "mcp, project_dir, project_id). work_mode is not accepted as an "
                                 "independent patch field; to change work_mode, patch project_id "
                                 "or project_dir + work_mode (work_mode only disambiguates the "
                                 "target project when resolving project_dir)."
@@ -717,6 +738,14 @@ class CronController:
                                     "type": "string",
                                     "description": "Model to use when the job runs. \
                                         Set to empty string to reset to default.",
+                                },
+                                "mcp": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Session-scoped MCP server names to enable when the "
+                                        "job runs. Set to [] to clear (use default set only)."
+                                    ),
                                 },
                                 "project_dir": {
                                     "type": "string",

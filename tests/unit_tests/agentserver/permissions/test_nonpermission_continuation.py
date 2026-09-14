@@ -98,3 +98,20 @@ async def test_unmarked_initial_call_still_enters_base_permission(
     await rail.before_tool_call(ctx)
 
     called.assert_awaited_once_with(ctx)
+
+
+@pytest.mark.asyncio
+async def test_before_tool_call_continues_when_workspace_resolve_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    called = AsyncMock()
+    monkeypatch.setattr(PermissionInterruptRail, "before_tool_call", called)
+    rail = object.__new__(JiuwenSwarmPermissionInterruptRail)
+    rail._host = SimpleNamespace(
+        resolve_workspace_dir=lambda: (_ for _ in ()).throw(OSError("no workspace")),
+    )
+    ctx = SimpleNamespace(extra={})
+
+    await rail.before_tool_call(ctx)
+
+    called.assert_awaited_once_with(ctx)

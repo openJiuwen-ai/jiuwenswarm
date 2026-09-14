@@ -75,6 +75,10 @@ class ToolCapability:
 
 
 _SHELL_TOOLS = {"bash", "cmd", "powershell", "mcp_exec_command", "create_terminal"}
+
+
+def shell_tool_names() -> list[str]:
+    return sorted(_SHELL_TOOLS)
 _CODE_TOOLS = {"code"}
 _PATH_TOOLS = {
     "apply_patch",
@@ -115,7 +119,9 @@ _LEGACY_TODO_TOOLS = {
     "todo_complete",
     "todo_remove",
 }
-_SESSION_STATUS_TOOLS = {"session_list"}
+_SESSION_STATUS_TOOLS = {"session_list", "session_message_list"}
+_SESSION_SEND_TOOLS = {"session_send_message"}
+_SESSION_MESSAGE_MANAGEMENT_TOOLS = {"session_message_resolve"}
 _ASK_USER_TOOLS = {"ask_user"}
 _SKILL_READ_TOOLS = {"skill_tool"}
 _SKILL_CHANGE_TOOLS = {"install_skill", "uninstall_skill"}
@@ -184,6 +190,8 @@ _STATIC_CANONICAL_TOOL_NAMES = frozenset(
     | _HOST_TODO_TOOLS
     | _LEGACY_TODO_TOOLS
     | _SESSION_STATUS_TOOLS
+    | _SESSION_SEND_TOOLS
+    | _SESSION_MESSAGE_MANAGEMENT_TOOLS
     | _ASK_USER_TOOLS
     | _SKILL_READ_TOOLS
     | _SKILL_CHANGE_TOOLS
@@ -331,6 +339,26 @@ def classify_tool(tool_name: str) -> ToolCapability:
             set(),
             "low",
             False,
+        )
+    if lowered in _SESSION_SEND_TOOLS:
+        return _capability(
+            resolution,
+            "task_management",
+            "cross_session_send",
+            "product_session",
+            {"delegation"},
+            "high",
+            True,
+        )
+    if lowered in _SESSION_MESSAGE_MANAGEMENT_TOOLS:
+        return _capability(
+            resolution,
+            "task_management",
+            "cross_session_resolution",
+            "product_session",
+            {"session_state_write"},
+            "high",
+            True,
         )
     if lowered in _ASK_USER_TOOLS:
         return _capability(

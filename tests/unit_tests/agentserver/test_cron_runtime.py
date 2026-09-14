@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
@@ -258,6 +259,76 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
     assert push.payloads[0]["body"]["action"] == "create"
     # 本地 cron_jobs.json 未被写入（单源）
     assert not (tmp_path / "cron_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_create_job_normalizes_and_forwards_mcp(tmp_path, monkeypatch) -> None:
+    """会话级 MCP 选择随 job 转发 Gateway 落库（strip/去空/去重后）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        job = await tools.create_job(
+            {
+                "id": "job-with-mcp",
+                "name": "daily",
+                "cron_expr": "0 9 * * *",
+                "timezone": "Asia/Shanghai",
+                "description": "hello",
+                "targets": "web",
+                "mcp": [" feishu-doc ", "github", "github", ""],
+            }
+        )
+    finally:
+        tools.reset_cron_route(token)
+
+    assert job["mcp"] == ["feishu-doc", "github"]
+    forwarded = push.payloads[0]["body"]["data"]
+    assert forwarded["mcp"] == ["feishu-doc", "github"]
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_create_job_without_mcp_omits_field(tmp_path, monkeypatch) -> None:
+    """未传 mcp 的 job 不带该字段（旧 job 行为与改造前一致）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        job = await tools.create_job(
+            {
+                "id": "job-no-mcp",
+                "name": "daily",
+                "cron_expr": "0 9 * * *",
+                "timezone": "Asia/Shanghai",
+                "description": "hello",
+                "targets": "web",
+            }
+        )
+    finally:
+        tools.reset_cron_route(token)
+
+    assert "mcp" not in job
+    assert "mcp" not in push.payloads[0]["body"]["data"]
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_update_job_clears_mcp_with_empty_list(tmp_path, monkeypatch) -> None:
+    """update patch mcp=[] → 归 None（清除选择，执行时回到全局默认集）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    existing = _make_job("job-clear-mcp", name="existing", mcp=["feishu-doc"])
+    monkeypatch.setattr(tools, "_view_job", AsyncMock(return_value=existing))
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        await tools.update_job("job-clear-mcp", {"mcp": []})
+    finally:
+        tools.reset_cron_route(token)
+
+    patch = push.payloads[0]["body"]["data"]["patch"]
+    assert patch["mcp"] is None
 
 
 @pytest.mark.asyncio

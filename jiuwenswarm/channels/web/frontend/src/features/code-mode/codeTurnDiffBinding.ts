@@ -1,5 +1,6 @@
 import type { Message } from '../../types';
 import type { GitTurnDiff } from './types';
+import { latestModifiedTurn } from './turnChangeState.js';
 
 function isUserFacingTeamEvent(message: Message): boolean {
   if (message.role !== 'system' || !message.content.startsWith('team.event:')) {
@@ -52,53 +53,72 @@ function findDirectMessageId(messageIds: Set<string>, turn: GitTurnDiff): string
   return candidates.find(candidate => candidate && messageIds.has(candidate)) ?? null;
 }
 
-/** Bind backend user-turn indexes to the assistant bubble rendered for that turn. */
+/**
+ * Live message timestamps use the browser clock while the turn timestamp is
+ * server-generated. With a fast browser clock the turn's own user message
+ * lands just after the turn start, and a strict "at or before" search would
+ * fall through to the previous chat round (or drop the card on the first
+ * turn). Keep the closest message at or before the turn start, and only fall
+ * back to the closest message inside the skew budget when that candidate is
+ * itself implausibly far — later chat rounds and off-screen windows start
+ * beyond the budget, so they never borrow the card.
+ */
+const LIVE_CLOCK_SKEW_MS = 2 * 60_000;
+
+function locateUserMessageByTurnTime(messages: Message[], turnTime: number): number {
+  if (!Number.isFinite(turnTime)) return -1;
+  let beforeIndex = -1;
+  let beforeGap = Number.POSITIVE_INFINITY;
+  let afterIndex = -1;
+  let afterGap = Number.POSITIVE_INFINITY;
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (message.role !== 'user') continue;
+    const at = Date.parse(message.timestamp);
+    if (!Number.isFinite(at)) continue;
+    if (at <= turnTime) {
+      const gap = turnTime - at;
+      if (gap < beforeGap) {
+        beforeGap = gap;
+        beforeIndex = index;
+      }
+    } else if (at - turnTime <= LIVE_CLOCK_SKEW_MS) {
+      const gap = at - turnTime;
+      if (gap <= afterGap) {
+        afterGap = gap;
+        afterIndex = index;
+      }
+    }
+  }
+  if (afterIndex >= 0 && (beforeIndex < 0 || beforeGap > LIVE_CLOCK_SKEW_MS)) {
+    return afterIndex;
+  }
+  return beforeIndex;
+}
+
+/** Bind only the latest file-editing turn; never infer a paginated turn offset. */
 export function bindTurnDiffsToMessages(messages: Message[], turns: GitTurnDiff[]): Map<string, GitTurnDiff[]> {
-  const messageIds = new Set(messages.map(message => message.id));
-  const assistantByTurnIndex = new Map<number, string>();
-  const localTurnIndexByAssistantId = new Map<string, number>();
-  const assistantByUserMessageId = new Map<string, string>();
-  let currentTurnIndex = 0;
-  let currentUserMessageId = '';
-
-  messages.forEach(message => {
-    if (message.role === 'user') {
-      currentTurnIndex += 1;
-      currentUserMessageId = message.id;
-      return;
-    }
-    if (!currentTurnIndex || !isAssistantTurnAnchor(message)) return;
-    // Keep the last assistant output before the next user message as the turn result.
-    assistantByTurnIndex.set(currentTurnIndex, message.id);
-    localTurnIndexByAssistantId.set(message.id, currentTurnIndex);
-    if (currentUserMessageId) assistantByUserMessageId.set(currentUserMessageId, message.id);
-  });
-
-  // History pagination normally provides the newest contiguous message window.
-  // Prefer an exact message-id anchor; otherwise align the latest local and backend turns.
-  const latestBackendTurn = turns.reduce((latest, turn) => Math.max(latest, turn.turn_index), 0);
-  let turnIndexOffset = Math.max(0, latestBackendTurn - currentTurnIndex);
-  let latestAnchoredTurn = 0;
-  turns.forEach(turn => {
-    const directMessageId = findDirectMessageId(messageIds, turn) || (turn.user_message_id ? assistantByUserMessageId.get(turn.user_message_id) : undefined);
-    const localTurnIndex = directMessageId ? localTurnIndexByAssistantId.get(directMessageId) : undefined;
-    if (localTurnIndex && turn.turn_index >= latestAnchoredTurn) {
-      latestAnchoredTurn = turn.turn_index;
-      turnIndexOffset = turn.turn_index - localTurnIndex;
-    }
-  });
-
+  const turn = latestModifiedTurn(turns);
   const result = new Map<string, GitTurnDiff[]>();
-  turns.forEach(turn => {
-    const messageId =
-      findDirectMessageId(messageIds, turn) ||
-      (turn.user_message_id ? assistantByUserMessageId.get(turn.user_message_id) : undefined) ||
-      assistantByTurnIndex.get(turn.turn_index - turnIndexOffset);
-    if (!messageId) return;
-    const boundTurns = result.get(messageId) ?? [];
-    boundTurns.push(turn);
-    boundTurns.sort((left, right) => left.turn_index - right.turn_index);
-    result.set(messageId, boundTurns);
-  });
+  if (!turn) return result;
+
+  const directId = findDirectMessageId(new Set(messages.map((message) => message.id)), turn);
+  if (directId) return new Map([[directId, [turn]]]);
+
+  let userIndex = messages.findIndex((message) => message.role === 'user' && message.id === turn.user_message_id);
+  if (userIndex < 0) {
+    // Live user ids are temporary. Locate the user interval containing the
+    // persisted turn start, instead of moving the card as more chats arrive.
+    userIndex = locateUserMessageByTurnTime(messages, Date.parse(turn.timestamp));
+  }
+  if (userIndex < 0) return result;
+
+  let messageId: string | null = null;
+  for (let index = userIndex + 1; index < messages.length; index += 1) {
+    const message = messages[index];
+    if (message.role === 'user') break;
+    if (isAssistantTurnAnchor(message)) messageId = message.id;
+  }
+  if (messageId) result.set(messageId, [turn]);
   return result;
 }

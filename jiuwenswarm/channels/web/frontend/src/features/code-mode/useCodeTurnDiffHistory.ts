@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { Message, ProjectInfo } from '../../types';
 import { gitClient } from './gitClient';
 import { gitWatchClient } from './gitWatchClient';
-import { latestTurnDiffKeyForMessages, turnChangeErrorMessage, turnDiffKey, updateTurnChangeStatus } from './turnChangeState';
+import { latestModifiedTurn, turnChangeErrorMessage, turnDiffKey, updateTurnChangeStatus } from './turnChangeState';
 import type { GitDiscardTurnChangesResult, GitRedoTurnChangesResult, GitTurnChangeAction, GitTurnDiff } from './types';
 import { bindTurnDiffsToMessages } from './codeTurnDiffBinding';
 import { emitCodeTurnChange } from './codeTurnChangeEvents';
@@ -41,10 +41,11 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
     setLoading(true);
     setError(null);
     try {
-      // limit=0 is explicitly defined by the backend as "return all turns".
-      const response = await gitClient.turnDiffList(projectId, sessionId, { limit: 0 });
+      // Summaries contain file-editing turns newest first, including discarded turns.
+      const response = await gitClient.turnDiffList(projectId, sessionId, { limit: 1 });
       if (requestSequenceRef.current !== requestSequence) return;
-      setTurns(response.turns);
+      const latest = latestModifiedTurn(response.turns);
+      setTurns(latest ? [latest] : []);
     } catch (nextError) {
       if (requestSequenceRef.current !== requestSequence) return;
       console.warn('[code-mode] Failed to load turn diff history', nextError);
@@ -74,7 +75,8 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
   }, [isProcessing, loadHistory]);
 
   const turnsByMessageId = useMemo(() => bindTurnDiffsToMessages(messages, turns), [messages, turns]);
-  const latestTurnKey = useMemo(() => latestTurnDiffKeyForMessages(messages, turns, turnsByMessageId), [messages, turns, turnsByMessageId]);
+  const latestTurn = turns[0] ?? null;
+  const latestTurnKey = latestTurn ? turnDiffKey(latestTurn) : null;
 
   useEffect(() => {
     if (!turnChangeNotice) return;
@@ -85,7 +87,6 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
   const changeLatestTurn = useCallback(
     async (action: GitTurnChangeAction) => {
       if (!projectId || !sessionId || sessionId === 'new' || isProcessing) return;
-      const latestTurn = turns.reduce<GitTurnDiff | null>((current, turn) => (!current || turn.turn_index > current.turn_index ? turn : current), null);
       if (!latestTurn) return;
 
       const turnKey = turnDiffKey(latestTurn);
@@ -99,7 +100,7 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
       setTurnChangeNotice(null);
 
       try {
-        const params = { project_id: projectId, session_id: sessionId };
+        const params = { project_id: projectId, session_id: sessionId, change_set_id: latestTurn.change_set_id };
         const result =
           action === 'discard'
             ? await gitWatchClient.request<GitDiscardTurnChangesResult>('project.git.discard_turn_changes', params, { timeoutMs: 60_000 })
@@ -121,11 +122,12 @@ export function useCodeTurnDiffHistory({ project, sessionId, isProcessing, messa
       } catch (nextError) {
         if (operationSequenceRef.current !== operationSequence) return;
         setTurnChangeError({ turnKey, message: turnChangeErrorMessage(nextError, action) });
+        void loadHistory();
       } finally {
         if (operationSequenceRef.current === operationSequence) setTurnChangeOperation(null);
       }
     },
-    [isProcessing, latestTurnKey, loadHistory, projectId, sessionId, turns],
+    [isProcessing, latestTurn, latestTurnKey, loadHistory, projectId, sessionId],
   );
   const discardLatestTurn = useCallback(() => changeLatestTurn('discard'), [changeLatestTurn]);
   const redoLatestTurn = useCallback(() => changeLatestTurn('redo'), [changeLatestTurn]);

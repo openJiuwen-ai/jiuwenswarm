@@ -1303,6 +1303,11 @@ class CronSchedulerService:
                 }
                 if job.model_name:
                     params["model_name"] = job.model_name
+                # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
+                # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
+                # 未配置（None）时保持既有行为（仅 init 全局默认集）。
+                if job.mcp:
+                    params["mcp"] = list(job.mcp)
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,

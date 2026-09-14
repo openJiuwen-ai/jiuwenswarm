@@ -4,6 +4,11 @@ import { normalizeFinalContent } from '../utils/finalContent';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { extractAutomation } from '../utils/heartbeatAutomation';
+import {
+  crossSessionAssistantMessageId,
+  crossSessionUserMessageId,
+  extractCrossSessionMessage,
+} from '../utils/crossSessionMessage';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
 import {
@@ -473,7 +478,7 @@ export interface HistoryCompactionReplay {
 interface BeginHistoryRestoreOptions {
   sessionId: string;
   subagentId?: string;
-  onReady: (messages: Message[], totalPages: number | null) => void;
+  onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 HarnessProgressBar */
@@ -488,9 +493,23 @@ interface BeginHistoryRestoreOptions {
   onCompactionReplay?: (info: HistoryCompactionReplay) => void;
   /** 恢复最新的完整 context.usage 快照，供刷新/续接后恢复上下文用量指示器 */
   onContextUsage?: (payload: Record<string, unknown>) => void;
-  /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
-  onEmpty?: (totalPages: number | null) => void;
+  /** 无消息且无工具回放时调用；游标元数据仍决定是否存在更早记录。 */
+  onEmpty?: (cursor: HistoryCursorMeta) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
+}
+
+export interface HistoryCursorMeta {
+  requestCursor: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+}
+
+export interface HistoryRestoreFailure {
+  code: string;
+  message: string;
 }
 
 export interface HistoryRestoreHandle {
@@ -505,10 +524,11 @@ function makeHistoryRestoreKey(sessionId: string, subagentId?: string): string {
   return subagentId ? `${sessionId}:subagent:${subagentId}:restore` : `${sessionId}:restore`;
 }
 
-function makeHistoryPageKey(sessionId: string, pageIdx: number, subagentId?: string): string {
+function makeHistoryCursorKey(sessionId: string, cursor: string | null, subagentId?: string): string {
+  const cursorKey = cursor ?? 'initial';
   return subagentId
-    ? `${sessionId}:subagent:${subagentId}:page:${pageIdx}`
-    : `${sessionId}:page:${pageIdx}`;
+    ? `${sessionId}:subagent:${subagentId}:cursor:${cursorKey}`
+    : `${sessionId}:cursor:${cursorKey}`;
 }
 
 function replaceActiveHistoryRequest(key: string): void {
@@ -937,7 +957,7 @@ function parseHistoryTimelineEntry(
     if (!content.trim() && mediaItems.length === 0) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-user-${sessionId}-${at}`;
     const isGoalObjectiveMessage =
       isTruthyHistoryFlag(record.is_goal_objective_message) ||
@@ -950,6 +970,12 @@ function parseHistoryTimelineEntry(
     // 历史恢复时读回同一个标记，保证刷新/切会话/后端重启后仍能识别 Heartbeat 轮。
     // 与实时链路（useWebSocket.ts）共用同一个 extractAutomation。
     const userAutomation = extractAutomation(record) ?? extractAutomation(buildEventPayloadForRecord(record));
+    const userCrossSession =
+      extractCrossSessionMessage(record) ??
+      extractCrossSessionMessage(buildEventPayloadForRecord(record));
+    const id = userCrossSession
+      ? crossSessionUserMessageId(userCrossSession.messageId)
+      : restoredId;
     return {
       kind: 'message',
       message: {
@@ -961,6 +987,7 @@ function parseHistoryTimelineEntry(
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
         ...(skills && skills.length > 0 ? { skills } : {}),
         ...(userAutomation ? { automation: userAutomation } : {}),
+        ...(userCrossSession ? { crossSession: userCrossSession } : {}),
       },
     };
   }
@@ -1056,7 +1083,7 @@ function parseHistoryTimelineEntry(
     if (!content.trim()) {
       return null;
     }
-    const id =
+    const restoredId =
       pickFirstString(record, ['id', 'message_id', 'msg_id']) ?? `hist-final-${sessionId}-${at}`;
     if (isTeamModeRecord(record)) {
       if (isHiddenTeamTeammateMessageRecord(record)) {
@@ -1065,7 +1092,7 @@ function parseHistoryTimelineEntry(
       return {
         kind: 'message',
         message: {
-          id: `team-leader-${id}`,
+          id: `team-leader-${restoredId}`,
           role: 'system',
           content: `team.leader:${JSON.stringify({
             content,
@@ -1085,6 +1112,11 @@ function parseHistoryTimelineEntry(
       : readAgentTemplateName(payload) ?? readAgentTemplateName(record);
     // 刷新后历史里的 proactive 消息也需带 proactiveRecId，否则赞/踩按钮在历史消息上不出现。
     const histProactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : '';
+    const assistantCrossSession =
+      extractCrossSessionMessage(payload) ?? extractCrossSessionMessage(record);
+    const id = assistantCrossSession
+      ? crossSessionAssistantMessageId(record.request_id, assistantCrossSession.messageId)
+      : restoredId;
     // completed_at：收尾时刻（耗时）；timestamp 已是气泡出现/首包时刻（排序）
     const completedAt =
       (typeof record.completed_at === 'number' || typeof record.completed_at === 'string'
@@ -1115,6 +1147,7 @@ function parseHistoryTimelineEntry(
           : {}),
         ...(agentTemplateName ? { agentTemplateName } : {}),
         ...(isProactiveRecommendation && histProactiveRecId ? { proactiveRecId: histProactiveRecId } : {}),
+        ...(assistantCrossSession ? { crossSession: assistantCrossSession } : {}),
         // §9：Heartbeat 自动轮的 assistant 消息同样带 metadata.automation 落盘，恢复时读回。
         // 优先读 payload（event_payload 已提升），再回退到 record 顶层。
         ...((extractAutomation(payload) ?? extractAutomation(record))
@@ -1729,6 +1762,7 @@ export function shouldProcessHistoryPayload(
   expectedPageIdx?: number,
   allowLegacyNoSession = false,
   expectedSubagentId?: string,
+  expectedCursor?: string | null,
 ): boolean {
   if (hasMismatchedHistoryBoundary(payload, expectedSessionId)) return false;
   const sid = pickFirstString(payload, ['session_id', 'sessionId']) ?? '';
@@ -1736,20 +1770,49 @@ export function shouldProcessHistoryPayload(
     return false;
   }
   const subagentId = pickFirstString(payload, ['subagent_id', 'subagentId']) ?? '';
-  if (expectedSubagentId) {
-    if (subagentId !== expectedSubagentId) {
-      return false;
-    }
-  } else if (subagentId) {
+  if (subagentId !== (expectedSubagentId ?? '')) {
     return false;
   }
   if (expectedPageIdx !== undefined && payload.page_idx !== expectedPageIdx) {
+    return false;
+  }
+  if (expectedCursor !== undefined && payload.cursor !== expectedCursor) {
     return false;
   }
   if (!sid) {
     return allowLegacyNoSession && (isHistoryRestoreDonePayload(payload) || isHistoryBatchEnd(payload));
   }
   return true;
+}
+
+function readHistoryCursorMeta(
+  payload: Record<string, unknown>,
+  requestCursor: string | null,
+): HistoryCursorMeta | null {
+  const hasMore = payload.has_more;
+  const nextCursor = payload.next_cursor;
+  const snapshotId = payload.snapshot_id;
+  const snapshotEnd = payload.snapshot_end;
+  if (typeof hasMore !== 'boolean') return null;
+
+  let normalizedNextCursor: string | null = null;
+  if (hasMore) {
+    if (typeof nextCursor !== 'string' || !nextCursor) return null;
+    normalizedNextCursor = nextCursor;
+  } else if (nextCursor !== null) {
+    return null;
+  }
+
+  if (snapshotId !== null && typeof snapshotId !== 'string') return null;
+  if (typeof snapshotEnd !== 'number' || !Number.isFinite(snapshotEnd) || snapshotEnd < 0) return null;
+
+  return {
+    requestCursor,
+    nextCursor: normalizedNextCursor,
+    hasMore,
+    snapshotId,
+    snapshotEnd,
+  };
 }
 
 export function beginHistoryRestore(options: BeginHistoryRestoreOptions): HistoryRestoreHandle {
@@ -1761,7 +1824,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1777,14 +1840,24 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       payload,
       options.sessionId,
       undefined,
-      activeHistoryRequests.size === 1,
+      false,
       options.subagentId,
+      null,
     )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
+    const nextMeta = readHistoryCursorMeta(payload, null);
+    if (nextMeta) {
+      cursorMeta = nextMeta;
+    }
+
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
     }
 
     if (isHistoryRestoreDonePayload(payload)) {
@@ -1838,23 +1911,62 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     releaseLiveEvents();
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    stopListening();
+    try {
+      options.onFailure?.(failure);
+    } finally {
+      releaseLiveEvents();
+    }
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
 
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
-      materializeHistoryTimeline(entries);
+    if (!cursorMeta) {
+      stopListening();
+      try {
+        options.onFailure?.({
+          code: 'INVALID_HISTORY_RESPONSE',
+          message: 'history response did not include cursor metadata',
+        });
+      } finally {
+        releaseLiveEvents();
+      }
+      return;
+    }
+
+    const {
+      messages,
+      toolReplay,
+      harnessReplay,
+      teamReplay,
+      subagentReplay,
+      reasoningReplay,
+      contextUsageReplay,
+    } = materializeHistoryTimeline(entries);
     const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
     try {
-      if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
-        options.onEmpty?.(totalPages);
+      const isEmpty = (
+        messages.length === 0
+        && toolReplay.length === 0
+        && harnessReplay.length === 0
+        && teamReplay.length === 0
+        && subagentReplay.length === 0
+        && !latestContextUsage
+      );
+      if (isEmpty) {
+        options.onEmpty?.(cursorMeta);
         return;
       }
-      options.onReady(messages, totalPages);
+      options.onReady(messages, cursorMeta);
       if (latestContextUsage) {
         options.onContextUsage?.(latestContextUsage);
       }
@@ -1868,9 +1980,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
         options.onTeamReplay?.(teamReplay);
       }
       if (subagentReplay.length > 0) {
-      options.onSubagentReplay?.(subagentReplay);
-    }
-    if (reasoningReplay.length > 0) {
+        options.onSubagentReplay?.(subagentReplay);
+      }
+      if (reasoningReplay.length > 0) {
         options.onReasoningReplay?.(reasoningReplay);
       }
       const compactionCount = entries.reduce((n, e) => (e.kind === 'compaction' ? n + 1 : n), 0);
@@ -1887,17 +1999,15 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 兜底：后端 history.get 流超时（faas 旧 session runtime 过 TTL 被
-  // 回收、init 60s 超时）时不发结束帧，强制 finalize 恢复 isLoadingHistory，
-  // 避免前端永久转圈、吞掉后续 chat.processing_status(is_processing=false)。
+  // 超时是一次明确失败，不能把不完整批次当作成功历史发布。
   restoreTimer = setTimeout(() => {
     if (disposed || finalized) return;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }
 
-export interface FetchHistoryPageResult {
+export interface FetchHistoryCursorBatchResult {
   messages: Message[];
   toolReplay: HistoryToolReplayItem[];
   harnessReplay: HistoryHarnessReplayItem[];
@@ -1905,58 +2015,59 @@ export interface FetchHistoryPageResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
-  totalPages: number | null;
+  cursor: HistoryCursorMeta;
 }
 
-export interface FetchHistoryPageOptions {
+export interface FetchHistoryCursorBatchOptions {
   sessionId: string;
-  pageIdx: number;
+  cursor: string | null;
   subagentId?: string;
-  onReady: (result: FetchHistoryPageResult) => void;
-  onEmpty?: (totalPages: number | null) => void;
-  onTimeout?: () => void;
+  onReady: (result: FetchHistoryCursorBatchResult) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
 }
 
-/**
- * 拉取单页历史（用于「加载更早」）。
- * 调用方需在订阅建立后再发 `history.get`（含对应 `page_idx`）。
- */
-export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryRestoreHandle {
-  const requestKey = makeHistoryPageKey(options.sessionId, options.pageIdx, options.subagentId);
+/** Subscribe before sending the matching cursor-based ``history.get`` request. */
+export function fetchHistoryCursorBatch(
+  options: FetchHistoryCursorBatchOptions,
+): HistoryRestoreHandle {
+  const requestKey = makeHistoryCursorKey(options.sessionId, options.cursor, options.subagentId);
   replaceActiveHistoryRequest(requestKey);
 
   const generation = restoreGeneration + 1;
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
-  let timedOut = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const reassembler = new HistoryRecordReassembler();
 
   const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, (event: WsEvent) => {
-    if (disposed) {
-      return;
-    }
-
+    if (disposed) return;
     const payload = event.payload;
     if (!shouldProcessHistoryPayload(
       payload,
       options.sessionId,
-      options.pageIdx,
-      activeHistoryRequests.size === 1,
+      undefined,
+      false,
       options.subagentId,
+      options.cursor,
     )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
-    }
+    const nextMeta = readHistoryCursorMeta(payload, options.cursor);
+    if (nextMeta) cursorMeta = nextMeta;
 
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
+    }
     if (isHistoryRestoreDonePayload(payload)) {
       finalize();
       return;
@@ -1966,13 +2077,9 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     const record = normalizeHistoryContent(raw, options.onError);
     if (record) {
       const full = reassembler.feed(record);
-      if (!full) {
-        return;
-      }
+      if (!full) return;
       const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
-      if (entry) {
-        entries.unshift(entry);
-      }
+      if (entry) entries.unshift(entry);
       const reasoningText = extractHistoryReasoningText(full);
       if (reasoningText) {
         entries.unshift({
@@ -1984,10 +2091,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
         });
       }
     }
-
-    if (isHistoryBatchEnd(payload)) {
-      finalize();
-    }
+    if (isHistoryBatchEnd(payload)) finalize();
   });
 
   function dispose(): void {
@@ -2003,46 +2107,35 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     }
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    dispose();
+    options.onFailure?.(failure);
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
-
-    if (timedOut) {
+    if (!cursorMeta) {
       dispose();
-      options.onTimeout?.();
+      options.onFailure?.({
+        code: 'INVALID_HISTORY_RESPONSE',
+        message: 'history response did not include cursor metadata',
+      });
       return;
     }
-
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
-      materializeHistoryTimeline(entries);
-    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
-
+    const materialized = materializeHistoryTimeline(entries);
+    const contextUsageSnapshot = selectLatestContextUsagePayload(materialized.contextUsageReplay);
     dispose();
-
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
-      options.onEmpty?.(totalPages);
-      return;
-    }
-    options.onReady({
-      messages,
-      toolReplay,
-      harnessReplay,
-      teamReplay,
-      subagentReplay,
-      reasoningReplay,
-      contextUsageSnapshot: latestContextUsage,
-      totalPages,
-    });
+    options.onReady({ ...materialized, contextUsageSnapshot, cursor: cursorMeta });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 同 beginHistoryRestore：兜底超时，避免分页 history.get 流卡死。
   restoreTimer = setTimeout(() => {
-    if (disposed || finalized) return;
-    timedOut = true;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }

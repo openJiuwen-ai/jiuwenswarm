@@ -1,4 +1,19 @@
 :root[data-theme='default'][data-color-mode='light'] {
+  --space-agent-group-gutter: 32px;
+  --space-agent-group-control: 8px;
+  --space-agent-group-grid: 16px;
+  --size-agent-group-drawer-control: 28px;
+  --space-agent-group-upload-top: 100px;
+  --space-agent-group-upload-inset: 24px;
+  --size-agent-group-upload-dialog-width: 550px;
+  --size-agent-group-upload-dialog-height: 460px;
+  --size-agent-group-upload-hint-height: 52px;
+  --size-agent-group-upload-drop-height: 200px;
+  --size-agent-group-upload-button-width: 84px;
+  --opacity-agent-disabled: 0.45;
+  --opacity-agent-muted: 0.55;
+  --opacity-agent-hidden: 0;
+  --opacity-agent-visible: 1;
   /* Surfaces */
   --color-surface-page: #f5f7f9;
   --color-surface-page-rgb: 245, 247, 249;
@@ -312,6 +327,26 @@
   --color-connector-tool-icon-surface: #f3f3f3;
   --color-connector-tool-icon-border: #dfdfdf;
   --color-connector-add-hover-surface: rgba(20, 118, 255, 0.06);
+  --color-agent-group-avatar-surface: var(--color-action-primary-subtle);
+  --color-agent-group-avatar-text: var(--color-text-link);
+  --color-agent-group-avatar-variant-1-surface: #edf3ff;
+  --color-agent-group-avatar-variant-1-text: #2161d1;
+  --color-agent-group-avatar-variant-1-border: #a9c7ff;
+  --color-agent-group-avatar-variant-2-surface: #eafbf2;
+  --color-agent-group-avatar-variant-2-text: #138a5b;
+  --color-agent-group-avatar-variant-2-border: #9de7c3;
+  --color-agent-group-avatar-variant-3-surface: #fff4e8;
+  --color-agent-group-avatar-variant-3-text: #c66b05;
+  --color-agent-group-avatar-variant-3-border: #ffd19a;
+  --color-agent-group-avatar-variant-4-surface: #f5edff;
+  --color-agent-group-avatar-variant-4-text: #7d3fc2;
+  --color-agent-group-avatar-variant-4-border: #d8b7ff;
+  --color-agent-group-avatar-variant-5-surface: #fff0f7;
+  --color-agent-group-avatar-variant-5-text: #c73678;
+  --color-agent-group-avatar-variant-5-border: #ffb5d4;
+  --color-agent-group-avatar-variant-6-surface: #eafbff;
+  --color-agent-group-avatar-variant-6-text: #1884a0;
+  --color-agent-group-avatar-variant-6-border: #a7e6f3;
   --color-icon-remove: #c2c2c2;
   --color-rsi-rail-bg: #ffffff;
   --color-rsi-rail-selected: #e8e8e8;

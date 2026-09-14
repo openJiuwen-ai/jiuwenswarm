@@ -977,146 +977,251 @@ def _resolve_turn_operation(
 def _run_discard_turn_changes(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Restore the latest turn and update its diff history in AgentServer."""
+    """Restore the last modified turn and update its diff history in AgentServer."""
     from jiuwenswarm.agents.harness.common.session_ops_service import (
-        get_last_turn_info,
+        get_last_modified_turn_info,
         restore_session_files,
+        turn_mutation_lock,
     )
     from jiuwenswarm.server.runtime.session.git_diff_status import (
         get_session_extra_history_roots,
     )
-    from jiuwenswarm.server.utils.diff_service import get_diff_service
+    from jiuwenswarm.server.utils.diff_service import (
+        DiffHistoryExpiredError,
+        get_diff_service,
+    )
 
     project, session_id, failure = _resolve_turn_operation(params)
     if failure is not None:
         return {}, failure
-    last_turn = get_last_turn_info(session_id=session_id)
-    turn_index = last_turn["turn_index"]
-    cut_timestamp = last_turn["timestamp"]
-    if turn_index <= 0:
-        return {}, {"error": "no turn to discard: session has no user messages", "code": "NO_TURN_TO_DISCARD"}
-    roots = get_session_extra_history_roots(session_id)
-    try:
-        restored = restore_session_files(
-            session_id=session_id,
-            turn_index=turn_index,
-            project_dir=project.project_dir,
-            extra_history_roots=roots,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[ProjectAdapter] discard_turn_changes restore failed: %s", exc)
-        return {}, {"error": f"failed to restore session files: {exc}", "code": "INTERNAL_ERROR"}
-    errors = restored.get("errors", []) or []
-    change_set_id: str | None = None
-    truncated = False
-    if cut_timestamp > 0 and not errors:
+    # 状态校验与 restore/mark/truncate 必须按 session 串行:并发 discard 会
+    # 双双通过 status 检查返回成功(违反 NOTHING_TO_DISCARD 契约),还会与
+    # 并发 redo 交叉互踩。
+    with turn_mutation_lock(session_id):
+        roots = get_session_extra_history_roots(session_id)
+        try:
+            last_turn = get_last_modified_turn_info(
+                session_id=session_id,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            # 定位失败(如持久化数据畸形)是错误态:映射为 INTERNAL_ERROR,
+            # 不能降级成 turn_index=0 的 NO_TURN_TO_DISCARD"没有可撤销修改"
+            # 空态误导用户。
+            logger.warning("[ProjectAdapter] discard_turn_changes failed to locate target: %s", exc)
+            return {}, {"error": f"failed to locate last modified turn: {exc}", "code": "INTERNAL_ERROR"}
+        turn_index = last_turn["turn_index"]
+        cut_timestamp = last_turn["timestamp"]
+        if turn_index <= 0:
+            return {}, {"error": "no turn to discard: session has no modified turns", "code": "NO_TURN_TO_DISCARD"}
+        if cut_timestamp <= 0:
+            # A restore without its cutoff cannot be made redoable: file_ops would
+            # remain visible and the turn status would remain completed.  Refuse
+            # before touching the workspace instead of returning a false success.
+            return {}, {
+                "error": f"diff history for last modified turn (index={turn_index}) has no usable timestamp",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
         service = get_diff_service()
-        change_set_id = service.mark_turn_discarded(
-            session_id, turn_index, project_dir=project.project_dir, extra_history_roots=roots
+        try:
+            target = service.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except DiffHistoryExpiredError as exc:
+            return {}, {
+                "error": str(exc) or f"diff history for last modified turn (index={turn_index}) expired",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
+        # Compare inside the mutation lock, before any workspace/history write.
+        expected_id = params.get("change_set_id")
+        target_changed = (
+            expected_id is not None
+            and (
+                not isinstance(expected_id, str)
+                or not expected_id
+                or expected_id != (target or {}).get("change_set_id")
+            )
         )
-        service.truncate_file_ops_by_timestamp(
-            session_id, cut_timestamp, soft=True, discarded=True,
-            project_dir=project.project_dir, extra_history_roots=roots,
+        if target_changed:
+            return {}, {
+                "error": "the requested change set is no longer the last modified turn; refresh history",
+                "code": "TURN_TARGET_CHANGED",
+            }
+        status = str((target or {}).get("status") or "")
+        if status == "discarded":
+            return {}, {
+                "error": f"last modified turn (index={turn_index}) is already discarded; nothing to discard",
+                "code": "NOTHING_TO_DISCARD",
+            }
+        try:
+            restored = restore_session_files(
+                session_id=session_id,
+                turn_index=turn_index,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ProjectAdapter] discard_turn_changes restore failed: %s", exc)
+            return {}, {"error": f"failed to restore session files: {exc}", "code": "INTERNAL_ERROR"}
+        errors = restored.get("errors", []) or []
+        change_set_id: str | None = None
+        truncated = False
+        if not errors:
+            change_set_id = service.mark_turn_discarded(
+                session_id, turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots, target=target,
+            )
+            service.truncate_file_ops_by_timestamp(
+                session_id, cut_timestamp, soft=True, discarded=True,
+                project_dir=project.project_dir, extra_history_roots=roots,
+            )
+            truncated = True
+        partial = bool(errors)
+        return {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "change_set_id": change_set_id,
+            "restored_files": restored.get("restored_files", []),
+            "deleted_files": restored.get("deleted_files", []),
+            "errors": errors,
+            "file_ops_truncated": truncated,
+            "global_file_ops_truncated": False,
+            "partial": partial,
+        }, (
+            {
+                "error": f"partial failure: {len(errors)} file(s) failed to restore; file_ops not truncated, retryable",
+                "code": "PARTIAL_RESTORE_FAILED",
+                "result": "partial",
+            }
+            if partial else None
         )
-        truncated = True
-    partial = bool(errors)
-    return {
-        "session_id": session_id,
-        "turn_index": turn_index,
-        "change_set_id": change_set_id,
-        "restored_files": restored.get("restored_files", []),
-        "deleted_files": restored.get("deleted_files", []),
-        "errors": errors,
-        "file_ops_truncated": truncated,
-        "global_file_ops_truncated": False,
-        "partial": partial,
-    }, (
-        {
-            "error": f"partial failure: {len(errors)} file(s) failed to restore; file_ops not truncated, retryable",
-            "code": "PARTIAL_RESTORE_FAILED",
-            "result": "partial",
-        }
-        if partial else None
-    )
 
 
 def _run_redo_turn_changes(
     params: dict[str, Any]
 ) -> tuple[dict[str, Any], dict[str, Any] | None]:
-    """Reapply the latest discarded turn in this AgentServer's worktree."""
+    """Reapply the last modified discarded turn in this AgentServer's worktree."""
     from jiuwenswarm.agents.harness.common.session_ops_service import (
-        get_last_turn_info,
+        get_last_modified_turn_info,
         redo_session_files,
+        turn_mutation_lock,
     )
     from jiuwenswarm.server.runtime.session.git_diff_status import (
         get_session_extra_history_roots,
     )
-    from jiuwenswarm.server.utils.diff_service import get_diff_service
+    from jiuwenswarm.server.utils.diff_service import (
+        DiffHistoryExpiredError,
+        get_diff_service,
+    )
 
     project, session_id, failure = _resolve_turn_operation(params)
     if failure is not None:
         return {}, failure
-    turn_index = get_last_turn_info(session_id=session_id)["turn_index"]
-    if turn_index <= 0:
-        return {}, {"error": "no turn to redo: session has no user messages", "code": "NO_TURN_TO_REDO"}
-    roots = get_session_extra_history_roots(session_id)
-    service = get_diff_service()
-    target = service.get_turn_diff(
-        session_id, turn_index=turn_index, project_dir=project.project_dir,
-        extra_history_roots=roots,
-    )
-    status = str((target or {}).get("status") or "")
-    if status != "discarded":
-        return {}, {
-            "error": f"last turn (index={turn_index}) is not discarded (status={status or 'unknown'}); nothing to redo",
-            "code": "NOTHING_TO_REDO",
-        }
-    try:
-        redone = redo_session_files(
-            session_id=session_id,
-            turn_index=turn_index,
-            project_dir=project.project_dir,
-            extra_history_roots=roots,
+    # 与 discard 同一把 per-session 锁:并发 redo 会双双通过 discarded 检查,
+    # 后者读不到已被前者 unmark 的 discarded_out 条目而误报
+    # REDO_HISTORY_MISSING;redo 与 discard 交叉亦然。
+    with turn_mutation_lock(session_id):
+        roots = get_session_extra_history_roots(session_id)
+        try:
+            turn_index = get_last_modified_turn_info(
+                session_id=session_id,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )["turn_index"]
+        except Exception as exc:  # noqa: BLE001
+            # 与 discard 同口径:定位失败映射为 INTERNAL_ERROR,而非
+            # NO_TURN_TO_REDO 的"没有可重新应用的修改"空态。
+            logger.warning("[ProjectAdapter] redo_turn_changes failed to locate target: %s", exc)
+            return {}, {"error": f"failed to locate last modified turn: {exc}", "code": "INTERNAL_ERROR"}
+        if turn_index <= 0:
+            return {}, {"error": "no turn to redo: session has no modified turns", "code": "NO_TURN_TO_REDO"}
+        service = get_diff_service()
+        try:
+            target = service.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except DiffHistoryExpiredError as exc:
+            return {}, {
+                "error": str(exc) or f"diff history for last modified turn (index={turn_index}) expired",
+                "code": "DIFF_HISTORY_EXPIRED",
+            }
+        # Compare inside the mutation lock, before any workspace/history write.
+        expected_id = params.get("change_set_id")
+        target_changed = (
+            expected_id is not None
+            and (
+                not isinstance(expected_id, str)
+                or not expected_id
+                or expected_id != (target or {}).get("change_set_id")
+            )
         )
-    except Exception as exc:  # noqa: BLE001
-        logger.warning("[ProjectAdapter] redo_turn_changes failed: %s", exc)
-        return {}, {"error": f"failed to redo session files: {exc}", "code": "INTERNAL_ERROR"}
-    errors = redone.get("errors", []) or []
-    redone_files = redone.get("redone_files", []) or []
-    deleted_files = redone.get("deleted_files", []) or []
-    base = {
-        "session_id": session_id,
-        "turn_index": turn_index,
-        "redone_files": redone_files,
-        "deleted_files": deleted_files,
-        "errors": errors,
-    }
-    if not errors and not redone_files and not deleted_files:
-        return base, {
-            "error": (
-                "no redoable files found: file_ops for this discarded turn is "
-                "missing or has no discarded_out entries; discarded status preserved"
-            ),
-            "code": "REDO_HISTORY_MISSING",
+        if target_changed:
+            return {}, {
+                "error": "the requested change set is no longer the last modified turn; refresh history",
+                "code": "TURN_TARGET_CHANGED",
+            }
+        status = str((target or {}).get("status") or "")
+        if status != "discarded":
+            return {}, {
+                "error": (
+                    f"last turn (index={turn_index}) is not discarded "
+                    f"(status={status or 'unknown'}); nothing to redo"
+                ),
+                "code": "NOTHING_TO_REDO",
+            }
+        try:
+            redone = redo_session_files(
+                session_id=session_id,
+                turn_index=turn_index,
+                project_dir=project.project_dir,
+                extra_history_roots=roots,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning("[ProjectAdapter] redo_turn_changes failed: %s", exc)
+            return {}, {"error": f"failed to redo session files: {exc}", "code": "INTERNAL_ERROR"}
+        errors = redone.get("errors", []) or []
+        redone_files = redone.get("redone_files", []) or []
+        deleted_files = redone.get("deleted_files", []) or []
+        base = {
+            "session_id": session_id,
+            "turn_index": turn_index,
+            "redone_files": redone_files,
+            "deleted_files": deleted_files,
+            "errors": errors,
         }
-    change_set_id = None
-    if not errors:
-        change_set_id = service.unmark_turn_discarded(
-            session_id, turn_index, project_dir=project.project_dir, extra_history_roots=roots
+        if not errors and not redone_files and not deleted_files:
+            return base, {
+                "error": (
+                    "no redoable files found: file_ops for this discarded turn is "
+                    "missing or has no discarded_out entries; discarded status preserved"
+                ),
+                "code": "REDO_HISTORY_MISSING",
+            }
+        change_set_id = None
+        if not errors:
+            change_set_id = service.unmark_turn_discarded(
+                session_id, turn_index, project_dir=project.project_dir,
+                extra_history_roots=roots, target=target,
+            )
+        partial = bool(errors)
+        return {
+            **base,
+            "change_set_id": change_set_id,
+            "partial": partial,
+        }, (
+            {
+                "error": (
+                    f"partial failure: {len(errors)} file(s) failed to redo; "
+                    "discarded status not cleared, retryable"
+                ),
+                "code": "PARTIAL_REDO_FAILED",
+                "result": "partial",
+            }
+            if partial else None
         )
-    partial = bool(errors)
-    return {
-        **base,
-        "change_set_id": change_set_id,
-        "partial": partial,
-    }, (
-        {
-            "error": f"partial failure: {len(errors)} file(s) failed to redo; discarded status not cleared, retryable",
-            "code": "PARTIAL_REDO_FAILED",
-            "result": "partial",
-        }
-        if partial else None
-    )
 
 
 def _ok_response(request: AgentRequest, payload: Any) -> AgentResponse:

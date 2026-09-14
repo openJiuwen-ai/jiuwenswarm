@@ -5,6 +5,7 @@
 import type { SkillTreePath } from './skillTree';
 import type { BeamSearchProgress } from './beamSearch';
 import type { HeartbeatAutomationMetadata } from './heartbeat';
+import type { CrossSessionMessageMetadata } from '../utils/crossSessionMessage';
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
@@ -76,6 +77,8 @@ export interface Message {
   completedAt?: string;
   /** 前端渲染身份，避免业务 id 重复或历史 prepend 导致 React key 抖动 */
   renderKey?: string;
+  /** 仅用于大历史渐进发布；实时消息没有该标记。 */
+  historyBatchSeq?: number;
   audioBase64?: string;
   audioMime?: string;
   mediaItems?: MediaItem[];
@@ -118,6 +121,8 @@ export interface Message {
    * 字段重新盖章，保证实时与历史共用同一识别逻辑。对齐「心跳任务前端开发与接口规格说明2」§7-§9。
    */
   automation?: HeartbeatAutomationMetadata;
+  /** 来自同一用户其他会话中 Agent 的后台请求。 */
+  crossSession?: CrossSessionMessageMetadata;
 }
 
 export interface ToolCall {
@@ -162,6 +167,8 @@ export interface ToolExecution {
   requestId?: string;
   /** Web 单 Agent 工具调用所属的专家；Team 工具不设置。 */
   agentTemplateName?: string;
+  /** 仅用于大历史渐进发布；实时工具没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface Conversation {

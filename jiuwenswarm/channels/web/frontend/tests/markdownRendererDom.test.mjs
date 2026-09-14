@@ -6,7 +6,7 @@ import i18next from 'i18next';
 import { I18nextProvider } from 'react-i18next';
 import { JSDOM } from 'jsdom';
 
-import { MarkdownRenderer } from '../node_modules/.cache/markdown-renderer/MarkdownRenderer.js';
+import { MarkdownIncludeMathMLContext, MarkdownRenderer } from '../node_modules/.cache/markdown-renderer/MarkdownRenderer.js';
 import { convertSvgToPng, downloadBlob, saveBlob } from '../node_modules/.cache/markdown-renderer/diagrams/diagramExport.js';
 import { MermaidDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/MermaidDiagram.js';
 import { SvgDiagram } from '../node_modules/.cache/markdown-renderer/diagrams/SvgDiagram.js';
@@ -524,6 +524,50 @@ test('keeps Markdown behavior compatible while dispatching supported fenced bloc
     assert.match(container.textContent, /<section data-host-injection="blocked">raw html<\/section>/);
   } finally {
     if (root) await act(async () => root.unmount());
+    restore();
+    dom.window.close();
+  }
+});
+
+test('preserves internal link handling with either MathML export setting', async () => {
+  const dom = new JSDOM('<!doctype html><html><body><div id="root"></div></body></html>');
+  const restore = installGlobals({
+    HTMLElement: dom.window.HTMLElement,
+    IS_REACT_ACT_ENVIRONMENT: true,
+    Node: dom.window.Node,
+    document: dom.window.document,
+    navigator: dom.window.navigator,
+    window: dom.window,
+  });
+  const container = dom.window.document.querySelector('#root');
+  const handledLinks = [];
+  const root = createRoot(container);
+  try {
+    for (const includeMathML of [true, false]) {
+      await act(async () => {
+        root.render(createElement(MarkdownIncludeMathMLContext.Provider, { value: includeMathML },
+          createElement(MarkdownRenderer, {
+            content: '$x^2$ [internal](./guide.md) [external](https://example.com) [anchor](#section)',
+            onLinkClick: (href) => {
+              handledLinks.push(href);
+              return true;
+            },
+          }),
+        ));
+      });
+      assert.ok(container.querySelector('.katex-html'));
+      assert.equal(container.querySelector('.katex-mathml') !== null, includeMathML);
+      const internalLink = container.querySelector('a[href="./guide.md"]');
+      assert.equal(internalLink.hasAttribute('target'), false);
+      const event = new dom.window.MouseEvent('click', { bubbles: true, cancelable: true });
+      await act(async () => { internalLink.dispatchEvent(event); });
+      assert.equal(event.defaultPrevented, true);
+      assert.equal(container.querySelector('a[href="https://example.com"]').target, '_blank');
+      assert.equal(container.querySelector('a[href="#section"]').hasAttribute('target'), false);
+    }
+    assert.deepEqual(handledLinks, ['./guide.md', './guide.md']);
+  } finally {
+    await act(async () => root.unmount());
     restore();
     dom.window.close();
   }

@@ -550,7 +550,11 @@ Restores the current session's last agent turn file changes to their pre-turn st
 | `global_file_ops_truncated` | boolean | Always `false`; global file_ops are not truncated to avoid cross-session damage |
 | `partial` | boolean | Whether the restore partially failed; when true, top-level `ok=false` and `code=PARTIAL_RESTORE_FAILED` |
 
-**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_DISCARD`, `PARTIAL_RESTORE_FAILED`
+**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_DISCARD`, `NOTHING_TO_DISCARD`, `DIFF_HISTORY_EXPIRED`, `PARTIAL_RESTORE_FAILED`
+
+> **`NOTHING_TO_DISCARD`:** The last turn with file changes is already in the `discarded` state (e.g. discarded by another client); nothing to discard and no workspace files are touched.
+>
+> **`DIFF_HISTORY_EXPIRED`:** The target turn no longer has a usable timestamp, or its diff history expired while being resolved; the operation is rejected before touching workspace files.
 
 ---
 
@@ -574,11 +578,13 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `errors` | object[] | Per-file redo errors |
 | `partial` | boolean | Whether the redo partially failed; when true, top-level `ok=false` and `code=PARTIAL_REDO_FAILED` |
 
-**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_REDO`, `NOTHING_TO_REDO`, `REDO_HISTORY_MISSING`, `PARTIAL_REDO_FAILED`
+**Error codes:** `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `SESSION_NOT_BOUND`, `PROJECT_SESSION_MISMATCH`, `SESSION_BUSY`, `NO_TURN_TO_REDO`, `NOTHING_TO_REDO`, `DIFF_HISTORY_EXPIRED`, `REDO_HISTORY_MISSING`, `PARTIAL_REDO_FAILED`
 
 > **`REDO_HISTORY_MISSING`:** The last turn is `discarded` but no redoable file_ops entries were found (file_ops missing/corrupted/no `discarded_out` markers). The `discarded` status is preserved for investigation.
 >
 > **`NOTHING_TO_REDO`:** The last turn was not discarded (e.g. `status=applied` or `completed`); nothing to redo.
+>
+> **`DIFF_HISTORY_EXPIRED`:** The diff history for the target turn expired while being resolved; the operation is rejected before touching workspace files.
 
 ---
 

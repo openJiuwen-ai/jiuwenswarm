@@ -16,6 +16,7 @@ from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTarget,
     CRON_JOB_DEFAULT_MODE,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
 )
@@ -249,6 +250,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
@@ -311,6 +313,7 @@ class CronJobStore:
             timeout_seconds=timeout,
             project_id=pid,
             model_name=model_name_val,
+            mcp=normalize_cron_job_mcp(mcp),
             app_id=str(app_id or "").strip(),
             work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
             user_id=str(user_id or "").strip(),
@@ -337,6 +340,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
@@ -357,6 +361,7 @@ class CronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
@@ -491,6 +496,11 @@ class CronJobStore:
                 else None
             )
             updated = replace(updated, model_name=new_model_name)
+        if "mcp" in patch:
+            # 显式传 null/[] 归 None（不注入）；非字符串元素被过滤。
+            updated = replace(
+                updated, mcp=normalize_cron_job_mcp(patch.get("mcp"))
+            )
         if "work_mode" in patch:
             # work_mode 由 controller 从 project_dir + work_mode 重解析后注入,
             # 或由 project_id 变更时从 Project 记录注入。store 层仅做规范化写入。

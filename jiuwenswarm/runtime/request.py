@@ -20,6 +20,7 @@ from jiuwenswarm.common.mode_matrix import (
 )
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_INTERNAL_KEY
 
 logger = logging.getLogger(__name__)
 
@@ -182,6 +183,7 @@ def sync_chat_request_metadata(
         else None
     )
     is_chat_turn = request.req_method in CHAT_TURN_METHODS
+    is_cross_session_turn = isinstance(params.get(SESSION_MESSAGE_INTERNAL_KEY), dict)
     legacy_eternal_value = params.get("eternal_conversation_enabled")
     legacy_persist_session: bool | None = None
     if isinstance(legacy_eternal_value, bool):
@@ -207,9 +209,14 @@ def sync_chat_request_metadata(
             cron_id=request_cron_id,
             user_id=str(user_id or "").strip() or None,
             last_user_message_at=(
-                dt.datetime.now(dt.timezone.utc).timestamp() if is_chat_turn else None
+                dt.datetime.now(dt.timezone.utc).timestamp()
+                if is_chat_turn and not is_cross_session_turn
+                else None
             ),
-            is_chat_turn=is_chat_turn,
+            # The history writer touches last_message_at after the internal
+            # Agent turn is actually recorded. Preparing it is not a human
+            # activity signal and must not move the Session prematurely.
+            is_chat_turn=is_chat_turn and not is_cross_session_turn,
             explicit_mode_provided=explicit_mode_provided,
             explicit_model_provided=explicit_model_provided,
             work_mode=params.get("work_mode"),
@@ -322,6 +329,8 @@ async def prepare_chat_turn(
     *,
     sync_metadata: bool = True,
     metadata_sync: Callable[..., str | None] = sync_chat_request_metadata,
+    agent_definition: dict[str, Any] | None = None,
+    agent_definition_fingerprint: str | None = None,
 ) -> tuple[str, str | None, Any]:
     """Resolve session semantics and select an agent from the shared manager."""
     params = request.params if isinstance(request.params, dict) else {}
@@ -460,12 +469,17 @@ async def prepare_chat_turn(
         raise TypeError(
             "agent_manager must implement atomic get_agent_for_request admission"
         )
-    agent = await get_agent_for_request(
-        request,
-        mode=agent_mode,
-        sub_mode=sub_mode,
-        admit_request=admit_request,
-    )
+    agent_kwargs: dict[str, Any] = {
+        "mode": agent_mode,
+        "sub_mode": sub_mode,
+        "admit_request": admit_request,
+    }
+    if agent_definition is not None:
+        agent_kwargs["agent_definition"] = agent_definition
+        agent_kwargs["agent_definition_fingerprint"] = (
+            agent_definition_fingerprint
+        )
+    agent = await get_agent_for_request(request, **agent_kwargs)
     if agent is None:
         raise ValueError("Failed to get agent")
 
