@@ -27,6 +27,7 @@ import asyncio
 import logging
 from typing import Final
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
@@ -430,7 +431,10 @@ class SessionAdapter(GatewayAdapter):
             )
         try:
             metadata = _get_session_metadata(target)
-            if str(metadata.get("mode") or "").strip().lower() == "team":
+            # metadata 落盘的是 canonical（agent_ws_server 写 mode=canonical_mode），
+            # Web 改发三段命名后 canonical 为 team.work.normal 等，裸 == "team" 会
+            # 漏判使 team 会话删除守卫被绕过，用 is_team_mode 覆盖全部 team 变体。
+            if is_team_mode(metadata.get("mode")):
                 return build_error_response(
                     request,
                     "team session delete requires agent server",

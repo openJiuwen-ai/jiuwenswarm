@@ -13,6 +13,7 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 
@@ -507,7 +508,10 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
             }
         if et in ("chat.tool_call", "chat.tracer_agent"):
             mode = item.get("mode")
-            return isinstance(mode, str) and mode.strip().lower() == "team"
+            # history 落盘的 mode 是前端原始发送值（resolve_request_mode 上游的 wire
+            # 值），Web 现统一发三段命名 team.work.normal / team.code.normal 等，
+            # 裸 == "team" 会漏判，用 is_team_mode 谓词覆盖全部 team canonical 变体。
+            return is_team_mode(mode)
         if et in ("chat.final", "chat.tool_result"):
             role = item.get("role")
             return isinstance(role, str) and role.strip().lower() == "teammate"
