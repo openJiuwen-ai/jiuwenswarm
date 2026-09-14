@@ -2387,11 +2387,13 @@ class JiuWenSwarmDeepAdapter:
         if connector_error is not None:
             return self._equipment_error_response(request, connector_error)
 
-        # Rule3: can only load package at fresh turn(no running agent / goal attached)
+        # Rule3: can only load package at fresh turn(no peer in-flight turn / goal attached).
+        # The current chat.send may already be reserved as busy for permission reload;
+        # that self-reservation is not a conflicting turn.
         would_change, reason = self._equipment_would_change(params)
         if would_change:
             attach_goal = self._wants_attach_goal(params)
-            if attach_goal or self._is_session_live(request.session_id):
+            if attach_goal or self._has_conflicting_inflight_turn(request.session_id):
                 return self._equipment_error_response(
                     request, f"equipment change rejected at non-fresh turn: {reason}"
                 )
@@ -3618,6 +3620,19 @@ class JiuWenSwarmDeepAdapter:
             self._is_session_active(sid)
             or self._is_deep_agent_executing_for_session(sid)
         )
+
+    def _has_conflicting_inflight_turn(self, session_id: str) -> bool:
+        """True when a peer turn is already executing for this session.
+
+        The current request may be reserved in ``_session_agent_tasks`` before
+        equipment sync; that self-reservation is ignored here.
+        """
+        sid = self._resolve_interrupt_session_id(session_id)
+        if self._active_session_ids.get(sid, 0) > 0:
+            return True
+        if self._session_has_other_running_agent_tasks(sid):
+            return True
+        return self._is_deep_agent_executing_for_session(sid)
 
     @staticmethod
     def _is_related_session(target_sid: str, other_sid: str) -> bool:

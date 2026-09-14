@@ -59,6 +59,7 @@ interface RawPluginPackageSummary {
   displayDescription: LocalizedText;
   category?: string;
   source?: PluginPackageSource;
+  avatar?: string;
   installed?: boolean;
   // v2 §3.1：connection_state 是 snake_case（跟这个接口族其余字段的驼峰写法不一致，但文档
   // 原文就是这么给的，如实照抄，不擅自"统一"成驼峰再要求后端改）。
@@ -73,6 +74,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
     displayDescription: raw.displayDescription,
     category: raw.category ?? '',
     source: normalizeEquipmentSource(raw.source, 'local'),
+    avatar: raw.avatar,
     installed: raw.installed ?? false,
     // 未提供时按"未就绪"兜底（不是像旧 connected 占位那样恒 true）——connectionState 现在是
     // 真实门禁判断依据（installed && connectionState==='connected' 才能发消息，见 v2 §1.3），
@@ -83,7 +85,6 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
 }
 
 interface RawPluginPackageDetail extends RawPluginPackageSummary {
-  avatar?: string;
   version?: string;
   details?: string;
   tags: LocalizedText[];
@@ -102,7 +103,6 @@ interface RawPluginPackageDetail extends RawPluginPackageSummary {
 function fromRawDetail(raw: RawPluginPackageDetail): PluginPackageDetail {
   return {
     ...fromRawSummary(raw),
-    avatar: raw.avatar,
     version: raw.version,
     details: raw.details,
     tags: raw.tags ?? [],

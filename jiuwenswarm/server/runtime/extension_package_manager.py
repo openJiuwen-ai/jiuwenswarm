@@ -1481,12 +1481,28 @@ async def _list_equipment_with_hub(
             exc_info=True,
         )
         return _apply_list_source_filter(list(cards_by_id.values()), params)
+    hub_icons: dict[str, str] = {}
     for item in remote_items:
-        if (
-            item.kind != hub_asset_kind
-            or item.asset_id in cards_by_id
-            or (item.package_name or item.asset_id) in local_package_ids
-        ):
+        if item.kind != hub_asset_kind or not item.icon_uri:
+            continue
+        hub_icons[item.asset_id] = item.icon_uri
+        hub_icons.setdefault(item.package_name or item.asset_id, item.icon_uri)
+    for card in cards_by_id.values():
+        if card.get("avatar"):
+            continue
+        icon = hub_icons.get(str(card.get("id") or "")) or hub_icons.get(
+            str(card.get("packageName") or card.get("id") or "")
+        )
+        if icon:
+            card["avatar"] = icon
+    for item in remote_items:
+        if item.kind != hub_asset_kind or item.asset_id in cards_by_id:
+            continue
+        name_taken = (item.package_name or item.asset_id) in local_package_ids
+        # Catalog tabs drop source=local. Keep the Hub card so plaza still
+        # shows the remote package (and its catalog icon) when a same-named
+        # local copy exists. Unfiltered/mine lists still prefer the local card.
+        if name_taken and source_filter not in {"builtin", "builtin+hub"}:
             continue
         cards_by_id[item.asset_id] = _hub_list_card(item)
     cards = [cards_by_id[key] for key in sorted(cards_by_id)]
@@ -1878,6 +1894,22 @@ async def _show_equipment_with_hub(
                     "installedVersion": record.version,
                 }
             )
+            if not local_card.get("avatar"):
+                port = hub_port or create_default_hub_asset_port()
+                try:
+                    remote = await port.query_asset(
+                        HubAssetQuery(
+                            kind=hub_asset_kind, asset_id=record.asset_id
+                        )
+                    )
+                except Exception:
+                    logger.warning(
+                        "[extension_package_manager] failed to query Hub icon for %s",
+                        record.asset_id,
+                        exc_info=True,
+                    )
+                else:
+                    local_card = _apply_hub_identity(local_card, remote)
         return local_card
     port = hub_port or create_default_hub_asset_port()
     remote_asset_id = record.asset_id if record is not None else name
