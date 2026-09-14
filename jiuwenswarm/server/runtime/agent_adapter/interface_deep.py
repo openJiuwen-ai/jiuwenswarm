@@ -8299,6 +8299,25 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         return bool(cancelled)
 
     @staticmethod
+    def _session_busy_chunk(request_id: str, channel_id: str) -> AgentResponseChunk:
+        """Session 忙时的显式拒绝帧（替代静默空 accept）。
+
+        gateway_normalize 将 ``chat.error`` + ``is_complete`` 规范为
+        ``e2a.error/status=failed``，``error`` 文本进入 e2a body.message。
+        """
+        return AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={
+                "event_type": "chat.error",
+                "code": "SESSION_BUSY",
+                "error": "session is busy: another request is being processed",
+                "retryable": True,
+            },
+            is_complete=True,
+        )
+
+    @staticmethod
     def _model_looks_usable(model: Model | None) -> bool:
         if model is None:
             return False
@@ -10269,6 +10288,11 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     is_complete=True,
                 )
 
+            async def _yield_session_busy() -> AsyncIterator[AgentResponseChunk]:
+                # session 忙时不得用空 accept 假装成功，返回可辨识失败
+                # （gateway_normalize 转为 e2a.error/status=failed）。
+                yield self._session_busy_chunk(rid, cid)
+
             if pending_goal_op is not None:
                 interaction_stream = await self._instance.attach_output()
                 control = await self._dispatch_goal_control(
@@ -10414,7 +10438,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 # _runner_session 的流），从而丢掉 output/notice chunk。
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
+                    # 普通聊天路径 busy：显式拒绝（不再静默空 accept 假成功）。
+                    async for chunk in _yield_session_busy():
                         yield chunk
                     interaction_stream_abort = False
                     return
