@@ -35,13 +35,52 @@ def test_link_member_configured_skills_links_only_selected(tmp_path):
     skills._link_member_configured_skills(
         member_skills,
         ["skill-a", "skill-c"],
-        global_skills,
+        [global_skills],
     )
 
     # Selected skills become links resolving back to the global store (no copies).
     assert (member_skills / "skill-a").resolve() == (global_skills / "skill-a").resolve()
     assert (member_skills / "skill-c").resolve() == (global_skills / "skill-c").resolve()
     assert not (member_skills / "skill-b").exists()
+
+
+def test_link_member_configured_skills_spans_multiple_source_dirs(tmp_path):
+    """Selected skills are linked from every source dir, matching runtime resolution."""
+    office_claw_skills = tmp_path / "office-claw-skills"
+    relay_skills = tmp_path / "relay-skills"
+    _make_skill(office_claw_skills, "skill-writer")
+    _make_skill(relay_skills, "minimax-xlsx")
+    _make_skill(relay_skills, "official-doc-formatter")
+
+    member_skills = tmp_path / "member" / "skills"
+    member_skills.mkdir(parents=True)
+
+    skills._link_member_configured_skills(
+        member_skills,
+        ["skill-writer", "minimax-xlsx", "official-doc-formatter"],
+        [office_claw_skills, relay_skills],
+    )
+
+    for name in ("skill-writer", "minimax-xlsx", "official-doc-formatter"):
+        assert (member_skills / name).exists()
+    # Links point back to the owning source dir.
+    assert (member_skills / "skill-writer").resolve() == (office_claw_skills / "skill-writer").resolve()
+    assert (member_skills / "minimax-xlsx").resolve() == (relay_skills / "minimax-xlsx").resolve()
+
+
+def test_link_member_configured_skills_first_source_wins_on_duplicate(tmp_path):
+    """When a skill name exists in multiple source dirs the first one wins."""
+    first = tmp_path / "first"
+    second = tmp_path / "second"
+    _make_skill(first, "dup-skill")
+    _make_skill(second, "dup-skill")
+
+    member_skills = tmp_path / "member" / "skills"
+    member_skills.mkdir(parents=True)
+
+    skills._link_member_configured_skills(member_skills, ["dup-skill"], [first, second])
+
+    assert (member_skills / "dup-skill").resolve() == (first / "dup-skill").resolve()
 
 
 def test_link_member_configured_skills_prunes_unselected_link(tmp_path):
@@ -53,24 +92,42 @@ def test_link_member_configured_skills_prunes_unselected_link(tmp_path):
     member_skills = tmp_path / "member" / "skills"
     member_skills.mkdir(parents=True)
 
-    skills._link_member_configured_skills(member_skills, ["skill-a", "skill-b"], global_skills)
+    skills._link_member_configured_skills(member_skills, ["skill-a", "skill-b"], [global_skills])
     assert (member_skills / "skill-a").exists()
     assert (member_skills / "skill-b").exists()
 
-    skills._link_member_configured_skills(member_skills, ["skill-a"], global_skills)
+    skills._link_member_configured_skills(member_skills, ["skill-a"], [global_skills])
     assert (member_skills / "skill-a").exists()
     assert not (member_skills / "skill-b").exists()
 
 
-def test_link_member_configured_skills_skips_missing_global_dir(tmp_path):
-    """A missing global skills directory is a no-op rather than an error."""
+def test_link_member_configured_skills_prunes_links_missing_from_new_sources(tmp_path):
+    """A link whose skill vanished from all source dirs is pruned on re-link."""
+    source = tmp_path / "source"
+    _make_skill(source, "skill-a")
+
+    member_skills = tmp_path / "member" / "skills"
+    member_skills.mkdir(parents=True)
+    skills._link_member_configured_skills(member_skills, ["skill-a"], [source])
+    assert (member_skills / "skill-a").exists()
+
+    # skill-a disappears from the source store (e.g. uninstalled globally).
+    import shutil
+
+    shutil.rmtree(source / "skill-a")
+    skills._link_member_configured_skills(member_skills, ["skill-a"], [source])
+    assert not (member_skills / "skill-a").exists()
+
+
+def test_link_member_configured_skills_skips_missing_source_dirs(tmp_path):
+    """All-missing source dirs is a no-op rather than an error."""
     member_skills = tmp_path / "member" / "skills"
     member_skills.mkdir(parents=True)
 
     skills._link_member_configured_skills(
         member_skills,
         ["skill-a"],
-        tmp_path / "does-not-exist",
+        [tmp_path / "does-not-exist"],
     )
 
     assert list(member_skills.iterdir()) == []

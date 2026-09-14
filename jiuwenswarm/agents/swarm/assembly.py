@@ -36,7 +36,10 @@ from jiuwenswarm.agents.swarm.registry import (
 )
 from jiuwenswarm.common.config import get_config
 from jiuwenswarm.common.mcp_config import build_enabled_mcp_server_configs
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import (
+    get_agent_skills_dir,
+    resolve_agent_registered_skill_dirs,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -140,6 +143,11 @@ def enrich_team_spec_for_swarm(
     )
     team_skills_dir = str(Path(team_ws_root) / "skills")
     global_skills_dir = str(get_agent_skills_dir())
+    # Member skill linking must read from the same roots the runtime skill_tool
+    # resolves against (tip/env shared dirs via resolve_agent_registered_skill_dirs),
+    # not the tenant workspace — which is empty when SHARED_SKILLS_DIRS is set,
+    # leaving configured skills unlinked ("Skill not found").
+    shared_skills_dirs = [str(p) for p in resolve_agent_registered_skill_dirs()]
 
     base = SwarmBuildContext(
         session_id=session_id,
@@ -154,6 +162,7 @@ def enrich_team_spec_for_swarm(
         team_ws_root=team_ws_root,
         team_skills_dir=team_skills_dir,
         global_skills_dir=global_skills_dir,
+        shared_skills_dirs=shared_skills_dirs,
         config=config,
         language=_normalize_prompt_language(
             getattr(spec, "language", None)
