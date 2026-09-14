@@ -17145,6 +17145,10 @@ class JiuWenSwarmDeepAdapter:
                 _approval_id,
                 resolved,
             )
+            # RelayClaw consumeFrames treats a 2-frame empty run (accepted +
+            # complete, no chat.delta) as jiuwen_session_busy / OA.05000090
+            # and can interrupt the parent PPT turn. Keepalive is a non-business
+            # frame that raises frameCount above that heuristic.
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -17153,6 +17157,12 @@ class JiuWenSwarmDeepAdapter:
                     "request_id": request.request_id,
                     "resolved": resolved,
                 },
+                is_complete=False,
+            )
+            yield AgentResponseChunk(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                payload={"event_type": "keepalive"},
                 is_complete=False,
             )
             yield AgentResponseChunk(

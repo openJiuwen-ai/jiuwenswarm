@@ -150,9 +150,13 @@ apply_openai_sse_invoke_patch()
 from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
 from jiuwenswarm.openjiuwen_skip_tool_patch import apply_skip_tool_tool_message_patch
 from jiuwenswarm.openjiuwen_streaming_tool_patch import apply_streaming_tool_wait_timeout_patch
+from jiuwenswarm.openjiuwen_subagent_approval_queue_patch import (
+    apply_subagent_approval_queue_patch,
+)
 
 apply_skip_tool_tool_message_patch()
 apply_streaming_tool_wait_timeout_patch()
+apply_subagent_approval_queue_patch()
 install_evolution_rail_kwargs_compat()
 
 # Batch-scoped tool concurrency limits from react.concurrency (AbilityManager hook).

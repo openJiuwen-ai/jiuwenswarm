@@ -59,6 +59,9 @@ async def test_skill_turbo_prompt_injected_when_tool_enabled():
     assert _SECTION_NAME in builder.sections
     content = builder.sections[_SECTION_NAME].content["cn"]
     assert "skill_acceleration_exec" in content
+    assert "必须" in content and "skill_tool" in content
+    assert "回复正文" in content
+    assert "[当前步骤:" in content
     assert rail._agent is deep
 
 

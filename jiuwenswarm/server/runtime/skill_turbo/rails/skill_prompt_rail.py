@@ -35,7 +35,7 @@ def _build_skill_turbo_guide_text(language: str) -> str:
 
 若你已先调用了 `skill_tool` 加载了 pptx-craft 正文（即**不属于**上述例外，只是误触），**仍须立即调用 `skill_acceleration_exec`**——不要因"已经加载了 SKILL.md"或"已经做了研究"而放弃加速通道。
 
-若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务——直接向用户总结结果即可。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。
+若 `skill_acceleration_exec` 返回成功（产物已生成），**禁止**再用 `skill_tool` 重复同一任务——直接向用户总结结果即可。若 `skill_acceleration_exec` 返回失败或未处理，**必须**继续用 `skill_tool` 加载对应技能走标准流程完成用户任务。降级后**禁止只调工具、把进度只留在折叠的工具列表里**：必须在用户可见的回复正文里接续写出与全新 `skill_tool` 运行相同的标准技能流进度（例如「已加载 pptx-craft 技能……」和 `[当前步骤: …]`），接在加速通道已展示的阶段之后继续写，不要重复加速通道的阶段横幅。
 
 🚫 **选区/编辑已有 PPT 排除（重要例外）**：当用户消息出现"PPT选区/选区原文/选区类型/选区位置/选区容器/选区 class/修改要求"等选区字段，或意图是**编辑、修改已有 PPT 文件的局部内容**（如改字体颜色、改某段文案、调某页样式、替换某区域）而非从零生成整套演示文稿时，**禁止调用 `skill_acceleration_exec`**——它只会从流水线 Stage 1 重新生成全新 PPT，无法复用已有文件做局部修改。此类请求请改用 `skill_tool` 加载 pptx-craft 标准流程（支持编辑已有 PPT），或直接用 `edit_file`/读写 pptx 的普通工具完成局部修改。
 """
@@ -45,7 +45,7 @@ def _build_skill_turbo_guide_text(language: str) -> str:
 
 If you have already mistakenly called `skill_tool` to load the pptx-craft body (i.e. this does **NOT** fall under the exception above - it was just a misfire), **you MUST still call `skill_acceleration_exec` immediately** - do NOT abandon the acceleration channel because "SKILL.md is already loaded" or "research is already done."
 
-If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task — just summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow.
+If `skill_acceleration_exec` returns success (the artifact is already generated), you are **forbidden** from calling `skill_tool` again for the same task — just summarize the result to the user. If `skill_acceleration_exec` returns failure or is not handled, you **MUST** fall back to `skill_tool` to load the corresponding skill and complete the user's task via the standard flow. After fallback you **MUST NOT** emit tool-only turns whose progress is only in the collapsed tool list: write the same user-visible body progress as a fresh `skill_tool` run (e.g. "skill loaded…" and `[当前步骤: …]`), continuing after the acceleration-channel stages already shown; do not repeat those stage banners.
 
 🚫 **PPT region/edit-existing exclusion (critical exception)**: When the user message contains selection fields such as "PPT选区/选区原文/选区类型/选区位置/选区容器/选区 class/修改要求", or the intent is to **edit or modify a local part of an existing PPT file** (e.g. change font color, rewrite a paragraph, restyle a slide, replace a region) rather than generating a full deck from scratch, you are **FORBIDDEN from calling `skill_acceleration_exec`** — it only regenerates a brand-new PPT from pipeline Stage 1 and cannot reuse an existing file for local edits. For such requests, use `skill_tool` to load the pptx-craft standard flow (which supports editing existing PPTs), or directly use `edit_file` / pptx read-write tools to make the local change.
 """

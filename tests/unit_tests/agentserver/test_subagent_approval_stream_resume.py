@@ -96,11 +96,12 @@ async def test_process_message_stream_resolves_subagent_approval_early(
         "request_id": "subagent_tool_permission_deadbeef",
         "answers": ["本次允许"],
     }
-    assert len(chunks) == 2
+    assert len(chunks) == 3
     assert chunks[0].payload["event_type"] == "runtime.accepted"
     assert chunks[0].payload["resolved"] is True
-    assert chunks[1].is_complete is True
-    assert chunks[1].payload is None
+    assert chunks[1].payload["event_type"] == "keepalive"
+    assert chunks[2].is_complete is True
+    assert chunks[2].payload is None
 
 
 @pytest.mark.asyncio
