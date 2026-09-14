@@ -70,7 +70,8 @@ def _restore_after_mcp_timeout_patch() -> Iterator[None]:
         if am_mod is not None and orig_am_anyio is not None:
             am_mod.anyio = orig_am_anyio
         for cls in _tool_classes_for_invoke_restore():
-            orig = getattr(cls, "_jws_orig_invoke", None)
+            # 只还原本类 stash，勿用 getattr 沿 MRO 误拿父类 orig
+            orig = cls.__dict__.get("_jws_orig_invoke")
             if orig is not None:
                 setattr(cls, "invoke", orig)
                 try:
@@ -700,6 +701,38 @@ async def test_am_invoke_wrap_honors_contextvar_timeout() -> None:
             setattr(_SlowTool, "invoke", orig)
             delattr(_SlowTool, "_jws_orig_invoke")
         timeout_patch._wrapped_methods.discard(key)
+
+
+@pytest.mark.asyncio
+async def test_am_wrap_does_not_replace_subclass_invoke_with_parent_orig() -> None:
+    """回归：先包父类再包子类时，不得用父类 _jws_orig_invoke 覆盖子类 invoke。"""
+
+    class _BaseTool:
+        async def invoke(self, *args, **kwargs):
+            del args, kwargs
+            return "base"
+
+    class _ChildTool(_BaseTool):
+        async def invoke(self, *args, **kwargs):
+            del args, kwargs
+            return "child"
+
+    timeout_patch._wrap_invoke_with_am_timeout(_BaseTool)
+    timeout_patch._wrap_invoke_with_am_timeout(_ChildTool)
+    try:
+        assert await _ChildTool().invoke({}) == "child"
+        assert "_jws_orig_invoke" in _ChildTool.__dict__
+        assert _ChildTool.__dict__["_jws_orig_invoke"] is not _BaseTool.__dict__.get(
+            "_jws_orig_invoke"
+        )
+    finally:
+        for cls in (_BaseTool, _ChildTool):
+            orig = cls.__dict__.get("_jws_orig_invoke")
+            if orig is not None:
+                setattr(cls, "invoke", orig)
+                delattr(cls, "_jws_orig_invoke")
+            timeout_patch._wrapped_methods.discard((cls, "am_timeout:invoke"))
+
 
 @pytest.mark.asyncio
 async def test_disconnect_wrap_clears_session_when_aclose_fails(

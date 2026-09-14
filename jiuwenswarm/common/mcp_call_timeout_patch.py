@@ -281,16 +281,20 @@ def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None
 
     用 ``_jws_orig_<method>`` 记住原始方法；测试反复 ``_PATCHED=False; clear;
     apply`` 时先还原再包一层，避免多层 ``wait_for`` 嵌套。
+
+    必须只看 ``cls.__dict__``：``hasattr``/``getattr`` 会沿 MRO 找到父类已
+    stash 的 ``_jws_orig_invoke``，把子类自己的 ``invoke`` 覆盖成父类空实现
+    （返回 None）——CI 里 LocalFunction / RequestScoped 全系挂掉的根因。
     """
-    if not hasattr(cls, method_name):
+    if method_name not in cls.__dict__:
         return
     orig_attr = f"_jws_orig_{method_name}"
-    # 再次包装前先还原，避免嵌套
-    if hasattr(cls, orig_attr):
-        orig = getattr(cls, orig_attr)
-        setattr(cls, method_name, orig)
+    # 再次包装前先还原，避免嵌套（仅本类自己 stash 的才算）
+    existing_orig = cls.__dict__.get(orig_attr)
+    if existing_orig is not None:
+        orig = existing_orig
     else:
-        orig = getattr(cls, method_name)
+        orig = cls.__dict__[method_name]
         try:
             setattr(cls, orig_attr, orig)
         except Exception as exc:
