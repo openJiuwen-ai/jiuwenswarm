@@ -37,13 +37,19 @@ test('side executes with or without an initial prompt', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('side', 'inspect the cache path', 'agent'), true);
 });
 
+test('goal executes with or without control arguments', () => {
+  assert.equal(shouldExecuteRegisteredSlashCommand('goal', '', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('goal', 'pause', 'agent'), true);
+  assert.equal(shouldExecuteRegisteredSlashCommand('goal', 'ship the release', 'agent'), true);
+});
+
 test('other registered slash commands keep their existing argument behavior', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'agent'), true);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'agent'), true);
 });
 
 test('team mode exposes and executes only the global new command', () => {
-  const commands = [{ name: 'new' }, { name: 'side' }, { name: 'compact' }, { name: 'plan' }, { name: 'persist' }];
+  const commands = [{ name: 'new' }, { name: 'side' }, { name: 'compact' }, { name: 'plan' }, { name: 'goal' }, { name: 'persist' }];
 
   assert.equal(supportsWebSlashCommands('team'), false);
   assert.deepEqual(getWebSlashCommandsForMode(commands, 'team'), [{ name: 'new' }]);
@@ -53,6 +59,7 @@ test('team mode exposes and executes only the global new command', () => {
   assert.equal(shouldExecuteRegisteredSlashCommand('side', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('compact', '', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('plan', '', 'team'), false);
+  assert.equal(shouldExecuteRegisteredSlashCommand('goal', 'pause', 'team'), false);
   assert.equal(shouldExecuteRegisteredSlashCommand('persist', '跟进发布', 'team'), false);
 });
 

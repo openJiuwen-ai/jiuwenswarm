@@ -48,7 +48,10 @@ import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
 import {
   parseSlashLine,
+  parseGoalSlashArgs,
   findSlashCommand,
+  type GoalSlashAction,
+  type GoalSlashSnapshot,
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
@@ -293,9 +296,12 @@ interface InputAreaProps {
   permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** 目标待设置态（"+"菜单选了「目标」）下发送时调用，取代普通 onSubmit/排队逻辑 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
   /** 工具栏"目标"标签的 × 按钮：目标已存在时点击等同删除目标 */
-  onClearGoal?: (sessionId: string) => void;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /**
    * 目标 active 时消息按设计走排队（见下方 isGoalActive 注释），但如果入队那一刻当前没有
    * 任何任务在处理，现有的自动排空触发点（chat.processing_status/interrupt_result）都要求
@@ -655,6 +661,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     permissionProfile,
     onSavePermission,
     onSetGoal,
+    onPauseGoal,
+    onResumeGoal,
+    onRefreshGoal,
     onClearGoal,
     onDrainTaskQueueIfIdle,
   },
@@ -1812,6 +1821,46 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const runGoalSlashAction = useCallback(
+    async (
+      sessionId: string,
+      action: GoalSlashAction,
+      objective?: string,
+    ): Promise<GoalSlashSnapshot> => {
+      if (action === 'get' && sessionId === NEW_CONVERSATION_ID) return null;
+
+      if (action === 'set') {
+        const normalizedObjective = objective?.trim() ?? '';
+        if (!onSetGoal || !normalizedObjective) throw new Error('Goal setting is unavailable');
+        if (sessionId === NEW_CONVERSATION_ID) {
+          // 欢迎页没有真实 session：复用工具栏 Goal 的懒创建路径，
+          // 由 App 在 session.create 成功后迁移 armed 状态并发出 command.goal set。
+          useGoalStore.getState().setArmed(sessionId, true);
+          onSubmit(normalizedObjective);
+          return null;
+        }
+        queueOrAddGoalObjectiveMessage(sessionId, normalizedObjective);
+        useGoalStore.getState().setArmed(sessionId, false);
+        await onSetGoal(sessionId, normalizedObjective);
+      } else {
+        const handler =
+          action === 'pause'
+            ? onPauseGoal
+            : action === 'resume'
+              ? onResumeGoal
+              : action === 'clear'
+                ? onClearGoal
+                : onRefreshGoal;
+        if (!handler) throw new Error(`Goal ${action} is unavailable`);
+        await handler(sessionId);
+      }
+
+      const goal = useGoalStore.getState().getRuntime(sessionId)?.goal;
+      return goal ? { objective: goal.objective, status: goal.status } : null;
+    },
+    [onClearGoal, onPauseGoal, onRefreshGoal, onResumeGoal, onSetGoal, onSubmit],
+  );
+
   const executeSlashCommand = useCallback(
     async (command: SlashCommand, context: SlashCommandContext, args: string) => {
       // /plan 是计划开关的命令入口。两条调用路径都汇聚到这里：
@@ -1863,6 +1912,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       const slashSid = useChatStore.getState().activeSessionId;
       const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
       if (cmd && shouldExecuteRegisteredSlashCommand(name, args, slashMode)) {
+        if (
+          cmd.name === 'goal' &&
+          parseGoalSlashArgs(args).action === 'set' &&
+          readyMediaItems.length > 0
+        ) {
+          pushAttachmentAlert(t('chat.goalAttachmentsBlocked'));
+          return;
+        }
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
         setAttachments([]);
         setAttachmentAlerts([]);
@@ -1881,6 +1938,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               startNewConversation: onNewSession,
               forkConversation: onForkSession,
               startSideConversation: onStartSideConversation,
+              runGoalAction: runGoalSlashAction,
+              confirmGoalOverwrite: (currentObjective, requestedObjective) =>
+                window.confirm(
+                  t('goal.overwriteConfirm', { currentObjective, requestedObjective }),
+                ),
             },
             args,
           );
@@ -1977,6 +2039,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onNewSession,
     onForkSession,
     onStartSideConversation,
+    runGoalSlashAction,
     onInterrupt,
     mode,
     isAgentMode,
@@ -2157,6 +2220,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 startNewConversation: onNewSession,
                 forkConversation: onForkSession,
                 startSideConversation: onStartSideConversation,
+                runGoalAction: runGoalSlashAction,
+                confirmGoalOverwrite: (currentObjective, requestedObjective) =>
+                  window.confirm(
+                    t('goal.overwriteConfirm', { currentObjective, requestedObjective }),
+                  ),
               },
               '',
             );
@@ -2301,7 +2369,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       onForkSession,
       onStartSideConversation,
       onSubmit,
+      runGoalSlashAction,
       setRangeStartByTextOffset,
+      t,
     ],
   );
 

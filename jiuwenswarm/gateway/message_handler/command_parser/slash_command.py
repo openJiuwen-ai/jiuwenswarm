@@ -551,6 +551,20 @@ BUILTIN_COMMANDS_META: tuple[dict[str, Any], ...] = (
         "available_modes": None,
     },
     {
+        "name": "goal",
+        "description": "设置、查看、暂停、恢复或清除持续目标",
+        "usage": "/goal [set <目标>|pause|resume|clear]",
+        "example": "/goal 持续修复测试直到全部通过",
+        "kind": "built-in",
+        "takesArgs": True,
+        "scope": "client",
+        "execution": "rpc",
+        "req_method": "command.goal",
+        # 欢迎页的 set 复用 Goal 工具栏懒创建 session 路径；其他控制会在客户端提示。
+        "requires_session": False,
+        "available_modes": None,
+    },
+    {
         "name": "persist",
         "description": "开启永续会话并开始任务（仅限新会话，创建后不可更改）",
         "usage": "/persist <任务>",

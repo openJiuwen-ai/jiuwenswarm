@@ -7,7 +7,7 @@ import { NEW_CONVERSATION_ID } from '../../../multi-session/state/newConversatio
 import { resolvePlanGoalInterlock } from './semantics';
 
 /**
- * 斜杠命令注册表（/new、/fork、/side、/compact、/plan、/persist）。
+ * 斜杠命令注册表（/new、/fork、/side、/compact、/plan、/goal、/persist）。
  * 后端与 TUI 共用 agent_ws_server；命令结果以 system 消息留痕，
  * 第一行回显命令行，MessageItem 按 isCommandOutput 渲染。
  */
@@ -24,6 +24,15 @@ export type SlashCommandContext = {
   startNewConversation: () => void;
   forkConversation: (sourceSessionId: string) => Promise<void>;
   startSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
+  runGoalAction: (
+    sessionId: string,
+    action: GoalSlashAction,
+    objective?: string,
+  ) => Promise<GoalSlashSnapshot>;
+  confirmGoalOverwrite: (
+    currentObjective: string,
+    requestedObjective: string,
+  ) => boolean | Promise<boolean>;
 };
 
 export interface SlashCommand {
@@ -45,10 +54,32 @@ interface PlanSlashStore {
 
 interface GoalSlashStore {
   getRuntime: (sessionId: string) =>
-    | { goal: { status: string } | null; armed: boolean }
+    | { goal: { status: string; objective?: string } | null; armed: boolean }
     | undefined;
   setArmed: (sessionId: string, armed: boolean) => void;
 }
+
+interface GoalPlanSlashStore {
+  isActive: (sessionId: string) => boolean;
+  hasPendingExplicitEntry: (sessionId: string) => boolean;
+  setActive: (sessionId: string, active: boolean) => void;
+}
+
+export type GoalSlashAction = 'get' | 'set' | 'pause' | 'resume' | 'clear';
+
+export type GoalSlashSnapshot = {
+  objective: string;
+  status: string;
+} | null;
+
+export type GoalSlashIntent =
+  | { action: 'get' | 'pause' | 'resume' | 'clear' }
+  | { action: 'set'; objective: string };
+
+export type GoalSetPreparationResult =
+  | 'ready'
+  | 'confirm_overwrite'
+  | 'blocked_by_plan';
 
 export type PlanSlashToggleResult =
   | 'activated'
@@ -85,6 +116,45 @@ export function togglePlanFromSlash(
     entrySource: 'slash_command',
   });
   return 'activated';
+}
+
+/** Parse `/goal` exactly like the TUI command handler. */
+export function parseGoalSlashArgs(args: string): GoalSlashIntent {
+  const normalizedArgs = args.trim();
+  if (!normalizedArgs) return { action: 'get' };
+
+  const lower = normalizedArgs.toLowerCase();
+  if (lower === 'pause' || lower === 'resume' || lower === 'clear') {
+    return { action: lower };
+  }
+  if (lower.startsWith('set ')) {
+    return { action: 'set', objective: normalizedArgs.slice(4).trim() };
+  }
+  if (lower === 'set') return { action: 'set', objective: '' };
+
+  // TUI 同样把 get/stop 等非保留字当作目标正文。
+  return { action: 'set', objective: normalizedArgs };
+}
+
+/** Apply the same Goal/Plan interlock used by the composer toolbar. */
+export function prepareGoalSetFromSlash(
+  sessionId: string,
+  overwriteConfirmed = false,
+  planStore: GoalPlanSlashStore = usePlanStore.getState(),
+  goalStore: GoalSlashStore = useGoalStore.getState(),
+): GoalSetPreparationResult {
+  const currentGoal = goalStore.getRuntime(sessionId)?.goal;
+  if (currentGoal && currentGoal.status !== 'completed' && !overwriteConfirmed) {
+    return 'confirm_overwrite';
+  }
+
+  if (planStore.isActive(sessionId)) {
+    if (!planStore.hasPendingExplicitEntry(sessionId)) return 'blocked_by_plan';
+    // 刚打开但尚未发送消息的 Plan 可以被 Goal 顶掉，与工具栏一致。
+    planStore.setActive(sessionId, false);
+  }
+  goalStore.setArmed(sessionId, false);
+  return 'ready';
 }
 
 /** 解析 "/persist some task" → { name: "persist", args: "some task" } */
@@ -218,6 +288,86 @@ const planCommand: SlashCommand = {
   },
 };
 
+function goalStatusOutput(goal: GoalSlashSnapshot): string {
+  if (!goal) return '当前会话没有持续目标。';
+  const statusLabel =
+    {
+      active: '进行中',
+      paused: '已暂停',
+      completed: '已完成',
+      blocked: '已阻塞',
+    }[goal.status] ?? goal.status;
+  return `当前目标（${statusLabel}）：${goal.objective}`;
+}
+
+/**
+ * /goal —— 复用 Web 已有的 Goal 状态机和 GoalBar。
+ * 语法与 TUI 一致：无参查询，pause/resume/clear 控制，set <objective>
+ * 或任意其他文本设置目标。已有未完成目标时先请用户确认覆盖。
+ */
+const goalCommand: SlashCommand = {
+  name: 'goal',
+  // 欢迎页可用 `/goal <objective>` 创建会话并设置目标。
+  requiresSession: false,
+  execute: async (ctx, args) => {
+    const intent = parseGoalSlashArgs(args);
+    if (intent.action === 'set' && !intent.objective) {
+      ctx.addMessage(
+        ctx.sessionId,
+        commandResultMessage(ctx.inputLine, '用法：/goal [set <目标>|pause|resume|clear]'),
+      );
+      return;
+    }
+
+    if (
+      ctx.sessionId === NEW_CONVERSATION_ID &&
+      intent.action !== 'get' &&
+      intent.action !== 'set'
+    ) {
+      ctx.addMessage(
+        ctx.sessionId,
+        commandResultMessage(ctx.inputLine, '请先开始一个对话再控制持续目标。'),
+      );
+      return;
+    }
+
+    try {
+      if (intent.action === 'set') {
+        let preparation = prepareGoalSetFromSlash(ctx.sessionId);
+        if (preparation === 'confirm_overwrite') {
+          const currentObjective =
+            useGoalStore.getState().getRuntime(ctx.sessionId)?.goal?.objective ?? '';
+          const confirmed = await ctx.confirmGoalOverwrite(
+            currentObjective,
+            intent.objective,
+          );
+          if (!confirmed) return;
+          preparation = prepareGoalSetFromSlash(ctx.sessionId, true);
+        }
+        if (preparation === 'blocked_by_plan') {
+          ctx.addMessage(
+            ctx.sessionId,
+            commandResultMessage(ctx.inputLine, '计划模式正在进行，请先退出计划模式再设置目标。'),
+          );
+          return;
+        }
+        await ctx.runGoalAction(ctx.sessionId, 'set', intent.objective);
+        return;
+      }
+
+      const goal = await ctx.runGoalAction(ctx.sessionId, intent.action);
+      if (intent.action === 'get') {
+        ctx.addMessage(ctx.sessionId, commandResultMessage(ctx.inputLine, goalStatusOutput(goal)));
+      }
+    } catch {
+      ctx.addMessage(
+        ctx.sessionId,
+        commandResultMessage(ctx.inputLine, '目标命令执行失败，请稍后再试。'),
+      );
+    }
+  },
+};
+
 /** /persist —— 在欢迎页创建 Persist Session，具体创建仍复用 App.tsx 现有入口。 */
 const persistCommand: SlashCommand = {
   name: 'persist',
@@ -250,5 +400,6 @@ export const SLASH_COMMANDS: SlashCommand[] = [
   sideCommand,
   compactCommand,
   planCommand,
+  goalCommand,
   persistCommand,
 ];

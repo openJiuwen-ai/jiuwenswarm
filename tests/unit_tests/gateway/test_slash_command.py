@@ -378,7 +378,7 @@ def test_first_batch_registry_ids() -> None:
 def test_web_slash_picker_command_contract() -> None:
     commands = list_builtin_commands({"work_mode": "code.normal"})["commands"]
     assert [command["name"] for command in commands] == [
-        "new", "fork", "side", "compact", "plan", "persist",
+        "new", "fork", "side", "compact", "plan", "goal", "persist",
     ]
     assert commands[0]["usage"] == "/new"
     assert commands[0]["execution"] == "client"
@@ -395,9 +395,13 @@ def test_web_slash_picker_command_contract() -> None:
     assert commands[4]["usage"] == "/plan"
     assert commands[4]["example"] is None
     assert commands[4]["plan_entry_source"] == "slash_command"
-    assert commands[5]["usage"] == "/persist <任务>"
-    assert commands[5]["execution"] == "session.create"
+    assert commands[5]["usage"] == "/goal [set <目标>|pause|resume|clear]"
+    assert commands[5]["takesArgs"] is True
+    assert commands[5]["req_method"] == "command.goal"
     assert commands[5]["requires_session"] is False
+    assert commands[6]["usage"] == "/persist <任务>"
+    assert commands[6]["execution"] == "session.create"
+    assert commands[6]["requires_session"] is False
 
 
 def test_exit_parse_rejects_short_form_requires_full_team_session_ref() -> None:

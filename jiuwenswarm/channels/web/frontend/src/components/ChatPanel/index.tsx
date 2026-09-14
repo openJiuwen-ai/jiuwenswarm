@@ -162,10 +162,11 @@ interface ChatPanelProps {
   permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
-  onPauseGoal?: (sessionId: string) => void;
-  onResumeGoal?: (sessionId: string) => void;
-  onClearGoal?: (sessionId: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
   /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
@@ -980,6 +981,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onSetGoal,
   onPauseGoal,
   onResumeGoal,
+  onRefreshGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
   welcomeVariant = null,
@@ -1896,6 +1898,9 @@ export const ChatPanel = React.memo(function ChatPanel({
                   permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
+                  onPauseGoal={onPauseGoal}
+                  onResumeGoal={onResumeGoal}
+                  onRefreshGoal={onRefreshGoal}
                   onClearGoal={onClearGoal}
                 />
               </div>
@@ -1969,6 +1974,9 @@ export const ChatPanel = React.memo(function ChatPanel({
             permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
+            onPauseGoal={onPauseGoal}
+            onResumeGoal={onResumeGoal}
+            onRefreshGoal={onRefreshGoal}
             onClearGoal={onClearGoal}
             onDrainTaskQueueIfIdle={onDrainTaskQueueIfIdle}
           />
