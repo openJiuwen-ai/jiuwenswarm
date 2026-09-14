@@ -4342,7 +4342,9 @@ def test_build_context_processor_rail_passes_session_memory_config(monkeypatch):
 
     assert isinstance(rail, FakeContextProcessorRail)
     assert rail.preset is True
-    assert rail.processors is None
+    assert rail.processors == [
+        ("SymphonyRetrievalCompactProcessor", SymphonyRetrievalCompactProcessorConfig())
+    ]
     assert rail.session_memory == {
         "trigger_tokens": 12000,
         "update_mode": "direct_replace",
