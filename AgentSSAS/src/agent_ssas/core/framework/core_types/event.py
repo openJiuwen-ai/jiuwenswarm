@@ -50,7 +50,8 @@ class EventNode:
     # - tool_call 类型:action_name = tool_name,input_content = args,output_content = tool_output
     # - interaction 类型:action_name = "invoke_start"(开始端)或 "invoke_end"(结束端),
     #   input_content = query,output_content = result
-    # - session 类型:action_name = "session_start"(开始端)或 "session_end"(结束端),input_content = "",output_content = ""
+    # - session 类型:action_name = "session_start"(开始端)或 "session_end"(结束端),
+    #   input_content = "",output_content = ""
     # - llm_call 类型:action_name = "llm_call",input_content = prompt,output_content = response
 
     # 数据关联字段

@@ -88,7 +88,8 @@ class AgentSSASThreatLog:
         )
         await self._write_json(file_path, ocsf_event)
 
-    def _to_ocsf(self, report: dict) -> dict:
+    @staticmethod
+    def _to_ocsf(report: dict) -> dict:
         """构建 OCSF Detection Finding 格式。
 
         委托 ocsf.build_ocsf_report 完成实际构建,此方法保留

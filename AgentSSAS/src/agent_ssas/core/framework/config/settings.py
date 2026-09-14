@@ -74,7 +74,8 @@ class AgentSSASConfig:
     # 各模块插件专有配置(预留扩展)
     modules: dict[str, dict[str, Any]] = field(default_factory=dict)
 
-    def _resolve_ssas_home(self) -> Path:
+    @staticmethod
+    def _resolve_ssas_home() -> Path:
         """解析存储根目录。
 
         按 SSAS_HOME → JIUWENSWARM_DATA_DIR → JIUWENSWARM_HOME → ~/.jiuwenswarm
