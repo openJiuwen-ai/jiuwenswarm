@@ -291,12 +291,12 @@ class TrajectoryHttpService:
         # One page states its records as references and resolves them once,
         # so content several records share crosses the wire a single time and
         # content the reader already holds does not cross it at all.
-        heads = sorted({
-            str(reference.get("hash") or "")
-            for record in result.get("records", ())
-            for reference in (record.get("sequences") or {}).values()
-            if reference.get("hash")
-        })
+        head_hashes: set[str] = set()
+        for record in result.get("records", ()):
+            for reference in (record.get("sequences") or {}).values():
+                if reference.get("hash"):
+                    head_hashes.add(str(reference["hash"]))
+        heads = sorted(head_hashes)
         resolved: dict[str, Any] = {"sequences": {}, "blobs": {}}
         if heads:
             try:
@@ -593,6 +593,7 @@ def attach_trajectory_routes(
             return _error_response("invalid trajectory request", "BAD_REQUEST", 400)
         response.headers["Cache-Control"] = "no-store"
         return response
+
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects")
     async def list_trajectory_subjects(
         session_id: str,

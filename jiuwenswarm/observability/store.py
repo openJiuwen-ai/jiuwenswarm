@@ -1263,12 +1263,8 @@ class TrajectoryStore:
         Existing rows keep the 0 default and their own payload, which
         ``_CURRENT_RAW_SIZE`` measures directly, so no backfill is required.
         """
-        columns = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(trajectory_current_records)"
-            ).fetchall()
-        }
+        rows = connection.execute("PRAGMA table_info(trajectory_current_records)").fetchall()
+        columns = {str(row["name"]) for row in rows}
         if "raw_size_bytes" not in columns:
             connection.execute(
                 "ALTER TABLE trajectory_current_records"
@@ -1291,12 +1287,8 @@ class TrajectoryStore:
         This runs before the schema script, which cannot create an index on a
         column the old table does not have.
         """
-        columns = {
-            str(row["name"])
-            for row in connection.execute(
-                "PRAGMA table_info(trajectory_stream_frames)"
-            ).fetchall()
-        }
+        rows = connection.execute("PRAGMA table_info(trajectory_stream_frames)").fetchall()
+        columns = {str(row["name"]) for row in rows}
         if "trace_id" in columns:
             connection.execute("DROP TABLE trajectory_stream_frames")
 
@@ -1651,12 +1643,12 @@ class AsyncTrajectoryReader:
             await connection.rollback()
             await connection.close()
         records = [_archive_record_from_row(row) for row in rows]
-        heads = sorted({
-            str(reference["hash"])
-            for record in records
-            for reference in (record.get("sequences") or {}).values()
-            if reference.get("hash")
-        })
+        head_hashes: set[str] = set()
+        for record in records:
+            for reference in (record.get("sequences") or {}).values():
+                if reference.get("hash"):
+                    head_hashes.add(str(reference["hash"]))
+        heads = sorted(head_hashes)
         empty: dict[str, Any] = {"sequences": {}, "blobs": {}}
         if not heads:
             return records, store_epoch, revision, empty

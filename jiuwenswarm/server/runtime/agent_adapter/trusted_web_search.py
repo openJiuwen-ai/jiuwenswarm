@@ -2,7 +2,7 @@
 
 """Trusted URL provenance adapter for OpenJiuwen's free-search tool.
 
-OpenJiuwen commit ``6ecf82184f5b9d5706b35015720f7b931869de56`` does not
+OpenJiuwen commit ``564997732e22fcdd204959b79b38b4768f5220c0`` does not
 expose structured search rows through a public hook. Keep the private seam in
 this module and lock its behavior to the upstream request contract with
 equivalence tests.
@@ -58,7 +58,7 @@ class TrustedWebFreeSearchTool(WebFreeSearchTool):
                             proxy_url=self._proxy_url,
                             allowed_domains=self._allowed_domains,
                             enabled_engines=self._enabled_engines,
-                        )
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001
                 return f"[ERROR]: free search failed: {exc}"

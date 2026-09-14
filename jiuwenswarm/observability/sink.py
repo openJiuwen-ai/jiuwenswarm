@@ -432,6 +432,14 @@ class TrajectoryRecordSink:
             self._work_available.set()
         return frames
 
+    def _has_preempting_work(self) -> bool:
+        """Whether a final record or a frame is waiting to preempt a debounce.
+
+        Returns:
+            True when either queue holds work that must not wait on a snapshot.
+        """
+        return not self._queue.empty() or not self._frame_queue.empty()
+
     def _wait_for_snapshot_coalescing(self, timeout: float) -> None:
         """Debounce provisional snapshots, letting finals and frames preempt.
 
@@ -441,18 +449,13 @@ class TrajectoryRecordSink:
         """
         with self._state_lock:
             has_snapshots = bool(self._snapshot_pending)
-        if (
-            not has_snapshots
-            or not self._queue.empty()
-            or not self._frame_queue.empty()
-            or self._stop_requested.is_set()
-        ):
+        if not has_snapshots or self._has_preempting_work() or self._stop_requested.is_set():
             return
 
         deadline = time.monotonic() + max(0.001, timeout)
         while not self._stop_requested.is_set():
             self._work_available.clear()
-            if not self._queue.empty() or not self._frame_queue.empty():
+            if self._has_preempting_work():
                 return
             remaining = deadline - time.monotonic()
             if remaining <= 0:
@@ -855,15 +858,14 @@ class TrajectorySessionSinkRouter:
     def _retire_idle_routes(self) -> None:
         now = time.monotonic()
         with self._routes_lock:
-            candidates = [
-                (session_id, writer)
-                for session_id, writer in self._writers.items()
-                if writer.stopping
-                or (
+            candidates: list[tuple[str, _SessionWriter]] = []
+            for session_id, writer in self._writers.items():
+                idle_long_enough = (
                     now - writer.last_activity >= _SESSION_WRITER_IDLE_SECONDS
                     and writer.sink.is_idle()
                 )
-            ]
+                if writer.stopping or idle_long_enough:
+                    candidates.append((session_id, writer))
             for _session_id, writer in candidates:
                 writer.stopping = True
                 writer.sink.request_stop()

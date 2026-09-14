@@ -151,12 +151,14 @@ def _extract_definitions(
     manifest = _load_yaml(manifest_path)
     schema_url = str(resolved["schema_url"])
     dependencies = manifest.get("dependencies", [])
-    core_schema_url = next(
-        str(dependency["schema_url"])
-        for dependency in dependencies
-        if "open-telemetry/semantic-conventions"
-        in str(dependency.get("registry_path", ""))
-    )
+    core_schema_url = ""
+    for dependency in dependencies:
+        registry_path = str(dependency.get("registry_path", ""))
+        if "open-telemetry/semantic-conventions" in registry_path:
+            core_schema_url = str(dependency["schema_url"])
+            break
+    if not core_schema_url:
+        raise ValueError(f"upstream semantic-conventions dependency missing from {manifest_path}")
 
     catalog = resolved.get("attribute_catalog")
     if not isinstance(catalog, list):
