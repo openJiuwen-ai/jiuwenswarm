@@ -295,10 +295,12 @@ def _patch_ability_manager_fail_after() -> None:
     class _AbilityManagerAnyioProxy:
         """AbilityManager 专用 anyio 视图：fail_after 桥接，其余原样转发。"""
 
-        def fail_after(self, *args, **kwargs):
+        @staticmethod
+        def fail_after(*args, **kwargs):
             return _fail_after_without_cancel_scope(*args, **kwargs)
 
-        def __getattr__(self, name: str) -> Any:
+        @staticmethod
+        def __getattr__(name: str) -> Any:
             return getattr(real_anyio, name)
 
     # 只改 ability_manager.anyio 绑定，绝不写 real_anyio.fail_after
