@@ -514,6 +514,10 @@ debug_trace:
     redact_prompts: false           # 脱敏 prompt/completion（密钥字段始终打码）
     redact_completions: false
 
+# Application 级 KV-Cache 算力亲和开关；Agent/Team 运行模式共享。
+kv_cache_affinity_config:
+  enable_kv_cache_affinity: false
+
 react:
   agent_name: main_agent
   enable_task_loop: true
@@ -543,9 +547,6 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
-  kv_cache_affinity_config:
-    enable_kv_cache_release: false
-    enable_kv_cache_affinity: false
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效

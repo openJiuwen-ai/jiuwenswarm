@@ -178,7 +178,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "develop" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "agent_os" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

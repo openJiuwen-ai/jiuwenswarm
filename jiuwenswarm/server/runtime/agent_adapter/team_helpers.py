@@ -25,6 +25,7 @@ from openjiuwen.agent_teams.schema.team import TeamRole
 from openjiuwen.agent_teams.monitor import TeamStreamLogger
 from openjiuwen.core.runner import Runner
 from openjiuwen.core.common.logging import server_logger
+from openjiuwen.core.session.agent_team import create_agent_team_session
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
@@ -2280,10 +2281,19 @@ async def _consume_stream_with_query(
             _safe_query_preview(initial_query),
         )
         runner_entered_at = time.monotonic()
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+            get_kv_cache_runtime,
+        )
+
+        runtime = get_kv_cache_runtime()
+        team_session = (
+            create_agent_team_session(session_id=session_id, kv_cache_runtime=runtime)
+            if runtime is not None else session_id
+        )
         async for chunk in Runner.run_agent_team_streaming(
             agent_team=team_spec,
             inputs={"query": initial_query},
-            session=session_id,
+            session=team_session,
             envs=envs,
             stream_logger=lg,
         ):

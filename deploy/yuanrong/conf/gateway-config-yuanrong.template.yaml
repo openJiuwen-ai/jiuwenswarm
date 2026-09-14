@@ -371,7 +371,6 @@ react:
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
   context_engine_config:
-    enable_kv_cache_release: false
     enable_openrouter_model_context_window_tokens: true
     enable_reload: true
     enabled: true

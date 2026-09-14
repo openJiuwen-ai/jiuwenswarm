@@ -2824,11 +2824,6 @@ async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(m
     channel = FakeWebChannel()
     saved: list[str] = []
     monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(
-        app_web_handlers,
-        "default_model_provider_from_entries",
-        lambda _models: "OpenAI",
-    )
     monkeypatch.setattr(app_web_handlers, "is_affinity_enabled", lambda _config: False)
     monkeypatch.setattr(
         app_web_handlers,

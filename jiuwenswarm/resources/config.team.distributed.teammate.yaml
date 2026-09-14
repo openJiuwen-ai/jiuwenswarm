@@ -187,6 +187,9 @@ telemetry:
     protocol:                       # metrics protocol，默认回退到 telemetry.protocol
     headers: {}                     # metrics headers，默认回退到 telemetry.headers
 
+kv_cache_affinity_config:
+  enable_kv_cache_affinity: false
+
 react:
   agent_name: main_agent
   enable_task_loop: false
@@ -207,9 +210,6 @@ react:
   answer_chunk_size: 500
   stream_chunk_threshold: 50
   stream_character_threshold: 2000
-  kv_cache_affinity_config:
-    enable_kv_cache_release: false
-    enable_kv_cache_affinity: false
   context_engine_config:
     enable_reload: true
     enabled: true

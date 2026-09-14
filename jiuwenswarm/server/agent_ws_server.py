@@ -1195,6 +1195,12 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
             return
 
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+            get_kv_cache_runtime,
+        )
+
+        get_kv_cache_runtime()
+
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 
@@ -1687,18 +1693,33 @@ class AgentWebSocketServer:
                     "[AgentWebSocketServer] 上传 HTTP 端点关闭失败: %s", exc
                 )
 
-        from jiuwenswarm.server.runtime.session.kv_cache_product_hooks import (
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
             cancel_pending_tasks,
         )
 
-        await cancel_pending_tasks()
+        try:
+            try:
+                await cancel_pending_tasks()
+            except Exception as exc:
+                logger.warning("[AgentWebSocketServer] KVC task cleanup failed: %s", exc)
 
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+                close_kv_cache_runtime,
+            )
+
+            # wait_closed() has drained connection handlers and their inference tasks.
+            try:
+                await close_kv_cache_runtime()
+            except Exception as exc:
+                logger.warning("[AgentWebSocketServer] KVC runtime cleanup failed: %s", exc)
+        finally:
+            if had_server:
+                try:
+                    await self._jiuwenbox_runner.stop()
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning("[AgentWebSocketServer] jiuwenbox_runner.stop failed: %s", exc)
         if not had_server:
             return
-        try:
-            await self._jiuwenbox_runner.stop()
-        except Exception as exc:  # noqa: BLE001
-            logger.warning("[AgentWebSocketServer] jiuwenbox_runner.stop failed: %s", exc)
         logger.info("[AgentWebSocketServer] 已停止")
 
     # ---------- 连接处理 ----------
@@ -1895,6 +1916,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.SESSION_SWITCH:
                 await self._handle_session_switch(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.SESSION_KVC_PREPARE:
+                await self._handle_session_kvc_prepare(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.SESSION_DELETE:
                 await self._handle_session_delete(ws, request, send_lock)
@@ -2268,6 +2292,51 @@ class AgentWebSocketServer:
             ReqMethod.CHAT_RESUME,
             ReqMethod.CHAT_ANSWER,
         )
+
+    async def _record_kvc_chat_started(self, request: AgentRequest) -> None:
+        """Best-effort KVC task fact; only same-Session evict may block it."""
+        try:
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                record_chat_started,
+            )
+
+            params = request.params if isinstance(request.params, dict) else {}
+            await record_chat_started(
+                session_id=str(request.session_id or params.get("session_id") or "").strip(),
+                params=params,
+                channel_id=str(request.channel_id or "default"),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentWebSocketServer] KVC chat-start hook failed; preserving chat: "
+                "session_id=%s error=%s",
+                request.session_id,
+                exc,
+            )
+
+    @staticmethod
+    def _record_kvc_chat_finished(
+        request: AgentRequest,
+        *,
+        succeeded: bool,
+    ) -> None:
+        try:
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                record_chat_finished,
+            )
+
+            params = request.params if isinstance(request.params, dict) else {}
+            record_chat_finished(
+                session_id=str(request.session_id or params.get("session_id") or "").strip(),
+                succeeded=succeeded,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[AgentWebSocketServer] KVC chat-finish hook failed; preserving chat: "
+                "session_id=%s error=%s",
+                request.session_id,
+                exc,
+            )
 
     @staticmethod
     def _is_client_disconnect_cancel_request(request: AgentRequest) -> bool:
@@ -2971,13 +3040,20 @@ class AgentWebSocketServer:
             and hasattr(manager, "begin_foreground_chat")
             and hasattr(manager, "end_foreground_chat")
         )
+        tracks_kvc_task = self._should_trigger_before_chat_request_hook(request)
+        kvc_task_succeeded = False
+        if tracks_kvc_task:
+            await self._record_kvc_chat_started(request)
         if foreground:
             await manager.begin_foreground_chat()
         try:
             await self._handle_unary_impl(ws, request, send_lock)
+            kvc_task_succeeded = True
         finally:
             if foreground:
                 await manager.end_foreground_chat()
+            if tracks_kvc_task:
+                self._record_kvc_chat_finished(request, succeeded=kvc_task_succeeded)
 
     async def _handle_unary_impl(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
@@ -3070,13 +3146,20 @@ class AgentWebSocketServer:
             and hasattr(manager, "begin_foreground_chat")
             and hasattr(manager, "end_foreground_chat")
         )
+        tracks_kvc_task = self._should_trigger_before_chat_request_hook(request)
+        kvc_task_succeeded = False
+        if tracks_kvc_task:
+            await self._record_kvc_chat_started(request)
         if foreground:
             await manager.begin_foreground_chat()
         try:
             await self._handle_stream_impl(ws, request, send_lock)
+            kvc_task_succeeded = True
         finally:
             if foreground:
                 await manager.end_foreground_chat()
+            if tracks_kvc_task:
+                self._record_kvc_chat_finished(request, succeeded=kvc_task_succeeded)
 
     async def _handle_stream_impl(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
@@ -3467,7 +3550,7 @@ class AgentWebSocketServer:
         context = None
         dispatch_signals = None
         try:
-            from jiuwenswarm.server.runtime.session.kv_cache_product_hooks import (
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
                 dispatch_session_switch_signals,
                 resolve_session_switch_context,
             )
@@ -3509,23 +3592,92 @@ class AgentWebSocketServer:
         channel_id: str,
         target_session_id: str,
         previous_session_id: str,
-        reason: str,
         context: Any,
-        team_manager: Any,
         dispatch_signals: Any,
+        view_id: str = "default-view",
     ) -> None:
         """Optional KVC signals after the product owner has prepared the switch."""
         if context is None or dispatch_signals is None:
             return
         await dispatch_signals(
             context=context,
-            agent_manager=self._agent_manager,
             channel_id=channel_id,
-            team_manager=team_manager,
             target_session_id=target_session_id,
             previous_session_id=previous_session_id,
-            reason=reason,
+            view_id=view_id,
         )
+
+    async def _handle_session_kvc_prepare(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Record typing intent; prefetch remains best-effort and asynchronous."""
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        intent_id = str(params.get("intent_id") or request.request_id or "").strip()
+        if not session_id:
+            resp = AgentResponse(
+                request_id=request.request_id,
+                channel_id=request.channel_id,
+                ok=False,
+                payload={"error": "session_id is required", "code": "BAD_REQUEST"},
+                metadata=request.metadata,
+            )
+        else:
+            try:
+                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                    record_session_prepare,
+                )
+
+                outcome = record_session_prepare(
+                    session_id=session_id,
+                    intent_id=intent_id,
+                    channel_id=str(request.channel_id or "default"),
+                    params=params,
+                )
+                logger.info(
+                    "[AgentWebSocketServer] session.kvc.prepare processed: "
+                    "session_id=%s intent_id=%s outcome=%s",
+                    session_id,
+                    intent_id,
+                    outcome,
+                )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={
+                        "session_id": session_id,
+                        "scheduled": outcome == "scheduled",
+                        "outcome": outcome,
+                    },
+                    metadata=request.metadata,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[AgentWebSocketServer] session.kvc.prepare failed closed: "
+                    "session_id=%s error=%s",
+                    session_id,
+                    exc,
+                )
+                # KVC is an optional optimization; typing must not fail.
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload={
+                        "session_id": session_id,
+                        "scheduled": False,
+                        "outcome": "failed",
+                    },
+                    metadata=request.metadata,
+                )
+
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
 
     async def _handle_session_switch(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """Switch product sessions without deleting recoverable session state."""
@@ -3573,11 +3725,15 @@ class AgentWebSocketServer:
                     "channel_id": channel_id,
                     "target_session_id": target,
                     "previous_session_id": previous_session_id,
-                    "reason": "session.switch: ",
                     "context": context,
-                    "team_manager": team_manager,
                     "dispatch_signals": dispatch_signals,
+                    "view_id": str(params.get("view_id") or f"ws:{id(ws)}"),
                 }
+                # This now records only in-memory foreground facts and
+                # dispatches any eligible action in the background.  Apply it
+                # before ack so an immediate chat.send cannot observe the new
+                # Session as background.
+                await self._dispatch_session_switch_kvc(**kvc_args)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3594,14 +3750,6 @@ class AgentWebSocketServer:
             async with send_lock:
                 await send_wire_payload(ws, wire)
 
-            if kvc_args is not None:
-                kvc_task = asyncio.create_task(
-                    self._dispatch_session_switch_kvc(**kvc_args),
-                    name=f"session-switch-kvc-{target}",
-                )
-                _background_session_kvc_tasks.add(kvc_task)
-                kvc_task.add_done_callback(_background_session_kvc_tasks.discard)
-                kvc_task.add_done_callback(_log_background_session_kvc_failure)
 
     async def _find_team_session_ids(self, team_name: str) -> list[str]:
         from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
@@ -4233,15 +4381,21 @@ class AgentWebSocketServer:
                         resp = checkpoint_resp
                     else:
                         from jiuwenswarm.agents.harness.team import (
-                            kv_cache_hooks as team_kv_cache_hooks,
+                            kv_cache_team_delete_guard,
                         )
 
                         for team_session_id in team_session_ids:
-                            await team_kv_cache_hooks.stop_runtime_before_terminal_delete(
+                            await kv_cache_team_delete_guard.stop_runtime_before_terminal_delete(
                                 stop_team_session_runtime_across_managers,
                                 session_id=team_session_id,
                                 reason="team.delete: ",
                             )
+                            if kv_cache_team_delete_guard.is_enabled():
+                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                                    release_session_kvc,
+                                )
+
+                                await release_session_kvc(session_id=team_session_id, is_team=True)
 
                         runtime_deleted = await Runner.delete_agent_team(
                             team_name=team_name,
@@ -4278,6 +4432,11 @@ class AgentWebSocketServer:
                                         failed_session_ids.append(team_session_id)
                                         continue
                                 remove_session_metadata_cache(team_session_id)
+                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                                    forget_deleted_session,
+                                )
+
+                                forget_deleted_session(team_session_id)
 
                             if failed_session_ids:
                                 resp = AgentResponse(
@@ -4377,15 +4536,22 @@ class AgentWebSocketServer:
                     is_team_session = self._is_team_metadata_mode(metadata)
                     team_name = str(metadata.get("team_name") or "").strip()
                     channel_id = str(metadata.get("channel_id") or request.channel_id or "").strip() or None
-                    if not is_team_session:
-                        from jiuwenswarm.server.runtime.session.kv_cache_product_hooks import (
-                            evict_plan_session,
+                    try:
+                        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                            mark_session_deleted,
                         )
 
-                        await evict_plan_session(
+                        mark_session_deleted(
                             session_id=target,
-                            agent_manager=self._agent_manager,
-                            channel_id=channel_id,
+                            channel_id=channel_id or "default",
+                            is_team=is_team_session,
+                        )
+                    except Exception as exc:
+                        logger.warning(
+                            "[AgentWebSocketServer] KVC delete tombstone failed; "
+                            "preserving product delete: session_id=%s error=%s",
+                            target,
+                            exc,
                         )
                     try:
                         if is_team_session:
@@ -4395,6 +4561,25 @@ class AgentWebSocketServer:
                                 reason="session.delete: ",
                             )
                         else:
+                            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+                                get_kv_cache_runtime,
+                            )
+
+                            # KVC ON needs quiescence before evict; OFF keeps the
+                            # original AgentOS Runner.release deletion path.
+                            if get_kv_cache_runtime() is not None:
+                                await self._agent_manager.cleanup_session_runtime(
+                                    channel_id=channel_id or "",
+                                    session_id=target,
+                                )
+
+                            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                                release_session_kvc,
+                            )
+
+                            await release_session_kvc(
+                                session_id=target,
+                            )
                             await Runner.release(target)
                             deleted = True
                     except Exception as exc:
@@ -4406,6 +4591,19 @@ class AgentWebSocketServer:
                         deleted = False
 
                     if not deleted:
+                        try:
+                            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                                restore_session_after_failed_delete,
+                            )
+
+                            restore_session_after_failed_delete(target)
+                        except Exception as exc:
+                            logger.warning(
+                                "[AgentWebSocketServer] KVC failed-delete rollback failed; "
+                                "preserving delete response: session_id=%s error=%s",
+                                target,
+                                exc,
+                            )
                         resp = AgentResponse(
                             request_id=request.request_id,
                             channel_id=request.channel_id,
@@ -4418,6 +4616,11 @@ class AgentWebSocketServer:
                         _plan_exited_sessions.discard(target)
                         _plan_active_sessions.discard(target)
                         remove_session_metadata_cache(target)
+                        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                            forget_deleted_session,
+                        )
+
+                        forget_deleted_session(target)
                         if is_team_session:
                             try:
                                 from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
@@ -9015,10 +9218,9 @@ class AgentWebSocketServer:
                         channel_id=channel_id,
                         target_session_id=session_id,
                         previous_session_id=previous_session_id,
-                        reason=lifecycle_reason,
                         context=switch_context,
-                        team_manager=team_manager,
                         dispatch_signals=dispatch_signals,
+                        view_id=str(params.get("view_id") or f"ws:{id(ws)}"),
                     ),
                     name=f"session-create-kvc-{session_id}",
                 )

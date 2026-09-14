@@ -10,6 +10,7 @@
   useMemo,
   forwardRef,
   useImperativeHandle,
+  FormEvent,
 } from 'react';
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
@@ -135,6 +136,8 @@ function isDefaultProject(project: ProjectInfo): boolean {
 
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
+  /** Signals that the user is editing an existing real Session. */
+  onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onPersistDocuments: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
   onInterrupt: (newInput?: string) => void;
@@ -482,6 +485,7 @@ function buildSubmitContent(text: string, attachments: AttachmentDraft[]): strin
 export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function InputArea(
   {
     onSubmit,
+    onInputIntent,
     onPersistMedia,
     onPersistDocuments,
     onInterrupt,
@@ -1547,8 +1551,20 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     el.focus();
   }, [extractPlainText, getCurrentComposerTrigger, setRangeStartByTextOffset]);
 
+  const notifyKVCInputIntent = useCallback(() => {
+    if (!activeSessionId || activeSessionId === NEW_CONVERSATION_ID) return;
+    onInputIntent?.(activeSessionId);
+  }, [activeSessionId, onInputIntent]);
+
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLDivElement>) => {
+      // keydown is the most reliable signal in the current Web frontend. Keep
+      // beforeinput/input/paste below as IME and WebView compatibility paths.
+      const isPrintableKey = e.key.length === 1 && !e.ctrlKey && !e.metaKey && !e.altKey;
+      const isPasteShortcut = (e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'v';
+      if (isPrintableKey || isPasteShortcut) {
+        notifyKVCInputIntent();
+      }
       if (composerSuggestion) {
         if (e.key === 'Escape') {
           e.preventDefault();
@@ -1596,7 +1612,23 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       composerSuggestionItems,
       handleSubmit,
       insertComposerToken,
+      notifyKVCInputIntent,
     ]
+  );
+
+  /**
+   * Start KVC preparation on the leading edge of a real editor insertion.
+   * `onInput` remains below as a compatibility fallback for WebViews that do
+   * not expose a useful beforeinput event.
+   */
+  const handleEditorBeforeInput = useCallback(
+    (event: FormEvent<HTMLDivElement>) => {
+      const nativeEvent = event.nativeEvent as InputEvent;
+      if (String(nativeEvent.inputType || '').startsWith('insert')) {
+        notifyKVCInputIntent();
+      }
+    },
+    [notifyKVCInputIntent],
   );
 
   /** contenteditable 输入时同步纯文本到 store + 联动 selectedSkills */
@@ -1606,6 +1638,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     // 提取纯文本
     const text = extractPlainText();
     useChatStore.getState().setInputValue(sid, text);
+    if (text.trim() && sid !== NEW_CONVERSATION_ID) {
+      notifyKVCInputIntent();
+    }
     // 联动 selectedSkills：扫描 contenteditable 现有 chip，移除已不在的技能（backspace 删除等情况）
     const el = inputRef.current;
     if (el) {
@@ -1623,7 +1658,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       });
     }
     updateComposerSuggestion();
-  }, [extractPlainText, updateComposerSuggestion]);
+  }, [extractPlainText, notifyKVCInputIntent, updateComposerSuggestion]);
 
   /** 保存当前光标位置（用于技能插入时定位） */
   const saveSelection = useCallback(() => {
@@ -1694,12 +1729,15 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
   const handlePaste = useCallback(
     (event: ClipboardEvent<HTMLDivElement>) => {
+      if (event.clipboardData.getData('text/plain').trim()) {
+        notifyKVCInputIntent();
+      }
       if (handleDesktopFilePaste(event)) return;
       if (clipboardHasFileItems(event.clipboardData)) {
         event.preventDefault();
       }
     },
-    [handleDesktopFilePaste],
+    [handleDesktopFilePaste, notifyKVCInputIntent],
   );
 
   useEffect(() => {
@@ -2147,6 +2185,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         ref={inputRef}
         contentEditable
         suppressContentEditableWarning
+        onBeforeInput={handleEditorBeforeInput}
         onInput={handleEditorInput}
         onKeyDown={handleKeyDown}
         onCompositionStart={() => { isComposingRef.current = true; }}

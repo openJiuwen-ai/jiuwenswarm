@@ -49,7 +49,7 @@ Each model type supports the following parameters:
 | `api_base`       | `api_base`                  | Base URL for model API        | Use the provider's API endpoint; **do not include `/chat/completions`**; appended automatically |
 | `api_key`        | `api_key`                   | Model API key                | Obtained from the model provider; keep confidential                                           |
 | `model`          | `model_name`                | Model identifier             | Use exact model ID such as `gpt-4o`, `claude-3-opus`, `deepseek-chat`                                         |
-| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `InferenceAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
+| `model_provider` | `client_provider`           | Model provider type          | Supports `OpenAI`, `DeepSeek`, `DashScope`, `SiliconFlow`, `AscendAffinity`, `OpenRouter` for API format adaptation; video/audio/vision models currently support `OpenAI` only |
 
 > 💡 **Field Mapping**: The frontend panel uses `model` / `model_provider` as display field names; when saved to `config.yaml` they are mapped to backend fields `model_name` / `client_provider`. Both refer to the same thing, only the naming in the config file differs.
 
@@ -248,26 +248,25 @@ Context compression manages dialogue history retention strategies.
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
 
-This section also provides a **Compute Affinity (KV Release)** toggle (`react.context_engine_config.enable_kv_cache_release`, default `false`).
-
 When enabled, the system will:
 
 1. Monitor message count and token usage
 2. Archive low-priority content when thresholds are reached
 3. Preserve lightweight indexes to free space for ongoing tasks
 
-### Compute Affinity (KV Release)
+### KV Cache Compute Affinity
 
-**Compute Affinity (KV Release)** is an advanced optimization feature of context compression for managing GPU memory usage.
+KV Cache compute affinity manages Session cache through the unified `agent_hint` protocol.
 
-- **Field**: `react.context_engine_config.enable_kv_cache_release`
+- **Field**: `kv_cache_affinity_config.enable_kv_cache_affinity` (Application scope)
+- **Client**: AgentOS uses `client_provider: AscendAffinity`; OpenAI extensions alone do not enable KVC on this branch.
 - **Default**: `false` (disabled)
-- **Purpose**: When enabled, the system dynamically releases KV Cache (key-value cache) that is no longer needed during conversations, saving GPU memory and allowing longer dialogue contexts.
+- **Purpose**: When enabled, the system prefetches, offloads, and evicts KV Cache along the Session lifecycle.
 
 **KV Cache Explanation**:
 - KV Cache is a cache used by large language models during inference to store intermediate computation results
 - As conversation rounds increase, KV Cache continues to grow, consuming significant GPU memory
-- With KV Release enabled, the system intelligently determines and releases cache data from historical conversations that are no longer needed
+- Suspended Sessions can offload cache, resumed Sessions can prefetch it, and permanently released Sessions evict it.
 
 **Applicable Scenarios**:
 - Long-running conversations requiring extensive history retention

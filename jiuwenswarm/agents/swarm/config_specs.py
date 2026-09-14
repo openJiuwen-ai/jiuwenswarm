@@ -19,7 +19,6 @@ so openjiuwen builds the member from the merged spec. Two profiles are supported
 
 from __future__ import annotations
 
-import logging
 import os
 from typing import (
     Any,
@@ -34,7 +33,7 @@ from openjiuwen.agent_teams.schema.deep_agent_spec import (
 )
 from openjiuwen.agent_teams.rails.builtin_elements import SKILL_USE as CORE_SKILL_USE
 from openjiuwen.agent_teams.rails.elements import TEAM_SKILL_USE
-from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
+from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.tool import McpServerConfig
 from openjiuwen.core.single_agent import AgentCard
 from openjiuwen.harness.prompts import resolve_language
@@ -44,10 +43,13 @@ from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
 from jiuwenswarm.common.config import (
-    ASCEND_AFFINITY_PROVIDER,
     get_default_model_provider,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
+)
+from jiuwenswarm.common.kv_cache_affinity_config import (
+    build_kv_cache_affinity_config,
+    get_default_model_client_config,
 )
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     get_context_engine_enabled,
@@ -62,27 +64,13 @@ from jiuwenswarm.common.mode_matrix import (
 
 # Modes that route to the code adapter and get the code member profile.
 _CODE_MODES: frozenset[str] = frozenset({"code.team", TEAM_PLAN_CODE_MODE})
-logger = logging.getLogger(__name__)
 
 
 def _kv_cache_affinity_config(config: dict[str, Any]) -> KVCacheAffinityConfig:
-    react = config.get("react")
-    react = react if isinstance(react, dict) else {}
-    raw = react.get("kv_cache_affinity_config")
-    raw = raw if isinstance(raw, dict) else {}
-    affinity_enabled = bool(raw.get("enable_kv_cache_affinity", False))
-    if affinity_enabled:
-        provider = get_default_model_provider(config)
-        if provider != ASCEND_AFFINITY_PROVIDER:
-            logger.warning(
-                "Team KV cache affinity failed closed: default provider=%s requires=%s",
-                provider or "<empty>",
-                ASCEND_AFFINITY_PROVIDER,
-            )
-            affinity_enabled = False
-    return KVCacheAffinityConfig(
-        enable_kv_cache_release=bool(raw.get("enable_kv_cache_release", False)),
-        enable_kv_cache_affinity=affinity_enabled,
+    return build_kv_cache_affinity_config(
+        config,
+        provider=get_default_model_provider(config),
+        model_client_config=get_default_model_client_config(config),
     )
 
 

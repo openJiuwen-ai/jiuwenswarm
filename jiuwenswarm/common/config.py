@@ -18,7 +18,9 @@ import yaml
 import portalocker
 
 from jiuwenswarm.common.kv_cache_affinity_config import (
-    ASCEND_AFFINITY_PROVIDER,
+    APPLICATION_KV_CACHE_CONFIG_KEY,
+    KV_CACHE_AFFINITY_ENABLED_KEY,
+    get_kv_cache_affinity_application_config,
     get_default_model_provider as resolve_default_model_provider,
     set_default_model_provider_in_entries,
     validate_affinity_invariant,
@@ -120,18 +122,17 @@ def _normalize_config(config: dict[str, Any] | None) -> None:
         mcc = react.get("model_client_config")
         if isinstance(mcc, dict) and "custom_headers" in mcc:
             mcc["custom_headers"] = _parse_custom_headers(mcc["custom_headers"])
-        kv_cfg = react.get("kv_cache_affinity_config")
-        if isinstance(kv_cfg, dict) and kv_cfg.get("enable_kv_cache_affinity", False):
-            provider = get_default_model_provider(config)
-            if provider != ASCEND_AFFINITY_PROVIDER:
-                logger.warning(
-                    "KV cache affinity configuration failed closed: default provider=%s requires=%s",
-                    provider or "<empty>",
-                    ASCEND_AFFINITY_PROVIDER,
-                )
-                # Runtime-only normalization: preserve the user's file for
-                # diagnosis, but never activate an inconsistent configuration.
-                kv_cfg["enable_kv_cache_affinity"] = False
+    kv_cfg = get_kv_cache_affinity_application_config(config)
+    if kv_cfg.get(KV_CACHE_AFFINITY_ENABLED_KEY, False):
+        valid, failures = validate_affinity_invariant(config)
+        if not valid:
+            logger.warning(
+                "KV cache affinity configuration failed closed: %s",
+                "; ".join(failures),
+            )
+            # Runtime-only normalization: preserve the user's file for
+            # diagnosis, but never activate an inconsistent configuration.
+            kv_cfg[KV_CACHE_AFFINITY_ENABLED_KEY] = False
     # send_file 工具默认开关：web/feishu/xiaoyi 顶层缺 send_file_allowed 时兜底 True。
     channels = config.get("channels", {})
     for _ch in ("web", "feishu", "xiaoyi"):
@@ -609,31 +610,20 @@ def update_context_engine_enabled_in_config(value: bool) -> None:
 
 
 def update_kv_cache_affinity_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_affinity 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_release"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """更新 Application 级 KVC 开关，并清理旧 ReAct 配置。"""
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        kv_config = data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+        if not isinstance(kv_config, dict):
+            kv_config = {}
+            data[APPLICATION_KV_CACHE_CONFIG_KEY] = kv_config
+        kv_config[KV_CACHE_AFFINITY_ENABLED_KEY] = value
 
+        react = data.get("react")
+        if isinstance(react, dict):
+            react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+        return data
 
-def update_kv_cache_release_enabled_in_config(value: bool) -> None:
-    """更新 react.kv_cache_affinity_config.enable_kv_cache_release 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "react" not in data:
-        data["react"] = {}
-    react = data["react"]
-    if "kv_cache_affinity_config" not in react:
-        react["kv_cache_affinity_config"] = {}
-    react["kv_cache_affinity_config"]["enable_kv_cache_release"] = value
-    if value:
-        react["kv_cache_affinity_config"]["enable_kv_cache_affinity"] = False
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    update_config(_mutate)
 
 
 def _merge_config_dict(target: dict[str, Any], patch: dict[str, Any]) -> None:
@@ -2058,6 +2048,26 @@ def _migrate_legacy_agent_submode_memory(user_data: dict[str, Any]) -> None:
         flat_memory["enabled"] = all(legacy_enabled_values)
 
 
+def _migrate_legacy_kv_cache_affinity_config(user_data: dict[str, Any]) -> None:
+    """Move the former ReAct-local KVC switch to Application scope."""
+    react = user_data.get("react")
+    if not isinstance(react, dict):
+        return
+    legacy = react.pop(APPLICATION_KV_CACHE_CONFIG_KEY, None)
+    canonical = user_data.get(APPLICATION_KV_CACHE_CONFIG_KEY)
+    if isinstance(canonical, dict):
+        if (
+            KV_CACHE_AFFINITY_ENABLED_KEY not in canonical
+            and isinstance(legacy, dict)
+            and KV_CACHE_AFFINITY_ENABLED_KEY in legacy
+        ):
+            canonical[KV_CACHE_AFFINITY_ENABLED_KEY] = legacy[
+                KV_CACHE_AFFINITY_ENABLED_KEY
+            ]
+    elif isinstance(legacy, dict):
+        user_data[APPLICATION_KV_CACHE_CONFIG_KEY] = deepcopy(legacy)
+
+
 def migrate_config_from_template(
     template_path: Path,
     user_config_path: Path,
@@ -2099,6 +2109,7 @@ def migrate_config_from_template(
     # 结构性迁移：plan/fast 子模式 memory 配置 -> 合并后的 modes.agent.memory
     # 必须在 _deep_merge 之前执行，否则旧子节点会被静默丢弃而非迁移。
     _migrate_legacy_agent_submode_memory(user_data)
+    _migrate_legacy_kv_cache_affinity_config(user_data)
 
     # Deep merge: template provides defaults, user values preserved
     merged_data = _deep_merge(template_data, user_data)

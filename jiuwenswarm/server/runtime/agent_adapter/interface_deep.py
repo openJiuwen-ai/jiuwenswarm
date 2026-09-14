@@ -33,7 +33,7 @@ if TYPE_CHECKING:
 
 import yaml
 from openjiuwen.core.context_engine.schema.config import CompressionRecallConfig, ContextEngineConfig
-from openjiuwen.core.foundation.kv_cache import KVCacheAffinityConfig
+from openjiuwen.core.kv_cache import KVCacheAffinityConfig
 from openjiuwen.core.foundation.llm import (
     Model,
     ModelClientConfig,
@@ -169,6 +169,7 @@ except ImportError:  # Compatibility with older agent-core versions.
 from openjiuwen.harness.schema.task import TodoStatus
 from openjiuwen.harness.workspace.workspace import Workspace, WorkspaceNode
 
+from jiuwenswarm.common.kv_cache_affinity_config import build_kv_cache_affinity_config, model_provider
 from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
     DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
     STATUSLINE_SETUP_AGENT_TYPE,
@@ -972,10 +973,10 @@ def parse_int(value: Any, default: int) -> int:
 def _deep_agent_context_engine_config(
     react_cfg: dict[str, Any] | None,
 ) -> ContextEngineConfig:
-    """供 ``create_deep_agent(..., context_engine_config=...)`` 使用（与 agent-core 集成测试方法二一致）。
+    """Build the agent-core Context Engine configuration.
 
     仅承接 ContextEngine 自身配置；KV cache affinity 由独立
-    ``react.kv_cache_affinity_config`` 管理。
+    Application 级 ``kv_cache_affinity_config`` 管理。
 
     context_window（模型支持的上下文总长度）由 ``_build_model_from_entry`` 放进
     core 的 ``ModelRequestConfig``，再由 ReActAgent 注入当前 ContextEngine 的模型级
@@ -1026,36 +1027,14 @@ def _deep_agent_context_engine_config(
     )
 
 
-def _model_provider(model: Any) -> str:
-    for owner in (model, getattr(model, "_client", None)):
-        model_client_config = getattr(owner, "model_client_config", None)
-        provider = getattr(model_client_config, "client_provider", None)
-        if provider is not None:
-            return str(getattr(provider, "value", provider) or "").strip()
-    return ""
-
-
 def _deep_agent_kv_cache_affinity_config(
-        react_cfg: dict[str, Any] | None,
-        model: Model | None = None,
+    application_config: dict[str, Any] | None,
+    model: Model | None = None,
 ) -> KVCacheAffinityConfig:
     """Build the ReActAgent KV cache affinity config from jiuwenswarm config."""
-    react_cfg = react_cfg or {}
-    kv_cfg = react_cfg.get("kv_cache_affinity_config")
-    kv_cfg = kv_cfg if isinstance(kv_cfg, dict) else {}
-    affinity_enabled = bool(kv_cfg.get("enable_kv_cache_affinity", False))
-    if affinity_enabled and model is not None:
-        provider = _model_provider(model)
-        if provider != "AscendAffinity":
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] KV cache affinity failed closed: "
-                "model provider=%s requires=AscendAffinity",
-                provider or "<empty>",
-            )
-            affinity_enabled = False
-    return KVCacheAffinityConfig(
-        enable_kv_cache_release=bool(kv_cfg.get("enable_kv_cache_release", False)),
-        enable_kv_cache_affinity=affinity_enabled,
+    return build_kv_cache_affinity_config(
+        application_config,
+        provider=model_provider(model),
     )
 
 
@@ -6427,7 +6406,7 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(
                 config,
             ),
-            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
+            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             max_iterations=config.get("max_iterations", 15),
             subagents=configured_subagents,
@@ -7064,7 +7043,7 @@ class JiuWenSwarmDeepAdapter:
             context_engine_config=_deep_agent_context_engine_config(
                 config,
             ),
-            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
+            kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config_base, model),
             vision_model_config=self._vision_model_config,
             audio_model_config=self._audio_model_config,
             enable_read_image_multimodal=self._resolve_enable_read_image_multimodal(config),
@@ -8184,9 +8163,14 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("DeepAgent instance is not initialized")
 
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
+            get_kv_cache_runtime,
+        )
+
         session = create_agent_session(
             session_id=session_id,
             card=getattr(self._instance, "card", None),
+            kv_cache_runtime=get_kv_cache_runtime(),
         )
         await session.pre_run(inputs={})
         await self._instance.start(session=session)
@@ -8222,6 +8206,7 @@ class JiuWenSwarmDeepAdapter:
 
     async def cleanup(self) -> None:
         """Release adapter-owned external runtime resources."""
+        await self._cleanup_evolution_background_tasks()
         if not self._is_session_scoped_adapter:
             for adapter in list(self._session_adapters.values()):
                 try:
@@ -8267,6 +8252,26 @@ class JiuWenSwarmDeepAdapter:
             self._memory_reindex_task.cancel()
         self._memory_reindex_task = None
         await self._close_a2x_client()
+
+    async def _cleanup_evolution_background_tasks(self) -> None:
+        """Drain detached evolution work before adapter-owned state is released."""
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import get_kv_cache_runtime
+
+        if get_kv_cache_runtime() is None:
+            return
+        rail = getattr(self, "_skill_evolution_rail", None)
+        cleanup = getattr(rail, "cleanup_background_tasks", None)
+        if not callable(cleanup):
+            return
+        try:
+            await cleanup()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] evolution cleanup failed during "
+                "adapter teardown: %s",
+                exc,
+            )
+            raise
 
     def _teardown_agent_owned_tools(self) -> None:
         """Drop this agent's stateful tool registrations from the global resource manager.

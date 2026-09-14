@@ -51,7 +51,7 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
     try_start_pg_cluster,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.agents.harness.team import kv_cache_hooks
+from jiuwenswarm.agents.harness.team import kv_cache_team_delete_guard
 from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
 from jiuwenswarm.common.config import (
     get_config,
@@ -875,18 +875,14 @@ class TeamManager:
         one active session per channel.
         """
         normalized_previous = str(previous_session_id or "").strip()
-        pre_signaled_session_ids: set[str] = set()
         if normalized_previous and normalized_previous != target_session_id:
-            await self.offload_session_kv_cache(
-                normalized_previous,
-                reason=f"{reason}session-switch",
-            )
+            # Product foreground/task facts own KVC offload.  A navigation
+            # event must not offload a Team that is still running.
             await self.stop_paused_session_runtime(
                 normalized_previous,
                 reason=f"{reason}session-switch: ",
                 offload=False,
             )
-            pre_signaled_session_ids.add(normalized_previous)
 
         if not self._is_distributed_mode(get_config()):
             logger.info(
@@ -900,33 +896,41 @@ class TeamManager:
             await self._stop_stale_distributed_sessions(
                 target_session_id,
                 reason=reason,
-                pre_signaled_session_ids=pre_signaled_session_ids,
             )
 
-    async def offload_session_kv_cache(self, session_id: str, reason: str = "") -> bool:
-        """Dispatch KVC offload for a Team session without changing runtime state."""
-        return await kv_cache_hooks.dispatch_for_session(
-            "offload",
-            session_id=session_id,
-            reason=reason,
-            resolve_team_name=self._lookup_session_team_name,
-        )
+    async def offload_session_kv_cache(self, session_id: str) -> bool:
+        """Offload a Team Session without changing its product runtime state."""
+        from openjiuwen.core.session.agent_team import create_agent_team_session
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import get_kv_cache_runtime
 
-    async def prefetch_session_kv_cache(self, session_id: str, reason: str = "") -> bool:
-        """Dispatch KVC prefetch for a historical Team session without resuming it."""
-        return await kv_cache_hooks.dispatch_for_session(
-            "prefetch",
+        runtime = get_kv_cache_runtime()
+        if runtime is None:
+            return False
+        session = create_agent_team_session(
             session_id=session_id,
-            reason=f"{reason}history-resume",
-            resolve_team_name=self._lookup_session_team_name,
+            kv_cache_runtime=runtime,
         )
+        return await session.suspend_kvc()
+
+    async def prefetch_session_kv_cache(self, session_id: str) -> bool:
+        """Prefetch a historical Team Session without resuming its runtime."""
+        from openjiuwen.core.session.agent_team import create_agent_team_session
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import get_kv_cache_runtime
+
+        runtime = get_kv_cache_runtime()
+        if runtime is None:
+            return False
+        session = create_agent_team_session(
+            session_id=session_id,
+            kv_cache_runtime=runtime,
+        )
+        return await session.prepare_kvc()
 
     async def _stop_stale_distributed_sessions(
         self,
         target_session_id: str,
         *,
         reason: str,
-        pre_signaled_session_ids: set[str] | None = None,
     ) -> None:
         """Stop active or pending distributed sessions except the target."""
         stale_sessions = [
@@ -948,13 +952,7 @@ class TeamManager:
             list(dict.fromkeys(stale_sessions)),
         )
 
-        already_signaled = pre_signaled_session_ids or set()
         for stale_session_id in dict.fromkeys(stale_sessions):
-            if stale_session_id not in already_signaled:
-                await self.offload_session_kv_cache(
-                    stale_session_id,
-                    reason=f"{reason}session-switch",
-                )
             await self.stop_session_runtime(
                 stale_session_id,
                 reason=reason,
@@ -2068,12 +2066,7 @@ class TeamManager:
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
 
-            await kv_cache_hooks.dispatch_signal(
-                "offload",
-                session_id=session_id,
-                team_name=team_name,
-                reason=f"{reason}team-terminate",
-            )
+            await self.offload_session_kv_cache(session_id)
 
             # Stop Runner-owned runtime first before cleaning locals
             # to avoid gate/teardown races
@@ -2307,10 +2300,7 @@ class TeamManager:
                 return False
 
             if offload:
-                await self.offload_session_kv_cache(
-                    session_id,
-                    reason=f"{reason}paused-runtime-stop",
-                )
+                await self.offload_session_kv_cache(session_id)
 
             logger.info(
                 "[TeamManager] %sstop paused team session runtime: session_id=%s team_name=%s",
@@ -2458,13 +2448,23 @@ class TeamManager:
         releasing only the session checkpoint.
         """
         team_name = self._resolve_delete_session_team_name(session_id)
-        await kv_cache_hooks.stop_runtime_before_terminal_delete(
-            self.stop_session_runtime,
-            session_id=session_id,
-            reason=reason,
-        )
+        affinity_enabled = kv_cache_team_delete_guard.is_enabled()
+        if affinity_enabled:
+            await self.stop_session_runtime(
+                session_id,
+                reason=reason,
+                stop_runner=False,
+            )
+        else:
+            await self.stop_session_runtime(session_id, reason=reason)
 
         try:
+            if affinity_enabled:
+                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                    release_session_kvc,
+                )
+
+                await release_session_kvc(session_id=session_id, is_team=True)
             if team_name:
                 await Runner.delete_agent_team(
                     team_name=team_name,

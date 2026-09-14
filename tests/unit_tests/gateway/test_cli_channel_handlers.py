@@ -1139,7 +1139,7 @@ async def test_session_preview_falls_back_to_local_adapter_when_agent_offline(
 async def test_session_delete_falls_back_to_shared_dir_when_agent_offline(
     monkeypatch: pytest.MonkeyPatch, tmp_path,
 ) -> None:
-    """AgentServer 不可达时，TUI session.delete 恢复迁移前本地删除路径。"""
+    """保留普通单用户 WebSocket 客户端的共享目录 fallback。"""
     server = FakeGatewayServer()
     register_cli_handlers(
         CliHandlersBindParams(
@@ -1159,14 +1159,6 @@ async def test_session_delete_falls_back_to_shared_dir_when_agent_offline(
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
         lambda *args, **kwargs: (session_dir, None),
-    )
-
-    async def fake_evict(**kwargs):
-        return None
-
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache_affinity_lifecycle.evict_session_kv_cache",
-        fake_evict,
     )
 
     await server.local_handlers["/tui"]["session.delete"](
