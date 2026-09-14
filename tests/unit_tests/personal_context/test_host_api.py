@@ -183,6 +183,7 @@ class FakeCore:
         self.deactivate_changes_active_before_error = False
         self.set_error: BaseException | None = None
         self.append_service_error: BaseException | None = None
+        self.replace_credentials_error: BaseException | None = None
         self.activate_error: BaseException | None = None
         self.activate_started: asyncio.Event | None = None
         self.activate_release: asyncio.Event | None = None
@@ -294,6 +295,26 @@ class FakeCore:
         if self.append_service_error is not None:
             error = self.append_service_error
             self.append_service_error = None
+            raise error
+
+    async def _replace_fetch_service_credentials(
+        self,
+        replacements: tuple[object, ...],
+    ) -> None:
+        self.calls.append(("replace_fetch_service_credentials", replacements))
+        assert self.configured is not None
+        replacement_by_id = {item.service_id: item for item in replacements}
+        self.configured = self.configured.model_copy(
+            update={
+                "fetch_services": tuple(
+                    replacement_by_id.get(item.service_id, item)
+                    for item in self.configured.fetch_services
+                )
+            }
+        )
+        if self.replace_credentials_error is not None:
+            error = self.replace_credentials_error
+            self.replace_credentials_error = None
             raise error
 
     async def _remove_fetch_service_config(self, service_id: str) -> None:
@@ -1351,7 +1372,7 @@ async def test_repository_pat_first_authorization_creates_minimal_stopped_config
 
 
 @pytest.mark.asyncio
-async def test_repository_pat_replacement_only_changes_future_service_snapshots(
+async def test_repository_pat_replacement_without_reauthorize_only_changes_future_snapshots(
     fake_host: tuple[PersonalContextHostAPI, FakeCore],
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -1388,6 +1409,177 @@ async def test_repository_pat_replacement_only_changes_future_service_snapshots(
     }
     assert snapshots == {"github-new": "new-token", "github-old": "old-token"}
     assert "credentials" not in new_public
+
+
+@pytest.mark.asyncio
+async def test_repository_reauthorization_updates_all_matching_services_only(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module,
+        "_validate_repository_pat",
+        validate,
+        raising=False,
+    )
+    await host.authorize_provider("github", credentials={"token": "old-github"})
+    await host.authorize_provider("gitcode", credentials={"pat": "old-gitcode"})
+    await host.create_fetch_service(_repository_service("github-one", "github"))
+    await host.create_fetch_service(_repository_service("github-two", "github"))
+    await host.create_fetch_service(_repository_service("gitcode-one", "gitcode"))
+    core.calls.clear()
+
+    result = await host.authorize_provider(
+        "github",
+        credentials={"token": "new-github"},
+        reauthorize=True,
+    )
+
+    snapshots = {
+        item["service_id"]: item["credentials"]
+        for item in host._stored_config["fetch_services"]
+    }
+    assert snapshots == {
+        "github-one": {"token": "new-github"},
+        "github-two": {"token": "new-github"},
+        "gitcode-one": {"pat": "old-gitcode"},
+    }
+    assert host._stored_config["provider_credentials"] == {
+        "github": {"token": "new-github"},
+        "gitcode": {"pat": "old-gitcode"},
+    }
+    assert [name for name, _value in core.calls] == [
+        "replace_fetch_service_credentials"
+    ]
+    assert result["state"] == "authorized"
+    assert "new-github" not in repr(result)
+
+
+@pytest.mark.asyncio
+async def test_repository_reauthorization_without_matching_service_skips_core_update(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module,
+        "_validate_repository_pat",
+        validate,
+        raising=False,
+    )
+
+    await host.authorize_provider(
+        "github",
+        credentials={"token": "old-token"},
+    )
+    core.calls.clear()
+
+    result = await host.authorize_provider(
+        "github",
+        credentials={"token": "new-token"},
+        reauthorize=True,
+    )
+
+    assert result["state"] == "authorized"
+    assert core.calls == []
+    assert host._stored_config["fetch_services"] == []
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("injected", "expected_error"),
+    [
+        (RuntimeError("candidate replace failed"), PersonalContext.Error),
+        (asyncio.CancelledError(), asyncio.CancelledError),
+    ],
+)
+async def test_repository_reauthorization_core_failure_restores_every_layer(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+    injected: BaseException,
+    expected_error: type[BaseException],
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module,
+        "_validate_repository_pat",
+        validate,
+        raising=False,
+    )
+    await host.authorize_provider("github", credentials={"token": "old-token"})
+    await host.create_fetch_service(_repository_service("github-one", "github"))
+    old_yaml = host._config_path.read_bytes()
+    old_stored = deepcopy(host._stored_config)
+    old_config = host._config
+    old_core_config = core.configured
+    core.replace_credentials_error = injected
+
+    with pytest.raises(expected_error):
+        await host.authorize_provider(
+            "github",
+            credentials={"token": "new-token"},
+            reauthorize=True,
+        )
+
+    assert host._config is old_config
+    assert host._stored_config == old_stored
+    assert host._config_path.read_bytes() == old_yaml
+    assert core.configured == old_core_config
+    assert list(host._home.glob(".*.tmp")) == []
+
+
+@pytest.mark.asyncio
+async def test_repository_reauthorization_yaml_failure_restores_core_and_memory(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    host, core = fake_host
+
+    async def validate(_provider: str, _secret: str) -> dict[str, str]:
+        return {"login": "account", "display_name": "Account"}
+
+    monkeypatch.setattr(
+        host_module,
+        "_validate_repository_pat",
+        validate,
+        raising=False,
+    )
+    await host.authorize_provider("github", credentials={"token": "old-token"})
+    await host.create_fetch_service(_repository_service("github-one", "github"))
+    old_yaml = host._config_path.read_bytes()
+    old_stored = deepcopy(host._stored_config)
+    old_config = host._config
+    old_core_config = core.configured
+
+    def fail_replace(_temporary: Path, _path: Path) -> None:
+        raise OSError("replace failed")
+
+    monkeypatch.setattr(host_module, "_replace_yaml", fail_replace)
+    with pytest.raises(PersonalContext.Error):
+        await host.authorize_provider(
+            "github",
+            credentials={"token": "new-token"},
+            reauthorize=True,
+        )
+
+    assert host._config is old_config
+    assert host._stored_config == old_stored
+    assert host._config_path.read_bytes() == old_yaml
+    assert core.configured == old_core_config
+    assert list(host._home.glob(".*.tmp")) == []
 
 
 @pytest.mark.asyncio
