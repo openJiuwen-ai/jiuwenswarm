@@ -44,7 +44,7 @@ class EventBuilder:
         common: dict[str, Any] = {
             "source": "AgentSSASSecurityRail",
             "event_type": event_type,
-            "event_class": self._id_manager._event_class_for(event, event_type),
+            "event_class": self._id_manager.event_class_for(event, event_type),
             "timestamp": time.time(),
             "interaction_seq": security_ctx.interaction_seq,
             "session_id": security_ctx.session_id,
@@ -73,7 +73,8 @@ class EventBuilder:
 
         return {"common": common, "payload": payload, "metadata": metadata}
 
-    def _event_type_for(self, event: AgentCallbackEvent) -> str:
+    @staticmethod
+    def _event_type_for(event: AgentCallbackEvent) -> str:
         """将 AgentCallbackEvent 映射为 event_type 字符串。"""
         mapping = {
             AgentCallbackEvent.BEFORE_INVOKE: "invoke_start",

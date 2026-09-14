@@ -74,10 +74,10 @@ class AgentSSASSecurityRail(BaseSecurityRail):
     ) -> None:
         """覆写基类的 _run_and_apply,构建扩展的 SecurityCheckContext。"""
         # ID 管理模块:生成交互标识(int 类型自增序号)
-        interaction_seq = self._id_manager._ensure_interaction_seq(ctx, event)
-        llm_call_seq = self._id_manager._ensure_llm_call_seq(ctx, event)
-        tool_call_seq = self._id_manager._ensure_tool_call_seq(ctx, event)
-        subsession_id = self._id_manager._resolve_subsession_id(ctx)
+        interaction_seq = self._id_manager.ensure_interaction_seq(ctx, event)
+        llm_call_seq = self._id_manager.ensure_llm_call_seq(ctx, event)
+        tool_call_seq = self._id_manager.ensure_tool_call_seq(ctx, event)
+        subsession_id = self._id_manager.resolve_subsession_id(ctx)
 
         # _resolve_subject_id、_get_user_input、_get_auto_confirm_config 由基类
         # BaseSecurityRail 提供,在此子类中通过 self 调用复用基类实现
@@ -90,15 +90,15 @@ class AgentSSASSecurityRail(BaseSecurityRail):
             auto_confirm_config=self._get_auto_confirm_config(ctx),
             subject_id=subject_id,
             interaction_seq=interaction_seq,
-            session_id=self._id_manager._resolve_session_id(ctx),
-            agent_id=self._id_manager._resolve_agent_id(ctx),
-            trace_id=self._id_manager._resolve_trace_id(ctx),
-            context_id=self._id_manager._resolve_context_id(ctx),
-            conversation_id=self._id_manager._resolve_conversation_id(ctx, event),
-            tool_call_id=self._id_manager._resolve_tool_call_id(
+            session_id=self._id_manager.resolve_session_id(ctx),
+            agent_id=self._id_manager.resolve_agent_id(ctx),
+            trace_id=self._id_manager.resolve_trace_id(ctx),
+            context_id=self._id_manager.resolve_context_id(ctx),
+            conversation_id=self._id_manager.resolve_conversation_id(ctx, event),
+            tool_call_id=self._id_manager.resolve_tool_call_id(
                 getattr(ctx.inputs, "tool_call", None)
             ),
-            tool_name=self._id_manager._resolve_tool_name(ctx, event),
+            tool_name=self._id_manager.resolve_tool_name(ctx, event),
             llm_call_seq=llm_call_seq,
             tool_call_seq=tool_call_seq,
             subsession_id=subsession_id,

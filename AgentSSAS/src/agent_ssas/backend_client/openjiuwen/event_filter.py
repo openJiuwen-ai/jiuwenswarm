@@ -50,7 +50,8 @@ class EventFilter:
         #   但 BEFORE_MODEL_CALL 本身作为生命周期事件仍然通过。
         return event_dict
 
-    def _build_risk_fields(self, security_ctx: ExtendedSecurityCheckContext) -> dict[str, Any]:
+    @staticmethod
+    def _build_risk_fields(security_ctx: ExtendedSecurityCheckContext) -> dict[str, Any]:
         """生成 PermissionInterruptRail deny 的安全检测事件字段。"""
         return {
             "risk_source": "PermissionInterruptRail",
