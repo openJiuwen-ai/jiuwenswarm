@@ -130,6 +130,11 @@ def resolve_agent_request_mode(
     ``agent.fast`` 请求都归一到 ``agent``（sub_mode=None）。历史裸 ``plan`` /
     ``fast``（无 ``agent.`` 前缀，如旧 cron job 存量数据）同样归一到 ``agent``，
     与 CLI ``MODE_ALIASES``、记忆配置 ``_resolve_mode_memory`` 的裸 token 处理保持一致。
+
+    ``flash.enabled`` 配置开关：置 true 时，所有归一到 ``agent`` 的对话请求被
+    注入为 ``flash`` mode（独立轻量 facade：单轮、裁 rail、无 task loop），无需
+    前端发 ``mode=flash``——配置即触发。``code`` / ``team`` 路径不受影响。置
+    false（默认）时维持原 ``agent`` 行为。这是前端未合入 flash 入口时的后端触发闸。
     """
     raw_value = getattr(raw_mode, "value", raw_mode)
     mode_text = raw_value.strip().lower() if isinstance(raw_value, str) else ""
@@ -139,18 +144,38 @@ def resolve_agent_request_mode(
         work_mode.strip().lower() if isinstance(work_mode, str) else ""
     )
 
+    # flash.enabled=true：agent 对话请求注入为 flash mode（配置触发，无需前端 mode=flash）。
+    # try/except 兜底：config 读取/解析失败时安全降级为「不注入」，避免 mode 解析整体崩——
+    # 原函数是纯函数（不读 config），引入 get_config 后必须保证 config 不可用时行为不变。
+    _flash_enabled = False
+    try:
+        _flash_enabled = bool((get_config() or {}).get("flash", {}).get("enabled", False))
+    except Exception:
+        logger.debug("[resolve_agent_request_mode] flash config read failed, not injecting", exc_info=True)
+
+    def _agent_or_flash() -> tuple[str, str | None, str]:
+        # 集中拦截：开关开时把「普通 agent 对话」出口改写成 flash。
+        if _flash_enabled:
+            return "flash", None, "flash"
+        return "agent", None, "agent"
+
     if mode_text in ("plan", "fast"):
         if normalized_work_mode == "code":
             return "code", "normal", "code.normal"
-        return "agent", None, "agent"
+        return _agent_or_flash()
 
     parts = mode_text.split(".")
     mode = parts[0] or "agent"
+    if mode == "flash":
+        # flash 是独立 mode（极简单 agent profile），无子模式，不受 work_mode
+        # 影响（flash 不走 code 工作模式）。AgentManager 按 "flash:None:project"
+        # 缓存到独立 facade，与 agent/code/team 并列，同进程共存不重启。
+        return "flash", None, "flash"
     if mode == "agent":
         # 合并模式：忽略历史子模式（plan / fast），统一 canonical "agent"。
         if normalized_work_mode == "code":
             return "code", "normal", "code.normal"
-        return "agent", None, "agent"
+        return _agent_or_flash()
     if mode == "team":
         sub_mode = parts[1] if len(parts) > 1 and parts[1] else None
         if sub_mode not in {None, "plan"}:
@@ -171,7 +196,7 @@ def resolve_agent_request_mode(
         if normalized_work_mode == "code":
             return "code", "normal", "code.normal"
         if normalized_work_mode == "work":
-            return "agent", None, "agent"
+            return _agent_or_flash()
     return mode, sub_mode, canonical_mode
 
 
