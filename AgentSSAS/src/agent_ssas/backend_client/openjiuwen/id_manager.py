@@ -81,21 +81,22 @@ class IDManager:
             self._session_interaction_seqs[key] = 0
             return 0
 
-    def _ensure_interaction_seq(self, ctx: AgentCallbackContext, event: AgentCallbackEvent = None) -> int:
+    def ensure_interaction_seq(self, ctx: AgentCallbackContext, event: AgentCallbackEvent = None) -> int:
         """获取或生成 interaction_seq(session 级,BEFORE_INVOKE 时自增)。
 
         使用 session 级 LRU 池存储,跨 DeepAgent/ReActAgent 层共享。
         初始值为 -1,BEFORE_INVOKE 时先自增再使用。
         后续事件复用同一序号(从 LRU 池读取当前值)。
         """
-        session_id = self._resolve_session_id(ctx)
+        session_id = self.resolve_session_id(ctx)
         if event is not None and event != AgentCallbackEvent.BEFORE_INVOKE:
             # 非 BEFORE_INVOKE:从 LRU 池复用当前值
             return self._get_interaction_seq_from_pool(session_id)
         # BEFORE_INVOKE 或未指定事件:原子自增
         return self._increment_interaction_seq_in_pool(session_id)
 
-    def _ensure_llm_call_seq(self, ctx: AgentCallbackContext, event: AgentCallbackEvent) -> int:
+    @staticmethod
+    def ensure_llm_call_seq(ctx: AgentCallbackContext, event: AgentCallbackEvent) -> int:
         """获取或生成 llm_call_seq(整数自增序号)。
 
         初始值为 -1,BEFORE_MODEL_CALL 时先自增再使用,AFTER_MODEL_CALL 复用。
@@ -109,7 +110,8 @@ class IDManager:
         # AFTER_MODEL_CALL 及 tool_call 事件复用当前值
         return ctx.extra.get("llm_call_seq", -1)
 
-    def _ensure_tool_call_seq(self, ctx: AgentCallbackContext, event: AgentCallbackEvent) -> int:
+    @staticmethod
+    def ensure_tool_call_seq(ctx: AgentCallbackContext, event: AgentCallbackEvent) -> int:
         """获取或生成 tool_call_seq(整数自增序号)。
 
         初始值为 -1,BEFORE_TOOL_CALL 时先自增再使用,AFTER_TOOL_CALL 复用。
@@ -122,7 +124,8 @@ class IDManager:
         # AFTER_TOOL_CALL 复用当前值
         return ctx.extra.get("tool_call_seq", -1)
 
-    def _resolve_subsession_id(self, ctx: AgentCallbackContext) -> str:
+    @staticmethod
+    def resolve_subsession_id(ctx: AgentCallbackContext) -> str:
         """获取 subsession_id(子 Agent 场景的父会话 ID)。
 
         子 Agent 场景下,子 Agent 的 parent_session_id 写入 subsession_id,
@@ -134,7 +137,8 @@ class IDManager:
             logger.debug("解析 subsession_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_conversation_id(self, ctx: AgentCallbackContext, event: AgentCallbackEvent) -> str:
+    @staticmethod
+    def resolve_conversation_id(ctx: AgentCallbackContext, event: AgentCallbackEvent) -> str:
         """获取 conversation_id,优先从 inputs 取,回退到 extra 缓存。"""
         cid = getattr(ctx.inputs, "conversation_id", None)
         if cid:
@@ -142,7 +146,8 @@ class IDManager:
             return cid
         return ctx.extra.get("conversation_id", "")
 
-    def _resolve_session_id(self, ctx: AgentCallbackContext) -> str:
+    @staticmethod
+    def resolve_session_id(ctx: AgentCallbackContext) -> str:
         """获取 session_id,无 session 时返回空字符串。"""
         try:
             return ctx.session.get_session_id() if ctx.session else ""
@@ -150,7 +155,8 @@ class IDManager:
             logger.debug("解析 session_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_agent_id(self, ctx: AgentCallbackContext) -> str:
+    @staticmethod
+    def resolve_agent_id(ctx: AgentCallbackContext) -> str:
         """获取 agent_id,无 agent 时返回空字符串。"""
         try:
             return ctx.agent.card.id if ctx.agent and ctx.agent.card else ""
@@ -158,15 +164,23 @@ class IDManager:
             logger.debug("解析 agent_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_trace_id(self, ctx: AgentCallbackContext) -> str:
+    @staticmethod
+    def resolve_trace_id(ctx: AgentCallbackContext) -> str:
         """获取 trace_id,无 session 时返回空字符串。"""
         try:
-            return ctx.session._inner._tracer._trace_id if ctx.session else ""
+            # 访问 openjiuwen Session 内部链路获取 trace_id,外部库无公开 API,
+            # 异常时 fail-open 返回空字符串,故豁免受保护成员检查
+            return (
+                ctx.session._inner._tracer._trace_id  # pylint: disable=protected-access
+                if ctx.session
+                else ""
+            )
         except Exception:
             logger.debug("解析 trace_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_context_id(self, ctx: AgentCallbackContext) -> str:
+    @staticmethod
+    def resolve_context_id(ctx: AgentCallbackContext) -> str:
         """获取 context_id,无 context 时返回空字符串。"""
         try:
             return ctx.context.context_id() if ctx.context else ""
@@ -174,7 +188,8 @@ class IDManager:
             logger.debug("解析 context_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_tool_name(self, ctx: AgentCallbackContext, event: AgentCallbackEvent) -> str:
+    @staticmethod
+    def resolve_tool_name(ctx: AgentCallbackContext, event: AgentCallbackEvent) -> str:
         """获取 tool_name,仅 TOOL 事件有值。"""
         try:
             if event in (AgentCallbackEvent.BEFORE_TOOL_CALL,
@@ -185,7 +200,8 @@ class IDManager:
             logger.debug("解析 tool_name 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _resolve_tool_call_id(self, tool_call) -> str:
+    @staticmethod
+    def resolve_tool_call_id(tool_call) -> str:
         """获取 tool_call_id。
 
         基类 BaseSecurityRail 中已存在此方法(用于 _resolve_subject_id),
@@ -197,7 +213,8 @@ class IDManager:
             logger.debug("解析 tool_call_id 失败, 返回空字符串", exc_info=True)
             return ""
 
-    def _event_class_for(self, event: AgentCallbackEvent, event_type: str) -> str:
+    @staticmethod
+    def event_class_for(event: AgentCallbackEvent, event_type: str) -> str:
         """根据 event_type 判断事件类别。
 
         安全检测事件(如 permission_interrupt_tool)返回 "security",
