@@ -1429,9 +1429,13 @@ class PersonalContextHostAPI:
         self,
         provider: str,
         credentials: dict[str, object] | None = None,
+        *,
+        reauthorize: bool = False,
     ) -> dict[str, object]:
         """Check or begin user authorization for a configured provider."""
 
+        if not isinstance(reauthorize, bool):
+            _raise_host_error("reauthorize must be a boolean")
         async with self._operation_lock:
             if not isinstance(provider, str) or not provider.strip():
                 _raise_host_error("provider must be a non-empty string")
@@ -1491,7 +1495,8 @@ class PersonalContextHostAPI:
                 )
             try:
                 return await self._personal_context.authorize_provider(
-                    normalized_provider
+                    normalized_provider,
+                    reauthorize=reauthorize,
                 )
             except asyncio.CancelledError:
                 raise

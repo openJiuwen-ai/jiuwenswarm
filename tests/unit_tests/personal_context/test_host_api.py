@@ -316,8 +316,13 @@ class FakeCore:
             raise error
         return self.snapshot_result
 
-    async def authorize_provider(self, provider: str) -> dict[str, object]:
-        self.calls.append(("authorize_provider", provider))
+    async def authorize_provider(
+        self,
+        provider: str,
+        *,
+        reauthorize: bool = False,
+    ) -> dict[str, object]:
+        self.calls.append(("authorize_provider", (provider, reauthorize)))
         return {
             "provider": provider,
             "state": "authorized",
@@ -850,10 +855,25 @@ async def test_authorize_provider_delegates_to_configured_core(
     await host.configure(_config(enabled=False, root_dir=tmp_path))
     core.calls.clear()
 
-    result = await host.authorize_provider("feishu")
+    result = await host.authorize_provider("feishu", reauthorize=True)
 
     assert result["state"] == "authorized"
-    assert core.calls == [("authorize_provider", "feishu")]
+    assert core.calls == [("authorize_provider", ("feishu", True))]
+
+
+@pytest.mark.asyncio
+async def test_authorize_provider_rejects_non_boolean_reauthorize_before_core_call(
+    fake_host: tuple[PersonalContextHostAPI, FakeCore],
+) -> None:
+    host, core = fake_host
+
+    with pytest.raises(PersonalContext.Error, match="reauthorize must be a boolean"):
+        await host.authorize_provider(  # type: ignore[arg-type]
+            "feishu",
+            reauthorize=1,
+        )
+
+    assert core.calls == []
 
 
 @pytest.mark.asyncio
