@@ -1467,6 +1467,19 @@ def _normalize_model_entry(entry: dict[str, Any]) -> dict[str, Any]:
     return saved
 
 
+def _merge_model_update(current: dict[str, Any], update: dict[str, Any]) -> dict[str, Any]:
+    """Merge an editable DTO while preserving omitted/write-only settings."""
+    merged = deepcopy(current)
+    for key, value in update.items():
+        if key in {"source", "is_agentos", "read_only", "write_only_fields"}:
+            continue
+        if isinstance(value, dict) and isinstance(merged.get(key), dict):
+            merged[key] = _merge_model_update(merged[key], value)
+        else:
+            merged[key] = deepcopy(value)
+    return merged
+
+
 def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     candidate = deepcopy((get_config_raw().get("models") or {}))
     defaults = candidate.setdefault("defaults", [])
@@ -1474,6 +1487,7 @@ def upsert_model_resource(entry: dict[str, Any]) -> dict[str, Any]:
     saved.setdefault("model_id", _new_business_id("mdl"))
     for index, current in enumerate(defaults):
         if isinstance(current, dict) and current.get("model_id") == saved["model_id"]:
+            saved = _merge_model_update(current, saved)
             defaults[index] = saved
             break
     else:

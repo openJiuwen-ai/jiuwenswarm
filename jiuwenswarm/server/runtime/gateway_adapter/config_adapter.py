@@ -82,6 +82,7 @@ class ConfigAdapter(GatewayAdapter):
         ReqMethod.CONFIG_SAVE_ALL.value,
         ReqMethod.CONFIG_VALIDATE_MODEL.value,
         ReqMethod.MODELS_LIST.value,
+        ReqMethod.MODELS_GET.value,
         ReqMethod.MODELS_REPLACE_ALL.value,
         ReqMethod.MODELS_VALIDATE.value,
         ReqMethod.MODELS_UPSERT.value,

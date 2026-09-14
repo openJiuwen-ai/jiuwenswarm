@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+from copy import deepcopy
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -43,6 +44,33 @@ def _matches(selection: ModelSelection, value: Any) -> bool:
     )
 
 
+def _find_embedded_selections(
+    value: Any,
+    selection: ModelSelection,
+    *,
+    scope: str,
+    path: tuple[str, ...] = (),
+    owner_id: str = "",
+) -> list[SelectionReference]:
+    """Find stable selections in Agent/Team configuration trees."""
+    refs: list[SelectionReference] = []
+    if isinstance(value, dict):
+        current_owner = str(value.get("id") or value.get("name") or owner_id)
+        if _matches(selection, value.get("model_selection")):
+            scope_id = current_owner or ".".join(path) or scope
+            refs.append(SelectionReference(scope, scope_id))
+        for key, child in value.items():
+            refs.extend(_find_embedded_selections(
+                child, selection, scope=scope, path=(*path, str(key)), owner_id=current_owner,
+            ))
+    elif isinstance(value, list):
+        for index, child in enumerate(value):
+            refs.extend(_find_embedded_selections(
+                child, selection, scope=scope, path=(*path, str(index)), owner_id=owner_id,
+            ))
+    return refs
+
+
 @dataclass(frozen=True)
 class SelectionReference:
     scope: str
@@ -51,7 +79,8 @@ class SelectionReference:
 
 class ModelCatalog:
     def __init__(self, config: dict[str, Any] | None = None) -> None:
-        self.snapshot = load_models_config(config or get_config())
+        self.config = config if config is not None else get_config()
+        self.snapshot = load_models_config(self.config)
 
     def get_model(self, model_id: str) -> dict[str, Any]:
         hit = self.snapshot["by_id"].get(model_id)
@@ -83,6 +112,29 @@ class ModelCatalog:
                 if isinstance(entry, dict) and entry.get("model_id"):
                     result.append(self._safe_model(entry, source))
         return result
+
+    def get_public_model_detail(self, model_id: str) -> dict[str, Any]:
+        """Return an editable model DTO without write-only credentials.
+
+        Updates are merge-based, so omitted write-only fields remain unchanged.
+        AgentOS models are intentionally exposed as read-only catalog entries.
+        """
+        hit = self.get_model(model_id)
+        entry = deepcopy(hit["entry"])
+        client = entry.get("model_client_config")
+        write_only_fields: list[str] = []
+        if isinstance(client, dict):
+            if "api_key" in client:
+                client.pop("api_key", None)
+                write_only_fields.append("model_client_config.api_key")
+            if "custom_headers" in client:
+                client.pop("custom_headers", None)
+                write_only_fields.append("model_client_config.custom_headers")
+        entry["source"] = hit["source"]
+        entry["is_agentos"] = hit["source"] == "agentos"
+        entry["read_only"] = hit["source"] == "agentos"
+        entry["write_only_fields"] = write_only_fields
+        return entry
 
     def list_public_groups(self) -> list[dict[str, Any]]:
         result = []
@@ -126,4 +178,8 @@ class ModelCatalog:
                     refs.append(SelectionReference("cron", str(item.get("id") or "")))
         except (OSError, ValueError):
             logger.warning("Failed to scan cron model references", exc_info=True)
-        return refs
+        refs.extend(_find_embedded_selections(self.config.get("agents"), selection, scope="agent"))
+        refs.extend(_find_embedded_selections(self.config.get("team"), selection, scope="team"))
+        # A malformed tree can contain the same selection through aliases. Keep
+        # the public result deterministic and avoid duplicate delete warnings.
+        return list(dict.fromkeys(refs))

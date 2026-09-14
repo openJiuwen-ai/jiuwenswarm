@@ -71,6 +71,28 @@ class FakeAgentClient:
             self.reload_finished.set()
 
 
+@pytest.mark.asyncio
+async def test_models_get_returns_desensitized_editable_detail(monkeypatch) -> None:
+    class FakeCatalog:
+        def get_public_model_detail(self, model_id):
+            assert model_id == "mdl_a"
+            return {
+                "model_id": model_id,
+                "model_client_config": {"model_name": "a"},
+                "write_only_fields": ["model_client_config.api_key"],
+            }
+
+    monkeypatch.setattr(app_web_handlers, "ModelCatalog", FakeCatalog)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["models.get"](object(), "req-model", {"model_id": "mdl_a"}, "sid")
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert "api_key" not in response["payload"]["model"]["model_client_config"]
+
+
 class _CapturingSessionListAgentClient:
     """捕获 E2A 信封并返回标准 session.list 响应（供 Web 转发断言）。"""
 

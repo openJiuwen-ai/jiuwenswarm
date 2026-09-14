@@ -5504,8 +5504,6 @@ class JiuWenSwarmDeepAdapter:
         requested = str(params.get("model_name") or "").strip()
         if requested:
             return requested
-        if getattr(self, "_last_resolved_model", None) is not None:
-            return ""
         session_id = str(getattr(request, "session_id", None) or "").strip()
         if session_id:
             try:
@@ -5528,16 +5526,31 @@ class JiuWenSwarmDeepAdapter:
         → 适配器默认模型。避免 command.goal / 中断恢复在适配器重建后掉回默认。
         """
         requested = self._requested_model_name(request)
+        selection = None
+        if requested.startswith(("model:", "model_group:")):
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_routing_registry import (
+                ModelExecutionContext,
+                ModelSelectionResolver,
+            )
+            selection_type, selection_id = requested.split(":", 1)
+            selection = ModelSelection(type=selection_type, id=selection_id)
+            checker = getattr(self, "_model_selection_can_access", None)
+            can_access = None
+            if callable(checker):
+                def can_access(kind: str, resource_id: str) -> bool:
+                    return bool(checker(request, kind, resource_id))
+            resolved_selection = ModelSelectionResolver().resolve(
+                selection,
+                ModelExecutionContext(can_access=can_access),
+            )
         if requested.startswith("model_group:"):
             group_id = requested.split(":", 1)[1]
             cached = self._model_group_cache.get(group_id)
-            if cached is not None:
+            if cached is not None and getattr(self, "_model_selection_can_access", None) is None:
                 return cached
-            from jiuwenswarm.common.model_selection import ModelSelection
             from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
-            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
-            resolved = ModelSelectionResolver().resolve(ModelSelection(type="model_group", id=group_id))
-            model = build_model_from_selection(resolved)
+            model = build_model_from_selection(resolved_selection)
             self._model_group_cache[group_id] = model
             return model
         if requested.startswith("model:"):

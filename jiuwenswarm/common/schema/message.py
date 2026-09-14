@@ -48,6 +48,7 @@ class ReqMethod(Enum):
     CONFIG_SAVE_ALL = "config.save_all"
     CONFIG_VALIDATE_MODEL = "config.validate_model"
     MODELS_LIST = "models.list"
+    MODELS_GET = "models.get"
     MODELS_REPLACE_ALL = "models.replace_all"
     MODELS_VALIDATE = "models.validate"
     MODELS_UPSERT = "models.upsert"

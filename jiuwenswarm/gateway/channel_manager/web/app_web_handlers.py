@@ -3861,6 +3861,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             catalog = ModelCatalog()
             if operation == "groups.list":
                 payload = {"groups": catalog.list_public_groups()}
+            elif operation == "models.get":
+                model_id = str((params or {}).get("model_id") or "").strip()
+                payload = {"model": catalog.get_public_model_detail(model_id)}
             elif operation == "models.references":
                 selection = ModelSelection.model_validate(params)
                 payload = {"references": [r.__dict__ for r in catalog.find_references(selection)]}
@@ -3877,7 +3880,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     raise ModelSelectionError(MODEL_SELECTION_NOT_FOUND, "resource does not exist")
                 payload = {key: resource_id, "deleted": True}
             elif operation == "models.upsert":
-                payload = {"model": upsert_model_resource((params or {}).get("model") or {})}
+                saved = upsert_model_resource((params or {}).get("model") or {})
+                payload = {"model": ModelCatalog().get_public_model_detail(saved["model_id"])}
             else:
                 payload = {"group": upsert_model_group_resource((params or {}).get("group") or {})}
             await channel.send_response(ws, req_id, ok=True, payload=payload)
@@ -6580,6 +6584,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_config_proxy("config.save_all", _ConfigReq.CONFIG_SAVE_ALL, _config_save_all)
     _register_config_proxy("config.validate_model", _ConfigReq.CONFIG_VALIDATE_MODEL, _config_validate_model)
     _register_config_proxy("models.list", _ConfigReq.MODELS_LIST, _models_list)
+    _register_config_proxy("models.get", _ConfigReq.MODELS_GET,
+                           lambda ws, rid, p, sid: _model_resource_rpc(ws, rid, p, sid, "models.get"))
     _register_config_proxy("models.replace_all", _ConfigReq.MODELS_REPLACE_ALL, _models_replace_all)
     _register_config_proxy("models.validate", _ConfigReq.MODELS_VALIDATE, _models_validate)
     _register_config_proxy("models.upsert", _ConfigReq.MODELS_UPSERT,

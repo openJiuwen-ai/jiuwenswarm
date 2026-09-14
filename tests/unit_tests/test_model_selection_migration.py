@@ -6,6 +6,7 @@ from jiuwenswarm.common.model_config_validation import validate_models_config
 from jiuwenswarm.common.model_errors import MODEL_SELECTION_DISABLED, ModelSelectionError
 from jiuwenswarm.common.model_catalog import ModelCatalog
 from jiuwenswarm.common.model_selection import ModelSelection, ResolvedModelGroup
+from jiuwenswarm.common.config import _merge_model_update
 from jiuwenswarm.server.runtime.model_routing_registry import ModelExecutionContext, ModelSelectionResolver
 
 
@@ -39,6 +40,51 @@ def test_catalog_is_desensitized():
     catalog = ModelCatalog(_config())
     assert "api_key" not in catalog.list_public_models()[0]
     assert catalog.get_model("mdl_a")["entry"]["model_client_config"]["api_key"] == "secret"
+
+
+def test_model_detail_is_editable_without_exposing_write_only_values():
+    detail = ModelCatalog(_config()).get_public_model_detail("mdl_a")
+
+    assert detail["read_only"] is False
+    assert detail["source"] == "defaults"
+    assert detail["model_detail"]["fallback_tag"] == "chat"
+    assert "api_key" not in detail["model_client_config"]
+    assert "custom_headers" not in detail["model_client_config"]
+    assert detail["write_only_fields"] == [
+        "model_client_config.api_key",
+        "model_client_config.custom_headers",
+    ]
+
+
+def test_model_update_preserves_omitted_write_only_values():
+    current = _config()["models"]["defaults"][0]
+
+    merged = _merge_model_update(current, {
+        "model_id": "mdl_a",
+        "alias": "renamed",
+        "model_client_config": {"model_name": "new-name"},
+        "write_only_fields": ["ignored"],
+    })
+
+    assert merged["alias"] == "renamed"
+    assert merged["model_client_config"]["model_name"] == "new-name"
+    assert merged["model_client_config"]["api_key"] == "secret"
+    assert merged["model_client_config"]["custom_headers"] == {"X-Test": "value"}
+    assert "write_only_fields" not in merged
+
+
+def test_catalog_finds_agent_and_team_references(monkeypatch, tmp_path):
+    config = _config()
+    selection = {"type": "model_group", "id": "mgp_a"}
+    config["agents"] = [{"id": "agent-a", "model_selection": selection}]
+    config["team"] = {"name": "team-a", "binding": {"model_selection": selection}}
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_agent_sessions_dir", lambda: tmp_path / "sessions")
+    monkeypatch.setattr("jiuwenswarm.common.utils.get_cron_jobs_path", lambda: tmp_path / "cron.json")
+
+    refs = ModelCatalog(config).find_references(ModelSelection(**selection))
+
+    assert ("agent", "agent-a") in {(ref.scope, ref.scope_id) for ref in refs}
+    assert ("team", "team-a") in {(ref.scope, ref.scope_id) for ref in refs}
 
 
 def test_default_group_wins_and_keeps_route_order():
