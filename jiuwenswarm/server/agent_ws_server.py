@@ -1155,6 +1155,9 @@ class AgentWebSocketServer:
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
         self._session_stream_tasks: dict[str, dict[asyncio.Task, asyncio.Event]] = {}
+        # 服务停机标志：True 时连接收尾才允许全局格杀在途任务（原 Gateway 独占
+        # 拓扑语义仅对停机成立）；单连接关闭走按请求收窄的取消路径。
+        self._stopping: bool = False
         # Desktop 直连不会经过 Gateway。单独记录活跃桌面会话，在进入 Agent 前
         # 拒绝超过上限的新会话，避免继续占用模型和运行时资源。
         self._active_desktop_chat_streams: dict[str, int] = {}
@@ -1689,6 +1692,8 @@ class AgentWebSocketServer:
 
     async def stop(self) -> None:
         """停止 WebSocket 服务端."""
+        # 停机后连接收尾允许全局格杀（所有输出已无服务对象）。
+        self._stopping = True
         # 先取消 checkpointer 预热任务, 避免在 server 关闭后仍在后台跑.
         warmup = self._checkpointer_warmup_task
         self._checkpointer_warmup_task = None
@@ -1756,6 +1761,9 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 发送 connection.ack 失败: %s", e)
 
         tasks: set[asyncio.Task] = set()
+        # 本连接发起的 chat.send 在途登记：request_id → session_id。
+        # 连接收尾时仅对这些请求做归属校验后的取消，不影响其它连接/会话。
+        conn_inflight: dict[str, str] = {}
 
         try:
             while True:
@@ -1764,7 +1772,9 @@ class AgentWebSocketServer:
                     # 对端干净关闭（管道/stdio EOF；WS 干净关闭由 ws 迭代协议转 None）
                     logger.info("[AgentWebSocketServer] 连接关闭（对端 EOF）: %s", remote)
                     break
-                task = asyncio.create_task(self._handle_message(transport, raw, send_lock))
+                task = asyncio.create_task(
+                    self._handle_message(transport, raw, send_lock, conn_inflight)
+                )
                 tasks.add(task)
                 task.add_done_callback(tasks.discard)
         except TRANSPORT_CLOSED_ERRORS as e:
@@ -1809,36 +1819,60 @@ class AgentWebSocketServer:
             for task in connection_tasks:
                 if not task.done():
                     task.cancel()
-            # Gateway 进程退出/端口关闭时，必须先取消各 session 内流式生产者（SessionManager）
-            # 并中止 DeepAgent 内层循环；否则仅等待 _handle_message 任务结束会一直阻塞到任务自然完成。
-            try:
-                await self._agent_manager.cancel_all_inflight_work(
-                    reason=f"[gateway ws closed {remote}] ",
-                )
-            except Exception:
-                logger.exception("[AgentWebSocketServer] cancel_all_inflight_work failed")
-            # Stop scheduler on server shutdown
-            try:
-                await self._stop_scheduler()
-            except Exception:
-                logger.exception("[AgentWebSocketServer] scheduler stop failed")
-            try:
-                from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
+            # 熔断作用域收窄：kill 的判据是"输出已无服务对象"。
+            # 单连接关闭只杀本连接发起、且归属校验通过的在途请求；全局格杀
+            # 仅在服务停机（所有输出同时失去服务对象，即原 Gateway 独占
+            # 拓扑假设成立的唯一现代场景）时执行。
+            if self._stopping:
+                # 停机：必须取消各 session 内流式生产者并中止 DeepAgent 内层
+                # 循环；否则仅等待 _handle_message 任务结束会阻塞到自然完成。
+                try:
+                    await self._agent_manager.cancel_all_inflight_work(
+                        reason=f"[agentserver stopping {remote}] ",
+                    )
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] cancel_all_inflight_work failed")
+                # Stop scheduler on server shutdown
+                try:
+                    await self._stop_scheduler()
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] scheduler stop failed")
+                try:
+                    from jiuwenswarm.agents.harness.team import cancel_all_team_stream_tasks_across_managers
 
-                await cancel_all_team_stream_tasks_across_managers(
-                    reason=f"[gateway ws closed {remote}] ",
-                )
-            except Exception:
-                logger.exception("[AgentWebSocketServer] team stream cancel failed")
+                    await cancel_all_team_stream_tasks_across_managers(
+                        reason=f"[agentserver stopping {remote}] ",
+                    )
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] team stream cancel failed")
+            elif conn_inflight:
+                # 单连接关闭：按 (session_id, request_id) 逐个取消，adapter 侧
+                # 校验活动回合归属，不匹配则跳过（其它连接/会话不受影响）。
+                try:
+                    await self._agent_manager.cancel_inflight_requests(
+                        [(sid, rid) for rid, sid in conn_inflight.items()],
+                        reason=f"[owner ws closed {remote}] ",
+                    )
+                except Exception:
+                    logger.exception("[AgentWebSocketServer] cancel_inflight_requests failed")
             if connection_tasks:
                 await asyncio.gather(*connection_tasks, return_exceptions=True)
-            self._session_stream_tasks.clear()
+            if self._stopping:
+                # 停机兜底清空全部注册；非停机路径由流任务自身 finally 逐条清理
+                # （_handle_stream_impl: 清除自身的宿主生命周期记录）。
+                self._session_stream_tasks.clear()
             try:
                 await transport.close()
             except Exception:  # noqa: BLE001 - 关停路径容错
                 pass
 
-    async def _handle_message(self, ws: Any, raw: str | bytes, send_lock: asyncio.Lock) -> None:
+    async def _handle_message(
+        self,
+        ws: Any,
+        raw: str | bytes,
+        send_lock: asyncio.Lock,
+        conn_inflight: dict[str, str] | None = None,
+    ) -> None:
         """解析一条 JSON 请求并分发到 IAgentServer 处理."""
         try:
             data = json.loads(raw)
@@ -1928,6 +1962,9 @@ class AgentWebSocketServer:
         # First touch point of frontend chat input inside AgentServer: record it through the
         # agent-core logging system so it lands in the unified agent log stream.
         if request.req_method == ReqMethod.CHAT_SEND:
+            # 连接级在途登记：供连接收尾时按请求归属收窄取消范围。
+            if conn_inflight is not None and request.request_id:
+                conn_inflight[str(request.request_id)] = str(request.session_id or "")
             server_logger.info(
                 "[AgentServer] chat input received: request_id=%s session_id=%s channel_id=%s query=%s",
                 request.request_id,

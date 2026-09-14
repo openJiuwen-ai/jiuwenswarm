@@ -499,6 +499,33 @@ class AgentManager:
                 except Exception:
                     logger.exception("[AgentManager] cancel_inflight_work failed")
 
+    async def cancel_inflight_requests(
+        self,
+        requests: list[tuple[str, str]],
+        reason: str = "[owner ws closed] ",
+    ) -> None:
+        """连接级收窄：仅取消 (session_id, request_id) 列表中归属匹配的在途回合。
+
+        adapter 侧会校验该 session 当前活动回合是否正是由该 request 发起，
+        不匹配则跳过，因此对其它连接/会话的在途任务无副作用。
+        """
+        if not requests:
+            return
+        logger.info(
+            "[AgentManager] cancel_inflight_requests: %d request(s), agents=%d",
+            len(requests),
+            sum(len(m) for m in self.agents.values()),
+        )
+        for modes in list(self.agents.values()):
+            for agent in list(modes.values()):
+                fn = getattr(agent, "cancel_inflight_requests", None)
+                if not callable(fn):
+                    continue
+                try:
+                    await fn(requests, reason)
+                except Exception:
+                    logger.exception("[AgentManager] cancel_inflight_requests failed")
+
     async def cleanup_session_runtime(self, *, channel_id: str = "", session_id: str) -> bool:
         """Release in-memory runtime for one session across existing channel agents.
 

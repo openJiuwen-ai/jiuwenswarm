@@ -8220,6 +8220,84 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         # between the first cancel and abort().
         self._cancel_scheduler_running_tasks()
 
+    async def cancel_inflight_request(
+        self,
+        session_id: str,
+        request_id: str,
+        reason: str = "[owner ws closed] ",
+    ) -> bool:
+        """连接级收窄：仅当 session 当前活动回合正是由 request_id 发起时才取消。
+
+        与 abort_on_gateway_disconnect 的"无条件 abort 共享 adapter 上所有
+        session"不同，这里先做回合归属校验（active_round.work.request_id），
+        归属不匹配（其它连接发起的回合）时不做任何事。
+
+        Returns:
+            True 表示执行了取消；False 表示无活动回合或归属不匹配，未触碰。
+        """
+        if not self._is_session_scoped_adapter:
+            cached = self._get_cached_session_adapter(session_id)
+            if cached is None:
+                # 无 session-scoped adapter = 该 session 无在途流，无需取消
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] cancel_inflight_request: no cached session "
+                    "adapter for session=%s, nothing to cancel (request=%s)",
+                    session_id,
+                    request_id,
+                )
+                return False
+            try:
+                return await cached.cancel_inflight_request(session_id, request_id, reason)
+            except Exception:
+                logger.exception(
+                    "[JiuWenSwarmDeepAdapter] cancel_inflight_request dispatch failed "
+                    "session=%s request=%s",
+                    session_id,
+                    request_id,
+                )
+                return False
+
+        instance = self._instance
+        if instance is None:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] cancel_inflight_request: no instance, skip "
+                "(session=%s request=%s)",
+                session_id,
+                request_id,
+            )
+            return False
+        active = getattr(instance, "active_round", None)
+        work = getattr(active, "work", None)
+        active_rid = getattr(work, "request_id", None)
+        if active is None or active_rid != request_id:
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] cancel_inflight_request: ownership mismatch, "
+                "skip (session=%s closing_request=%s active_request=%s)",
+                session_id,
+                request_id,
+                active_rid,
+            )
+            return False
+        try:
+            cancelled = await instance.cancel_round(reason=reason)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] cancel_inflight_request: cancelled=%s "
+                "session=%s request=%s",
+                cancelled,
+                session_id,
+                request_id,
+            )
+        except Exception:
+            logger.exception(
+                "[JiuWenSwarmDeepAdapter] cancel_inflight_request failed session=%s request=%s",
+                session_id,
+                request_id,
+            )
+            return False
+        # 打断卡在 LLM HTTP await 的在途任务（与会话级 cancel 同样的兜底）。
+        self._cancel_scheduler_running_tasks()
+        return bool(cancelled)
+
     @staticmethod
     def _model_looks_usable(model: Model | None) -> bool:
         if model is None:

@@ -3387,6 +3387,41 @@ class JiuWenSwarm:
         except Exception:
             logger.exception("[JiuWenSwarm] adapter.abort_on_gateway_disconnect failed")
 
+    async def cancel_inflight_requests(
+        self,
+        requests: list[tuple[str, str]],
+        log_prefix: str = "[owner ws closed] ",
+    ) -> None:
+        """连接级收窄：按 (session_id, request_id) 取消归属匹配的在途回合。
+
+        与 cancel_inflight_work 的全量中止不同，这里逐请求交给 adapter 做
+        活动回合归属校验，非该请求发起的运行中任务不会被触碰。
+        """
+        adapter = self._adapter
+        if adapter is None or not requests:
+            logger.info(
+                "[JiuWenSwarm] cancel_inflight_requests: skip (adapter=%s n=%d)",
+                "None" if adapter is None else "set",
+                len(requests),
+            )
+            return
+        fn = getattr(adapter, "cancel_inflight_request", None)
+        if not callable(fn):
+            logger.info(
+                "[JiuWenSwarm] cancel_inflight_requests: skip (adapter %s has no cancel_inflight_request)",
+                type(adapter).__name__,
+            )
+            return
+        for session_id, request_id in requests:
+            try:
+                await fn(session_id, request_id, log_prefix)
+            except Exception:
+                logger.exception(
+                    "[JiuWenSwarm] cancel_inflight_request failed session=%s request=%s",
+                    session_id,
+                    request_id,
+                )
+
     async def cleanup(self) -> None:
         """清理资源，准备销毁实例.
 
