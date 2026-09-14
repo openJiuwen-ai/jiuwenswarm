@@ -144,6 +144,10 @@ ERROR_EVENT_TYPE = _ERROR_EVENT.value
 STREAM_SOURCE_ID_FIELD = "stream_source_id"
 _INTERRUPT_OUTPUT_ATTACH_RETRY_COUNT = 20
 _INTERRUPT_OUTPUT_ATTACH_RETRY_INTERVAL_SECONDS = 0.05
+# 忙时中断续跑 ACK 的最长挂起时间：ACK 终结帧必须晚于被注入回合的所有
+# 输出帧（见 _await_busy_interrupt_output_idle），故等待当前输出租约释放，
+# 仅在超长回合异常悬挂时兜底放行。
+_INTERRUPT_ACK_HOLD_TIMEOUT_SECONDS = 1800.0
 
 # SkillTurbo 内部工具 id 后缀（如 BashTool_skill_turbo）。外层 ReAct 工具结果不含此后缀。
 _SKILL_TURBO_TOOL_ID_SUFFIX = "_skill_turbo"
@@ -3174,6 +3178,9 @@ class JiuWenSwarmDeepAdapter:
             await self._clear_skill_turbo_resume_ctx_via_isolated_session(target_sid)
             if context_engine is not None:
                 await context_engine.save_contexts(loop_session)
+            # 强制落盘（须在 save_contexts 之后），防 post_run 幂等导致清除不持久化
+            if callable(getattr(loop_session, "commit", None)):
+                await loop_session.commit()
         except Exception:
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] interrupt: failed to clear pending "
@@ -3201,6 +3208,13 @@ class JiuWenSwarmDeepAdapter:
         """
         card = getattr(getattr(self, "_instance", None), "card", None)
         if card is None:
+            # card 缺失时无法打开 checkpointer 通道，clear 静默跳过会导致
+            # 残留 resume_ctx 触发任务重跑，提升到 warning 保证可观测。
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear skipped: "
+                "card is None session_id=%s (stale resume_ctx may trigger task rerun)",
+                session_id,
+            )
             return
         from openjiuwen.core.session.agent import create_agent_session
         from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
@@ -3217,9 +3231,12 @@ class JiuWenSwarmDeepAdapter:
             try:
                 await session.post_run()
             except Exception:
-                logger.debug(
+                # post_run 失败时 clear 不落盘，残留 resume_ctx 会触发任务重跑，
+                # 提升到 warning 保证可观测。
+                logger.warning(
                     "[JiuWenSwarmDeepAdapter] skill_turbo resume ctx clear "
-                    "post_run failed",
+                    "post_run failed session_id=%s (stale resume_ctx may trigger task rerun)",
+                    session_id,
                     exc_info=True,
                 )
 
@@ -11390,28 +11407,29 @@ class JiuWenSwarmDeepAdapter:
         if not summary:
             return
 
-        # 构建中断恢复提示词（内联，避免依赖 plan_pause_helpers）。
+        # 构建产物提示词（内联，避免依赖 plan_pause_helpers）。
+        # 注：此提示对中断取消和正常完成两种场景都生效——产物记录不区分二者，
+        # 措辞统一为"已有产物"而非"中断取消"，避免对已完成的任务产生误导。
         language = self._resolve_runtime_language()
         template = (
-            "[Interrupt recovery hint]\n"
-            "The previous task was interrupted and cancelled. "
-            "Here is a summary of completed work artifacts before the interruption:\n\n"
+            "[Existing artifact hint]\n"
+            "A previous run left completed work artifacts:\n\n"
             "{summary}\n\n"
             "Based on this, judge the current task state:\n"
             "- If artifacts show the target file already exists with substantial content, "
-            "read_file first before deciding to supplement or rebuild from scratch\n"
+            "read_file first to check the current state before deciding to supplement or "
+            "rebuild from scratch\n"
             "- If artifacts show the target file was not created or has minimal content, "
             "you may create it anew\n"
-            "- Do not blindly write_file to rebuild a file that already exists and is complete"
+            "- Do not blindly rebuild a file that already exists and is complete"
         ) if language in ("en", "english") else (
-            "【中断恢复提示】之前的任务被中断取消。"
-            "以下是中断前已完成的工作产物摘要：\n\n"
+            "【已有产物提示】检测到上一轮留下的已完成产物：\n\n"
             "{summary}\n\n"
             "请据此判断当前任务状态：\n"
             "- 如果产物显示目标文件已存在且内容较完整，请先 read_file 查看当前状态，"
             "再决定是补充完善还是从头重建\n"
             "- 如果产物显示目标文件尚未创建或内容很少，可以重新创建\n"
-            "- 不要盲目从头 write_file 重建一个已存在的完整文件"
+            "- 不要盲目从头重建一个已存在的完整文件"
         )
         prompt = template.format(summary=summary.strip() or "(empty)")
 
@@ -12041,12 +12059,19 @@ class JiuWenSwarmDeepAdapter:
                     yield summary_chunk
 
             async def _clear_resume_ctx() -> None:
-                await _skill_turbo_clear_resume_ctx(session)
+                # 清掉 DeepAgent 键的 pending HITL 状态与隔离键的 resume_ctx，
+                # 避免下一条消息重放中断点重跑已完成任务。
+                sid = request.session_id or "default"
                 try:
-                    await session.post_run()
+                    if not await self._clear_pending_skill_turbo_hitl(sid):
+                        await self._clear_skill_turbo_resume_ctx_via_isolated_session(sid)
                 except Exception:
-                    logger.debug(
-                        "[JiuWenSwarmDeepAdapter] skill_turbo resume_stream post_run failed",
+                    # 清除失败时残留断点会重跑任务，warning 保证可观测。
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] skill_turbo resume clear "
+                        "failed session_id=%s (stale interrupt state "
+                        "may trigger task rerun)",
+                        sid,
                         exc_info=True,
                     )
 
@@ -12826,6 +12851,69 @@ class JiuWenSwarmDeepAdapter:
             (time.monotonic() - started) * 1000,
         )
         return None
+
+    async def _await_busy_interrupt_output_idle(
+        self,
+        session_id: str,
+        *,
+        timeout: float = _INTERRUPT_ACK_HOLD_TIMEOUT_SECONDS,
+    ) -> None:
+        """Hold the busy-path interrupt ACK until the current output consumer unwinds.
+
+        The interrupt resume already injected its answer via ``send_input``;
+        the resumed round keeps streaming on the previous consumer's output
+        lease.  Relay clients forward this ACK's terminal frame into their
+        still-listening parent stream, so an early terminal makes them tear
+        the parent down mid-round and drop the resumed round's task/chat
+        events.  Wait for the current lease to be released (round finished /
+        consumer detached) before the ACK emits its terminal frame.
+        """
+        try:
+            manager = self._instance._interaction_output  # pylint: disable=protected-access
+            lease = manager.current_lease()
+            if lease is None:
+                # 无活跃租约（已空闲）：无需挂起。
+                return
+            await asyncio.wait_for(lease.closed.wait(), timeout=timeout)
+        except asyncio.TimeoutError:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] interrupt ACK hold timed out waiting for "
+                "busy output lease: session_id=%s timeout_ms=%.0f",
+                session_id,
+                timeout * 1000,
+            )
+        except (AttributeError, TypeError):
+            # 测试替身 / 运行时无租约管理器：无可等待的租约事件，直接放行
+            # （保持 ACK 立即终结的旧行为）。
+            return
+        except Exception:
+            # 租约等待异常不得反噬 ACK 流本身。
+            logger.exception(
+                "[JiuWenSwarmDeepAdapter] interrupt ACK hold failed: session_id=%s",
+                session_id,
+            )
+
+    def _clear_round_scoped_permission_grants(self) -> None:
+        """新一轮用户消息开始时回收「本次允许」的轮级授权。
+
+        SkillAuthorizationPermissionRail 会把 allow_once 授权写入会话
+        auto_confirm 表并打轮级标记（同一轮任务内同 key 免重复弹卡）。
+        此处在普通用户新消息（非 HITL resume / 非 goal 控制）开始时回收
+        这些轮级条目；用户显式选择「会话内记住 / 永久记住」的授权不受影响。
+        """
+        try:
+            from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization_permission_rail import (
+                clear_round_scoped_auto_confirm,
+            )
+
+            clear_round_scoped_auto_confirm(
+                getattr(self._instance, "_interaction_session", None)
+            )
+        except Exception:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] clear round-scoped auto_confirm failed",
+                exc_info=True,
+            )
 
     @staticmethod
     def _resolve_input_dispatch_mode(params: Any) -> InputDispatchMode | None:
@@ -16534,6 +16622,9 @@ class JiuWenSwarmDeepAdapter:
                     )
                 )
             else:
+                # 新一轮用户消息：回收「本次允许」的轮级授权（allow_once
+                # 只在本轮任务内复用，跨用户消息不生效）。
+                self._clear_round_scoped_permission_grants()
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is not None:
                     await self._instance.send_input(
@@ -17758,11 +17849,34 @@ class JiuWenSwarmDeepAdapter:
                         request.session_id or "default"
                     )
                 if interaction_stream is None:
-                    async for chunk in _yield_runtime_accepted():
-                        yield chunk
+                    # Busy interaction: the injected answer resumes the round
+                    # whose output the previous chat.send consumer still
+                    # streams.  Relay clients forward this ACK's terminal
+                    # frame into their still-listening parent stream, so an
+                    # immediate terminal would tear the parent down mid-round
+                    # and drop the resumed round's task/chat events.  Hold the
+                    # ACK open until the busy consumer releases its lease.
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload={"event_type": "runtime.accepted", "request_id": rid},
+                        is_complete=False,
+                    )
+                    await self._await_busy_interrupt_output_idle(
+                        request.session_id or "default"
+                    )
+                    yield AgentResponseChunk(
+                        request_id=rid,
+                        channel_id=cid,
+                        payload=None,
+                        is_complete=True,
+                    )
                     interaction_stream_abort = False
                     return
             else:
+                # 新一轮用户消息：回收「本次允许」的轮级授权（allow_once
+                # 只在本轮任务内复用，跨用户消息不生效）。
+                self._clear_round_scoped_permission_grants()
                 interaction_stream = await self._instance.attach_output()
                 if interaction_stream is None:
                     async for chunk in _yield_runtime_accepted():
@@ -17962,8 +18076,10 @@ class JiuWenSwarmDeepAdapter:
                     continue
 
                 if chunk_type == "llm_output":
+                    # openjiuwen llm_controller streams payload.output; SkillTurbo
+                    # uses payload.content. Accept either — same as llm_reasoning.
                     content = (
-                        chunk.payload.get("content", "")
+                        (chunk.payload.get("content", "") or chunk.payload.get("output", ""))
                         if isinstance(chunk.payload, dict)
                         else str(chunk.payload)
                     )
@@ -18771,8 +18887,11 @@ class JiuWenSwarmDeepAdapter:
                         return {"event_type": "chat.error", "error": error or "任务执行失败"}
 
                 if chunk_type == "llm_output":
+                    # Mirror llm_reasoning: openjiuwen uses "output", SkillTurbo "content".
                     content = (
-                        payload.get("content", "") if isinstance(payload, dict) else str(payload)
+                        (payload.get("content", "") or payload.get("output", ""))
+                        if isinstance(payload, dict)
+                        else str(payload)
                     )
                     delta_payload = JiuWenSwarmDeepAdapter._stream_text_payload(
                         "chat.delta", content

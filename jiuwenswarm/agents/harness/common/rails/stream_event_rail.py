@@ -57,6 +57,7 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import (
     SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY,
     extract_effective_project_dir,
+    overlay_serial_todo_statuses,
 )
 from jiuwenswarm.common.tool_display import (
     build_tool_display_name,
@@ -1628,6 +1629,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
 
         # Parent StreamEventRail only: team-member rails use their own
         # workspace and must not feed request_summaries.tasks.
+        # Serial overlay is applied after format (same helper as task.update)
+        # so todo.updated cannot leak a later completed row while an earlier
+        # item is still open.
         if not self._member_name:
             from jiuwenswarm.perf.guard import run_perf_safe
             from jiuwenswarm.perf.todo_tracker import (
@@ -1644,7 +1648,9 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
                 ),
             )
 
-        todos = self._format_todos_for_frontend(todos_data)
+        todos = overlay_serial_todo_statuses(
+            self._format_todos_for_frontend(todos_data)
+        )
 
         try:
             await session.write_stream(

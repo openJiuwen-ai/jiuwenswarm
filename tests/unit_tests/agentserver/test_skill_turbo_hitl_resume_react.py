@@ -21,6 +21,7 @@ from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from jiuwenswarm.server.runtime.skill_turbo.permission_bridge import (
     SKILL_TURBO_RESUME_CTX_KEY,
+    clear_resume_ctx,
     load_resume_ctx,
     mark_resume_in_flight,
     save_resume_ctx,
@@ -385,6 +386,89 @@ async def test_save_resume_ctx_clears_stale_resume_in_flight():
     assert again.get("pending_tool_call_id") == "skill_turbo-tc-ask_user-2"
     assert not again.get("resume_in_flight"), (
         "save_resume_ctx 必须清除上一轮 mark_resume_in_flight 残留的 resume_in_flight 标志"
+    )
+
+
+@pytest.mark.asyncio
+async def test_clear_resume_ctx_persists_across_sessions():
+    """clear_resume_ctx 后新 session load_resume_ctx 必须返回 None。
+
+    场景：SkillTurbo resume 成功交付 PPT 后调用 clear_resume_ctx，随后同一
+    session_id 的新请求（如过期的 permission_interrupt 续延）经
+    skill_acceleration_exec 工具再次 load_resume_ctx。若 clear 未真正落盘，
+    新 session pre_run 会从 checkpointer 读回残留 ctx，触发 PPT 重复生成。
+
+    openjiuwen Session.post_run 是幂等的（_post_run_done 标志）。
+    _try_skill_turbo_resume 路径里 mark_resume_in_flight 已 post_run 过，
+    随后 _clear_resume_ctx() 若用同一 session 再 post_run 是 no-op，不 commit。
+    修复后 _clear_resume_ctx() 改用独立 session（pre_run+clear+post_run）保证落盘。
+    本测试模拟该不变量：clear 后任意新 session load 必须返回 None。
+    """
+    from openjiuwen.core.session.utils import update_dict
+
+    checkpoint: dict = {}
+
+    class _MergeCheckpointSession:
+        """模拟 openjiuwen Session 的 merge 语义 + 幂等 pre_run/post_run。"""
+
+        def __init__(self):
+            self._state: dict = {}
+            self._post_run_done = False
+            self._pre_run_done = False
+
+        async def pre_run(self, inputs=None):
+            if self._pre_run_done:
+                return
+            self._state = copy.deepcopy(checkpoint)
+            self._pre_run_done = True
+            self._post_run_done = False
+
+        async def post_run(self):
+            if self._post_run_done:
+                return
+            checkpoint.clear()
+            checkpoint.update(copy.deepcopy(self._state))
+            self._post_run_done = True
+
+        def update_state(self, mapping):
+            update_dict(mapping, self._state)
+
+        def get_state(self, key):
+            return copy.deepcopy(self._state.get(key))
+
+    # 中断：保存 resume_ctx
+    saver = _MergeCheckpointSession()
+    await saver.pre_run()
+    await save_resume_ctx(
+        saver,
+        plan_code="plan-x",
+        inputs={},
+        pending_tool_call_id="skill_turbo-tc-ask_user-1",
+        task_states=None,
+    )
+    await saver.post_run()
+
+    # 恢复请求到达：_try_skill_turbo_resume 创建新 session
+    resume_session = _MergeCheckpointSession()
+    await resume_session.pre_run()
+    loaded = await load_resume_ctx(resume_session)
+    assert loaded is not None
+    # mark_resume_in_flight: pre_run + update_state + post_run（已 post_run）
+    await mark_resume_in_flight(resume_session, loaded)
+
+    # 恢复成功后 clear：模拟修复后的 _clear_resume_ctx() —— 用独立 session
+    # （同一 session 的 post_run 已被 mark_resume_in_flight 触发，是 no-op）。
+    clear_session = _MergeCheckpointSession()
+    await clear_session.pre_run()
+    await clear_resume_ctx(clear_session)
+    await clear_session.post_run()
+
+    # 新请求新 session：skill_acceleration_exec 工具 load_resume_ctx
+    reader = _MergeCheckpointSession()
+    stale = await load_resume_ctx(reader)
+    assert stale is None, (
+        "clear_resume_ctx 后 load_resume_ctx 必须返回 None；"
+        "残留 ctx 会让过期中断续延触发任务重复执行"
     )
 
 

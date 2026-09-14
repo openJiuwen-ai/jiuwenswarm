@@ -12,7 +12,10 @@
 from __future__ import annotations
 
 import logging
+from contextvars import ContextVar
+from typing import Any, Optional
 
+from openjiuwen.core.single_agent.interrupt.state import INTERRUPT_AUTO_CONFIRM_KEY
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
@@ -21,9 +24,105 @@ logger = logging.getLogger(__name__)
 #: 由 SkillAuthorizationRail 专属门禁裁决的工具。
 _SKILL_GATE_TOOL_NAMES = ("skill_tool", "skill_complete")
 
+#: 「本次允许」轮内复用：allow_once 授权写入会话 auto_confirm 表时同步记录
+#: 的 key 集合（session state key）。新一轮用户消息开始时仅清除这些 key，
+#: 用户显式选择「会话内记住/永久记住」的授权不受影响。
+ROUND_AUTO_CONFIRM_KEYS = "__round_auto_confirm_keys__"
+
+#: 在 ``_should_store_auto_confirm``（持有 auto_confirm 标志）与
+#: ``_store_auto_confirm``（签名不含该标志）之间传递写入范围。
+_PENDING_STORE_SCOPE: ContextVar[Optional[str]] = ContextVar(
+    "permission_auto_confirm_store_scope", default=None
+)
+
+
+def _store_round_scoped_auto_confirm(ctx: AgentCallbackContext, auto_confirm_key: str) -> None:
+    """allow_once 授权写入 auto_confirm 表并打轮级标记。
+
+    写入现有 ``__interrupt_auto_confirm__`` 使既有的首轮命中路径
+    （``_is_auto_confirmed``）直接放行；同时把 key 记入
+    ``__round_auto_confirm_keys__``，供新一轮用户消息开始时精确回收。
+    """
+    session = ctx.session
+    config = session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) or {}
+    if not isinstance(config, dict):
+        config = {}
+    config[auto_confirm_key] = True
+    round_keys = session.get_state(ROUND_AUTO_CONFIRM_KEYS) or []
+    if not isinstance(round_keys, list):
+        round_keys = []
+    if auto_confirm_key not in round_keys:
+        round_keys = [*round_keys, auto_confirm_key]
+    session.update_state({
+        INTERRUPT_AUTO_CONFIRM_KEY: config,
+        ROUND_AUTO_CONFIRM_KEYS: round_keys,
+    })
+    logger.info(
+        "[PermissionEngine] permission.auto_confirm.store_round_scoped key=%s",
+        auto_confirm_key,
+    )
+
+
+def clear_round_scoped_auto_confirm(session: Any) -> None:
+    """新一轮用户消息开始时回收「本次允许」的轮级授权。
+
+    只删除 ``__round_auto_confirm_keys__`` 记录的 key；「会话内记住」
+    （``auto_confirm=True``）写入的条目不在该集合中，保持有效。
+    """
+    if session is None:
+        return
+    try:
+        round_keys = session.get_state(ROUND_AUTO_CONFIRM_KEYS)
+    except Exception:  # noqa: BLE001
+        return
+    if not isinstance(round_keys, list) or not round_keys:
+        return
+    config = session.get_state(INTERRUPT_AUTO_CONFIRM_KEY) or {}
+    if isinstance(config, dict):
+        for key in round_keys:
+            config.pop(key, None)
+    session.update_state({
+        INTERRUPT_AUTO_CONFIRM_KEY: config,
+        ROUND_AUTO_CONFIRM_KEYS: [],
+    })
+    logger.info(
+        "[PermissionEngine] permission.auto_confirm.round_scope_cleared keys=%s",
+        round_keys,
+    )
+
 
 class SkillAuthorizationPermissionRail(PermissionInterruptRail):
-    """PermissionInterruptRail 子类：Skill 门禁已裁决的调用跳过权限 Rail。"""
+    """PermissionInterruptRail 子类：Skill 门禁已裁决的调用跳过权限 Rail。
+
+    另：覆盖 auto_confirm 写入判定——「本次允许」（allow_once）也写入会话
+    auto_confirm 表但打轮级标记（``ROUND_AUTO_CONFIRM_KEYS``），使同一轮
+    任务内同 key 的后续工具调用免于重复弹卡；新一轮用户消息开始时由
+    ``clear_round_scoped_auto_confirm`` 回收，不扩大到跨轮/跨会话。
+    """
+
+    @staticmethod
+    def _should_store_auto_confirm(
+        *,
+        approved: bool,
+        auto_confirm: bool,
+        session: Any,
+        auto_confirm_key: str,
+        persisted: bool,
+    ) -> bool:
+        base_ok = bool(approved and session is not None and auto_confirm_key and not persisted)
+        if base_ok and not auto_confirm:
+            # allow_once：本轮内复用（写轮级标记，新用户消息时回收）。
+            _PENDING_STORE_SCOPE.set("round")
+            return True
+        _PENDING_STORE_SCOPE.set("session" if (base_ok and auto_confirm) else None)
+        return bool(base_ok and auto_confirm)
+
+    @staticmethod
+    def _store_auto_confirm(ctx: AgentCallbackContext, auto_confirm_key: str) -> None:
+        if _PENDING_STORE_SCOPE.get() == "round":
+            _store_round_scoped_auto_confirm(ctx, auto_confirm_key)
+            return
+        PermissionInterruptRail._store_auto_confirm(ctx, auto_confirm_key)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if self._skill_authorization_gate_handled(ctx):
@@ -78,5 +177,7 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
 
 
 __all__ = [
+    "ROUND_AUTO_CONFIRM_KEYS",
     "SkillAuthorizationPermissionRail",
+    "clear_round_scoped_auto_confirm",
 ]

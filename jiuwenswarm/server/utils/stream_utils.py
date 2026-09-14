@@ -254,8 +254,9 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
             return {"event_type": "chat.error", "error": error}
 
     if chunk_type == "llm_output":
+        # openjiuwen streams payload.output; SkillTurbo uses payload.content.
         content = (
-            payload.get("content", "")
+            (payload.get("content", "") or payload.get("output", ""))
             if isinstance(payload, dict)
             else str(payload)
         )
