@@ -20,14 +20,13 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import time
 from pathlib import Path
 from typing import Any
 
 from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
-
-import logging
 
 logger = logging.getLogger(__name__)
 

@@ -14,12 +14,12 @@
 
 from __future__ import annotations
 
+import logging
+
 import uvicorn
 
 from agent_ssas.core.framework.access_adapter.http_server import create_app
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
-
-import logging
 
 logger = logging.getLogger(__name__)
 
