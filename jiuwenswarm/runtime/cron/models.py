@@ -220,13 +220,26 @@ def validate_cron_model(raw: Any) -> str | None:
     value = str(raw).strip()
     if not value:
         return None
-    from jiuwenswarm.common.config import get_model_config, get_model_names
+    from jiuwenswarm.common.config import (
+        get_model_config,
+        get_model_names,
+        resolve_env_vars,
+    )
 
     entry = get_model_config(value)
     if entry is not None:
         mcc = entry.get("model_client_config") or {}
-        canonical = (mcc.get("model_name") or "").strip()
-        return canonical if canonical else value
+        configured_name = mcc.get("model_name")
+        if not configured_name:
+            return value
+        canonical = str(resolve_env_vars(configured_name) or "").strip()
+        if not canonical:
+            raise ValueError(
+                f"Configured model {value!r} has a model_client_config.model_name "
+                f"that resolves to an empty value ({configured_name!r}). Set the "
+                "referenced environment variable or configure a concrete model_name."
+            )
+        return canonical
 
     try:
         from jiuwenswarm.server.runtime.opencode_zen import (
