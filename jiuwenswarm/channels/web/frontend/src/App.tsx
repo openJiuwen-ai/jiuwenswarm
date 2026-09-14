@@ -670,13 +670,6 @@ function AppContent({
     useSubagentStore.getState().hydrateRuntime(sessionId);
   }, [sessionId]);
 
-  useEffect(() => {
-    if (!initialDataLoaded) {
-      return;
-    }
-    void loadProjects();
-  }, [initialDataLoaded, loadProjects]);
-
   const {
     setCurrentSession,
     setAvailableModels,
@@ -2038,6 +2031,34 @@ function AppContent({
       setInitialDataLoaded(true);
     })();
   }, [fetchConfig, initialDataLoaded, isConnected]);
+
+  const initialProjectsLoadedRef = useRef(false);
+
+  useEffect(() => {
+    if (!initialDataLoaded || !isConnected || initialProjectsLoadedRef.current) {
+      return;
+    }
+    let cancelled = false;
+    const retryDelaysMs = [2000, 5000, 10000, 15000, 30000];
+    const run = async () => {
+      if (await loadProjects()) {
+        if (!cancelled) initialProjectsLoadedRef.current = true;
+        return;
+      }
+      for (const delayMs of retryDelaysMs) {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        if (cancelled) return;
+        if (await loadProjects()) {
+          if (!cancelled) initialProjectsLoadedRef.current = true;
+          return;
+        }
+      }
+    };
+    void run();
+    return () => {
+      cancelled = true;
+    };
+  }, [initialDataLoaded, isConnected, loadProjects]);
 
   useEffect(() => {
     if (!isConnected || !routeSessionId) {

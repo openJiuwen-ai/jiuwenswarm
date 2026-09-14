@@ -46,7 +46,7 @@ interface WorkspaceState {
   isLoadingProjects: boolean;
   error: string | null;
   setWorkMode: (workMode: WorkMode) => Promise<void>;
-  loadProjects: (refreshEpoch?: number) => Promise<void>;
+  loadProjects: (refreshEpoch?: number) => Promise<boolean>;
   loadProjectSessions: (projectId: string, limit?: number, refreshEpoch?: number) => Promise<void>;
   showMoreSessions: (projectId: string) => Promise<void>;
   collapseSessions: (projectId: string) => Promise<void>;
@@ -283,8 +283,8 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
-      if (get().workMode !== requestedWorkMode) return;
-      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      if (get().workMode !== requestedWorkMode) return true;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return true;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
@@ -308,8 +308,10 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
         };
       });
       await get().loadPinnedSessions(refreshEpoch);
+      return true;
     } catch (error) {
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
+      return false;
     }
   },
 
