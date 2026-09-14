@@ -358,6 +358,22 @@ gateway_deploy_process() {
     master_host=$(get_local_ip)   # 本机即 ingress master，gateway 部署在本机
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
+    # 幂等保护：服务已运行时跳过整个部署（与 agent-registry 一致），
+    # 避免重复 up 触发 jiuwenswarm-init 重建工作区 + systemctl restart 重启运行中进程、
+    # 以及 nohup 模式重复拉起；配置更新需先 down 再 up。
+    local svc_name
+    svc_name=$(gateway_service_name)
+    if gateway_has_systemd "${master_host}"; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+            warning "${svc_name} already running; run 'down' first to redeploy"
+            return 0
+        fi
+    fi
+    if exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-gateway' >/dev/null 2>&1"; then
+        warning "jiuwenswarm-gateway process already alive (unit not active: deactivating/legacy nohup); run 'down' first to redeploy"
+        return 0
+    fi
+
     info "Deploying gateway on ${master_host}..."
 
     # 前置端口检查仅对实际持有 ingress_virtual_ip 的节点执行：

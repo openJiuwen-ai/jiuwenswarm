@@ -212,6 +212,20 @@ web_deploy_process() {
     master_host=$(web_resolve_host)
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
 
+    # 幂等保护：服务已运行时跳过整个部署（与 gateway / agent-registry 一致），
+    # 避免重复 up 无条件 systemctl restart 重启运行中进程、中断在途连接。
+    local svc_name
+    svc_name=$(web_service_name)
+    if web_has_systemd "${master_host}"; then
+        if exec_on_host "${master_host}" "systemctl is-active --quiet ${svc_name}" 2>/dev/null; then
+            warning "${svc_name} already running; run 'down' first to redeploy"
+            return 0
+        fi
+    elif exec_on_host "${master_host}" "pgrep -f '[j]iuwenswarm-web' >/dev/null 2>&1"; then
+        warning "jiuwenswarm-web already running (process mode); run 'down' first to redeploy"
+        return 0
+    fi
+
     info "Deploying web server on ${master_host}..."
 
     # web server 无配置文件需渲染(jiuwenswarm whl 自带 frontend/dist), 直接启动。
