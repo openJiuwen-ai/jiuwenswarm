@@ -464,8 +464,9 @@ install_openjiuwen() {
   die "git not found and no local agent-core. Options:
   1) export PATH=${OHOS_HNP_BIN}:\$PATH   (cmd-pkgs git 常见路径)
   2) export GIT_EXECUTABLE=/path/to/git
-  3) copy agent-core to $OFFICE_CLAW/agent-core then USE_LOCAL_OPENJIUWEN=1
-  4) Windows zip: https://gitcode.com/openJiuwen/agent-core/-/tree/enterprise-dev"
+  3) export AGENT_CORE_PATH=/path/to/agent-core (dev-stable 分支源码) + USE_LOCAL_OPENJIUWEN=1
+  4) copy agent-core to $OFFICE_CLAW/agent-core then USE_LOCAL_OPENJIUWEN=1
+  5) zip: https://gitcode.com/openJiuwen/agent-core/-/tree/${OPENJIUWEN_GIT_REF:-dev-stable}"
 }
 
 # google-genai 版本对齐（2026-09-14 真机实测补充）：
