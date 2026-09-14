@@ -12,9 +12,8 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
-from jiuwenswarm.runtime import (
-    AgentRuntime,
-    RuntimeStateError,
+from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
+from jiuwenswarm.runtime.session_provisioner import (
     SessionForkInput,
     SessionForkResult,
     SessionProvisionCommitTiming,

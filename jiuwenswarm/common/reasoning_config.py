@@ -25,6 +25,14 @@ def _parse_api_base(api_base: str | None):
     return urlparse(value)
 
 
+# Kimi models reject any other sampling values. Match both official endpoints
+# and the model ID because aggregators such as DashScope expose Kimi models too.
+SAMPLING_OVERRIDE_RULES: dict[str, dict[str, float]] = {
+    "api.moonshot.cn": {"temperature": 1.0, "top_p": 0.95},
+    "api.kimi.com": {"temperature": 1.0, "top_p": 0.95},
+}
+
+
 # 按 api_base host 识别的 endpoint_profile 覆盖表,来源是用户配置 config.yaml
 # 顶层的 endpoint_profile_overrides(host -> profile),源码不内置任何 host。
 # 用途:自建网关(如 vLLM 起的 DashScope 风格服务,认 enable_thinking /
@@ -55,6 +63,18 @@ def effective_endpoint_profile(api_base: str | None, endpoint_profile: Any = Non
     if explicit:
         return explicit
     return resolve_endpoint_profile_override(api_base)
+
+
+def resolve_sampling_override(
+    api_base: str | None,
+    model_name: str | None = None,
+) -> dict[str, float] | None:
+    """Return the required sampling parameters for Kimi endpoints/models."""
+    host = (_parse_api_base(api_base).hostname or "").lower()
+    normalized_model = str(model_name or "").strip().lower().rsplit("/", 1)[-1]
+    if host in SAMPLING_OVERRIDE_RULES or normalized_model.startswith("kimi-"):
+        return {"temperature": 1.0, "top_p": 0.95}
+    return None
 
 
 def normalize_reasoning_level(raw: Any) -> ReasoningLevel | None:
@@ -152,6 +172,7 @@ def validate_reasoning_level_for_model(
 
 
 __all__ = [
+    "SAMPLING_OVERRIDE_RULES",
     "ReasoningLevel",
     "SUPPORTED_REASONING_LEVELS",
     "effective_endpoint_profile",
@@ -159,5 +180,6 @@ __all__ = [
     "reasoning_config_for_level",
     "reasoning_level_options",
     "resolve_endpoint_profile_override",
+    "resolve_sampling_override",
     "validate_reasoning_level_for_model",
 ]

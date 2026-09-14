@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 import inspect
 import logging
@@ -19,7 +20,7 @@ import shutil
 import tempfile
 import time
 from pathlib import Path
-from typing import Any, AsyncIterator, Tuple
+from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
 
@@ -75,6 +76,10 @@ from jiuwenswarm.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
 )
+from jiuwenswarm.common.context_keys import (
+    JIUWENSWARM_CHANNEL_CONTEXT_KEY,
+    JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
@@ -102,6 +107,30 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     EVOLUTION_INTERRUPT_METADATA_SOURCES,
     is_interrupt_resume_payload,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+)
+
+
+def _with_request_runtime_context(
+    run: object,
+    *,
+    channel: str,
+    skip_a2ui: bool,
+) -> dict[str, Any]:
+    """Return a copy of ``run`` carrying JiuwenSwarm request metadata."""
+    run_data = dict(run) if isinstance(run, dict) else {}
+    raw_context = run_data.get("context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    raw_extra = context.get("extra")
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra[JIUWENSWARM_CHANNEL_CONTEXT_KEY] = channel
+    if skip_a2ui:
+        extra[JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY] = True
+    context["extra"] = extra
+    run_data["context"] = context
+    return run_data
 
 
 class _TeamPlanApprovalPayloadError(ValueError):
@@ -180,6 +209,23 @@ def restore_chat_send_equipment_params(
             value = saved[key]
             params[key] = list(value) if isinstance(value, list) else value
     return params
+
+
+def _permission_card_ids_from_answers(answers: list[dict]) -> list[str]:
+    """Normalize the single opaque permission-card locator."""
+
+    if len(answers) != 1:
+        return []
+    answer = answers[0]
+    if not isinstance(answer, dict):
+        return []
+    raw_card_id = answer.get("card_id")
+    if not isinstance(raw_card_id, str):
+        return []
+    card_id = raw_card_id.strip()
+    if not card_id or len(card_id) > 128:
+        return []
+    return [card_id]
 
 
 def _schedule_symphony_session_feedback(
@@ -269,7 +315,38 @@ def _warn_unrecognised_approval_option(
     )
 
 
+def is_external_user_authored_dispatch(
+    params: Any,
+    *,
+    channel_id: Any = "",
+    request_method: Any = None,
+    metadata: Any = None,
+) -> bool:
+    """Return whether Host ingress proved an external user-authored dispatch."""
+
+    if not isinstance(params, dict):
+        return False
+    # Scheduled Heartbeats reuse the original channel, including web. Inspect
+    # each ingress container separately so merging metadata cannot erase a marker.
+    for container in (params, metadata, params.get("metadata")):
+        automation = container.get("automation") if isinstance(container, dict) else None
+        if isinstance(automation, dict) and str(automation.get("kind") or "").strip().lower() == "heartbeat":
+            return False
+    if params.get("log_as_user") is False:
+        return False
+    if params.get("attach_goal") is True:
+        return False
+    if is_interrupt_resume_payload(params):
+        return False
+    if request_method == ReqMethod.COMMAND_GOAL:
+        return False
+    if str(channel_id or "").strip().lower() in {"cron", "heartbeat"}:
+        return False
+    return not str(params.get("source") or "").strip()
+
+
 def _should_record_user_history(params: Any) -> bool:
+    # History visibility is not permission authority: retain Heartbeat turns.
     if not isinstance(params, dict):
         return True
     if params.get("log_as_user") is False:
@@ -954,7 +1031,8 @@ def _handle_statusline_prompt_command(query: str) -> Tuple[str, str]:
 
 def build_user_prompt(content: str | dict, files: dict, channel: str, language: str, *,
     trusted_dirs: list[str] | None = None, metadata: dict[str, Any] | None = None,
-    skills: list[str] | None = None) -> str:
+    skills: list[str] | None = None,
+    origin_kind: str = HOST_USER_ORIGIN_INTERNAL) -> str:
     """Build the user prompt for an agent.
 
     Thin wrapper over :meth:`UserTurn.render` — the single renderer shared by
@@ -985,6 +1063,7 @@ def build_user_prompt(content: str | dict, files: dict, channel: str, language: 
         trusted_dirs=trusted_dirs,
         skills=skills,
         metadata=metadata,
+        origin_kind=origin_kind,
     ).render()
 
 
@@ -1015,6 +1094,16 @@ class JiuWenSwarm:
         self._skill_manager = SkillManager(workspace_dir=str(get_agent_workspace_dir()))
         self._session_manager = SessionManager()
         self._heartbeat_service: Any | None = None
+        self._permissions_changed_notifier: Callable[[], None] | None = None
+        self._permissions_external_input_context_builder: Callable[..., Any] | None = None
+        # Preserve an SDK-declared root Agent across the SkillNet rebuild hook.
+        # Default Agent builds retain their historical no-argument reload path.
+        self._runtime_agent_create_snapshot: tuple[
+            dict[str, Any] | None,
+            str,
+            str | None,
+            dict[str, Any],
+        ] | None = None
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
         self._skilldev_service = None
 
@@ -1102,6 +1191,14 @@ class JiuWenSwarm:
             )
             if callable(setter):
                 setter(self._personal_context_runtime_enabled)
+            if hasattr(self._adapter, "set_permissions_changed_notifier"):
+                self._adapter.set_permissions_changed_notifier(
+                    self._permissions_changed_notifier
+                )
+            if hasattr(self._adapter, "set_permissions_external_input_context_builder"):
+                self._adapter.set_permissions_external_input_context_builder(
+                    self._permissions_external_input_context_builder
+                )
             self._skill_manager.set_skillnet_install_complete_hook(
                 self._on_skillnet_install_complete
             )
@@ -1133,6 +1230,29 @@ class JiuWenSwarm:
         if callable(refresher):
             await refresher()
 
+
+    def set_permissions_changed_notifier(
+        self,
+        notifier: Callable[[], None] | None,
+    ) -> None:
+        """Inject the host composition callback for persisted permission changes."""
+        self._permissions_changed_notifier = notifier
+        if self._adapter is not None and hasattr(
+            self._adapter, "set_permissions_changed_notifier"
+        ):
+            self._adapter.set_permissions_changed_notifier(notifier)
+
+    def set_permissions_external_input_context_builder(
+        self,
+        builder: Callable[..., Any] | None,
+    ) -> None:
+        """Inject the Host external-input permission publication context."""
+        self._permissions_external_input_context_builder = builder
+        if self._adapter is not None and hasattr(
+            self._adapter, "set_permissions_external_input_context_builder"
+        ):
+            self._adapter.set_permissions_external_input_context_builder(builder)
+
     @staticmethod
     def _adapter_mode_for_request(request: AgentRequest) -> str:
         """选择 Deep / Code adapter。
@@ -1151,8 +1271,14 @@ class JiuWenSwarm:
             return "code"
         return "agent"
 
-    async def create_instance(self, config: dict[str, Any] | None = None, *,
-                              mode: str = "agent", sub_mode: str = None) -> None:
+    async def create_instance(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        mode: str = "agent",
+        sub_mode: str = None,
+        agent_definition: dict[str, Any] | None = None,
+    ) -> None:
         """初始化 Agent 实例.
 
         Args:
@@ -1160,8 +1286,26 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
+        runtime_agent_snapshot = (
+            (
+                deepcopy(config) if config is not None else None,
+                mode,
+                sub_mode,
+                deepcopy(agent_definition),
+            )
+            if agent_definition is not None
+            else None
+        )
         adapter = self._ensure_adapter(mode=mode)
-        await adapter.create_instance(config, mode=mode, sub_mode=sub_mode)
+        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        if agent_definition is not None:
+            if mode != "code":
+                raise ValueError(
+                    "custom Agent definitions are supported only in code mode"
+                )
+            create_kwargs["agent_definition"] = dict(agent_definition)
+        await adapter.create_instance(config, **create_kwargs)
+        self._runtime_agent_create_snapshot = runtime_agent_snapshot
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
             self._sdk_name, mode, sub_mode,
@@ -1174,7 +1318,17 @@ class JiuWenSwarm:
 
     async def _on_skillnet_install_complete(self) -> None:
         """Reload the agent and refresh live team skill rails after async install."""
-        await self.create_instance()
+        snapshot = self._runtime_agent_create_snapshot
+        if snapshot is None:
+            await self.create_instance()
+        else:
+            config, mode, sub_mode, definition = deepcopy(snapshot)
+            await self.create_instance(
+                config,
+                mode=mode,
+                sub_mode=sub_mode,
+                agent_definition=definition,
+            )
         await self._reload_team_skill_rails()
 
     @staticmethod
@@ -1238,6 +1392,16 @@ class JiuWenSwarm:
             asyncio.create_task(adapter.try_start_dreaming(
                 busy_checker=lambda: sm.has_active_tasks(),))
 
+    def has_smart_permission_lifecycle(self, config: dict[str, Any]) -> bool:
+        checker = getattr(self._adapter, "has_smart_permission_lifecycle", None)
+        return bool(callable(checker) and checker(config))
+
+    async def reload_permissions_config(self, config: dict[str, Any], *, include_legacy: bool) -> None:
+        if self.has_smart_permission_lifecycle(config):
+            await self._adapter.notify_permissions_changed(config, include_legacy=include_legacy)
+        elif include_legacy:
+            await self.reload_agent_config(config_base=config, env_overrides={})
+
     async def prepare_session(
         self,
         *,
@@ -1295,7 +1459,10 @@ class JiuWenSwarm:
                 query, _request_debug = strip_debug_directive(query)
         if self._is_malformed_team_plan_approval_payload(params):
             raise _TeamPlanApprovalPayloadError(self._team_plan_approval_payload_error_message())
-        channel = request.channel_id or (request.session_id.split('_')[0] if request.session_id else "web")
+        request_channel = str(request.channel_id or "").strip()
+        channel = request_channel or (
+            request.session_id.split('_')[0] if request.session_id else "web"
+        )
         language = config_base.get("preferred_language", "zh")
 
         # Get trusted directories from request params (passed by TUI)
@@ -1316,6 +1483,16 @@ class JiuWenSwarm:
         param_metadata = params.get("metadata") if isinstance(params, dict) else None
         if isinstance(param_metadata, dict):
             metadata = {**metadata, **param_metadata}
+        origin_kind = (
+            HOST_USER_ORIGIN_EXTERNAL
+            if is_external_user_authored_dispatch(
+                params,
+                channel_id=channel,
+                request_method=request.req_method,
+                metadata=request.metadata,
+            )
+            else HOST_USER_ORIGIN_INTERNAL
+        )
         param_project_dir = params.get("project_dir")
         metadata_project_dir = metadata.get("project_dir") if isinstance(metadata, dict) else None
         project_dir = (
@@ -1351,6 +1528,7 @@ class JiuWenSwarm:
             trusted_dirs=trusted_dirs,
             skills=skills,
             metadata=metadata,
+            origin_kind=origin_kind,
         )
 
         if isinstance(query, InteractiveInput):
@@ -1360,13 +1538,10 @@ class JiuWenSwarm:
             if answers:
                 request_id = params.get("request_id", "")
                 source = params.get("source", "")
-                raw_original_request = params.get("original_request") if source == "ask_user_interrupt" else ""
-                original_request = raw_original_request.strip() if isinstance(raw_original_request, str) else ""
                 interactive_input = self._build_interactive_input_from_answers(
                     request_id,
                     answers,
                     source,
-                    original_request=original_request,
                 )
                 if interactive_input is not None:
                     final_query = interactive_input
@@ -1396,7 +1571,10 @@ class JiuWenSwarm:
         }
         if _request_debug:
             inputs["_request_debug"] = True
-        if request.metadata and request.metadata.get("skip_a2ui") is True:
+        skip_a2ui = bool(
+            request.metadata and request.metadata.get("skip_a2ui") is True
+        )
+        if skip_a2ui:
             inputs["skip_a2ui"] = True
 
         # 传递 enable_memory 参数
@@ -1424,6 +1602,16 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+
+        # DeepAgent normalizes inputs to a fixed InvokeInputs schema, so loose
+        # top-level fields such as ``channel`` do not reach model-call rails.
+        # RunContext.extra is the SDK-supported request-scoped extension point
+        # and survives every ReAct iteration independently of the Agent mode.
+        inputs["run"] = _with_request_runtime_context(
+            inputs.get("run"),
+            channel=request_channel,
+            skip_a2ui=skip_a2ui,
+        )
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd
@@ -1549,8 +1737,6 @@ class JiuWenSwarm:
             request_id: str,
             answers: list[dict],
             source: str = "",
-            *,
-            original_request: str = "",
     ) -> Any:
         """从用户答案构建 InteractiveInput.
 
@@ -1568,7 +1754,7 @@ class JiuWenSwarm:
 
         if source == "ask_user_interrupt":
             answers_dict = {}
-            free_text_answer = ""
+            free_text_answer: str | None = None
             for answer in answers:
                 if isinstance(answer, dict):
                     question_text = str(answer.get("question", "") or "").strip()
@@ -1617,16 +1803,12 @@ class JiuWenSwarm:
                         )
             if not answers_dict and free_text_answer:
                 answers_dict["__free_text__"] = free_text_answer
-            payload: dict[str, Any] = {"answers": answers_dict}
-            if isinstance(original_request, str) and original_request.strip():
-                payload["original_request"] = original_request.strip()
-            interactive_input.update(request_id, payload)
+            interactive_input.update(request_id, {"answers": answers_dict})
             logger.info(
                 "[JiuWenSwarm] AskUserRail InteractiveInput.update: request_id=%s "
-                "answer_count=%s has_original_request=%s",
+                "answer_count=%s",
                 request_id,
                 len(answers_dict),
-                "original_request" in payload,
             )
             return interactive_input
 
@@ -1746,12 +1928,20 @@ class JiuWenSwarm:
             )
             confirm_payload = {"approved": False, "auto_confirm": False, "feedback": f"未知选项: {value}"}
 
-        interactive_input.update(request_id, confirm_payload)
-        logger.info(
-            "[JiuWenSwarm] PermissionRail InteractiveInput.update: request_id=%s payload=%s",
-            request_id, confirm_payload
+        card_ids = (
+            _permission_card_ids_from_answers(answers)
+            if source == "permission_interrupt" else []
         )
-
+        if not card_ids:
+            interactive_input.update(request_id, confirm_payload)
+            return interactive_input
+        interactive_input.update(card_ids[0], confirm_payload)
+        logger.info(
+            "[JiuWenSwarm] PermissionRail card InteractiveInput.update: "
+            "request_id=%s card_id=%s",
+            request_id,
+            card_ids[0],
+        )
         return interactive_input
 
     async def _handle_skilldev_request(self, request: AgentRequest) -> AgentResponse | None:
@@ -2527,6 +2717,11 @@ class JiuWenSwarm:
 
         if request.req_method == ReqMethod.CHAT_ANSWER:
             adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+            validator = getattr(
+                adapter, "validate_auto_permission_workspace_request", None
+            )
+            if callable(validator):
+                validator(request)
             return await adapter.handle_user_answer(request)
 
         if request.req_method == ReqMethod.CHAT_SWARMFLOW_REPLY:
@@ -2651,6 +2846,9 @@ class JiuWenSwarm:
             return package_catalog_response
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
+        if callable(validator):
+            validator(request)
 
         heartbeat_response = await adapter.handle_heartbeat(request)
         if heartbeat_response is not None:
@@ -2969,6 +3167,9 @@ class JiuWenSwarm:
                 return
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
+        validator = getattr(adapter, "validate_auto_permission_workspace_request", None)
+        if callable(validator):
+            validator(request)
 
         session_id = self._session_manager.get_session_id(request.session_id)
         if isinstance(request.params, dict):
@@ -4222,6 +4423,27 @@ class JiuWenSwarm:
             return
         await method(operation, config_path)
 
+    async def apply_rsi_harness_install(
+        self,
+        operation: str,
+        *,
+        config_path: str,
+        installation_id: str,
+    ) -> dict[str, Any]:
+        """Apply an RSI-published Harness through the adapter-owned LoadRecord."""
+
+        adapter = self._adapter
+        if adapter is None:
+            return {"status": "SKIPPED", "resources": []}
+        method = getattr(adapter, "apply_rsi_harness_install", None)
+        if method is None:
+            return {"status": "SKIPPED", "resources": []}
+        return await method(
+            operation,
+            config_path=config_path,
+            installation_id=installation_id,
+        )
+
     async def _unload_live_equipment(self, kind: str, package_id: str) -> None:
         """Unload a catalog package from live session adapters before delete.
 
@@ -4383,6 +4605,19 @@ class JiuWenSwarm:
         if session_id is None:
             return bool(has_runtime())
         return bool(has_runtime(session_id))
+
+    def has_auto_permission_session(self, session_id: str | None) -> bool:
+        adapter = self._adapter
+        checker = getattr(adapter, "has_auto_permission_session", None)
+        return bool(callable(checker) and checker(session_id))
+
+    def validate_auto_permission_workspace_request(self, request: AgentRequest) -> None:
+        adapter = self._adapter
+        validator = getattr(
+            adapter, "validate_auto_permission_workspace_request", None
+        )
+        if callable(validator):
+            validator(request)
 
     async def cancel_inflight_work(
         self,

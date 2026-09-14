@@ -1541,7 +1541,7 @@ async def _broadcast_event(
     tm = get_team_manager(channel_id)
     if event and event.get("event_type") == 'team.error':
         event.update({"event_type": "chat.error"})
-    result = tm.broadcast_event(session_id, event)
+    result = tm.broadcast_event(session_id, event, channel_id=channel_id)
     if inspect.isawaitable(result):
         await result
     _try_finish_cron_team_stream(channel_id, session_id, event)
@@ -3851,6 +3851,8 @@ async def _consume_workflow_events(
             wf_status = (wf.get("status") or "").strip()
 
             # ── 所有通道都广播原始 workflow.updated（供 web 树视图渲染）──
+            # channel_id 随事件传下去：终态事件在 waiter 已被 cancel 拆除时，
+            # broadcast_event 用它走 gateway server-push 兜底投递。
             await _broadcast_event(channel_id, session_id, event)
 
             # The idle guard may be holding a swallowed team.idle for this

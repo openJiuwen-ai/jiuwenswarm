@@ -6,36 +6,28 @@ import { getApiBase } from '../../utils/env';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryUsage } from './trajectory/model';
 
-export interface TrajectoryTraceSummary {
-  trace_id: string;
+/** One execution subject's chain, summarized without loading any payload. */
+export interface TrajectorySubjectSummary {
+  subject_id: string;
+  display_name: string | null;
+  kind: string | null;
+  parent_id: string | null;
+  record_count: number;
+  trace_count: number;
+  first_start_time_unix_nano: string;
+  last_observed_time_unix_nano: string;
+  first_revision: number;
   revision: number;
-  start_time_unix_nano: string;
-  end_time_unix_nano: string;
-  span_count: number;
-  request_id: string | null;
-  run_id: string | null;
-  agent_mode: string | null;
   has_error: boolean;
+  running: boolean;
 }
 
-export interface TrajectoryTraceListResponse {
+export interface TrajectorySubjectListResponse {
   schema_version: 1;
   session_id: string;
   store_epoch: string;
-  items: TrajectoryTraceSummary[];
-  next_cursor: string | null;
-  revision_cursor: string;
-}
-
-export interface TrajectoryRevisionListResponse {
-  schema_version: 1;
-  session_id: string;
-  store_epoch: string;
-  reset: boolean;
-  items: TrajectoryTraceSummary[];
-  next_cursor: string;
-  watermark: string;
-  has_more: boolean;
+  items: TrajectorySubjectSummary[];
+  watermark: number;
 }
 
 export interface TrajectorySessionUsageItem {
@@ -68,13 +60,42 @@ export interface TrajectoryDetailRecord {
   trace_id?: string;
   span_id?: string;
   raw_size_bytes?: number;
+  /** Chain each restated attribute refers to, by attribute key. */
+  sequences?: Record<string, { hash: string; depth: number }>;
+  /** Attributes whose chain could not be rebuilt from what is held. */
+  incomplete_sequences?: string[];
   projection_omitted?: 'record_too_large';
 }
 
-export interface TrajectoryTraceDetailResponse {
+/** One increment of a model's answer, as stored outside the span. */
+export interface TrajectoryStreamFrame {
+  frame_seq: number;
+  trace_id: string;
+  span_id: string;
+  subject_id: string;
+  sequence: number;
+  kind: string;
+  timestamp_unix_nano: number;
+  text?: string;
+  tool_call_id?: string;
+  tool_name?: string;
+  arguments_delta?: string;
+}
+
+export interface TrajectoryStreamFramesResponse {
   schema_version: 1;
   session_id: string;
-  trace_id: string;
+  frame_seq: number;
+  reset: boolean;
+  frames: TrajectoryStreamFrame[];
+  has_more: boolean;
+  next_since_frame_seq: number;
+}
+
+export interface TrajectorySubjectRecordsResponse {
+  schema_version: 1;
+  session_id: string;
+  subject_id: string;
   revision: number;
   reset: boolean;
   records: TrajectoryDetailRecord[];
@@ -82,6 +103,10 @@ export interface TrajectoryTraceDetailResponse {
   next_since_revision: number;
   projected_raw_bytes?: number;
   max_projected_raw_bytes?: number;
+  /** Element hashes of every chain this page refers to, in order. */
+  sequences?: Record<string, string[]>;
+  /** Element content this reader was not assumed to already hold. */
+  blobs?: Record<string, string>;
 }
 
 export class TrajectoryApiError extends Error {
@@ -139,25 +164,24 @@ async function readResponse(response: Response): Promise<unknown> {
   );
 }
 
-function validTraceSummary(value: unknown): value is TrajectoryTraceSummary {
+function validSubjectSummary(value: unknown): value is TrajectorySubjectSummary {
   if (!object(value)) return false;
-  return typeof value.trace_id === 'string'
-    && /^[0-9a-f]{32}$/.test(value.trace_id)
+  return typeof value.subject_id === 'string'
+    && value.subject_id.length > 0
     && Number.isSafeInteger(value.revision)
-    && typeof value.start_time_unix_nano === 'string'
-    && /^\d+$/.test(value.start_time_unix_nano)
-    && typeof value.end_time_unix_nano === 'string'
-    && /^\d+$/.test(value.end_time_unix_nano)
-    && Number.isSafeInteger(value.span_count)
-    && typeof value.has_error === 'boolean';
+    && Number.isSafeInteger(value.first_revision)
+    && Number.isSafeInteger(value.record_count)
+    && Number.isSafeInteger(value.trace_count)
+    && typeof value.first_start_time_unix_nano === 'string'
+    && /^\d+$/.test(value.first_start_time_unix_nano)
+    && typeof value.last_observed_time_unix_nano === 'string'
+    && /^\d+$/.test(value.last_observed_time_unix_nano)
+    && typeof value.has_error === 'boolean'
+    && typeof value.running === 'boolean';
 }
 
 function validOtlp(value: unknown): value is OtlpExportTraceServiceRequest {
   return object(value) && Array.isArray(value.resourceSpans);
-}
-
-function validOpaqueCursor(value: unknown): value is string {
-  return typeof value === 'string' && value.length > 0 && value.length <= 512;
 }
 
 function validStoreEpoch(value: unknown): value is string {
@@ -215,50 +239,25 @@ export async function getTrajectorySessionUsage(
   return payload as unknown as TrajectorySessionUsageResponse;
 }
 
-export async function listTrajectoryTraces(
+/**
+ * List the execution subjects that own a chain in one session.
+ *
+ * Passing `afterRevision` returns only the chains that advanced past it, which
+ * is how the panel polls. The store epoch tells a caller its revisions are
+ * stale and it must restart from zero.
+ */
+export async function listTrajectorySubjects(
   sessionId: string,
   options: {
     signal?: AbortSignal;
-    cursor?: string | null;
-    limit?: number;
+    afterRevision?: number;
   } = {},
-): Promise<TrajectoryTraceListResponse> {
-  const query = new URLSearchParams({ limit: String(options.limit ?? 30) });
-  if (options.cursor) query.set('cursor', options.cursor);
-  const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/traces?${query.toString()}`,
-  ), {
-    cache: 'no-store',
-    signal: options.signal,
-  });
-  const payload = await readResponse(response);
-  if (!object(payload)
-    || payload.schema_version !== 1
-    || payload.session_id !== sessionId
-    || !validStoreEpoch(payload.store_epoch)
-    || !Array.isArray(payload.items)
-    || !payload.items.every(validTraceSummary)
-    || (payload.next_cursor !== null && !validOpaqueCursor(payload.next_cursor))
-    || !validOpaqueCursor(payload.revision_cursor)) {
-    throw new TrajectoryApiError('Trajectory list response is invalid', 502, 'INVALID_RESPONSE');
-  }
-  return payload as unknown as TrajectoryTraceListResponse;
-}
-
-export async function listTrajectoryTraceRevisions(
-  sessionId: string,
-  options: {
-    signal?: AbortSignal;
-    afterRevision: string;
-    limit?: number;
-  },
-): Promise<TrajectoryRevisionListResponse> {
+): Promise<TrajectorySubjectListResponse> {
   const query = new URLSearchParams({
-    after_revision: options.afterRevision,
-    limit: String(options.limit ?? 100),
+    after_revision: String(options.afterRevision ?? 0),
   });
   const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/revisions?${query.toString()}`,
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/subjects?${query.toString()}`,
   ), {
     cache: 'no-store',
     signal: options.signal,
@@ -268,40 +267,36 @@ export async function listTrajectoryTraceRevisions(
     || payload.schema_version !== 1
     || payload.session_id !== sessionId
     || !validStoreEpoch(payload.store_epoch)
-    || typeof payload.reset !== 'boolean'
     || !Array.isArray(payload.items)
-    || !payload.items.every(validTraceSummary)
-    || !validOpaqueCursor(payload.next_cursor)
-    || !validOpaqueCursor(payload.watermark)
-    || typeof payload.has_more !== 'boolean'
-    || (payload.reset === true
-      && (payload.items.length !== 0
-        || payload.has_more !== false
-        || payload.next_cursor !== payload.watermark))) {
-    throw new TrajectoryApiError(
-      'Trajectory revision response is invalid',
-      502,
-      'INVALID_RESPONSE',
-    );
+    || !payload.items.every(validSubjectSummary)
+    || !Number.isSafeInteger(payload.watermark)) {
+    throw new TrajectoryApiError('Trajectory subject list is invalid', 502, 'INVALID_RESPONSE');
   }
-  return payload as unknown as TrajectoryRevisionListResponse;
+  return payload as unknown as TrajectorySubjectListResponse;
 }
 
-export async function getTrajectoryTrace(
+/**
+ * Read one page of an execution subject's chain, in commit order.
+ *
+ * Paging advances along the chain, so the window a page ends on is the base
+ * the next page's first delta applies to.
+ */
+export async function getTrajectorySubjectRecords(
   sessionId: string,
-  traceId: string,
+  subjectId: string,
   options: {
     signal?: AbortSignal;
     sinceRevision?: number;
     limit?: number;
   } = {},
-): Promise<TrajectoryTraceDetailResponse> {
+): Promise<TrajectorySubjectRecordsResponse> {
   const query = new URLSearchParams({
     since_revision: String(options.sinceRevision ?? 0),
     limit: String(options.limit ?? 1000),
   });
   const response = await fetch(trajectoryUrl(
-    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/traces/${encodeURIComponent(traceId)}?${query.toString()}`,
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}`
+    + `/subjects/${encodeURIComponent(subjectId)}/records?${query.toString()}`,
   ), {
     cache: 'no-store',
     signal: options.signal,
@@ -310,7 +305,7 @@ export async function getTrajectoryTrace(
   if (!object(payload)
     || payload.schema_version !== 1
     || payload.session_id !== sessionId
-    || payload.trace_id !== traceId
+    || payload.subject_id !== subjectId
     || !Number.isSafeInteger(payload.revision)
     || typeof payload.reset !== 'boolean'
     || !Array.isArray(payload.records)
@@ -389,24 +384,146 @@ export async function getTrajectoryTrace(
       ...(traceId === undefined ? {} : { trace_id: traceId }),
       ...(spanId === undefined ? {} : { span_id: spanId }),
       ...(rawSizeBytes === undefined ? {} : { raw_size_bytes: rawSizeBytes }),
+      ...(object(candidate.sequences)
+        ? { sequences: candidate.sequences as Record<string, { hash: string; depth: number }> }
+        : {}),
       ...(projectionOmitted === undefined ? {} : { projection_omitted: projectionOmitted }),
     };
   });
   return {
     schema_version: 1,
     session_id: sessionId,
-    trace_id: traceId,
+    subject_id: subjectId,
     revision: Number(payload.revision),
     reset: payload.reset,
     records,
     has_more: payload.has_more,
     next_since_revision: Number(payload.next_since_revision),
+    ...(object(payload.sequences) ? { sequences: payload.sequences as Record<string, string[]> } : {}),
+    ...(object(payload.blobs) ? { blobs: payload.blobs as Record<string, string> } : {}),
     ...(Number.isSafeInteger(payload.projected_raw_bytes)
       ? { projected_raw_bytes: Number(payload.projected_raw_bytes) }
       : {}),
     ...(Number.isSafeInteger(payload.max_projected_raw_bytes)
       ? { max_projected_raw_bytes: Number(payload.max_projected_raw_bytes) }
       : {}),
+  };
+}
+
+export async function getTrajectoryStreamFrames(
+  sessionId: string,
+  options: {
+    signal?: AbortSignal;
+    sinceFrameSeq?: number;
+    limit?: number;
+  } = {},
+): Promise<TrajectoryStreamFramesResponse> {
+  const query = new URLSearchParams({
+    since_frame_seq: String(options.sinceFrameSeq ?? 0),
+    limit: String(options.limit ?? 500),
+  });
+  const response = await fetch(trajectoryUrl(
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/stream-frames?${query.toString()}`,
+  ), {
+    cache: 'no-store',
+    signal: options.signal,
+  });
+  const payload = await readResponse(response);
+  if (!object(payload)
+    || payload.schema_version !== 1
+    || payload.session_id !== sessionId
+    || !Number.isSafeInteger(payload.frame_seq)
+    || typeof payload.reset !== 'boolean'
+    || !Array.isArray(payload.frames)
+    || typeof payload.has_more !== 'boolean'
+    || !Number.isSafeInteger(payload.next_since_frame_seq)) {
+    throw new TrajectoryApiError('Trajectory frame response is invalid', 502, 'INVALID_RESPONSE');
+  }
+  const frames: TrajectoryStreamFrame[] = payload.frames.map((candidate) => {
+    if (!object(candidate)
+      || !Number.isSafeInteger(candidate.frame_seq)
+      || !Number.isSafeInteger(candidate.sequence)
+      || typeof candidate.kind !== 'string'
+      || typeof candidate.trace_id !== 'string'
+      || !/^[0-9a-f]{32}$/.test(candidate.trace_id)
+      || typeof candidate.span_id !== 'string'
+      || !/^[0-9a-f]{16}$/.test(candidate.span_id)
+      || typeof candidate.subject_id !== 'string') {
+      throw new TrajectoryApiError('Trajectory frame is invalid', 502, 'INVALID_RESPONSE');
+    }
+    // Text is taken exactly as stored. Trimming it here would glue the
+    // answer's words together once the frames are concatenated.
+    const text = typeof candidate.text === 'string' ? candidate.text : undefined;
+    const toolCallId = typeof candidate.tool_call_id === 'string'
+      ? candidate.tool_call_id
+      : undefined;
+    const toolName = typeof candidate.tool_name === 'string' ? candidate.tool_name : undefined;
+    const argumentsDelta = typeof candidate.arguments_delta === 'string'
+      ? candidate.arguments_delta
+      : undefined;
+    const timestamp = Number.isSafeInteger(candidate.timestamp_unix_nano)
+      ? Number(candidate.timestamp_unix_nano)
+      : 0;
+    return {
+      frame_seq: Number(candidate.frame_seq),
+      trace_id: candidate.trace_id,
+      span_id: candidate.span_id,
+      subject_id: candidate.subject_id,
+      sequence: Number(candidate.sequence),
+      kind: candidate.kind,
+      timestamp_unix_nano: timestamp,
+      ...(text === undefined ? {} : { text }),
+      ...(toolCallId === undefined ? {} : { tool_call_id: toolCallId }),
+      ...(toolName === undefined ? {} : { tool_name: toolName }),
+      ...(argumentsDelta === undefined ? {} : { arguments_delta: argumentsDelta }),
+    };
+  });
+  return {
+    schema_version: 1,
+    session_id: sessionId,
+    frame_seq: Number(payload.frame_seq),
+    reset: payload.reset,
+    frames,
+    has_more: payload.has_more,
+    next_since_frame_seq: Number(payload.next_since_frame_seq),
+  };
+}
+
+/** Most hashes one request may name; the server rejects more. */
+export const MAX_SEQUENCE_REQUEST = 200;
+
+/**
+ * Fetch chains by hash, for content this reader turned out not to hold.
+ *
+ * A page read delivers content only when the reader was not assumed to have
+ * it already. That assumption holds for a reader following along from the
+ * start, and this is the way back for one it does not hold for: a reload, a
+ * second device, an entry dropped from the browser's cache. Asking by hash
+ * rather than by position is what makes the answer conclusive -- content
+ * still missing after this is content the store no longer has.
+ */
+export async function getTrajectorySequences(
+  sessionId: string,
+  hashes: readonly string[],
+  options: { signal?: AbortSignal } = {},
+): Promise<{ sequences: Record<string, string[]>; blobs: Record<string, string> }> {
+  if (hashes.length === 0) return { sequences: {}, blobs: {} };
+  const query = new URLSearchParams({ hashes: hashes.join(','), since_revision: '0' });
+  const response = await fetch(trajectoryUrl(
+    `/api/trajectory/sessions/${encodeURIComponent(sessionId)}/sequences?${query.toString()}`,
+  ), {
+    cache: 'no-store',
+    signal: options.signal,
+  });
+  const payload = await readResponse(response);
+  if (!object(payload)
+    || payload.schema_version !== 1
+    || payload.session_id !== sessionId) {
+    throw new TrajectoryApiError('Trajectory sequence response is invalid', 502, 'INVALID_RESPONSE');
+  }
+  return {
+    sequences: object(payload.sequences) ? payload.sequences as Record<string, string[]> : {},
+    blobs: object(payload.blobs) ? payload.blobs as Record<string, string> : {},
   };
 }
 

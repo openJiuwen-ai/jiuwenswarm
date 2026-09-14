@@ -6,8 +6,15 @@ import asyncio
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueue,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.server.runtime.agent_adapter.permission_runtime_state import (
+    SessionPermissionState,
+)
 
 
 def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
@@ -21,6 +28,8 @@ def _make_adapter(**state: object) -> JiuWenSwarmDeepAdapter:
 class _IdleChildAdapter:
     def __init__(self) -> None:
         self.cleaned = False
+        self._permission_state = SessionPermissionState()
+        self._root_permission_queue = RootPermissionQueue()
 
     @staticmethod
     def is_session_active(_session_id: str) -> bool:
@@ -29,6 +38,9 @@ class _IdleChildAdapter:
     @staticmethod
     def is_deep_agent_executing_for_session(_session_id: str) -> bool:
         return False
+
+    def _has_live_root_permission_owner(self, session_id: str) -> bool:
+        return self._root_permission_queue.has_live(root_session_id=session_id)
 
     async def cleanup(self) -> None:
         self.cleaned = True
@@ -163,6 +175,41 @@ async def test_cleanup_session_adapter_removes_idle_child_adapter() -> None:
     assert getattr(parent, "_session_adapter_last_used") == {}
     assert getattr(parent, "_session_adapter_versions") == {}
     assert getattr(parent, "_session_adapter_reload_failures") == {}
+
+
+@pytest.mark.asyncio
+async def test_cleanup_session_adapter_keeps_pending_permission_owner() -> None:
+    child = _IdleChildAdapter()
+    card = child._root_permission_queue.begin(
+        root_session_id="sess-pending",
+        request_id="request-old",
+        execution_session_id="sess-pending",
+        tool_call_id="call-old",
+        tool_name="bash",
+    )
+    child._root_permission_queue.mark_pending(
+        card.key,
+        request=InterruptRequest(
+            message="approve",
+            metadata={"tool_invocation_key": card.key.to_wire()},
+        ),
+        auto_manual=True,
+        root_context=None,
+    )
+    parent = _make_adapter(
+        _is_session_scoped_adapter=False,
+        _session_adapters={"sess-pending": child},
+        _session_adapter_locks={"sess-pending": asyncio.Lock()},
+        _session_adapter_last_used={"sess-pending": 1.0},
+        _session_adapter_versions={"sess-pending": 1},
+        _session_adapter_reload_failures={},
+    )
+
+    removed = await parent.cleanup_session_adapter("sess-pending")
+
+    assert removed is False
+    assert child.cleaned is False
+    assert parent._session_adapters == {"sess-pending": child}
 
 
 @pytest.mark.asyncio

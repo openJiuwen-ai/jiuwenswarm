@@ -56,7 +56,7 @@ export interface NormalizedTrajectoryAttributes {
   usageOutputTokens?: bigint
   usageReasoningTokens?: bigint
   usageCacheReadTokens?: bigint
-  usageCacheCreationTokens?: bigint
+  usageCacheWriteTokens?: bigint
   inputCost?: number
   outputCost?: number
   totalCost?: number
@@ -89,7 +89,7 @@ export interface NormalizedTrajectoryAttributes {
   toolType?: string
   toolDescription?: string
   toolResourceId?: string
-  openJiuwenToolType?: string
+  toolProtocol?: string
   toolAuthoritative?: boolean
   toolCallArguments?: unknown
   toolCallResult?: unknown
@@ -107,6 +107,8 @@ export interface NormalizedTrajectoryAttributes {
   messageSourcePlugin?: string
   compactionInputTokens?: bigint
   compactionSummary?: string
+  compactionNumber?: bigint
+  contextOperationId?: string
   langfuseObservationType?: string
   errorType?: string
   errorMessage?: string
@@ -151,20 +153,12 @@ interface NormalizedMessage {
   }
 }
 
-const LEGACY = {
+// Foreign conventions the viewer also ingests: the legacy `tracer_otel`
+// handler and the Langfuse projection. OpenJiuwen's own emitter writes the
+// standard key alone, so it needs no entry here.
+const COMPATIBILITY = {
   openJiuwenSessionId: 'openjiuwen.session_id',
-  responseFinishReason: 'gen_ai.response.finish_reason',
-  responseTimeToFirstTokenMs: 'gen_ai.response.time_to_first_token_ms',
-  toolCallId: 'gen_ai.tool.id',
-  toolCallArguments: 'gen_ai.tool.input',
-  toolCallResult: 'gen_ai.tool.output',
-  toolCalls: 'gen_ai.tool_calls',
-  langfuseInput: 'langfuse.observation.input',
-  langfuseOutput: 'langfuse.observation.output',
   langfuseObservationType: 'langfuse.observation.type',
-  agentTeamSessionId: 'agentteam.session.id',
-  deepAgentName: 'deepagent.agent.name',
-  deepAgentIteration: 'deepagent.task.iteration',
 } as const
 
 const TRAJECTORY_KINDS = new Set<string>(DSH_TRAJECTORY_KINDS)
@@ -293,24 +287,6 @@ function object(value: unknown): Record<string, unknown> | undefined {
     : undefined
 }
 
-function langfuseOutput(attributes: OtlpAttributeMap): Resolved<Record<string, unknown>> | undefined {
-  const resolved = resolveFlexible(attributes, [LEGACY.langfuseOutput])
-  if (resolved === undefined) return undefined
-  const value = object(resolved.value)
-  return value === undefined ? undefined : { key: resolved.key, value }
-}
-
-function langfuseFinishReasons(
-  output: Resolved<Record<string, unknown>> | undefined,
-): Resolved<readonly string[]> | undefined {
-  if (output === undefined || !Array.isArray(output.value.choices)) return undefined
-  const reasons = output.value.choices.flatMap((candidate): string[] => {
-    const choice = object(candidate)
-    return typeof choice?.finish_reason === 'string' ? [choice.finish_reason] : []
-  })
-  return reasons.length === 0 ? undefined : { key: output.key, value: reasons }
-}
-
 function text(value: unknown): string {
   if (typeof value === 'string') return value
   return JSON.stringify(value, null, 2) ?? String(value)
@@ -334,44 +310,6 @@ function normalizedToolCall(value: unknown): NormalizedPart | undefined {
       ? {}
       : { arguments: typeof rawArguments === 'string' ? parsedJson(rawArguments) : rawArguments }),
   }
-}
-
-function canonicalValue(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(canonicalValue).join(',')}]`
-  const valueObject = object(value)
-  if (valueObject === undefined) return JSON.stringify(value) ?? String(value)
-  return `{${Object.keys(valueObject).sort().map(key => (
-    `${JSON.stringify(key)}:${canonicalValue(valueObject[key])}`
-  )).join(',')}}`
-}
-
-function sameToolCall(left: NormalizedPart, right: NormalizedPart): boolean {
-  if (left.type !== 'tool_call' || right.type !== 'tool_call') return false
-  if (left.id !== undefined || right.id !== undefined) {
-    return left.id !== undefined && left.id === right.id
-  }
-  return left.name !== undefined
-    && left.name === right.name
-    && canonicalValue(left.arguments) === canonicalValue(right.arguments)
-}
-
-function mergeToolCallRepresentations(
-  primaryParts: readonly NormalizedPart[],
-  aliasCalls: readonly NormalizedPart[],
-): NormalizedPart[] {
-  const consumedPrimaryCalls = new Set<number>()
-  const merged = [...primaryParts]
-  for (const call of aliasCalls) {
-    const primaryIndex = primaryParts.findIndex((part, index) => (
-      !consumedPrimaryCalls.has(index) && sameToolCall(part, call)
-    ))
-    if (primaryIndex >= 0) {
-      consumedPrimaryCalls.add(primaryIndex)
-      continue
-    }
-    merged.push(call)
-  }
-  return merged
 }
 
 function normalizedContentParts(value: unknown, reasoning: boolean): NormalizedPart[] {
@@ -415,22 +353,9 @@ function normalizedContentParts(value: unknown, reasoning: boolean): NormalizedP
 
 function normalizedMessage(value: unknown, defaultRole: string): NormalizedMessage | undefined {
   const message = object(value)
-  if (message === undefined) {
-    if (value === undefined) return undefined
-    return { role: defaultRole, parts: normalizedContentParts(value, false) }
-  }
+  if (message === undefined || !Array.isArray(message.parts)) return undefined
   const role = typeof message.role === 'string' ? message.role : defaultRole
-  const reasoning = message.is_reasoning === true || role === 'reasoning'
-  const rawParts = message.parts ?? message.content ?? message.text
-  let parts = normalizedContentParts(rawParts, reasoning)
-  const calls = message.tool_calls ?? message.toolCalls
-  if (Array.isArray(calls)) {
-    const aliasCalls = calls.flatMap((call): NormalizedPart[] => {
-      const normalized = normalizedToolCall(call)
-      return normalized === undefined ? [] : [normalized]
-    })
-    parts = mergeToolCallRepresentations(parts, aliasCalls)
-  }
+  const parts = normalizedContentParts(message.parts, false)
   const openjiuwen = object(message.openjiuwen)
   const promptAttachmentHistory = openjiuwen?.kind === 'prompt_attachment_history'
     && (openjiuwen.mode === 'snapshot' || openjiuwen.mode === 'delta')
@@ -440,7 +365,7 @@ function normalizedMessage(value: unknown, defaultRole: string): NormalizedMessa
       } as const
     : undefined
   return {
-    role: role === 'reasoning' ? 'assistant' : role,
+    role,
     parts,
     ...(promptAttachmentHistory === undefined
       ? {}
@@ -448,31 +373,8 @@ function normalizedMessage(value: unknown, defaultRole: string): NormalizedMessa
   }
 }
 
-function normalizedMessages(value: unknown, defaultRole: string): readonly NormalizedMessage[] {
-  const envelope = object(value)
-  if (envelope !== undefined) {
-    if (Array.isArray(envelope.choices)) {
-      return envelope.choices.flatMap((choice): readonly NormalizedMessage[] => {
-        const choiceObject = object(choice)
-        return normalizedMessages(choiceObject?.message ?? choice, defaultRole)
-      })
-    }
-    const nested = envelope.messages ?? envelope.message ?? envelope.input ?? envelope.output
-    if (nested !== undefined && nested !== value) return normalizedMessages(nested, defaultRole)
-  }
-  const candidates = Array.isArray(value) ? value : [value]
-  return candidates.flatMap((candidate): NormalizedMessage[] => {
-    const message = normalizedMessage(candidate, defaultRole)
-    return message === undefined ? [] : [message]
-  })
-}
-
 function hasMessageContentShape(message: Record<string, unknown>): boolean {
-  return message.parts !== undefined
-    || message.content !== undefined
-    || message.text !== undefined
-    || message.tool_calls !== undefined
-    || message.toolCalls !== undefined
+  return Array.isArray(message.parts)
 }
 
 function normalizedStructuredMessages(
@@ -489,70 +391,12 @@ function normalizedStructuredMessages(
     })
     return messages.length === 0 ? undefined : messages
   }
-  const envelope = object(value)
-  if (envelope === undefined) return undefined
-  if (Array.isArray(envelope.choices)) {
-    if (envelope.choices.length === 0) return []
-    const messages = envelope.choices.flatMap((choice): NormalizedMessage[] => {
-      const choiceObject = object(choice)
-      const normalized = normalizedStructuredMessages(choiceObject?.message ?? choice, defaultRole)
-      return normalized === undefined ? [] : [...normalized]
-    })
-    return messages.length === 0 ? undefined : messages
-  }
-  const nested = envelope.messages ?? envelope.message ?? envelope.input ?? envelope.output
-  if (nested !== undefined && nested !== value) {
-    return normalizedStructuredMessages(nested, defaultRole)
-  }
-  if (!hasMessageContentShape(envelope)) return undefined
-  const message = normalizedMessage(envelope, defaultRole)
-  return message === undefined ? undefined : [message]
-}
-
-function indexedMessages(
-  attributes: OtlpAttributeMap,
-  prefix: string,
-  defaultRole: string,
-): { messages: readonly NormalizedMessage[]; complete: boolean } | undefined {
-  const indexes = new Set<number>()
-  const expression = new RegExp(`^${prefix.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}\\.(\\d+)\\.`)
-  for (const key of attributes.keys()) {
-    const match = expression.exec(key)
-    if (match?.[1] !== undefined) indexes.add(Number(match[1]))
-  }
-  if (indexes.size === 0) return undefined
-  const messages: NormalizedMessage[] = []
-  for (const index of [...indexes].sort((left, right) => left - right)) {
-    const role = readStringAttribute(attributes, `${prefix}.${index}.role`) ?? defaultRole
-    const contentValue = attributes.get(`${prefix}.${index}.content`)
-    const content = contentValue === undefined ? undefined : flexibleValue(contentValue)
-    const reasoning = readBooleanAttribute(attributes, `${prefix}.${index}.is_reasoning`) === true
-      || role === 'reasoning'
-    const parts = normalizedContentParts(content, reasoning)
-    const toolCallsValue = attributes.get(`${prefix}.${index}.tool_calls`)
-    const toolCalls = toolCallsValue === undefined ? undefined : flexibleValue(toolCallsValue)
-    if (Array.isArray(toolCalls)) {
-      for (const toolCall of toolCalls) {
-        const normalized = normalizedToolCall(toolCall)
-        if (normalized !== undefined) parts.push(normalized)
-      }
-    }
-    messages.push({ role: role === 'reasoning' ? 'assistant' : role, parts })
-  }
-  const orderedIndexes = [...indexes].sort((left, right) => left - right)
-  return {
-    messages,
-    complete: orderedIndexes[0] === 0
-      && orderedIndexes.every((index, position) => index === position),
-  }
+  return undefined
 }
 
 function resolveMessages(
   attributes: OtlpAttributeMap,
   structuredKeys: readonly string[],
-  indexedPrefixes: readonly string[],
-  observationKey: string,
-  scalarKeys: readonly string[],
   defaultRole: string,
 ): Resolved<unknown> | undefined {
   for (const key of structuredKeys) {
@@ -561,23 +405,7 @@ function resolveMessages(
     const messages = normalizedStructuredMessages(flexibleValue(value), defaultRole)
     if (messages !== undefined) return { key, value: messages, complete: true }
   }
-  for (const prefix of indexedPrefixes) {
-    const indexed = indexedMessages(attributes, prefix, defaultRole)
-    if (indexed !== undefined) {
-      return { key: `${prefix}.*`, value: indexed.messages, complete: indexed.complete }
-    }
-  }
-  const observation = resolveFlexible(attributes, [observationKey])
-  if (observation !== undefined) {
-    const messages = normalizedMessages(observation.value, defaultRole)
-    if (messages.length > 0 && messages.some(message => message.parts.length > 0)) {
-      return { key: observation.key, value: messages }
-    }
-  }
-  const scalar = resolveFlexible(attributes, scalarKeys)
-  return scalar === undefined
-    ? undefined
-    : { key: scalar.key, value: normalizedMessages(scalar.value, defaultRole) }
+  return undefined
 }
 
 function resolveStructuredParts(
@@ -663,14 +491,10 @@ export function normalizeTrajectoryAttributes(
 ): NormalizedTrajectoryAttributes {
   const raw = exactAttributeMap(entries)
   const target: MutableNormalized = { raw, sources: {} }
-  const observationOutput = langfuseOutput(raw)
-
   assign(target, 'conversationId', resolveString(raw, [
     STANDARD_ATTRIBUTES.conversationId,
-    OPENJIUWEN_ATTRIBUTES.sessionId,
     STANDARD_ATTRIBUTES.sessionId,
-    LEGACY.openJiuwenSessionId,
-    LEGACY.agentTeamSessionId,
+    COMPATIBILITY.openJiuwenSessionId,
   ]))
   assign(target, 'traceRoot', resolveBoolean(raw, [
     OPENJIUWEN_ATTRIBUTES.traceRoot,
@@ -744,23 +568,12 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'responseFinishReasons', resolveStringArray(raw, [
     STANDARD_ATTRIBUTES.responseFinishReasons,
-    LEGACY.responseFinishReason,
-  ]) ?? langfuseFinishReasons(observationOutput))
+  ]))
 
   const firstChunk = resolveNonNegativeNumber(raw, [
     STANDARD_ATTRIBUTES.responseTimeToFirstChunk,
   ])
-  if (firstChunk !== undefined) {
-    assign(target, 'responseTimeToFirstChunkSeconds', firstChunk)
-  } else {
-    const legacyFirstToken = resolveNonNegativeNumber(raw, [LEGACY.responseTimeToFirstTokenMs])
-    if (legacyFirstToken !== undefined) {
-      assign(target, 'responseTimeToFirstChunkSeconds', {
-        key: legacyFirstToken.key,
-        value: legacyFirstToken.value / 1_000,
-      })
-    }
-  }
+  assign(target, 'responseTimeToFirstChunkSeconds', firstChunk)
 
   // Token usage is read only in the standard shape, where every cache and
   // reasoning count is a breakdown of the input respectively output total.
@@ -778,8 +591,8 @@ export function normalizeTrajectoryAttributes(
   assign(target, 'usageCacheReadTokens', resolveNonNegativeInt64(raw, [
     STANDARD_ATTRIBUTES.usageCacheReadTokens,
   ]))
-  assign(target, 'usageCacheCreationTokens', resolveNonNegativeInt64(raw, [
-    STANDARD_ATTRIBUTES.usageCacheCreationTokens,
+  assign(target, 'usageCacheWriteTokens', resolveNonNegativeInt64(raw, [
+    STANDARD_ATTRIBUTES.usageCacheWriteTokens,
   ]))
   assign(target, 'inputCost', resolveNonNegativeNumber(raw, [
     OPENJIUWEN_ATTRIBUTES.inputCost,
@@ -817,7 +630,6 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'agentName', resolveString(raw, [
     STANDARD_ATTRIBUTES.agentName,
-    LEGACY.deepAgentName,
   ]))
   assign(target, 'agentVersion', resolveString(raw, [
     STANDARD_ATTRIBUTES.agentVersion,
@@ -852,9 +664,6 @@ export function normalizeTrajectoryAttributes(
     [
       STANDARD_ATTRIBUTES.inputMessages,
     ],
-    [],
-    LEGACY.langfuseInput,
-    [],
     'user',
   )
   if (inputMessages !== undefined) {
@@ -887,24 +696,10 @@ export function normalizeTrajectoryAttributes(
     [
       STANDARD_ATTRIBUTES.outputMessages,
     ],
-    [],
-    LEGACY.langfuseOutput,
-    [],
     'assistant',
   )
   if (outputMessages !== undefined) {
-    const calls = resolveFlexible(raw, [LEGACY.toolCalls])
-    const aliasCalls = calls === undefined || !Array.isArray(calls.value)
-      ? []
-      : calls.value.flatMap((call): NormalizedPart[] => {
-        const normalized = normalizedToolCall(call)
-        return normalized === undefined ? [] : [normalized]
-      })
-    const messages = normalizedMessages(outputMessages.value, 'assistant').map((message, index) => {
-      if (index !== 0 || aliasCalls.length === 0) return message
-      return { ...message, parts: mergeToolCallRepresentations(message.parts, aliasCalls) }
-    })
-    assign(target, 'outputMessages', { key: outputMessages.key, value: messages })
+    assign(target, 'outputMessages', outputMessages)
   }
 
   assign(target, 'toolDefinitions', resolveStructuredArray(raw, [
@@ -915,7 +710,6 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'toolCallId', resolveString(raw, [
     STANDARD_ATTRIBUTES.toolCallId,
-    LEGACY.toolCallId,
   ]))
   assign(target, 'toolType', resolveString(raw, [
     STANDARD_ATTRIBUTES.toolType,
@@ -925,23 +719,18 @@ export function normalizeTrajectoryAttributes(
   ]))
   assign(target, 'toolResourceId', resolveString(raw, [
     OPENJIUWEN_ATTRIBUTES.toolResourceId,
-    STANDARD_ATTRIBUTES.toolId,
   ]))
-  assign(target, 'openJiuwenToolType', resolveString(raw, [
-    OPENJIUWEN_ATTRIBUTES.toolType,
+  assign(target, 'toolProtocol', resolveString(raw, [
+    OPENJIUWEN_ATTRIBUTES.toolProtocol,
   ]))
   assign(target, 'toolAuthoritative', resolveBoolean(raw, [
     OPENJIUWEN_ATTRIBUTES.toolAuthoritative,
   ]))
   assign(target, 'toolCallArguments', resolveFlexible(raw, [
     STANDARD_ATTRIBUTES.toolCallArguments,
-    LEGACY.toolCallArguments,
-    LEGACY.langfuseInput,
   ]))
   assign(target, 'toolCallResult', resolveFlexible(raw, [
     STANDARD_ATTRIBUTES.toolCallResult,
-    LEGACY.toolCallResult,
-    LEGACY.langfuseOutput,
   ]))
 
   assign(target, 'sourceSequence', resolveNonNegativeInt64(raw, [
@@ -954,7 +743,6 @@ export function normalizeTrajectoryAttributes(
   assign(target, 'stepNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.stepNumber,
     DSH_ATTRIBUTES.stepNumber,
-    LEGACY.deepAgentIteration,
   ]))
   assign(target, 'trajectoryKind', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.trajectoryKind,
@@ -988,8 +776,14 @@ export function normalizeTrajectoryAttributes(
   assign(target, 'compactionSummary', resolveString(raw, [
     DSH_ATTRIBUTES.compactionSummary,
   ]))
+  assign(target, 'compactionNumber', resolvePositiveInt64(raw, [
+    OPENJIUWEN_ATTRIBUTES.compactionNumber,
+  ]))
+  assign(target, 'contextOperationId', resolveString(raw, [
+    OPENJIUWEN_ATTRIBUTES.contextOperationId,
+  ]))
   assign(target, 'langfuseObservationType', resolveString(raw, [
-    LEGACY.langfuseObservationType,
+    COMPATIBILITY.langfuseObservationType,
   ]))
   assign(target, 'errorType', resolveString(raw, [
     STANDARD_ATTRIBUTES.errorType,
@@ -1037,11 +831,11 @@ export function normalizeTrajectoryStreamEvents(
       DSH_ATTRIBUTES.streamText,
     ])?.value
     const toolCallId = resolveString(attributes, [
-      OPENJIUWEN_ATTRIBUTES.streamToolCallId,
+      STANDARD_ATTRIBUTES.toolCallId,
       DSH_ATTRIBUTES.streamToolCallId,
     ])?.value
     const toolName = resolveString(attributes, [
-      OPENJIUWEN_ATTRIBUTES.streamToolName,
+      STANDARD_ATTRIBUTES.toolName,
       DSH_ATTRIBUTES.streamToolName,
     ])?.value
     const argumentsDelta = resolveString(attributes, [

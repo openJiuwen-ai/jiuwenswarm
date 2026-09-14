@@ -6,6 +6,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+)
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 
 
@@ -84,8 +90,10 @@ def test_render_marks_system_channels_and_drops_files():
     assert "files_updated_by_user" not in envelope
 
 
-def test_render_marks_heartbeat_automation_and_adds_zh_task_boundary():
+@pytest.mark.parametrize("origin_kind", [HOST_USER_ORIGIN_EXTERNAL, HOST_USER_ORIGIN_INTERNAL])
+def test_render_marks_heartbeat_automation_and_adds_zh_task_boundary(origin_kind):
     turn = _turn(
+        origin_kind=origin_kind,
         metadata={"automation": {"kind": "heartbeat", "run_id": "run-1"}},
     )
 
@@ -98,6 +106,7 @@ def test_render_marks_heartbeat_automation_and_adds_zh_task_boundary():
     )
     assert envelope["source"] == "system"
     assert envelope["type"] == "heartbeat"
+    assert envelope["origin_kind"] == origin_kind
     assert "files_updated_by_user" not in envelope
 
 

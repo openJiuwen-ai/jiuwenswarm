@@ -11,6 +11,12 @@ import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
+import { RsiPage } from './features/rsi/RsiPage';
+import {
+  normalizeRSIEnabled,
+  setRSIFeatureEnabled,
+  useRSIFeatureEnabled,
+} from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import HeartbeatPanel from './components/HeartbeatPanel';
@@ -48,7 +54,7 @@ import {
   type FetchHistoryPageResult,
 } from './features/historyRestore';
 import { prefetchHistoryPages } from './features/historyPagination';
-import { isPlanWireMode } from './features/planMode/wireMode';
+import { isPlanWireMode, resolvePlanWireMode } from './features/planMode/wireMode';
 import { queueOrAddGoalObjectiveMessage } from './features/goalPendingObjectiveBubble';
 import { LoginPage } from './features/auth/LoginPage';
 import { LogoutButton } from './features/auth/LogoutButton';
@@ -64,6 +70,7 @@ import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session } from './types';
+import type { WorkMode } from './features/workspace/projectTypes';
 import {
   EXTERNAL_CLI_AGENT_KINDS,
   type ExternalCliAgentKind,
@@ -197,6 +204,7 @@ type LoadedHistoryPage = {
 function getWorkContextForSession(sessionId: string): {
   project_id?: string;
   project_dir?: string;
+  work_mode?: WorkMode;
 } {
   const sessionState = useSessionStore.getState();
   const workspaceState = useWorkspaceStore.getState();
@@ -206,9 +214,22 @@ function getWorkContextForSession(sessionId: string): {
       : sessionState.sessions.find((item) => item.session_id === sessionId);
   const selectedProject = workspaceState.selectedProject;
 
+  // work_mode 取值顺序与 hooks/useWebSocket.ts 的 getSessionWorkMode 一致：
+  // session → selectedProject → 全局 workMode。用 .trim() 过滤空白而非纯 falsy
+  // 短路：session.work_mode 存在但为空串时，旧逻辑会 fallback 到全局，把 code
+  // profile 的会话路由成 work（profile 由 resolvePlanWireMode 拼进 mode 字段，
+  // 错位会被后端按 work 解析）。trim 后空串/纯空白视为未设置，才继续往上游找。
+  // 三处来源都是 WorkMode（'work' | 'code'），trim 仅滤空白不改语义，收窄回 WorkMode。
+  const work_mode = (
+    session?.work_mode?.trim()
+    || selectedProject?.work_mode?.trim()
+    || workspaceState.workMode
+  ) as WorkMode | undefined;
+
   return {
     project_id: session?.project_id || selectedProject?.project_id || undefined,
     project_dir: session?.project_dir || selectedProject?.project_dir || undefined,
+    work_mode,
   };
 }
 
@@ -774,16 +795,26 @@ function AppContent({
     import.meta.env.MODE,
     typeof serverConfig?.runtime_platform === 'string' ? serverConfig.runtime_platform : undefined,
   );
+  const rsiFeatureEnabled = useRSIFeatureEnabled();
   const hiddenNavItems = useMemo<MainNavKey[]>(() => {
     const base = getHiddenNavItemsForPlatform(frontendPlatform);
+    const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
+      ? base
+      : [...base, 'experiments'];
     // feature 关闭时移除全部个人上下文入口
     if (!FEATURE_PERSONAL_CONTEXT_UI) {
-      return [...base, 'personalContext', 'personalContextSettings'];
+      return [...rsiFiltered, 'personalContext', 'personalContextSettings'];
     }
     // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
-    if (!masterEnabled) return [...base, 'personalContext'];
-    return base;
-  }, [frontendPlatform, masterEnabled]);
+    if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
+    return rsiFiltered;
+  }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+
+  useEffect(() => {
+    if (!rsiFeatureEnabled && activeNav === 'experiments') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, rsiFeatureEnabled]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -1480,6 +1511,7 @@ function AppContent({
     try {
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
+      setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setServerConfig(config);
       setConfigError(null);
@@ -2378,7 +2410,11 @@ function AppContent({
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
       view_id: kvcViewIdRef.current,
-      mode: runtime?.mode ?? mode,
+      mode: resolvePlanWireMode(
+        runtime?.mode ?? mode,
+        usePlanStore.getState().isActive(targetSessionId),
+        getWorkContextForSession(targetSessionId).work_mode,
+      ),
     }).then((response) => {
       if (response?.outcome === 'failed'
           && kvcPreparedInputSessionRef.current === targetSessionId) {
@@ -2425,13 +2461,17 @@ function AppContent({
     const workContext = {
       project_id: baseWorkContext.project_id || preservedProject?.project_id,
       project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
-      work_mode: useWorkspaceStore.getState().workMode,
+      work_mode: baseWorkContext.work_mode,
     };
 
     try {
       const createParams: Record<string, unknown> = {
         create_token: generateUuidV4(),
-        mode: runtimeSettings.mode,
+        mode: resolvePlanWireMode(
+          runtimeSettings.mode,
+          usePlanStore.getState().isActive(NEW_CONVERSATION_ID),
+          workContext.work_mode,
+        ),
         is_swarm: runtimeSettings.mode === 'team',
         title: createConversationTitle(initialTitle).slice(0, 100),
         work_mode: workContext.work_mode,
@@ -2531,12 +2571,16 @@ function AppContent({
       const workContext = {
         project_id: baseWorkContext.project_id || preservedProject?.project_id,
         project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
-        work_mode: useWorkspaceStore.getState().workMode,
+        work_mode: baseWorkContext.work_mode,
       };
       try {
         const createParams: Record<string, unknown> = {
           create_token: generateUuidV4(),
-          mode: runtimeSettings.mode,
+          mode: resolvePlanWireMode(
+            runtimeSettings.mode,
+            usePlanStore.getState().isActive(NEW_CONVERSATION_ID),
+            workContext.work_mode,
+          ),
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
@@ -3335,6 +3379,11 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               </div>
             </div>
           </>
+        )}
+        {activeNav === 'experiments' && (
+          <div className="app-section">
+            <RsiPage />
+          </div>
         )}
         {hasVisitedAgents && (
           <div className={`app-section min-h-0 ${activeNav === 'agents' ? '' : 'is-hidden'}`}>

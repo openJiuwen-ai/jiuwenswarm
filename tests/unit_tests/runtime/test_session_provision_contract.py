@@ -12,7 +12,7 @@ from typing import Any, cast
 
 import pytest
 
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     RuntimeSessionProvisioner,
     SessionCreateInput,
@@ -105,7 +105,7 @@ async def _commit(
 def test_session_provision_contract_cold_import_has_no_transport_modules() -> None:
     script = """
 import sys
-from jiuwenswarm.runtime import (
+from jiuwenswarm.runtime.session_provisioner import (
     PreparedSessionProvision,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,

@@ -1487,11 +1487,17 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
             self._write_json(500, {"error": "download_module_unavailable"})
             return
 
-        payload = validate_file_download_token(token)
+        # Delivered artifacts remain valid even when legacy tokens contain exp.
+        # Signature verification is still mandatory; scoped image tokens below
+        # retain their original lifetime and session constraints.
+        payload = validate_file_download_token(token, check_expiry=False)
         # Skill 正文图片 token intentionally does not carry an absolute path.
         # In the legacy shared-directory layout it must therefore be resolved
         # through the skill manifest before entering the generic file bridge.
         if payload is not None and str(payload.get("purpose") or "") == PURPOSE_SKILL_CONTENT_IMAGE:
+            if validate_file_download_token(token, check_expiry=True) is None:
+                self._write_json(403, {"error": "invalid_or_expired_token"})
+                return
             request_sid = extract_request_session_id(query=query, headers=self.headers)
             error = validate_skill_content_image_payload(
                 payload, request_session_id=request_sid

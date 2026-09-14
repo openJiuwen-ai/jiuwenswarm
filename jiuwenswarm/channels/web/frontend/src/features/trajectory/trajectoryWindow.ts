@@ -9,13 +9,14 @@ import type {
 import type { TrajectoryUsage } from './trajectory/model';
 import type {
   TrajectoryDetailRecord,
-  TrajectoryRevisionListResponse,
-  TrajectoryTraceDetailResponse,
-  TrajectoryTraceListResponse,
-  TrajectoryTraceSummary,
+  TrajectorySubjectListResponse,
+  TrajectorySubjectRecordsResponse,
+  TrajectorySubjectSummary,
 } from './trajectoryClient';
+import { emptyStreamFrameState } from './trajectoryFrames';
+import type { StreamFrameState } from './trajectoryFrames';
 
-export interface TrajectoryTraceBucket {
+export interface TrajectoryChainBucket {
   revision: number;
   records: Map<string, OtlpExportTraceServiceRequest>;
   rawRecords: Map<string, TrajectoryDetailRecord>;
@@ -28,33 +29,30 @@ export interface TrajectoryRecordVersion {
 }
 
 export interface TrajectoryWindowState {
-  buckets: Map<string, TrajectoryTraceBucket>;
+  /** One bucket per execution subject, keyed by subject id. */
+  buckets: Map<string, TrajectoryChainBucket>;
   storeEpoch: string | null;
-  pageCursor: string | null;
-  revisionCursor: string | null;
+  /** Highest change_seq the listing has reported, and the next poll's floor. */
+  watermark: number;
+  /**
+   * Frames accumulated for the spans still writing their answer, plus how far
+   * along the session's frame stream this reader has read. Frames advance on
+   * their own watermark because a streaming span emits many of them without
+   * rewriting its record.
+   */
+  frames: StreamFrameState;
   listWindowInitialized: boolean;
   rawSelection: string;
 }
 
-export type HeadRefreshWindow = {
+export type SubjectRefreshWindow = {
   reset: true;
   storeEpoch: string;
 } | {
   reset: false;
   storeEpoch: string;
-  summaries: TrajectoryTraceSummary[];
-  firstPageNextCursor: string | null;
-  revisionCursor: string;
-};
-
-export type RevisionRefreshWindow = {
-  reset: true;
-  storeEpoch: string;
-} | {
-  reset: false;
-  storeEpoch: string;
-  summaries: TrajectoryTraceSummary[];
-  nextCursor: string;
+  summaries: TrajectorySubjectSummary[];
+  watermark: number;
 };
 
 export interface TrajectoryOperationCoordinator {
@@ -76,8 +74,8 @@ export interface TrajectoryTraceHintCoordinator {
   ) => Promise<void>;
 }
 
-export interface StagedTrajectoryTrace {
-  bucket: TrajectoryTraceBucket;
+export interface StagedTrajectoryChain {
+  bucket: TrajectoryChainBucket;
   invalidRecordSeen: boolean;
 }
 
@@ -124,22 +122,17 @@ function trajectoryEventSessionId(payload: Record<string, unknown>): string | nu
   return null;
 }
 
-type TraceListPageLoader = (
-  cursor: string | null,
+type SubjectListLoader = (
+  afterRevision: number,
   signal: AbortSignal,
-) => Promise<TrajectoryTraceListResponse>;
+) => Promise<TrajectorySubjectListResponse>;
 
-type RevisionListPageLoader = (
-  afterRevision: string,
-  signal: AbortSignal,
-) => Promise<TrajectoryRevisionListResponse>;
-
-type TraceDetailPageLoader = (
+type ChainPageLoader = (
   sinceRevision: number,
   signal: AbortSignal,
-) => Promise<TrajectoryTraceDetailResponse>;
+) => Promise<TrajectorySubjectRecordsResponse>;
 
-type TraceDetailPagePublisher = (staged: StagedTrajectoryTrace) => void;
+type ChainPagePublisher = (staged: StagedTrajectoryChain) => void;
 
 function invalidPagination(message: string): Error {
   const error = new Error(message);
@@ -149,10 +142,10 @@ function invalidPagination(message: string): Error {
 
 export function createTrajectoryWindowState(): TrajectoryWindowState {
   return {
-    buckets: new Map<string, TrajectoryTraceBucket>(),
+    buckets: new Map<string, TrajectoryChainBucket>(),
     storeEpoch: null,
-    pageCursor: null,
-    revisionCursor: null,
+    watermark: 0,
+    frames: emptyStreamFrameState,
     listWindowInitialized: false,
     rawSelection: '',
   };
@@ -172,10 +165,10 @@ export function shouldCatchUpAfterTrajectoryTerminalEvent(
 }
 
 export function resetTrajectoryWindowState(state: TrajectoryWindowState): void {
-  state.buckets = new Map<string, TrajectoryTraceBucket>();
+  state.buckets = new Map<string, TrajectoryChainBucket>();
   state.storeEpoch = null;
-  state.pageCursor = null;
-  state.revisionCursor = null;
+  state.watermark = 0;
+  state.frames = emptyStreamFrameState;
   state.listWindowInitialized = false;
   state.rawSelection = '';
 }
@@ -301,9 +294,9 @@ function terminal(lifecycle: TrajectoryRecordVersion['lifecycle']): boolean {
 
 /** Apply one revision page with per-record latest-wins and terminal absorption. */
 export function applyTrajectoryDetailRecords(
-  current: TrajectoryTraceBucket | undefined,
-  detail: TrajectoryTraceDetailResponse,
-): StagedTrajectoryTrace {
+  current: TrajectoryChainBucket | undefined,
+  detail: TrajectorySubjectRecordsResponse,
+): StagedTrajectoryChain {
   let records = new Map<string, OtlpExportTraceServiceRequest>(current?.records ?? []);
   let rawRecords = new Map<string, TrajectoryDetailRecord>(current?.rawRecords ?? []);
   let versions = new Map<string, TrajectoryRecordVersion>(current?.versions ?? []);
@@ -363,114 +356,64 @@ export function applyTrajectoryDetailRecords(
   };
 }
 
-export function dedupeTraceSummaries(
-  summaries: readonly TrajectoryTraceSummary[],
-): TrajectoryTraceSummary[] {
-  const byTraceId = new Map<string, TrajectoryTraceSummary>();
+export function dedupeSubjectSummaries(
+  summaries: readonly TrajectorySubjectSummary[],
+): TrajectorySubjectSummary[] {
+  const bySubjectId = new Map<string, TrajectorySubjectSummary>();
   for (const summary of summaries) {
-    const current = byTraceId.get(summary.trace_id);
+    const current = bySubjectId.get(summary.subject_id);
     if (current === undefined || summary.revision >= current.revision) {
-      byTraceId.set(summary.trace_id, summary);
+      bySubjectId.set(summary.subject_id, summary);
     }
   }
-  return [...byTraceId.values()];
+  return [...bySubjectId.values()];
 }
 
 export function selectSummariesNeedingLoad(
   loadedRevisions: ReadonlyMap<string, number>,
-  ...summaryGroups: Array<readonly TrajectoryTraceSummary[]>
-): TrajectoryTraceSummary[] {
-  const summaries = dedupeTraceSummaries(summaryGroups.flatMap(group => [...group]));
+  ...summaryGroups: Array<readonly TrajectorySubjectSummary[]>
+): TrajectorySubjectSummary[] {
+  const summaries = dedupeSubjectSummaries(summaryGroups.flatMap(group => [...group]));
   return summaries.filter((summary) => {
-    const loadedRevision = loadedRevisions.get(summary.trace_id);
+    const loadedRevision = loadedRevisions.get(summary.subject_id);
     return loadedRevision === undefined || summary.revision > loadedRevision;
   });
 }
 
-export async function collectHeadRefreshWindow(
-  loadedRevisions: ReadonlyMap<string, number>,
-  expectedStoreEpoch: string,
+/**
+ * Collect the subjects that own a chain in one session.
+ *
+ * A session holds few subjects, so the listing is a single request rather
+ * than a paginated window: first load and polling differ only in the
+ * revision floor they pass. A rotated store epoch means the caller's
+ * revisions describe a database that no longer exists, so it must restart.
+ */
+export async function collectSubjectRefreshWindow(
+  afterRevision: number,
+  expectedStoreEpoch: string | null,
   signal: AbortSignal,
-  loadPage: TraceListPageLoader,
-): Promise<HeadRefreshWindow | null> {
-  let cursor: string | null = null;
-  let firstPageNextCursor: string | null = null;
-  let revisionCursor = '';
-  const summaries: TrajectoryTraceSummary[] = [];
-  while (true) {
-    if (signal.aborted) return null;
-    const page = await loadPage(cursor, signal);
-    if (signal.aborted) return null;
-    if (page.store_epoch !== expectedStoreEpoch) {
-      return { reset: true, storeEpoch: page.store_epoch };
-    }
-    if (cursor === null) {
-      firstPageNextCursor = page.next_cursor;
-      revisionCursor = page.revision_cursor;
-    }
-    summaries.push(...page.items);
-    const overlapsLoadedWindow = page.items.some(item => loadedRevisions.has(item.trace_id));
-    if (loadedRevisions.size === 0 || overlapsLoadedWindow || page.next_cursor === null) {
-      return {
-        reset: false,
-        storeEpoch: expectedStoreEpoch,
-        summaries: dedupeTraceSummaries(summaries),
-        firstPageNextCursor,
-        revisionCursor,
-      };
-    }
-    if (page.next_cursor === cursor) {
-      throw invalidPagination('Trajectory head pagination did not advance');
-    }
-    cursor = page.next_cursor;
+  loadList: SubjectListLoader,
+): Promise<SubjectRefreshWindow | null> {
+  if (signal.aborted) return null;
+  const page = await loadList(afterRevision, signal);
+  if (signal.aborted) return null;
+  if (expectedStoreEpoch !== null && page.store_epoch !== expectedStoreEpoch) {
+    return { reset: true, storeEpoch: page.store_epoch };
   }
+  return {
+    reset: false,
+    storeEpoch: page.store_epoch,
+    summaries: dedupeSubjectSummaries(page.items),
+    watermark: page.watermark,
+  };
 }
 
-export async function collectRevisionRefreshWindow(
-  afterRevision: string,
-  expectedStoreEpoch: string,
+export async function stageTrajectoryChainPages(
+  current: TrajectoryChainBucket | undefined,
   signal: AbortSignal,
-  loadPage: RevisionListPageLoader,
-): Promise<RevisionRefreshWindow | null> {
-  let cursor = afterRevision;
-  let expectedWatermark: string | null = null;
-  const summaries: TrajectoryTraceSummary[] = [];
-  while (true) {
-    if (signal.aborted) return null;
-    const page = await loadPage(cursor, signal);
-    if (signal.aborted) return null;
-    if (page.reset || page.store_epoch !== expectedStoreEpoch) {
-      return { reset: true, storeEpoch: page.store_epoch };
-    }
-    if (expectedWatermark !== null && page.watermark !== expectedWatermark) {
-      throw invalidPagination('Trajectory revision watermark changed during pagination');
-    }
-    expectedWatermark = page.watermark;
-    summaries.push(...page.items);
-    if (!page.has_more) {
-      if (page.next_cursor !== page.watermark) {
-        throw invalidPagination('Trajectory revision pagination ended before its watermark');
-      }
-      return {
-        reset: false,
-        storeEpoch: expectedStoreEpoch,
-        summaries: dedupeTraceSummaries(summaries),
-        nextCursor: page.next_cursor,
-      };
-    }
-    if (page.next_cursor === cursor) {
-      throw invalidPagination('Trajectory revision pagination did not advance');
-    }
-    cursor = page.next_cursor;
-  }
-}
-
-export async function stageTrajectoryTracePages(
-  current: TrajectoryTraceBucket | undefined,
-  signal: AbortSignal,
-  loadPage: TraceDetailPageLoader,
-  publishPage?: TraceDetailPagePublisher,
-): Promise<StagedTrajectoryTrace | null> {
+  loadPage: ChainPageLoader,
+  publishPage?: ChainPagePublisher,
+): Promise<StagedTrajectoryChain | null> {
   let sinceRevision = current?.revision ?? 0;
   let stagedRecords = new Map<string, OtlpExportTraceServiceRequest>(
     current?.records ?? [],

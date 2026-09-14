@@ -16,8 +16,8 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime import (
-    AgentRuntime,
+from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.session_provisioner import (
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
     SessionProvisionState,

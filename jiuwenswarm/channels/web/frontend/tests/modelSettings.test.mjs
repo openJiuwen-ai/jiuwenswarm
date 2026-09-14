@@ -20,6 +20,7 @@ import {
 } from '../node_modules/.cache/settings-refactor/modules/models/modelAdapters.js';
 import { validateModelDraft } from '../node_modules/.cache/settings-refactor/modules/models/modelValidation.js';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -454,6 +455,22 @@ test('default and deletion operations preserve identity, group semantics, and re
   assert.throws(() => removeEditableModel([primary, agentOs], primary), /LAST_EDITABLE_MODEL/);
 });
 
+test('adding a model replaces only the placeholder primary model', () => {
+  const placeholder = { model_name: 'your-model-name', alias: 'placeholder', is_default: true };
+  const existing = { model_name: 'existing', alias: 'existing', is_default: true };
+  const added = { model_name: 'new-model', alias: 'new', is_default: false };
+  const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
+
+  const replaced = addEditableModel([placeholder, existing, agentOs], added);
+  assert.deepEqual(replaced.map((model) => model.alias), ['new', 'existing', 'backup']);
+  assert.equal(replaced[0].is_default, true);
+  assert.equal(replaced.includes(placeholder), false);
+
+  const appended = addEditableModel([existing, agentOs], added);
+  assert.deepEqual(appended, [existing, agentOs, added]);
+  assert.equal(appended[0], existing);
+});
+
 test('model Settings sources use the required RPCs without hardcoded vendor options or unsupported tiers', () => {
   const page = source('src/features/settings/modules/models/ModelsSettings.tsx');
   const dialog = source('src/features/settings/modules/models/ModelDialog.tsx');
@@ -485,8 +502,14 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.match(page, /const protocol = displayModelProtocol\(model\)/);
   assert.match(page, /vendorKey \? getVendorLabel\(vendorKey, t\) : t\('settingsPanel\.models\.customVendor'\)/);
   assert.match(page, /\[providerLabel, protocolLabel, model\.model_name\]\.join\(' · '\)/);
-  assert.match(page, /<h3 title=\{presentation\.customName\}>\{presentation\.customName\}<\/h3>/);
-  assert.match(page, /<p title=\{presentation\.metadata\}>\{presentation\.metadata\}<\/p>/);
+  assert.match(
+    page,
+    /<h3 title=\{presentation\.customName\} data-testid="settings-models-card-title" data-variant=\{model\.origin_index \?\? 'new'\}>\{presentation\.customName\}<\/h3>/,
+  );
+  assert.match(
+    page,
+    /<p title=\{presentation\.metadata\} data-testid="settings-models-card-metadata" data-variant=\{model\.origin_index \?\? 'new'\}>\{presentation\.metadata\}<\/p>/,
+  );
   assert.doesNotMatch(page, /accountMode|connectOpenAIAccount/);
   assert.doesNotMatch(dialog, /accountMode/);
   assert.doesNotMatch(page, /Promise\.all\(\[loadModels\(\), loadCatalog\(\)\]\)/);
@@ -562,7 +585,7 @@ test('grouped models use an accessible accordion and keep only the group default
     page,
     /const canSetPrimary = !readOnly && !isPrimary && \(!isDuplicate \|\| model\.is_default === true\)/,
   );
-  assert.match(page, /\{canSetPrimary \? \(\s*<Button[\s\S]{0,320}settingsPanel\.models\.setPrimary/);
+  assert.match(page, /\{canSetPrimary \? \(\s*<Button[\s\S]{0,480}settingsPanel\.models\.setPrimary/);
   assert.match(
     page,
     /<button[\s\S]{0,240}className="settings-model-group__header"[\s\S]{0,240}aria-expanded=\{isExpanded\}[\s\S]{0,160}aria-controls=\{groupContentId\}/,
@@ -572,7 +595,7 @@ test('grouped models use an accessible accordion and keep only the group default
   assert.match(page, /settings-model-group__toggle-icon--expanded/);
   assert.match(
     page,
-    /<strong title=\{group\.modelName\}>\{group\.modelName\}<\/strong>\s*<\/div>\s*<span className="settings-model-group__meta">[\s\S]{0,120}settingsPanel\.models\.groupMeta/,
+    /<strong title=\{group\.modelName\}>\{group\.modelName\}<\/strong>\s*<\/div>\s*<span className="settings-model-group__meta" data-testid="settings-models-group-meta" data-variant=\{group\.modelName\}>[\s\S]{0,120}settingsPanel\.models\.groupMeta/,
   );
   assert.doesNotMatch(page, /settings-model-group__count/);
   assert.match(settingsCss, /\.settings-model-group__header\s*\{[^}]*justify-content: space-between/s);

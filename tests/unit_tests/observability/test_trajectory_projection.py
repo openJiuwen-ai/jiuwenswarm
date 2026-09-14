@@ -31,10 +31,10 @@ def _otlp_with_attributes(*attributes: dict) -> dict:
     }
 
 
-def test_project_trajectory_scope_reads_openjiuwen_team_attributes() -> None:
+def test_project_trajectory_scope_reads_agentteam_attributes() -> None:
     otlp = _otlp_with_attributes(
-        {"key": "openjiuwen.team.id", "value": {"stringValue": "research-team"}},
-        {"key": "openjiuwen.team.name", "value": {"stringValue": "Research Team"}},
+        {"key": "agentteam.team.id", "value": {"stringValue": "research-team"}},
+        {"key": "agentteam.team.name", "value": {"stringValue": "Research Team"}},
     )
     scope = project_trajectory_scope(otlp)
     assert scope == TrajectoryScope(
@@ -73,7 +73,7 @@ def test_scope_matches_team_id() -> None:
 
 def test_scope_projection_survives_json_round_trip() -> None:
     otlp = _otlp_with_attributes(
-        {"key": "openjiuwen.team.id", "value": {"stringValue": "round-trip-team"}},
+        {"key": "agentteam.team.id", "value": {"stringValue": "round-trip-team"}},
     )
     payload = json.loads(json.dumps(otlp))
     scope = project_trajectory_scope(payload)

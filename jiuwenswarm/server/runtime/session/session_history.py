@@ -13,13 +13,14 @@ from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 
 logger = logging.getLogger(__name__)
 _FILE_LOCK = threading.Lock()
 _WRITE_QUEUE: queue.Queue[
-    tuple[str, dict[str, Any], str | None, Future[None] | None]
+    tuple[str, dict[str, Any], str | None, Future[None] | None, int]
 ] = queue.Queue(maxsize=20000)
 _QUEUE_ENQUEUE_LOCK = threading.Lock()
 _WORKER_STARTED = False
@@ -235,10 +236,16 @@ def _serialize_value(obj: Any) -> Any:
 
 
 def _session_dir(session_id: str, *, create: bool = True) -> Path:
-    session_dir = get_agent_sessions_dir() / session_id
-    if create:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    if not create:
+        return lc.resolve_session(
+            session_id, must_exist=False, sessions_root=get_agent_sessions_dir()
+        )
+    with lc.resource_lock("session", session_id):
+        lc.write_guard(session_id)
+        session_dir = get_agent_sessions_dir() / session_id
         session_dir.mkdir(parents=True, exist_ok=True)
-    return session_dir
+        return session_dir
 
 
 def resolve_session_dir(
@@ -411,6 +418,27 @@ def load_history_records(session_id: str, *, subagent_id: str | None = None) -> 
 
 
 def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    sid = _managed_history_session_id(path)
+    if sid is None:
+        return _write_records_unfenced(path, records)
+    with lc.resource_lock("session", sid):
+        lc.write_guard(sid)
+        return _write_records_unfenced(path, records)
+
+
+def _managed_history_session_id(path: Path) -> str | None:
+    for root in (get_agent_sessions_dir(), get_agent_sessions_dir().parent / "sessions_archived"):
+        try:
+            relative = path.relative_to(root)
+            if len(relative.parts) > 1:
+                return relative.parts[0]
+        except ValueError:
+            pass
+    return None
+
+
+def _write_records_unfenced(path: Path, records: list[dict[str, Any]]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     if path.suffix.lower() == ".jsonl":
         payload = "\n".join(
@@ -428,6 +456,16 @@ def _write_records_to_path(path: Path, records: list[dict[str, Any]]) -> None:
 
 
 def _append_record_jsonl(path: Path, record: dict[str, Any]) -> None:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    sid = _managed_history_session_id(path)
+    if sid is None:
+        return _append_record_unfenced(path, record)
+    with lc.resource_lock("session", sid):
+        lc.write_guard(sid)
+        return _append_record_unfenced(path, record)
+
+
+def _append_record_unfenced(path: Path, record: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a", encoding="utf-8") as fh:
         fh.write(json.dumps(record, ensure_ascii=False))
@@ -507,7 +545,10 @@ def _is_team_relevant(item: dict[str, Any]) -> bool:
             }
         if et in ("chat.tool_call", "chat.tracer_agent"):
             mode = item.get("mode")
-            return isinstance(mode, str) and mode.strip().lower() == "team"
+            # history 落盘的 mode 是前端原始发送值（resolve_request_mode 上游的 wire
+            # 值），Web 现统一发三段命名 team.work.normal / team.code.normal 等，
+            # 裸 == "team" 会漏判，用 is_team_mode 谓词覆盖全部 team canonical 变体。
+            return is_team_mode(mode)
         if et in ("chat.final", "chat.tool_result"):
             role = item.get("role")
             return isinstance(role, str) and role.strip().lower() == "teammate"
@@ -691,9 +732,15 @@ def _ensure_worker_started() -> None:
 
         def _worker() -> None:
             while True:
-                sid, item, subagent_id, receipt = _WRITE_QUEUE.get()
+                sid, item, subagent_id, receipt, generation = _WRITE_QUEUE.get()
                 try:
-                    _write_item(sid, item, subagent_id=subagent_id)
+                    if sid is None:
+                        item.set()
+                        continue
+                    from jiuwenswarm.server.runtime.session import lifecycle as lc
+                    with lc.resource_lock("session", sid):
+                        lc.write_guard(sid, generation)
+                        _write_item(sid, item, subagent_id=subagent_id)
                 except Exception as exc:  # noqa: BLE001
                     if receipt is not None:
                         receipt.set_exception(exc)
@@ -709,6 +756,17 @@ def _ensure_worker_started() -> None:
         _WORKER_STARTED = True
 
 
+def flush_pending_writes(timeout: float = 10) -> bool:
+    _ensure_worker_started()
+    deadline = time.monotonic() + timeout
+    barrier = threading.Event()
+    try:
+        _WRITE_QUEUE.put((None, barrier, None, None, 0), timeout=timeout)
+    except queue.Full:
+        return False
+    return barrier.wait(max(0, deadline - time.monotonic()))
+
+
 def _enqueue_history_item(
     session_id: str,
     item: dict[str, Any],
@@ -719,14 +777,16 @@ def _enqueue_history_item(
     """Keep all history records on one FIFO path, including under pressure."""
 
     _ensure_worker_started()
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    generation = lc.state("session", session_id).get("generation", 0)
     normalized_subagent_id = (subagent_id or "").strip() or None
     with _QUEUE_ENQUEUE_LOCK:
         try:
-            _WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt))
+            _WRITE_QUEUE.put_nowait((session_id, item, normalized_subagent_id, receipt, generation))
         except queue.Full:
             # A synchronous disk-write fallback can overtake queued records.
             # Block only under backpressure so request boundaries remain FIFO.
-            _WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt))
+            _WRITE_QUEUE.put((session_id, item, normalized_subagent_id, receipt, generation))
 
 
 def append_history_record(

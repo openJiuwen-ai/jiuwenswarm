@@ -166,6 +166,55 @@ class _CronToolsCronBackend(CronToolBackend):
             )
         return payload
 
+    @staticmethod
+    def _inherit_session_mcp(
+        payload: dict[str, Any],
+        context: CronToolContext | None,
+    ) -> dict[str, Any]:
+        """创建 cron 时复用创建它的 chat-session 的会话级 MCP 选择。
+
+        用户在 web 会话里选择的 MCP 会随每轮 chat.send 持久化到会话
+        metadata 的 ``session_equipment.mcp`` 快照；这里在调用方未显式传
+        ``mcp`` 时用该快照填充（key-presence 语义：显式传 ``[]`` 表示
+        "不用 MCP"，不被继承覆盖），保证 cron 执行会话通过 chat.send 的
+        ``mcp`` 字段走与 chat-session 相同的 reconcile_session_mcp 通道。
+        会话无 MCP 选择 / 读取失败时保持原 payload，不阻断创建。
+        """
+        if context is None or "mcp" in payload:
+            return payload
+        session_id = getattr(context, "session_id", None)
+        if not (isinstance(session_id, str) and session_id.strip()):
+            return payload
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_equipment,
+            )
+
+            equipment = get_session_equipment(session_id, cache_bust=True)
+            inherited = equipment.get("mcp") if isinstance(equipment, dict) else None
+            if not (
+                isinstance(inherited, list)
+                and inherited
+                and all(isinstance(item, str) for item in inherited)
+            ):
+                return payload
+            out = dict(payload)
+            out["mcp"] = list(inherited)
+            logger.info(
+                "[CronRuntimeBridge] cron job reuses chat-session mcp: "
+                "session=%s mcp=%s",
+                session_id,
+                inherited,
+            )
+            return out
+        except Exception as exc:  # noqa: BLE001 - 继承失败不阻断创建
+            logger.debug(
+                "[CronRuntimeBridge] reuse session mcp failed session=%s: %s",
+                session_id,
+                exc,
+            )
+        return payload
+
     async def list_jobs(self, *, include_disabled: bool = True) -> list[dict[str, Any]]:
         jobs = await self._with_route(None, self._cron_tools.list_jobs())
         rows = [self._to_backend_job(job) for job in jobs]
@@ -203,6 +252,9 @@ class _CronToolsCronBackend(CronToolBackend):
         # 模型，如免费模型 mimo-v2.5-free），保证 cron 执行与创建它的会话使用同一
         # 模型配置，而不是回退到 config 默认模型。
         payload = self._inherit_session_model(payload, context=context)
+        # cron 的会话级 MCP 选择复用创建它的 chat-session 的 MCP 快照
+        #（未显式传 mcp 时填充；执行时经 chat.send 的 mcp 字段走 reconcile）。
+        payload = self._inherit_session_mcp(payload, context=context)
         logger.info(
             "[CronRuntimeBridge] create_job mapped payload.targets=%s payload.id=%s payload.name=%s",
             payload.get("targets"),
@@ -455,6 +507,18 @@ def _extract_legacy_params(
         model_name_raw = data.get("model_name") or payload_block.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             out["model_name"] = str(model_name_raw).strip()
+
+        # mcp：透传会话级 MCP 选择（顶层或随 payload 传入）；未显式传时由
+        # 调用方继承会话 MCP 快照。保留显式空列表，避免继承覆盖或无法清除选择；
+        # 非空列表只接受非空字符串元素，其余交给继承/规范化。
+        mcp_raw = data.get("mcp")
+        if mcp_raw is None:
+            mcp_raw = payload_block.get("mcp")
+        if (
+            isinstance(mcp_raw, (list, tuple))
+            and all(isinstance(item, str) and item.strip() for item in mcp_raw)
+        ):
+            out["mcp"] = [str(item).strip() for item in mcp_raw]
 
         context_session_id = getattr(context, "session_id", None)
         context_metadata = getattr(context, "metadata", None) or {}

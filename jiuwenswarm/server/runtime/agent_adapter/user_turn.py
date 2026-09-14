@@ -21,6 +21,12 @@ from dataclasses import dataclass, replace
 from datetime import datetime, timedelta, timezone
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_INTERNAL,
+    HOST_USER_PROMPT_PREFIX_EN,
+    HOST_USER_PROMPT_PREFIX_ZH,
+)
+
 logger = logging.getLogger(__name__)
 
 # ``inputs`` key carrying the UserTurn across the team dispatch boundary.
@@ -55,6 +61,7 @@ class UserTurn:
     trusted_dirs: list[str] | None = None
     skills: list[str] | None = None
     metadata: dict[str, Any] | None = None
+    origin_kind: str = HOST_USER_ORIGIN_INTERNAL
 
     def with_text(self, text: Any) -> "UserTurn":
         """Return a copy carrying rewritten user text, keeping all context."""
@@ -84,6 +91,7 @@ class UserTurn:
             return self.text
 
         content = self.text
+        origin_kind = self.origin_kind
         if isinstance(content, str):
             # /statusline <prompt> is a prompt-type command (mirrors Claude Code);
             # it never goes through /skills. The rewritten content instructs
@@ -91,14 +99,21 @@ class UserTurn:
             statusline_dispatch, _description = _handle_statusline_prompt_command(content)
             if statusline_dispatch:
                 content = statusline_dispatch
+                origin_kind = HOST_USER_ORIGIN_INTERNAL
 
         prompt_channel = self._prompt_channel()
-        envelope = self._build_envelope(content, prompt_channel)
+        envelope = self._build_envelope(content, prompt_channel, origin_kind=origin_kind)
         rendered = self._interaction_prefix() + _lead_in(prompt_channel, self.language)
         rendered += json.dumps(envelope, ensure_ascii=False)
         return rendered
 
-    def _build_envelope(self, content: Any, prompt_channel: str) -> dict[str, Any]:
+    def _build_envelope(
+        self,
+        content: Any,
+        prompt_channel: str,
+        *,
+        origin_kind: str,
+    ) -> dict[str, Any]:
         """Assemble the JSON envelope body for ``content``."""
         is_system = prompt_channel in _SYSTEM_CHANNELS
         now = datetime.now(timezone(timedelta(hours=8)))
@@ -113,6 +128,7 @@ class UserTurn:
         # Scheduled and heartbeat turns carry no user upload.
         if not is_system:
             envelope["files_updated_by_user"] = json.dumps(self.files or {}, ensure_ascii=False)
+        envelope["origin_kind"] = origin_kind
 
         skills_to_use = self._resolve_skills(content)
         if skills_to_use:
@@ -221,7 +237,7 @@ def _lead_in(channel: str, language: str) -> str:
                 "当前为 Heartbeat 自动任务：仅执行 content 明确指定的任务；"
                 "除非 content 明确要求，否则不得改变任务目标或管理 Heartbeat 任务：\n"
             )
-        return "你收到一条消息：\n"
+        return HOST_USER_PROMPT_PREFIX_ZH
     if channel == "cron":
         return (
             "You receive a new message. For query tasks, you must output the queried content"
@@ -233,7 +249,7 @@ def _lead_in(channel: str, language: str) -> str:
             "specified in content; do not change its objective or manage Heartbeat "
             "jobs unless content explicitly requires it:\n"
         )
-    return "You receive a new message:\n"
+    return HOST_USER_PROMPT_PREFIX_EN
 
 
 def _handle_skills_use_slash_command(content: str) -> tuple[list[str], str]:

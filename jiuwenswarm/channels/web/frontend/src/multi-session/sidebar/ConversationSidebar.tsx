@@ -49,7 +49,7 @@ import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
 import UnpinIcon from '../../assets/work-mode/unpin.svg?react';
-import SidebarCollapseIcon from '../../assets/sidebar/collapse.svg?react';
+import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 
 const UNREAD_KEY = 'jiuwenswarm_session_unread';
 const RELATIVE_TIME_REFRESH_MS = 60_000;
@@ -1337,7 +1337,7 @@ export function ConversationSidebar({
           aria-label={t('common.collapse') || 'Collapse'}
           data-testid="multi-session-sidebar-collapse"
         >
-          <SidebarCollapseIcon aria-hidden />
+          <PanelCollapseIcon aria-hidden />
         </button>
         </div>
         <div className="conversation-sidebar__operations" data-testid="multi-session-operations">

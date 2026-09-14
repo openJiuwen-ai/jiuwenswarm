@@ -2425,7 +2425,8 @@ class SkillManager:
             source: teamskillshub | clawhub | skillnet；缺省按 teamskillshub
             identifier: hub asset_id / clawhub slug / skillnet url
             force: bool
-            owner_handle / display_name: clawhub 可选
+            owner_handle: clawhub 可选
+            display_name: teamskillshub / clawhub 可选（市场展示名，写入 local_skills）
             url: skillnet 可选；缺省用 identifier
         """
         params = params or {}
@@ -2440,22 +2441,18 @@ class SkillManager:
 
         force = bool(params.get("force", False))
         if source in {"teamskillshub", "swarmskillshub"}:
-            return await self.handle_skills_team_skills_hub_install(
-                {
-                    "asset_id": identifier,
-                    "force": force,
-                    **(
-                        {"version": params["version"]}
-                        if params.get("version") is not None
-                        else {}
-                    ),
-                    **(
-                        {"market_url": params["market_url"]}
-                        if params.get("market_url") is not None
-                        else {}
-                    ),
-                }
-            )
+            hub_payload: dict[str, Any] = {
+                "asset_id": identifier,
+                "force": force,
+            }
+            if params.get("version") is not None:
+                hub_payload["version"] = params["version"]
+            if params.get("market_url") is not None:
+                hub_payload["market_url"] = params["market_url"]
+            display_name = str(params.get("display_name") or "").strip()
+            if display_name:
+                hub_payload["display_name"] = display_name
+            return await self.handle_skills_team_skills_hub_install(hub_payload)
         if source == "clawhub":
             payload: dict[str, Any] = {
                 "slug": identifier,
@@ -3420,6 +3417,8 @@ class SkillManager:
         force = bool(params.get("force", False))
         version = params.get("version")
         version_str = str(version).strip() if version is not None else ""
+        # 市场展示名（可选）；与 ClawHub 一致，仅新安装时写入 local_skills
+        requested_display_name = str(params.get("display_name") or "").strip()
 
         existing = self._find_skill_dir_by_installed_asset_id(asset_id)
         if existing is not None:
@@ -3531,11 +3530,14 @@ class SkillManager:
                     product_version=product_version,
                 )
 
+                resolved_display_name = requested_display_name or skill_name
+
                 if use_custom_output:
                     return {
                         "success": True,
                         "skill": {
                             "name": skill_name,
+                            "display_name": resolved_display_name,
                             "source": "teamskillshub",
                             "asset_id": asset_id,
                             "path": str(dest),
@@ -3557,6 +3559,7 @@ class SkillManager:
                 self._add_local_skill(
                     {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "origin": f"teamskillshub:{asset_id}",
                         "source": "teamskillshub",
                         "installed_at": installed_at,
@@ -3565,6 +3568,7 @@ class SkillManager:
                 self._add_installed_plugin(
                     {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "marketplace": "teamskillshub",
                         "commit": "",
                         "source": "teamskillshub",
@@ -3576,6 +3580,7 @@ class SkillManager:
                     "success": True,
                     "skill": {
                         "name": skill_name,
+                        "display_name": resolved_display_name,
                         "source": "teamskillshub",
                         "asset_id": asset_id,
                         "path": str(dest),
@@ -6867,6 +6872,14 @@ class SkillManager:
                 continue
         return False
 
+    @staticmethod
+    def _path_is_in_process_temp(path: Path) -> bool:
+        """判断路径是否位于当前进程的标准临时目录内。"""
+        try:
+            return SkillManager._path_is_within_root(path, Path(tempfile.gettempdir()))
+        except (OSError, ValueError, RuntimeError):
+            return False
+
     def _assert_import_local_source_safe(self, raw_path: str) -> None:
         """拒绝符号链接、URL 协议与落在基础黑名单根下的本地导入源。
 
@@ -6900,7 +6913,15 @@ class SkillManager:
             resolved = expanded.resolve()
         except (OSError, ValueError, RuntimeError) as exc:
             raise ValueError(f"path 无效: {exc}") from exc
+        # macOS 的进程临时目录位于 /private/var 下；放行该目录避免正常的
+        # 上传/解压暂存文件被 /var 基础黑名单误判。显式运维黑名单仍优先。
+        allow_process_temp = (
+            not os.getenv(_IMPORT_LOCAL_FORBIDDEN_DIRS_ENV)
+            and self._path_is_in_process_temp(resolved)
+        )
         for root in self._get_import_local_forbidden_roots():
+            if allow_process_temp and root == Path("/var"):
+                continue
             if self._path_is_within_root(resolved, root):
                 raise ValueError(f"path 位于禁止导入的目录: {raw}")
         if resolved.is_dir():

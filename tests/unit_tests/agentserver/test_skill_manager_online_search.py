@@ -288,11 +288,19 @@ async def test_online_search_install_dispatches_teamskillshub(tmp_path, monkeypa
     monkeypatch.setattr(manager, "handle_skills_team_skills_hub_install", _install)
 
     payload = await manager.handle_skills_online_search_install(
-        {"identifier": "asset-demo", "force": True}
+        {
+            "identifier": "asset-demo",
+            "force": True,
+            "display_name": "演示技能",
+        }
     )
 
     assert payload["success"] is True
-    assert seen == {"asset_id": "asset-demo", "force": True}
+    assert seen == {
+        "asset_id": "asset-demo",
+        "force": True,
+        "display_name": "演示技能",
+    }
 
 
 @pytest.mark.asyncio

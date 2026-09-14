@@ -213,7 +213,7 @@ test('custom tags keep fixed and user-entered labels in create order', () => {
   ]);
 });
 
-test('catalog view model filters mine/search and clamps pages deterministically', () => {
+test('catalog view model filters mine/search and returns the full filtered list', () => {
   const catalog = [
     {
       id: 'a',
@@ -249,16 +249,15 @@ test('catalog view model filters mine/search and clamps pages deterministically'
       avatarUrl: null,
     },
   ];
+  // 2026-09-11 分页移除后 viewModel 不再收 page/pageSize、返回全量过滤结果（见
+  // buildCatalogViewModel），断言只看 items/totalItems。
   const view = buildCatalogViewModel(catalog, {
     scope: 'mine',
     category: '',
     query: '市场',
-    page: 99,
-    pageSize: 1,
   });
 
   assert.equal(view.totalItems, 1);
-  assert.equal(view.page, 1);
   assert.deepEqual(
     view.items.map((item) => item.id),
     ['a'],
@@ -278,7 +277,7 @@ test('catalog view model filters mine/search and clamps pages deterministically'
         avatarUrl: null,
       },
     ],
-    { scope: 'mine', category: '', query: '', page: 1, pageSize: 6 },
+    { scope: 'mine', category: '', query: '' },
   );
   assert.deepEqual(
     installedBuiltin.items.map((item) => item.id),
@@ -289,8 +288,6 @@ test('catalog view model filters mine/search and clamps pages deterministically'
     scope: 'catalog',
     category: 'ProductDevelopment',
     query: '',
-    page: 1,
-    pageSize: 12,
   });
   assert.deepEqual(
     productCatalog.items.map((item) => item.id),

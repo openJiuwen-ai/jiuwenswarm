@@ -12,17 +12,19 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Loader2, PlayCircle } from 'lucide-react';
+import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
 import { Switch } from '../Switch';
 import { usePersonalContextStore } from '../../stores';
 import {
   type FetchProvider,
   type FetchRunProgress,
+  type FetchRunRecord,
   type FetchServiceConfig,
   type FetchServiceState,
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
   FREQUENCY_SECONDS,
+  pcApi,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { AddContentDrawer } from './AddContentDrawer';
@@ -36,6 +38,27 @@ import gitcodeIcon from '../../assets/settings/channels/gitcode.png';
 import './ServicesPanel.css';
 
 const POLL_INTERVAL_MS = 5000;
+
+function runTimestampValue(value: string | null | undefined): number {
+  const timestamp = value ? new Date(value).getTime() : Number.NEGATIVE_INFINITY;
+  return Number.isFinite(timestamp) ? timestamp : Number.NEGATIVE_INFINITY;
+}
+
+function latestFetchRun(runs?: FetchRunRecord[]): FetchRunRecord | null {
+  if (!runs?.length) return null;
+  return runs.reduce(
+    (latest, run) => (runTimestampValue(run.started_at) > runTimestampValue(latest.started_at) ? run : latest),
+    runs[0],
+  );
+}
+
+function formatRunTimestamp(value: string | null | undefined): string {
+  if (!value) return '';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '';
+  const pad = (part: number) => String(part).padStart(2, '0');
+  return `${date.getFullYear()}-${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}`;
+}
 
 const PROVIDER_ICON: Record<FetchProvider, string> = {
   local_files: localFilesIcon,
@@ -52,6 +75,10 @@ interface PersonalContextServicesPanelProps {
   isActive: boolean;
   onBackToGraph: () => void;
 }
+
+type PanelNotice =
+  | { kind: 'success'; key: string }
+  | { kind: 'error'; message: string };
 
 export function PersonalContextServicesPanel({
   isConnected,
@@ -75,24 +102,46 @@ export function PersonalContextServicesPanel({
     loadAuthStatus,
     isProviderAuthorized,
   } = usePersonalContextStore();
-  const [error, setError] = useState<string | null>(null);
+  const [notice, setNotice] = useState<PanelNotice | null>(null);
+  const [runHistories, setRunHistories] = useState<Record<string, FetchRunRecord[]>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<FetchServiceConfig | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<FetchProvider>(PROVIDER_ORDER[0]);
   /** 用户是否手动点过分类；为 true 后不再自动切换默认分类。 */
   const [userTouched, setUserTouched] = useState(false);
   const pollRef = useRef<number | null>(null);
+  const runStatusLoadingRef = useRef(false);
+  const runStatusRequestRef = useRef(0);
+
+  /** 一次批量拉取全部服务运行历史；失败不干扰任务列表与进度轮询。 */
+  const loadRunHistories = useCallback(() => {
+    if (runStatusLoadingRef.current) return;
+    runStatusLoadingRef.current = true;
+    const requestId = ++runStatusRequestRef.current;
+    void pcApi.getRunStatus()
+      .then((response) => {
+        if (requestId !== runStatusRequestRef.current) return;
+        setRunHistories(
+          Object.fromEntries(response.services.map((item) => [item.service_id, item.runs])),
+        );
+      })
+      .catch(() => {})
+      .finally(() => {
+        runStatusLoadingRef.current = false;
+      });
+  }, []);
 
   // 轮询同时刷新服务列表与运行态进度（fetch_service_states / fetch_run_progress），
   // 否则任务页进度会停留在进页快照（见 ServicesPanel.refresh 旧实现只刷 loadServices）。
   const refresh = useCallback(() => {
     void loadServices().catch((e: unknown) => {
-      setError(e instanceof Error ? e.message : String(e));
+      setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
     });
     void loadStatus().catch(() => {
       // 进度刷新失败不阻断列表展示
     });
-  }, [loadServices, loadStatus]);
+    loadRunHistories();
+  }, [loadServices, loadStatus, loadRunHistories]);
 
   useEffect(() => {
     if (!isConnected || !isActive) return;
@@ -123,19 +172,19 @@ export function PersonalContextServicesPanel({
 
   const handleRun = useCallback(
     (serviceId: string) => {
-      setError(null);
+      setNotice(null);
       void runOne(serviceId)
-        .then(() => setError(t('personalContext.services.runSubmitted')))
-        .catch((e: unknown) => setError(e instanceof Error ? e.message : String(e)));
+        .then(() => setNotice({ kind: 'success', key: 'personalContext.services.runSubmitted' }))
+        .catch((e: unknown) => setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) }));
     },
     [runOne, t],
   );
 
   const handleStop = useCallback(
     (serviceId: string) => {
-      setError(null);
+      setNotice(null);
       void stopRun(serviceId).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       });
     },
     [stopRun],
@@ -143,9 +192,9 @@ export function PersonalContextServicesPanel({
 
   const handleToggle = useCallback(
     (serviceId: string, enabled: boolean) => {
-      setError(null);
+      setNotice(null);
       void setServiceEnabled(serviceId, enabled).catch((e: unknown) => {
-        setError(e instanceof Error ? e.message : String(e));
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       });
     },
     [setServiceEnabled],
@@ -153,7 +202,7 @@ export function PersonalContextServicesPanel({
 
   const handleDelete = useCallback(
     async (serviceId: string, state?: FetchServiceState) => {
-      setError(null);
+      setNotice(null);
       if (!window.confirm(t('personalContext.services.deleteConfirm'))) return;
       // 后端要求 STOPPED 才能删；非 STOPPED 先停（走 store 有 pending+乐观更新）
       try {
@@ -162,7 +211,7 @@ export function PersonalContextServicesPanel({
         }
         await deleteService(serviceId);
       } catch (e) {
-        setError(e instanceof Error ? e.message : String(e));
+        setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       }
     },
     [deleteService, setServiceEnabled, t],
@@ -186,9 +235,51 @@ export function PersonalContextServicesPanel({
 
   const categoryServices = services.filter((s) => s.provider === selectedProvider);
 
+  useEffect(() => {
+    if (notice?.kind !== 'success') return;
+    const timer = window.setTimeout(() => setNotice(null), 5000);
+    return () => window.clearTimeout(timer);
+  }, [notice]);
+
   return (
     <div className="pc-services" data-testid="personal-context-services">
-      {error && <div className="pc-services__error" role="alert">{error}</div>}
+      {notice && (
+        <div
+          className={`pc-services__error${notice.kind === 'success' ? ' pc-services__notice--success' : ' pc-services__error--dismissible'}`}
+          role={notice.kind === 'success' ? 'status' : 'alert'}
+        >
+          {notice.kind === 'success' && (
+            <svg
+              className="pc-services__success-icon"
+              width="16"
+              height="16"
+              viewBox="0 0 16 16"
+              fill="none"
+              aria-hidden="true"
+            >
+              <circle cx="8" cy="8" r="8" fill="#5CB300" />
+              <path
+                d="M4.5 8.2L6.9 10.6L11.5 5.6"
+                stroke="#FFFFFF"
+                strokeWidth="1.6"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+              />
+            </svg>
+          )}
+          <span>{notice.kind === 'success' ? t(notice.key) : notice.message}</span>
+          {notice.kind === 'error' && (
+            <button
+              type="button"
+              className="pc-services__error-close"
+              aria-label={t('common.close')}
+              onClick={() => setNotice(null)}
+            >
+              <X size={14} />
+            </button>
+          )}
+        </div>
+      )}
 
       {loadingServices && services.length === 0 ? (
         <div className="pc-services__loading"><Loader2 className="spin" size={20} /></div>
@@ -207,6 +298,7 @@ export function PersonalContextServicesPanel({
               onClick={openDrawer}
               disabled={!isConnected}
             >
+              <Plus size={16} />
               {t('personalContext.services.addContent')}
             </button>
           </div>
@@ -294,6 +386,7 @@ export function PersonalContextServicesPanel({
                   onClick={openDrawer}
                   disabled={!isConnected}
                 >
+                  <Plus size={16} />
                   {t('personalContext.services.addContent')}
                 </button>
               </div>
@@ -306,6 +399,7 @@ export function PersonalContextServicesPanel({
                     state={status?.fetch_service_states[s.service_id] ?? 'STOPPED'}
                     lastError={status?.fetch_service_errors[s.service_id] ?? null}
                     progress={status?.fetch_run_progress[s.service_id]}
+                    lastRun={latestFetchRun(runHistories[s.service_id])}
                     pending={
                       !!pendingWrites[`svc:${s.service_id}`] ||
                       !!pendingWrites[`run:${s.service_id}`] ||
@@ -405,6 +499,7 @@ function ServiceCard({
   state,
   lastError,
   progress,
+  lastRun,
   pending,
   stopping,
   onRun,
@@ -417,6 +512,7 @@ function ServiceCard({
   state: FetchServiceState;
   lastError: string | null;
   progress?: FetchRunProgress;
+  lastRun?: FetchRunRecord | null;
   pending: boolean;
   stopping: boolean;
   onRun: (id: string) => void;
@@ -463,6 +559,15 @@ function ServiceCard({
     : isHour
       ? t('personalContext.services.intervalHour', { n: Math.floor(interval / FREQUENCY_SECONDS.hour) })
       : `${interval}s`;
+  const lastRunText = formatRunTimestamp(lastRun?.finished_at ?? lastRun?.started_at);
+  const lastRunTitle = lastRun
+    ? [
+      `${t('personalContext.services.startedAt')} ${formatRunTimestamp(lastRun.started_at)}`,
+      lastRun.finished_at
+        ? `${t('personalContext.services.finishedAt')} ${formatRunTimestamp(lastRun.finished_at)}`
+        : null,
+    ].filter(Boolean).join(' · ')
+    : undefined;
 
   return (
     <div className="pc-services__card">
@@ -470,9 +575,20 @@ function ServiceCard({
         {service.service_id}
       </div>
       <div className="pc-services__card-body">
-        {/* 左：采样周期 */}
-        <div className="pc-services__card-freq">
-          {freqText}
+        {/* 左：采样周期 + 上次采集时间 */}
+        <div className="pc-services__card-schedule">
+          <div className="pc-services__card-freq">
+            {freqText}
+          </div>
+          {lastRun && lastRunText && (
+            <span className="pc-services__card-schedule-divider" aria-hidden="true" />
+          )}
+          {lastRun && lastRunText && (
+            <div className="pc-services__card-last-run" title={lastRunTitle}>
+              <span>{t('personalContext.services.lastRun')}</span>
+              <span>{lastRunText}</span>
+            </div>
+          )}
         </div>
 
         {/* 中：采集状态 */}

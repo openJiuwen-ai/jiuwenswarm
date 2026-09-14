@@ -186,7 +186,11 @@ async def test_code_multimodal_reload_preserves_snapshot_without_registering_too
 
     refresh.assert_awaited_once_with(config_base, env_overrides)
     fan_out.assert_awaited_once_with(
-        config_base, env_overrides, None, {"multimodal"}
+        config_base,
+        env_overrides,
+        None,
+        {"multimodal"},
+        permission_notification=False,
     )
     sync_group.assert_not_called()
     assert not adapter._vision_tools

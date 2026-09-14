@@ -18,6 +18,9 @@ touching a real LLM, the network, or a live ``DeepAgent``:
 
 from __future__ import annotations
 
+# TEST ONLY: endpoint literals use RFC-reserved domains and are configuration
+# values only; the assembly suite never performs network I/O.
+
 import inspect
 import json
 import logging
@@ -1476,6 +1479,33 @@ def test_send_file_gating_defaults_by_channel() -> None:
     assert not runtime_tools._is_send_file_enabled(disabled, "web")
 
 
+def test_team_send_file_does_not_enable_auto_authorization(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Team assembly keeps the legacy manual send-file execution path."""
+    toolkit = MagicMock()
+    toolkit.get_tools.return_value = [object()]
+    toolkit_type = MagicMock(return_value=toolkit)
+    monkeypatch.setattr(runtime_tools, "SendFileToolkit", toolkit_type)
+    ctx = SwarmBuildContext(
+        session_id="session-team",
+        request_id="request-team",
+        channel_id="web",
+        request_metadata={"mode": "team"},
+    )
+
+    assert runtime_tools.build_send_file_tools({}, ctx) == toolkit.get_tools.return_value
+    toolkit_type.assert_called_once_with(
+        request_id="request-team",
+        session_id="session-team",
+        channel_id="web",
+        metadata={"mode": "team"},
+        user_id=None,
+        project_dir=None,
+        team_workspace_root=None,
+    )
+
+
 def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
     """The cron provider builds the member-scoped toolkit via CronRuntimeBridge."""
 
@@ -1804,12 +1834,12 @@ def test_vision_model_config_params_gating(monkeypatch: pytest.MonkeyPatch) -> N
     monkeypatch.setattr(tools, "multimodal_model_enabled", lambda cfg, kind: True)
     monkeypatch.setattr(tools, "apply_vision_model_config_from_yaml", lambda cfg: None)
     monkeypatch.setenv("VISION_API_KEY", "key")
-    monkeypatch.setenv("VISION_BASE_URL", "https://vision.example")
+    monkeypatch.setenv("VISION_BASE_URL", "https://vision.invalid")
     monkeypatch.setenv("VISION_MODEL", "vlm-1")
 
     params = tools.vision_model_config_params({})
     assert params["api_key"] == "key"
-    assert params["base_url"] == "https://vision.example"
+    assert params["base_url"] == "https://vision.invalid"
     assert params["model"] == "vlm-1"
 
 
@@ -2612,6 +2642,7 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
 
     calls: list[str] = []
     created: list[object] = []
+    build_calls: list[dict[str, object]] = []
 
     class FakePermissionRail:
         priority = 90
@@ -2622,7 +2653,8 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
         async def before_tool_call(self, ctx: object) -> None:
             calls.append(ctx.inputs.tool_name)
 
-    def fake_build_permission_rail(**_kwargs: object) -> FakePermissionRail:
+    def fake_build_permission_rail(**kwargs: object) -> FakePermissionRail:
+        build_calls.append(kwargs)
         rail = FakePermissionRail()
         created.append(rail)
         return rail
@@ -2630,16 +2662,26 @@ async def test_team_plan_leader_permission_rail_skips_exit_plan_mode(
     monkeypatch.setattr(interrupt_helpers, "build_permission_rail", fake_build_permission_rail)
 
     plan_rail = code_rails.build_permission_interrupt(
-        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        {
+            "permissions_config": {"enabled": True, "mode": "auto"},
+            "model_name": "gpt-4",
+        },
         SwarmBuildContext(mode="team.plan.code", role="leader"),
     )
     code_rail = code_rails.build_permission_interrupt(
-        {"permissions_config": {"enabled": True}, "model_name": "gpt-4"},
+        {
+            "permissions_config": {"enabled": True, "mode": "auto"},
+            "model_name": "gpt-4",
+        },
         SwarmBuildContext(mode="code.team", role="leader"),
     )
 
     assert plan_rail is not created[0]
     assert code_rail is created[1]
+    assert all(
+        call_kwargs.get("enable_auto_permission", False) is False
+        for call_kwargs in build_calls
+    )
     assert plan_rail.get_callbacks()[AgentCallbackEvent.BEFORE_TOOL_CALL] == plan_rail.before_tool_call
 
     await plan_rail.before_tool_call(types.SimpleNamespace(inputs=types.SimpleNamespace(tool_name="exit_plan_mode")))
@@ -2823,7 +2865,7 @@ def test_code_member_builds_declaratively_without_post_processing(
         model=TeamModelConfig(
             model_client_config=ModelClientConfig(
                 client_provider="OpenAI",
-                api_key="test-key",
+                api_key="TEST_ONLY_MODEL_KEY",
                 api_base="https://example.test/v1",
                 verify_ssl=False,
             )

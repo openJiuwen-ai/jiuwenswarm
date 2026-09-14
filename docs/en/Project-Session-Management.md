@@ -18,7 +18,7 @@ The current implementation adds a `work_mode` dimension to isolate regular work 
 | **Default projects** | Not persisted; dynamically injected by APIs. `default` is the work default project, `default_code` is the code default project. Rename/remove/pin are forbidden |
 | **`work_mode`** | Isolation dimension for projects, sessions, and scheduled tasks. Values: `work` / `code`. Web defaults to `work`; TUI defaults to `code` |
 | **Code project Git capabilities** | Real `code` projects expose Git status, init, branch, Diff, history, monitoring, and discard/redo APIs. Default projects and `work` projects do not expose Git operations |
-| **Soft delete** | `project.remove` marks `hidden:true` without deleting the record. While hidden, its non-pinned sessions temporarily fall back to the mode-specific default project |
+| **Archive** | `project.archive` rejects running sessions, disables cron jobs and marks `hidden:true`; all child sessions retain their project association and are hidden |
 | **Pinned sessions** | Detached from project groups and fetched via `project.pinned_sessions`, sorted by `pin_order` ascending |
 | **Pinned projects** | Pinned projects appear first, sorted by `pin_order` ascending |
 | **Immutability** | Once `project_id`, `project_dir`, and `work_mode` are bound to a session, they cannot be changed; no cross-project/cross-mode migration API is provided |
@@ -58,7 +58,7 @@ Returned by `project.list`.
 | `pinned` | boolean | Whether pinned |
 | `pin_order` | integer | Pin order; lower comes first; `0` when not pinned |
 | `is_default` | boolean | Whether this is a default project |
-| `hidden` | boolean | Whether soft-deleted; defaults are always false |
+| `hidden` | boolean | Whether archived; defaults are always false |
 | `session_count` | integer | Number of non-pinned sessions in this project |
 | `last_message_at` | number \| null | Latest message timestamp (UTC seconds) |
 | `last_user_message_at` | number \| null | Latest user message timestamp; falls back to `created_at` |
@@ -231,7 +231,7 @@ Returns sorted projects with statistics and injected default projects.
 | Param | Type | Required | Description |
 |-------|------|----------|-------------|
 | `filter` | string | no | `all` / `pinned` / `unpinned`, default `all` |
-| `include_hidden` | boolean | no | Whether to include soft-deleted projects |
+| `include_hidden` | boolean | no | Whether to include archived projects |
 | `work_mode` | string | no | Filter by `work` / `code`; omitted returns all modes |
 
 **Response payload:** `projects` (`ProjectInfo[]`).
@@ -252,7 +252,7 @@ Returns non-pinned sessions for a project. `default` returns unbound/fallback wo
 
 ### project.create - Create project
 
-Creates a project with an optional directory. If a non-empty `project_dir` matches a hidden project in the same `work_mode`, that project is restored. Code projects automatically probe or initialize Git.
+Creates a project with an optional directory. If a non-empty `project_dir` matches an archived project in the same `work_mode`, creation returns `PROJECT_ARCHIVED`; restore it explicitly first. Code projects automatically probe or initialize Git.
 
 **Request params:**
 
@@ -266,9 +266,9 @@ Creates a project with an optional directory. If a non-empty `project_dir` match
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `project_id` | string | New or restored project ID |
+| `project_id` | string | New project ID |
 | `project_dir` | string | Project path |
-| `restored` | boolean | Whether a hidden project was restored |
+| `restored` | boolean | Always false; restoration uses project.unarchive |
 | `project` | ProjectInfo | Full project object |
 | `work_mode` | string | Project work mode |
 | `git` | object | Git snapshot for code projects; disabled/empty for work projects |
@@ -301,30 +301,33 @@ Toggles project pin state and compacts pin order.
 
 ---
 
-### project.remove - Soft-delete project
+### project.archive - Archive project
 
-Marks a project as hidden and unpins it. Its non-pinned sessions temporarily fall back to the mode-specific default project.
+Request: `{project_id:string}`. Checks all child sessions, including cron execution sessions. If any is running, returns `PROJECT_BUSY` without changing state or stopping work. Otherwise disables cron jobs, hides the project and all its sessions, and unpins the project. Sessions retain their project association and do not move into the default project or the explicit session archive. The check does not fence new executions; work may start between the check and the archive commit.
 
-**Request params:** `project_id` (string, required)
+Response: `{project_id, archived:true, hidden:true, archived_at, affected_sessions, stopped_cron_jobs, stop_pending}`. `affected_sessions` counts active-directory sessions newly hidden; `stopped_cron_jobs` counts jobs changed from enabled to disabled. Repeated requests finish pending cleanup without changing the archive timestamp.
 
-**Response payload:** `affected_sessions`.
+Errors: `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `PROJECT_BUSY`, `OPERATION_IN_PROGRESS`, `PARTIAL_PROJECT_ARCHIVE_FAILED`. Busy responses require the caller to finish work and retry. Other partial failures report the phase, completed resource IDs, failed items and retryability; archive does not create a pre-commit execution fence or retry in the background.
 
-**Error codes:** `NOT_FOUND`, `FORBIDDEN`
+### project.unarchive - Restore project visibility
+
+Request: `{project_id:string}`. Restores visibility without enabling cron jobs, resuming tasks, or restoring explicitly archived sessions.
+
+Response: `{project_id, restored:boolean, work_mode, affected_sessions}`. An already active project returns `restored:false`. Pending archive cleanup blocks restoration.
+
+Errors: `BAD_REQUEST`, `NOT_FOUND`, `FORBIDDEN`, `CONFLICT`, `OPERATION_IN_PROGRESS`, `RESTORE_FAILED`.
+
+### Archive queries and permanent deletion
+
+- `session.archive` / `session.unarchive`: `{session_ids:string[]}`, 1–100 IDs; response `{succeeded_count, failed_count, results}`. A running session returns `SESSION_BUSY` without stopping it or changing state. Idle sessions can be archived. Cron and heartbeat execution sessions cannot be archived individually.
+- `session.archived.list`: optional `project_id`, `work_mode`, `keyword`, `limit` (default 20, maximum 200), `offset`; returns `{sessions, total, limit, offset, has_more}`. Only explicitly archived sessions appear.
+- `project.archived.list`: optional `work_mode`, `keyword`, `limit` (default 20, maximum 100), `offset`; returns `{projects, total, limit, offset, has_more}` without nested sessions. Both archive lists sort by archive time descending, then ID ascending.
+- `session.delete`: accepts legacy `session_id` (success payload remains `{session_id}`) or batch `session_ids`; permanently deletes active or archived session data.
+- `project.delete`: `{project_id:string}`, archived projects only. Deletes cron jobs, sessions in both storage roots, then the project record. Returns `{project_id, deleted:true, deleted_sessions, deleted_cron_jobs}`. Never deletes the user's `project_dir`.
+
+List items expose `lifecycle_operation`, `execution_blocked`, and `stop_pending`. Lifecycle mutations require AgentServer; no file-only delete fallback is available. Archive does not cancel tasks, wait for shutdown or retry shutdown in the background; its `stop_pending` is false. Permanent deletion retains its stop, write-isolation and background-retry semantics. Archived resources remain blocked until restored.
 
 ---
-
-### project.restore - Restore project
-
-Restores a hidden project. Sessions automatically reattach by `project_id`.
-
-**Request params:** `project_id` (string, required)
-
-**Response payload:** `affected_sessions`.
-
-**Error codes:** `NOT_FOUND`, `CONFLICT`, `FORBIDDEN`
-
----
-
 ### project.pinned_sessions - List pinned sessions
 
 Returns all pinned sessions sorted by `pin_order`.
@@ -529,7 +532,7 @@ Releases watcher resources. `all` removes the whole watcher; `files` / `detail` 
 
 ### project.git.discard_turn_changes - Discard last turn file changes
 
-Restores the current session's last agent turn file changes to their pre-turn state, or deletes files created in that turn. On full success, session-specific file_ops entries for that turn are soft-deleted (marked `discarded_out` rather than physically removed, preserving snapshots for `redo_turn_changes`) and Diff watchers are woken. On partial failure, the response uses `ok=false` and keeps file_ops so the operation can be retried.
+Restores the current session's last agent turn file changes to their pre-turn state, or deletes files created in that turn. On full success, session-specific file_ops entries for that turn are archived (marked `discarded_out` rather than physically removed, preserving snapshots for `redo_turn_changes`) and Diff watchers are woken. On partial failure, the response uses `ok=false` and keeps file_ops so the operation can be retried.
 
 **Request params:** `project_id` (code project ID), `session_id` (must belong to the project).
 
@@ -543,7 +546,7 @@ Restores the current session's last agent turn file changes to their pre-turn st
 | `restored_files` | string[] | Files restored to previous contents |
 | `deleted_files` | string[] | Newly created files deleted by discard |
 | `errors` | object[] | Per-file restore errors |
-| `file_ops_truncated` | boolean | Whether session-specific file_ops entries were marked `discarded_out` (soft-deleted, preserved for redo) |
+| `file_ops_truncated` | boolean | Whether session-specific file_ops entries were marked `discarded_out` (archived, preserved for redo) |
 | `global_file_ops_truncated` | boolean | Always `false`; global file_ops are not truncated to avoid cross-session damage |
 | `partial` | boolean | Whether the restore partially failed; when true, top-level `ok=false` and `code=PARTIAL_RESTORE_FAILED` |
 
@@ -590,11 +593,11 @@ Symmetric to `discard_turn_changes`: re-applies the file changes that were disca
 | `session.pin` | Session | Pin/unpin session |
 | `project.list` | Project | List projects with pin and work_mode filters |
 | `project.get_sessions` | Project | List non-pinned sessions by project |
-| `project.create` | Project | Create/restore project; code projects auto probe/init Git |
+| `project.create` | Project | Create project; code projects auto probe/init Git |
 | `project.rename` | Project | Rename project |
 | `project.pin` | Project | Pin/unpin project |
-| `project.remove` | Project | Soft delete project |
-| `project.restore` | Project | Restore soft-deleted project |
+| `project.archive` | Project | Archive project |
+| `project.unarchive` | Project | Restore archived project |
 | `project.pinned_sessions` | Project | List pinned sessions |
 | `project.git.status` | Git | Live Git status, not persisted |
 | `project.git.probe` | Git | Re-probe Git and persist `ProjectInfo.git` |

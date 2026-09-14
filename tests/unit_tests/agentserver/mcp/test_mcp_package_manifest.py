@@ -362,15 +362,18 @@ def test_iterates_builtin_and_hub_roots_and_resolves_by_package_id(tmp_path: Pat
     assert resolve_mcp_package("missing", builtin_root, hub_root) is None
 
 
-def test_duplicate_package_id_across_roots_is_rejected(tmp_path: Path) -> None:
+def test_duplicate_package_id_prefers_first_root(tmp_path: Path) -> None:
+    """Resolve duplicate package IDs by root order, with built-ins first."""
     roots = (tmp_path / "mcp_builtins", tmp_path / "mcp_hub")
-    for root in roots:
+    for index, root in enumerate(roots):
         package = root / "duplicate"
         _write_json(
             package / "manifest.json",
-            _manifest("duplicate", {"type": "cli", "file": "cli.json"}),
+            _manifest("duplicate", {"type": "cli", "file": f"cli-{index}.json"}),
         )
-        _write_json(package / "cli.json", {})
+        _write_json(package / f"cli-{index}.json", {})
 
-    with pytest.raises(McpPackageError, match="duplicate MCP package id"):
-        iter_mcp_packages(*roots)
+    packages = iter_mcp_packages(*roots)
+
+    assert [package.package_id for package in packages] == ["duplicate"]
+    assert resolve_mcp_package("duplicate", *roots).root == roots[0] / "duplicate"

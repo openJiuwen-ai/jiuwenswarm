@@ -6,10 +6,16 @@ import type { WebConnectionState } from '../../types';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryDetailRecord } from './trajectoryClient';
 import {
+  absorbSequencePage,
+  createSequenceCache,
+  rebuildRecord,
+  type SequenceCache,
+} from './trajectorySequences';
+import {
   applyTrajectoryDetailRecords,
   recordIdentity,
   type TrajectoryRecordVersion,
-  type TrajectoryTraceBucket,
+  type TrajectoryChainBucket,
 } from './trajectoryWindow';
 
 export const TRAJECTORY_ARCHIVE_FORMAT = 'openjiuwen.trajectory.archive';
@@ -131,7 +137,40 @@ export function parseTrajectoryArchive(text: string): TrajectoryArchive {
   if (new Set(records.map(record => record.record_id)).size !== records.length) {
     throw new Error('Trajectory archive contains duplicate record identities');
   }
+  // An addressed archive states its records by reference and carries the
+  // dictionaries that resolve them. It is self-contained either way; the
+  // difference is only whether the content sits inside each record or once
+  // beside all of them.
+  if (value.content_addressed === true) {
+    const cache = createSequenceCache();
+    absorbSequencePage(cache, {
+      sequences: object(value.sequences) ? value.sequences as Record<string, string[]> : {},
+      blobs: object(value.blobs) ? value.blobs as Record<string, string> : {},
+    });
+    const rebuilt = records.map(record => rebuildArchiveRecord(record, cache));
+    return { ...value, records: rebuilt } as unknown as TrajectoryArchive;
+  }
   return { ...value, records } as unknown as TrajectoryArchive;
+}
+
+/** Put a referenced archive record back together from the archive's own dictionaries. */
+function rebuildArchiveRecord(
+  record: TrajectoryArchiveRecord,
+  cache: SequenceCache,
+): TrajectoryArchiveRecord {
+  const references = (record as { sequences?: Record<string, { hash: string }> }).sequences;
+  if (references === undefined || record.otlp === null || record.otlp === undefined) return record;
+  const detail = rebuildRecord(
+    {
+      ingest_seq: 0,
+      raw_valid: true,
+      otlp: record.otlp as never,
+      sequences: references as never,
+    },
+    cache,
+  );
+  if (detail.otlp === record.otlp) return record;
+  return { ...record, otlp: detail.otlp } as TrajectoryArchiveRecord;
 }
 
 function decodeRawJson(record: TrajectoryArchiveRecord): unknown {
@@ -150,7 +189,7 @@ function decodeRawJson(record: TrajectoryArchiveRecord): unknown {
 }
 
 export function trajectoryArchiveView(archive: TrajectoryArchive): TrajectoryArchiveView {
-  const buckets = new Map<string, TrajectoryTraceBucket>();
+  const buckets = new Map<string, TrajectoryChainBucket>();
   let invalidRecordSeen = false;
   const rawDataByRecordId = new Map<string, unknown>();
   for (const [index, record] of archive.records.entries()) {
@@ -163,7 +202,7 @@ export function trajectoryArchiveView(archive: TrajectoryArchive): TrajectoryArc
     const applied = applyTrajectoryDetailRecords(current, {
       schema_version: 1,
       session_id: archive.session_id,
-      trace_id: record.trace_id,
+      subject_id: 'main',
       revision: Math.max(current?.revision ?? 0, index + 1),
       reset: false,
       records: [detailRecord],

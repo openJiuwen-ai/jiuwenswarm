@@ -280,6 +280,22 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
             self.events.append("get")
             return self.agent
 
+        async def get_agent_for_request(
+            self,
+            request,
+            *,
+            mode=None,
+            sub_mode=None,
+            admit_request=None,
+        ):
+            project_dir = admit_request() if callable(admit_request) else None
+            return await self.get_agent(
+                channel_id=request.channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                sub_mode=sub_mode,
+            )
+
         async def begin_foreground_chat(self):
             self.events.append("begin")
 

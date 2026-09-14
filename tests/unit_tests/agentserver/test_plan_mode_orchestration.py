@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock, patch
+from unittest.mock import ANY, AsyncMock, MagicMock, patch
 
 import pytest
 
@@ -53,7 +53,7 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
 
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -69,7 +69,7 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
     assert mode == "code"
     assert sub_mode == "plan"
     assert resolved_agent is agent
-    manager.get_agent.assert_awaited_once()
+    manager.get_agent_for_request.assert_awaited_once()
     manager.wait_for_session_prewarm.assert_awaited_once_with(session_id)
 
 
@@ -77,7 +77,12 @@ async def test_prepare_code_mode_chat_turn_resolves_mode_and_agent() -> None:
 async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> None:
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -102,11 +107,11 @@ async def test_prepare_chat_normalizes_agent_request_for_code_workspace() -> Non
 
     assert (mode, sub_mode, resolved_agent) == ("code", "normal", agent)
     assert request.params["mode"] == "code.normal"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="code",
-        project_dir="/tmp/code-project",
         sub_mode="normal",
+        admit_request=ANY,
     )
 
 
@@ -115,7 +120,12 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
     """Heartbeat CHAT_SEND without mode continues in the original session mode."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -159,11 +169,11 @@ async def test_prepare_chat_without_mode_restores_locked_session_mode() -> None:
     assert (mode, sub_mode, resolved) == ("code", "normal", agent)
     assert request.params["mode"] == "code.normal"
     assert request.params["work_mode"] == "code"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="code",
-        project_dir=None,
         sub_mode="normal",
+        admit_request=ANY,
     )
 
 
@@ -172,7 +182,12 @@ async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session(
     """A mode-less Heartbeat must re-enter the Session's Team runtime."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -209,11 +224,11 @@ async def test_prepare_heartbeat_chat_without_mode_restores_locked_team_session(
     assert (mode, sub_mode, resolved) == ("team", None, agent)
     assert request.params["mode"] == "team.work.normal"
     assert request.params["work_mode"] == "work"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="team",
-        project_dir=None,
         sub_mode=None,
+        admit_request=ANY,
     )
     assert sync_metadata.call_args.kwargs["explicit_mode_provided"] is False
 
@@ -223,7 +238,12 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
     """A legacy work session must not inherit TUI's code default on resume."""
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -260,11 +280,11 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
     assert (mode, sub_mode, resolved) == ("agent", None, agent)
     assert request.params["mode"] == "agent"
     assert request.params["work_mode"] == "work"
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="tui",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="agent",
-        project_dir=None,
         sub_mode=None,
+        admit_request=ANY,
     )
 
 
@@ -272,7 +292,13 @@ async def test_prepare_chat_without_mode_restores_locked_work_session_on_tui() -
 async def test_prepare_chat_uses_locked_persist_session_metadata() -> None:
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
+
     manager.wait_for_session_prewarm = AsyncMock()
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
     server._agent_manager = manager
@@ -310,7 +336,12 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
     """
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+
+    async def dispatch(_request, **kwargs):
+        kwargs["admit_request"]()
+        return agent
+
+    manager.get_agent_for_request = AsyncMock(side_effect=dispatch)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -335,11 +366,11 @@ async def test_prepare_team_chat_turn_propagates_locked_project_dir() -> None:
         "member_name": "reviewer",
         "project_dir": "/tmp/locked-project",
     }
-    manager.get_agent.assert_awaited_once_with(
-        channel_id="web",
+    manager.get_agent_for_request.assert_awaited_once_with(
+        request,
         mode="team",
-        project_dir="/tmp/locked-project",
         sub_mode=None,
+        admit_request=ANY,
     )
     manager.wait_for_session_prewarm.assert_awaited_once_with("sess_team_project")
 
@@ -767,7 +798,7 @@ async def test_prepare_chat_turn_skips_approval_for_interrupt_resume() -> None:
 
     agent = MagicMock()
     manager = MagicMock()
-    manager.get_agent = AsyncMock(return_value=agent)
+    manager.get_agent_for_request = AsyncMock(return_value=agent)
     manager.wait_for_session_prewarm = AsyncMock()
 
     server = AgentWebSocketServer.__new__(AgentWebSocketServer)
@@ -789,7 +820,7 @@ async def test_prepare_chat_turn_skips_approval_for_interrupt_resume() -> None:
 
     assert mode == "code"
     assert sub_mode == "plan"
-    manager.get_agent.assert_awaited_once()
+    manager.get_agent_for_request.assert_awaited_once()
     manager.wait_for_session_prewarm.assert_awaited_once_with(session_id)
 
 

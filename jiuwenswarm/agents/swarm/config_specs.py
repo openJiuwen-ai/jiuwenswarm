@@ -48,6 +48,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
+    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
     get_default_model_client_config,
 )
