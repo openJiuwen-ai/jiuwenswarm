@@ -4,6 +4,11 @@ import type {
   AgentConnectionState,
   AgentDetail,
   AgentFileContent,
+  AgentGroupCapabilities,
+  AgentGroupCatalogItem,
+  AgentGroupDetail,
+  AgentGroupMember,
+  AgentGroupSource,
   AgentSource,
   DefinitionFileEntry,
   SkillOption,
@@ -15,6 +20,10 @@ import type {
   RawAgentTag,
   RawAgentTemplateDetail,
   RawAgentTemplateListItem,
+  RawAgentGroupCapabilities,
+  RawAgentGroupDetail,
+  RawAgentGroupListItem,
+  RawAgentGroupMember,
   RawLocalizedText,
   RawSkillOption,
 } from './raw';
@@ -34,6 +43,10 @@ export function resolveLocalizedText(value: string | RawLocalizedText | undefine
 
 export function normalizeAgentSource(source: string | undefined): AgentSource {
   return normalizeEquipmentSource(source, 'local');
+}
+
+export function normalizeAgentGroupSource(source: string | undefined): AgentGroupSource {
+  return source === 'built-in' || source === 'builtin-in' || source === 'builtin' ? 'builtin' : 'local';
 }
 
 export function normalizeAgentConnectionState(state: string | undefined): AgentConnectionState {
@@ -67,10 +80,78 @@ function normalizeTags(tags: RawAgentTag[] | undefined, locale: SupportedLocale)
     .filter((tag) => tag.label.length > 0);
 }
 
-export function normalizeAgentTemplateListItem(
-  raw: RawAgentTemplateListItem,
-  locale: SupportedLocale,
-): AgentCatalogItem {
+function normalizeAvatarUrl(value: string | undefined): string | null {
+  const avatar = value?.trim() || '';
+  if (/^(?:https?:|data:image\/)/i.test(avatar)) return avatar;
+  return null;
+}
+
+function normalizeGroupCapabilities(
+  raw: RawAgentGroupCapabilities | undefined,
+  source: AgentGroupSource,
+  installed: boolean,
+): AgentGroupCapabilities {
+  return {
+    canUse: raw?.canUse ?? installed,
+    canInstall: raw?.canInstall ?? !installed,
+    canUninstall: raw?.canUninstall ?? (installed || source === 'local'),
+    canPreviewFiles: raw?.canPreviewFiles ?? true,
+    canEdit: raw?.canEdit === true,
+    canPublish: raw?.canPublish === true,
+  };
+}
+
+function normalizeGroupMember(raw: RawAgentGroupMember, locale: SupportedLocale): AgentGroupMember {
+  const id = raw.id?.trim() || 'member';
+  return {
+    id,
+    agentTemplateId: raw.agentTemplateId?.trim() || id,
+    displayName: resolveLocalizedText(raw.displayName, locale) || id,
+    description: resolveLocalizedText(raw.displayDescription, locale),
+    role: raw.role === 'leader' || id === 'leader' ? 'leader' : 'member',
+    avatarUrl: normalizeAvatarUrl(raw.avatar),
+  };
+}
+
+export function normalizeAgentGroupListItem(raw: RawAgentGroupListItem, locale: SupportedLocale): AgentGroupCatalogItem {
+  const source = normalizeAgentGroupSource(raw.source);
+  const installed = raw.installed === true;
+  const members = (raw.members || []).map(member => normalizeGroupMember(member, locale));
+  return {
+    id: raw.id,
+    name: raw.name?.trim() || raw.id,
+    displayName: resolveLocalizedText(raw.displayName, locale) || raw.name || raw.id,
+    description: resolveLocalizedText(raw.displayDescription, locale),
+    category: raw.category || '',
+    source,
+    installed,
+    memberCount: typeof raw.memberCount === 'number' && Number.isFinite(raw.memberCount)
+      ? raw.memberCount
+      : members.length,
+    members,
+    skills: (raw.skills || []).map(item => normalizeCapability(item, locale)),
+    tags: normalizeTags(raw.tags, locale),
+    avatarUrl: normalizeAvatarUrl(raw.avatar),
+    capabilities: normalizeGroupCapabilities(raw.capabilities, source, installed),
+  };
+}
+
+export function normalizeAgentGroupDetail(raw: RawAgentGroupDetail, locale: SupportedLocale): AgentGroupDetail {
+  const base = normalizeAgentGroupListItem(raw, locale);
+  return {
+    ...base,
+    version: raw.version || '',
+    updatedAt: raw.updatedAt || '',
+    details: raw.details || '',
+    persona: raw.persona || '',
+    leaderId: raw.leaderId || 'leader',
+    quickInputs: (raw.quickInputs || [])
+      .map(item => resolveLocalizedText(item, locale))
+      .filter(item => item.length > 0),
+  };
+}
+
+export function normalizeAgentTemplateListItem(raw: RawAgentTemplateListItem, locale: SupportedLocale): AgentCatalogItem {
   const source = normalizeAgentSource(raw.source);
   const identity = normalizeEquipmentIdentity(raw);
   return {
@@ -86,6 +167,14 @@ export function normalizeAgentTemplateListItem(
     tags: normalizeTags(raw.tags, locale),
     avatarUrl: raw.avatar ? raw.avatar : null,
     ...(typeof raw.version === 'string' && raw.version ? { version: raw.version } : {}),
+    ...(raw.teamCompatible
+      ? {
+          teamCompatible: {
+            leader: raw.teamCompatible.leader === true,
+            member: raw.teamCompatible.member === true,
+          },
+        }
+      : {}),
   };
 }
 

@@ -25,7 +25,7 @@ type TagSummaryProps = {
   fallback?: string;
 };
 
-function TagSummary({ tags, fallback }: TagSummaryProps) {
+export function TagSummary({ tags, fallback }: TagSummaryProps) {
   const { t } = useTranslation();
   const metaRef = useRef<HTMLSpanElement>(null);
   const measureRef = useRef<HTMLSpanElement>(null);
@@ -129,6 +129,8 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
       <button
         type="button"
         className="agent-management-card__body"
+        data-testid="agent-card-open"
+        data-variant={item.id}
         onClick={() => onOpen(item.id)}
         aria-label={t('agentManagement.card.open', { name: item.displayName })}
       >
@@ -161,7 +163,7 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
         </span>
         <span className="agent-management-card__description" title={description}>{description}</span>
       </button>
-      <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })}>
+      <div className="agent-management-card__actions" aria-label={t('agentManagement.card.actions', { name: item.displayName })} data-testid="agent-card-actions">
         {canEdit ? (
           <button
             type="button"
@@ -176,6 +178,8 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
           <button
             type="button"
             className="agent-management-button agent-management-button--secondary agent-management-card-action--use"
+            data-testid="agent-card-action"
+            data-variant="use"
             disabled={!canUse || busy}
             aria-disabled={!canUse}
             onClick={() => onUse(item.id)}
@@ -187,6 +191,8 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
           <button
             type="button"
             className="agent-management-button agent-management-button--primary"
+            data-testid="agent-card-action"
+            data-variant="install"
             disabled={busy}
             aria-busy={busy}
             onClick={() => onInstall(item.id)}
@@ -197,6 +203,8 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
           <button
             type="button"
             className="agent-management-button agent-management-button--secondary"
+            data-testid="agent-card-action"
+            data-variant="connect"
             disabled={busy}
             aria-busy={busy}
             onClick={() => onReconnect(item.id)}
@@ -207,6 +215,8 @@ export function DefinitionCard({ item, scope, busy, onOpen, onUse, onReconnect, 
           <button
             type="button"
             className="agent-management-button agent-management-button--primary"
+            data-testid="agent-card-action"
+            data-variant="uninstall"
             disabled={busy}
             aria-busy={busy}
             onClick={() => onUninstall(item.id)}
