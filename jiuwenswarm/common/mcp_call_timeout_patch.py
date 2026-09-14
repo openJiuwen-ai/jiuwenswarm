@@ -39,6 +39,10 @@ This patch is applied once at process startup (from
      and retry the same call so both the original chat and a newly created
      chat recover after MCP service restart (without requiring AS restart).
 
+     同 MCP client 的调用经 ``_client_io_lock`` **串行**是刻意取舍（多会话
+     共享进程级客户端时避免并发踩坏半死连接）；重试语义是
+     **at-least-once**（超时/死会话后可能已在对端执行过一次）。
+
      NB: remote（sse / streamable-http）**必须**用 ``asyncio.wait_for``，
      **不能**用 ``anyio.fail_after``。transport 自带后台 task + anyio
      cancel scope；外层再套 ``fail_after`` 会在跨 task 退出时抛
@@ -114,12 +118,51 @@ __all__ = [
 ]
 
 
+def _fire_and_forget_aclose_exit_stack(stack: Any) -> None:
+    """后台 best-effort ``aclose`` 旧 AsyncExitStack，避免泄漏；不阻塞调用方。"""
+    if not isinstance(stack, AsyncExitStack):
+        return
+
+    async def _aclose() -> None:
+        try:
+            await stack.aclose()
+        except BaseException as exc:
+            # 含 CancelledError：后台清理失败不得污染当前调用方
+            logger.debug(
+                "[mcp-timeout] background aclose of old AsyncExitStack failed: %r",
+                exc,
+            )
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.debug(
+            "[mcp-timeout] no running loop; skip background aclose of old AsyncExitStack"
+        )
+        return
+
+    task = loop.create_task(_aclose())
+
+    def _drain_task_result(done: asyncio.Task) -> None:
+        try:
+            done.result()
+        except BaseException:
+            pass
+
+    task.add_done_callback(_drain_task_result)
+
+
 def force_invalidate_mcp_client(client: Any) -> None:
     """丢弃半死会话状态，换上新的 AsyncExitStack，供后续 ``connect()`` 重连。
 
     SDK ``StreamableHttpClient.disconnect`` 在 aclose 失败时往往不清 ``_session``，
     且成功 aclose 后旧 stack 也不能再 enter。超时 / Session terminated 路径必须
     无条件调用本函数。
+
+    替换 ``_exit_stack`` 前会取出旧 stack，用 running loop 的
+    ``create_task`` fire-and-forget 去 ``aclose()``（后台 best-effort；异常仅
+    debug 记录。无 running loop 时 debug 后放弃 aclose）。本函数保持同步，
+    不改成 async。
 
     同时打上 ``_jws_needs_reconnect``：即便残留对象仍像「已连接」，下次调用也强制
     重连。聊天会话 A/B 共用同一客户端，否则新建会话也会继承半死连接。
@@ -129,7 +172,9 @@ def force_invalidate_mcp_client(client: Any) -> None:
             setattr(client, attr, None)
     if hasattr(client, "_is_disconnected"):
         setattr(client, "_is_disconnected", True)
+    old_stack = None
     if hasattr(client, "_exit_stack"):
+        old_stack = getattr(client, "_exit_stack", None)
         setattr(client, "_exit_stack", AsyncExitStack())
     if hasattr(client, "_auth_provider"):
         setattr(client, "_auth_provider", None)
@@ -142,6 +187,8 @@ def force_invalidate_mcp_client(client: Any) -> None:
             type(client).__name__,
             exc,
         )
+    if old_stack is not None:
+        _fire_and_forget_aclose_exit_stack(old_stack)
 
 
 def is_retryable_mcp_dead_session_error(error: BaseException) -> bool:
@@ -171,7 +218,11 @@ def _is_outer_cancellation() -> bool:
 
 
 def _client_io_lock(client: Any) -> asyncio.Lock:
-    """进程级共享 MCP client 的重连/调用串行锁，避免多会话并发踩坏半死连接。"""
+    """进程级共享 MCP client 的重连/调用串行锁。
+
+    串行是刻意取舍：多聊天会话共用同一客户端时，避免并发重连/调用踩坏半死连接。
+    超时与死会话路径的重试是 at-least-once（对端可能已执行过一次）。
+    """
     lock = getattr(client, "_jws_io_lock", None)
     if isinstance(lock, asyncio.Lock):
         return lock
@@ -188,33 +239,16 @@ def _client_io_lock(client: Any) -> asyncio.Lock:
     return lock
 
 
-async def _safe_disconnect(client: Any, *, context: str) -> None:
-    """disconnect 并吞掉非外层 CancelledError / 普通异常，避免误判用户取消。"""
-    try:
-        await client.disconnect()
-    except asyncio.CancelledError:
-        if _is_outer_cancellation():
-            raise
-        logger.warning(
-            "[mcp-timeout] disconnect (%s) raised CancelledError without outer "
-            "cancel; treating as transport teardown noise",
-            context,
-        )
-    except Exception as exc:
-        logger.warning(
-            "[mcp-timeout] disconnect (%s) failed: %r",
-            context,
-            exc,
-        )
-
-
 async def _abandon_session(client: Any, *, context: str) -> None:
-    """超时后直接作废本地会话，不调用 disconnect()/aclose。
+    """超时后直接作废本地会话，不在当前 task 上调用 disconnect()/aclose。
 
     wait_for 超时在子 task 取消调用；原 AsyncExitStack 里的 anyio cancel scope
     若在父 task 上 aclose，会抛 cancel scope 并污染当前 task 的 scope 栈，
     导致下一轮重连后的成功结果在 AbilityManager 外层退出时仍被盖掉
     （TC_MCP_CALL_014 第 3 轮）。
+
+    ``force_invalidate_mcp_client`` 会把旧 stack 丢到后台 task best-effort
+    ``aclose()``，本协程本身不 await 清理。
     """
     force_invalidate_mcp_client(client)
     logger.warning(
@@ -243,13 +277,31 @@ def _wrap_disconnect_always_invalidate(cls: type, method_name: str) -> None:
 
 
 def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None:
-    """AbilityManager 路径下用 wait_for 限时，避免外层 fail_after 的 cancel scope。"""
-    if (cls, f"am_timeout:{method_name}") in _wrapped_methods:
-        return
+    """AbilityManager 路径下用 wait_for 限时，避免外层 fail_after 的 cancel scope。
+
+    用 ``_jws_orig_<method>`` 记住原始方法；测试反复 ``_PATCHED=False; clear;
+    apply`` 时先还原再包一层，避免多层 ``wait_for`` 嵌套。
+    """
     if not hasattr(cls, method_name):
         return
+    orig_attr = f"_jws_orig_{method_name}"
+    # 再次包装前先还原，避免嵌套
+    if hasattr(cls, orig_attr):
+        orig = getattr(cls, orig_attr)
+        setattr(cls, method_name, orig)
+    else:
+        orig = getattr(cls, method_name)
+        try:
+            setattr(cls, orig_attr, orig)
+        except Exception as exc:
+            logger.debug(
+                "[mcp-timeout] failed to stash %s on %s: %r",
+                orig_attr,
+                cls.__name__,
+                exc,
+            )
+
     _wrapped_methods.add((cls, f"am_timeout:{method_name}"))
-    orig = getattr(cls, method_name)
 
     async def wrapped(self, *args, **kwargs):
         timeout = _am_call_timeout.get()
@@ -258,6 +310,30 @@ def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None
         return await asyncio.wait_for(orig(self, *args, **kwargs), timeout=timeout)
 
     setattr(cls, method_name, wrapped)
+
+
+def _install_tool_init_subclass_am_timeout_hook(tool_cls: type) -> None:
+    """Tool 子类若在自身 ``__dict__`` 定义了 ``invoke``，自动套 AM wait_for 包装。"""
+    if getattr(tool_cls, "_jws_am_timeout_init_subclass_hooked", False):
+        return
+    prev = tool_cls.__dict__.get("__init_subclass__")
+
+    def __init_subclass__(cls, **kwargs):  # noqa: N807 — 匹配 Python 钩子名
+        if prev is not None:
+            prev(cls, **kwargs)
+        else:
+            super(tool_cls, cls).__init_subclass__(**kwargs)
+        if "invoke" in cls.__dict__:
+            _wrap_invoke_with_am_timeout(cls)
+
+    try:
+        tool_cls.__init_subclass__ = __init_subclass__  # type: ignore[method-assign]
+        setattr(tool_cls, "_jws_am_timeout_init_subclass_hooked", True)
+    except Exception as exc:
+        logger.warning(
+            "[mcp-timeout] Tool.__init_subclass__ AM timeout hook skipped: %r",
+            exc,
+        )
 
 
 def _patch_ability_manager_fail_after() -> None:
@@ -313,17 +389,26 @@ def _patch_ability_manager_fail_after() -> None:
     _wrap_invoke_with_am_timeout(Tool)
     _wrap_invoke_with_am_timeout(MCPTool)
     try:
-        from openjiuwen.core.foundation.tool.function.function import Function
+        from openjiuwen.core.foundation.tool.function.function import LocalFunction
 
-        _wrap_invoke_with_am_timeout(Function)
+        _wrap_invoke_with_am_timeout(LocalFunction)
     except Exception as exc:  # noqa: BLE001 — 可选依赖，缺了就跳过
-        logger.debug("[mcp-timeout] Function invoke wrap skipped: %r", exc)
+        logger.warning("[mcp-timeout] LocalFunction invoke wrap skipped: %r", exc)
+    try:
+        from openjiuwen.core.foundation.tool.service_api.restful_api import RestfulApi
+
+        _wrap_invoke_with_am_timeout(RestfulApi)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[mcp-timeout] RestfulApi invoke wrap skipped: %r", exc)
     try:
         from jiuwenswarm.common.mcp_config import RequestScopedOfficeClawMcpTool
 
         _wrap_invoke_with_am_timeout(RequestScopedOfficeClawMcpTool)
     except Exception as exc:  # noqa: BLE001
-        logger.debug("[mcp-timeout] RequestScoped invoke wrap skipped: %r", exc)
+        logger.warning("[mcp-timeout] RequestScoped invoke wrap skipped: %r", exc)
+
+    # 后续新 Tool 子类若自带 invoke，自动包装，避免再漏
+    _install_tool_init_subclass_am_timeout_hook(Tool)
 
     logger.info(
         "[mcp-timeout] AbilityManager fail_after → wait_for bridge applied "
@@ -471,6 +556,11 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     self, cls_name=cls.__name__, method=name, timeout=timeout
                 )
 
+            async def _reconnect_and_invoke_once(*, reason: str):
+                """作废重连后立刻再 invoke 一次（spurious-cancel / dead-session 共用）。"""
+                await _connect_fresh(self, reason=reason)
+                return await _invoke_once()
+
             # 进程级共享 client：串行化重连与调用，避免多聊天会话并发踩坏会话。
             async with _client_io_lock(self):
                 # 同会话续聊：上一轮超时后自动恢复连接，避免永久 execute invoke failed。
@@ -507,8 +597,7 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                     )
                     # 连接中断类：作废后重连并重试一次（对齐 SSE mock 重启场景）
                     try:
-                        await _connect_fresh(self, reason="spurious-cancel")
-                        return await _invoke_once()
+                        return await _reconnect_and_invoke_once(reason="spurious-cancel")
                     except TimeoutError:
                         try:
                             await _handle_timeout()
@@ -522,9 +611,15 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
                             raise
                         force_invalidate_mcp_client(self)
                         raise _transport_cancel_error(cls.__name__, name) from None
-                    except Exception:
+                    except Exception as retry_exc:
                         force_invalidate_mcp_client(self)
-                        raise _transport_cancel_error(cls.__name__, name) from None
+                        logger.warning(
+                            "[mcp-timeout] %s.%s retry after spurious cancel failed: %r",
+                            cls.__name__,
+                            name,
+                            retry_exc,
+                        )
+                        raise _transport_cancel_error(cls.__name__, name) from retry_exc
                 except Exception as exc:
                     # MCP 服务重启后协议会话失效：进程级客户端仍持有旧 session id，
                     # 新旧聊天会话都会 Session terminated / 404。作废后重连并重试一次。

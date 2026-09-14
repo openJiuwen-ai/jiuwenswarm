@@ -3,8 +3,9 @@
 
 from __future__ import annotations
 
-from contextlib import AsyncExitStack
+from contextlib import AsyncExitStack, contextmanager
 from types import SimpleNamespace
+from typing import Iterator
 
 import anyio
 import pytest
@@ -14,6 +15,78 @@ from jiuwenswarm.common.mcp_call_timeout_patch import (
     force_invalidate_mcp_client,
     is_retryable_mcp_dead_session_error,
 )
+
+
+@contextmanager
+def _restore_after_mcp_timeout_patch() -> Iterator[None]:
+    """还原 apply_mcp_call_timeout_patch 可能改动的全局绑定（anyio / 原始 invoke）。
+
+    假 transport 模块下主要还原真 SDK 的 ``ability_manager.anyio``；
+    若 AM 桥接包装了 Tool 等，用 ``_jws_orig_invoke`` 还原。
+    """
+    am_mod = None
+    orig_am_anyio = None
+    try:
+        import openjiuwen.core.single_agent.ability_manager as am_mod
+
+        orig_am_anyio = am_mod.anyio
+    except Exception:
+        am_mod = None
+
+    def _tool_classes_for_invoke_restore() -> list[type]:
+        classes: list[type] = []
+        try:
+            from openjiuwen.core.foundation.tool.base import Tool
+            from openjiuwen.core.foundation.tool.mcp.base import MCPTool
+
+            classes.extend([Tool, MCPTool])
+        except Exception:
+            return classes
+        try:
+            from openjiuwen.core.foundation.tool.function.function import LocalFunction
+
+            classes.append(LocalFunction)
+        except Exception:
+            pass
+        try:
+            from openjiuwen.core.foundation.tool.service_api.restful_api import (
+                RestfulApi,
+            )
+
+            classes.append(RestfulApi)
+        except Exception:
+            pass
+        try:
+            from jiuwenswarm.common.mcp_config import RequestScopedOfficeClawMcpTool
+
+            classes.append(RequestScopedOfficeClawMcpTool)
+        except Exception:
+            pass
+        return classes
+
+    try:
+        yield
+    finally:
+        if am_mod is not None and orig_am_anyio is not None:
+            am_mod.anyio = orig_am_anyio
+        for cls in _tool_classes_for_invoke_restore():
+            orig = getattr(cls, "_jws_orig_invoke", None)
+            if orig is not None:
+                setattr(cls, "invoke", orig)
+                try:
+                    delattr(cls, "_jws_orig_invoke")
+                except Exception:
+                    pass
+        # 单测会反复清 _PATCHED；收尾再清一次，避免泄漏到其它文件
+        timeout_patch._PATCHED = False
+        timeout_patch._wrapped_methods.clear()
+
+
+@pytest.fixture
+def restore_mcp_timeout_patch():
+    """显式还原入口（与模块 autouse 等价；AM 桥接用例可点名依赖以表意）。"""
+    with _restore_after_mcp_timeout_patch():
+        yield
 
 
 def test_force_invalidate_clears_session_and_replaces_exit_stack() -> None:
@@ -175,6 +248,13 @@ def _install_fake_streamable_client(
     client._jws_call_timeout = default_timeout
     client._name = "qa-noauth-streamable-http"
     return client, connect_count, StreamableHttpClient
+
+
+@pytest.fixture(autouse=True)
+def _autouse_restore_mcp_timeout_patch():
+    """本文件凡 apply / 改 ability_manager.anyio 的用例结束后还原全局副作用。"""
+    with _restore_after_mcp_timeout_patch():
+        yield
 
 
 @pytest.mark.asyncio
@@ -561,10 +641,12 @@ async def test_sse_timeout_reports_timeout_not_cancelled(
 @pytest.mark.asyncio
 async def test_am_fail_after_bridge_does_not_mutate_global_anyio(
     monkeypatch: pytest.MonkeyPatch,
+    restore_mcp_timeout_patch,
 ) -> None:
     """AbilityManager 桥接不得改写共享 anyio.fail_after（否则 ProgressiveRail 丢 cancel_called）。"""
     import anyio
 
+    del restore_mcp_timeout_patch  # fixture 副作用：结束后还原 am_mod.anyio
     _install_fake_transport_modules(monkeypatch)
     timeout_patch._PATCHED = False
     timeout_patch._wrapped_methods.clear()
@@ -613,7 +695,11 @@ async def test_am_invoke_wrap_honors_contextvar_timeout() -> None:
             await tool.invoke({})
     finally:
         timeout_patch._am_call_timeout.reset(token)
-
+        orig = getattr(_SlowTool, "_jws_orig_invoke", None)
+        if orig is not None:
+            setattr(_SlowTool, "invoke", orig)
+            delattr(_SlowTool, "_jws_orig_invoke")
+        timeout_patch._wrapped_methods.discard(key)
 
 @pytest.mark.asyncio
 async def test_disconnect_wrap_clears_session_when_aclose_fails(

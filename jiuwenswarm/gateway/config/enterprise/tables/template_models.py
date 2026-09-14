@@ -156,30 +156,6 @@ MCP_TEMPLATE_TABLE_DEF = TableDefinition(
     ],
 )
 
-MCP_TEMPLATE_TABLE_DEF = TableDefinition(
-    table_name="mcp_template",
-    columns=[
-        ColumnDefinition(
-            "id",
-            "integer",
-            primary_key=True,
-            autoincrement=True,
-            nullable=False,
-        ),
-        ColumnDefinition("template_id", "string", length=100, nullable=False),
-        ColumnDefinition("template_name", "string", length=128, nullable=False),
-        ColumnDefinition("description", "string", length=512, nullable=True),
-        ColumnDefinition("mcp_entry", "json", nullable=False),
-        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
-        ColumnDefinition("data", "json", nullable=True),
-        ColumnDefinition("created_at", "datetime", nullable=False),
-        ColumnDefinition("updated_at", "datetime", nullable=False),
-    ],
-    indexes=[
-        IndexDefinition(["template_id"], unique=True),
-    ],
-)
-
 PERMISSIONS_TEMPLATE_TABLE_DEF = TableDefinition(
     table_name="permissions_template",
     columns=[

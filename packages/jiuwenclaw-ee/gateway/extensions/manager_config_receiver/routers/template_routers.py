@@ -37,8 +37,6 @@ from ..schemas.template_schemas import (
     McpTemplateUpdateRequest,
     ModelTemplateCreateRequest,
     ModelTemplateUpdateRequest,
-    McpTemplateCreateRequest,
-    McpTemplateUpdateRequest,
     PermissionsTemplateCreateRequest,
     PermissionsTemplateUpdateRequest,
     SkillPrebuiltTemplateCreateRequest,
