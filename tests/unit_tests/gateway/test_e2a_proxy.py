@@ -131,6 +131,38 @@ async def test_proxy_uses_adapter_fallback_only_for_local_websocket_client(monke
 
 
 @pytest.mark.asyncio
+async def test_proxy_offline_session_delete_uses_maintenance_runtime(monkeypatch) -> None:
+    """The shared-directory fallback enters Runtime without enabling KVC."""
+    from jiuwenswarm.runtime.session_delete import SessionDeleteResult
+
+    async def _delete_offline_session(**kwargs):
+        return SessionDeleteResult(
+            ok=True,
+            session_id=kwargs["session_id"],
+            deleted=True,
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.offline_session_cleanup.delete_offline_session",
+        _delete_offline_session,
+    )
+    local_client = WebSocketAgentServerClient()  # server_ready defaults to False
+    channel = FakeChannel()
+
+    await _invoke(
+        channel,
+        local_client,
+        req_method=ReqMethod.SESSION_DELETE,
+        params={"session_id": "legacy"},
+        session_id="legacy",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is True
+    assert response["payload"] == {"session_id": "legacy"}
+
+
+@pytest.mark.asyncio
 async def test_proxy_keeps_permissions_fallback_for_local_websocket_client(monkeypatch) -> None:
     """Permissions kept their pre-refactor shared-directory availability path."""
     local_client = WebSocketAgentServerClient()  # server_ready defaults to False

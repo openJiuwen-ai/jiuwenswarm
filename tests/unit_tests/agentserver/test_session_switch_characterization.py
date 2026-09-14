@@ -252,9 +252,8 @@ async def test_success_preserves_complete_wire_metadata_and_order() -> None:
 async def test_server_crosses_real_runtime_and_provisioner_boundary(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.server.runtime.session.kv_cache import (
-        kv_cache_product_hooks,
-    )
+    from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+    from jiuwenswarm.server.runtime.session import session_metadata
 
     trace: list[str] = []
 
@@ -272,35 +271,27 @@ async def test_server_crosses_real_runtime_and_provisioner_boundary(
     async def initialize() -> None:
         trace.append("runtime.start")
 
-    context = SimpleNamespace(
-        target_is_team=False,
-        previous_is_team=False,
-        resolved_mode="code.normal",
-        affinity_enabled=True,
-    )
-
-    def resolve_context(**_kwargs: Any) -> Any:
-        trace.append("runtime.switch.prepare")
-        return context
-
-    async def dispatch_signals(**kwargs: Any) -> None:
-        trace.append("runtime.switch.commit")
-        assert kwargs["view_id"] == "integration-view"
+    class ActivityParticipant:
+        async def foreground_changed(self, event: Any) -> None:
+            trace.append("runtime.switch.commit")
+            assert event.view_id == "integration-view"
 
     monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "resolve_session_switch_context",
-        resolve_context,
+        session_metadata,
+        "get_session_metadata",
+        lambda _session_id: {"mode": "code.normal"},
     )
-    monkeypatch.setattr(
-        kv_cache_product_hooks,
-        "dispatch_session_switch_signals",
-        dispatch_signals,
+    registry = RuntimeParticipantRegistry()
+    registry.replace_session_participants(
+        activity=(ActivityParticipant(),),
+        delete=(),
     )
+
     runtime = AgentRuntime(
         agent_manager=AgentManagerStub(),  # type: ignore[arg-type]
         initializer=initialize,
         plan_controller=PlanControllerStub(),  # type: ignore[arg-type]
+        participant_registry=registry,
     )
     server = make_server(runtime)
     ws = RecordingWebSocket(trace)
@@ -320,7 +311,6 @@ async def test_server_crosses_real_runtime_and_provisioner_boundary(
 
         assert trace == [
             "runtime.start",
-            "runtime.switch.prepare",
             "runtime.switch.commit",
             "response.send",
         ]

@@ -453,12 +453,6 @@ def configure_message_path(
     monkeypatch.setattr(server, "_prepare_code_mode_chat_turn", prepare_turn)
     monkeypatch.setattr(server, "_ensure_code_mode_state", ensure_state)
     monkeypatch.setattr(server, "_check_post_process_plan_exit", noop_async)
-    monkeypatch.setattr(server, "_record_kvc_chat_started", noop_async)
-    monkeypatch.setattr(
-        server,
-        "_record_kvc_chat_finished",
-        lambda *_args, **_kwargs: None,
-    )
 
 
 async def install_blocking_stream_task(
