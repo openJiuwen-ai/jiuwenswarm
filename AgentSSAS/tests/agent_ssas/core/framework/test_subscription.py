@@ -31,7 +31,7 @@ class TestSubscriptionParsing:
     def test_default_mode_is_notify() -> None:
         """验证无后缀的订阅默认为 notify 模式。"""
         mgr = TestSubscriptionParsing._make_manager()
-        mgr._register_subscription(
+        mgr._register_subscription(  # pylint: disable=protected-access
             "mod_a", "tool_input"
         )
         subs = mgr.get_subscribers_with_mode("tool_input")
@@ -43,7 +43,7 @@ class TestSubscriptionParsing:
     def test_auth_suffix_parsed() -> None:
         """验证 :auth 后缀解析为 auth 模式。"""
         mgr = TestSubscriptionParsing._make_manager()
-        mgr._register_subscription(
+        mgr._register_subscription(  # pylint: disable=protected-access
             "mod_a", "tool_input:auth"
         )
         subs = mgr.get_subscribers_with_mode("tool_input")
@@ -55,8 +55,8 @@ class TestSubscriptionParsing:
     def test_mixed_modes_same_event() -> None:
         """验证同一事件类型可被不同模块以不同模式订阅。"""
         mgr = TestSubscriptionParsing._make_manager()
-        mgr._register_subscription("mod_a", "tool_input")
-        mgr._register_subscription("mod_b", "tool_input:auth")
+        mgr._register_subscription("mod_a", "tool_input")  # pylint: disable=protected-access
+        mgr._register_subscription("mod_b", "tool_input:auth")  # pylint: disable=protected-access
         subs = mgr.get_subscribers_with_mode("tool_input")
         assert ("mod_a", "notify") in subs
         assert ("mod_b", "auth") in subs
@@ -75,7 +75,7 @@ class TestAggregateEventExpansion:
     def test_one_toolcall_event_notify_expansion() -> None:
         """验证 one_toolcall_event (notify) 展开为 tool_input:notify + tool_output:notify。"""
         mgr = TestAggregateEventExpansion._make_manager()
-        mgr._register_subscription("mod_a", "one_toolcall_event")
+        mgr._register_subscription("mod_a", "one_toolcall_event")  # pylint: disable=protected-access
         subs_input = mgr.get_subscribers_with_mode("tool_input")
         subs_output = mgr.get_subscribers_with_mode("tool_output")
         assert ("mod_a", "notify") in subs_input
@@ -87,7 +87,7 @@ class TestAggregateEventExpansion:
     def test_one_toolcall_event_auth_expansion() -> None:
         """验证 one_toolcall_event:auth 展开为 tool_input:notify + tool_output:auth。"""
         mgr = TestAggregateEventExpansion._make_manager()
-        mgr._register_subscription("mod_a", "one_toolcall_event:auth")
+        mgr._register_subscription("mod_a", "one_toolcall_event:auth")  # pylint: disable=protected-access
         subs_input = mgr.get_subscribers_with_mode("tool_input")
         subs_output = mgr.get_subscribers_with_mode("tool_output")
         # 起始事件为 notify
@@ -101,7 +101,7 @@ class TestAggregateEventExpansion:
     def test_one_llmcall_event_auth_expansion() -> None:
         """验证 one_llmcall_event:auth 展开:llm_output 为 auth,其余为 notify。"""
         mgr = TestAggregateEventExpansion._make_manager()
-        mgr._register_subscription("mod_a", "one_llmcall_event:auth")
+        mgr._register_subscription("mod_a", "one_llmcall_event:auth")  # pylint: disable=protected-access
         subs_llm_input = mgr.get_subscribers_with_mode("llm_input")
         subs_llm_output = mgr.get_subscribers_with_mode("llm_output")
         subs_tool_input = mgr.get_subscribers_with_mode("tool_input")
@@ -119,7 +119,7 @@ class TestAggregateEventExpansion:
     def test_one_interaction_event_auth_expansion() -> None:
         """验证 one_interaction_event:auth 展开:invoke_end 为 auth,其余为 notify。"""
         mgr = TestAggregateEventExpansion._make_manager()
-        mgr._register_subscription("mod_a", "one_interaction_event:auth")
+        mgr._register_subscription("mod_a", "one_interaction_event:auth")  # pylint: disable=protected-access
         subs_invoke_start = mgr.get_subscribers_with_mode("invoke_start")
         subs_invoke_end = mgr.get_subscribers_with_mode("invoke_end")
         subs_llm_input = mgr.get_subscribers_with_mode("llm_input")
@@ -144,7 +144,7 @@ class TestReferenceCounting:
         """验证注册订阅后 has_subscribers 返回 True。"""
         mgr = TestReferenceCounting._make_manager()
         assert mgr.has_subscribers("tool_input") is False
-        mgr._register_subscription("mod_a", "tool_input")
+        mgr._register_subscription("mod_a", "tool_input")  # pylint: disable=protected-access
         assert mgr.has_subscribers("tool_input") is True
 
     @staticmethod
@@ -154,7 +154,7 @@ class TestReferenceCounting:
         """验证聚合事件订阅提升关联基础事件的引用计数。"""
         mgr = TestReferenceCounting._make_manager()
         # 订阅 one_toolcall_event 应提升 tool_input 和 tool_output 的引用计数
-        mgr._register_subscription("mod_a", "one_toolcall_event")
+        mgr._register_subscription("mod_a", "one_toolcall_event")  # pylint: disable=protected-access
         assert mgr.has_subscribers("tool_input") is True
         assert mgr.has_subscribers("tool_output") is True
 
@@ -164,7 +164,7 @@ class TestReferenceCounting:
     def test_wildcard_subscription_has_subscribers() -> None:
         """验证通配符 * 订阅使所有事件类型 has_subscribers 返回 True。"""
         mgr = TestReferenceCounting._make_manager()
-        mgr._register_subscription("mod_a", "*")
+        mgr._register_subscription("mod_a", "*")  # pylint: disable=protected-access
         assert mgr.has_subscribers("tool_input") is True
         assert mgr.has_subscribers("any_event_type") is True
 
@@ -231,9 +231,9 @@ class TestGetSubscribersWithMode:
     def test_dedup_preserves_order() -> None:
         """验证同一模块以不同模式订阅同一事件时去重保序。"""
         mgr = DetectionModuleManager(AgentSSASConfig())
-        mgr._register_subscription("mod_a", "tool_input:auth")
-        mgr._register_subscription("mod_b", "tool_input")
-        mgr._register_subscription("mod_a", "tool_input")
+        mgr._register_subscription("mod_a", "tool_input:auth")  # pylint: disable=protected-access
+        mgr._register_subscription("mod_b", "tool_input")  # pylint: disable=protected-access
+        mgr._register_subscription("mod_a", "tool_input")  # pylint: disable=protected-access
         subs = mgr.get_subscribers_with_mode("tool_input")
         # mod_a 首次出现是 auth(先注册),不重复
         assert subs[0] == ("mod_a", "auth")

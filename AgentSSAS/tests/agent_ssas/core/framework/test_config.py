@@ -123,7 +123,7 @@ class TestAgentSSASConfig:
         monkeypatch.setenv("SSAS_HOME", "/tmp/ssas_home")
         monkeypatch.setenv("JIUWENSWARM_DATA_DIR", "/tmp/data_dir")
         monkeypatch.setenv("JIUWENSWARM_HOME", "/tmp/jw_home")
-        resolved = c._resolve_ssas_home()
+        resolved = c._resolve_ssas_home()  # pylint: disable=protected-access
         assert resolved == Path("/tmp/ssas_home")
 
     @staticmethod
@@ -137,7 +137,7 @@ class TestAgentSSASConfig:
         monkeypatch.delenv("SSAS_HOME", raising=False)
         monkeypatch.setenv("JIUWENSWARM_DATA_DIR", "/tmp/data_dir")
         monkeypatch.delenv("JIUWENSWARM_HOME", raising=False)
-        resolved = c._resolve_ssas_home()
+        resolved = c._resolve_ssas_home()  # pylint: disable=protected-access
         assert resolved == Path("/tmp/data_dir")
 
     @staticmethod
@@ -151,5 +151,5 @@ class TestAgentSSASConfig:
         monkeypatch.delenv("SSAS_HOME", raising=False)
         monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
         monkeypatch.setenv("JIUWENSWARM_HOME", "/tmp/jw_home")
-        resolved = c._resolve_ssas_home()
+        resolved = c._resolve_ssas_home()  # pylint: disable=protected-access
         assert resolved == Path("/tmp/jw_home")

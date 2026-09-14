@@ -15,19 +15,35 @@
 from __future__ import annotations
 
 import time
-from typing import Any
+from typing import Any, NamedTuple
+
+
+class EventIds(NamedTuple):
+    """事件关联标识(session/agent/trace),打包以减少函数参数个数。"""
+
+    session_id: str = "test-session"
+    agent_id: str = "test-agent"
+    trace_id: str = "test-trace"
+
+
+class CallInfo(NamedTuple):
+    """调用序号信息(llm/tool 调用序号与工具调用 ID)。"""
+
+    llm_call_seq: int = -1
+    tool_call_seq: int = -1
+    tool_call_id: str = ""
+
+
+_DEFAULT_IDS = EventIds()
+_DEFAULT_CALL = CallInfo()
 
 
 def create_raw_event(
     event_type: str,
     event_class: str = "lifecycle",
-    session_id: str = "test-session",
-    agent_id: str = "test-agent",
-    trace_id: str = "test-trace",
+    ids: EventIds = _DEFAULT_IDS,
     interaction_seq: int = 0,
-    llm_call_seq: int = -1,
-    tool_call_seq: int = -1,
-    tool_call_id: str = "",
+    call: CallInfo = _DEFAULT_CALL,
     *,
     source: str = "AgentSSASSecurityRail",
     timestamp: float | None = None,
@@ -45,13 +61,9 @@ def create_raw_event(
     Args:
         event_type: 事件类型,如 "tool_input"。
         event_class: 事件大类,"lifecycle" 或 "security"。
-        session_id: 会话 ID。
-        agent_id: 智能体 ID。
-        trace_id: 链路追踪 ID。
+        ids: 关联标识(session_id/agent_id/trace_id)。
         interaction_seq: 交互序号。
-        llm_call_seq: LLM 调用序号,默认 -1。
-        tool_call_seq: 工具调用序号,默认 -1。
-        tool_call_id: 工具调用唯一标识。
+        call: 调用序号信息(llm_call_seq/tool_call_seq/tool_call_id)。
         source: 上报源标识,默认 "AgentSSASSecurityRail"。
         timestamp: 事件时间戳,None 时使用当前时间。
         payload: payload 层内容,None 时按 event_type 推导默认内容。
@@ -63,6 +75,12 @@ def create_raw_event(
     Returns:
         符合三层结构的 raw_event dict。
     """
+    session_id = ids.session_id
+    agent_id = ids.agent_id
+    trace_id = ids.trace_id
+    llm_call_seq = call.llm_call_seq
+    tool_call_seq = call.tool_call_seq
+    tool_call_id = call.tool_call_id
     if timestamp is None:
         timestamp = time.time()
     if conversation_id is None:
@@ -116,17 +134,11 @@ def _default_payload(event_type: str) -> dict[str, Any]:
         }
     if event_type == "llm_input":
         return {
-            "content": {
-                "messages": [
-                    {"role": "user", "content": "帮我列出当前目录下的文件"}
-                ]
-            },
+            "content": {"messages": [{"role": "user", "content": "帮我列出当前目录下的文件"}]},
         }
     if event_type == "llm_output":
         return {
-            "content": {
-                "response": "我将调用 bash 工具列出文件"
-            },
+            "content": {"response": "我将调用 bash 工具列出文件"},
         }
     if event_type == "tool_input":
         return {
@@ -180,79 +192,73 @@ def generate_event_sequence(
     if base_timestamp is None:
         base_timestamp = time.time()
 
+    ids = EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id)
+
     # 每个事件的时间戳递增 1 秒,保证顺序
     return [
         create_raw_event(
             "invoke_start",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
             timestamp=base_timestamp,
         ),
         create_raw_event(
             "llm_input",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
-            llm_call_seq=0,
+            call=CallInfo(llm_call_seq=0),
             timestamp=base_timestamp + 1,
         ),
         create_raw_event(
             "tool_input",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
-            llm_call_seq=0,
-            tool_call_seq=0,
-            tool_call_id="call-001",
+            call=CallInfo(llm_call_seq=0, tool_call_seq=0, tool_call_id="call-001"),
             timestamp=base_timestamp + 2,
         ),
         create_raw_event(
             "tool_output",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
-            llm_call_seq=0,
-            tool_call_seq=0,
-            tool_call_id="call-001",
+            call=CallInfo(llm_call_seq=0, tool_call_seq=0, tool_call_id="call-001"),
             timestamp=base_timestamp + 3,
         ),
         create_raw_event(
             "llm_output",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
-            llm_call_seq=0,
+            call=CallInfo(llm_call_seq=0),
             timestamp=base_timestamp + 4,
         ),
         create_raw_event(
             "invoke_end",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=ids,
             interaction_seq=interaction_seq,
             timestamp=base_timestamp + 5,
         ),
     ]
 
 
+class RiskInfo(NamedTuple):
+    """安全检测结果字段(等级/类型/来源/决策/证据)。"""
+
+    risk_level: str = "high"
+    risk_type: str = "tool_permission_denied"
+    risk_source: str = "PermissionInterruptRail"
+    decision: str = "reject"
+    evidence: dict[str, Any] | None = None
+
+
+_DEFAULT_RISK = RiskInfo()
+
+
 def generate_permission_interrupt_event(
-    session_id: str = "test-session",
-    agent_id: str = "test-agent",
-    trace_id: str = "test-trace",
+    ids: EventIds = _DEFAULT_IDS,
     interaction_seq: int = 0,
     tool_call_seq: int = 0,
     tool_call_id: str = "call-001",
-    risk_level: str = "high",
-    risk_type: str = "tool_permission_denied",
-    risk_source: str = "PermissionInterruptRail",
-    decision: str = "reject",
-    evidence: dict[str, Any] | None = None,
+    risk: RiskInfo = _DEFAULT_RISK,
+    *,
     timestamp: float | None = None,
 ) -> dict[str, Any]:
     """产生安全检测事件(permission_interrupt_tool)。
@@ -261,22 +267,17 @@ def generate_permission_interrupt_event(
     decision、evidence 等安全检测结果字段,用于验证安全护栏检测模块。
 
     Args:
-        session_id: 会话 ID。
-        agent_id: 智能体 ID。
-        trace_id: 链路追踪 ID。
+        ids: 关联标识(session_id/agent_id/trace_id)。
         interaction_seq: 交互序号。
         tool_call_seq: 工具调用序号。
         tool_call_id: 工具调用唯一标识。
-        risk_level: 风险等级,默认 "high"。
-        risk_type: 风险类型,默认 "tool_permission_denied"。
-        risk_source: 风险来源 Rail 名。
-        decision: 安全决策,默认 "reject"。
-        evidence: 证据字典,None 时使用默认值。
+        risk: 安全检测结果字段(等级/类型/来源/决策/证据)。
         timestamp: 事件时间戳,None 时使用当前时间。
 
     Returns:
         安全检测事件 raw_event dict。
     """
+    evidence = risk.evidence
     if evidence is None:
         evidence = {"reason": "工具未被授权调用"}
     if timestamp is None:
@@ -285,21 +286,18 @@ def generate_permission_interrupt_event(
     return create_raw_event(
         "permission_interrupt_tool",
         event_class="security",
-        session_id=session_id,
-        agent_id=agent_id,
-        trace_id=trace_id,
+        ids=ids,
         interaction_seq=interaction_seq,
-        tool_call_seq=tool_call_seq,
-        tool_call_id=tool_call_id,
+        call=CallInfo(llm_call_seq=-1, tool_call_seq=tool_call_seq, tool_call_id=tool_call_id),
         timestamp=timestamp,
         payload={
             "tool_name": "bash",
             "tool_call_id": tool_call_id,
             "content": {"tool_args": {"command": "rm -rf /"}},
-            "risk_source": risk_source,
-            "risk_type": risk_type,
-            "risk_level": risk_level,
-            "decision": decision,
+            "risk_source": risk.risk_source,
+            "risk_type": risk.risk_type,
+            "risk_level": risk.risk_level,
+            "decision": risk.decision,
             "evidence": evidence,
         },
     )

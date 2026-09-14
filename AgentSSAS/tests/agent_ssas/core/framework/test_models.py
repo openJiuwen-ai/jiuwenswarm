@@ -208,7 +208,7 @@ class TestUnifiedEvent:
     def test_build_aux_ids() -> None:
         """验证 _build_aux_ids 提取关联 ID 字段。"""
         unified = TestUnifiedEvent._make_unified()
-        aux_ids = UnifiedEvent._build_aux_ids(
+        aux_ids = UnifiedEvent._build_aux_ids(  # pylint: disable=protected-access
             unified.event_node, unified.trace
         )
         assert aux_ids["interaction_seq"] == 0
