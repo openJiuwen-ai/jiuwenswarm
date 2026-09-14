@@ -178,24 +178,24 @@ class AgentSSASConfig:
         支持 SSAS_ 前缀 + 字段名(大写)格式,如 SSAS_MODE、SSAS_ENABLED。
         存储路径相关环境变量(SSAS_HOME 等)不带 SSAS_ 前缀,由 _resolve_ssas_home 处理。
         """
-        # bool 字段(局部常量,全大写以符合命名规范)
-        BOOL_FIELDS = {
+        # bool 字段映射(snake_case 命名)
+        bool_fields = {
             "SSAS_ENABLED": "enabled",
             "SSAS_ENABLE_EXCEPTION_HOOKS": "enable_exception_hooks",
         }
-        for env_key, field_name in BOOL_FIELDS.items():
+        for env_key, field_name in bool_fields.items():
             val = os.environ.get(env_key)
             if val is not None:
                 setattr(self, field_name, val.lower() == "true")
 
-        # int 字段(局部常量,全大写以符合命名规范)
-        INT_FIELDS = {
+        # int 字段映射(snake_case 命名)
+        int_fields = {
             "SSAS_RAIL_PRIORITY": "rail_priority",
             "SSAS_HTTP_PORT": "http_port",
             "SSAS_EVENT_TTL_DAYS": "event_ttl_days",
             "SSAS_ALERT_TTL_DAYS": "alert_ttl_days",
         }
-        for env_key, field_name in INT_FIELDS.items():
+        for env_key, field_name in int_fields.items():
             val = os.environ.get(env_key)
             if val is not None:
                 try:
@@ -203,12 +203,12 @@ class AgentSSASConfig:
                 except ValueError:
                     pass
 
-        # float 字段(局部常量,全大写以符合命名规范)
-        FLOAT_FIELDS = {
+        # float 字段映射(snake_case 命名)
+        float_fields = {
             "SSAS_HTTP_TIMEOUT": "http_timeout",
             "SSAS_AUTH_TIMEOUT": "auth_timeout",
         }
-        for env_key, field_name in FLOAT_FIELDS.items():
+        for env_key, field_name in float_fields.items():
             val = os.environ.get(env_key)
             if val is not None:
                 try:
@@ -224,8 +224,8 @@ class AgentSSASConfig:
             except ValueError:
                 pass
 
-        # 字符串字段(局部常量,全大写以符合命名规范)
-        STR_FIELDS = {
+        # 字符串字段映射(snake_case 命名)
+        str_fields = {
             "SSAS_HTTP_ENDPOINT": "http_endpoint",
             "SSAS_HTTP_HOST": "http_host",
             "SSAS_HTTP_TOKEN": "http_token",
@@ -233,7 +233,7 @@ class AgentSSASConfig:
             "SSAS_DECISION_POLICY": "decision_policy",
             "SSAS_RISK_REPORT_THRESHOLD": "risk_report_threshold",
         }
-        for env_key, field_name in STR_FIELDS.items():
+        for env_key, field_name in str_fields.items():
             val = os.environ.get(env_key)
             if val is not None:
                 setattr(self, field_name, val)
