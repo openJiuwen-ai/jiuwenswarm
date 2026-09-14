@@ -58,6 +58,7 @@ class _MockOptionalDeps:
             from importlib.machinery import ModuleSpec
             return ModuleSpec(fullname, _MockOptionalDeps())
         return None
+
     @staticmethod
     def create_module(spec):
         mod = types.ModuleType(spec.name)
@@ -85,6 +86,7 @@ if "pysbd" not in sys.modules:
         class _MockSegmenter:
             def __init__(self, *args, **kwargs):
                 pass
+
             @staticmethod
             def segment(text):
                 return [text] if text else []
@@ -220,6 +222,7 @@ class TestPermissionInterruptDenyFlow:
         assert isinstance(common["tool_call_seq"], int)
         assert common["source"] == "AgentSSASSecurityRail"
         assert common["tool_call_id"] == "call_test_001"
+
     @staticmethod
     @pytest.mark.level1
     async def test_no_security_event_when_skip_tool_false():
@@ -250,6 +253,7 @@ class TestPermissionInterruptDenyFlow:
         assert raw_event["common"]["event_class"] == "lifecycle"
         # 不应有安全检测字段
         assert "risk_source" not in raw_event["payload"]
+
     @staticmethod
     @pytest.mark.level1
     async def test_fail_open_when_backend_exception():
@@ -274,6 +278,7 @@ class TestPermissionInterruptDenyFlow:
         decision = ctx.extra.get("_interrupt_decision")
         assert decision is not None
         assert isinstance(decision, SecurityAllow)
+
     @staticmethod
     @pytest.mark.level1
     async def test_interaction_seq_increments_across_invokes():
@@ -296,6 +301,7 @@ class TestPermissionInterruptDenyFlow:
         pool = rail._id_manager._session_interaction_seqs  # pylint: disable=protected-access
         seq_val = pool.get("__no_session__", -1)
         assert seq_val == 1
+
     @staticmethod
     @pytest.mark.level1
     async def test_llm_call_seq_increments_within_invoke():
@@ -324,6 +330,7 @@ class TestPermissionInterruptDenyFlow:
         ctx_model2.inputs.tools = []
         await rail._run_and_apply(ctx_model2, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx_model2.extra["llm_call_seq"] == 1
+
     @staticmethod
     @pytest.mark.level1
     async def test_tool_call_seq_increments_for_multiple_tools():
