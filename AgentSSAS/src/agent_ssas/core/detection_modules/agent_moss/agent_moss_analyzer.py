@@ -128,7 +128,7 @@ class AgentMossAnalyzer:
             )
             complete_history.append(record)
             complete_history.sort(key=lambda item: (item.timestamp, item.event_id))
-            self._history[history_key] = complete_history[-self._max_history_events :]
+            self._history[history_key] = complete_history[-self._max_history_events:]
 
             report = self._build_report(
                 model_data=model_data,

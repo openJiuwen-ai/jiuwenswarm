@@ -247,7 +247,7 @@ class DataLeakagePDGDetector:
         trace = [self._trace_event(record) for record in events]
         trace = [event for event in trace if event.event_type in _RELEVANT_EVENT_TYPES]
         trace.sort(key=lambda event: (event.timestamp, event.event_id))
-        return self._build_graph(trace[-self.max_events :])
+        return self._build_graph(trace[-self.max_events:])
 
     def _trace_with_candidate(
         self,
@@ -260,7 +260,7 @@ class DataLeakagePDGDetector:
         trace = [self._trace_event(record) for record in history]
         trace = [event for event in trace if event.event_type in _RELEVANT_EVENT_TYPES]
         trace.sort(key=lambda event: (event.timestamp, event.event_id))
-        trace = trace[-(self.max_events - 1) :]
+        trace = trace[-(self.max_events - 1):]
         timestamp = trace[-1].timestamp + 0.000001 if trace else 0.0
         trace.append(
             _TraceEvent(
@@ -858,22 +858,10 @@ def _classify_action(
     name = subject.lower()
     text = (name + "\n" + _json_text(params)).lower()
     registered_egress = any(pattern.search(name) for pattern in egress_tool_patterns)
-    egress_name = any(
-        marker in name
-        for marker in (
-            "send_email",
-            "send_http",
-            "send_message",
-            "send_file",
-            "upload",
-            "webhook",
-            "http_post",
-            "http_put",
-            "post_request",
-            "scp",
-            "sftp",
-            "rsync",
-        )
+    egress_name_markers = (
+        "send_email", "send_http", "send_message", "send_file",
+        "upload", "webhook", "http_post", "http_put", "post_request",
+        "scp", "sftp", "rsync",
     )
     egress_command = bool(re.search(r"\b(?:curl|wget|scp|sftp|rsync|ftp)\b", text))
     http_request_egress = bool(
@@ -882,7 +870,10 @@ def _classify_action(
             r"(?:\bpost\b|\bput\b|\bpatch\b|\bupload\b|\bbody\b|\bdata\b)", text
         )
     )
-    if registered_egress or egress_name or egress_command or http_request_egress:
+    # 注: egress 判定合并为单一 any,控制布尔表达式数量
+    if any((registered_egress, egress_command, http_request_egress)) or any(
+        marker in name for marker in egress_name_markers
+    ):
         return "public_egress"
     if any(
         marker in name for marker in ("write", "edit", "append", "save", "create_file")
@@ -906,8 +897,10 @@ def _resource_ids(value: Any) -> set[str]:
     resources: set[str] = set()
     patterns = (
         r"(?<![A-Za-z0-9:])@?((?:/|\./|\.\./)[A-Za-z0-9_./~+\-]+)",
-        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?"
-        r"|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
+        (
+            r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?"
+            r"|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])"
+        ),
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text):

@@ -308,9 +308,9 @@ class PolicyEngine:
             if self.analyze_obfuscated_execution:
                 score = max(score, self._match_patterns(text, _OBFUSCATED_EXECUTION_PATTERNS, findings))
 
-        if self.analyze_sensitive_path_access and (
-            shell_like or self._is_file_access_tool(lower_subject)
-        ):
+        # 敏感路径访问仅对 shell 类或文件访问类工具启用分析
+        file_access_like = shell_like or self._is_file_access_tool(lower_subject)
+        if self.analyze_sensitive_path_access and file_access_like:
             score = max(score, self._match_patterns(text, _SENSITIVE_PATH_PATTERNS, findings))
 
         if self.analyze_data_exfiltration:
