@@ -17,6 +17,7 @@ from jiuwenswarm.common.config import (
     resolve_env_vars,
     update_external_cli_agents_in_config,
     update_permissions_profile_in_config,
+    update_code_graph_in_config,
     update_skill_retrieval_in_config,
     update_setup_guide_enabled_in_config,
     update_xiaoyi_runtime_in_config,
@@ -129,6 +130,44 @@ class TestConfigFunctions:
 
         raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
         assert raw["setup_guide"] == {"enabled": False}
+
+    @staticmethod
+    def test_update_code_graph_in_config_enables_code_agent_when_graph_hangs_there(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ):
+        temp_config_file.write_text(
+            "react:\n  subagents:\n    code_agent:\n      enabled: false\n"
+            "code_graph:\n  profile: off\n  agent: root\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+
+        update_code_graph_in_config({"profile": "graph", "agent": "code_agent"})
+
+        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        assert raw["code_graph"]["profile"] == "graph"
+        assert raw["code_graph"]["agent"] == "code_agent"
+        assert raw["react"]["subagents"]["code_agent"]["enabled"] is True
+
+    @staticmethod
+    def test_update_code_graph_in_config_root_hang_does_not_force_code_agent(
+        monkeypatch: pytest.MonkeyPatch,
+        temp_config_file: Path,
+    ):
+        temp_config_file.write_text(
+            "react:\n  subagents:\n    code_agent:\n      enabled: false\n"
+            "code_graph:\n  profile: off\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setattr("jiuwenswarm.common.config.CONFIG_YAML_PATH", temp_config_file)
+
+        update_code_graph_in_config({"profile": "graph", "agent": "root"})
+
+        raw = yaml.safe_load(temp_config_file.read_text(encoding="utf-8"))
+        assert raw["code_graph"]["profile"] == "graph"
+        assert raw["code_graph"]["agent"] == "root"
+        assert raw["react"]["subagents"]["code_agent"]["enabled"] is False
 
     @staticmethod
     @pytest.mark.parametrize(

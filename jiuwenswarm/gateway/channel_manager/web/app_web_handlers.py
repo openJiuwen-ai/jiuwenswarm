@@ -2456,6 +2456,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("proactive_recommendation_enabled", "false")
             payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
             payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
+            for key, value in _flatten_code_graph_for_config_panel({}).items():
+                payload.setdefault(key, value)
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _external_cli_detect(ws, req_id, params, session_id):

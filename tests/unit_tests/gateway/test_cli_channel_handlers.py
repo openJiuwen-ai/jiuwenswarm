@@ -1532,3 +1532,108 @@ async def test_tui_config_set_writes_code_graph(monkeypatch: pytest.MonkeyPatch)
     assert recorded == [{"profile": "graph", "agent": "root", "max_files": 100}]
     assert server.responses[-1]["ok"] is True
     assert "code_graph_profile" in server.responses[-1]["payload"]["updated"]
+
+
+@pytest.mark.asyncio
+async def test_tui_config_get_defaults_missing_and_unknown_code_graph(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    monkeypatch.setattr(tui_connect_module, "get_config_raw", lambda: {})
+    await server.local_handlers["/tui"]["config.get"](object(), "req-cg-miss", {}, "sess-cg")
+    missing = server.responses[-1]["payload"]
+    assert missing["code_graph_profile"] == "off"
+    assert missing["code_graph_agent"] == "root"
+    assert missing["code_graph_max_files"] == "5000"
+    assert missing["code_graph_max_source_bytes"] == "40"
+
+    monkeypatch.setattr(
+        tui_connect_module,
+        "get_config_raw",
+        lambda: {"code_graph": {"profile": "nonsense", "agent": True, "max_files": "abc"}},
+    )
+    await server.local_handlers["/tui"]["config.get"](object(), "req-cg-bad", {}, "sess-cg")
+    unknown = server.responses[-1]["payload"]
+    assert unknown["code_graph_profile"] == "off"
+    assert unknown["code_graph_agent"] == "root"
+    assert unknown["code_graph_max_files"] == "5000"
+
+
+@pytest.mark.asyncio
+async def test_tui_config_set_coerces_code_graph_boundaries(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    server = FakeGatewayServer()
+    recorded: list[dict] = []
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+
+    class _Registry:
+        @classmethod
+        def get_instance(cls):
+            return cls()
+
+        def get_crypto_provider(self):
+            return None
+
+    monkeypatch.setattr("jiuwenswarm.extensions.ExtensionRegistry", _Registry)
+    monkeypatch.setattr(
+        tui_connect_module,
+        "update_code_graph_in_config",
+        lambda updates: recorded.append(updates),
+    )
+
+    await server.local_handlers["/tui"]["config.set"](
+        object(),
+        "req-cg-bad",
+        {
+            "code_graph_profile": "classic",
+            "code_graph_agent": "nope",
+            "code_graph_max_files": "abc",
+            "code_graph_max_source_bytes": "xyz",
+        },
+        "sess-cg",
+    )
+    assert recorded[-1]["profile"] == "off"
+    assert recorded[-1]["agent"] == "root"
+    assert recorded[-1]["max_files"] == 5000
+    assert recorded[-1]["max_source_bytes"] == "40MB"
+    assert server.responses[-1]["ok"] is True
+
+    await server.local_handlers["/tui"]["config.set"](
+        object(),
+        "req-cg-zero",
+        {"code_graph_max_files": "0"},
+        "sess-cg",
+    )
+    assert recorded[-1] == {"max_files": 1}
+
+    monkeypatch.setattr(
+        tui_connect_module,
+        "update_code_graph_in_config",
+        lambda updates: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    await server.local_handlers["/tui"]["config.set"](
+        object(),
+        "req-cg-fail",
+        {"code_graph_profile": "graph"},
+        "sess-cg",
+    )
+    assert server.responses[-1]["ok"] is True
+    assert "code_graph_profile" not in server.responses[-1]["payload"]["updated"]

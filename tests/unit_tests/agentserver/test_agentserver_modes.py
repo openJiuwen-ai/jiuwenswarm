@@ -394,6 +394,18 @@ def test_status_code_graph_stale_over_max_files_reports_unavailable(tmp_path, mo
     assert "max_files" in str(payload.get("message") or "")
 
 
+def test_status_code_graph_manager_error_is_absent(monkeypatch):
+    monkeypatch.setattr(
+        "openjiuwen.core.retrieval.code_graph.manager.get_code_graph_manager",
+        lambda _cfg=None: (_ for _ in ()).throw(RuntimeError("manager down")),
+    )
+    payload = agent_ws_server_module.resolve_status_code_graph(
+        {"code_graph": {"profile": "graph", "agent": "root"}},
+        "/tmp/project",
+    )
+    assert payload == {"present": False, "state": "absent"}
+
+
 def test_build_inputs_keeps_stable_project_dir_and_dynamic_cwd(monkeypatch):
     from jiuwenswarm.server.runtime.agent_adapter import interface as interface_module
 

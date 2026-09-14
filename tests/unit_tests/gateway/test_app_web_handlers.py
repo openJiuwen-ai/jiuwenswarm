@@ -2044,6 +2044,74 @@ async def test_config_set_routes_code_graph_payload_to_config_helper(monkeypatch
     assert "code_graph_profile" in channel.responses[-1]["payload"]["updated"]
 
 
+@pytest.mark.asyncio
+async def test_config_set_coerces_code_graph_boundaries(monkeypatch):
+    channel = FakeWebChannel()
+    recorded: list[dict] = []
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.get_config_raw",
+        lambda: {"preferred_language": "zh"},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.get_config",
+        lambda: {"code_graph": {}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_code_graph_in_config",
+        lambda updates: recorded.append(updates),
+    )
+
+    await channel.methods["config.set"](
+        object(),
+        "req-code-graph-bad",
+        {
+            "code_graph_profile": "focused",
+            "code_graph_agent": "graph_agent",
+            "code_graph_max_files": "nope",
+            "code_graph_max_build_rss_mb": "-8",
+        },
+        "sess-code-graph",
+    )
+    assert recorded[-1]["profile"] == "off"
+    assert recorded[-1]["agent"] == "root"
+    assert recorded[-1]["max_files"] == 5000
+    assert recorded[-1]["max_build_rss_mb"] == 1
+    assert channel.responses[-1]["ok"] is True
+
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_code_graph_in_config",
+        lambda updates: (_ for _ in ()).throw(OSError("disk full")),
+    )
+    await channel.methods["config.set"](
+        object(),
+        "req-code-graph-fail",
+        {"code_graph_profile": "graph"},
+        "sess-code-graph",
+    )
+    assert channel.responses[-1]["ok"] is True
+    assert "code_graph_profile" not in channel.responses[-1]["payload"]["updated"]
+
+
+@pytest.mark.asyncio
+async def test_config_get_exception_defaults_code_graph(monkeypatch):
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    monkeypatch.setattr(
+        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.get_config_raw",
+        lambda: (_ for _ in ()).throw(RuntimeError("config missing")),
+    )
+
+    await channel.methods["config.get"](object(), "req-cg-exc", {}, "sess-cg")
+
+    payload = channel.responses[-1]["payload"]
+    assert channel.responses[-1]["ok"] is True
+    assert payload["code_graph_profile"] == "off"
+    assert payload["code_graph_agent"] == "root"
+    assert payload["code_graph_max_files"] == "5000"
+    assert payload["code_graph_max_source_bytes"] == "40"
+
+
 def test_web_config_panel_profile_is_off_or_graph_only() -> None:
     from pathlib import Path
 
