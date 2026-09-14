@@ -85,13 +85,15 @@ def _assert_failopen_degraded(module, caplog):
 class TestPatchFailopenRuntime:
     """模拟 agent-ssas 导入失败, 验证 interface_deep 优雅降级。"""
 
-    def test_patch_applied_agent_ssas_available(self):
+    @staticmethod
+    def test_patch_applied_agent_ssas_available():
         """基线: 正常环境下 patch 生效且 AgentSSAS 可用。"""
         module = _import_patched_interface_deep()
         assert module._SSAS_AVAILABLE is True  # pylint: disable=protected-access
         assert module.AgentSSASSecurityRail is not None
 
-    def test_failopen_when_agent_ssas_missing(self, caplog):
+    @staticmethod
+    def test_failopen_when_agent_ssas_missing(caplog):
         """场景一: agent-ssas 整体不可用时, 导入不崩溃且正确降级。"""
         _import_patched_interface_deep()
         snap = _snapshot_and_remove(_agent_ssas_module_names())
@@ -104,7 +106,8 @@ class TestPatchFailopenRuntime:
         finally:
             _restore(snap, injected=["agent_ssas", INTERFACE_DEEP])
 
-    def test_failopen_when_symbol_missing(self, caplog):
+    @staticmethod
+    def test_failopen_when_symbol_missing(caplog):
         """场景二: 符号缺失(版本不匹配, 即线上实际触发的场景)时, 导入不崩溃且正确降级。"""
         _import_patched_interface_deep()
         snap = _snapshot_and_remove([INTERFACE_DEEP, SETTINGS_MODULE])
@@ -142,8 +145,9 @@ def _failopen_block_lines(patch_path):
 class TestPatchFailopenContent:
     """校验 patch 文件中 fail-open 分块的写法, 防止缺陷经 patch 再次引入。"""
 
+    @staticmethod
     @pytest.mark.parametrize("patch_path", _PATCHES, ids=lambda p: p.name)
-    def test_failopen_block_uses_inline_getlogger(self, patch_path):
+    def test_failopen_block_uses_inline_getlogger(patch_path):
         """except 分支必须使用内联 logging.getLogger, 不得引用尚未定义的模块级 logger。"""
         block = _failopen_block_lines(patch_path)
         joined = "\n".join(block)

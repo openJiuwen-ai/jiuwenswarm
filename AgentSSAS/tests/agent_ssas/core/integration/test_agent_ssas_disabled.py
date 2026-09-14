@@ -18,18 +18,21 @@ from agent_ssas.core.framework.config.settings import AgentSSASConfig, AgentSSAS
 class TestSsasDisabled:
     """配置关闭 SSAS 测试。"""
 
-    def test_config_disabled_flag(self):
+    @staticmethod
+    def test_config_disabled_flag():
         """AgentSSASConfig(enabled=False) 正确设置。"""
         config = AgentSSASConfig(enabled=False)
         assert config.enabled is False
 
-    def test_config_enabled_default_true(self):
+    @staticmethod
+    def test_config_enabled_default_true():
         """AgentSSASConfig 默认 enabled=True。"""
         config = AgentSSASConfig()
         assert config.enabled is True
 
+    @staticmethod
     @pytest.mark.asyncio
-    async def test_create_backend_inprocess_works(self, tmp_path):
+    async def test_create_backend_inprocess_works(tmp_path):
         """enabled=True 时 create_backend 正常创建后端。"""
         from agent_ssas.core.integration.register import create_backend
 
@@ -37,8 +40,9 @@ class TestSsasDisabled:
         backend = await create_backend(config)
         assert backend is not None
 
+    @staticmethod
     @pytest.mark.asyncio
-    async def test_create_backend_http_works(self, tmp_path):
+    async def test_create_backend_http_works(tmp_path):
         """HTTP 模式 create_backend 正常创建后端。"""
         from agent_ssas.core.integration.register import create_backend
 
@@ -51,7 +55,8 @@ class TestSsasDisabled:
         assert backend is not None
         await backend.close()
 
-    def test_disabled_config_does_not_crash(self, tmp_path):
+    @staticmethod
+    def test_disabled_config_does_not_crash(tmp_path):
         """配置关闭 SSAS 时不会导致任何异常。"""
         config = AgentSSASConfig(ssas_home=str(tmp_path), enabled=False)
         # 验证配置对象创建不报错
@@ -59,7 +64,8 @@ class TestSsasDisabled:
         # 验证存储路径仍可解析
         assert config.storage_path is not None
 
-    def test_jiuwenswarm_rails_logic_disabled(self):
+    @staticmethod
+    def test_jiuwenswarm_rails_logic_disabled():
         """模拟 jiuwenswarm _build_agent_rails 的 SSAS 关闭逻辑。
 
         验证 ssas.enabled=false 时不注册 AgentSSASSecurityRail,
@@ -75,7 +81,8 @@ class TestSsasDisabled:
         # 当 enabled=False 时,不应创建 AgentSSASSecurityRail
         # 此测试验证逻辑分支正确,不会因 SSAS 关闭而报错
 
-    def test_jiuwenswarm_rails_logic_enabled(self):
+    @staticmethod
+    def test_jiuwenswarm_rails_logic_enabled():
         """模拟 jiuwenswarm _build_agent_rails 的 SSAS 开启逻辑。"""
         config_base = {"ssas": {"enabled": True}}
         ssas_config = config_base.get("ssas", {})
@@ -83,7 +90,8 @@ class TestSsasDisabled:
         ssas_enabled = ssas_config.get("enabled", True)
         assert ssas_enabled is True
 
-    def test_jiuwenswarm_rails_logic_default(self):
+    @staticmethod
+    def test_jiuwenswarm_rails_logic_default():
         """默认配置(无 ssas 段)时 SSAS 开启。"""
         config_base = {}
         ssas_config = config_base.get("ssas", {})
@@ -91,7 +99,8 @@ class TestSsasDisabled:
         ssas_enabled = ssas_config.get("enabled", True)
         assert ssas_enabled is True  # 默认开启
 
-    def test_disabled_ssas_no_side_effects(self, tmp_path):
+    @staticmethod
+    def test_disabled_ssas_no_side_effects(tmp_path):
         """SSAS 关闭时不产生任何残留文件或副作用。"""
         config = AgentSSASConfig(ssas_home=str(tmp_path), enabled=False)
         # 仅创建配置对象,不应创建任何存储文件
