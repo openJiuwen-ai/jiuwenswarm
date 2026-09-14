@@ -1320,6 +1320,114 @@ def test_sync_team_identity_metadata_keeps_existing_conflicting_team(monkeypatch
     assert updates == []
 
 
+def test_reconcile_request_team_binding_repairs_empty_metadata(monkeypatch, tmp_path):
+    """Bind 元数据丢失（跨租户根写入）时，chat.send 以 params.team_name 修复绑定。"""
+    import jiuwenswarm.server.runtime.team_binding_store as binding_store_mod
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBinding
+
+    bound_sessions: list[dict[str, str]] = []
+    metadata_updates: list[dict[str, object]] = []
+
+    class _FakeStore:
+        def get(self, team_name: str):
+            assert team_name == "oc_team_user-team"
+            return TeamBinding(
+                team_name="oc_team_user-team",
+                template_id="oc_team_user-team",
+                created_at=1.0,
+                updated_at=1.0,
+            )
+
+        def bind_session(self, *, team_name: str, session_id: str):
+            bound_sessions.append({"team_name": team_name, "session_id": session_id})
+            return self.get(team_name)
+
+    class _FakeEntity:
+        template_id = "oc_team_user-team"
+
+    monkeypatch.setattr(team_helpers, "get_team_binding_store", lambda: _FakeStore())
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, sessions_root=None: {"team_name": ""},
+    )
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: metadata_updates.append(kwargs))
+    monkeypatch.setattr(
+        team_helpers,
+        "ensure_team_entity_for_binding",
+        lambda binding, config_base=None: _FakeEntity(),
+    )
+    monkeypatch.setattr(
+        team_helpers.TeamManager,
+        "build_session_scoped_team_name",
+        staticmethod(lambda team_name, session_id: f"{team_name}_scoped"),
+    )
+
+    request = SimpleNamespace(
+        params={"team_name": "oc_team_user-team"},
+    )
+    team_helpers._reconcile_request_team_binding(
+        request,
+        session_id="sess-bind-lost",
+        mode="team",
+        sessions_root=tmp_path,
+        config_base={},
+    )
+
+    assert bound_sessions == [{"team_name": "oc_team_user-team", "session_id": "sess-bind-lost"}]
+    assert len(metadata_updates) == 1
+    update = metadata_updates[0]
+    assert update["team_name"] == "oc_team_user-team"
+    assert update["runtime_team_name"] == "oc_team_user-team_scoped"
+    assert update["team_template_id"] == "oc_team_user-team"
+    assert update["mode"] == "team"
+    assert update["sessions_root"] == tmp_path
+
+
+def test_reconcile_request_team_binding_skips_when_already_bound(monkeypatch, tmp_path):
+    """绑定已一致时不重复写盘。"""
+    metadata_reads: list[dict[str, object]] = [{"team_name": "oc_team_user-team", "runtime_team_name": "oc_team_user-team_scoped"}]
+
+    class _FakeStore:
+        def get(self, team_name: str):
+            raise AssertionError("binding store should not be consulted when already bound")
+
+    import jiuwenswarm.server.runtime.team_binding_store as binding_store_mod
+    monkeypatch.setattr(binding_store_mod, "get_team_binding_store", lambda: _FakeStore())
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda session_id, cache_bust=False, sessions_root=None: metadata_reads[0],
+    )
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: (_ for _ in ()).throw(AssertionError("must not write")))
+
+    request = SimpleNamespace(params={"team_name": "oc_team_user-team"})
+    team_helpers._reconcile_request_team_binding(
+        request,
+        session_id="sess-bound",
+        mode="team",
+        sessions_root=tmp_path,
+        config_base={},
+    )
+
+
+def test_reconcile_request_team_binding_ignores_missing_params(monkeypatch, tmp_path):
+    """无 params.team_name（非 relay 路径）时直接跳过，不读元数据。"""
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda *args, **kwargs: (_ for _ in ()).throw(AssertionError("must not read metadata")),
+    )
+    request = SimpleNamespace(params={})
+    team_helpers._reconcile_request_team_binding(
+        request,
+        session_id="sess-no-params",
+        mode="team",
+        sessions_root=tmp_path,
+        config_base={},
+    )
+
+
 @pytest.mark.anyio
 async def test_consume_monitor_events_only_broadcasts_monitor_events(monkeypatch):
     broadcasted: list[dict[str, object]] = []
