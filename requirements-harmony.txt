@@ -45,6 +45,7 @@ greenlet>=3.3.2
 # ============================================================
 # 数据校验和序列化
 # ============================================================
+# 钉版：与 wheels/ 预编 wheel 配对；逐包安装链的全局约束见 scripts/ohos/constraints-harmony.txt（PIP_CONSTRAINT）
 pydantic==2.13.4
 pydantic-core==2.46.4
 pydantic-settings>=2.0
@@ -132,12 +133,13 @@ virtualenv>=20.29
 gitcode-api>=1.2.20
 openpyxl>=3.1.0
 mermaid-py>=0.8.0,<0.9
-fastmcp>=2.3.0
+fastmcp>=2.14.2,<3.0
 dashscope>=1.22.0
 cacheout>=0.16.0
 pysbd>=0.3.4
 oauthlib>=3.2.2
 cachetools>=5.0.0
+jsonschema-path>=0.3.4
 
 # 有意排除（native 或重依赖，鸿蒙无 wheel / 代码有守卫降级）：
 #   transformers (tokenizers native; 5 处引用全部 try/except/TYPE_CHECKING 守卫)

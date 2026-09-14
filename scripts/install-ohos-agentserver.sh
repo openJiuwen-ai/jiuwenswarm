@@ -38,6 +38,8 @@
 #   CREATE_VENV=1      默认创建 $REPO_ROOT/.venv
 #   SKIP_PHASE0/1/2/3/4  跳过对应阶段（phase 0 = wheels 预装）
 #   CONTINUE_ON_FAIL=1 单包失败继续（默认 1）
+#   PIP_CONSTRAINT     全局 pip constraints（默认 scripts/ohos/constraints-harmony.txt，
+#                      钉 pydantic 配对，防逐包解析拉到无 musl wheel 的新版本）
 
 set -u
 
@@ -86,6 +88,15 @@ FORCE_REINSTALL=${FORCE_REINSTALL:-0}
 
 DEPS_INSTALLER=${OHOS_DEPS_INSTALLER:-$OHOS_DIR/install-ohos-all-deps.sh}
 WHEEL_PRELOADER=${OHOS_WHEEL_PRELOADER:-$OHOS_DIR/ohos-wheel-preload.sh}
+
+# 全局 pip constraints（2026-09-14 真机实测补充）：按包逐个 pip install 时，
+# requirements 里的钉版对单次解析不可见（sqlmodel>=0.0.37 自行解析 pydantic
+# 2.13.5 → core 2.46.5 无 musl wheel → maturin 构建失败）。PIP_CONSTRAINT 由
+# pip 原生支持（20.1+），注入后对所有子进程 pip 调用全局生效。
+if [ -z "${PIP_CONSTRAINT:-}" ] && [ -f "$OHOS_DIR/constraints-harmony.txt" ]; then
+  PIP_CONSTRAINT="$OHOS_DIR/constraints-harmony.txt"
+  export PIP_CONSTRAINT
+fi
 
 log() {
   printf '[%s] %s\n' "$(date '+%H:%M:%S')" "$1"
@@ -457,6 +468,29 @@ install_openjiuwen() {
   4) Windows zip: https://gitcode.com/openJiuwen/agent-core/-/tree/enterprise-dev"
 }
 
+# google-genai 版本对齐（2026-09-14 真机实测补充）：
+# a2ui-agent-sdk（requirements 在列）→ a2a-sdk → google-adk 需要 genai>=2.19，
+# 逐包安装会把 google-genai 顶到 2.x；而 jiuwenswarm 的 google-genai 客户端
+# 代码按 1.x API 验证（1.75.0，真机 Tier 3）。genai 不进 constraints（会让
+# a2ui 解析整体失败），改为 phase 1 后统一降级。降级后 google-adk 的 pip
+# check 报错是已知且被接受的（真机验证状态即如此；adk 路径仅 a2ui 集成时
+# 触达，基础服务器不用）。
+harmonize_google_genai() {
+  _ver=$("$PYTHON" -c "import importlib.metadata as m; print(m.version('google-genai'))" 2>/dev/null || echo "")
+  if [ -z "$_ver" ]; then
+    return 0
+  fi
+  case "$_ver" in
+    1.*) log "google-genai $_ver OK (1.x verified line)"; return 0 ;;
+  esac
+  log "google-genai $_ver >=2 detected (a2ui/google-adk transitive) — downgrade to 1.75.0"
+  if pip_in_venv 'google-genai==1.75.0' >/dev/null 2>&1; then
+    log "google-genai downgraded to 1.75.0 (google-adk pip-check warning expected)"
+  else
+    log "WARN: google-genai downgrade failed; server google-genai client may misbehave"
+  fi
+}
+
 install_pymilvus_stub() {
   # pymilvus 的依赖链（orjson Rust-native）在鸿蒙不可装；dev-stable
   # checkpointer/context_evolver 仅 import 其符号（2026-09 真机实测全链通过
@@ -576,6 +610,7 @@ fi
 # ---------- 1. requirements-harmony（逐包 + 传递依赖）----------
 if [ "${SKIP_PHASE1:-0}" != "1" ]; then
   run_manifest_phase 1 agentserver-minimal
+  harmonize_google_genai
 else
   log "SKIP phase 1 (requirements-harmony manifest)"
 fi
