@@ -145,8 +145,9 @@ def resolve_agent_request_mode(
     )
 
     # flash.enabled=true：agent 对话请求注入为 flash mode（配置触发，无需前端 mode=flash）。
-    # try/except 兜底：config 读取/解析失败时安全降级为「不注入」，避免 mode 解析整体崩——
-    # 原函数是纯函数（不读 config），引入 get_config 后必须保证 config 不可用时行为不变。
+    # try/except 兜底：config 读取失败时安全降级为「不注入」，避免 mode 解析
+    # 整体崩——原函数纯函数（不读 config），引入 get_config 后须保证 config
+    # 不可用时行为不变。
     _flash_enabled = False
     try:
         _flash_enabled = bool((get_config() or {}).get("flash", {}).get("enabled", False))

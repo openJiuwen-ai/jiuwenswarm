@@ -90,8 +90,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_permission_rail",
         "_context_processor_rail",
         "_ask_user_rail",
-        "_filesystem_rail",       # SysOperationRail: init() 注册 ReadFile/WriteFile/EditFile/Glob/ListDir/Grep/Bash；丢掉=无文件/shell 能力
-        "_progressive_tool_rail",  # ProgressiveToolRail: 系统提示词中的渐进式工具引导/导航
+        # _filesystem_rail: SysOperationRail, init() 注册 ReadFile/WriteFile/
+        #   EditFile/Glob/ListDir/Grep/Bash；丢掉=无文件/shell 能力。
+        "_filesystem_rail",
+        # _progressive_tool_rail: ProgressiveToolRail, 系统提示词中的渐进式工具引导。
+        "_progressive_tool_rail",
     })
 
     # PROTECTED rails are always built even under a keep-whitelist (dropping
