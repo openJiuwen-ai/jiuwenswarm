@@ -75,7 +75,7 @@ def _restore(snap, injected):
 
 def _assert_failopen_degraded(module, caplog):
     """断言 interface_deep 在导入失败后正确降级(fail-open)。"""
-    assert module._SSAS_AVAILABLE is False
+    assert module._SSAS_AVAILABLE is False  # pylint: disable=protected-access
     assert module.AgentSSASSecurityRail is None
     assert "AgentSSASSecurityRail not loaded" in caplog.text
 
@@ -88,7 +88,7 @@ class TestPatchFailopenRuntime:
     def test_patch_applied_agent_ssas_available(self):
         """基线: 正常环境下 patch 生效且 AgentSSAS 可用。"""
         module = _import_patched_interface_deep()
-        assert module._SSAS_AVAILABLE is True
+        assert module._SSAS_AVAILABLE is True  # pylint: disable=protected-access
         assert module.AgentSSASSecurityRail is not None
 
     def test_failopen_when_agent_ssas_missing(self, caplog):

@@ -19,6 +19,9 @@ from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBack
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
 from agent_ssas.core.framework.core_types.assessment import RiskAssessment, RiskLevel
 from tests.fixtures.event_factory import (
+    CallInfo,
+    EventIds,
+    RiskInfo,
     create_raw_event,
     generate_event_sequence,
     generate_permission_interrupt_event,
@@ -87,7 +90,7 @@ class TestEndToEnd:
         assert ocsf["trace_id"] == "e2e-trace"
 
         # 验证 SQLite 数据库中记录了事件
-        db_events = await backend._storage.get_events_by_trace_id(
+        db_events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
             "e2e-trace"
         )
         # 至少应有 raw_event 记录
@@ -119,12 +122,10 @@ class TestEndToEnd:
         await backend.initialize()
 
         raw_event = generate_permission_interrupt_event(
-            session_id="e2e-sec-session",
-            agent_id="e2e-sec-agent",
-            trace_id="e2e-sec-trace",
-            interaction_seq=0,
+            ids=EventIds(session_id="e2e-sec-session", agent_id="e2e-sec-agent", trace_id="e2e-sec-trace"),
             tool_call_seq=0,
-            risk_level="high",
+            interaction_seq=0,
+            risk=RiskInfo(risk_level="high"),
         )
         assessment = await backend.report_event(raw_event)
         # notify 模式:report_event 不等待后台检测,直接返回无风险
@@ -135,9 +136,7 @@ class TestEndToEnd:
         await asyncio.sleep(0.2)
         # 验证威胁日志文件已以 OCSF 格式落盘
         threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
-        threat_files = list(
-            threat_log_dir.glob("threat_e2e-sec-trace_*.json")
-        )
+        threat_files = list(threat_log_dir.glob("threat_e2e-sec-trace_*.json"))
         assert len(threat_files) >= 1, "应生成至少一个威胁日志文件"
         # 验证文件内容为 OCSF Detection Finding 格式
         with open(threat_files[0], "r", encoding="utf-8") as f:
@@ -185,13 +184,10 @@ class TestEndToEnd:
 
         # 安全检测事件
         security_event = generate_permission_interrupt_event(
-            session_id="mix-session",
-            agent_id="mix-agent",
-            trace_id="mix-trace-sec",
-            interaction_seq=1,
+            ids=EventIds(session_id="mix-session", agent_id="mix-agent", trace_id="mix-trace-sec"),
             tool_call_seq=0,
-            risk_level="critical",
-            risk_type="tool_permission_denied",
+            interaction_seq=1,
+            risk=RiskInfo(risk_level="critical", risk_type="tool_permission_denied"),
         )
         assessment = await backend.report_event(security_event)
         # notify 模式:report_event 不等待后台检测,直接返回无风险
@@ -202,12 +198,8 @@ class TestEndToEnd:
         await asyncio.sleep(0.2)
         # 验证两类威胁日志都已生成
         threat_log_dir = Path(config.storage_path) / "reports" / "threat_log"
-        lifecycle_files = list(
-            threat_log_dir.glob("threat_mix-trace_*.json")
-        )
-        security_files = list(
-            threat_log_dir.glob("threat_mix-trace-sec_*.json")
-        )
+        lifecycle_files = list(threat_log_dir.glob("threat_mix-trace_*.json"))
+        security_files = list(threat_log_dir.glob("threat_mix-trace-sec_*.json"))
         assert len(lifecycle_files) >= 1
         assert len(security_files) >= 1
 
@@ -229,17 +221,14 @@ class TestEndToEnd:
         await backend.initialize()
 
         raw_event = create_raw_event(
-            "tool_input",
-            session_id="mod-session",
-            agent_id="mod-agent",
-            trace_id="mod-trace",
+            "tool_input", ids=EventIds(session_id="mod-session", agent_id="mod-agent", trace_id="mod-trace")
         )
         await backend.report_event(raw_event)
         # 等待 notify 模式异步任务完成写入
         await asyncio.sleep(0.1)
 
         # 查询 test_detection 模块的 result_store
-        module = backend._module_manager.get_module("test_detection")
+        module = backend._module_manager.get_module("test_detection")  # pylint: disable=protected-access
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=10)
         assert len(reports) >= 1

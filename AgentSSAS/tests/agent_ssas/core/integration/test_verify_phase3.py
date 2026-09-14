@@ -21,12 +21,15 @@ r"""AgentSSAS 阶段三真实环境验证脚本。
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 import shutil
 import sys
 import tempfile
 import time
 from pathlib import Path
+
+logger = logging.getLogger(__name__)
 
 
 def _set_ssas_home(tag: str, clean: bool = True) -> str:
@@ -78,9 +81,9 @@ def _safe_clean_home(home: Path) -> None:
                     shutil.rmtree(item)
                 else:
                     item.unlink()
-            except OSError:
+            except OSError as item_exc:
                 # 跳过被锁定的文件/目录,继续删除其他
-                pass
+                logger.debug("跳过锁定项 %s: %s", item.name, item_exc)
 
     # 如果 ssas 子目录下的数据库文件已删除,清理成功
     # 如果仍有残留(文件被锁定),重命名整个目录作为兜底
@@ -91,12 +94,11 @@ def _safe_clean_home(home: Path) -> None:
             ts = int(time.time())
             backup = home.parent / f"{home.name}_old_{ts}"
             home.rename(backup)
-            print(f"[verify] Renamed locked dir {home.name} -> {backup.name}")
-        except Exception:
+            logger.info(f"[verify] Renamed locked dir {home.name} -> {backup.name}")
+        except OSError as rename_exc:
             raise RuntimeError(
-                f"无法清理测试目录 {home}(ssas_core.db 被锁定)。"
-                f"请手动关闭可能占用该目录的进程后重试。"
-            )
+                f"无法清理测试目录 {home}(ssas_core.db 被锁定)。请手动关闭可能占用该目录的进程后重试。"
+            ) from rename_exc
 
 
 def _safe_rmtree(path: Path) -> None:
@@ -117,19 +119,16 @@ def _safe_rmtree(path: Path) -> None:
         ts = int(time.time())
         backup = path.parent / f"{path.name}_old_{ts}"
         path.rename(backup)
-        print(f"[verify] Renamed locked dir {path.name} -> {backup.name} (will be cleaned up later)")
+        logger.info(f"[verify] Renamed locked dir {path.name} -> {backup.name} (will be cleaned up later)")
         return
-    except Exception:
-        pass
+    except OSError as rename_exc:
+        logger.debug("rename 兜底也失败,进入强制删除: %s", rename_exc)
     # 如果重命名也失败,最后尝试静默强制删除
     # 注: ignore_errors 模式替代原 subprocess cmd rmdir 方案,
     # 避免 subprocess 调用(同时规避静态检查 G.EDV.04/G.EDV.05)
     shutil.rmtree(path, ignore_errors=True)
     if path.exists():
-        raise RuntimeError(
-            f"无法清理测试目录 {path}(文件被锁定)。"
-            f"请手动关闭可能占用该目录的进程后重试。"
-        )
+        raise RuntimeError(f"无法清理测试目录 {path}(文件被锁定)。请手动关闭可能占用该目录的进程后重试。")
 
 
 async def verify_inprocess():
@@ -150,20 +149,24 @@ async def verify_inprocess():
     from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
     from agent_ssas.core.framework.config.settings import AgentSSASConfig
     from agent_ssas.core.framework.core_types.assessment import RiskLevel
-    from tests.fixtures.event_factory import generate_event_sequence, generate_permission_interrupt_event
+    from tests.fixtures.event_factory import (
+        EventIds,
+        generate_event_sequence,
+        generate_permission_interrupt_event,
+    )
 
     home = _set_ssas_home("inprocess")
-    print(f"[verify_inprocess] SSAS_HOME={home}")
+    logger.info(f"[verify_inprocess] SSAS_HOME={home}")
 
     config = AgentSSASConfig()
     backend = AgentSSASBackend(config)
     try:
         rail = AgentSSASSecurityRail(backend=backend)
         assert rail.priority == 80, f"priority 应为 80,实际 {rail.priority}"
-        print(f"[verify_inprocess] PASS: AgentSSASSecurityRail registered, priority={rail.priority}")
+        logger.info(f"[verify_inprocess] PASS: AgentSSASSecurityRail registered, priority={rail.priority}")
 
         await backend.initialize()
-        print("[verify_inprocess] PASS: AgentSSASSecurityRail backend initialized")
+        logger.info("[verify_inprocess] PASS: AgentSSASSecurityRail backend initialized")
 
         # 完整事件流:invoke_start → llm_input → tool_input → tool_output → llm_output → invoke_end
         events = generate_event_sequence(
@@ -175,49 +178,47 @@ async def verify_inprocess():
             result = await backend.report_event(raw_event)
             assert result is not None
             assert result.risk_level == RiskLevel.SAFE, (
-                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,"
-                f"实际 {result.risk_level}"
+                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,实际 {result.risk_level}"
             )
-        print(f"[verify_inprocess] PASS: {len(events)} lifecycle events -> all risk_level=safe")
+        logger.info(f"[verify_inprocess] PASS: {len(events)} lifecycle events -> all risk_level=safe")
 
         # 安全检测事件:permission_interrupt_tool
         sec_event = generate_permission_interrupt_event(
-            session_id="verify-session",
-            agent_id="verify-agent",
-            trace_id="verify-trace",
+            ids=EventIds(session_id="verify-session", agent_id="verify-agent", trace_id="verify-trace")
         )
         result = await backend.report_event(sec_event)
         assert result.risk_level == RiskLevel.HIGH, f"安全检测事件应返回 high,实际 {result.risk_level}"
         assert result.has_risk is True
-        print(
+        logger.info(
             f"[verify_inprocess] PASS: security event -> "
             f"risk_level={result.risk_level.value}, has_risk={result.has_risk}"
         )
         assert "tool_permission_denied" in result.detected_threats
-        print(f"[verify_inprocess] PASS: detected_threats={result.detected_threats}")
+        logger.info(f"[verify_inprocess] PASS: detected_threats={result.detected_threats}")
 
         # 检查文件生成
         ssas_dir = Path(home) / "ssas"
         db_path = ssas_dir / "ssas_core.db"
         assert db_path.exists(), f"ssas_core.db 未生成: {db_path}"
-        print(f"[verify_inprocess] PASS: ssas_core.db generated at {db_path}")
+        logger.info(f"[verify_inprocess] PASS: ssas_core.db generated at {db_path}")
 
         # 验证数据库表数据
         import sqlite3
+
         conn = sqlite3.connect(str(db_path))
 
         raw_events_count = conn.execute("SELECT COUNT(*) FROM raw_events").fetchone()[0]
         assert raw_events_count >= 7, f"raw_events 表应有 >=7 条记录(6 生命周期 + 1 安全检测),实际 {raw_events_count}"
-        print(f"[verify_inprocess] PASS: raw_events table has {raw_events_count} records (expected >=7)")
+        logger.info(f"[verify_inprocess] PASS: raw_events table has {raw_events_count} records (expected >=7)")
 
         events_count = conn.execute("SELECT COUNT(*) FROM events").fetchone()[0]
         # events 表含基础事件 + session_start 派生事件 + 聚合事件,应 >=7
         assert events_count >= 7, f"events 表应有 >=7 条记录(含派生事件和聚合事件),实际 {events_count}"
-        print(f"[verify_inprocess] PASS: events table has {events_count} records (expected >=7)")
+        logger.info(f"[verify_inprocess] PASS: events table has {events_count} records (expected >=7)")
 
         alerts_count = conn.execute("SELECT COUNT(*) FROM alerts").fetchone()[0]
         assert alerts_count >= 1, f"alerts 表应有 >=1 条告警记录(安全检测事件),实际 {alerts_count}"
-        print(f"[verify_inprocess] PASS: alerts table has {alerts_count} records (expected >=1)")
+        logger.info(f"[verify_inprocess] PASS: alerts table has {alerts_count} records (expected >=1)")
 
         conn.close()
 
@@ -225,14 +226,14 @@ async def verify_inprocess():
         if reports_dir.exists():
             files = list(reports_dir.glob("*.json"))
             assert len(files) > 0, "威胁日志文件未生成"
-            print(f"[verify_inprocess] PASS: {len(files)} threat log files generated")
+            logger.info(f"[verify_inprocess] PASS: {len(files)} threat log files generated")
 
         modules_dir = ssas_dir / "modules"
         if modules_dir.exists():
             module_names = [d.name for d in modules_dir.iterdir() if d.is_dir()]
-            print(f"[verify_inprocess] PASS: detection modules: {module_names}")
+            logger.info(f"[verify_inprocess] PASS: detection modules: {module_names}")
 
-        print("[verify_inprocess] === ALL CHECKS PASSED ===")
+        logger.info("[verify_inprocess] === ALL CHECKS PASSED ===")
     finally:
         # 关闭 SQLite 连接,释放 Windows WAL 文件锁定
         # 这确保下次运行时 _safe_rmtree 能成功清理旧数据
@@ -247,10 +248,14 @@ async def verify_http_client():
     """
     import httpx
 
-    from tests.fixtures.event_factory import generate_event_sequence, generate_permission_interrupt_event
+    from tests.fixtures.event_factory import (
+        EventIds,
+        generate_event_sequence,
+        generate_permission_interrupt_event,
+    )
 
     endpoint = os.environ.get("SSAS_HTTP_ENDPOINT", "http://localhost:8443")
-    print(f"[verify_http_client] endpoint={endpoint}")
+    logger.info(f"[verify_http_client] endpoint={endpoint}")
 
     async with httpx.AsyncClient(base_url=endpoint, timeout=10.0) as client:
         # 完整事件流:invoke_start → llm_input → tool_input → tool_output → llm_output → invoke_end
@@ -269,19 +274,16 @@ async def verify_http_client():
             assert resp.status_code == 200, f"HTTP 状态码应为 200,实际 {resp.status_code}"
             assessment = resp.json()["assessment"]
             assert assessment["risk_level"] == "safe", (
-                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,"
-                f"实际 {assessment['risk_level']}"
+                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,实际 {assessment['risk_level']}"
             )
-        print(
+        logger.info(
             f"[verify_http_client] PASS: {len(events)} lifecycle events -> "
             f"all risk_level=safe, first latency={first_latency:.1f}ms"
         )
 
         # 安全检测事件:permission_interrupt_tool
         sec_event = generate_permission_interrupt_event(
-            session_id="http-verify",
-            agent_id="http-agent",
-            trace_id="http-trace",
+            ids=EventIds(session_id="http-verify", agent_id="http-agent", trace_id="http-trace")
         )
         resp = await client.post("/api/v1/events", json={"raw_event": sec_event})
         assert resp.status_code == 200
@@ -289,19 +291,19 @@ async def verify_http_client():
         assert assessment["risk_level"] == "high", f"安全检测事件应返回 high,实际 {assessment['risk_level']}"
         assert assessment["has_risk"] is True
         assert "tool_permission_denied" in assessment["detected_threats"]
-        print(
+        logger.info(
             f"[verify_http_client] PASS: security event -> status=200, "
             f"risk_level={assessment['risk_level']}, has_risk={assessment['has_risk']}"
         )
-        print(f"[verify_http_client] PASS: detected_threats={assessment['detected_threats']}")
+        logger.info(f"[verify_http_client] PASS: detected_threats={assessment['detected_threats']}")
 
         # 健康检查
         resp = await client.get("/health")
         assert resp.status_code == 200
         assert resp.json() == {"status": "ok"}
-        print("[verify_http_client] PASS: health check -> status=ok")
+        logger.info("[verify_http_client] PASS: health check -> status=ok")
 
-    print("[verify_http_client] === ALL CHECKS PASSED ===")
+    logger.info("[verify_http_client] === ALL CHECKS PASSED ===")
 
 
 def verify_disabled():
@@ -316,26 +318,26 @@ def verify_disabled():
 
     config = AgentSSASConfig(enabled=False)
     assert config.enabled is False
-    print(f"[verify_disabled] PASS: AgentSSASConfig(enabled=False) -> enabled={config.enabled}")
+    logger.info(f"[verify_disabled] PASS: AgentSSASConfig(enabled=False) -> enabled={config.enabled}")
 
     assert config.storage_path is not None
-    print(f"[verify_disabled] PASS: storage_path={config.storage_path}")
+    logger.info(f"[verify_disabled] PASS: storage_path={config.storage_path}")
 
     # 模拟 jiuwenswarm _build_agent_rails 的逻辑
     config_base = {"ssas": {"enabled": False}}
     ssas_config = config_base.get("ssas", {})
     ssas_enabled = ssas_config.get("enabled", True)
     assert ssas_enabled is False
-    print("[verify_disabled] PASS: jiuwenswarm config ssas.enabled=false -> skip registration")
+    logger.info("[verify_disabled] PASS: jiuwenswarm config ssas.enabled=false -> skip registration")
 
     # 验证默认配置(无 ssas 段)时 SSAS 开启
     config_base_empty = {}
     ssas_config_empty = config_base_empty.get("ssas", {})
     ssas_enabled_default = ssas_config_empty.get("enabled", True)
     assert ssas_enabled_default is True
-    print("[verify_disabled] PASS: default config (no ssas section) -> enabled=True")
+    logger.info("[verify_disabled] PASS: default config (no ssas section) -> enabled=True")
 
-    print("[verify_disabled] === ALL CHECKS PASSED ===")
+    logger.info("[verify_disabled] === ALL CHECKS PASSED ===")
 
 
 def start_http_server():
@@ -356,8 +358,8 @@ def start_http_server():
     # 检查端口是否被占用,若被占用则终止占用进程
     _free_port(port)
 
-    print(f"[http-server] Starting AgentSSAS HTTP Server on port {port}...")
-    print("[http-server] Press Ctrl+C to stop")
+    logger.info(f"[http-server] Starting AgentSSAS HTTP Server on port {port}...")
+    logger.info("[http-server] Press Ctrl+C to stop")
     app = create_app(config)
     uvicorn.run(app, host=config.http_host, port=port, log_level="info")
 
@@ -396,17 +398,18 @@ def _free_port(port: int) -> None:
                                 capture_output=True,
                                 timeout=5,
                             )
-                            print(f"[http-server] Killed old process (PID={pid}) on port {port}")
-                        except Exception:
-                            pass
+                            logger.info(f"[http-server] Killed old process (PID={pid}) on port {port}")
+                        except OSError as kill_exc:
+                            # 端口清理是尽力而为,失败仅记录,不影响服务启动
+                            logger.debug("kill 旧进程失败: %s", kill_exc)
                         return
-    except Exception:
-        pass
+    except OSError as scan_exc:
+        logger.debug("netstat 扫描端口失败: %s", scan_exc)
 
 
 def main():
     if len(sys.argv) < 2:
-        print(__doc__)
+        logger.info("%s", __doc__)
         sys.exit(1)
 
     cmd = sys.argv[1]
@@ -421,11 +424,10 @@ def main():
         verify_disabled()
     elif cmd == "all":
         asyncio.run(verify_inprocess())
-        print()
         verify_disabled()
     else:
-        print(f"Unknown command: {cmd}")
-        print(__doc__)
+        logger.info("Unknown command: %s", cmd)
+        logger.info("%s", __doc__)
         sys.exit(1)
 
 

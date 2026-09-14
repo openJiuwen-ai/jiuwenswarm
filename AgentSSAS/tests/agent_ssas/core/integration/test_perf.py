@@ -22,6 +22,9 @@ from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBack
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
 from agent_ssas.core.framework.core_types.assessment import RiskAssessment, RiskLevel
 from tests.fixtures.event_factory import (
+    CallInfo,
+    EventIds,
+    RiskInfo,
     create_raw_event,
     generate_permission_interrupt_event,
 )
@@ -69,24 +72,25 @@ class TestPerf:
         for i in range(10, 50):
             raw_event = create_raw_event(
                 "tool_input",
-                session_id=f"perf-life-session-{i}",
-                agent_id=f"perf-life-agent-{i}",
-                trace_id=f"perf-life-trace-{i}",
+                ids=EventIds(
+                    session_id=f"perf-life-session-{i}",
+                    agent_id=f"perf-life-agent-{i}",
+                    trace_id=f"perf-life-trace-{i}",
+                ),
+                call=CallInfo(tool_call_seq=0, tool_call_id=f"call-{i}"),
                 interaction_seq=0,
-                tool_call_seq=0,
-                tool_call_id=f"call-{i}",
             )
             events.append((raw_event, "lifecycle"))
 
         # 构造 10 个安全检测事件
         for i in range(10):
             raw_event = generate_permission_interrupt_event(
-                session_id=f"perf-sec-session-{i}",
-                agent_id=f"perf-sec-agent-{i}",
-                trace_id=f"perf-sec-trace-{i}",
-                interaction_seq=0,
+                ids=EventIds(
+                    session_id=f"perf-sec-session-{i}", agent_id=f"perf-sec-agent-{i}", trace_id=f"perf-sec-trace-{i}"
+                ),
                 tool_call_seq=0,
-                risk_level="high",
+                interaction_seq=0,
+                risk=RiskInfo(risk_level="high"),
             )
             events.append((raw_event, "security"))
 
@@ -113,12 +117,10 @@ class TestPerf:
 
         # 断言性能指标(类常量需通过类名访问)
         assert avg_latency < TestPerf.SINGLE_EVENT_LATENCY_LIMIT, (
-            f"平均单事件延迟 {avg_latency:.4f}s 超过上限 "
-            f"{TestPerf.SINGLE_EVENT_LATENCY_LIMIT}s"
+            f"平均单事件延迟 {avg_latency:.4f}s 超过上限 {TestPerf.SINGLE_EVENT_LATENCY_LIMIT}s"
         )
         assert throughput > TestPerf.THROUGHPUT_LIMIT, (
-            f"吞吐量 {throughput:.2f} 事件/秒 低于下限 "
-            f"{TestPerf.THROUGHPUT_LIMIT} 事件/秒"
+            f"吞吐量 {throughput:.2f} 事件/秒 低于下限 {TestPerf.THROUGHPUT_LIMIT} 事件/秒"
         )
 
     @staticmethod
@@ -139,24 +141,27 @@ class TestPerf:
             events.append(
                 create_raw_event(
                     "tool_input",
-                    session_id=f"perf-batch-session-{i}",
-                    agent_id=f"perf-batch-agent-{i}",
-                    trace_id=f"perf-batch-trace-{i}",
+                    ids=EventIds(
+                        session_id=f"perf-batch-session-{i}",
+                        agent_id=f"perf-batch-agent-{i}",
+                        trace_id=f"perf-batch-trace-{i}",
+                    ),
+                    call=CallInfo(tool_call_seq=0, tool_call_id=f"call-{i}"),
                     interaction_seq=0,
-                    tool_call_seq=0,
-                    tool_call_id=f"call-{i}",
                 )
             )
         # 10 个安全检测事件
         for i in range(10):
             events.append(
                 generate_permission_interrupt_event(
-                    session_id=f"perf-batch-sec-session-{i}",
-                    agent_id=f"perf-batch-sec-agent-{i}",
-                    trace_id=f"perf-batch-sec-trace-{i}",
-                    interaction_seq=0,
+                    ids=EventIds(
+                        session_id=f"perf-batch-sec-session-{i}",
+                        agent_id=f"perf-batch-sec-agent-{i}",
+                        trace_id=f"perf-batch-sec-trace-{i}",
+                    ),
                     tool_call_seq=0,
-                    risk_level="high",
+                    interaction_seq=0,
+                    risk=RiskInfo(risk_level="high"),
                 )
             )
 
@@ -169,9 +174,7 @@ class TestPerf:
         # 批量延迟应低于宽松阈值(110 事件,每事件上限 1 秒 -> 总 110 秒,
         # 此处取 60 秒作为 CI 环境宽松上限)
         batch_limit = 60.0
-        assert total_latency < batch_limit, (
-            f"批量延迟 {total_latency:.2f}s 超过上限 {batch_limit}s"
-        )
+        assert total_latency < batch_limit, f"批量延迟 {total_latency:.2f}s 超过上限 {batch_limit}s"
 
 
 def _make_lifecycle_event_sequence(index: int) -> list[dict]:
@@ -189,55 +192,41 @@ def _make_lifecycle_event_sequence(index: int) -> list[dict]:
     return [
         create_raw_event(
             "invoke_start",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
             interaction_seq=0,
             timestamp=1715000000.0,
         ),
         create_raw_event(
             "llm_input",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
+            call=CallInfo(llm_call_seq=0),
             interaction_seq=0,
-            llm_call_seq=0,
             timestamp=1715000001.0,
         ),
         create_raw_event(
             "tool_input",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
+            call=CallInfo(tool_call_seq=0, tool_call_id=f"call-{index}"),
             interaction_seq=0,
-            tool_call_seq=0,
-            tool_call_id=f"call-{index}",
             timestamp=1715000002.0,
         ),
         create_raw_event(
             "tool_output",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
+            call=CallInfo(tool_call_seq=0, tool_call_id=f"call-{index}"),
             interaction_seq=0,
-            tool_call_seq=0,
-            tool_call_id=f"call-{index}",
             timestamp=1715000003.0,
         ),
         create_raw_event(
             "llm_output",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
+            call=CallInfo(llm_call_seq=0),
             interaction_seq=0,
-            llm_call_seq=0,
             timestamp=1715000004.0,
         ),
         create_raw_event(
             "invoke_end",
-            session_id=session_id,
-            agent_id=agent_id,
-            trace_id=trace_id,
+            ids=EventIds(session_id=session_id, agent_id=agent_id, trace_id=trace_id),
             interaction_seq=0,
             timestamp=1715000005.0,
         ),

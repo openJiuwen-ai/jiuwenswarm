@@ -19,6 +19,9 @@ from agent_ssas.core.framework.core_types.assessment import RiskAssessment, Risk
 
 # 确保能导入测试 fixtures
 from tests.fixtures.event_factory import (
+    CallInfo,
+    EventIds,
+    RiskInfo,
     create_raw_event,
     generate_permission_interrupt_event,
 )
@@ -41,12 +44,9 @@ class TestPipelineIntegration:
         await backend.initialize()
         raw_event = create_raw_event(
             "tool_input",
-            session_id="int-session",
-            agent_id="int-agent",
-            trace_id="int-trace",
+            ids=EventIds(session_id="int-session", agent_id="int-agent", trace_id="int-trace"),
+            call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
             interaction_seq=0,
-            tool_call_seq=0,
-            tool_call_id="call-001",
         )
         assessment = await backend.report_event(raw_event)
         assert isinstance(assessment, RiskAssessment)
@@ -68,50 +68,36 @@ class TestPipelineIntegration:
         events = [
             create_raw_event(
                 "invoke_start",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
                 interaction_seq=0,
             ),
             create_raw_event(
                 "llm_input",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                call=CallInfo(llm_call_seq=0),
                 interaction_seq=0,
-                llm_call_seq=0,
             ),
             create_raw_event(
                 "tool_input",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
                 interaction_seq=0,
-                tool_call_seq=0,
-                tool_call_id="call-001",
             ),
             create_raw_event(
                 "tool_output",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                call=CallInfo(tool_call_seq=0, tool_call_id="call-001"),
                 interaction_seq=0,
-                tool_call_seq=0,
-                tool_call_id="call-001",
             ),
             create_raw_event(
                 "llm_output",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
+                call=CallInfo(llm_call_seq=0),
                 interaction_seq=0,
-                llm_call_seq=0,
             ),
             create_raw_event(
                 "invoke_end",
-                session_id="seq-session",
-                agent_id="seq-agent",
-                trace_id="seq-trace",
+                ids=EventIds(session_id="seq-session", agent_id="seq-agent", trace_id="seq-trace"),
                 interaction_seq=0,
             ),
         ]
@@ -135,13 +121,10 @@ class TestPipelineIntegration:
         backend = AgentSSASBackend(config)
         await backend.initialize()
         raw_event = generate_permission_interrupt_event(
-            session_id="sec-session",
-            agent_id="sec-agent",
-            trace_id="sec-trace",
-            interaction_seq=0,
+            ids=EventIds(session_id="sec-session", agent_id="sec-agent", trace_id="sec-trace"),
             tool_call_seq=0,
-            risk_level="high",
-            risk_type="tool_permission_denied",
+            interaction_seq=0,
+            risk=RiskInfo(risk_level="high", risk_type="tool_permission_denied"),
         )
         assessment = await backend.report_event(raw_event)
         assert isinstance(assessment, RiskAssessment)
@@ -158,14 +141,10 @@ class TestPipelineIntegration:
         config = AgentSSASConfig(ssas_home=str(ssas_home))
         backend = AgentSSASBackend(config)
         await backend.initialize()
-        raw_event = create_raw_event(
-            "tool_input",
-            session_id="persist-session",
-            trace_id="persist-trace",
-        )
+        raw_event = create_raw_event("tool_input", ids=EventIds(session_id="persist-session", trace_id="persist-trace"))
         await backend.report_event(raw_event)
         # 从存储查询 raw_events
-        events = await backend._storage.get_events_by_trace_id(
+        events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
             "persist-trace"
         )
         # 至少应有 raw_event 记录
@@ -183,12 +162,9 @@ class TestPipelineIntegration:
         await backend.initialize()
         raw_event = create_raw_event(
             "tool_input",
-            session_id="moss-session",
-            agent_id="moss-agent",
-            trace_id="moss-trace",
+            ids=EventIds(session_id="moss-session", agent_id="moss-agent", trace_id="moss-trace"),
+            call=CallInfo(tool_call_seq=0, tool_call_id="moss-call-1"),
             interaction_seq=0,
-            tool_call_seq=0,
-            tool_call_id="moss-call-1",
             payload={
                 "tool_name": "bash",
                 "content": {"tool_args": {"command": "rm -rf /tmp/demo"}},
@@ -201,14 +177,14 @@ class TestPipelineIntegration:
         assert assessment.risk_level == RiskLevel.SAFE
         await asyncio.sleep(0.05)
 
-        module = backend._module_manager.get_module("agent_moss")
+        module = backend._module_manager.get_module("agent_moss")  # pylint: disable=protected-access
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=20)
+        # 仅保留 agent_moss 模块且风险分达 80 的报告
         moss_reports = [
             report
             for report in reports
-            if report.get("module_name") == "agent_moss"
-            and report.get("risk_score", 0) >= 80
+            if report.get("module_name") == "agent_moss" and report.get("risk_score", 0) >= 80
         ]
         assert moss_reports
         report = moss_reports[0]
