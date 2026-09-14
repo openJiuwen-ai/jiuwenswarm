@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# remote backend integration tests (gate-recheck)
 
 # tests/agent_ssas/core/integration/test_remote_backend.py
 """AgentSSASRemoteBackend 测试。
