@@ -11,9 +11,25 @@ from .pdg import DataLeakagePDGDetector
 
 
 _DANGEROUS_SHELL_PATTERNS = [
-    (r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)", "recursive force remove at filesystem root", 95),
-    (r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\b", "recursive force remove", 82),
-    (r"(?i)\brm\s+-[^\s;|&]*r[^\s;|&]*\s+/(?:etc|var|home|boot|usr|sys|proc)\b", "recursive remove of critical system directory", 90),
+    # rm -rf / (递归强制删除根目录) 与 rm -rf 任意目标
+    (
+        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*"
+        r"|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\s+/(?:\s|$)",
+        "recursive force remove at filesystem root",
+        95,
+    ),
+    (
+        r"\brm\s+(?:-[^\s;|&]*[rR][^\s;|&]*[fF][^\s;|&]*"
+        r"|-[^\s;|&]*[fF][^\s;|&]*[rR][^\s;|&]*)\b",
+        "recursive force remove",
+        82,
+    ),
+    (
+        r"(?i)\brm\s+-[^\s;|&]*r[^\s;|&]*\s+"
+        r"/(?:etc|var|home|boot|usr|sys|proc)\b",
+        "recursive remove of critical system directory",
+        90,
+    ),
     (r"(?i)\brm\b[^\n;|&]*\*[^\n;|&]*", "wildcard delete operation", 82),
     (r"\bdd\b.+\bof=/dev/(?:sd[a-z]|disk\d|nvme)", "raw disk overwrite", 95),
     (r"(?i)\bdd\b(?=.*\bif=/dev/zero\b)(?=.*\bof=)", "zero-fill disk overwrite", 95),
@@ -33,19 +49,55 @@ _NETWORK_TRANSFER_PATTERNS = [
 ]
 
 _EXFILTRATION_PATTERNS = [
-    (r"(?is)\bcurl\b(?=.*\b(?:-d|--data|--data-binary|--data-urlencode|--upload-file|-T|--form|-F)\b)", "curl data upload", 85),
+    (
+        r"(?is)\bcurl\b(?=.*\b(?:-d|--data|--data-binary"
+        r"|--data-urlencode|--upload-file|-T|--form|-F)\b)",
+        "curl data upload",
+        85,
+    ),
     (r"(?is)\bwget\b(?=.*\b(?:--post-data|--post-file|--method=POST)\b)", "wget data upload", 85),
-    (r"(?is)\b(?:curl|wget|scp|rsync)\b(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers|\.ssh/id_|api[_-]?key|secret|token|password))", "sensitive data exfiltration command", 90),
+    (
+        r"(?is)\b(?:curl|wget|scp|rsync)\b"
+        r"(?=.*(?:/etc/shadow|/etc/passwd|/etc/sudoers|\.ssh/id_"
+        r"|api[_-]?key|secret|token|password))",
+        "sensitive data exfiltration command",
+        90,
+    ),
     (r"(?i)\bnc\b[^\n;|&]*(?:-e\s|/bin/(?:sh|bash)\b)", "netcat reverse shell", 90),
     (r"(?i)/dev/(?:tcp|udp)/[^\s\"']+", "tcp/udp pseudo-device shell", 86),
 ]
 
 _SENSITIVE_PATH_PATTERNS = [
-    (r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)|dev/mem|var/run/docker\.sock)(?:[\s\"':/]|$)", "sensitive path access: critical credential or control file", 92),
-    (r"(?i)(?:^|[\s\"'=:@])/(?:boot|proc/sys|sys)(?:/|[\s\"':]|$)", "sensitive path access: critical system directory", 88),
-    (r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])", "sensitive path access: ssh private key", 92),
-    (r"(?i)(?:^|[\s\"'=:@])/(?:etc/passwd|etc/ssh/sshd_config|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)", "sensitive path access: system configuration", 78),
-    (r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)(?:[\s\"']|$)", "sensitive path access: credential file", 82),
+    (
+        r"(?i)(?:^|[\s\"'=:@])/(?:etc/(?:shadow|sudoers)"
+        r"|dev/mem|var/run/docker\.sock)(?:[\s\"':/]|$)",
+        "sensitive path access: critical credential or control file",
+        92,
+    ),
+    (
+        r"(?i)(?:^|[\s\"'=:@])/(?:boot|proc/sys|sys)(?:/|[\s\"':]|$)",
+        "sensitive path access: critical system directory",
+        88,
+    ),
+    (
+        r"(?i)(?:^|[\s\"'=:@])(?:~|/[^\s\"']*)?/?\.ssh/"
+        r"(?:id_rsa|id_ed25519|id_ecdsa)(?:\b|[\s\"'])",
+        "sensitive path access: ssh private key",
+        92,
+    ),
+    (
+        r"(?i)(?:^|[\s\"'=:@])/(?:etc/passwd|etc/ssh/sshd_config"
+        r"|etc/crontab|etc/systemd/)(?:[\s\"':/]|$)",
+        "sensitive path access: system configuration",
+        78,
+    ),
+    (
+        r"(?i)(?:^|[\s\"'=:@])(?:[^\s\"']*/)?"
+        r"(?:\.env|credentials(?:\.json)?|secrets?\.ya?ml|llm_secrets\.json)"
+        r"(?:[\s\"']|$)",
+        "sensitive path access: credential file",
+        82,
+    ),
 ]
 
 _ACCOUNT_MANAGEMENT_PATTERNS = [
@@ -59,15 +111,36 @@ _ACCOUNT_MANAGEMENT_PATTERNS = [
 
 _PERSISTENCE_PATTERNS = [
     (r"(?i)\bcrontab\s+(?:-e|-r)\b", "cron table modification", 82),
-    (r"(?i)(?:\|\s*crontab\b|>>?\s*/etc/(?:crontab|cron\.d/|cron\.daily/|cron\.hourly/))", "cron persistence modification", 88),
-    (r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?\.ssh/authorized_keys\b", "ssh authorized_keys persistence", 88),
-    (r"(?i)(?:>>?|tee\s+-?a?|chmod\s+\+x|chmod\s+[0-7]{3,4})\s+[^\n;|&]*\.git/hooks/", "git hook persistence modification", 84),
+    (
+        r"(?i)(?:\|\s*crontab\b|>>?\s*/etc/"
+        r"(?:crontab|cron\.d/|cron\.daily/|cron\.hourly/))",
+        "cron persistence modification",
+        88,
+    ),
+    (
+        r"(?i)(?:>>?|tee\s+-?a?)\s+(?:~|/[^\s\"']*)?/?"
+        r"\.ssh/authorized_keys\b",
+        "ssh authorized_keys persistence",
+        88,
+    ),
+    (
+        r"(?i)(?:>>?|tee\s+-?a?|chmod\s+\+x"
+        r"|chmod\s+[0-7]{3,4})\s+[^\n;|&]*\.git/hooks/",
+        "git hook persistence modification",
+        84,
+    ),
     (r"(?i)(?:>>?|tee\s+-?a?)\s+/etc/systemd/system/[^\s\"']+\.service", "systemd service persistence file write", 88),
     (r"(?i)\bsystemctl\s+enable\b", "systemd service persistence enable", 82),
 ]
 
 _OBFUSCATED_EXECUTION_PATTERNS = [
-    (r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*(?:\|\s*(?:sh|bash|zsh|python|python3)\b|\b(?:sh|bash|zsh|python|python3)\s+-c\b)", "base64 decoded execution", 88),
+    (
+        r"(?i)\bbase64\b[^\n;|&]*(?:-d|--decode)[^\n;|&]*"
+        r"(?:\|\s*(?:sh|bash|zsh|python|python3)\b"
+        r"|\b(?:sh|bash|zsh|python|python3)\s+-c\b)",
+        "base64 decoded execution",
+        88,
+    ),
     (r"(?i)\b(?:eval|exec|system)\s*\(", "dynamic code execution", 82),
 ]
 

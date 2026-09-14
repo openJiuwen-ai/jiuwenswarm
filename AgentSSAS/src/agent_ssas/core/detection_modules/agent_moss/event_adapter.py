@@ -225,7 +225,8 @@ def _decode_jsonish(value: Any, depth: int = 0) -> Any:
         if stripped[:1] in {"{", "["}:
             try:
                 return _decode_jsonish(json.loads(stripped), depth + 1)
-            except (json.JSONDecodeError, TypeError, ValueError):
+            except (TypeError, ValueError):
+                # 注: json.JSONDecodeError 是 ValueError 子类,捕获 ValueError 即可覆盖
                 return value
         return value
     if isinstance(value, dict):

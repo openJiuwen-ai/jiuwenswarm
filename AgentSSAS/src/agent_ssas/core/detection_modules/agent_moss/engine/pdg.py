@@ -767,7 +767,8 @@ def _decode_jsonish(value: Any, depth: int = 0) -> Any:
         if stripped[:1] in {"{", "["}:
             try:
                 return _decode_jsonish(json.loads(stripped), depth + 1)
-            except (json.JSONDecodeError, TypeError, ValueError):
+            except (TypeError, ValueError):
+                # 注: json.JSONDecodeError 是 ValueError 子类,捕获 ValueError 即可覆盖
                 return value
         return value
     if isinstance(value, dict):
@@ -905,7 +906,8 @@ def _resource_ids(value: Any) -> set[str]:
     resources: set[str] = set()
     patterns = (
         r"(?<![A-Za-z0-9:])@?((?:/|\./|\.\./)[A-Za-z0-9_./~+\-]+)",
-        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
+        r"(?i)(?<![A-Za-z0-9_.-])((?:\.env(?:\.[A-Za-z0-9_-]+)?"
+        r"|credentials(?:\.json)?|secrets?\.ya?ml))(?![A-Za-z0-9_.-])",
     )
     for pattern in patterns:
         for match in re.finditer(pattern, text):
