@@ -553,14 +553,12 @@ class RuntimeSessionCoordinator:
             generation=target_generation,
         )
         active = [handle for handle in executions if not handle.state.terminal]
-        settling = [
-            handle
-            for handle in executions
-            if handle.state.terminal
-            and handle.retain_owner_task
-            and handle.task is not None
-            and not handle.task.done()
-        ]
+        settling = []
+        for handle in executions:
+            if not handle.state.terminal or not handle.retain_owner_task:
+                continue
+            if handle.task is not None and not handle.task.done():
+                settling.append(handle)
         direct = [handle for handle in active if self._requires_direct_cancel(handle)]
         direct_timeouts = await self._request_direct_cancel(
             direct,
@@ -572,13 +570,11 @@ class RuntimeSessionCoordinator:
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
         )
         if not scheduler_existed:
-            settling.extend(
-                handle
-                for handle in active
-                if handle.work_kind.scheduled
-                and handle.task is not None
-                and not handle.task.done()
-            )
+            for handle in active:
+                if not handle.work_kind.scheduled or handle.task is None:
+                    continue
+                if not handle.task.done():
+                    settling.append(handle)
         settling_timeouts = await self._wait_for_handles(
             settling,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,

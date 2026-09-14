@@ -653,13 +653,9 @@ class HeartbeatSchedulerService:
             self._active_runs.pop(run_id, None)
             if before_queue is not None:
                 await before_queue()
-            if (
-                consume_queue
-                and job.run_state.current_run_id is None
-                and job.run_state.queued_run_id is not None
-                and not job.is_terminal()
-            ):
-                await self._consume_queued_run(job.id)
+            if consume_queue and job.run_state.current_run_id is None:
+                if job.run_state.queued_run_id is not None and not job.is_terminal():
+                    await self._consume_queued_run(job.id)
             return False
         now = self._now_fn()
         normalized = {

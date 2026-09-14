@@ -694,13 +694,13 @@ class HeartbeatJobStore:
             rs = job.run_state
             if rs.current_run_id or not rs.queued_run_id:
                 return job
+            run_limit_reached = job.max_runs is not None and int(
+                job.run_count
+            ) >= int(job.max_runs)
             if (
                 not job.enabled
                 or job.is_terminal()
-                or (
-                    job.max_runs is not None
-                    and int(job.run_count) >= int(job.max_runs)
-                )
+                or run_limit_reached
             ):
                 return replace(
                     job,

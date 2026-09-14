@@ -158,11 +158,9 @@ class SessionExecutionRegistry:
             if not expired and not over_capacity:
                 break
             self._terminal.popleft()
-            if (
-                handle is not None
-                and handle.state.terminal
-                and (handle.task is None or handle.task.done())
-            ):
+            if handle is None or not handle.state.terminal:
+                continue
+            if handle.task is None or handle.task.done():
                 self._remove(handle)
 
     def _remove(self, handle: SessionExecutionHandle) -> None:
