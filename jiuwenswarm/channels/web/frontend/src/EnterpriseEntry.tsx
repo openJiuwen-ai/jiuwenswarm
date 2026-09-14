@@ -52,25 +52,75 @@ function entryPath(): string {
   return pathname.startsWith('/chat') ? '/chat/' : '/';
 }
 
-function contextUrl(selected: EnterpriseAgentContext, debugContext = false): string {
+const ACTIVE_CLUSTER_STORAGE_KEY = 'jiuwenclaw_active_cluster';
+
+function readKnownCluster(): string {
+  try {
+    return sessionStorage.getItem(ACTIVE_CLUSTER_STORAGE_KEY) || '';
+  } catch {
+    return '';
+  }
+}
+
+function writeKnownCluster(jiuwenclawId: string): void {
+  try {
+    sessionStorage.setItem(ACTIVE_CLUSTER_STORAGE_KEY, jiuwenclawId);
+  } catch {
+    // 隐私模式等场景写失败时，仍以本次内存比较为准
+  }
+}
+
+function contextUrl(
+  selected: EnterpriseAgentContext,
+  debugContext = false,
+  resetPath = false,
+): string {
   const query = new URLSearchParams({
     user_id: selected.user_id,
     group_id: selected.group_id,
     bot_id: selected.bot_id,
   });
   if (debugContext) query.set('debug_context', '1');
-  return `${entryPath()}?${query.toString()}`;
+  const path = resetPath
+    ? window.location.pathname.startsWith('/chat')
+      ? '/chat/'
+      : '/'
+    : entryPath();
+  return `${path}?${query.toString()}`;
 }
 
-function activateContext(selected: EnterpriseAgentContext, navigate: boolean, debugContext = false): void {
+function activateContext(
+  selected: EnterpriseAgentContext,
+  navigate: boolean,
+  debugContext = false,
+  resetPath = false,
+): void {
   setRuntimeScope({
     userId: selected.user_id,
     groupId: selected.group_id,
     botId: selected.bot_id,
   });
-  const nextUrl = contextUrl(selected, debugContext);
+  const nextUrl = contextUrl(selected, debugContext, resetPath);
   if (navigate) window.location.replace(nextUrl);
   else window.history.replaceState({}, '', nextUrl);
+}
+
+/**
+ * 写入 active-cluster Cookie。
+ * Cookie 为 HttpOnly，前端读不到，用 sessionStorage 记录上次目标，避免每次启动都整页刷新。
+ * 返回 true 表示相对上次已知实例发生了切换（需要 reload 让 nginx 改上游）。
+ */
+async function ensureActiveCluster(
+  provider: NonNullable<ReturnType<typeof resolveEnterpriseAuthProvider>>,
+  jiuwenclawId: string,
+): Promise<boolean> {
+  const next = jiuwenclawId.trim();
+  if (!next || !provider.setActiveCluster) return false;
+  const prev = readKnownCluster();
+  if (prev === next) return false;
+  await provider.setActiveCluster(next);
+  writeKnownCluster(next);
+  return Boolean(prev);
 }
 
 export function isDebugContext(search: string): boolean {
@@ -208,6 +258,15 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
           setPhase('empty');
           return;
         }
+        const clusterChanged = await ensureActiveCluster(provider, selected.jiuwenclaw_id);
+        if (cancelled) return;
+        if (clusterChanged) {
+          // Cookie 已指向新实例，整页刷新让 nginx 改打 /chat、/gateway-api
+          window.location.replace(
+            contextUrl(selected, isDebugContext(window.location.search), true),
+          );
+          return;
+        }
         activateContext(selected, false, isDebugContext(window.location.search));
         setContext({ user, contexts, selected });
         setPhase('ready');
@@ -234,7 +293,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
       contextError,
       contextSwitching,
       onContextChange: key => {
-        if (contextSwitching) return;
+        if (contextSwitching || !provider) return;
         const selected = context.contexts.find(item => agentContextKey(item) === key);
         if (!selected) return;
         // 自定义（debug_context）下即使三元组碰巧与某授权项相同，点选列表项也要退出自定义。
@@ -242,7 +301,15 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         if (sameIdentity && !isDebugContext(window.location.search)) return;
         setContextSwitching(true);
         setContextError('');
-        activateContext(selected, true, false);
+        void (async () => {
+          try {
+            const clusterChanged = await ensureActiveCluster(provider, selected.jiuwenclaw_id);
+            activateContext(selected, true, false, clusterChanged);
+          } catch (switchError) {
+            setContextSwitching(false);
+            setContextError(errorText(switchError));
+          }
+        })();
       },
       onCustomContextApply: input => {
         if (contextSwitching) return;
@@ -270,7 +337,7 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
       },
       onLogout: logout,
     };
-  }, [context, contextError, contextSwitching, logout, t]);
+  }, [context, contextError, contextSwitching, logout, provider, t]);
 
   if (!enterprise) return <>{children}</>;
   if (phase !== 'ready' || !contextValue) return <EntryStatus phase={phase} error={error} onLogout={logout} />;

@@ -8,6 +8,8 @@ export interface EnterpriseAuthProvider {
   redirectToLogin(): boolean;
   getCurrentUser(): Promise<EnterpriseUser>;
   listAgentContexts(): Promise<EnterpriseAgentContext[]>;
+  /** 写入 Manager 用户面反代 Cookie ``jiuwenclaw_id``；模拟登录可省略。 */
+  setActiveCluster?(jiuwenclawId: string): Promise<void>;
   logout(): Promise<void>;
 }
 

@@ -23,10 +23,10 @@ function requestMessage(body: unknown, fallback: string): string {
   return fallback;
 }
 
-async function requestJson<T>(path: string): Promise<T> {
+async function requestJson<T>(path: string, init: RequestInit = {}): Promise<T> {
   let response: Response;
   try {
-    response = await managerAuthenticatedFetch(path);
+    response = await managerAuthenticatedFetch(path, init);
   } catch (error) {
     throw new EnterpriseAuthError(0, `网络请求失败：${error instanceof Error ? error.message : String(error)}`);
   }
@@ -54,6 +54,19 @@ export const managerAuthProvider: EnterpriseAuthProvider = {
     );
     if (result.code !== 200) throw new EnterpriseAuthError(result.code, result.message || '加载 Agent 上下文失败');
     return result.data?.contexts ?? [];
+  },
+  async setActiveCluster(jiuwenclawId: string) {
+    const result = await requestJson<ManagerResponse<{ jiuwenclaw_id: string }>>(
+      '/manager-api/v1/user-console/active-cluster',
+      {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ jiuwenclaw_id: jiuwenclawId }),
+      },
+    );
+    if (result.code !== 200) {
+      throw new EnterpriseAuthError(result.code, result.message || '切换集群失败');
+    }
   },
   async logout() {
     const refreshToken = getManagerRefreshToken();
