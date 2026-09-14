@@ -204,8 +204,7 @@ class AgentSSASBackend:
             if self._report_count >= _TTL_CLEANUP_INTERVAL:
                 self._report_count = 0
                 task = asyncio.create_task(self._cleanup_storages_safe())
-                self._pipeline._background_tasks.add(task)
-                task.add_done_callback(self._pipeline._background_tasks.discard)
+                self._pipeline.track_background_task(task)
 
     async def _cleanup_storages_safe(self) -> None:
         """后台 TTL 清理入口,异常仅记日志(后台任务无人 await)。"""
