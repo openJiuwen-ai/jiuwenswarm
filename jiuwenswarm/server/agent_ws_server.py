@@ -2485,7 +2485,16 @@ class AgentWebSocketServer:
                 e,
             )
             wire = AgentWebSocketServer._send_error_response(
-                ws, request, send_lock, str(e),
+                ws,
+                request,
+                send_lock,
+                str(e),
+                (
+                    getattr(e, "code", None)
+                    if isinstance(getattr(e, "code", None), str)
+                    and getattr(e, "code", None).startswith("AGENT_GROUP_")
+                    else None
+                ),
             )
             async with send_lock:
                 await send_wire_payload(ws, wire)
@@ -4107,6 +4116,7 @@ class AgentWebSocketServer:
         params = request.params if isinstance(request.params, dict) else {}
         if not isinstance(request.params, dict):
             request.params = params
+        requested_agent_group_name = ""
         session_id = str(request.session_id or params.get("session_id") or "").strip()
         if not session_id:
             return None
@@ -4126,6 +4136,32 @@ class AgentWebSocketServer:
         _, _, canonical_mode = resolve_agent_request_mode(effective_mode)
         if not self._is_team_metadata_mode({"mode": canonical_mode}):
             return None
+
+        if "agent_group_name" in params:
+            raw_agent_group_name = params.get("agent_group_name")
+            if not isinstance(raw_agent_group_name, str) or not raw_agent_group_name.strip():
+                from jiuwenswarm.server.runtime.extension_package_manager import (
+                    AgentGroupPackageError,
+                )
+
+                raise AgentGroupPackageError(
+                    "agent_group_name must be a non-empty string",
+                    "AGENT_GROUP_NAME_INVALID",
+                )
+            requested_agent_group_name = raw_agent_group_name.strip()
+            # Validate before creating the generated Team so an invalid package
+            # cannot leave behind a partially bound session.
+            from jiuwenswarm.server.runtime.extension_package_manager import (
+                AgentGroupPackageError,
+                resolve_agent_group_dir,
+            )
+
+            try:
+                resolve_agent_group_dir(requested_agent_group_name)
+            except AgentGroupPackageError:
+                raise
+            except ValueError as exc:
+                raise AgentGroupPackageError(str(exc), "AGENT_GROUP_NOT_FOUND") from exc
 
         existing_team_name = str(metadata.get("team_name") or "").strip()
         if existing_team_name:
@@ -4152,6 +4188,31 @@ class AgentWebSocketServer:
             from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
             from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
 
+            team_leader_identity = None
+            if requested_agent_group_name:
+                # The session binding is created before TeamHelpers sees the
+                # first chat request, so the latter cannot use
+                # ``persist_agent_group`` to detect this first-binding edge.
+                # Resolve the packaged leader only for this new binding; an
+                # existing legacy session without a snapshot must keep its
+                # historical fallback identity.
+                from jiuwenswarm.server.runtime.extension_package_manager import (
+                    resolve_agent_group_leader_identity,
+                )
+
+                try:
+                    team_leader_identity = resolve_agent_group_leader_identity(
+                        requested_agent_group_name
+                    )
+                except Exception as identity_exc:  # noqa: BLE001 — identity is optional
+                    logger.warning(
+                        "[AgentWebSocketServer] unable to resolve AgentGroup leader identity: "
+                        "session_id=%s agent_group_name=%s error=%s",
+                        session_id,
+                        requested_agent_group_name,
+                        identity_exc,
+                    )
+
             binding, _template = await self._create_generated_team_binding(
                 description=query,
                 config_base=get_config(),
@@ -4170,7 +4231,10 @@ class AgentWebSocketServer:
                     mode=canonical_mode,
                     team_name=binding.team_name,
                     team_template_id=binding.template_id,
+                    agent_group_name=requested_agent_group_name or None,
+                    team_leader_identity=team_leader_identity,
                     touch_last_message_at=False,
+                    cache_bust=bool(requested_agent_group_name),
                     sync_write=True,
                 )
             except Exception:

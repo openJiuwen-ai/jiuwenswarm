@@ -91,7 +91,7 @@ export function CatalogPage({
             </button>
           </div>
         ) : isEmpty ? (
-          <div className="agent-management-state">
+          <div className="agent-management-state" data-testid="agent-management-empty-state" data-kind="agent">
             <p>
               {hasQuery
                 ? t('agentManagement.states.noMatch')

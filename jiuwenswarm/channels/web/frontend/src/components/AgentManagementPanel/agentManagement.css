@@ -5,6 +5,7 @@
   --agent-opacity-muted: 0.55;
   --agent-opacity-hidden: 0;
   --agent-opacity-visible: 1;
+  --agent-radius-chip: 4px;
   min-width: 0;
   flex: 1 1 auto;
   overflow-x: hidden;
@@ -13,15 +14,70 @@
   color: var(--color-text-primary);
 }
 
-[data-testid='agent-management-panel'][data-variant='catalog'],
-[data-testid='agent-management-panel'][data-variant='mine'],
-[data-testid='agent-management-panel'][data-variant='detail'],
-[data-testid='agent-management-panel'][data-variant='create'] {
+.page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: var(--space-agent-group-grid);
+  margin-bottom: 0;
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-left: 0;
+  border: 0;
+  gap: var(--space-agent-group-grid);
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button {
+  padding: 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button + button {
+  border-left: 1px solid var(--color-border-default);
+  padding-left: var(--space-agent-group-grid);
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button::after {
+  content: none;
+}
+
+.page-content[data-variant="mine"] .agent-management-primary-actions {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.page-content[data-definition-kind="group"] .agent-group-detail {
+  transform: none;
+  overflow-y: auto;
+}
+
+.agent-group-detail > *,
+.agent-group-editor > * {
+  flex-shrink: 0;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail,
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: none;
+}
+
+[data-testid="agent-management-panel"][data-variant="catalog"],
+[data-testid="agent-management-panel"][data-variant="mine"],
+.page-content[data-testid="agent-management-panel"][data-variant="teams"],
+[data-testid="agent-management-panel"][data-variant="detail"],
+[data-testid="agent-management-panel"][data-variant="create"] {
   overflow-y: hidden;
   scrollbar-gutter: auto;
 }
 
-[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor {
+[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+[data-testid="agent-management-panel"][data-variant="create"] .agent-group-editor,
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-group-detail {
   transform: translateX(4px);
 }
 
@@ -70,7 +126,7 @@
 
 .agent-management-button:disabled {
   cursor: wait;
-  opacity: var(--agent-opacity-muted);
+  opacity: var(--opacity-agent-muted);
 }
 
 .agent-management-button--primary {
@@ -111,6 +167,279 @@
   min-height: 24px;
 }
 
+.agent-management-secondary-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 18px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-secondary-tabs button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 7px 10px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-management-secondary-tabs button:hover,
+.agent-management-secondary-tabs button:focus-visible,
+.agent-management-secondary-tabs button.is-active {
+  color: var(--color-text-primary);
+  outline: 0;
+}
+
+.agent-management-secondary-tabs button.is-active {
+  font-weight: 600;
+}
+
+.agent-management-secondary-tabs button.is-active::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  background: var(--color-action-primary);
+  content: '';
+}
+
+[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+  height: 160px;
+}
+
+.agent-management-card {
+  position: relative;
+  height: 160px;
+  overflow: visible;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  transition:
+    border-color var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+}
+
+.agent-group-avatar,
+.agent-group-member-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+  font-weight: 600;
+}
+
+.agent-group-avatar img,
+.agent-group-member-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-group-avatar--card {
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+}
+
+.agent-group-member-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 15px;
+}
+
+.agent-group-editor__selection-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agent-group-editor__selection-label button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link);
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-group-editor__selection-label button:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 8px 10px;
+}
+
+.agent-group-editor__selected-agent strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0 24px;
+}
+
+.agent-group-upload-dialog__kind button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 10px 4px 9px;
+  cursor: pointer;
+}
+
+.agent-group-upload-dialog__kind button.is-active {
+  border-bottom-color: var(--color-action-primary);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.agent-management-card:hover,
+.agent-management-card:focus-within {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-md);
+  transform: translateY(-1px);
+}
+
+.agent-management-card__body {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 23px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-management-card__heading {
+  display: flex;
+  height: 56px;
+  flex: 0 0 56px;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.agent-management-card__content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 0;
+}
+
+.agent-management-card:hover .agent-management-card__content,
+.agent-management-card:focus-within .agent-management-card__content {
+  padding-right: 64px;
+}
+
+.agent-management-card--multi-action:hover .agent-management-card__content,
+.agent-management-card--multi-action:focus-within .agent-management-card__content {
+  padding-right: 148px;
+}
+
+.agent-management-card__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-management-card__title {
+  overflow: hidden;
+  color: var(--color-text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  flex: 0 0 auto;
+  margin-top: 12px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-management-card__meta {
+  --agent-management-tag-overflow-width: 20px;
+  display: flex;
+  min-width: 0;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.agent-management-card__meta>.agent-management-tag {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__tag-overflow {
+  display: inline-flex;
+  width: var(--agent-management-tag-overflow-width);
+  height: 24px;
+  flex: 0 0 var(--agent-management-tag-overflow-width);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.agent-management-card__meta-measure {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: flex;
+  gap: 8px;
+  visibility: hidden;
+  width: max-content;
+  pointer-events: none;
+}
 .agent-management-card__update {
   position: relative;
   display: inline-flex;
@@ -137,12 +466,27 @@
   display: flex;
   gap: 8px;
   margin-left: auto;
-  opacity: 0;
-  transition: opacity 150ms ease;
+  opacity: var(--opacity-agent-hidden);
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition:
+    opacity var(--duration-fast) var(--ease-out),
+    transform var(--duration-fast) var(--ease-out);
 }
 
-.page-card:hover .agent-management-card__actions {
-  opacity: 1;
+.agent-management-card.page-card > .agent-management-card__actions {
+  position: absolute;
+  top: 36px;
+  right: 24px;
+  margin-left: 0;
+}
+
+.page-card:hover .agent-management-card__actions,
+.agent-management-card:hover .agent-management-card__actions,
+.agent-management-card:focus-within .agent-management-card__actions {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .agent-management-card__actions .agent-management-button {
@@ -180,7 +524,7 @@
 .agent-management-card-action--use:disabled,
 .agent-management-detail-action--use:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
+  opacity: var(--opacity-agent-disabled);
 }
 
 /* 详情页头像已迁移到共享组件 ui/EntityHeader（.entity-header__avatar） */
@@ -253,6 +597,39 @@
   margin: 16px 0 0;
 }
 
+.agent-management-pagination {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-top: 24px;
+  color: var(--color-text-secondary);
+  font-size: 13px;
+}
+
+.agent-management-pagination__buttons {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.agent-management-pagination__buttons button {
+  display: inline-flex;
+  width: 28px;
+  height: 28px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  cursor: pointer;
+}
+
+.agent-management-pagination__buttons button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
 .agent-management-editor {
   padding-bottom: 72px;
 }
@@ -327,7 +704,7 @@
 
 .agent-management-detail-action--uninstall:disabled {
   cursor: wait;
-  opacity: var(--agent-opacity-muted);
+  opacity: var(--opacity-agent-muted);
 }
 
 .agent-management-inline-error {
@@ -376,9 +753,112 @@
    chip .detail-chip.detail-chip--link.detail-chip--spread + 图标位 .detail-chip__icon，
    chip 规格与连接器详情示例统一为 32px 药丸（原 40px 带边框行不再保留）。 */
 
-.agent-management-detail .detail-chip--link:disabled {
+.agent-management-detail-capability-group {
+  min-width: 0;
+}
+
+.agent-management-detail-capability-group h2 {
+  margin-bottom: 8px;
+}
+
+.agent-management-detail-capability-group .agent-management-chip {
+  min-height: 32px;
+  border-radius: var(--agent-radius-chip);
+  background: var(--color-sidebar-nav-hover);
+  color: var(--color-text-primary);
+  padding: 0 16px;
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-management-detail-capability-group+.agent-management-detail-capability-group {
+  margin-top: 32px;
+}
+
+.agent-management-prompt-list {
+  display: grid;
+  max-width: 696px;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+}
+
+.agent-management-prompt {
+  display: flex;
+  min-width: 0;
+  min-height: 40px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  border: 1px solid var(--color-sidebar-nav-hover);
+  border-radius: var(--radius-md);
+  background: var(--color-task-card-surface);
+  color: var(--color-chat-supporting-text);
+  padding: 0 16px;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.agent-management-prompt span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-prompt__send {
+  display: inline-flex;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-chat-supporting-text);
+  padding: 0;
+  cursor: pointer;
+}
+
+.agent-management-detail .detail-chip--link:disabled,
+.agent-management-prompt__send:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
+  opacity: var(--opacity-agent-disabled);
+}
+
+.agent-management-detail-tabs {
+  display: flex;
+  gap: 32px;
+  margin-top: 32px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-detail-tabs button {
+  min-height: 42px;
+  padding: 0 0 12px;
+  color: var(--color-text-primary);
+  font-size: 16px;
+  line-height: 24px;
+  min-width: 64px;
+}
+
+.agent-management-detail-tabs button:disabled {
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-disabled);
+}
+
+.agent-management-file-preview {
+  height: 650px;
+  margin-top: 24px;
+}
+
+.agent-management-file-preview--unavailable {
+  display: flex;
+  height: auto;
+  min-height: 240px;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
 }
 
 .agent-management-markdown {
@@ -410,6 +890,25 @@
   color: var(--color-text-secondary);
   font-size: 14px;
   line-height: 22px;
+}
+
+.agent-management-editor__tabs button {
+  position: relative;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.agent-management-editor__tabs button:hover,
+.agent-management-editor__tabs button:focus-visible {
+  color: var(--color-text-strong);
+  outline: 0;
 }
 
 .agent-management-editor__tabs span:nth-child(-n + 2) {
@@ -1042,6 +1541,18 @@
   color: var(--color-text-secondary);
   padding: 0;
   cursor: pointer;
+  opacity: var(--opacity-agent-hidden);
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.agent-management-capability-card:hover .agent-management-capability-card__remove,
+.agent-management-capability-card:focus-within .agent-management-capability-card__remove,
+.agent-group-editor__member-card:hover .agent-management-capability-card__remove,
+.agent-group-editor__member-card:focus-within .agent-management-capability-card__remove,
+.agent-management-capability-card__remove:focus-visible {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
 }
 
 .agent-management-capability-card__remove:hover,
@@ -1058,7 +1569,7 @@
   border: 0;
   border-radius: var(--radius-md);
   padding: 24px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--effect-shadow-md);
 }
 
 .agent-management-selected-capabilities .agent-management-capability-card__heading {
@@ -1362,44 +1873,6 @@
   line-height: 24px;
 }
 
-.agent-management-selection-tabs {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  border-bottom: 1px solid var(--color-border-default);
-  padding: 0 24px;
-}
-
-.agent-management-selection-tab {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 12px 0;
-  cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-}
-
-.agent-management-selection-tab.is-active {
-  color: var(--color-text-strong);
-}
-
-.agent-management-selection-tab.is-active::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: var(--color-text-strong);
-  content: '';
-}
-
-.agent-management-selection-tab[aria-disabled='true'] {
-  cursor: default;
-  opacity: 0.55;
-}
-
 .agent-management-selection-search {
   display: flex;
   flex: 0 0 32px;
@@ -1607,9 +2080,10 @@
   flex: 0 0 16px;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: 0;
-  color: inherit;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-inverse);
 }
 
 .agent-management-selection-card__action svg {
@@ -1627,6 +2101,35 @@
 
 .agent-management-selection-card.is-selected {
   background: var(--color-feedback-info-subtle);
+}
+
+.agent-management-selection-card.is-selected .agent-management-selection-card__action {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+}
+
+.agent-management-selection-card:disabled,
+.agent-management-selection-card.is-disabled {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-selection-card:disabled .agent-management-selection-card__action,
+.agent-management-selection-card.is-disabled .agent-management-selection-card__action {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-selection-card:disabled:hover,
+.agent-management-selection-card:disabled:focus-visible,
+.agent-management-selection-card.is-disabled:hover,
+.agent-management-selection-card.is-disabled:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
 }
 
 .agent-management-inline-action {
@@ -1647,74 +2150,9 @@
   color: var(--color-text-strong);
 }
 
-.agent-management-skill-options {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.agent-management-skill-option {
-  display: flex;
-  min-width: 0;
-  min-height: 156px;
-  align-items: flex-start;
-  gap: 12px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-surface-card);
-  padding: 24px;
-  color: var(--color-text-primary);
-  cursor: pointer;
-  text-align: left;
-}
-
-.agent-management-skill-option:hover,
-.agent-management-skill-option.is-selected {
-  border-color: var(--color-border-hover);
-  background: var(--color-action-secondary);
-}
-
-.agent-management-skill-option__icon {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  background: var(--color-action-primary-subtle);
-  color: var(--color-text-link);
-}
-
-.agent-management-skill-option > span:last-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.agent-management-skill-option strong {
-  overflow: hidden;
-  color: var(--color-text-strong);
-  font-size: 14px;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-skill-option small {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  line-height: 20px;
-}
-
 .agent-management-form-muted {
   color: var(--color-text-secondary);
   font-size: 13px;
-}
-
-.agent-management-form-empty-state {
-  margin: 0 0 20px;
 }
 
 .agent-management-form-error {
@@ -1787,7 +2225,16 @@
     padding-bottom: 16px;
   }
 
-  .agent-management-skill-options,
+  .agent-management-secondary-tabs {
+    margin-left: 0;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-management-detail-capabilities,
+  .agent-management-prompt-list,
   .agent-management-selected-capabilities,
   .agent-management-selection-grid {
     grid-template-columns: 1fr;
@@ -1810,7 +2257,7 @@
     right: 16px;
     top: auto;
     bottom: 16px;
-    opacity: var(--agent-opacity-visible);
+    opacity: var(--opacity-agent-visible);
     pointer-events: auto;
     transform: none;
   }
@@ -1819,5 +2266,782 @@
 @media (max-width: 560px) {
   .agent-management-card {
     height: auto;
+  }
+}
+/* 0807 high-fidelity alignment: keep the existing live seams and tune only
+   the Agent/AgentGroup surfaces covered by the design exports. */
+.page-content[data-testid="agent-management-panel"] .card-grid-auto {
+  padding-top: 32px !important;
+}
+
+.page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+  width: 360px !important;
+}
+
+.page-content[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+.page-content[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor {
+  padding-top: 0;
+}
+
+.agent-group-avatar {
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  border: 1px solid var(--color-agent-group-avatar-border, var(--color-border-default));
+  border-radius: var(--radius-agent-group-avatar);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+}
+
+.agent-group-avatar--variant-1,
+.agent-group-member-avatar--variant-1 {
+  border-color: var(--color-agent-group-avatar-variant-1-border);
+  background: var(--color-agent-group-avatar-variant-1-surface);
+  color: var(--color-agent-group-avatar-variant-1-text);
+}
+
+.agent-group-avatar--variant-2,
+.agent-group-member-avatar--variant-2 {
+  border-color: var(--color-agent-group-avatar-variant-2-border);
+  background: var(--color-agent-group-avatar-variant-2-surface);
+  color: var(--color-agent-group-avatar-variant-2-text);
+}
+
+.agent-group-avatar--variant-3,
+.agent-group-member-avatar--variant-3 {
+  border-color: var(--color-agent-group-avatar-variant-3-border);
+  background: var(--color-agent-group-avatar-variant-3-surface);
+  color: var(--color-agent-group-avatar-variant-3-text);
+}
+
+.agent-group-avatar--variant-4,
+.agent-group-member-avatar--variant-4 {
+  border-color: var(--color-agent-group-avatar-variant-4-border);
+  background: var(--color-agent-group-avatar-variant-4-surface);
+  color: var(--color-agent-group-avatar-variant-4-text);
+}
+
+.agent-group-avatar--variant-5,
+.agent-group-member-avatar--variant-5 {
+  border-color: var(--color-agent-group-avatar-variant-5-border);
+  background: var(--color-agent-group-avatar-variant-5-surface);
+  color: var(--color-agent-group-avatar-variant-5-text);
+}
+
+.agent-group-avatar--variant-6,
+.agent-group-member-avatar--variant-6 {
+  border-color: var(--color-agent-group-avatar-variant-6-border);
+  background: var(--color-agent-group-avatar-variant-6-surface);
+  color: var(--color-agent-group-avatar-variant-6-text);
+}
+
+.agent-group-detail .agent-management-detail__identity h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 8px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-group-detail__capabilities {
+  margin-top: 32px;
+}
+
+.agent-group-editor__header {
+  display: block;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 29px;
+  margin-bottom: 32px;
+}
+
+.agent-group-editor__header h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-editor .agent-management-editor__tabs {
+  width: 100%;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button,
+.agent-group-editor .agent-management-editor__tabs span {
+  position: relative;
+  width: max-content !important;
+  min-width: max-content;
+  min-height: 32px;
+  height: 32px !important;
+  box-sizing: border-box;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agent-group-editor .agent-management-editor__tabs button:first-child {
+  min-width: 80px;
+  margin-right: 18px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button.is-active,
+.agent-group-editor .agent-management-editor__tabs span.is-active {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.agent-group-editor .agent-management-editor__tabs span.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  content: '';
+}
+
+.agent-group-editor .agent-management-form-section {
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-form-section > h2 {
+  margin-bottom: 24px;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.agent-group-editor .agent-management-form-field--wide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-editor .agent-management-form-field--tag-picker {
+  gap: 2px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.agent-group-editor .agent-management-form-field--wide input,
+.agent-group-editor .agent-management-form-field--wide textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 20px;
+}
+
+.agent-group-editor .agent-management-form-field--wide input {
+  height: 32px;
+}
+
+.agent-group-editor .agent-management-form-field--wide textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.agent-group-editor .agent-group-editor__intro-section textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  margin-top: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  min-height: 64px;
+  box-sizing: border-box;
+  align-items: center;
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+}
+
+.agent-group-editor__selection-label button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+}
+
+.agent-group-upload-dialog__radio {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+}
+
+.agent-group-upload-dialog__radio::after {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  content: '';
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio {
+  border-color: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio::after {
+  background: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  order: 1;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+}
+
+@media (max-width: 900px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(320px, 100%) !important;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: repeat(auto-fit, minmax(174px, 1fr));
+  }
+}
+
+@media (max-width: 1000px) {
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-primary-actions {
+    grid-column: 1;
+    grid-row: 2;
+    justify-content: flex-end;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-secondary-tabs {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 720px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(228px, 100%) !important;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-group-upload-dialog-overlay {
+  align-items: flex-start;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: var(--space-agent-group-upload-top) var(--space-agent-group-gutter) var(--space-agent-group-gutter);
+}
+
+.agent-management-upload-dialog.agent-group-upload-dialog {
+  width: var(--size-agent-group-upload-dialog-width);
+  height: var(--size-agent-group-upload-dialog-height);
+  box-sizing: border-box;
+  gap: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-agent-group-upload-inset);
+}
+
+.agent-group-upload-dialog > header {
+  height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog > header button {
+  width: var(--size-agent-group-drawer-control);
+  height: var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  height: var(--size-agent-group-upload-hint-height);
+  min-height: var(--size-agent-group-upload-hint-height);
+  flex: 0 0 var(--size-agent-group-upload-hint-height);
+  align-items: center;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-grid) 0 0;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+  height: 50px;
+  flex: 0 0 50px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-control) 0 14px;
+  border: 0;
+  padding: var(--space-agent-group-control) 0 0;
+}
+
+.agent-group-upload-dialog__label {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-upload-dialog__options {
+  display: flex;
+  height: 20px;
+  align-items: center;
+  gap: 20px;
+}
+
+.agent-group-upload-dialog__options button {
+  display: inline-flex;
+  height: 20px;
+  align-items: center;
+  gap: var(--space-agent-group-control);
+  border: 0;
+  padding: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-upload-dialog__options button.is-active {
+  border-bottom: 0;
+  font-weight: 400;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+  height: var(--size-agent-group-upload-drop-height);
+  min-height: var(--size-agent-group-upload-drop-height);
+  flex: 0 0 var(--size-agent-group-upload-drop-height);
+  box-sizing: border-box;
+  border-radius: var(--radius-xl);
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+  gap: var(--space-agent-group-control);
+  margin-top: var(--space-agent-group-grid) !important;
+  padding: 0;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button {
+  width: var(--size-agent-group-upload-button-width);
+  min-width: var(--size-agent-group-upload-button-width);
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-upload-dialog__hint-copy {
+  min-width: 0;
+}
+
+.agent-group-detail .agent-group-avatar--detail {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  border-radius: var(--radius-md);
+}
+
+.agent-group-editor__header {
+  margin-bottom: 0;
+}
+
+[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: none;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: translateX(4px);
+}
+
+.agent-group-editor__intro-field textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__selection-label .agent-management-inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Keep the Expert Team detail page on the same centered detail container and
+   metadata rhythm as the ordinary Expert detail page. */
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: translateX(4px);
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 17px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Expert Team pickers share the same selection-card seam as the Expert skill
+   picker. Keep the avatar inside the existing capability-card icon geometry. */
+.agent-management-selection-avatar {
+  overflow: hidden;
+}
+
+.agent-management-selection-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-management-selection-avatar > span {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Newly added Expert Team fields keep the same quiet focus treatment as the
+   ordinary Expert Team name input. */
+.agent-group-editor input:focus,
+.agent-group-editor input:focus-visible,
+.agent-group-editor textarea:focus,
+.agent-group-editor textarea:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
+  box-shadow: none;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-member-card__identity > .agent-group-member-card__badge {
+  margin-top: 0;
+}
+
+/* Expert Team creation follows the original high-fidelity hierarchy: one
+   selected leader card, followed by a three-column member card grid. Empty
+   states remain actions, not fake inputs. */
+.agent-group-editor__team-config-section .agent-group-editor__selection-grid {
+  display: block;
+  margin-top: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  margin-top: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field + .agent-group-editor__selection-field {
+  margin-top: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label {
+  margin-bottom: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label .agent-management-inline-action {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  width: min(100%, 456px);
+  min-height: 132px;
+  align-items: flex-start;
+  box-sizing: border-box;
+  gap: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__selected-agent-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__selected-agent-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__selected-agent-copy p,
+.agent-group-editor__member-card-copy p {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-group-editor__selected-agent-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 0;
+}
+
+.agent-group-editor__member-card {
+  display: block;
+  min-width: 0;
+  min-height: 132px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__member-card-top {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-group-editor__member-card-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__member-card-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__member-card-top > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-card .agent-management-capability-card__remove {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  padding: 0;
+}
+
+/* Detail roster cards follow the high-fidelity member tile: avatar first,
+   then the compact name row. The native title keeps long names discoverable
+   without adding another visible line to the card. */
+.agent-group-detail__members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 174px);
+  gap: 16px;
+}
+
+.agent-group-member-card {
+  display: flex;
+  width: 174px;
+  height: 104px;
+  min-width: 0;
+  min-height: 104px;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 12px 16px;
+  text-align: center;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.agent-group-member-card:hover {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+.agent-group-member-card__avatar-wrap {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+.agent-group-member-avatar {
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-member-card__badge {
+  min-height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--color-member-card-badge-surface);
+  color: var(--color-text-link);
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .agent-group-editor__selected-agent {
+    width: 100%;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-group-member-card {
+    width: 100%;
   }
 }

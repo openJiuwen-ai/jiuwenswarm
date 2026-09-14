@@ -12,10 +12,15 @@ import {
   CheckCircle2,
   ClipboardList,
   Copy,
+  Code2,
+  FileText,
+  Image as ImageIcon,
   Info,
   LoaderCircle,
+  Presentation,
   Share2,
   Sparkles,
+  Table2,
   X,
 } from 'lucide-react';
 import type { TFunction } from 'i18next';
@@ -23,6 +28,7 @@ import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
 import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
 import { ContextCompressionLines } from './MessageItem';
 import { InputArea, type InputAreaHandle } from './InputArea';
@@ -31,6 +37,7 @@ import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 import lineUpIcon from '../../assets/lineUp.svg';
 import beeFlyingIcon from '../../assets/bee-flying.webp';
 import beeStaticIcon from '../../assets/bee-static.png';
+import homeBanner from '../../assets/home-banner.svg';
 import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLifecycle';
 import loadSendIcon from '../../assets/load-send.svg';
 import editIcon from '../../assets/edit.svg';
@@ -139,6 +146,8 @@ interface ChatPanelProps {
   onClearGoal?: (sessionId: string) => void;
   /** 目标 active 但当前无处理中任务时，消息入队后主动排空一次，见 InputArea.tsx 对应调用点 */
   onDrainTaskQueueIfIdle?: (sessionId: string) => void;
+  /** 专家团「通过聊天创建」入口的 4.9 高保真欢迎态。 */
+  welcomeVariant?: 'group-create' | null;
 }
 
 // 邀请指令只对 human_agent 成员存在（见 upsertHumanShareCommandFromEvent 的
@@ -578,6 +587,17 @@ function WelcomeHeading() {
   );
 }
 
+function GroupCreateWelcomeHeading() {
+  const { t } = useTranslation();
+
+  return (
+    <>
+      <span className="chat-welcome__heading-highlight">{t('chat.groupCreateWelcomeBrand')}</span>
+      <span>{t('chat.groupCreateWelcomeSuffix')}</span>
+    </>
+  );
+}
+
 function getShareExportTitle(t: TFunction, isExportingShare: boolean, canExportShare: boolean): string {
   if (isExportingShare) {
     return t('share.exporting');
@@ -935,6 +955,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onResumeGoal,
   onClearGoal,
   onDrainTaskQueueIfIdle,
+  welcomeVariant = null,
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
@@ -944,6 +965,10 @@ export const ChatPanel = React.memo(function ChatPanel({
   const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
   const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const [teamGroupIdentity, setTeamGroupIdentity] = useState<AgentGroupIdentity | null>(null);
+  useEffect(() => {
+    setTeamGroupIdentity(null);
+  }, [activeSessionId]);
   const hasHarnessProgress = useHarnessStore(
     (s) => mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0,
   );
@@ -968,6 +993,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   const isDesktopAttachmentDropEnabled = useDesktopLocalFilePickerReady();
   const hasTimelineContent = messages.length > 0 || toolExecutionOrder.length > 0;
   const hasConversation = Boolean(isHistoryRestoring || historyPager || hasTimelineContent);
+  const isGroupCreateWelcome = welcomeVariant === 'group-create';
   const historyLoadedPages = historyPager?.loadedPages ?? 0;
   const historyTotalPages = historyPager?.totalPages ?? 0;
   const historyLoadingMore = historyPager?.loadingMore ?? false;
@@ -1652,7 +1678,11 @@ export const ChatPanel = React.memo(function ChatPanel({
               )}
               {hasTimelineContent ? (
                 <>
-                  <MessageList messages={messages} renderAfterMessage={renderCodeChangesAfterMessage} />
+                  <MessageList
+                    messages={messages}
+                    renderAfterMessage={renderCodeChangesAfterMessage}
+                    teamGroupIdentityOverride={teamGroupIdentity}
+                  />
                   {shouldShowHumanShare && (
                     <HumanShareCard commands={teamHumanShareCommands} onShare={() => setHumanShareOpen(true)} />
                   )}
@@ -1672,23 +1702,39 @@ export const ChatPanel = React.memo(function ChatPanel({
               ) : null}
             </>
           ) : (
-            <div className="chat-welcome" data-testid="chat-panel-welcome">
+            <div
+              className={`chat-welcome${isGroupCreateWelcome ? ' chat-welcome--group-create' : ''}`}
+              data-testid="chat-panel-welcome"
+              data-variant={isGroupCreateWelcome ? 'group-create' : 'default'}
+            >
+              {isGroupCreateWelcome && (
+                <img
+                  className="chat-welcome__group-create-banner"
+                  src={homeBanner}
+                  alt={t('chat.groupCreateBannerAlt')}
+                  data-testid="chat-panel-welcome-group-banner"
+                />
+              )}
               <h2 className="chat-welcome__heading" data-testid="chat-panel-welcome-heading">
-                <WelcomeHeading />
+                {isGroupCreateWelcome ? <GroupCreateWelcomeHeading /> : <WelcomeHeading />}
               </h2>
               <div className="chat-welcome__composer" data-testid="chat-panel-welcome-composer">
-                <div
-                  ref={bubbleRef}
-                  className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
-                  data-testid="chat-panel-welcome-banner-bubble"
-                >
-                  {t('chat.welcomeBubbleText')}
-                </div>
-                <BeeBanner
-                  className="chat-welcome__banner chat-welcome__banner--bee"
-                  altText={t('chat.welcomeLogoAlt')}
-                  onTrigger={() => setBubbleVisible(true)}
-                />
+                {!isGroupCreateWelcome && (
+                  <>
+                    <div
+                      ref={bubbleRef}
+                      className={`chat-welcome__banner chat-welcome__banner--bubble${bubbleVisible ? ' chat-welcome__banner--bubble--visible' : ''}`}
+                      data-testid="chat-panel-welcome-banner-bubble"
+                    >
+                      {t('chat.welcomeBubbleText')}
+                    </div>
+                    <BeeBanner
+                      className="chat-welcome__banner chat-welcome__banner--bee"
+                      altText={t('chat.welcomeLogoAlt')}
+                      onTrigger={() => setBubbleVisible(true)}
+                    />
+                  </>
+                )}
                 <ActiveTeamGroupEntry isProcessing={isProcessing} teamAreaExpanded={teamAreaExpanded} />
                 <AgentActivityCard isProcessing={isProcessing} onSendTask={handleSendMessage} />
                 <InterruptResultBubble />
@@ -1707,12 +1753,37 @@ export const ChatPanel = React.memo(function ChatPanel({
                   autoFocusKey={autoFocusKey}
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
+                  onAgentGroupIdentityChange={setTeamGroupIdentity}
                   permissionsEnabled={permissionsEnabled}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
                   onClearGoal={onClearGoal}
                 />
               </div>
+              {isGroupCreateWelcome && (
+                <div className="chat-welcome__capabilities" data-testid="chat-panel-welcome-capabilities">
+                  <span className="chat-welcome__capability">
+                    <Code2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.web')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <FileText aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.document')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Presentation aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.slides')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <Table2 aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.spreadsheet')}
+                  </span>
+                  <span className="chat-welcome__capability">
+                    <ImageIcon aria-hidden="true" />
+                    {t('chat.groupCreateCapabilities.imageGeneration')}
+                  </span>
+                </div>
+              )}
               <div className="chat-suggestions" data-testid="chat-panel-welcome-suggestions">
                 {suggestions.map((text) => (
                   <SuggestionCard key={text} text={text} onClick={() => handleSuggestion(text)} />
@@ -1752,6 +1823,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             autoFocusKey={autoFocusKey}
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
+            onAgentGroupIdentityChange={setTeamGroupIdentity}
             permissionsEnabled={permissionsEnabled}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}

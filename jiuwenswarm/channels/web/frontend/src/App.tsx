@@ -63,6 +63,7 @@ import {
   normalizeToolResultPayload,
 } from './features/tool-events/toolEventNormalizer';
 import { readAgentTemplateName } from './features/agentIdentity';
+import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
@@ -331,6 +332,7 @@ function AppContent({
     return 'new';
   });
   const [chatSurfaceViews, setChatSurfaceViews] = useState<Record<string, ChatSurfaceView>>({});
+  const [chatWelcomeVariant, setChatWelcomeVariant] = useState<'group-create' | null>(null);
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
@@ -1476,6 +1478,35 @@ function AppContent({
       }
       if (sessionIdRef.current === targetSessionId) {
         setMissingSessionId((current) => (current === targetSessionId ? null : current));
+        if (Object.prototype.hasOwnProperty.call(session, 'agent_group_name')) {
+          const pendingAgentGroupBinding = useSessionStore.getState()
+            .getRuntime(targetSessionId)?.agentGroupBindingPending;
+          const sessionGroupBinding = typeof session.agent_group_name === 'string'
+            ? session.agent_group_name.trim()
+            : '';
+          // 首次 chat.send 的 session metadata 可能先于后端绑定落盘返回空值。
+          // 保留本地乐观锁，交给 reconcileAgentGroupBinding 的成功/失败结果收敛，
+          // 避免路由恢复的 metadata 读回把发送瞬间的锁定提前清掉。
+          const confirmedAgentGroupBinding = useSessionStore.getState()
+            .getRuntime(targetSessionId)?.agentGroupBinding;
+          if (sessionGroupBinding || (!pendingAgentGroupBinding && !confirmedAgentGroupBinding)) {
+            useSessionStore.getState().setAgentGroupBinding(targetSessionId, sessionGroupBinding || null);
+            if (!sessionGroupBinding && !pendingAgentGroupBinding && !confirmedAgentGroupBinding) {
+              // 旧版本允许在已有普通 Team 上留下专家团草稿；该会话并没有可绑定的
+              // 首次构建窗口，恢复 metadata 时一并清掉，避免后续发送再次提交非法字段。
+              useSessionStore.getState().clearAgentGroupSelectionIntent(targetSessionId);
+            }
+          }
+        }
+        const sessionGroupId = typeof session.agent_group_name === 'string'
+          ? session.agent_group_name.trim()
+          : '';
+        useSessionStore.getState().setTeamLeaderIdentity(
+          targetSessionId,
+          sessionGroupId && Object.prototype.hasOwnProperty.call(session, 'team_leader_identity')
+            ? normalizeTeamLeaderIdentity(session.team_leader_identity)
+            : null,
+        );
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
         // 覆盖"targetSession 为空、走 loadSessionMetadata"这条恢复路径（如从 cron 触发
         // 会话列表点进来的占位 session 之后补全元数据的场景，bug002）。
@@ -2304,6 +2335,7 @@ function AppContent({
     // agent 模式（bug003）。
     const nextMode = options.forceMode ?? resolvedEntrySettings.mode;
     const { selectedModelName } = resolvedEntrySettings;
+    setChatWelcomeVariant(options.welcomeVariant ?? null);
     const selectedProject = options.project ?? useWorkspaceStore.getState().selectedProject;
     const projectDir = resolveNewConversationProjectDir(
       options.preserveProject,
@@ -2314,13 +2346,22 @@ function AppContent({
       currentSessionId !== NEW_CONVERSATION_ID ? currentSessionId : undefined,
     );
     setHistoryLoadingMore(false);
-    const pendingAgentSelection = shouldRestorePendingNewConversation
+    const preservePendingDefinitionSelections = shouldRestorePendingNewConversation && !options.welcomeVariant;
+    const pendingAgentSelection = preservePendingDefinitionSelections
       && pendingNewRuntime?.agentSelectionIntent.kind === 'select'
       ? pendingNewRuntime.agentSelectionIntent
+      : null;
+    const pendingAgentGroupSelection = preservePendingDefinitionSelections
+      && nextMode === 'team'
+      && pendingNewRuntime?.agentGroupSelectionIntent.kind === 'select'
+      ? pendingNewRuntime.agentGroupSelectionIntent
       : null;
     resetNewConversationRuntime({ mode: nextMode, selectedModelName, projectDir });
     if (pendingAgentSelection) {
       useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, pendingAgentSelection);
+    }
+    if (pendingAgentGroupSelection) {
+      useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, pendingAgentGroupSelection);
     }
     if (options.initialInputValue) {
       useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, options.initialInputValue);
@@ -2385,6 +2426,8 @@ function AppContent({
   const handleSwitchMode = useCallback((targetMode: AgentMode) => {
     const currentId = sessionIdRef.current;
     if (useChatStore.getState().getRuntime(currentId)?.isProcessing) return;
+    const currentSessionRuntime = useSessionStore.getState().getRuntime(currentId);
+    if ((currentSessionRuntime?.agentGroupBinding || currentSessionRuntime?.agentGroupBindingPending) && targetMode !== 'team') return;
     if (currentId === NEW_CONVERSATION_ID) {
       setMode(NEW_CONVERSATION_ID, targetMode);
       return;
@@ -2546,6 +2589,16 @@ function AppContent({
     }
   }, [mode, navigate, request, t]);
 
+  const handleUseAgentGroup = useCallback((groupId: string) => {
+    enterNewConversation('team', { forceMode: 'team' });
+    useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
+  }, [enterNewConversation]);
+
+  const handleUseGroupPrompt = useCallback((groupId: string, prompt: string) => {
+    enterNewConversation('team', { initialInputValue: prompt, forceMode: 'team' });
+    useSessionStore.getState().setAgentGroupSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: groupId });
+  }, [enterNewConversation]);
+
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
     if (!currentSessionId) return;
@@ -2566,6 +2619,18 @@ function AppContent({
         projectDir: newRuntime?.projectDirectory ?? null,
         persistSession: persistCommand.persistSession,
       };
+      const pendingNewAgentGroupBinding = runtimeSettings.mode === 'team'
+        && newRuntime?.agentGroupSelectionIntent.kind === 'select'
+        ? newRuntime.agentGroupSelectionIntent.id
+        : null;
+      if (pendingNewAgentGroupBinding) {
+        // 欢迎页创建真实会话前也要立即锁住已选专家团；否则 create conversation
+        // 的异步等待期间，用户仍能看到并操作未绑定的草稿标签。
+        useSessionStore.getState().setAgentGroupBindingPending(
+          NEW_CONVERSATION_ID,
+          pendingNewAgentGroupBinding,
+        );
+      }
       const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
       const preservedProject = newConversationProjectRef.current;
       const workContext = {
@@ -2638,6 +2703,13 @@ function AppContent({
         const pendingAgentSelection = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentSelectionIntent ?? { kind: 'keep' as const };
         useSessionStore.getState().setAgentSelectionIntent(newSid, pendingAgentSelection);
         useSessionStore.getState().clearAgentSelectionIntent(NEW_CONVERSATION_ID);
+        const pendingAgentGroupSelection = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentGroupSelectionIntent ?? { kind: 'keep' as const };
+        useSessionStore.getState().setAgentGroupSelectionIntent(newSid, pendingAgentGroupSelection);
+        const pendingAgentGroupBinding = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID)?.agentGroupBindingPending;
+        if (pendingAgentGroupBinding) {
+          useSessionStore.getState().setAgentGroupBindingPending(newSid, pendingAgentGroupBinding);
+        }
+        useSessionStore.getState().clearAgentGroupSelectionIntent(NEW_CONVERSATION_ID);
         // Swarmflow 开关同样按 session 存，必须在 removeRuntime('new') 之前搬到真实会话，
         // 否则 NEW_CONVERSATION_ID 的 runtime 被删后读到 undefined，chat.send 不带 enable_swarmflow=true。
         const newConvSwarmflow = useSessionStore.getState().getRuntime(NEW_CONVERSATION_ID);
@@ -2683,6 +2755,9 @@ function AppContent({
         newConversationProjectRef.current = null;
         newConversationPreviousSessionRef.current = null;
       } catch (error) {
+        if (pendingNewAgentGroupBinding) {
+          useSessionStore.getState().setAgentGroupBindingPending(NEW_CONVERSATION_ID, null);
+        }
         useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
         useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
         useChatStore.getState().setInputValue(NEW_CONVERSATION_ID, content);
@@ -2859,6 +2934,7 @@ function AppContent({
 
   const performSessionRestore = useCallback(
     async (targetSessionId: string, targetMode?: string, targetSession?: Session, options?: { skipHistoryLoad?: boolean }) => {
+      setChatWelcomeVariant(null);
       const previousSessionId = sessionIdRef.current;
       const previousMode =
         useSessionStore.getState().getRuntime(previousSessionId)?.mode ?? mode;
@@ -3279,6 +3355,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         sessionTitle={sessionTitle}
                         sessionProjectName={sessionProjectName}
                         sessionProject={sessionProject}
+                        welcomeVariant={sessionId === NEW_CONVERSATION_ID ? chatWelcomeVariant : null}
                         teamAreaExpanded={toolPanelHidden ? null : isTeamAreaExpanded}
                         autoFocusKey={composerFocusKey}
                         onNavigateToSkills={() => handleNavigate('skills')}
@@ -3391,9 +3468,17 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               isActive={activeNav === 'agents'}
               onUseAgent={handleUseAgent}
               onUsePrompt={handleUseAgentPrompt}
+              onUseAgentGroup={handleUseAgentGroup}
+              onUseGroupPrompt={handleUseGroupPrompt}
               onCreateViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
                 initialSelectedSkills: ['agent-creator'],
+              })}
+              onCreateGroupViaChat={() => requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-creator'],
+                forceMode: 'team',
+                welcomeVariant: 'group-create',
               })}
             />
           </div>

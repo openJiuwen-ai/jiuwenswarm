@@ -97,6 +97,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
       try {
         const payload = await requestEquipmentList<RawAgentListPayload>(webRequest, 'agent_templates.list', {
           ...(options.filter ? { filter: options.filter } : {}),
+          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
         });
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
