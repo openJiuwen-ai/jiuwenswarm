@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# demo client for http_server_demo (gate-recheck)
 
 """AgentSSAS HTTP 模式客户端示例。
 
