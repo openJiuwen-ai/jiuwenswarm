@@ -125,11 +125,38 @@ def compute_backoff_delay(
     return min(initial_delay * (multiplier**exponent), max_delay)
 
 
+def _image_list_name(payload: dict[str, Any]) -> str:
+    """Registry image identity for TUI list: prefer ``name``, fall back to ``framework``."""
+    return str(payload.get("name") or payload.get("framework") or "").strip()
+
+
+def parse_access_mode(raw: Any) -> list[dict[str, Any]]:
+    """Normalize registry ``access_mode`` into a list of dict rows."""
+    if not isinstance(raw, list):
+        return []
+    return [dict(row) for row in raw if isinstance(row, dict)]
+
+
+def cmd_for_access_mode(access_mode: Any, name: str) -> str:
+    """Return ``cmd`` for the ``access_mode`` row whose ``name`` matches *name*."""
+    want = str(name or "").strip().lower()
+    if not want:
+        return ""
+    rows = access_mode if isinstance(access_mode, list) else []
+    for row in rows:
+        if not isinstance(row, dict):
+            continue
+        if str(row.get("name") or "").strip().lower() == want:
+            return str(row.get("cmd") or "").strip()
+    return ""
+
+
 @dataclass(frozen=True)
 class ImageEntry:
-    """One row from registry ``GET /api/images`` (flat: one framework version)."""
+    """One row from registry ``GET /api/images`` (flat: one version)."""
 
     framework: str
+    name: str = ""
     framework_version: str = ""
     is_default: bool = False
     imageurl: str = ""
@@ -142,7 +169,13 @@ class ImageEntry:
     uploaded_by: str = ""
     image_module_version: str = ""
     created_at: str = ""
+    access_mode: list[dict[str, Any]] = field(default_factory=list)
     raw: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def list_name(self) -> str:
+        """Identity used by ``3rdagent.list`` (registry ``name``, else ``framework``)."""
+        return str(self.name or self.framework or "").strip()
 
     @classmethod
     def from_dict(cls, data: dict[str, Any]) -> ImageEntry:
@@ -150,8 +183,10 @@ class ImageEntry:
         mounts = payload.get("mounts")
         ports = payload.get("ports")
         env = payload.get("env")
+        identity = _image_list_name(payload)
         return cls(
-            framework=str(payload.get("framework") or "").strip(),
+            framework=str(payload.get("framework") or identity).strip(),
+            name=identity,
             framework_version=str(payload.get("framework_version") or "").strip(),
             is_default=bool(payload.get("is_default")),
             imageurl=str(payload.get("imageurl") or "").strip(),
@@ -164,6 +199,7 @@ class ImageEntry:
             uploaded_by=str(payload.get("uploaded_by") or "").strip(),
             image_module_version=str(payload.get("image_module_version") or "").strip(),
             created_at=str(payload.get("created_at") or "").strip(),
+            access_mode=parse_access_mode(payload.get("access_mode")),
             raw=payload,
         )
 
@@ -352,6 +388,7 @@ class RegistryClient:
             return [
                 ImageEntry(
                     framework=name,
+                    name=name,
                     framework_version="default",
                     is_default=True,
                     imageurl=f"local/stub/{name}:latest",
@@ -574,37 +611,38 @@ class RegistryClient:
         )
 
     async def list_user_images(self, user_id: str) -> list[ImageInfo]:
-        """List switchable frameworks; one ``ImageInfo`` per framework.
+        """List switchable images; one ``ImageInfo`` per registry ``name``.
 
         ``GET /api/images`` is flat (one row per version). For UI listing we
-        keep a single entry per framework, preferring ``is_default=true``.
+        keep a single entry per ``name``, preferring ``is_default=true``.
         """
         uid = str(user_id or "").strip()
         entries = await self.list_images()
-        by_framework: dict[str, ImageEntry] = {}
+        by_name: dict[str, ImageEntry] = {}
         for entry in entries:
-            framework = str(entry.framework or "").strip()
-            if not framework:
+            name = entry.list_name
+            if not name:
                 continue
-            existing = by_framework.get(framework)
+            existing = by_name.get(name)
             if existing is None or (entry.is_default and not existing.is_default):
-                by_framework[framework] = entry
+                by_name[name] = entry
 
         images: list[ImageInfo] = []
-        for framework, entry in by_framework.items():
+        for name, entry in by_name.items():
             imageurl = str(entry.imageurl or "").strip() or None
             images.append(
                 ImageInfo(
-                    image_name=framework,
+                    image_name=name,
                     image_uri=imageurl,
                     metadata={
-                        "agent_type": framework,
+                        "agent_type": name,
                         "user_id": uid,
-                        "framework": framework,
+                        "name": name,
                         "framework_version": entry.framework_version,
                         "is_default": entry.is_default,
                         "imageurl": entry.imageurl,
                         "uploaded_by": entry.uploaded_by,
+                        "access_mode": list(entry.access_mode),
                         "source": "registry" if self.enabled else "local_stub",
                     },
                 )
