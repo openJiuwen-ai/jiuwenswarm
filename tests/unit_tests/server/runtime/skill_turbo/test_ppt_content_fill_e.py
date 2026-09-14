@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+import pytest
+
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
     _CONTENT_FILL_DENSITY_CHECKLIST,
     _build_content_template_fill_prompt,
@@ -287,3 +289,136 @@ def test_custom_fill_prompt_branch_rules():
     assert "至少两个直接子块" in prompt
     assert "THEME_CSS_*" in prompt or "THEME" in prompt
     assert "FULL_OUTLINE_SHOULD_NOT_APPEAR" not in prompt
+
+
+_DORMANT_CHART_HTML = (
+    '<div class="ppt-slide"><div id="chart-1"></div>'
+    "<!-- CHART_SCAFFOLD_BEGIN\n"
+    "<script>const option = null; if (!option) return;</script>\n"
+    "CHART_SCAFFOLD_END --></div>"
+)
+
+
+def _make_page_ctx(*, style_id: str, style_mode: str, pages_dir: str):
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+        PageGenContext,
+    )
+
+    return PageGenContext(
+        page_num=1,
+        style_id=style_id,
+        style_text="style",
+        outline_page=_OUTLINE_CONTENT,
+        research_page="research",
+        outline_is_full=False,
+        image_map_page="",
+        designer_md_text="",
+        style_mode=style_mode,
+        pages_dir=pages_dir,
+        pages_seeded=True,
+        page_path=f"{pages_dir}/page-1.pptx.html",
+        pptx_root=pages_dir,
+        total_pages=1,
+    )
+
+
+@pytest.mark.asyncio
+async def test_custom_chart_exhausted_tries_free_gen_then_soft_accept(tmp_path):
+    """custom：填槽耗尽后先 free_gen；失败则 soft 交付 last_raw（不进 missing）。"""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.template_fill import (
+        PageGenPolicy,
+    )
+
+    pages_dir = str(tmp_path)
+    host = MagicMock()
+    host.read_file_for_worker = AsyncMock(return_value=_MINIMAL_SEED_HTML)
+    host.write_file_for_worker = AsyncMock(return_value=True)
+    worker = SlideDesignerWorker(
+        host, PageGenPolicy(allow_free_gen_fallback=True, max_fill_attempts=1)
+    )
+    worker._fill_template_once = AsyncMock(
+        return_value=("", _DORMANT_CHART_HTML, "chart_scaffold_not_activated")
+    )
+    worker._run_free_generate = AsyncMock(return_value=("", "free_generate_failed"))
+    worker._layout_loop = AsyncMock(return_value=(True, "", False))
+
+    result = await worker.run(
+        _make_page_ctx(style_id="custom", style_mode="custom", pages_dir=pages_dir)
+    )
+
+    worker._run_free_generate.assert_awaited_once()
+    assert result.ok is True
+    assert result.layout_warning is True
+    assert result.html == _DORMANT_CHART_HTML
+    assert result.fail_reason == "chart_scaffold_not_activated"
+
+
+@pytest.mark.asyncio
+async def test_custom_chart_exhausted_delivers_free_gen_when_ok(tmp_path):
+    """custom：free_gen 成功则交付 free_gen 页，不再 soft last_raw。"""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.template_fill import (
+        PageGenPolicy,
+    )
+
+    pages_dir = str(tmp_path)
+    free_html = '<div class="ppt-slide"><div id="chart-1"></div></div>'
+    host = MagicMock()
+    host.read_file_for_worker = AsyncMock(return_value=_MINIMAL_SEED_HTML)
+    host.write_file_for_worker = AsyncMock(return_value=True)
+    worker = SlideDesignerWorker(
+        host, PageGenPolicy(allow_free_gen_fallback=True, max_fill_attempts=1)
+    )
+    worker._fill_template_once = AsyncMock(
+        return_value=("", _DORMANT_CHART_HTML, "chart_scaffold_not_activated")
+    )
+    worker._run_free_generate = AsyncMock(return_value=(free_html, ""))
+
+    result = await worker.run(
+        _make_page_ctx(style_id="custom", style_mode="custom", pages_dir=pages_dir)
+    )
+
+    worker._run_free_generate.assert_awaited_once()
+    assert result.ok is True
+    assert result.html == free_html
+    assert result.layout_warning is False
+    host.write_file_for_worker.assert_awaited()
+
+
+@pytest.mark.asyncio
+async def test_preset_chart_exhausted_soft_accept_skips_free_gen(tmp_path):
+    """preset：无 free_gen，图表未激活直接 soft 交付。"""
+    from unittest.mock import AsyncMock, MagicMock
+
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.template_fill import (
+        PageGenPolicy,
+    )
+
+    pages_dir = str(tmp_path)
+    host = MagicMock()
+    host.read_file_for_worker = AsyncMock(return_value=_MINIMAL_SEED_HTML)
+    host.write_file_for_worker = AsyncMock(return_value=True)
+    worker = SlideDesignerWorker(
+        host, PageGenPolicy(allow_free_gen_fallback=False, max_fill_attempts=1)
+    )
+    worker._fill_template_once = AsyncMock(
+        return_value=("", _DORMANT_CHART_HTML, "chart_scaffold_not_activated")
+    )
+    worker._run_free_generate = AsyncMock(return_value=("", "should_not_run"))
+    worker._layout_loop = AsyncMock(return_value=(True, "", False))
+
+    result = await worker.run(
+        _make_page_ctx(
+            style_id="business-classic",
+            style_mode="preset",
+            pages_dir=pages_dir,
+        )
+    )
+
+    worker._run_free_generate.assert_not_awaited()
+    assert result.ok is True
+    assert result.layout_warning is True
+    assert result.html == _DORMANT_CHART_HTML
