@@ -16,7 +16,7 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
 
 * **Installation**: For first-time JiuwenSwarm users, covering basic installation, environment preparation, TUI mode installation, and quick start guidance.
 * **Basic Usage**: Introduces common daily-use entry points, including page overview, conversation, agents, sessions, heartbeat, scheduled tasks, skills, channels, configuration, browser service, logs, and MCP service settings.
-* **Advanced Operations**: Covers advanced capabilities and extension mechanisms, including context compression, Skill self-evolution, tool permissions and security, E2A / A2A protocols, multi-agent collaboration, memory systems, and TUI mode.
+* **Advanced Operations**: Covers advanced capabilities and extension mechanisms, including context compression, Skill self-evolution, TTSE dual-track self-evolution, tool permissions and security, E2A / A2A protocols, multi-agent collaboration, memory systems, and TUI mode.
 * **Appendix**: Provides supplementary materials for project usage and maintenance, including EXE packaging, Windows auto-update design, and developer documentation.
 * **Development Practices**: Collects real Agent application cases built with JiuwenSwarm, helping developers reference existing practices for secondary development and capability extension.
 
@@ -137,6 +137,11 @@ This page collects common JiuwenSwarm usage instructions, feature documentation,
       <td width="22%"><strong>Skill Self-Evolution</strong></td>
       <td width="28%"><a href="en/SkillSelfEvolution.md">Skill Self-Evolution</a></td>
       <td width="50%">Skill iteration, self-optimization, and capability accumulation mechanisms.</td>
+    </tr>
+    <tr>
+      <td width="22%"><strong>TTSE Dual-Track Self-Evolution</strong></td>
+      <td width="28%"><a href="en/TTSE.md">TTSE Dual-Track Self-Evolution</a></td>
+      <td width="50%">Induce FACT / TIP from trajectories, independent of Skill-body evolution.</td>
     </tr>
     <tr>
       <td width="22%"><strong>Tool Permissions and Security</strong></td>
