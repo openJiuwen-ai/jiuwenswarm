@@ -411,4 +411,7 @@ class PolicyEngine:
             compiled.append((name, re.compile(str(pattern))))
         if compiled:
             return compiled
-        return [(name, re.compile(pattern)) for name, pattern in _DEFAULT_SENSITIVE_PATTERNS]
+        default_compiled: list[tuple[str, re.Pattern[str]]] = []
+        for name, pattern in _DEFAULT_SENSITIVE_PATTERNS:
+            default_compiled.append((name, re.compile(pattern)))
+        return default_compiled
