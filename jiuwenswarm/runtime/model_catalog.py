@@ -152,12 +152,14 @@ def build_model_catalog(
     ``entries`` may be a one-shot iterable. It is consumed exactly once, and
     skipped entries still retain their position in subsequent selection keys.
     """
-    models = tuple(
-        descriptor
-        for global_index, entry in enumerate(entries)
-        if isinstance(entry, Mapping)
-        if (descriptor := _descriptor(global_index, entry)) is not None
-    )
+    model_items: list[RuntimeModelDescriptor] = []
+    for global_index, entry in enumerate(entries):
+        if not isinstance(entry, Mapping):
+            continue
+        descriptor = _descriptor(global_index, entry)
+        if descriptor is not None:
+            model_items.append(descriptor)
+    models = tuple(model_items)
     if not models:
         return ModelCatalogResult(models=())
 
@@ -238,13 +240,15 @@ def _resolve_configured_model_entry(
         configured_name = _safe_text(client_config.get("model_name"))
         return entry if configured_name == bare_name else None
 
-    named = tuple(
-        entry
-        for entry in materialized
-        if isinstance(entry, Mapping)
-        and isinstance(entry.get("model_client_config"), Mapping)
-        and _safe_text(entry["model_client_config"].get("model_name")) == target
-    )
+    named: list[Mapping[str, Any]] = []
+    for entry in materialized:
+        if not isinstance(entry, Mapping):
+            continue
+        client_config = entry.get("model_client_config")
+        if not isinstance(client_config, Mapping):
+            continue
+        if _safe_text(client_config.get("model_name")) == target:
+            named.append(entry)
     if named:
         return next(
             (entry for entry in named if entry.get("is_default") is True), named[0]

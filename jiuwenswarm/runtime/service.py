@@ -1460,7 +1460,8 @@ class AgentRuntime:
             "trigger_hook": trigger_hook,
             "on_control_event": on_control_event,
         }
-        if owner := self._agent_execution_owner(request):
+        owner = self._agent_execution_owner(request)
+        if owner:
             invoke_kwargs["_agent_execution"] = owner
         return await self.invoke(request, **invoke_kwargs)
 
@@ -1489,7 +1490,8 @@ class AgentRuntime:
             "trigger_hook": trigger_hook,
             "on_control_event": on_control_event,
         }
-        if owner := self._agent_execution_owner(request):
+        owner = self._agent_execution_owner(request)
+        if owner:
             stream_kwargs["_agent_execution"] = owner
         return [event async for event in self.stream(request, **stream_kwargs)]
 

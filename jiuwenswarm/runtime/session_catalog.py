@@ -234,13 +234,14 @@ def list_sessions(request: SessionListInput) -> SessionListResult:
     limit, offset = _validate_page(request.limit, request.offset)
     try:
         raw_sessions = _collect_session_metadata()
-        filtered = tuple(
-            projected
-            for metadata in raw_sessions
-            if isinstance(metadata, Mapping)
-            if (projected := _project_session(metadata, channel_id=channel_id))
-            is not None
-        )
+        session_items: list[SessionSummary] = []
+        for metadata in raw_sessions:
+            if not isinstance(metadata, Mapping):
+                continue
+            projected = _project_session(metadata, channel_id=channel_id)
+            if projected is not None:
+                session_items.append(projected)
+        filtered = tuple(session_items)
     except SessionCatalogError:
         raise
     except Exception:
@@ -254,8 +255,9 @@ def list_sessions(request: SessionListInput) -> SessionListResult:
             key=lambda item: (-item.last_message_at, item.session_id),
         )
     )
+    page_end = offset + limit
     return SessionListResult(
-        sessions=ordered[offset : offset + limit],
+        sessions=ordered[offset:page_end],
         total=len(ordered),
         limit=limit,
         offset=offset,

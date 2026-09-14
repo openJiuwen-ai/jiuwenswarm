@@ -625,6 +625,7 @@ class AgentManager:
         config: dict[str, Any] | None = None,
         sub_mode: str = None,
         cache_key: str | None = None,
+        *,
         agent_definition: dict[str, Any] | None = None,
         agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm":
@@ -1220,6 +1221,7 @@ class AgentManager:
             mode: str = "agent",
             project_dir: str = None,
             sub_mode: str = None,
+            *,
             agent_definition: dict[str, Any] | None = None,
             agent_definition_fingerprint: str | None = None,
     ) -> "JiuWenSwarm | None":
@@ -1775,8 +1777,9 @@ class AgentManager:
                 create_kwargs: dict[str, Any] = {
                     "cache_key": params.get("cache_key") or mode_key
                 }
-                if params.get("agent_definition") is not None:
-                    create_kwargs["agent_definition"] = params["agent_definition"]
+                agent_definition = params.get("agent_definition")
+                if agent_definition is not None:
+                    create_kwargs["agent_definition"] = agent_definition
                     create_kwargs["agent_definition_fingerprint"] = params.get(
                         "agent_definition_fingerprint"
                     )
