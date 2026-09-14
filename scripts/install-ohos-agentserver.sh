@@ -127,6 +127,88 @@ resolve_base_python() {
   return 1
 }
 
+# venv 健壮创建（2026-09-14 鸿蒙 PC 实测补充）：部分鸿蒙设备的用户盘
+# （fuse/hmdfs 类）上 python -m venv 会以 "Error: [Errno 2] No such file or
+# directory: '<venv>/bin/python3.12'" 失败。已知三类成因：目录"沉降窗口"
+# （makedirs 后 bin 目录短暂不可见，venv 内部 makedirs→symlink 间隙即触发，
+# 重试间隔无效，必须预建目录等沉降后再跑）、符号链受限（回退 copyfile 也
+# 受沉降影响）、ensurepip 子进程 exec 失败。按序尝试，全败输出诊断。
+_venv_verify() {
+  [ -x "$_venv_py" ] || return 1
+  "$_venv_py" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' \
+    >/dev/null 2>&1 || return 1
+  "$_venv_py" -m pip --version >/dev/null 2>&1 || return 1
+  return 0
+}
+
+create_venv_robust() {
+  _venv_dir=$1 _base_py=$2
+  _venv_py="$_venv_dir/bin/python"
+
+  # 策略 1: 标准 venv（真机验证过的手机形态）
+  rm -rf "$_venv_dir"
+  if "$_base_py" -m venv "$_venv_dir" >/dev/null 2>&1 && _venv_verify; then
+    log "  venv OK (standard)"
+    return 0
+  fi
+
+  # 策略 2: 预建目录 + 等沉降 + venv（对付 venv 内部 makedirs→symlink 间隙
+  # 的目录可见性延迟：目录由我们提前建好，venv 走 exist_ok 路径时目录已稳定）
+  log "  venv 标准创建失败，预建目录等待沉降后重试..."
+  rm -rf "$_venv_dir"
+  mkdir -p "$_venv_dir/bin" "$_venv_dir/lib/python3.12" "$_venv_dir/include" 2>/dev/null
+  sleep 5
+  if "$_base_py" -m venv "$_venv_dir" >/dev/null 2>&1 && _venv_verify; then
+    log "  venv OK (precreated-dirs)"
+    return 0
+  fi
+
+  # 策略 3: 预建目录 + 等沉降 + --copies（用户盘符号链受限时 venv 内部回退
+  # copyfile；注意拷贝的解释器若是"启动器"形态可能带 argv0 相对寻址问题，
+  # 由 _venv_verify 的实际执行检查兜底）
+  log "  仍失败，尝试 --copies（符号链受限兜底）..."
+  rm -rf "$_venv_dir"
+  mkdir -p "$_venv_dir/bin" "$_venv_dir/lib/python3.12" "$_venv_dir/include" 2>/dev/null
+  sleep 5
+  if "$_base_py" -m venv --copies "$_venv_dir" >/dev/null 2>&1 && _venv_verify; then
+    log "  venv OK (--copies)"
+    return 0
+  fi
+
+  # 策略 4: --without-pip + 手动补 pip（venv 的 ensurepip 子进程在该文件
+  # 系统上 exec 失败的兜底：先建解释器链并验证可执行，再补 pip）
+  log "  仍失败，尝试 --without-pip + 手动 ensurepip ..."
+  rm -rf "$_venv_dir"
+  mkdir -p "$_venv_dir/bin" "$_venv_dir/lib/python3.12" "$_venv_dir/include" 2>/dev/null
+  sleep 3
+  if "$_base_py" -m venv --without-pip "$_venv_dir" >/dev/null 2>&1 \
+    && [ -x "$_venv_py" ] \
+    && "$_venv_py" -c 'import sys; sys.exit(0 if sys.version_info[:2] == (3, 12) else 1)' >/dev/null 2>&1; then
+    if "$_venv_py" -m ensurepip --upgrade >/dev/null 2>&1 && _venv_verify; then
+      log "  venv OK (--without-pip + ensurepip)"
+      return 0
+    fi
+    # ensurepip 也失败：从基础解释器侧借 pip（pip>=22.3 支持 --python 定向）
+    if "$_base_py" -m ensurepip --upgrade >/dev/null 2>&1 \
+      && "$_base_py" -m pip --python "$_venv_py" install --upgrade pip >/dev/null 2>&1 \
+      && _venv_verify; then
+      log "  venv OK (--without-pip + base-side pip bootstrap)"
+      return 0
+    fi
+  fi
+
+  # 诊断输出（远程排障：复现一次保留现场 + 打印 bin 内容与基础解释器形态）
+  log "  venv 创建全部策略失败。诊断："
+  rm -rf "$_venv_dir"
+  "$_base_py" -m venv "$_venv_dir" 2>&1 | tail -3 | sed 's/^/    venv: /'
+  log "  bin 目录: $(ls -la "$_venv_dir/bin" 2>/dev/null | tail -n +2 | tr '\n' ';' || echo '不存在')"
+  log "  基础解释器: $(ls -la "$_base_py" 2>/dev/null || echo '不存在')"
+  log "  /tmp 对照: $("$_base_py" -m venv /tmp/ohos-venv-diag >/dev/null 2>&1 && echo 'tmp-venv-OK' || echo 'tmp-venv-也失败')"
+  rm -rf /tmp/ohos-venv-diag 2>/dev/null
+  return 1
+}
+
+
 run_manifest_phase() {
   _phase=$1
   _profile=$2
@@ -572,11 +654,14 @@ BASE_PY=$(readlink -f "$BASE_PY" 2>/dev/null || echo "$BASE_PY")
 export OHOS_REAL_PYTHON="$BASE_PY"
 
 if [ "$CREATE_VENV" = "1" ]; then
-  if [ ! -x "$VENV_DIR/bin/python" ]; then
-    log "create venv: $VENV_DIR (base $BASE_PY)"
-    "$BASE_PY" -m venv "$VENV_DIR"
-  else
+  _venv_py_tmp="$VENV_DIR/bin/python"
+  if [ -x "$_venv_py_tmp" ] && "$_venv_py_tmp" -m pip --version >/dev/null 2>&1; then
     log "reuse venv: $VENV_DIR"
+  else
+    [ -x "$_venv_py_tmp" ] && log "venv 存在但不可用（残缺/未带 pip），重建: $VENV_DIR"
+    log "create venv: $VENV_DIR (base $BASE_PY)"
+    create_venv_robust "$VENV_DIR" "$BASE_PY" \
+      || die "venv 创建失败（见上方诊断输出；可手动验证: $BASE_PY -m venv /tmp/t && rm -rf /tmp/t）"
   fi
   export PYTHON="$VENV_DIR/bin/python"
   # 勿 readlink -f venv/bin/python：会解析到 OHOS_REAL_PYTHON，pip 装到系统 Python
