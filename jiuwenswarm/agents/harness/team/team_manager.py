@@ -688,6 +688,18 @@ class TeamManager:
         team_name = str(metadata.get("team_name") or "").strip()
         runtime_team_name = resolve_session_runtime_team_name(metadata)
         template_id = str(metadata.get("team_template_id") or "").strip()
+        if not team_name:
+            # Session metadata may live under a tenant sessions root that the
+            # bind path did not write to (handlers vs runtime resolve the root
+            # at different ContextVar binding moments). The binding store is
+            # the authoritative session→team record and is global, so recover
+            # from it before falling back to defaults.
+            recovered = TeamManager._recover_torn_team_binding(
+                session_id,
+                sessions_root=sessions_root,
+            )
+            if recovered is not None:
+                team_name, runtime_team_name, template_id = recovered
         template_snapshot = get_session_team_template_snapshot(
             session_id,
             sessions_root=sessions_root,
@@ -744,6 +756,86 @@ class TeamManager:
             template_id or None,
             template_snapshot,
         )
+
+    @staticmethod
+    def _recover_torn_team_binding(
+        session_id: str,
+        *,
+        sessions_root: str | Path | None = None,
+    ) -> tuple[str, str, str] | None:
+        """Recover a team binding lost to torn session metadata storage.
+
+        ``team.session.bind`` persists the session→team mapping in the global
+        binding store (``bindings.json``), while per-session metadata may be
+        written under a different tenant sessions root than the one the
+        runtime reads. When metadata carries no team binding but the binding
+        store does, trust the store (binding source of truth) and heal the
+        metadata in place so subsequent turns converge back to it.
+
+        Fail-open: any store/heal error returns ``None`` (or is swallowed) so
+        the caller keeps its previous fallback behavior.
+
+        Returns:
+            ``(team_name, runtime_team_name, template_id)`` or ``None``.
+        """
+        try:
+            from jiuwenswarm.server.runtime.team_binding_store import (
+                get_team_binding_store,
+            )
+
+            binding = get_team_binding_store().find_by_session(session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[TeamManager] team binding store lookup failed: "
+                "session_id=%s: %s",
+                session_id,
+                exc,
+            )
+            return None
+        if binding is None:
+            return None
+        team_name = str(binding.team_name or "").strip()
+        template_id = str(binding.template_id or "").strip()
+        if not team_name:
+            return None
+        runtime_team_name = TeamManager.build_session_scoped_team_name(
+            team_name,
+            session_id,
+        )
+        # Self-heal: re-persist the binding into the metadata root this
+        # request reads. Non-fatal on failure — this request already builds
+        # from the recovered values; the heal only benefits later turns.
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                update_session_metadata,
+            )
+
+            update_session_metadata(
+                session_id=session_id,
+                team_name=team_name,
+                runtime_team_name=runtime_team_name,
+                team_template_id=template_id,
+                touch_last_message_at=False,
+                sync=True,
+                sessions_root=sessions_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[TeamManager] team binding metadata heal failed (non-fatal): "
+                "session_id=%s team_name=%s: %s",
+                session_id,
+                team_name,
+                exc,
+            )
+        logger.info(
+            "[TeamManager] recovered team binding from binding store "
+            "(session metadata carried none): session_id=%s team_name=%s "
+            "template_id=%s",
+            session_id,
+            team_name,
+            template_id,
+        )
+        return team_name, runtime_team_name, template_id
 
     def _load_session_team_spec(
         self,

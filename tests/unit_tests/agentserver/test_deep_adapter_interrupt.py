@@ -915,6 +915,52 @@ def test_runtime_route_binds_adapter_artifact_output_dir(tmp_path: Path) -> None
         adapter._reset_runtime_cron_context(tokens)
 
 
+def test_runtime_route_binds_request_workspace_as_artifact_output_dir(
+    tmp_path: Path,
+) -> None:
+    from jiuwenswarm.agents.harness.common.tools.deepresearch import tools as dt
+
+    agent_workspace = tmp_path / "agent-workspace"
+    request_workspace = tmp_path / "session-workspace"
+    adapter = _make_adapter(
+        _env_service_id="service-output",
+        _env_agent_id="agent-output",
+        _workspace_dir=str(agent_workspace),
+    )
+    tokens = adapter._bind_runtime_cron_context(
+        channel_id="officeclaw",
+        session_id="sess-output",
+        metadata={},
+        request_id="req-output",
+        mode="agent",
+        project_dir=str(request_workspace),
+    )
+    try:
+        assert dt._get_effective_request_output_dir() == request_workspace.resolve()
+    finally:
+        adapter._reset_runtime_cron_context(tokens)
+
+
+def test_progressive_deepresearch_context_keeps_request_workspace(
+    tmp_path: Path,
+) -> None:
+    request_workspace = tmp_path / "session-workspace"
+    adapter = _make_adapter(
+        _env_service_id="service-output",
+        _env_agent_id="agent-output",
+    )
+    adapter._current_request_route = {
+        "session_id": "sess-output",
+        "request_id": "req-output",
+        "channel_id": "officeclaw",
+        "output_dir": str(request_workspace),
+    }
+
+    assert adapter._get_deepresearch_tool_context()["output_dir"] == str(
+        request_workspace.resolve()
+    )
+
+
 def test_runtime_route_keeps_artifact_leaf_lexical(tmp_path: Path) -> None:
     agent_workspace = tmp_path / "agent-workspace"
     outside = tmp_path / "outside"

@@ -146,8 +146,9 @@ def _card(
 
 
 class _DiscoverySequence:
-    def set_allow_loopback_http(self, enabled: bool) -> None:
-        self.allow_loopback_http = enabled
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self.allow_loopback = allow_loopback
+        self.allow_http = allow_http
 
     def __init__(self, *cards: DiscoveredCard) -> None:
         self.cards = list(cards)
@@ -483,7 +484,7 @@ async def test_discovery_blocks_private_and_plain_http_targets() -> None:
     ("192.168.1.27", "http", {"allow_http": True}, False),
     ("10.0.0.8", "https", {"allow_private_network": True}, True),
     ("127.0.0.1", "http", {"allow_http": True, "allow_private_network": True}, False),
-    ("127.0.0.1", "http", {"allow_http": True, "allow_loopback": True}, True),
+    ("127.0.0.1", "http", {"allow_http": True, "allow_loopback": True}, False),
     ("93.184.216.34", "https", {}, True),
     ("93.184.216.34", "http", {"allow_http": True}, False),
     ("93.184.216.34", "http", {"allow_http": True, "allow_public_http": True}, True),
@@ -493,7 +494,7 @@ async def test_discovery_blocks_private_and_plain_http_targets() -> None:
     ("2001:4860:4860::8888", "http", {}, False),
     ("fc00::1", "https", {"allow_private_network": True}, False),
     ("::ffff:192.168.1.1", "https", {"allow_private_network": True}, False),
-    ("::1", "http", {"allow_http": True, "allow_loopback": True}, True),
+    ("::1", "http", {"allow_http": True, "allow_loopback": True}, False),
     (["2001:4860:4860::8888", "93.184.216.34"], "https", {}, True),
     (["93.184.216.34", "192.168.1.27"], "https", {"allow_private_network": True}, False),
     (["2001:4860:4860::8888", "192.168.1.27"], "https", {"allow_private_network": True}, False),
@@ -504,7 +505,7 @@ async def test_enterprise_network_policy(address, scheme, policy, allowed):
     async def resolver(host, port):
         return addresses
 
-    service = A2AOutboundDiscoveryService(address_resolver=resolver, allow_loopback_http=True)
+    service = A2AOutboundDiscoveryService(address_resolver=resolver, allow_loopback=True, allow_http=True)
     if allowed:
         target = await service.validate_network_target(
             f"{scheme}://weather.example.com/a2a", network_policy=policy
@@ -724,3 +725,27 @@ def test_app_gateway_wires_outbound_repository_without_removed_edition_module():
     from jiuwenswarm.gateway.storage_assembly import create_a2a_outbound_repository
 
     assert callable(create_a2a_outbound_repository)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("allow_loopback", [False, True])
+@pytest.mark.parametrize("allow_http", [False, True])
+@pytest.mark.parametrize("scheme", ["http", "https"])
+@pytest.mark.parametrize("address", ["93.184.216.34", "127.0.0.1", "::1", "192.168.1.27"])
+async def test_personal_network_switches_are_independent(address, scheme, allow_loopback, allow_http):
+    async def resolver(host, port):
+        return [address]
+
+    service = A2AOutboundDiscoveryService(address_resolver=resolver)
+    service.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+    allowed = (
+        (address == "93.184.216.34" or (allow_loopback and address in {"127.0.0.1", "::1"}))
+        and (scheme == "https" or allow_http)
+    )
+    if allowed:
+        target = await service.validate_network_target(f"{scheme}://agent.example.com/a2a")
+        assert target.pinned_address == address
+    else:
+        with pytest.raises(A2AOutboundError) as error:
+            await service.validate_network_target(f"{scheme}://agent.example.com/a2a")
+        assert error.value.code is A2AOutboundErrorCode.DISCOVERY_BLOCKED

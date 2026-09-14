@@ -20,7 +20,6 @@ render_secret_configmap() {
         "RUNTIME_DB_PASSWORD"
         "REDIS_PASSWORD"
         "OBS_SECRET_KEY"
-        "API_KEY"
     )
     for key in "${secret_keys[@]}"; do
         # 空值直接跳过，无需编码

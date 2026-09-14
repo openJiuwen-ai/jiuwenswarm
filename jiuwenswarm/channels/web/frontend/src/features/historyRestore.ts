@@ -1,10 +1,11 @@
-import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution } from '../types';
+import { Message, MessageRole, UsageSummary, FileDownloadItem, MediaItem, WsEvent, ToolExecution, AskUserQuestionPayload } from '../types';
 import { webClient } from '../services/webClient';
 import { normalizeFinalContent } from '../utils/finalContent';
 import { mergeFileDownloadItems } from '../utils/fileDownloadDedup';
 import { parseTimestampToMs, timestampMsToIso } from '../utils/timestamp';
 import { isA2UIClientEventContent } from './a2ui/a2uiContent';
 import { normalizeToolCallPayload, normalizeToolResultPayload } from './tool-events/toolEventNormalizer';
+import { normalizeAskUserQuestionPayload } from './askUserQuestion';
 import {
   buildGoalCompletedContent,
   isGoalCompletedContent,
@@ -25,7 +26,10 @@ const ALLOWED_ASSISTANT_EVENT_TYPES = new Set([
   'team.task',
   'harness.message',
   'harness.stage_result',
-  'harness.extension_ready'
+  'harness.extension_ready',
+  'chat.ask_user_question',
+  'chat.ask_user_question_expired',
+  'chat.ask_user_answered',
 ]);
 
 /** 后端约定：最后一帧 `history.message` 使用 `payload.status: done`（兼容旧版 `payload.content: done`） */
@@ -74,7 +78,10 @@ type HistoryTimelineEntry =
   | { kind: 'team_task'; at: string; payload: { event: Record<string, unknown> } }
   | { kind: 'harness_message'; at: string; content: string; stage?: string }
   | { kind: 'harness_stage_result'; at: string; stage: string; status: string; error: string; messages: string[]; metrics: Record<string, unknown> }
-  | { kind: 'reasoning'; at: string; text: string };
+  | { kind: 'reasoning'; at: string; text: string }
+  | { kind: 'ask_user_question'; at: string; payload: AskUserQuestionPayload }
+  | { kind: 'ask_user_question_expired'; at: string; requestId: string }
+  | { kind: 'ask_user_answered'; at: string; requestId: string };
 
 interface BeginHistoryRestoreOptions {
   sessionId: string;
@@ -88,6 +95,8 @@ interface BeginHistoryRestoreOptions {
   onTeamReplay?: (items: HistoryTeamReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复模型思考块（chat.reasoning） */
   onReasoningReplay?: (items: HistoryReasoningReplayItem[]) => void;
+  /** 刷新后回放仍未作答的 HITL 卡片（ask_user / 权限确认） */
+  onAskUserReplay?: (question: AskUserQuestionPayload | null) => void;
   /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
   onEmpty?: (totalPages: number | null) => void;
   onError?: (message: string) => void;
@@ -460,6 +469,33 @@ function parseHistoryTimelineEntry(
     };
   }
 
+  if (eventType === 'chat.ask_user_question') {
+    const payload = normalizeAskUserQuestionPayload(record);
+    if (!payload) {
+      return null;
+    }
+    return {
+      kind: 'ask_user_question',
+      at,
+      payload,
+    };
+  }
+
+  if (eventType === 'chat.ask_user_question_expired' || eventType === 'chat.ask_user_answered') {
+    const requestId =
+      pickFirstString(record, ['request_id']) ??
+      (isRecord(record.payload) ? pickFirstString(record.payload, ['request_id']) : undefined) ??
+      '';
+    if (!requestId) {
+      return null;
+    }
+    return {
+      kind: eventType === 'chat.ask_user_answered' ? 'ask_user_answered' : 'ask_user_question_expired',
+      at,
+      requestId,
+    };
+  }
+
   const payload = buildEventPayloadForRecord(record);
 
   if (eventType === 'chat.final') {
@@ -643,6 +679,7 @@ interface MaterializedHistoryTimeline {
   harnessReplay: HistoryHarnessReplayItem[];
   teamReplay: HistoryTeamReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
+  pendingAskUser: AskUserQuestionPayload | null;
 }
 
 /** 将已按时间升序的 history 条目折叠成消息/工具/思考，供 restore / page / 文件预览共用。 */
@@ -652,9 +689,25 @@ function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): Materializ
   const harnessReplay: HistoryHarnessReplayItem[] = [];
   const teamReplay: HistoryTeamReplayItem[] = [];
   const reasoningReplay: HistoryReasoningReplayItem[] = [];
+  let pendingAskUser: AskUserQuestionPayload | null = null;
 
   for (const e of entries) {
+    if (e.kind === 'ask_user_question') {
+      pendingAskUser = e.payload;
+      continue;
+    }
+    if (e.kind === 'ask_user_question_expired' || e.kind === 'ask_user_answered') {
+      if (pendingAskUser?.request_id === e.requestId) {
+        pendingAskUser = null;
+      }
+      continue;
+    }
     if (e.kind === 'message') {
+      // 同一轮里 ask_user 前后常有 chat.final 铺垫句（如「好的，那我认真问一个」），
+      // 不能把它当成「已经答完」。只有用户又发了新消息才收起卡片。
+      if (e.message.role === 'user') {
+        pendingAskUser = null;
+      }
       messages.push(e.message);
       continue;
     }
@@ -697,6 +750,7 @@ function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): Materializ
       continue;
     }
     if (e.kind === 'file_items') {
+      pendingAskUser = null;
       if (!attachFilesToPreviousAssistant(messages, e.files)) {
         messages.push(createFileOnlyAssistantMessage(e.at, e.files));
       }
@@ -710,10 +764,11 @@ function materializeHistoryTimeline(entries: HistoryTimelineEntry[]): Materializ
       reasoningReplay.push({ at: e.at, text: e.text });
       continue;
     }
+    pendingAskUser = null;
     toolReplay.push({ kind: e.kind, at: e.at, payload: e.payload });
   }
 
-  return { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay };
+  return { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay, pendingAskUser };
 }
 
 /**
@@ -842,6 +897,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           description: n.description,
           formatted_args: n.formatted_args,
           display_name: n.display_name,
+          source_skill: n.source_skill,
           memberName: n.memberName,
         },
         // 与实时一致：先 pending，等 tool_result 再落终态；无 result 的孤儿在循环末尾结算。
@@ -1039,12 +1095,18 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   function finalize(): void {
     if (disposed) return;
 
-    const { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay } =
+    const { messages, toolReplay, harnessReplay, teamReplay, reasoningReplay, pendingAskUser } =
       materializeHistoryTimeline(entries);
 
     dispose();
 
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0) {
+    if (
+      messages.length === 0 &&
+      toolReplay.length === 0 &&
+      harnessReplay.length === 0 &&
+      teamReplay.length === 0 &&
+      !pendingAskUser
+    ) {
       options.onEmpty?.(totalPages);
       return;
     }
@@ -1060,6 +1122,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     }
     if (reasoningReplay.length > 0) {
       options.onReasoningReplay?.(reasoningReplay);
+    }
+    if (pendingAskUser) {
+      options.onAskUserReplay?.(pendingAskUser);
     }
   }
 

@@ -545,7 +545,24 @@
     "connectionStatus": "连接状态",
     "version": "版本",
     "language": "语言",
-    "moreSettings": "更多设置"
+    "moreSettings": "更多设置",
+    "enterpriseContext": {
+      "user": "用户",
+      "userContext": "用户上下文",
+      "modeAria": "上下文设定方式",
+      "selectAgent": "选择 Agent",
+      "custom": "自定义",
+      "agentOrgLabel": "agent名称-组织名称",
+      "botId": "bot_id",
+      "groupId": "group_id",
+      "userId": "user_id",
+      "apply": "应用",
+      "switching": "正在切换...",
+      "logout": "注销登录",
+      "customRequired": "请填写 bot_id、group_id、user_id",
+      "noMatch": "没有匹配项",
+      "pleaseSelect": "请选择"
+    }
   },
   "a2aIngress": {
     "security": {
@@ -606,12 +623,15 @@
         "or": " 或 "
       },
       "localDebug": {
-        "title": "本地 Agent 调试",
-        "description": "控制是否允许发现和调用本机 loopback 地址上的明文 HTTP Agent。设置保存后立即生效。",
-        "allow": "允许本机 HTTP Agent",
-        "warning": "仅用于本机 E2E 调试。启用后会放宽针对 127.0.0.1 / ::1 的 SSRF 防护，请勿在生产环境开启。",
+        "title": "网络访问设置",
+        "description": "允许访问 localhost 等回环地址。",
+        "allow": "允许本地回环地址",
+        "warning": "风险：回环访问可能暴露 Gateway 本机服务，仅用于可信 Agent。",
+        "httpWarning": "风险：HTTP 允许公网明文传输，凭据和任务数据可能泄露。",
         "saving": "保存中...",
-        "saved": "出站本地调试设置已保存并立即生效。"
+        "saved": "出站网络访问设置已保存并立即生效。",
+        "allowHttp": "允许 HTTP",
+        "httpDescription": "允许明文 HTTP；回环访问需同时开启上方开关。"
       },
       "discovery": {
         "title": "发现第三方 Agent",
@@ -2310,6 +2330,7 @@
     "skillApproval": {
       "title": "Skill 加载审批",
       "trustBuiltin": "内置",
+      "trustPrebuilt": "企业预置",
       "versionLocal": "本地（无版本）",
       "source": "来源",
       "version": "版本",

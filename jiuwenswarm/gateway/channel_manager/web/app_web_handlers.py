@@ -1960,13 +1960,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(ws, req_id, a2a_manager.outbound_get_settings)
 
     async def _a2a_outbound_settings_update(ws, req_id, params, session_id):
-        enabled = params.get("allow_loopback_http")
-        if not isinstance(enabled, bool):
+        allow_loopback = params.get("allow_loopback")
+        allow_http = params.get("allow_http")
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error="allow_loopback_http must be a boolean",
+                error="allow_loopback and allow_http must be booleans",
                 code="A2A_CONFIG_INVALID",
             )
             return
@@ -1974,7 +1975,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws,
             req_id,
             lambda: a2a_manager.outbound_update_settings(
-                allow_loopback_http=enabled
+                allow_loopback=allow_loopback, allow_http=allow_http
             ),
         )
 
@@ -2070,12 +2071,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_delete(str(params.get("agent_id") or ""))
         )
 
-    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id, user_id=None):
         await _send_a2a_outbound(
             ws,
             req_id,
             lambda: a2a_manager.outbound_dispatch_get(
                 str(params.get("dispatch_id") or ""),
+                source_user_id=user_id,
                 source_session_id=(session_id if is_enterprise() else None),
                 source_resource_id=(
                     str(params.get("bot_id") or "") if is_enterprise() else None
@@ -2083,7 +2085,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ),
         )
 
-    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id, user_id=None):
         try:
             limit = int(params.get("limit", 200))
         except (TypeError, ValueError):
@@ -2099,7 +2101,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_list(limit=limit),
+            lambda: a2a_manager.outbound_dispatch_list(
+                limit=limit, source_user_id=user_id
+            ),
         )
 
     channel.register_method("a2a.outbound.settings.get", _a2a_outbound_settings_get)

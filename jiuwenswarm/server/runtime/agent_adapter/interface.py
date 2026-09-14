@@ -66,7 +66,10 @@ from jiuwenswarm.common.utils import (
     get_env_file,
     reset_free_search_runtime_flags,
 )
-from jiuwenswarm.server.runtime.a2ui.integration import finalize_assistant_response_if_a2ui
+from jiuwenswarm.server.runtime.a2ui.integration import (
+    finalize_assistant_response_if_a2ui,
+    is_a2ui_channel,
+)
 from jiuwenswarm.server.runtime.a2ui.runtime.finalizer import should_finalize_a2ui_content
 from jiuwenswarm.agents.harness.common.auto_memory import (
     _execute_auto_memory_extraction,
@@ -188,6 +191,15 @@ def _should_record_user_history(params: Any) -> bool:
     if is_interrupt_resume_payload(params):
         return False
     return str(params.get("source") or "") != "proactive_recommendation"
+
+
+def _ask_user_answer_request_id(params: dict[str, Any], fallback: str) -> str:
+    rid = str(params.get("request_id") or "").strip()
+    if isinstance(rid, str):
+        matched = re.search(r"^(?P<base>.+)#\d+$", rid)
+        if matched and matched.group("base").strip():
+            rid = matched.group("base").strip()
+    return rid or str(fallback or "").strip()
 
 
 def _history_media_string(item: dict[str, Any], *keys: str) -> str | None:
@@ -320,6 +332,9 @@ _A2UI_STREAM_PARTIAL_MARKERS = (
     "dataModelUpdate",
     "deleteSurface",
 )
+# 过短 token（如 data、begin、<a、delete、surface）在普通 HTML/JS/JSON 中
+# 高频出现，不得命中半标记判定。8 是过滤所有已知误词的最小安全长度。
+_A2UI_PARTIAL_MARKER_MIN_LEN = 8
 _A2UI_PENDING_RENDER_DELTA = "<a2ui-json>\n"
 
 
@@ -413,7 +428,7 @@ def _looks_like_partial_a2ui_marker(value: Any) -> bool:
         if match is None:
             continue
         token = match.group(0)
-        if len(token) < 2:
+        if len(token) < _A2UI_PARTIAL_MARKER_MIN_LEN:
             continue
         rest = candidate[len(token):].strip()
         if rest and not any(marker.startswith(token + rest) for marker in _A2UI_STREAM_PARTIAL_MARKERS):
@@ -468,7 +483,7 @@ def _a2ui_marker_start(value: Any) -> int | None:
         if match is None:
             continue
         token = match.group(0)
-        if len(token) < 2:
+        if len(token) < _A2UI_PARTIAL_MARKER_MIN_LEN:
             continue
         rest = candidate[len(token):].strip()
         if rest and not any(marker.startswith(token + rest) for marker in _A2UI_STREAM_PARTIAL_MARKERS):
@@ -1103,6 +1118,40 @@ class JiuWenSwarm:
     def _append_history_record(self, **kwargs: Any) -> None:
         kwargs.update(self._history_kwargs())
         append_history_record(**kwargs)
+
+    def _append_ask_user_answered_history(
+        self,
+        *,
+        request: AgentRequest,
+        session_id: str,
+    ) -> None:
+        """Record HITL resume so refresh does not revive an already-answered card."""
+        params = request.params if isinstance(request.params, dict) else {}
+        answers = params.get("answers")
+        status = params.get("status")
+        has_answers = isinstance(answers, list) and bool(answers)
+        has_status = isinstance(status, str) and bool(status.strip())
+        if not has_answers and not has_status:
+            return
+        rid = _ask_user_answer_request_id(params, request.request_id)
+        if not rid:
+            return
+        extra: dict[str, Any] = {"request_id": rid}
+        source = str(params.get("source") or "").strip()
+        if source:
+            extra["source"] = source
+        extra["status"] = str(status).strip() if has_status else "answered"
+        self._append_history_record(
+            session_id=session_id,
+            request_id=rid,
+            channel_id=request.channel_id,
+            role="assistant",
+            event_type="chat.ask_user_answered",
+            content="",
+            timestamp=time.time(),
+            extra=extra,
+            mode=params.get("mode", "unknown"),
+        )
 
     def _get_skilldev_service(self):
         """懒初始化并返回 SkillDevService 实例.
@@ -2581,6 +2630,8 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=request.params.get("mode", "unknown"),
             )
+        else:
+            self._append_ask_user_answered_history(request=request, session_id=session_id)
 
         logger.info(
             "[JiuWenSwarm] 处理请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
@@ -2918,6 +2969,8 @@ class JiuWenSwarm:
                 channel_metadata=request.metadata,
                 mode=params_for_history.get("mode", "unknown"),
             )
+        elif request.req_method != ReqMethod.COMMAND_GOAL:
+            self._append_ask_user_answered_history(request=request, session_id=session_id)
 
         logger.info(
             "[JiuWenSwarm] 处理流式请求: request_id=%s channel_id=%s session_id=%s sdk=%s",
@@ -3208,6 +3261,7 @@ class JiuWenSwarm:
         suppress_a2ui_stream = False
         a2ui_pending_render_sent = False
         a2ui_stream_probe = ""
+        a2ui_probe_enabled = is_a2ui_channel(cid)
         _yielded_from_queue = 0
         logger.info(
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s is_first=%s",
@@ -3284,7 +3338,7 @@ class JiuWenSwarm:
 
                             payload_content = str(data.payload.get("content", ""))
                             a2ui_split = None
-                            if et in {"chat.delta", "chat.final"} and payload_content:
+                            if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
                                 a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
                                 a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
                             if _should_defer_a2ui_processing_status(
@@ -3486,7 +3540,7 @@ class JiuWenSwarm:
 
                         payload_content = str(data.get("content", ""))
                         a2ui_split = None
-                        if et in {"chat.delta", "chat.final"} and payload_content:
+                        if a2ui_probe_enabled and et in {"chat.delta", "chat.final"} and payload_content:
                             a2ui_split = _split_a2ui_stream_content(a2ui_stream_probe, payload_content)
                             a2ui_stream_probe = _extend_a2ui_stream_probe(a2ui_stream_probe, payload_content)
                         if _should_defer_a2ui_processing_status(

@@ -8,6 +8,9 @@ from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
 
+from jiuwenswarm.gateway.a2a_manager.outbound.discovery import A2AOutboundDiscoveryService
+from jiuwenswarm.gateway.a2a_manager.outbound.errors import A2AOutboundError
+
 from ..core.template.a2a_access_policy_template import A2AAccessPolicyTemplateService
 from ..core.template.a2a_outbound_template import A2AOutboundTemplateService
 from ..core.template.agent_template import AgentTemplateService
@@ -53,7 +56,7 @@ def _http_exc(exc: ValueError) -> HTTPException:
     return HTTPException(status_code=status, detail=detail)
 
 
-def _require_secure_a2a_credential_transport(
+async def _require_secure_a2a_credential_transport(
     request: Request,
     tag: str,
     business: dict[str, Any],
@@ -62,11 +65,20 @@ def _require_secure_a2a_credential_transport(
     # G.CTL.03: if 内布尔条件不超过 3 个，isinstance 判断前置
     if tag != "a2a_outbound" or not isinstance(credential, dict):
         return
-    if credential.get("operation") == "replace" and request.url.scheme.lower() != "https":
+    if credential.get("operation") != "replace":
+        return
+    data = business.get("data") or {}
+    policy = data.get("network_policy") if isinstance(data, dict) else None
+    policy = policy if isinstance(policy, dict) else {}
+    try:
+        await A2AOutboundDiscoveryService().validate_network_target(
+            str(request.url), network_policy=policy,
+        )
+    except A2AOutboundError as exc:
         raise HTTPException(
             status_code=400,
-            detail="A2A credentials may only be synchronized over HTTPS",
-        )
+            detail="A2A credential sync blocked by network access settings",
+        ) from exc
 
 
 def _add_template_crud(
@@ -84,7 +96,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
-        _require_secure_a2a_credential_transport(request, tag, sync.business)
+        await _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             result = await svc_factory().create(
                 sync.business
@@ -102,7 +114,7 @@ def _add_template_crud(
         body: Any,
     ):
         sync = await build_sync_context(body, request.method)
-        _require_secure_a2a_credential_transport(request, tag, sync.business)
+        await _require_secure_a2a_credential_transport(request, tag, sync.business)
         try:
             await svc_factory().update(
                 template_id, sync.business

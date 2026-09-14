@@ -11,7 +11,6 @@ import ipaddress
 import json
 import os
 import re
-import sys
 import threading
 import time
 import weakref
@@ -63,6 +62,36 @@ def extract_enabled_mcp_server_entries(
     return result
 
 
+def _coerce_str_dict(raw: Any) -> dict[str, str] | None:
+    """将 JSON 对象规范为 ``dict[str, str]``；非 dict 返回 ``None``。"""
+    if not isinstance(raw, dict):
+        return None
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _resolve_remote_mcp_auth(
+    entry: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """把配置条目里的鉴权字段映射到 SDK ``McpServerConfig`` 顶层字段。
+
+    openjiuwen 的 SSE / Streamable HTTP 客户端只读 ``auth_headers`` /
+    ``auth_query_params``，不读 ``params.headers``。
+
+    字段别名（后者为兼容名）：
+    - headers ←→ auth_headers（企业 MCP 模板 / config.yaml 多用 ``headers``）
+    - query_params ←→ auth_query_params
+
+    同组两个键都有时，以 SDK 标准名（``auth_*``）为准。
+    """
+    auth_headers = _coerce_str_dict(entry.get("auth_headers"))
+    if not auth_headers:
+        auth_headers = _coerce_str_dict(entry.get("headers"))
+    auth_query = _coerce_str_dict(entry.get("auth_query_params"))
+    if not auth_query:
+        auth_query = _coerce_str_dict(entry.get("query_params"))
+    return auth_headers or {}, auth_query or {}
+
+
 def build_mcp_server_config(
     entry: dict[str, Any],
     *,
@@ -74,12 +103,26 @@ def build_mcp_server_config(
         entry: One config entry under ``mcp.servers``.
         server_id_scope: Optional scope used to derive a stable ``server_id``.
             When omitted, openjiuwen's default random id behavior is preserved.
+
+    Note:
+        Remote MCP 的 Bearer 等鉴权必须进 ``auth_headers``（SDK 建连字段），
+        不能只塞进 ``params.headers``——否则客户端不带凭证，服务端会 401。
     """
     name = str(entry.get("name", "")).strip()
     if not name:
         return None
-    transport = str(entry.get("transport", "")).strip().lower()
-    if transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
+    raw_transport = str(entry.get("transport", "")).strip().lower()
+    # 用户可配 MCP 仅允许远程 transport；stdio 留给 OfficeClaw Relay / browser-move 内部路径。
+    if raw_transport not in {
+        "sse",
+        "http",
+        "streamable-http",
+        "streamable_http",
+    }:
+        return None
+    # 别名归一后再交给 SDK（http → streamable-http），避免 Unsupported MCP client type
+    transport = _normalize_mcp_client_type(raw_transport)
+    if transport not in {"sse", "streamable-http"}:
         return None
 
     payload: dict[str, Any] = {
@@ -90,39 +133,21 @@ def build_mcp_server_config(
     if explicit_server_id:
         payload["server_id"] = explicit_server_id
 
-    if transport == "stdio":
-        command = str(entry.get("command", "")).strip()
-        if not command:
-            return None
-        params: dict[str, Any] = {"command": command}
-        args = entry.get("args")
-        if isinstance(args, list):
-            params["args"] = [str(item) for item in args]
-        cwd = entry.get("cwd")
-        if isinstance(cwd, str) and cwd.strip():
-            params["cwd"] = cwd.strip()
-        env = entry.get("env")
-        if isinstance(env, dict):
-            params["env"] = {str(k): str(v) for k, v in env.items()}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-            params["timeout_s"] = int(timeout_s)
-        payload["server_path"] = f"stdio://{name}"
+    url = str(entry.get("url", "")).strip()
+    if not url:
+        return None
+    payload["server_path"] = url
+    auth_headers, auth_query = _resolve_remote_mcp_auth(entry)
+    if auth_headers:
+        payload["auth_headers"] = auth_headers
+    if auth_query:
+        payload["auth_query_params"] = auth_query
+    params: dict[str, Any] = {}
+    timeout_s = entry.get("timeout_s")
+    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
+        params["timeout_s"] = float(timeout_s)
+    if params:
         payload["params"] = params
-    else:
-        url = str(entry.get("url", "")).strip()
-        if not url:
-            return None
-        payload["server_path"] = url
-        params: dict[str, Any] = {}
-        headers = entry.get("headers")
-        if isinstance(headers, dict):
-            params["headers"] = {str(k): str(v) for k, v in headers.items()}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-            params["timeout_s"] = int(timeout_s)
-        if params:
-            payload["params"] = params
 
     if server_id_scope and "server_id" not in payload:
         payload["server_id"] = _stable_mcp_server_id(server_id_scope, name, payload)
@@ -231,41 +256,28 @@ def _safe_id_part(value: str, *, default: str) -> str:
     return (normalized or default)[:48]
 
 
-def _normalize_stdio_command_kind(command: str) -> str:
-    """将 command 归一化为 'node'、'python'、'npx' 或 'uvx'。
-
-    支持绝对路径如 /usr/local/bin/node、C:\\Program Files\\node.exe 等。
-    npx/uvx为包运行器，参数为包名而非本地脚本路径，安全模型与 node/python 不同。
-    """
-    raw = str(command or "").strip()
-    if not raw:
-        raise ValueError("工具配置缺少 'command' 字段")
-
-    normalized = raw.replace("\\", "/").rsplit("/", 1)[-1].lower()
-    if normalized in ("node", "node.exe"):
-        return "node"
-    if normalized.startswith("python"):
-        return "python"
-    if normalized in ("npx", "npx.exe", "npx.cmd", "npx.bat"):
-        return "npx"
-    if normalized in ("uvx", "uvx.exe"):
-        return "uvx"
-    raise ValueError(
-        f"不支持的 command 类型: '{command}'，目前仅支持 node/python/npx/uvx 及其绝对路径"
-    )
-
-
 def _normalize_mcp_client_type(raw_type: object) -> str:
+    """归一 MCP transport / client_type 到 SDK 注册名。
+
+    Gateway 模板与 config.yaml 允许别名 ``http`` / ``streamable_http``；
+    openjiuwen ResourceMgr 只认 ``streamable-http``（见 StreamableHttpClient.__client_name__）。
+    未归一时会出现：模板保存成功 → chat 注册报 ``Unsupported MCP client type: http``。
+
+    空 / None 返回空串（不再默认 ``stdio``）；显式 ``stdio`` 仍返回 ``stdio``，
+    便于上层配置入口拒绝用户可配本地 stdio。
+    """
     if raw_type is None:
-        return "stdio"
+        return ""
     s = str(raw_type).strip().lower().replace("_", "-")
-    if "streamable" in s:
+    if not s:
+        return ""
+    if s in {"http", "streamable-http", "streamablehttp"} or "streamable" in s:
         return "streamable-http"
     if s == "sse":
         return "sse"
     if s == "stdio":
         return "stdio"
-    return s if s else "stdio"
+    return s
 
 
 def _pick_mcp_url(tool_config: dict) -> str:
@@ -282,151 +294,6 @@ def _optional_auth_dict(tool_config: dict, key: str) -> dict | None:
     if not isinstance(raw, dict):
         raise ValueError(f"字段 {key!r} 必须是 JSON 对象")
     return dict(raw)
-
-
-_DANGEROUS_ARGS_PATTERN = frozenset(
-    {
-        "-e",
-        "--eval",
-        "-c",
-        "--command",
-        "-i",
-    }
-)
-
-
-def _check_dangerous_args(tool_name: str, args: list) -> None:
-    if not isinstance(args, list):
-        return
-    for arg in args:
-        arg_str = str(arg).strip()
-        if arg_str in _DANGEROUS_ARGS_PATTERN:
-            raise ValueError(
-                f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                "禁止通过参数注入执行任意代码。"
-            )
-        for dangerous_prefix in ("-e=", "--eval=", "-c=", "--command="):
-            if arg_str.lower().startswith(dangerous_prefix):
-                raise ValueError(
-                    f"安全拦截阻断：工具 '{tool_name}' 的 args 包含危险标志 '{arg_str}'，"
-                    "禁止通过参数注入执行任意代码。"
-                )
-
-
-def _trusted_cat_cafe_stdio_roots() -> list[Path]:
-    roots: list[Path] = []
-    raw = (os.getenv("CAT_CAFE_MCP_CWD") or "").strip()
-    if raw:
-        try:
-            roots.append(Path(raw).expanduser().resolve())
-        except OSError:
-            pass
-    try:
-        roots.append((Path.home() / ".office-claw").resolve())
-    except OSError:
-        pass
-    try:
-        roots.append(Path(sys.executable).resolve().parent)
-    except OSError:
-        pass
-    lp = (os.getenv("LOCALAPPDATA") or "").strip()
-    if lp:
-        inst = Path(lp) / "Programs" / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    for env_key in ("ProgramFiles", "ProgramFiles(x86)"):
-        base = os.getenv(env_key, "").strip()
-        if not base:
-            continue
-        inst = Path(base) / "OfficeClaw"
-        try:
-            if inst.exists():
-                roots.append(inst.resolve())
-        except OSError:
-            pass
-    seen: set[str] = set()
-    out: list[Path] = []
-    for r in roots:
-        key = os.path.normcase(str(r))
-        if key not in seen:
-            seen.add(key)
-            out.append(r)
-    return out
-
-
-def _path_is_under_trusted_root(path: Path, roots: list[Path]) -> bool:
-    try:
-        rp = path.resolve()
-    except OSError:
-        return False
-    for root in roots:
-        try:
-            rp.relative_to(root)
-            return True
-        except ValueError:
-            continue
-    return False
-
-
-def _validate_cat_cafe_request_scoped_stdio(params: dict[str, Any]) -> None:
-    """限制请求级 stdio：禁止内联代码执行面，脚本路径须在受信根目录下。
-
-    npx/uvx 为包运行器，参数为包名及其参数，不适用本地脚本路径受信根校验
-    （代码来源为包仓库而非本地文件，信任决策在于包名而非路径）。
-    """
-    cmd = str(params.get("command") or "").strip()
-    args = params.get("args") or []
-    if not isinstance(args, list):
-        raise ValueError("stdio MCP 的 args 须为列表")
-
-    kind = _normalize_stdio_command_kind(cmd)
-    flat = [str(a) for a in args]
-    lowered = [a.strip().lower() for a in flat]
-    if any(x == "-c" or x == "--command" for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 python -c / --command")
-    if kind == "node" and any(x in ("-e", "--eval") for x in lowered):
-        raise ValueError("请求级 cat_cafe_mcp 禁止使用 node -e / --eval")
-
-    if kind in ("npx", "uvx"):
-        return
-
-    cwd_path: Path | None = None
-    cwd_raw = params.get("cwd")
-    if isinstance(cwd_raw, str) and cwd_raw.strip():
-        try:
-            cwd_path = Path(cwd_raw).expanduser().resolve()
-        except OSError as exc:
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 无效: {cwd_raw}") from exc
-        if not _path_is_under_trusted_root(cwd_path, _trusted_cat_cafe_stdio_roots()):
-            raise ValueError(f"请求级 cat_cafe_mcp cwd 不在受信根目录下: {cwd_path}")
-
-    roots = _trusted_cat_cafe_stdio_roots()
-    for a in flat:
-        s = a.strip()
-        if not s or s.startswith("-"):
-            continue
-        path_like_suffix = s.lower().endswith((".js", ".mjs", ".cjs", ".py"))
-        if "/" not in s and "\\" not in s and not path_like_suffix:
-            continue
-        candidate = Path(s).expanduser()
-        if not candidate.is_absolute() and cwd_path is None:
-            raise ValueError(
-                "请求级 cat_cafe_mcp 使用相对脚本路径时必须提供位于受信根下的 cwd"
-            )
-        try:
-            if cwd_path is not None and not candidate.is_absolute():
-                resolved = (cwd_path / candidate).resolve()
-            else:
-                resolved = candidate.resolve()
-        except OSError:
-            continue
-        if not _path_is_under_trusted_root(resolved, roots):
-            raise ValueError(
-                f"请求级 cat_cafe_mcp 参数路径不在受信根目录下: {resolved}"
-            )
 
 
 _REQUEST_REMOTE_BLOCKED_HOSTS = frozenset(
@@ -520,22 +387,19 @@ def _validate_request_scoped_remote_mcp(tool_name: str, cfg: dict) -> None:
 
 
 def create_mcp_tool(config_str: str) -> McpServerConfig:
-    """从 JSON 字符串解析并构造 ``McpServerConfig``。
+    """从 JSON 字符串解析并构造远程 ``McpServerConfig``。
+
+    用户可配连接器仅支持远程类型（sse / streamable-http / playwright / openapi）。
+    本地 stdio 不在此入口开放（OfficeClaw Relay 走独立校验路径）。
 
     Args:
-        1.stdio类型:
-        config_str: JSON 格式配置字符串，格式为：
-            {
-                "name": "tool_name",
-                "command": "node" | "python" | "npx" | "uvx",
-                "args": ["xxx.js"] | ["xxx.py"] | ["-y", "@scope/pkg"] | ["pkg"]
-            }
+        config_str: JSON 格式配置字符串，例如：
 
-        2.streamable-http类型:
+        1.streamable-http类型:
             {
+                "name": "my-http-mcp",
                 "type": "streamableHttp",
                 "url": "http://127.0.0.1:3002/mcp",
-                "env": {},
                 "auth_headers": {
                     "Authorization": "Bearer xxx"
                 },
@@ -544,12 +408,11 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
                 }
             }
 
-        3.sse类型:
+        2.sse类型:
             {
                 "name": "my-sse-mcp",
                 "type": "sse",
                 "url": "http://127.0.0.1:3001/sse",
-                "env": {},
                 "auth_headers": {
                     "Authorization": "Bearer xxx"
                 },
@@ -557,7 +420,8 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
                     "token": "yyy"
                 }
             }
-        4.playwright类型:
+
+        3.playwright类型:
             {
                 "name": "my-playwright-mcp",
                 "description": "可选说明",
@@ -566,11 +430,18 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
                 "env": {}
             }
 
+        4.openapi类型:
+            {
+                "name": "my-openapi-mcp",
+                "type": "openapi",
+                "url": "http://127.0.0.1:3004/openapi.json"
+            }
+
     Returns:
         ``McpServerConfig``，由调用方通过 ``Runner.resource_mgr.add_mcp_server(..., tag=...)`` 注册。
 
     Raises:
-        ValueError: JSON 解析失败或配置不合法时
+        ValueError: JSON 解析失败、缺 type、type=stdio，或其它不合法配置时
     """
     try:
         config = json.loads(config_str)
@@ -591,10 +462,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
 
     tool_name = tool_config.get("name")
     server_id = str(tool_config.get("server_id") or tool_name or "").strip()
-    command = tool_config.get("command")
-    args = tool_config.get("args", [])
     env = tool_config.get("env")
-    cwd = tool_config.get("cwd")
     # timeout_s 兼容两种下发形状：顶层（config.yaml 风格）与嵌套 params.timeout_s
     # （relay buildMcpRequestFields 下发的 {"params": {"timeout_s": N}}）。
     timeout_s = tool_config.get("timeout_s")
@@ -620,8 +488,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     if client_type == "sse":
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
-        headers = _optional_auth_dict(tool_config, "auth_headers")
-        query = _optional_auth_dict(tool_config, "auth_query_params")
+        headers, query = _resolve_remote_mcp_auth(tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,
@@ -635,8 +502,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     if client_type == "streamable-http":
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
-        headers = _optional_auth_dict(tool_config, "auth_headers")
-        query = _optional_auth_dict(tool_config, "auth_query_params")
+        headers, query = _resolve_remote_mcp_auth(tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,
@@ -669,23 +535,10 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
             params=params,
         )
 
-    if not isinstance(args, list):
-        raise ValueError(f"工具 '{tool_name}' 的 args 必须是列表类型")
-
-    _check_dangerous_args(tool_name, args)
-
-    normalized_command = str(command or "").strip()
-    _normalize_stdio_command_kind(normalized_command)
-    params["command"] = normalized_command
-    params["args"] = args
-    if isinstance(cwd, str) and cwd.strip():
-        params["cwd"] = cwd.strip()
-    return McpServerConfig(
-        server_id=server_id or tool_name,
-        server_name=tool_name,
-        server_path=f"stdio://{tool_name}",
-        client_type="stdio",
-        params=params,
+    raise ValueError(
+        f"工具 '{tool_name}' 不支持 type={client_type or tool_config.get('type')!r}；"
+        "用户可配 MCP 仅支持 sse / streamable-http / playwright / openapi"
+        "（本地 stdio 已禁用，请使用远程 URL）"
     )
 
 
@@ -900,6 +753,7 @@ async def _run_mcp_worker(
 
     按 ``params["_mcp_client_type"]`` 分派：
     - stdio（默认/缺省）：起 ``stdio_client`` + ``ClientSession`` 进程。
+      仅供 OfficeClaw Relay 身份 pin 后的 worker 使用；用户可配连接器入口已切断。
     - sse / streamable-http：复用 openjiuwen 的 ``SseClient`` / ``StreamableHttpClient``，
       connect 后长连接复用（自带 owner-task/cancel-scope/超时/重连 + auth 注入）。
 
@@ -1763,14 +1617,14 @@ async def list_request_mcp_server_tools(
     """发现单个用户连接器的 tool schema。
 
     config 是 Relay 的启动载荷（无 tool schema），需起一次服务调 list_tools() 收集，
-    对齐 _list_office_claw_mcp_tools_uncached。支持 stdio / sse / streamable-http。
+    对齐 _list_office_claw_mcp_tools_uncached。仅支持远程 sse / streamable-http。
     返回 (tool_defs, connect_params)：connect_params 是经 create_mcp_tool 安全层过滤后的
     连接描述，带 ``_mcp_client_type`` 字段供 ``_run_mcp_worker`` 按 transport 分派，
     交给 RequestScopedOfficeClawMcpTool。任意失败返回 ([], {}) 以免单个坏连接器中断注册。
     """
 
-    # 经 create_mcp_tool 安全层（危险参数过滤/stdio 命令白名单）；sse/http 再过
-    # _validate_request_scoped_remote_mcp（SSRF）。不是 office-claw 身份 pin。
+    # 经 create_mcp_tool 安全层（SSRF 主机屏蔽等），
+    # 而非 office-claw 身份 pin（validate_office_claw_mcp_config，专用于 Relay 自带 office-claw）。
     config_with_name = {**dict(config), "name": server_name}
     try:
         server_cfg = create_mcp_tool(json.dumps(config_with_name))
@@ -1795,73 +1649,13 @@ async def list_request_mcp_server_tools(
             return [], {}
         return await _list_remote_mcp_connector_tools(server_name, server_cfg, client_type)
 
-    if client_type != "stdio":
-        logger.warning(
-            "request-scoped MCP connector '%s' transport '%s' not supported; skipping",
-            server_name,
-            client_type or "unknown",
-        )
-        return [], {}
-
-    # stdio：起一次进程，list_tools 后关闭。
-    from mcp import ClientSession
-    from mcp.client.stdio import stdio_client
-
-    params = dict(getattr(server_cfg, "params", {}) or {})
-    if "command" not in params or "args" not in params:
-        logger.warning(
-            "request-scoped MCP connector '%s' stdio params incomplete: %s",
-            server_name,
-            params,
-        )
-        return [], {}
-
-    # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
-    # （npx 冷启动首次 initialize/list_tools 可远超 300s；下发值过小则仍以 300s 兜底）。
-    _discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
-    _timeout_raw = params.get("timeout_s")
-    if (
-        isinstance(_timeout_raw, (int, float))
-        and not isinstance(_timeout_raw, bool)
-        and _timeout_raw > _discovery_timeout
-    ):
-        _discovery_timeout = float(_timeout_raw)
-
-    stack = AsyncExitStack()
-    try:
-        read, write = await stack.enter_async_context(
-            stdio_client(_stdio_server_parameters(params))
-        )
-        session = await stack.enter_async_context(
-            ClientSession(read, write, sampling_callback=None)
-        )
-        # 防护 connector 启动卡死（用户配置的连接器是任意命令，不像可信的 office-claw）。
-        # 同样用 anyio.fail_after 而非 asyncio.wait_for（破坏 stdio cancel-scope 不变量）。
-        try:
-            with anyio.fail_after(_discovery_timeout):
-                await session.initialize()
-                response = await session.list_tools()
-        except TimeoutError:
-            logger.warning(
-                "request-scoped MCP connector '%s' discovery timed out after "
-                "%.0fs (initialize/list_tools hung)",
-                server_name,
-                _discovery_timeout,
-            )
-            return [], {}
-        tool_defs = _extract_mcp_tool_defs(response)
-        # 标记 transport，供 _run_mcp_worker 分派（默认 None 等价 stdio）。
-        params["_mcp_client_type"] = "stdio"
-        return tool_defs, params
-    except Exception as exc:
-        logger.warning(
-            "request-scoped MCP connector '%s' tool discovery failed: %s",
-            server_name,
-            exc,
-        )
-        return [], {}
-    finally:
-        await stack.aclose()
+    logger.warning(
+        "request-scoped MCP connector '%s' transport '%s' not supported "
+        "(user connectors are remote-only); skipping",
+        server_name,
+        client_type or "unknown",
+    )
+    return [], {}
 
 
 async def _list_remote_mcp_connector_tools(
@@ -2284,15 +2078,10 @@ __all__ = [
     "revoke_live_office_claw_allowlist",
     "unregister_live_office_claw_tool_instance",
     "validate_office_claw_mcp_config",
-    "_check_dangerous_args",
     "_is_blocked_host",
     "_loopback_mcp_allowed",
     "_normalize_mcp_client_type",
-    "_normalize_stdio_command_kind",
     "_optional_auth_dict",
-    "_path_is_under_trusted_root",
     "_pick_mcp_url",
-    "_trusted_cat_cafe_stdio_roots",
-    "_validate_cat_cafe_request_scoped_stdio",
     "_validate_request_scoped_remote_mcp",
 ]

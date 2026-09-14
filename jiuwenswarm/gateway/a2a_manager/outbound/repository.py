@@ -217,21 +217,29 @@ class A2AOutboundRepository:
         *,
         limit: int | None = None,
         offset: int = 0,
+        source_user_id: str | None = None,
     ) -> list[A2AOutboundDispatch]:
         rows = await self._store.list(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
-            filters=self._codec.list_filters(),
+            filters=self._dispatch_filters(source_user_id),
             order_by="created_at DESC",
             limit=None if limit is None else max(0, int(limit)),
             offset=max(0, int(offset)),
         )
         return [self._codec.dispatch_from_record(row) for row in rows]
 
-    async def count_dispatches(self) -> int:
+    def _dispatch_filters(self, source_user_id: str | None) -> dict[str, Any]:
+        # None is reserved for system-wide maintenance and personal history.
+        filters = dict(self._codec.list_filters() or {})
+        if source_user_id is not None:
+            filters["source_user_id"] = source_user_id
+        return filters
+
+    async def count_dispatches(self, *, source_user_id: str | None = None) -> int:
         """Return the total matching record count, skipping row decoding."""
         rows = await self._store.list(
             A2A_OUTBOUND_DISPATCH_STORE_NAME,
-            filters=self._codec.list_filters(),
+            filters=self._dispatch_filters(source_user_id),
         )
         return len(rows)
 

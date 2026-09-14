@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useTranslation } from 'react-i18next';
 import { Check, Copy, Power, RefreshCw, RotateCw, X } from 'lucide-react';
 import { isEnterprise } from '../../edition';
+import { RUNTIME_SCOPE_CHANGED_EVENT } from '../../services/runtimeScope';
 import type { WebError } from '../../types/websocket';
 import { A2AOutboundPanel } from './A2AOutboundPanel';
 import { A2AIngressSecurityFields } from './A2AIngressSecurityFields';
@@ -70,7 +71,27 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
   const savedCredentialRef = useRef('');
   const historyResponseGenerationRef = useRef(0);
   const outboundHistoryResponseGenerationRef = useRef(0);
+  const awaitingHistoryReconnectRef = useRef(false);
   const copyFeedbackTimerRef = useRef<number | null>(null);
+
+  useEffect(() => {
+    if (isConnected) awaitingHistoryReconnectRef.current = false;
+  }, [isConnected]);
+
+  useEffect(() => {
+    if (!enterpriseMode) return;
+    const clearUserHistory = () => {
+      awaitingHistoryReconnectRef.current = true;
+      ++outboundHistoryResponseGenerationRef.current;
+      setOutboundHistory([]);
+      setOutboundHistoryError(null);
+      setOutboundHistoryLoading(false);
+      setCopiedHistoryCell(null);
+      setCopyError(null);
+    };
+    window.addEventListener(RUNTIME_SCOPE_CHANGED_EVENT, clearUserHistory);
+    return () => window.removeEventListener(RUNTIME_SCOPE_CHANGED_EVENT, clearUserHistory);
+  }, [enterpriseMode]);
 
   const acceptSnapshot = useCallback(
     (payload: unknown, credential?: string) => {
@@ -140,7 +161,7 @@ export function A2AIngressPanel({ isConnected, request }: A2AIngressPanelProps) 
 
   const refreshOutboundHistory = useCallback(
     async (showLoading = true) => {
-      if (!isConnected) return;
+      if (!isConnected || awaitingHistoryReconnectRef.current) return;
       const responseGeneration = ++outboundHistoryResponseGenerationRef.current;
       if (showLoading) setOutboundHistoryLoading(true);
       try {

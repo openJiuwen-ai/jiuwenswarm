@@ -8,6 +8,7 @@ from __future__ import annotations
 from openjiuwen_runtime.foundation.db.handler import DBHandler
 from openjiuwen_runtime.foundation.db.table_def import TableDefinition
 
+from .a2a_migration import ensure_dispatch_user_column
 from .a2a_models import (
     A2A_OUTBOUND_DISPATCH_TABLE_DEF,
     A2A_OUTBOUND_RUNTIME_STATE_TABLE_DEF,
@@ -16,27 +17,28 @@ from .a2a_models import (
 from .application_config_models import (
     LOG_MASKING_RULE_TABLE_DEF,
     LOGGING_CONFIG_TABLE_DEF,
-    TASK_MEMORY_CONFIG_TABLE_DEF,
     MEMORY_CONFIG_TABLE_DEF,
+    TASK_MEMORY_CONFIG_TABLE_DEF,
 )
 from .cron_job_models import CRON_JOB_TABLE_DEF
-from .session_map_models import SESSION_MAP_TABLE_DEF
+from .instance_resource_models import INSTANCE_AGENT_RESOURCE_TABLE_DEF
 from .key_models import (
     GATEWAY_ENC_KEYPAIR_TABLE_DEF,
     GATEWAY_SIGN_KEYPAIR_TABLE_DEF,
     MANAGER_SIGN_PUBKEY_TABLE_DEF,
 )
-from .instance_resource_models import INSTANCE_AGENT_RESOURCE_TABLE_DEF
+from .link_binding_state_models import LINK_BINDING_STATE_TABLE_DEF
+from .session_map_models import SESSION_MAP_TABLE_DEF
 from .template_models import (
     A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF,
     A2A_OUTBOUND_TEMPLATE_TABLE_DEF,
     AGENT_TEMPLATE_TABLE_DEF,
     EMBEDDING_TEMPLATE_TABLE_DEF,
     EXTENSION_CONFIG_TEMPLATE_TABLE_DEF,
+    MCP_TEMPLATE_TABLE_DEF,
     MODEL_TEMPLATE_TABLE_DEF,
     PERMISSIONS_TEMPLATE_TABLE_DEF,
     SKILL_PREBUILT_TEMPLATE_TABLE_DEF,
-    MCP_TEMPLATE_TABLE_DEF,
 )
 
 ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
@@ -62,10 +64,13 @@ ALL_TABLE_DEFINITIONS: tuple[TableDefinition, ...] = (
     MEMORY_CONFIG_TABLE_DEF,
     CRON_JOB_TABLE_DEF,
     SESSION_MAP_TABLE_DEF,
+    LINK_BINDING_STATE_TABLE_DEF,
 )
 
 
 async def init_all_tables(handler: DBHandler) -> None:
     """对已连接的 ``handler`` 依次 ``init_table``，幂等（表已存在则跳过创建逻辑）。"""
     for table_def in ALL_TABLE_DEFINITIONS:
+        if table_def is A2A_OUTBOUND_DISPATCH_TABLE_DEF:
+            await ensure_dispatch_user_column(handler.get_engine())
         await handler.init_table(table_def)

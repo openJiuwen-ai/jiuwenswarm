@@ -99,13 +99,14 @@ class A2AManager:
             outbound_settings_repository or A2AOutboundSettingsRepository()
         )
         outbound_settings = self._outbound_settings_repository.load()
-        allow_loopback_http = bool(outbound_settings.get("allow_loopback_http", False))
+        allow_loopback = bool(outbound_settings.get("allow_loopback", False))
+        allow_http = bool(outbound_settings.get("allow_http", False))
         self._outbound = outbound_registry
         if self._outbound is None and outbound_repository is not None:
             self._outbound = A2AOutboundRegistry(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback_http=allow_loopback_http
+                    allow_loopback=allow_loopback, allow_http=allow_http
                 ),
             )
         self._outbound_dispatcher = outbound_dispatcher
@@ -113,10 +114,10 @@ class A2AManager:
             self._outbound_dispatcher = A2AOutboundDispatcher(
                 outbound_repository,
                 discovery_service=A2AOutboundDiscoveryService(
-                    allow_loopback_http=allow_loopback_http
+                    allow_loopback=allow_loopback, allow_http=allow_http
                 ),
             )
-        self._apply_outbound_settings(allow_loopback_http)
+        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
 
     @property
     def channel(self) -> _ManagedA2AChannel | None:
@@ -145,19 +146,19 @@ class A2AManager:
         return dict(self._outbound_settings_repository.load())
 
     async def outbound_update_settings(
-        self, *, allow_loopback_http: bool
+        self, *, allow_loopback: bool, allow_http: bool
     ) -> dict[str, bool]:
-        if not isinstance(allow_loopback_http, bool):
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
-        self._outbound_settings_repository.save(allow_loopback_http=allow_loopback_http)
-        self._apply_outbound_settings(allow_loopback_http)
-        return {"allow_loopback_http": allow_loopback_http}
+        self._outbound_settings_repository.save(allow_loopback=allow_loopback, allow_http=allow_http)
+        self._apply_outbound_settings(allow_loopback=allow_loopback, allow_http=allow_http)
+        return {"allow_loopback": allow_loopback, "allow_http": allow_http}
 
-    def _apply_outbound_settings(self, allow_loopback_http: bool) -> None:
+    def _apply_outbound_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
         for target in (self._outbound, self._outbound_dispatcher):
-            setter = getattr(target, "set_allow_loopback_http", None)
+            setter = getattr(target, "set_network_settings", None)
             if callable(setter):
-                setter(allow_loopback_http)
+                setter(allow_loopback=allow_loopback, allow_http=allow_http)
 
     async def outbound_register(self, params: dict[str, Any]) -> dict[str, Any]:
         return await self._require_outbound().register(params)
@@ -221,7 +222,9 @@ class A2AManager:
         *,
         source_session_id: str | None = None,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         if is_enterprise() and not str(source_resource_id or "").strip():
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         if source_resource_id is not None:
@@ -229,11 +232,25 @@ class A2AManager:
                 dispatch_id,
                 source_session_id=str(source_session_id or ""),
                 source_resource_id=source_resource_id,
+                source_user_id=source_user_id,
             )
         return await self._require_outbound().get_dispatch(dispatch_id)
 
-    async def outbound_dispatch_list(self, *, limit: int = 200) -> dict[str, Any]:
-        return await self._require_outbound().list_dispatches(limit=limit)
+    @staticmethod
+    def _history_user_id(user_id: str | None) -> str | None:
+        if not is_enterprise():
+            return None
+        normalized = str(user_id or "").strip()
+        if not normalized:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        return normalized
+
+    async def outbound_dispatch_list(
+        self, *, limit: int = 200, source_user_id: str | None = None
+    ) -> dict[str, Any]:
+        return await self._require_outbound().list_dispatches(
+            limit=limit, source_user_id=self._history_user_id(source_user_id)
+        )
 
     async def outbound_find_agents(
         self,
@@ -259,8 +276,10 @@ class A2AManager:
         mode: str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
         reason: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         await self._require_a2a_agent_authorized(source_resource_id, agent_id)
         return await self._require_outbound_dispatcher().dispatch(
             agent_id=agent_id,
@@ -268,6 +287,7 @@ class A2AManager:
             mode=mode,
             source_session_id=source_session_id,
             source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
             reason=reason,
         )
 
@@ -277,13 +297,16 @@ class A2AManager:
         dispatch_id: str,
         source_session_id: str,
         source_resource_id: str | None = None,
+        source_user_id: str | None = None,
     ) -> dict[str, Any]:
+        source_user_id = self._history_user_id(source_user_id)
         if is_enterprise() and not str(source_resource_id or "").strip():
             raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
         return await self._require_outbound_dispatcher().query_dispatch(
             dispatch_id,
             source_session_id=source_session_id,
             source_resource_id=source_resource_id,
+            source_user_id=source_user_id,
         )
 
     async def _resolve_effective_a2a_agent_ids(

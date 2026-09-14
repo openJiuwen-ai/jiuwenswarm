@@ -151,15 +151,20 @@ def _parse_skill_md(path: Path) -> dict[str, Any] | None:
 def _get_all_skills() -> tuple[set[str], list[dict[str, Any]]]:
     """Discover all available skills (local + builtin) by scanning disk."""
     try:
-        from jiuwenswarm.common.utils import get_agent_skills_dir, get_builtin_skills_dir
+        from jiuwenswarm.common.utils import (
+            get_agent_skills_dir,
+            get_builtin_skills_dir,
+        )
+        from jiuwenswarm.edition import is_enterprise
+
         skills_dir = get_agent_skills_dir()
-        builtin_dir = get_builtin_skills_dir()
         skills: list[dict[str, Any]] = []
         installed_names: set[str] = set()
         seen: set[str] = set()
-        for child_dir, source, is_installed in [
-            (skills_dir, "local", True), (builtin_dir, "builtin", False),
-        ]:
+        discovery_dirs = [(skills_dir, "local", True)]
+        if not is_enterprise():
+            discovery_dirs.append((get_builtin_skills_dir(), "builtin", False))
+        for child_dir, source, is_installed in discovery_dirs:
             if not child_dir or not child_dir.exists():
                 continue
             for child in child_dir.iterdir():

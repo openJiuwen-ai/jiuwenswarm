@@ -102,6 +102,7 @@ def test_skill_authorization_rail_uses_agent_template_without_request_context(
 ) -> None:
     from jiuwenswarm.server.runtime.agent_adapter import interface_deep
 
+    monkeypatch.setenv("SKILL_AUTHORIZATION_ENABLED", "false")
     monkeypatch.setattr(
         interface_deep,
         "get_effective_permissions_config",

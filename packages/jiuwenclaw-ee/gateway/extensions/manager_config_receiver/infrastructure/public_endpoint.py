@@ -3,6 +3,8 @@
 
 from __future__ import annotations
 
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+
 from .config import Settings, get_settings
 
 
@@ -15,4 +17,5 @@ def resolve_public_endpoint(cfg: Settings | None = None) -> str:
     cfg = cfg or get_settings()
     port = int(cfg.gateway_config_http_port or 8775)
     host = (cfg.gateway_config_public_host or "").strip() or "127.0.0.1"
-    return f"{cfg.gateway_config_public_scheme}://{host}:{port}"
+    scheme = "https" if LinkMTLSConfig.from_env().enforced else cfg.gateway_config_public_scheme
+    return f"{scheme}://{host}:{port}"

@@ -3345,9 +3345,9 @@ async def reload_logging_levels() -> None:
         update_log_levels()
         return
     try:
-        from jiuwenswarm.server.runtime.enterprise_config import gateway_db
+        from jiuwenswarm.server.runtime.enterprise_config import db_queries
 
-        rows = await gateway_db.list_records(_LOGGING_CONFIG_TABLE)
+        rows = await db_queries.list_records(_LOGGING_CONFIG_TABLE)
         row = rows[0] if rows else None
         apply_logging_config_payload(
             _logging_config_row_to_dict(row) if row is not None else None,

@@ -83,6 +83,8 @@ cat <<EOF
 AGENT_RUNTIME_IMAGE="swr.cn-north-4.myhuaweicloud.com/openjiuwen/jiuwenclaw-agent-runtime-${ARCH}:${VERSION}"
 
 MODE=product
+# 内部链路证书认证默认关闭，按需显式改为 enforce。
+JIUWENSWARM_LINK_MTLS_MODE=off
 #CLAW_CODE_PATH=""
 #RUNTIME_CODE_PATH=""
 #CORE_CODE_PATH=""
@@ -117,6 +119,9 @@ if [[ "${TYPE}" == "dev" ]]; then
 cat <<EOF
 # MANAGER_SERVER_NODE_PORT=30086
 # MANAGER_WEB_NODE_PORT=30273
+# 首次创建 Identity 账号时的密码；不配置则使用默认值 admin / user1
+# IDENTITY_ADMIN_PASSWORD=""
+# IDENTITY_USER1_PASSWORD=""
 EOF
 fi
 
@@ -142,8 +147,19 @@ API_BASE=""
 API_KEY=""
 
 #LOG_MASK_ENABLED=false
-APPLY_PATCH=true
 EOF
+
+if [[ "${TYPE}" == "dev" ]]; then
+cat <<EOF
+APPLY_PATCH=true
+LOGIN_AUTH_SIMULATE=true
+EOF
+else
+cat <<EOF
+APPLY_PATCH=false
+LOGIN_AUTH_SIMULATE=false
+EOF
+fi
 } > "${ENV_FILE}"
 
 echo "Generated: ${ENV_FILE} (ARCH=${ARCH}, VERSION=${VERSION}, TYPE=${TYPE})"

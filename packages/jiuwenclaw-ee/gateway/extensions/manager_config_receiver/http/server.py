@@ -7,6 +7,8 @@ import logging
 
 from uvicorn import Config, Server
 
+from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+
 from ..infrastructure.config import get_settings
 from .app import create_app
 
@@ -29,6 +31,12 @@ class ConfigReceiverServer:
             return
         # 嵌套在 Gateway 进程内：关掉 uvicorn 默认 log_config / access_log，
         # 避免 AccessFormatter 与主进程 logging 冲突（expected 5 args, got 0）。
+        link_mtls = LinkMTLSConfig.from_env()
+        if link_mtls.mode.value == "observe":
+            logger.info(
+                "[ManagerConfigReceiver] link mTLS observe preflight complete; "
+                "data path remains HTTP"
+            )
         config = Config(
             self._app,
             host=self._host,
@@ -39,6 +47,7 @@ class ConfigReceiverServer:
             access_log=False,
             # Proxy headers are handled by create_app() with the configured trust list.
             proxy_headers=False,
+            **link_mtls.uvicorn_ssl_kwargs(),
         )
         self._server = Server(config)
 

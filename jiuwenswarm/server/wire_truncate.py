@@ -55,6 +55,9 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "chat.tool_result",
         "chat.usage_summary",
         "chat.file",
+        "chat.ask_user_question",
+        "chat.ask_user_question_expired",
+        "chat.ask_user_answered",
         "team.message",
         "context.compact_boundary",
         "context.compact_summary",
@@ -80,6 +83,17 @@ _HISTORY_COLLAPSE_KEEP_KEYS = {
     "is_goal_objective_message",
     "is_goal_completed_message",
     "evidence",
+    # HITL cards: keep structured extras if the record has to be collapsed.
+    "questions",
+    "source",
+    "agent_scope_id",
+    "approval_schema",
+    "evolution_meta",
+    "plan_approval_kind",
+    "plan_content",
+    "plan_language",
+    "skill_approval_card",
+    "x-skill-approval-card",
 }
 
 _WORKFLOW_SNAPSHOT_KEEP_KEYS = {

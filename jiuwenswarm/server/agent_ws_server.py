@@ -22,6 +22,7 @@ from openjiuwen.core.common.logging import server_logger
 from websockets.exceptions import ConnectionClosed as WebSocketConnectionClosed
 
 from jiuwenswarm.agents.harness.common.auto_harness import AutoHarnessService, reset_harness_packages_state
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.gateway_push.wire import build_server_push_wire
 from jiuwenswarm.server.ws_send import send_wire_payload
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
@@ -442,7 +443,7 @@ class AgentWebSocketServer:
 
     # ---------- 生命周期 ----------
 
-    async def start(self) -> None:
+    async def start(self, *, listen: bool = True) -> None:
         """启动 WebSocket 服务端，开始监听连接。优先使用 legacy.server.serve 以与 Gateway 的 legacy client 握手兼容.
 
         注: persistent checkpointer 的初始化历史在 ``legacy_serve`` 之前同步 await,
@@ -459,31 +460,34 @@ class AgentWebSocketServer:
         # Reset harness package state to native on service startup
         reset_harness_packages_state()
 
-        try:
-            from websockets.legacy.server import serve as legacy_serve
-            self._server = await legacy_serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+        if listen:
+            try:
+                from websockets.legacy.server import serve as legacy_serve
+                self._server = await legacy_serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            except ImportError:
+                import websockets
+                self._server = await websockets.serve(
+                    self._connection_handler,
+                    self._host,
+                    self._port,
+                    process_request=self._process_request,
+                    ping_interval=self._ping_interval,
+                    ping_timeout=self._ping_timeout,
+                    max_size=AGENT_WS_MAX_MESSAGE_BYTES,
+                )
+            logger.info(
+                "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
             )
-        except ImportError:
-            import websockets
-            self._server = await websockets.serve(
-                self._connection_handler,
-                self._host,
-                self._port,
-                process_request=self._process_request,
-                ping_interval=self._ping_interval,
-                ping_timeout=self._ping_timeout,
-                max_size=AGENT_WS_MAX_MESSAGE_BYTES,
-            )
-        logger.info(
-            "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
-        )
+        else:
+            logger.info("[AgentServer] handler initialized without an unauthenticated WS listener")
         # 启动端到端预热：interface_deep import → checkpointer → 临时 DeepAgent → query。
         # 拆成两个 task：
         #   - _startup_warmup_task 承载阶段1/2（import+checkpointer），快速有界，
@@ -606,6 +610,15 @@ class AgentWebSocketServer:
           产品起不来, 也无从修复)。
         """
         try:
+            # 企业级:沙箱由 agentserver Pod 内的 jiuwenbox 容器提供
+            # (K8s 启动,external),不走 internal 子进程拉起;config.yaml 为
+            # 部署工具下发的只读挂载,也不做回写
+            if is_enterprise():
+                logger.info(
+                    "[sandbox_lifecycle] enterprise: sandbox 由 jiuwenbox "
+                    "sidecar 提供, skipping internal jiuwenbox auto-start"
+                )
+                return
             # 非 Linux/Windows 平台直接跳过 auto-start: jiuwenbox 依赖平台专属
             # 内核能力 (Linux: bwrap/Landlock/命名空间; Windows: win_setup 用户
             # 创建 + WFP + ACL), 其它平台 (macOS 等) 起不来; 即便 spawn 成功后续
@@ -1517,4 +1530,3 @@ class AgentWebSocketServer:
                 "[AgentServer] Built model cache with %d models, default=%s",
                 len(self._model_cache), first_name
             )
-

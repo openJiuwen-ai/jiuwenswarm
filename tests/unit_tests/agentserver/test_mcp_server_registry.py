@@ -47,8 +47,12 @@ async def _wait_until(predicate, *, turns: int = 20) -> None:
     raise AssertionError("timed out waiting for worker task to start")
 
 
-def _stdio_cfg(name: str = "chrome-devtools") -> dict:
-    return {"name": name, "command": "node", "args": ["mcp.js"]}
+def _user_cfg(name: str = "chrome-devtools") -> dict:
+    return {
+        "name": name,
+        "type": "streamable-http",
+        "url": "https://example.com/mcp",
+    }
 
 
 def _remote_cfg(name: str = "qichacha") -> dict:
@@ -63,7 +67,7 @@ def _remote_cfg(name: str = "qichacha") -> dict:
 async def _ok_discover(name, config):
     return (
         [{"name": f"{name}_tool", "description": "d", "input_params": {}}],
-        {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        {"_mcp_client_type": "streamable-http", "url": "https://example.com/mcp"},
     )
 
 
@@ -85,7 +89,7 @@ async def test_add_writes_cache(registry: McpServerRegistry, monkeypatch) -> Non
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    results = await registry.add_servers([_stdio_cfg()])
+    results = await registry.add_servers([_user_cfg()])
     assert results == [
         {
             "name": "chrome-devtools",
@@ -108,12 +112,40 @@ async def test_add_duplicate_and_invalid(registry: McpServerRegistry, monkeypatc
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
-    again = await registry.add_servers([_stdio_cfg(), {"name": "bad", "command": "node", "args": ["-e", "1"]}])
+    await registry.add_servers([_user_cfg()])
+    again = await registry.add_servers([_user_cfg(), {"name": "bad", "command": "node", "args": ["-e", "1"]}])
     assert again[0]["ok"] is False
     assert again[0]["error"] == "already exists"
     assert again[1]["ok"] is False
-    assert "安全拦截" in again[1]["error"] or "dangerous" in again[1]["error"].lower() or "-e" in again[1]["error"]
+    assert (
+        "仅支持" in again[1]["error"]
+        or "stdio" in again[1]["error"].lower()
+        or "已禁用" in again[1]["error"]
+        or "安全拦截" in again[1]["error"]
+        or "dangerous" in again[1]["error"].lower()
+        or "-e" in again[1]["error"]
+    )
+
+
+@pytest.mark.asyncio
+async def test_add_rejects_stdio_user_connector(registry: McpServerRegistry, monkeypatch) -> None:
+    called: list[str] = []
+
+    async def discover(name, config):
+        called.append(name)
+        return [], {}
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    results = await registry.add_servers(
+        [{"name": "local", "command": "node", "args": ["mcp.js"]}]
+    )
+    assert results[0]["ok"] is False
+    assert "仅支持" in results[0]["error"] or "stdio" in results[0]["error"].lower() or "已禁用" in results[0]["error"]
+    assert called == []
+    assert await registry.list_servers() == []
 
 
 @pytest.mark.asyncio
@@ -146,7 +178,7 @@ async def test_add_scan_failure_does_not_write(registry: McpServerRegistry, monk
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         fail_discover,
     )
-    results = await registry.add_servers([_stdio_cfg()])
+    results = await registry.add_servers([_user_cfg()])
     assert results[0]["ok"] is False
     assert await registry.list_servers() == []
 
@@ -157,20 +189,20 @@ async def test_remove_and_update(registry: McpServerRegistry, monkeypatch) -> No
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     removed = await registry.remove_servers(["chrome-devtools", "missing"])
     assert removed[0]["ok"] is True
     assert removed[1]["error"] == "not found"
 
-    await registry.add_servers([_stdio_cfg()])
-    same = await registry.update_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
+    same = await registry.update_servers([_user_cfg()])
     assert same[0]["ok"] is True
     assert same[0].get("skipped") is True
 
     async def new_discover(name, config):
         return (
             [{"name": "new_tool", "description": "", "input_params": {}}],
-            {"_mcp_client_type": "stdio", "command": "node", "args": ["other.js"]},
+            {"_mcp_client_type": "streamable-http", "url": "https://example.com/other"},
         )
 
     monkeypatch.setattr(
@@ -178,7 +210,13 @@ async def test_remove_and_update(registry: McpServerRegistry, monkeypatch) -> No
         new_discover,
     )
     changed = await registry.update_servers(
-        [{"name": "chrome-devtools", "command": "node", "args": ["other.js"]}]
+        [
+            {
+                "name": "chrome-devtools",
+                "type": "streamable-http",
+                "url": "https://example.com/other",
+            }
+        ]
     )
     assert changed[0]["ok"] is True
     got = await registry.get_server("chrome-devtools")
@@ -193,7 +231,7 @@ async def test_update_scan_fail_keeps_old(registry: McpServerRegistry, monkeypat
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
 
     async def fail_discover(name, config):
         return [], {}
@@ -203,7 +241,13 @@ async def test_update_scan_fail_keeps_old(registry: McpServerRegistry, monkeypat
         fail_discover,
     )
     updated = await registry.update_servers(
-        [{"name": "chrome-devtools", "command": "node", "args": ["other.js"]}]
+        [
+            {
+                "name": "chrome-devtools",
+                "type": "streamable-http",
+                "url": "https://example.com/other",
+            }
+        ]
     )
     assert updated[0]["ok"] is False
     got = await registry.get_server("chrome-devtools")
@@ -213,7 +257,7 @@ async def test_update_scan_fail_keeps_old(registry: McpServerRegistry, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_scanner_skips_stdio_and_updates_remote(
+async def test_scanner_skips_non_http_and_updates_remote(
     registry: McpServerRegistry, monkeypatch
 ) -> None:
     calls: list[str] = []
@@ -227,7 +271,7 @@ async def test_scanner_skips_stdio_and_updates_remote(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         discover,
     )
-    await registry.add_servers([_stdio_cfg(), _remote_cfg()])
+    await registry.add_servers([_playwright_cfg(), _remote_cfg()])
     calls.clear()
     await registry.scan_once()
     assert calls == ["qichacha"]
@@ -238,9 +282,9 @@ async def test_scanner_skips_stdio_and_updates_remote(
     second = await registry.get_server("qichacha")
     assert second is not None
     assert second["version"] == version_after_add + 1
-    stdio = await registry.get_server("chrome-devtools")
-    assert stdio is not None
-    assert stdio["version"] == 1
+    skipped = await registry.get_server("pw")
+    assert skipped is not None
+    assert skipped["version"] == 1
 
 
 @pytest.mark.asyncio
@@ -313,7 +357,7 @@ async def test_snapshot_unknown_and_empty(registry: McpServerRegistry, monkeypat
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     snap = await registry.snapshot_for_chat(["chrome-devtools"])
     assert snap[0][0] == "chrome-devtools"
     with pytest.raises(UnknownMcpServerError):
@@ -349,7 +393,7 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
 
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     adapter._instance = SimpleNamespace(ability_manager=SimpleNamespace())
@@ -482,7 +526,7 @@ async def test_chat_mcp_server_list_keeps_leftover_pptx(monkeypatch) -> None:
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         registry_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     _stub_office_claw_system_tools(monkeypatch)
     monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", leftover_discover)
     resource_manager = _ResourceManager()
@@ -535,7 +579,7 @@ async def test_chat_mcp_server_list_wins_name_collision(monkeypatch) -> None:
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     _stub_office_claw_system_tools(monkeypatch)
     resource_manager = _ResourceManager()
     monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
@@ -617,7 +661,7 @@ async def test_invoke_after_remove_does_not_rebuild_worker(monkeypatch) -> None:
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     card = ToolCard(
         id=f"{MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX}abc.chrome-devtools.t",
         name="t",
@@ -656,7 +700,7 @@ async def test_invoke_disabled_server_refuses(monkeypatch) -> None:
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         _ok_discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     registry._registry["chrome-devtools"].enabled = False
     with pytest.raises(DisabledMcpServerError):
         await registry.acquire_worker("chrome-devtools")
@@ -670,17 +714,17 @@ async def test_invoke_after_update_uses_new_connect_params(monkeypatch) -> None:
     registry = reset_mcp_server_registry_for_tests()
 
     async def discover(name, config):
-        args = list(config.get("args") or [])
+        url = str(config.get("url") or "")
         return (
             [{"name": "t", "description": "", "input_params": {}}],
-            {"_mcp_client_type": "stdio", "command": "node", "args": args},
+            {"_mcp_client_type": "streamable-http", "url": url},
         )
 
     monkeypatch.setattr(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     card = ToolCard(
         id=f"{MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX}abc.chrome-devtools.t",
         name="t",
@@ -689,25 +733,33 @@ async def test_invoke_after_update_uses_new_connect_params(monkeypatch) -> None:
     )
     tool = RequestScopedOfficeClawMcpTool(
         card,
-        {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        {"_mcp_client_type": "streamable-http", "url": "https://example.com/mcp"},
         "req",
         "chrome-devtools",
         use_global_pool=True,
     )
-    seen_args: list[list] = []
+    seen_urls: list[str] = []
 
     async def fake_run(params, worker):
-        seen_args.append(list(params.get("args") or []))
+        seen_urls.append(str(params.get("url") or ""))
         await worker.queue.get()
 
     with patch("jiuwenswarm.common.mcp_server_registry._run_mcp_worker", fake_run):
         await tool._acquire_mcp_session()
-        await _wait_until(lambda: seen_args == [["mcp.js"]])
+        await _wait_until(lambda: seen_urls == ["https://example.com/mcp"])
         await registry.update_servers(
-            [{"name": "chrome-devtools", "command": "node", "args": ["other.js"]}]
+            [
+                {
+                    "name": "chrome-devtools",
+                    "type": "streamable-http",
+                    "url": "https://example.com/other",
+                }
+            ]
         )
         await tool._acquire_mcp_session()
-        await _wait_until(lambda: seen_args == [["mcp.js"], ["other.js"]])
+        await _wait_until(
+            lambda: seen_urls == ["https://example.com/mcp", "https://example.com/other"]
+        )
         await registry.worker_pool.close_all()
 
 
@@ -796,7 +848,7 @@ async def test_scanner_skips_playwright_and_scans_sse(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         discover,
     )
-    await registry.add_servers([_playwright_cfg(), _sse_cfg(), _stdio_cfg()])
+    await registry.add_servers([_playwright_cfg(), _sse_cfg()])
     calls.clear()
     await registry.scan_once()
     assert calls == ["remote-sse"]
@@ -840,8 +892,8 @@ async def test_crud_handlers_batch_partial_failure(monkeypatch) -> None:
         _handler_ctx(
             {
                 "servers": [
-                    _stdio_cfg(),
-                    _stdio_cfg(),
+                    _user_cfg(),
+                    _user_cfg(),
                     {"name": "bad", "command": "node", "args": ["-e", "1"]},
                 ]
             },
@@ -892,7 +944,7 @@ async def test_chat_registry_path_skips_discovery_and_keeps_global_worker(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         discover,
     )
-    await registry.add_servers([_stdio_cfg()])
+    await registry.add_servers([_user_cfg()])
     assert discover_calls == ["chrome-devtools"]
     discover_calls.clear()
 

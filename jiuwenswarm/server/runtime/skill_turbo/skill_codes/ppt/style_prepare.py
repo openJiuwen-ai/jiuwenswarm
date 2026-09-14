@@ -178,20 +178,13 @@ class StylePrepareNode(PlanNode):
             logger.warning("[P7] 模板包目录下未找到 md 文件: %s", pack_dir)
             return ""
         md_path = md_files[0]
-        if not self.has_tool("read_file"):
-            logger.warning("[P7] read_file 工具不可用，无法读取模板 md")
-            return ""
-        try:
-            result = await self.call_tool("read_file", file_path=str(md_path))
-            content = PptCommon.parse_tool_file_content(result)
-            if content:
-                logger.info("[P7] 读取模板 md 成功: %s", md_path)
-                return content
-            logger.warning("[P7] 模板 md 文件为空: %s", md_path)
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P7] 读取模板 md 失败 %s: %s", md_path, e)
+        content = await PptCommon.read_file_with_retry(
+            self, str(md_path), log_prefix="[P7]"
+        )
+        if content:
+            logger.info("[P7] 读取模板 md 成功: %s", md_path)
+            return content
+        logger.warning("[P7] 模板 md 文件为空: %s", md_path)
         return ""
 
     async def _load_preset_style(self, style_id: str, pptx_root: str = "") -> str:
@@ -206,17 +199,13 @@ class StylePrepareNode(PlanNode):
         for preset_path in candidates:
             if not preset_path.is_file():
                 continue
-            try:
-                result = await self.call_tool("read_file", file_path=str(preset_path))
-                content = PptCommon.parse_tool_file_content(result)
-                if content:
-                    logger.info("[P7] 加载预设风格成功：%s", preset_path)
-                    return content
-                logger.warning("[P7] 预设风格文件为空：%s", preset_path)
-            except Exception as e:
-                if isinstance(e, AbortError):
-                    raise
-                logger.warning("[P7] 读取预设风格失败 %s: %s", preset_path, e)
+            content = await PptCommon.read_file_with_retry(
+                self, str(preset_path), log_prefix="[P7]"
+            )
+            if content:
+                logger.info("[P7] 加载预设风格成功：%s", preset_path)
+                return content
+            logger.warning("[P7] 预设风格文件为空：%s", preset_path)
         return ""
 
     async def _generate_custom_style(self, request: CustomStyleRequest) -> str:

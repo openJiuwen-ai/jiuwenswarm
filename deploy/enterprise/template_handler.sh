@@ -61,9 +61,11 @@ render_config_template(){
 }
 
 # Append a single hostPath code mount (volume + volumeMount) to the first
-# container of every Deployment in <file>. 
+# container of every Deployment in <file>.
+# 第 5 个参数可选：hostPath.type，默认 Directory；单文件用 File。
 add_code_mount() {
     local file="$1" name="$2" host_path="$3" mount_path="$4"
+    local host_type="${5:-Directory}"
     yq eval '
         select(.kind == "Deployment").spec.template.spec.containers[0].volumeMounts
             |= ((. // []) + [{
@@ -77,7 +79,7 @@ add_code_mount() {
                 "name": "'"${name}"'",
                 "hostPath": {
                     "path": "'"${host_path}"'",
-                    "type": "Directory"
+                    "type": "'"${host_type}"'"
                 }
             }])
     ' -i "${file}"
@@ -95,6 +97,15 @@ mount_runtime_code() {
     add_code_mount "$1" "runtime-code" \
         "${DEPLOY_VARS["RUNTIME_CODE_PATH"]}" \
         "${DEPLOY_VARS["RUNTIME_POD_CODE_PATH"]}"
+}
+
+# manager-web：把仓库 nginx 模板盖到镜像内 entrypoint 读取的路径。
+mount_manager_web_nginx_template() {
+    [ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ] && return
+    add_code_mount "$1" "manager-web-nginx-template" \
+        "${DEPLOY_VARS["RUNTIME_CODE_PATH"]}/docker/manager-web.nginx.conf.template" \
+        "/etc/nginx/templates/default.conf.template" \
+        "File"
 }
 
 mount_runtime_pkg() {
@@ -115,18 +126,6 @@ mount_core_pkg() {
         "${DEPLOY_VARS["CORE_POD_PKG_PATH"]}"
 }
 
-# User Web 挂载代码时先构建静态资源，再走与产品镜像相同的入口。
-# Vite dev HTML 使用根路径资源，不能完整经由 Manager Web 的 /chat 子路径代理。
-run_web_mounted() {
-    local file="$1"
-    [ -z "${DEPLOY_VARS["CLAW_POD_CODE_PATH"]:-}" ] && return
-    local root="${DEPLOY_VARS["CLAW_POD_CODE_PATH"]}"
-    local workdir="${root}/jiuwenswarm/channels/web/frontend"
-
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].command = ["/bin/sh", "-c"]' -i "${file}"
-    yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].args = ["cd '"${workdir}"' && npm run build && cd '"${root}"' && exec jiuwenswarm-start web"]' -i "${file}"
-}
-
 enable_dev_mode_if_needed() {
     [ "${DEPLOY_VARS["MODE"]}" != "dev" ] && return
 
@@ -140,9 +139,6 @@ enable_dev_mode_if_needed() {
         web)
             [ "${DEPLOY_VARS["IS_MOUNT_WEB_CODE"]}" != "true" ] && return
             mount_claw_code "${file}"
-            mount_runtime_pkg "${file}"
-            mount_core_pkg "${file}"
-            run_web_mounted "${file}"
             ;;
         manager-server | runtime | identity)
             mount_runtime_code "${file}"
@@ -150,6 +146,7 @@ enable_dev_mode_if_needed() {
         manager-web)
             [ "${DEPLOY_VARS["IS_MOUNT_MANAGER_WEB_CODE"]}" != "true" ] && return
             mount_runtime_code "${file}"
+            mount_manager_web_nginx_template "${file}"
             ;;
         *)
             warning "enable_dev_mode_if_needed: unknown component '${comp}', skipping"
@@ -162,8 +159,6 @@ enable_dev_mode_if_needed() {
     yq eval 'select(.kind == "Deployment").spec.template.spec.nodeName = "'"${DEPLOY_VARS["CURRENT_NODE_NAME"]}"'"' -i "${file}"
     yq eval 'select(.kind == "Deployment").spec.template.spec.securityContext.fsGroup = 0' -i "${file}"
     yq eval 'select(.kind == "Deployment").spec.template.spec.containers[0].securityContext = {
-        "allowPrivilegeEscalation": true,
-        "runAsNonRoot": false,
         "runAsUser": 0,
         "runAsGroup": 0
     }' -i "${file}"

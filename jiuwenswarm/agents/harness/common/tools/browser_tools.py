@@ -450,6 +450,32 @@ def _normalize_client_type(client_type: str) -> str:
     return value
 
 
+def _is_browser_runtime_mcp_config(config: McpServerConfig) -> bool:
+    """仅识别浏览器自己的 MCP，避免劫持企业远程 MCP 客户端。"""
+    configured_id = (
+        _browser_env("BROWSER_RUNTIME_MCP_SERVER_ID", "") or _BROWSER_MCP_DEFAULT_ID
+    ).strip()
+    configured_name = (
+        _browser_env("BROWSER_RUNTIME_MCP_SERVER_NAME", "") or _BROWSER_MCP_DEFAULT_NAME
+    ).strip()
+    server_id = str(getattr(config, "server_id", "") or "").strip()
+    server_name = str(getattr(config, "server_name", "") or "").strip()
+    server_path = str(getattr(config, "server_path", "") or "").strip().lower()
+    if server_name and server_name in {configured_name, _BROWSER_MCP_DEFAULT_NAME}:
+        return True
+    if server_id and server_id in {
+        configured_id,
+        _BROWSER_MCP_DEFAULT_ID,
+        f"{configured_id}_sse",
+        f"{_BROWSER_MCP_DEFAULT_ID}_sse",
+    }:
+        return True
+    return (
+        "playwright-runtime-wrapper" in server_path
+        or "playwright_runtime" in server_path
+    )
+
+
 def _ensure_browser_move_client_patch() -> None:
     global _BROWSER_MOVE_CLIENT_PATCHED
     if _BROWSER_MOVE_CLIENT_PATCHED:
@@ -503,10 +529,19 @@ def _ensure_browser_move_client_patch() -> None:
     original_create_client = tool_mgr.ToolMgr._create_client
 
     def _patched_create_client(config: McpServerConfig):
+        # 非浏览器 MCP 必须走原 _create_client（含 timeout_s 盖章与 SDK 客户端），
+        # 否则企业模板的超时恢复 / auth_headers 会整段失效。
+        if not _is_browser_runtime_mcp_config(config):
+            return original_create_client(config)
         normalized = _normalize_client_type(getattr(config, "client_type", ""))
         if normalized == "sse":
             if sse_cls is not None:
-                return sse_cls(config.server_path, config.server_name, config.auth_headers, config.auth_query_params)
+                return sse_cls(
+                    config.server_path,
+                    config.server_name,
+                    config.auth_headers,
+                    config.auth_query_params,
+                )
             return original_create_client(config)
         if normalized == "streamable-http":
             return streamable_http_cls(
@@ -519,10 +554,8 @@ def _ensure_browser_move_client_patch() -> None:
             return stdio_cls(config.server_path, config.server_name, config.params)
         return original_create_client(config)
 
-    tool_mgr.StdioClient = stdio_cls
-    if sse_cls is not None:
-        tool_mgr.SseClient = sse_cls
-    tool_mgr.StreamableHttpClient = streamable_http_cls
+    # 不再全局替换 ToolMgr.StreamableHttpClient / SseClient / StdioClient：
+    # registry 与超时补丁依赖 SDK 原类；只按 server 分流 _create_client。
     tool_mgr.ToolMgr._create_client = staticmethod(_patched_create_client)
     _BROWSER_MOVE_CLIENT_PATCHED = True
 

@@ -663,9 +663,8 @@ async def test_handle_command_mcp_add_triggers_reload(server, fake_ws, monkeypat
         params={
             "action": "add",
             "name": "demo",
-            "transport": "stdio",
-            "command": "python",
-            "args": ["server.py"],
+            "transport": "sse",
+            "url": "http://127.0.0.1:18013/sse",
         },
     )
 

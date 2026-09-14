@@ -17,6 +17,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
     get_default_model_provider as resolve_default_model_provider,
@@ -2994,6 +2995,13 @@ def update_sandbox_endpoint(
     所有 ``None`` 入参表示"本次不修改该字段, 保留 config.yaml 中既有值",
     以方便 ``_handle_sandbox_enable`` 在不同阶段分批落盘。
     """
+    # 企业级:config.yaml 为只读挂载, 不回写
+    if is_enterprise():
+        logger.info(
+            "[config] enterprise: config.yaml 为只读挂载, "
+            "sandbox endpoint 不持久化(仅运行期生效)")
+        return set()
+
     url_value = str(url or "").strip()
     type_value = str(sandbox_type or "").strip()
     if not url_value or not type_value:
@@ -3126,6 +3134,13 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
             ``files`` 字典若提供则整体替换；其余键按值合并。 ``idle_*`` 字段
             接受整数秒数 (``<= 0`` 归一化为 ``None`` = 禁用淘汰) 或 ``None``。
     """
+    # 企业级:config.yaml 为只读挂载,不回写(返回当前 runtime,未变更)
+    if is_enterprise():
+        logger.info(
+            "[config] enterprise: config.yaml 为只读挂载, "
+            "sandbox runtime 不持久化(仅运行期生效)")
+        return dict(get_sandbox_runtime() or {})
+
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 

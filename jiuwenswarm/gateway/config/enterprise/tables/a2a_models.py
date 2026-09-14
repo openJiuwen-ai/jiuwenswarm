@@ -56,6 +56,7 @@ A2A_OUTBOUND_DISPATCH_TABLE_DEF = TableDefinition(
         ColumnDefinition("request_message_id", "string", length=100, nullable=False),
         ColumnDefinition("source_session_id", "string", length=512, nullable=False),
         ColumnDefinition("source_resource_id", "string", length=100, nullable=True),
+        ColumnDefinition("source_user_id", "string", length=256, nullable=True),
         ColumnDefinition("remote_task_id", "string", length=256, nullable=True),
         ColumnDefinition("remote_context_id", "string", length=256, nullable=True),
         ColumnDefinition("accepted_at", "datetime", nullable=True),
@@ -73,6 +74,7 @@ A2A_OUTBOUND_DISPATCH_TABLE_DEF = TableDefinition(
     indexes=[
         IndexDefinition(["dispatch_id"], unique=True),
         IndexDefinition(["source_session_id"]),
+        IndexDefinition(["source_user_id", "created_at"]),
         IndexDefinition(["source_resource_id"]),
         IndexDefinition(["created_at"]),
     ],

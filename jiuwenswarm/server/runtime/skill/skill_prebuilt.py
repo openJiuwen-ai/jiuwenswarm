@@ -51,6 +51,7 @@ class SkillPrebuiltItem:
     source_id: str = ""
     version_id: str = ""
     sha256: str = ""
+    author: str = ""
 
     @property
     def package_url(self) -> str:
@@ -141,7 +142,8 @@ def parse_agent_skill_prebuilt(
     """解析 gateway 下发的预置清单（``skill_prebuilt``）。
 
     顶层一等字段：``skill_id``、``package_url``、``source_id``、``version_id``、``enabled``；
-    ``data.sha256`` 仅用于 url 路径完整性校验（provider 忽略）。
+    ``data.sha256`` 仅用于 url 路径完整性校验（provider 忽略）；
+    ``data.author`` 为管理面已下发的作者，预置安装可直接落账。
     """
     items: list[SkillPrebuiltItem] = []
     for raw in skills or []:
@@ -163,6 +165,7 @@ def parse_agent_skill_prebuilt(
             or str(data.get("version_id") or "").strip()
         )
         package_url = str(raw.get("package_url") or "").strip()
+        author = str(data.get("author") or "").strip()[:200]
         items.append(
             SkillPrebuiltItem(
                 id=skill_id,
@@ -170,6 +173,7 @@ def parse_agent_skill_prebuilt(
                 source_id=source_id,
                 version_id=version_id,
                 sha256=_extract_sha256(raw),
+                author=author,
             )
         )
     return AgentSkillPrebuiltConfig(agent_id=agent_id, service_id=service_id, skills=items)
@@ -485,6 +489,7 @@ class SkillPrebuiltSynchronizer:
 
         installed_dir = previous_skill_name
         install_version = item.version
+        install_author = ""
         if need_download:
             if mode == "provider":
                 # provider 不得回退到 package_url
@@ -493,6 +498,7 @@ class SkillPrebuiltSynchronizer:
                     skill_id=item.id,
                     version_id=item.version_id,
                     force=True,
+                    author=item.author,
                 )
                 if not install_result.get("ok"):
                     code = str(install_result.get("error_code") or "download_failed")
@@ -585,6 +591,16 @@ class SkillPrebuiltSynchronizer:
             if mode == "provider"
             else item.package_url
         )
+        if not install_author and not need_download:
+            # 同版本调和只走本地三源：账本 / 模板 / SKILL.md。
+            # catalogue search 留在下载安装路径，避免每次 create_instance 回查 hub。
+            # 账本已有作者则不再回填，避免 SKILL.md 覆盖。
+            existing_row = installed_skills_map.get(installed_dir) or {}
+            install_author = str(existing_row.get("author") or "").strip()
+        if not install_author:
+            install_author = str(item.author or "").strip()
+        if not install_author:
+            install_author = self._manager.lookup_skill_md_author(installed_dir)
         try:
             row = await asyncio.to_thread(
                 self._manager.record_skill_installation,
@@ -597,6 +613,7 @@ class SkillPrebuiltSynchronizer:
                 source_id=item.source_id or None,
                 version_id=item.version_id or None,
                 verification={"checksum_sha256": item.sha256} if item.sha256 else None,
+                author=install_author or None,
                 replace_by_name=True,
             )
         except SkillNameConflictError as exc:

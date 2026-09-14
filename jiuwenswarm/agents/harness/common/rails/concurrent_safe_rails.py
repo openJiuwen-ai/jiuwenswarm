@@ -16,6 +16,9 @@ the agent can use them.
 from __future__ import annotations
 
 import logging
+import hashlib
+import json
+from copy import copy
 
 from openjiuwen.core.runner import Runner
 from openjiuwen.harness.rails import SysOperationRail
@@ -43,6 +46,10 @@ from openjiuwen.harness.workspace.workspace import WorkspaceNode
 logger = logging.getLogger(__name__)
 
 _TODO_WRITE_TOOLS = frozenset({"todo_create", "todo_modify"})
+
+
+class _TodoBindingMismatchError(RuntimeError):
+    """A registered todo tool belongs to a different binding."""
 
 
 class ConcurrentSafeSysOperationRail(SysOperationRail):
@@ -117,6 +124,7 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             return
 
         self.system_prompt_builder = getattr(agent, "system_prompt_builder", None)
+        self._state_agent = agent
 
         if not self.sys_operation:
             self.set_sys_operation(agent.deep_config.sys_operation)
@@ -126,6 +134,16 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         workspace_dir = str(self.workspace.get_node_path(WorkspaceNode.TODO))
         agent_id = getattr(getattr(agent, "card", None), "id", None)
         language = self.system_prompt_builder.language if self.system_prompt_builder else "cn"
+        fs = self.sys_operation.fs()
+        # Tools retain their filesystem client and workspace. Include both
+        # bindings in the process-local registry ID, not only the agent ID.
+        binding = hashlib.sha256(
+            json.dumps([workspace_dir, id(fs)]).encode("utf-8")
+        ).hexdigest()[:24]
+        scoped_agent_id = f"{agent_id or 'todo'}_{binding}"
+
+        def matches_binding(tool):
+            return tool.workspace == workspace_dir and tool.fs is fs
 
         tool_configs = [
             (TodoCreateTool, False),
@@ -134,33 +152,60 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         ]
 
         existing_tools = []
+        stale_abilities = []
         for ability in agent.ability_manager.list():
             if isinstance(ability, ToolCard):
                 tool_instance = Runner.resource_mgr.get_tool(tool_id=ability.id)
                 if tool_instance:
                     for i, (tool_class, found) in enumerate(tool_configs):
                         if isinstance(tool_instance, tool_class):
+                            if not matches_binding(tool_instance):
+                                stale_abilities.append(ability.name)
+                                break
                             tool_configs[i] = (tool_class, True)
                             existing_tools.append(tool_instance)
                             break
 
         tools = existing_tools.copy()
         try:
+            new_tools = []
             for tool_class, found in tool_configs:
                 if not found:
-                    new_tool = tool_class(self.sys_operation, workspace_dir, language, agent_id)
-                    if Runner.resource_mgr.get_tool(new_tool.card.id) is not None:
-                        agent.ability_manager.add(new_tool.card)
-                        tools.append(new_tool)
+                    new_tool = tool_class(self.sys_operation, workspace_dir, language, scoped_agent_id)
+                    registered_tool = Runner.resource_mgr.get_tool(new_tool.card.id)
+                    if registered_tool is not None:
+                        if not isinstance(registered_tool, tool_class) or not matches_binding(registered_tool):
+                            raise _TodoBindingMismatchError(f"Todo tool binding mismatch: {new_tool.card.id}")
+                        tools.append(registered_tool)
                         continue
-                    Runner.resource_mgr.add_tool(new_tool)
-                    agent.ability_manager.add(new_tool.card)
+                    new_tools.append(new_tool)
                     tools.append(new_tool)
+            # Validate every binding before changing either registry or
+            # abilities, so a late mismatch leaves initialization untouched.
+            for name in stale_abilities:
+                agent.ability_manager.remove(name)
+            for tool in new_tools:
+                Runner.resource_mgr.add_tool(tool)
+            for tool in tools:
+                agent.ability_manager.add(tool.card)
             self.tools = tools
+        except _TodoBindingMismatchError:
+            logger.exception("ConcurrentSafeTaskPlanningRail: todo binding conflict")
+            raise
         except Exception as exc:
             logger.warning("ConcurrentSafeTaskPlanningRail: failed to add tool, error: %s", exc)
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
+        # Tool callbacks run on the inner ReActAgent; TaskPlan belongs to
+        # the DeepAgent that initialized this rail. Do not mutate shared ctx.
+        if not callable(getattr(ctx.agent, "load_state", None)):
+            state_agent = getattr(self, "_state_agent", None)
+            if not callable(getattr(state_agent, "load_state", None)) or not callable(
+                getattr(state_agent, "save_state", None)
+            ):
+                return
+            ctx = copy(ctx)
+            ctx.agent = state_agent
         await super().after_tool_call(ctx)
         if not isinstance(ctx.inputs, ToolCallInputs):
             return

@@ -86,9 +86,11 @@ test('A2A outbound list rejects any malformed item', () => {
   assert.equal(normalizeA2AOutboundList({ items: 'invalid' }), null);
 });
 
-test('A2A outbound settings require an explicit loopback boolean', () => {
-  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback_http: true }), { allow_loopback_http: true });
-  assert.equal(normalizeA2AOutboundSettings({ allow_loopback_http: 'true' }), null);
+test('A2A outbound settings require explicit loopback and HTTP booleans', () => {
+  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback: true, allow_http: false }), { allow_loopback: true, allow_http: false });
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: 'true', allow_http: false }), null);
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: true }), null);
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: false, allow_http: 'true' }), null);
   assert.equal(normalizeA2AOutboundSettings({}), null);
 });
 

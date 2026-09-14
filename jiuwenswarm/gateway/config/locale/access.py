@@ -52,7 +52,16 @@ async def get_preferred_language_in_config() -> str:
 
 
 async def update_preferred_language_in_config(lang: str) -> None:
-    """更新顶层 preferred_language 并写回。"""
+    """更新顶层 preferred_language 并写回。
+
+    企业版无 preferred_language 同构表，且 config.yaml 为只读/全局共享挂载，
+    禁止回写（会失败或污染整实例所有用户的语言）。企业版 UI 语言由前端
+    localStorage 持久化。
+    """
+    from jiuwenswarm.edition import is_enterprise
+
+    if is_enterprise():
+        return
     repo = get_preferred_language_config_repository()
     if repo is None:
         from jiuwenswarm.common.config import (

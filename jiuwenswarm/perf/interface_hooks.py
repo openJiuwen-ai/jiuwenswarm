@@ -9,6 +9,7 @@ from typing import Any
 from jiuwenswarm.perf.collector import get_perf_collector
 from jiuwenswarm.perf.config import get_perf_summary_config
 from jiuwenswarm.perf.context import (
+    DeepResearchReportType,
     clear_request_context,
     mark_first_answer_latency,
     mark_first_byte_latency,
@@ -107,18 +108,18 @@ def set_perf_summary_context(
     mode: str = "agent.plan",
     service_id: str | None = None,
     agent_id: str | None = None,
+    requested_report_type: DeepResearchReportType | None = None,
 ) -> None:
     """Bind perf request context at parent-agent request entry.
 
-    Always begins the collector request (even if ``rail`` is None). When a
-    RequestSummaryRail is present, also bind on the rail instance so LLM/tool
-    hooks running on DeepAgent's interaction-round Task can resolve request_id
-    without relying on ContextVar inheritance.
+    Always binds the execution request context, even when performance summaries
+    are disabled. When collection is enabled, it also begins the collector
+    request and binds a RequestSummaryRail so interaction-round hooks can resolve
+    request_id without relying on ContextVar inheritance.
     """
 
     def _setup() -> None:
-        if not get_perf_summary_config().enabled:
-            return
+        perf_enabled = get_perf_summary_config().enabled
         ctx = set_request_context(
             session_id=session_id,
             request_id=request_id,
@@ -126,7 +127,11 @@ def set_perf_summary_context(
             mode=mode,
             service_id=service_id,
             agent_id=agent_id,
+            requested_report_type=requested_report_type,
+            begin_perf_collection=perf_enabled,
         )
+        if not perf_enabled:
+            return
         bind = getattr(rail, "bind_request_context", None)
         if callable(bind):
             bind(ctx)
