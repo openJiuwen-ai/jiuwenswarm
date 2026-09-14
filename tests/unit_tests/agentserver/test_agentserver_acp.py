@@ -846,6 +846,72 @@ async def test_handle_session_create_returns_session_id(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
+async def test_handle_single_expert_session_create_bypasses_generic_prewarm(
+    monkeypatch, tmp_path
+):
+    """单专家必须在 expert_id 落盘后装配，不能认领无专家的通用预热实例。"""
+    server = AgentWebSocketServerHarness()
+    fake_manager = FakeAgentManager(session_id="expert_session_001")
+    server.set_agent_manager_for_test(fake_manager)
+    fake_ws = FakeWebSocket()
+    sessions_root = tmp_path / "sessions"
+
+    async def _fetch_and_classify_expert(expert_id):
+        assert expert_id == "expert-a"
+        return "agent", tmp_path / "expert-a", []
+
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        fake_encode_agent_response_for_wire,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.expert.expert_service.fetch_and_classify_expert",
+        _fetch_and_classify_expert,
+    )
+    patch_session_roots(monkeypatch, sessions_root)
+
+    request = AgentRequest(
+        request_id="req-session-create-expert",
+        channel_id="web",
+        req_method=ReqMethod.SESSION_CREATE,
+        params={
+            "mode": "agent",
+            "create_token": "create-expert-001",
+            "expert_id": "expert-a",
+            "title": "Expert A",
+        },
+    )
+
+    await server.handle_session_create_for_test(fake_ws, request, asyncio.Lock())
+
+    assert len(fake_manager.claim_session_calls) == 1
+    assert fake_manager.claim_session_calls[0]["prewarm_eligible"] is False
+    metadata = json.loads(
+        (sessions_root / "expert_session_001" / "metadata.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert metadata["expert_id"] == "expert-a"
+    assert metadata["expert_type"] == "agent"
+    assert fake_ws.sent == [
+        {
+            "response_id": "req-session-create-expert",
+            "payload": {
+                "sessionId": "expert_session_001",
+                "session_id": "expert_session_001",
+                "projectId": "default",
+                "projectDir": "",
+                "workMode": "work",
+                "prewarm_hit": False,
+                "prewarm_status": "bypassed",
+            },
+            "ok": True,
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_handle_session_create_rejects_explicit_session_id(monkeypatch, tmp_path):
     server = AgentWebSocketServerHarness()
     fake_manager = FakeAgentManager(session_id="unused-default")

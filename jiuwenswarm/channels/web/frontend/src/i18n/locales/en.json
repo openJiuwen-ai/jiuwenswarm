@@ -309,7 +309,7 @@
       "placeholder": "Select Model"
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
-    "modeSwitchDisabledProcessing":"This conversation is running. Start a new conversation to choose another mode",
+    "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",
@@ -1057,7 +1057,10 @@
       "memory": { "label": "Memory Sensitive Info Filter", "hint": "Configure sensitive content types forbidden from memory" },
       "email": { "label": "Email Settings", "hint": "Email account and token settings" },
       "other": { "label": "Other Settings", "hint": "Unclassified extended parameters" },
-      "proactive": { "label": "Proactive Recommendation", "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel" }
+      "proactive": {
+        "label": "Proactive Recommendation",
+        "hint": "Automatically analyze user needs and proactively offer suggestions; adjust the schedule in the Cron panel"
+      }
     },
     "booleanLabels": {
       "evolutionAutoScan": "Auto-detect evolution signals",
@@ -2384,6 +2387,39 @@
     "customOption": "Custom",
     "customPlaceholder": "No suitable option? Type your answer...",
     "skippedSummary": "Skipped"
+  },
+  "swarmflow": {
+    "statusPlanned": "Planned",
+    "statusPending": "Pending",
+    "statusRunning": "Running",
+    "statusPaused": "Paused",
+    "statusCompleted": "Completed",
+    "statusFailed": "Failed",
+    "statusStopped": "Stopped",
+    "statusWaitingForHuman": "Waiting for input",
+    "subWorkflow": "Sub-workflow",
+    "clickToReply": "Click to reply",
+    "waitingForHuman": "Waiting for {{count}}",
+    "noWorkflow": "No workflow",
+    "layoutIndented": "Indented Tree",
+    "layoutOrgChart": "Org Chart",
+    "layoutGraph": "Flow Graph",
+    "pauseResumeHint": "Pause / Resume",
+    "stopHint": "Stop",
+    "controlAlreadyCompleted": "Workflow already completed",
+    "controlAlreadyStopped": "Workflow already stopped",
+    "controlAlreadyFailed": "Workflow already failed",
+    "controlAlreadyPaused": "Workflow already paused",
+    "controlUnavailable": "Workflow is running; control unavailable",
+    "controlNotFound": "Workflow run not found",
+    "controlsDisabledHint": "Continue routing experts from the main conversation in compatibility mode.",
+    "sessionBudget": "Session budget",
+    "runBudget": "Run budget",
+    "sessionBudgetShort": "Session",
+    "runBudgetShort": "Run",
+    "budgetUnlimited": "unbounded",
+    "budgetExhaustedSession": "Session budget exhausted",
+    "budgetExhaustedWorkflow": "Run budget exhausted"
   },
   "qaSummary": {
     "title": "Clarifications"

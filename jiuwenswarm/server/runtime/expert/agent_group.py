@@ -34,8 +34,13 @@ from openjiuwen.harness.schema.extension_spec import (
     SkillSpec,
 )
 
+from jiuwenswarm.server.runtime.expert.team_contract import (
+    EXPERT_TEAM_STAGE_METADATA_KEY,
+)
+
 INSTRUCTION_SECTION_NAME = "agent_group_instruction"
 LEADER_RULES_SECTION_NAME = "agent_group_leader_rules"
+TEAM_STAGE_SECTION_NAME = "expert_team_stage_override"
 
 
 class AgentGroupPackageError(ValueError):
@@ -93,9 +98,7 @@ def _package_file(path: Path, *, root: Path, label: str) -> Path:
 def _persona_dir(agent_dir: Path, manifest: dict[str, Any], *, agent_name: str) -> Path:
     persona = manifest.get("persona")
     if not isinstance(persona, dict) or not isinstance(persona.get("dir"), str):
-        raise AgentGroupPackageError(
-            f"成员 {agent_name!r} 缺少 persona.dir 声明"
-        )
+        raise AgentGroupPackageError(f"成员 {agent_name!r} 缺少 persona.dir 声明")
     raw_dir = persona["dir"]
     if Path(raw_dir).expanduser().is_absolute():
         raise AgentGroupPackageError(
@@ -132,7 +135,9 @@ def _agent_names(payload: dict[str, Any]) -> list[str]:
     for raw_name in raw_agents:
         name = _safe_component(raw_name, label="成员名")
         if name in seen:
-            raise AgentGroupPackageError(f"顶层 manifest agents 存在重复成员名: {name!r}")
+            raise AgentGroupPackageError(
+                f"顶层 manifest agents 存在重复成员名: {name!r}"
+            )
         seen.add(name)
         names.append(name)
     if "leader" not in seen:
@@ -152,7 +157,9 @@ def _shared_skills(package_dir: Path, payload: dict[str, Any]) -> list[SkillSpec
     for raw_name in raw_skills:
         name = _safe_component(raw_name, label="共享技能名")
         if name in seen:
-            raise AgentGroupPackageError(f"顶层 manifest skills 存在重复技能名: {name!r}")
+            raise AgentGroupPackageError(
+                f"顶层 manifest skills 存在重复技能名: {name!r}"
+            )
         seen.add(name)
         skill_dir = _child_dir(skills_root, name, label=f"共享技能 {name!r}")
         _package_file(
@@ -197,6 +204,45 @@ def _load_member_template(package_dir: Path, agent_name: str) -> AgentTemplateSp
         raise AgentGroupPackageError(
             f"成员 {agent_name!r} 身份不一致: 目录名={agent_name!r}, "
             f"agentCard.id={template.agent_card.id!r}"
+        )
+
+    metadata = manifest.get("metadata")
+    stage_file = (
+        metadata.get(EXPERT_TEAM_STAGE_METADATA_KEY)
+        if isinstance(metadata, dict)
+        else None
+    )
+    if stage_file is not None:
+        if not isinstance(stage_file, str) or not stage_file.strip():
+            raise AgentGroupPackageError(
+                f"成员 {agent_name!r} 的 {EXPERT_TEAM_STAGE_METADATA_KEY} 必须是非空字符串"
+            )
+        stage_path = _package_file(
+            agent_dir / stage_file,
+            root=agent_dir,
+            label=f"成员 {agent_name!r} 的专家团阶段规则",
+        )
+        stage_text = stage_path.read_text(encoding="utf-8").strip()
+        if not stage_text:
+            raise AgentGroupPackageError(
+                f"成员 {agent_name!r} 的专家团阶段规则不能为空"
+            )
+        if any(s.name == TEAM_STAGE_SECTION_NAME for s in template.prompt_sections):
+            raise AgentGroupPackageError(
+                f"成员 {agent_name!r} 占用了保留 section 名 {TEAM_STAGE_SECTION_NAME!r}"
+            )
+        stage_priority = (
+            max([20, *(section.priority for section in template.prompt_sections)]) + 1
+        )
+        stage_section = PromptSectionSpec(
+            name=TEAM_STAGE_SECTION_NAME,
+            content={"cn": stage_text, "en": stage_text},
+            # This is an override contract, so it must flatten after every
+            # source-owned section as well as the group instruction (priority 20).
+            priority=stage_priority,
+        )
+        template = template.model_copy(
+            update={"prompt_sections": [*template.prompt_sections, stage_section]}
         )
 
     # leader 常规约定 persona.dir="."，core loader 会把 AGENT.md 一并读入；
@@ -337,7 +383,7 @@ def read_group_display(package_dir: Path) -> dict[str, str]:
     return display
 
 
-def read_group_members(package_dir: Path) -> list[dict[str, str]]:
+def read_group_members(package_dir: Path) -> list[dict[str, Any]]:
     """列表展示用：成员摘要（leader 置顶），尽力而为、不抛错。
 
     返回 [{"id", "name", "description", "role"}]，role 为 "lead" | "member"；
@@ -350,16 +396,19 @@ def read_group_members(package_dir: Path) -> list[dict[str, str]]:
             return []
         # leader 置顶，其余按声明序
         ordered = sorted(raw_agents, key=lambda n: 0 if n == "leader" else 1)
-        members: list[dict[str, str]] = []
+        members: list[dict[str, Any]] = []
         for raw_name in ordered:
             if not isinstance(raw_name, str):
                 continue
             name = raw_name.strip()
-            manifest_path = package_dir / "agents" / name / "manifest.json"
+            member_dir = package_dir / "agents" / name
+            manifest_path = member_dir / "manifest.json"
             display_name, description = name, ""
+            manifest: dict[str, Any] = {}
             try:
-                manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
-                if isinstance(manifest, dict):
+                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
+                if isinstance(parsed, dict):
+                    manifest = parsed
                     card = manifest.get("agentCard")
                     if isinstance(card, dict):
                         display_name = str(card.get("name") or name)
@@ -369,19 +418,35 @@ def read_group_members(package_dir: Path) -> list[dict[str, str]]:
                         description = str(manifest.get("description") or "")
             except (OSError, UnicodeDecodeError, json.JSONDecodeError):
                 pass
-            members.append({
-                "id": name,
-                "name": display_name,
-                "description": description,
-                "role": "lead" if name == "leader" else "member",
-                # 成员头像（avatars/<id>.png 存在时）：本地源给绝对路径（前端只认
-                # http(s) 直链，本地路径会回退首字头像）；仓库源由仓库下发 URL
-                **(
-                    {"avatar": str((package_dir / "avatars" / f"{name}.png").resolve())}
-                    if (package_dir / "avatars" / f"{name}.png").is_file()
-                    else {}
-                ),
-            })
+            # 只展示该成员 manifest 真正挂载的原始 Skill；禁止将顶层共享
+            # Skill 或其他成员 Skill 误标为该成员私有能力。
+            member_skills: list[dict[str, str]] = []
+            if isinstance(manifest, dict):
+                from jiuwenswarm.server.runtime.expert.expert_store import (
+                    _read_expert_skill_summaries,
+                )
+
+                member_skills = _read_expert_skill_summaries(member_dir, manifest)
+            members.append(
+                {
+                    "id": name,
+                    "name": display_name,
+                    "description": description,
+                    "role": "lead" if name == "leader" else "member",
+                    "skills": member_skills,
+                    # 成员头像（avatars/<id>.png 存在时）：本地源给绝对路径（前端只认
+                    # http(s) 直链，本地路径会回退首字头像）；仓库源由仓库下发 URL
+                    **(
+                        {
+                            "avatar": str(
+                                (package_dir / "avatars" / f"{name}.png").resolve()
+                            )
+                        }
+                        if (package_dir / "avatars" / f"{name}.png").is_file()
+                        else {}
+                    ),
+                }
+            )
         return members
     except (OSError, UnicodeDecodeError, json.JSONDecodeError):
         return []

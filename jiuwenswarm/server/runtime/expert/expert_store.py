@@ -13,12 +13,15 @@ import io
 import json
 import os
 import shutil
+import stat
+import tempfile
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
 import httpx
+import yaml
 
 from jiuwenswarm.common.np_transport import (
     PipeError,
@@ -31,6 +34,10 @@ DEFAULT_REPO_URL = "http://127.0.0.1:18901"
 REPO_URL_ENV = "JIUWEN_EXPERT_REPO_URL"
 LOCAL_DIRS_ENV = "JIUWEN_EXPERT_LOCAL_DIRS"
 _FETCH_TIMEOUT_SEC = 30.0
+MAX_EXPERT_ZIP_BYTES = 50 * 1024 * 1024
+MAX_EXPERT_ZIP_ENTRIES = 5000
+MAX_EXPERT_ZIP_EXPANDED_BYTES = 200 * 1024 * 1024
+IMPORTED_MARKER = ".xiaoyi-import.json"
 
 
 @dataclass
@@ -44,12 +51,15 @@ class ExpertSummary:
     available: bool
     unavailable_reason: str = ""
     tags: list[str] = field(default_factory=list)
+    # 按 manifest.skills 的调用顺序返回；name/description 直接取各 SKILL.md
+    # frontmatter，前端不得根据目录名另起展示名。
+    skills: list[dict[str, str]] = field(default_factory=list)
     type: str = "agent"  # "agent" | "team"（专家团）
     metadata: dict[str, Any] = field(default_factory=dict)
     avatar_url: str = ""  # 仓库下发的头像绝对地址（<img> 直连）；空 = 无头像
     # 专家团成员摘要（type="team" 时非空，leader 置顶）：
     # [{"id", "name", "description", "role": "lead"|"member"}]
-    members: list[dict[str, str]] = field(default_factory=list)
+    members: list[dict[str, Any]] = field(default_factory=list)
 
 
 class ExpertNotFound(Exception):
@@ -201,6 +211,48 @@ def validate_expert_package(package_dir: Path) -> list[str]:
     return warnings
 
 
+def _read_expert_skill_summaries(
+    package_dir: Path,
+    manifest: dict[str, Any],
+) -> list[dict[str, str]]:
+    """读取专家内嵌 Skill 的原始展示信息，顺序与 manifest 完全一致。"""
+    summaries: list[dict[str, str]] = []
+    for entry in manifest.get("skills") or []:
+        if not isinstance(entry, dict):
+            continue
+        relative_dir = str(entry.get("dir") or "").strip()
+        if not relative_dir:
+            continue
+        skill_dir = package_dir / relative_dir
+        skill_md = skill_dir / "SKILL.md"
+        name = skill_dir.name
+        description = ""
+        try:
+            text = skill_md.read_text(encoding="utf-8")
+            if text.startswith("---"):
+                closing = text.find("\n---", 3)
+                if closing >= 0:
+                    metadata = yaml.safe_load(text[3:closing])
+                    if isinstance(metadata, dict):
+                        raw_name = metadata.get("name")
+                        raw_description = metadata.get("description")
+                        if isinstance(raw_name, str) and raw_name.strip():
+                            name = raw_name.strip()
+                        if isinstance(raw_description, str):
+                            description = raw_description.strip()
+        except (OSError, UnicodeDecodeError, yaml.YAMLError):
+            # 包已通过结构校验；展示元数据异常时仍保留目录名，不能让列表整体不可用。
+            pass
+        summaries.append(
+            {
+                "name": name,
+                "description": description,
+                "dir": relative_dir,
+            }
+        )
+    return summaries
+
+
 class HttpRepoExpertPackageSource:
     """调简易包仓库 API 的实现。
 
@@ -264,6 +316,7 @@ class HttpRepoExpertPackageSource:
                 available=bool(item.get("available", False)),
                 unavailable_reason=str(item.get("unavailable_reason", "")),
                 tags=list(item.get("tags") or []),
+                skills=[dict(s) for s in item.get("skills") or [] if isinstance(s, dict)],
                 type=str(item.get("type", "agent")),
                 metadata=dict(item.get("metadata") or {}),
                 avatar_url=str(item.get("avatar_url") or ""),
@@ -315,24 +368,91 @@ def _extract_zip(content: bytes, target_dir: Path) -> None:
     容错：条目全部位于同一个一级目录前缀下时自动剥掉该层，让
     ``manifest.json`` 落到包根目录，与平铺打包形态等价。
     """
+    if len(content) > MAX_EXPERT_ZIP_BYTES:
+        raise ValueError("专家 ZIP 不能超过 50 MB")
     with zipfile.ZipFile(io.BytesIO(content)) as zf:
-        names = zf.namelist()
-        for name in names:
+        infos = zf.infolist()
+        if len(infos) > MAX_EXPERT_ZIP_ENTRIES:
+            raise ValueError("zip 条目数量超过限制")
+        if sum(info.file_size for info in infos) > MAX_EXPERT_ZIP_EXPANDED_BYTES:
+            raise ValueError("zip 解压后总大小超过 200 MB")
+        names: list[str] = []
+        seen: set[str] = set()
+        for info in infos:
+            name = info.filename.replace("\\", "/")
             normalized = Path(name)
-            if normalized.is_absolute() or ".." in normalized.parts:
-                raise ValueError(f"zip 条目路径非法: {name}")
+            mode = info.external_attr >> 16
+            if (not name or name.startswith("/") or normalized.is_absolute()
+                    or ".." in normalized.parts or (mode and stat.S_ISLNK(mode))
+                    or info.flag_bits & 0x1):
+                raise ValueError(f"zip 条目非法: {info.filename}")
+            key = name.rstrip("/")
+            if key in seen:
+                raise ValueError(f"zip 含重复条目: {name}")
+            seen.add(key)
+            names.append(name)
         prefix = _single_top_level_prefix(names)
         if target_dir.exists():
             shutil.rmtree(target_dir)
         target_dir.mkdir(parents=True, exist_ok=True)
-        for name in names:
+        for info, name in zip(infos, names):
             rel = name[len(prefix):] if prefix else name
             if not rel or rel.endswith("/"):
                 continue
             dest = target_dir / rel
             dest.parent.mkdir(parents=True, exist_ok=True)
-            with zf.open(name) as src, open(dest, "wb") as dst:
+            with zf.open(info) as src, open(dest, "wb") as dst:
                 shutil.copyfileobj(src, dst)
+
+
+def import_expert_zip(content: bytes, *, filename: str = "expert.zip") -> dict[str, Any]:
+    """校验后原子写入用户专家缓存；支持单专家和 agent_group。"""
+    cache_root = get_expert_cache_dir()
+    cache_root.mkdir(parents=True, exist_ok=True)
+    temp_root = Path(tempfile.mkdtemp(prefix=".expert-import-", dir=cache_root))
+    raw_dir = temp_root / "raw"
+    try:
+        _extract_zip(content, raw_dir)
+        manifest_path = raw_dir / "manifest.json"
+        if not manifest_path.is_file():
+            raise InvalidExpertPackage("专家 ZIP 根目录缺少 manifest.json")
+        try:
+            manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as exc:
+            raise InvalidExpertPackage(f"manifest.json 无法读取: {exc}") from exc
+        if manifest.get("package_type") == "agent_group":
+            expert_id = str(manifest.get("name") or "").strip()
+            expert_type = "team"
+        else:
+            card = manifest.get("agentCard") if isinstance(manifest, dict) else None
+            expert_id = str(card.get("id") if isinstance(card, dict) else "").strip()
+            expert_type = "agent"
+        if (not expert_id or expert_id in {".", ".."}
+                or Path(expert_id).name != expert_id or "\\" in expert_id):
+            raise InvalidExpertPackage("专家包 ID 必须是安全的单级目录名")
+        staged_dir = temp_root / expert_id
+        raw_dir.rename(staged_dir)
+        warnings = validate_expert_package(staged_dir)
+        (staged_dir / IMPORTED_MARKER).write_text(
+            json.dumps({"filename": Path(filename).name}, ensure_ascii=False), encoding="utf-8"
+        )
+        target_dir = cache_root / expert_id
+        replaced = target_dir.exists()
+        backup_dir = temp_root / "previous"
+        if replaced:
+            target_dir.rename(backup_dir)
+        try:
+            staged_dir.rename(target_dir)
+        except Exception:
+            if backup_dir.exists() and not target_dir.exists():
+                backup_dir.rename(target_dir)
+            raise
+        return {"expert_id": expert_id, "type": expert_type,
+                "warnings": warnings, "replaced": replaced}
+    except (zipfile.BadZipFile, ValueError) as exc:
+        raise InvalidExpertPackage(f"专家 ZIP 无效: {exc}") from exc
+    finally:
+        shutil.rmtree(temp_root, ignore_errors=True)
 
 
 class LocalDirExpertPackageSource:
@@ -357,7 +477,8 @@ class LocalDirExpertPackageSource:
         metadata: dict[str, Any] = {}
         card: dict[str, Any] = {}
         group: dict[str, str] = {}
-        members: list[dict[str, str]] = []
+        members: list[dict[str, Any]] = []
+        skills: list[dict[str, str]] = []
         pkg_type = "agent"
         try:
             validate_expert_package(package_dir)
@@ -375,9 +496,29 @@ class LocalDirExpertPackageSource:
 
                 group = read_group_display(package_dir)
                 members = read_group_members(package_dir)
+                # 团队自身的展示/溯源信息仍在顶层 metadata；此前团分支没有
+                # 赋值，导致 workflow、deliverables、tags 等在 experts.list
+                # 静默丢失。共享 skills 仍按顶层声明读取，成员私有 skills 则
+                # 由 read_group_members 挂在对应成员上，二者不可混为全员共享。
+                metadata = (
+                    dict(manifest.get("metadata"))
+                    if isinstance(manifest.get("metadata"), dict)
+                    else {}
+                )
+                raw_shared_skills = manifest.get("skills") or []
+                shared_entries = [
+                    {"dir": f"skills/{name}"}
+                    for name in raw_shared_skills
+                    if isinstance(name, str) and name.strip()
+                ]
+                skills = _read_expert_skill_summaries(
+                    package_dir,
+                    {"skills": shared_entries},
+                )
             else:
                 card = manifest.get("agentCard") or {}
                 metadata = manifest.get("metadata") or {}
+                skills = _read_expert_skill_summaries(package_dir, manifest)
         except (InvalidExpertPackage, json.JSONDecodeError) as exc:
             reason = str(exc)
         return ExpertSummary(
@@ -388,6 +529,7 @@ class LocalDirExpertPackageSource:
             available=not reason,
             unavailable_reason=reason,
             tags=list(metadata.get("tags") or []),
+            skills=skills,
             type=pkg_type,
             metadata=metadata,
             members=members,
@@ -397,6 +539,30 @@ class LocalDirExpertPackageSource:
         package_dir = self._experts_dir / expert_id
         if not package_dir.is_dir():
             raise ExpertNotFound(f"专家包不存在: {expert_id}")
+        return package_dir
+
+
+class ImportedExpertPackageSource(LocalDirExpertPackageSource):
+    """用户从前端导入并持久化在专家缓存中的包。"""
+
+    def __init__(self, experts_dir: Path | None = None) -> None:
+        super().__init__(experts_dir or get_expert_cache_dir())
+
+    async def list(self) -> list[ExpertSummary]:
+        if not self._experts_dir.is_dir():
+            return []
+        summaries: list[ExpertSummary] = []
+        for child in sorted(self._experts_dir.iterdir()):
+            if child.is_dir() and (child / IMPORTED_MARKER).is_file():
+                summary = self._summarize(child)
+                summary.source = "imported"
+                summaries.append(summary)
+        return summaries
+
+    async def fetch(self, expert_id: str) -> Path:
+        package_dir = self._experts_dir / expert_id
+        if not package_dir.is_dir() or not (package_dir / IMPORTED_MARKER).is_file():
+            raise ExpertNotFound(f"已导入专家包不存在: {expert_id}")
         return package_dir
 
 
@@ -434,13 +600,14 @@ _default_source: ExpertPackageSource | None = None
 
 
 def get_expert_source() -> ExpertPackageSource:
-    """source 工厂：local override（env 开启时）+ 仓库。"""
+    """source 工厂：local override + 用户导入缓存 + 仓库。"""
     global _default_source
     if _default_source is None:
         sources: list[ExpertPackageSource] = []
         if os.environ.get(LOCAL_DIRS_ENV) == "1":
             sources.append(LocalDirExpertPackageSource())
             logger.info("expert local dir override enabled (%s)", get_agent_experts_dir())
+        sources.append(ImportedExpertPackageSource())
         sources.append(HttpRepoExpertPackageSource())
         _default_source = (
             sources[0] if len(sources) == 1 else ChainExpertPackageSource(sources)

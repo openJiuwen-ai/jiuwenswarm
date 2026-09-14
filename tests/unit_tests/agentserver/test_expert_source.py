@@ -276,6 +276,35 @@ async def test_local_override_wins_on_fetch(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_local_list_uses_skill_frontmatter_names_in_manifest_order(
+        tmp_path: Path,
+) -> None:
+    local_dir = tmp_path / "experts"
+    package = _make_package(
+        local_dir,
+        "content-expert",
+        skills=["skills/directory-alias", "skills/second-directory"],
+    )
+    (package / "skills/directory-alias/SKILL.md").write_text(
+        "---\nname: original-skill-name\ndescription: 原始技能说明\n---\n# body\n",
+        encoding="utf-8",
+    )
+    (package / "skills/second-directory/SKILL.md").write_text(
+        "---\nname: second-original-name\ndescription: 第二项\n---\n# body\n",
+        encoding="utf-8",
+    )
+
+    summaries = await es.LocalDirExpertPackageSource(experts_dir=local_dir).list()
+
+    assert [skill["name"] for skill in summaries[0].skills] == [
+        "original-skill-name",
+        "second-original-name",
+    ]
+    assert summaries[0].skills[0]["description"] == "原始技能说明"
+    assert summaries[0].skills[0]["dir"] == "skills/directory-alias"
+
+
+@pytest.mark.asyncio
 async def test_chain_fetch_falls_back_to_repo(
         tmp_path: Path, cache_dir: Path
 ) -> None:

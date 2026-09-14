@@ -83,9 +83,7 @@ export function ArtifactsPanel({
 
     const pywebviewApi = (window as DownloadCapableWindow).pywebview?.api;
     if (pywebviewApi?.download_file) {
-      const outcome = await executeDesktopSave(() =>
-        pywebviewApi.download_file!(downloadUrl, artifact.name || 'download')
-      );
+      const outcome = await executeDesktopSave(() => pywebviewApi.download_file!(downloadUrl, artifact.name || 'download'));
       if (outcome === 'failed') {
         window.alert(t('artifacts.downloadFailed', { name: artifact.name }));
       }
@@ -229,6 +227,20 @@ export function ArtifactsPanel({
       </div>
     </section>
   );
+}
+
+/**
+ * develop 分支 ExpandedPanel 使用的稳定适配入口。beta3 的 ArtifactsPanel
+ * 已经同时承担列表与预览，因此这里直接复用现有实现，避免复制两套产物状态。
+ */
+export function ArtifactExpandedPanel({
+  selectedArtifactId,
+  onSelectArtifact,
+}: {
+  selectedArtifactId?: string;
+  onSelectArtifact: (artifactId: string) => void;
+}) {
+  return <ArtifactsPanel selectedArtifactId={selectedArtifactId} onSelectArtifact={onSelectArtifact} />;
 }
 
 function PreviewNotice({ title, fill = false }: { title: string; fill?: boolean }) {

@@ -79,6 +79,7 @@ from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_C
 from jiuwenswarm.server.invocation_context_builder import build_invocation_context
 from jiuwenswarm.server.runtime.agent_warm_pool import WarmClaim
 from jiuwenswarm.server.runtime.expert.expert_service import ExpertService
+from jiuwenswarm.server.runtime.expert.expert_graph_service import ExpertGraphService
 from jiuwenswarm.server.runtime.session.session_metadata import get_all_sessions_metadata, remove_session_metadata_cache
 from jiuwenswarm.server.runtime.session.session_history import (
     append_compact_history_records,
@@ -1148,6 +1149,8 @@ class AgentWebSocketServer:
             agent_manager=self._agent_manager,
             adapter_resolver=lambda agent: self._resolve_adapter(agent),
         )
+        # 专家图谱进程内快照与候选物化；WS handler 只负责协议转发与回包。
+        self._expert_graph_service = ExpertGraphService()
         # skills.* 等无状态 RPC：AgentManager 未缓存 agent 时复用的轻量 JiuWenSwarm，
         # 避免每次 cache miss 都 new 导致 SkillNet 异步安装等实例态断裂。
         self._stateless_fallback_agents: dict[str, Any] = {}
@@ -2138,8 +2141,20 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.EXPERT_INSTALL:
                 await self._handle_expert_install(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.EXPERT_IMPORT:
+                await self._handle_expert_import(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.EXPERT_UNLOAD:
                 await self._handle_expert_unload(ws, request, send_lock)
+                return
+            if request.req_method in (
+                ReqMethod.EXPERTS_INVENTORY_REFRESH,
+                ReqMethod.EXPERTS_GRAPH_BUILD,
+                ReqMethod.EXPERTS_GRAPH_GET,
+                ReqMethod.EXPERTS_TEAMS_MINE,
+                ReqMethod.EXPERTS_TEAMS_MATERIALIZE,
+            ):
+                await self._handle_expert_graph_request(ws, request, send_lock)
                 return
             # Schedule task management
             if request.req_method == ReqMethod.SCHEDULE_CHECK_CONFIG:
@@ -4182,12 +4197,61 @@ class AgentWebSocketServer:
             ws, request, send_lock, ok=result.ok, payload=result.payload
         )
 
+    async def _handle_expert_import(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """上传 ZIP，严格解码、校验并持久化为单专家或专家团。"""
+        import base64
+        import binascii
+
+        params = request.params if isinstance(request.params, dict) else {}
+        encoded = params.get("file_content")
+        filename = str(params.get("filename") or "expert.zip")
+        if not isinstance(encoded, str) or not encoded:
+            result = await self._expert_service.import_expert(
+                file_content=b"", filename=filename
+            )
+        else:
+            if len(encoded) > 70 * 1024 * 1024:
+                await self._send_expert_response(
+                    ws, request, send_lock, ok=False,
+                    payload={"error": "专家 ZIP 不能超过 50 MB", "code": "BAD_REQUEST"},
+                )
+                return
+            try:
+                content = base64.b64decode(encoded, validate=True)
+            except (ValueError, binascii.Error):
+                await self._send_expert_response(
+                    ws, request, send_lock, ok=False,
+                    payload={"error": "file_content 不是有效 Base64", "code": "BAD_REQUEST"},
+                )
+                return
+            result = await self._expert_service.import_expert(
+                file_content=content, filename=filename
+            )
+        await self._send_expert_response(
+            ws, request, send_lock, ok=result.ok, payload=result.payload
+        )
+
     async def _handle_expert_unload(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         """业务编排在 ExpertService.unload_expert。"""
         session_id, _ = self._extract_expert_params(request)
         result = await self._expert_service.unload_expert(
             channel_id=request.channel_id or "default",
             session_id=session_id,
+        )
+        await self._send_expert_response(
+            ws, request, send_lock, ok=result.ok, payload=result.payload
+        )
+
+    async def _handle_expert_graph_request(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """转发 ExpertGraph RPC；状态、校验和错误映射均由 service 负责。"""
+        result = await self._expert_graph_service.execute(
+            request.req_method.value,
+            request.params,
         )
         await self._send_expert_response(
             ws, request, send_lock, ok=result.ok, payload=result.payload
@@ -9006,6 +9070,10 @@ class AgentWebSocketServer:
             prewarm_eligible = (
                 not is_swarm
                 and canonical_mode in {"agent", "code", "code.normal"}
+                # 通用预热实例在 session metadata 创建前已完成装配，无法重放
+                # 本次 session.create 携带的单专家。专家会话先绕过通用预热，
+                # 让实例在 expert_id 落盘后创建，保证首轮 prompt 即挂载专家。
+                and not expert_id_param
             )
             create_token = str(params.get("create_token") or "").strip()
             if external_session:

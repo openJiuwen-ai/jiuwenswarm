@@ -1,0 +1,398 @@
+{
+  "version": "xiaoyi.expert-pool-catalog.v1",
+  "defaults": {
+    "member": {
+      "enabled": true,
+      "collaboration": {
+        "contractVersion": "xiaoyi.expert-collaboration.v1",
+        "reusable": true
+      }
+    }
+  },
+  "teams": {
+    "humanize-ppt-team": {
+      "categoryId": "06-ContentCreative",
+      "tags": ["PPT", "演示设计", "内容创作"],
+      "members": {
+        "outline-director": {
+          "displayName": "PPT大纲导演",
+          "description": "把零散资料整理成叙事清楚、重点突出的演示大纲和页面结构。",
+          "quickPrompt": "把这份材料整理成一套适合向领导汇报的PPT大纲。",
+          "skills": ["humanize-ppt"],
+          "deliverables": ["可直接进入视觉制作的演示大纲", "逐页信息结构"],
+          "collaboration": {
+            "outputs": [
+              {
+                "id": "presentation-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-brief.v1",
+                "description": "含受众、叙事主线、逐页结构和素材边界的演示交接单",
+                "visibility": "internal"
+              },
+              {
+                "id": "presentation-outline.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "description": "可浏览评审的PPT大纲",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "guizang-renderer": {
+          "displayName": "中文PPT生成师",
+          "description": "根据演示大纲生成中文排版稳定、可直接展示的HTML幻灯片。",
+          "quickPrompt": "把这份大纲做成一套简洁专业的中文PPT。",
+          "skills": ["guizang-ppt-skill"],
+          "deliverables": ["中文HTML幻灯片"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "presentation-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-brief.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "presentation-deck.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-deck.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "presentation.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "frontend-slides-renderer": {
+          "displayName": "PPT视觉探索师",
+          "description": "探索多种视觉方向，并把选定方向实现成可演示的HTML幻灯片。",
+          "quickPrompt": "给这套PPT探索三种视觉风格并做出最佳版本。",
+          "skills": ["frontend-slides"],
+          "deliverables": ["多风格视觉方案", "可演示HTML幻灯片"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "presentation-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-brief.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "presentation-deck.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-deck.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "visual-presentation.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "video-motion-agent": {
+          "displayName": "PPT视频动效师",
+          "description": "为演示内容增加节奏清楚的视频、转场和数据动效。",
+          "quickPrompt": "给这套PPT加上克制但有冲击力的视频动效。",
+          "skills": ["remotion-video-toolkit"],
+          "deliverables": ["可嵌入演示的视频动效"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "presentation-deck.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-deck.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "presentation-motion.mp4",
+                "mediaType": "video/mp4",
+                "schema": "xiaoyi.presentation-motion.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "html-ppt-presenter": {
+          "displayName": "PPT演讲增强师",
+          "description": "为HTML幻灯片补充演讲模式、备注、导航和现场展示体验。",
+          "quickPrompt": "给这套PPT加上演讲模式和演讲者备注。",
+          "skills": ["html-ppt"],
+          "deliverables": ["带演讲模式的HTML幻灯片"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "presentation-deck.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-deck.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "presentation-player.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "qa": {
+          "displayName": "PPT交付质检官",
+          "description": "检查幻灯片的排版、内容完整性、演讲模式和最终交付可用性。",
+          "quickPrompt": "检查这套PPT能不能直接打开演示和交付。",
+          "skills": ["webapp-testing", "powerpoint-pptx"],
+          "deliverables": ["PPT交付质检报告"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "presentation-deck.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-deck.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "presentation-qa.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.presentation-qa.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "presentation-qa-report.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "huashu-data-pro": {
+      "categoryId": "04-DataAI",
+      "tags": ["数据分析", "Excel", "可视化"],
+      "members": {
+        "trend-analyst": {
+          "displayName": "数据趋势分析师",
+          "description": "识别时间序列趋势、拐点和周期变化，并解释业务含义。",
+          "quickPrompt": "看看这份数据最近有什么趋势和拐点。",
+          "skills": ["excel-analysis", "chart-image"],
+          "deliverables": ["趋势分析网页看板"],
+          "collaboration": {
+            "outputs": [
+              {
+                "id": "data-insight-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.data-insight.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "trend-analysis.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "structure-analyst": {
+          "displayName": "数据结构分析师",
+          "description": "拆解指标构成、分组差异和多表关系，找出变化由谁贡献。",
+          "quickPrompt": "帮我拆解这份数据的构成和关键差异。",
+          "skills": ["excel-analysis", "data-analysis"],
+          "deliverables": ["结构拆解网页看板"],
+          "collaboration": {
+            "outputs": [
+              {
+                "id": "data-insight-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.data-insight.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "structure-analysis.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "anomaly-analyst": {
+          "displayName": "数据异常分析师",
+          "description": "扫描离群点、突变和数据质量问题，并给出可复核证据。",
+          "quickPrompt": "帮我找出这份表里的异常数据和可能原因。",
+          "skills": ["excel-analysis", "data-analysis"],
+          "deliverables": ["异常诊断网页看板"],
+          "collaboration": {
+            "outputs": [
+              {
+                "id": "data-insight-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.data-insight.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "anomaly-analysis.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "software-company": {
+      "categoryId": "02-Programming",
+      "tags": ["软件开发", "产品研发", "交付协作"],
+      "members": {
+        "software-product-manager": {
+          "displayName": "软件产品经理",
+          "description": "把模糊想法整理成用户价值、功能范围和可验收的产品需求。",
+          "quickPrompt": "把我的产品想法整理成一份能评审的需求方案。",
+          "skills": ["prd", "user-research"],
+          "deliverables": ["产品需求评审网页"],
+          "collaboration": {
+            "outputs": [
+              {
+                "id": "product-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.product-brief.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "product-brief.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "software-architect": {
+          "displayName": "软件架构师",
+          "description": "根据产品需求设计系统边界、模块关系、接口和关键技术方案。",
+          "quickPrompt": "根据这份需求给我设计一个清楚可落地的技术架构。",
+          "skills": ["api-dev", "diagram-generator"],
+          "deliverables": ["可视化架构方案"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "product-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.product-brief.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "architecture-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.architecture-brief.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "architecture.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "software-engineer": {
+          "displayName": "软件工程师",
+          "description": "根据架构和需求实现可运行代码，并整理关键实现说明。",
+          "quickPrompt": "按照这份需求和架构帮我实现一个可运行版本。",
+          "skills": ["typescript", "vercel-react-best-practices"],
+          "deliverables": ["可运行代码与实现说明"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "architecture-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.architecture-brief.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "implementation-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.implementation-brief.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "implementation-preview.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        },
+        "software-qa-engineer": {
+          "displayName": "软件测试工程师",
+          "description": "从需求和实现中设计测试、验证关键流程并输出缺陷证据。",
+          "quickPrompt": "检查这个功能有没有明显问题并给我一份测试报告。",
+          "skills": ["test-case-generator", "webapp-testing"],
+          "deliverables": ["可复核的软件测试报告"],
+          "collaboration": {
+            "inputs": [
+              {
+                "id": "implementation-brief.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.implementation-brief.v1",
+                "visibility": "internal"
+              }
+            ],
+            "outputs": [
+              {
+                "id": "software-qa.json",
+                "mediaType": "application/json",
+                "schema": "xiaoyi.software-qa.v1",
+                "visibility": "internal"
+              },
+              {
+                "id": "software-qa-report.html",
+                "mediaType": "text/html",
+                "schema": "xiaoyi.rendered-html.v1",
+                "primary": true,
+                "visibility": "public"
+              }
+            ]
+          }
+        }
+      }
+    }
+  }
+}

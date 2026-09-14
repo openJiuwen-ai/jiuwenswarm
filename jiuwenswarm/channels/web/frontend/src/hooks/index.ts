@@ -4,3 +4,4 @@
 
 export { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages } from './useWebSocket';
 export { useSpeechRecognition, useSpeechSynthesis } from './useSpeech';
+export { useFullscreenPanel } from './useFullscreenPanel';

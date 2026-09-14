@@ -268,6 +268,26 @@ class ExpertService:
             payload={"expert_id": expert_id, "type": expert_type, "warnings": warnings},
         )
 
+    async def import_expert(self, *, file_content: bytes, filename: str) -> ExpertOpResult:
+        if not file_content:
+            return ExpertOpResult(
+                ok=False,
+                payload={"error": "missing file_content", "code": "BAD_REQUEST"},
+            )
+        try:
+            payload = _expert_store.import_expert_zip(file_content, filename=filename)
+            return ExpertOpResult(ok=True, payload=payload)
+        except _expert_store.InvalidExpertPackage as exc:
+            logger.warning("[ExpertService] expert.import 包非法: %s", exc)
+            return ExpertOpResult(
+                ok=False, payload={"error": str(exc), "code": "INVALID_PACKAGE"}
+            )
+        except Exception as exc:
+            logger.exception("[ExpertService] expert.import failed: %s", exc)
+            return ExpertOpResult(
+                ok=False, payload={"error": str(exc), "code": "INTERNAL_ERROR"}
+            )
+
     async def load_expert(
             self,
             *,

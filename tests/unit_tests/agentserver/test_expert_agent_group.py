@@ -11,10 +11,13 @@ import shutil
 from pathlib import Path
 
 import pytest
+from openjiuwen.harness.schema.extension_spec import PromptSectionSpec
 
+from jiuwenswarm.server.runtime.expert import agent_group as agent_group_module
 from jiuwenswarm.server.runtime.expert import expert_store as es
 from jiuwenswarm.server.runtime.expert.agent_group import (
     INSTRUCTION_SECTION_NAME,
+    TEAM_STAGE_SECTION_NAME,
     AgentGroupPackageError,
     load_agent_group_package,
     read_group_display,
@@ -23,7 +26,7 @@ from jiuwenswarm.server.runtime.expert.agent_group import (
 )
 
 TESTDATA_GROUP = (
-        Path(__file__).parent / "testdata" / "expert_groups" / "sample-expert-group"
+    Path(__file__).parent / "testdata" / "expert_groups" / "sample-expert-group"
 )
 
 
@@ -85,6 +88,71 @@ def test_load_sample_package_ok() -> None:
         assert all(Path(d).is_absolute() for d in skill_dirs), name
 
 
+def test_load_member_team_stage_as_final_priority_section(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    pkg = _copy_sample(tmp_path)
+    member_dir = pkg / "agents" / "member1"
+    stage_file = member_dir / "EXPERT_TEAM_STAGE.txt"
+    stage_file.write_text(
+        "# 阶段覆盖规则\n\n只交付声明的 handoff。\n", encoding="utf-8"
+    )
+    manifest_path = member_dir / "manifest.json"
+    manifest = _read_manifest(manifest_path)
+    manifest["metadata"] = {"expertTeamStageFile": stage_file.name}
+    _write_manifest(manifest_path, manifest)
+
+    original_loader = agent_group_module.load_agent_template_package
+
+    def load_with_late_source_contract(path: Path):
+        template = original_loader(path)
+        if Path(path).parent.name != "member1":
+            return template
+        source_contract = PromptSectionSpec(
+            name="source_output_contract",
+            content={"cn": "生成 standalone.md", "en": "generate standalone.md"},
+            priority=100,
+        )
+        return template.model_copy(
+            update={
+                "prompt_sections": [*template.prompt_sections, source_contract]
+            }
+        )
+
+    monkeypatch.setattr(
+        agent_group_module, "load_agent_template_package", load_with_late_source_contract
+    )
+
+    template = load_agent_group_package(pkg)["member1"]
+    stage_sections = [
+        section
+        for section in template.prompt_sections
+        if section.name == TEAM_STAGE_SECTION_NAME
+    ]
+
+    assert len(stage_sections) == 1
+    assert stage_sections[0].priority == 101
+    assert stage_sections[0].priority > max(
+        section.priority
+        for section in template.prompt_sections
+        if section.name != TEAM_STAGE_SECTION_NAME
+    )
+    assert "只交付声明的 handoff" in stage_sections[0].content["cn"]
+
+
+def test_reject_member_team_stage_path_escape(tmp_path: Path) -> None:
+    pkg = _copy_sample(tmp_path)
+    outside = pkg / "outside-stage.md"
+    outside.write_text("outside\n", encoding="utf-8")
+    member_manifest = pkg / "agents" / "member1" / "manifest.json"
+    manifest = _read_manifest(member_manifest)
+    manifest["metadata"] = {"expertTeamStageFile": "../../outside-stage.md"}
+    _write_manifest(member_manifest, manifest)
+
+    with pytest.raises(AgentGroupPackageError, match="阶段规则"):
+        load_agent_group_package(pkg)
+
+
 def test_read_group_display() -> None:
     display = read_group_display(TESTDATA_GROUP)
     assert display["name"] == "sample-expert-group"
@@ -111,15 +179,17 @@ def test_validate_member_model_field_warns(tmp_path: Path) -> None:
     # model 字段不生效（warning 请移除）；须是 core loader 可解析的合法引用，
     # 非法形态会在装载期被 core loader 硬失败（与单专家现状同款语义）
     (pkg / "agents" / "member1" / "model.json").write_text(
-        json.dumps({
-            "model": {
-                "model_client_config": {
-                    "client_provider": "OpenAI",
-                    "api_key": "sk-dummy",
-                    "api_base": "https://example.com/v1",
+        json.dumps(
+            {
+                "model": {
+                    "model_client_config": {
+                        "client_provider": "OpenAI",
+                        "api_key": "sk-dummy",
+                        "api_base": "https://example.com/v1",
+                    }
                 }
             }
-        }),
+        ),
         encoding="utf-8",
     )
     member_manifest = pkg / "agents" / "member1" / "manifest.json"
@@ -200,7 +270,9 @@ def test_reject_member_forbidden_fields(tmp_path: Path, forbidden: str) -> None:
     pkg = _copy_sample(tmp_path)
     member_manifest = pkg / "agents" / "member1" / "manifest.json"
     payload = _read_manifest(member_manifest)
-    payload[forbidden] = [{"file": "x.py", "class": "X"}] if forbidden == "rails" else [{"dir": "sub/x"}]
+    payload[forbidden] = (
+        [{"file": "x.py", "class": "X"}] if forbidden == "rails" else [{"dir": "sub/x"}]
+    )
     _write_manifest(member_manifest, payload)
     with pytest.raises(AgentGroupPackageError, match=forbidden):
         load_agent_group_package(pkg)
@@ -245,7 +317,9 @@ def test_validate_expert_package_dispatches_group(tmp_path: Path) -> None:
     assert es.validate_expert_package(pkg) == []
 
 
-def test_validate_expert_package_group_failure_as_invalid_package(tmp_path: Path) -> None:
+def test_validate_expert_package_group_failure_as_invalid_package(
+    tmp_path: Path,
+) -> None:
     pkg = _copy_sample(tmp_path)
     (pkg / "agents" / "leader" / "AGENT.md").unlink()
     with pytest.raises(es.InvalidExpertPackage, match="AGENT.md"):
@@ -358,9 +432,7 @@ def test_identity_extra_team_uses_lead_name(
     _patch_metadata(
         monkeypatch, {"expert_id": "sample-expert-group", "expert_type": "team"}
     )
-    monkeypatch.setattr(
-        es, "get_cached_expert_package_dir", lambda _id: TESTDATA_GROUP
-    )
+    monkeypatch.setattr(es, "get_cached_expert_package_dir", lambda _id: TESTDATA_GROUP)
 
     extra = svc.current_expert_identity_extra("s1")
 

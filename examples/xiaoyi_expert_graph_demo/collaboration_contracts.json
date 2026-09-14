@@ -1,0 +1,327 @@
+{
+  "data-dashboard-analyst": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "outputs": [
+      {
+        "id": "data-insight-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.data-insight.v1",
+        "description": "含指标变化、异常线索、原因假设和行动建议的数据洞察交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "data-dashboard.html",
+        "mediaType": "text/html",
+        "schema": "xiaoyi.rendered-html.v1",
+        "description": "可直接打开汇报的一页数据洞察看板",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "campaign-launch-director"
+    ]
+  },
+  "paper-insight-analyst": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "outputs": [
+      {
+        "id": "research-evidence.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.research-evidence.v1",
+        "description": "保留来源、证据等级和适用边界的论文证据清单",
+        "visibility": "internal"
+      },
+      {
+        "id": "paper-insight-brief.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.research-brief.v1",
+        "description": "带证据链接的论文洞察卡片",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "research-prd-lead"
+    ]
+  },
+  "research-prd-lead": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "inputs": [
+      {
+        "id": "research-evidence.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.research-evidence.v1",
+        "description": "可追溯的用户研究或论文证据",
+        "visibility": "internal"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "product-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.product-brief.v1",
+        "description": "含目标用户、核心问题、价值主张、功能范围和验收条件的产品交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "product-requirements.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.product-requirements.v1",
+        "description": "可评审、可追溯的产品需求文档",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "paper-insight-analyst",
+      "campaign-launch-director"
+    ]
+  },
+  "campaign-launch-director": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "inputs": [
+      {
+        "id": "data-insight-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.data-insight.v1",
+        "description": "用于制定增长动作的数据洞察",
+        "visibility": "internal"
+      },
+      {
+        "id": "product-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.product-brief.v1",
+        "description": "用于制定发布策略的产品定义",
+        "visibility": "internal"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "campaign-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.campaign-brief.v1",
+        "description": "含受众、卖点、内容支柱、渠道动作、事实边界和发布节奏的营销交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "campaign-plan.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.campaign-plan.v1",
+        "description": "可评审的营销策略与渠道文案方案",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "data-dashboard-analyst",
+      "research-prd-lead",
+      "xiaohongshu-content-studio"
+    ]
+  },
+  "travel-journal-designer": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "outputs": [
+      {
+        "id": "travel-content-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.travel-content-brief.v1",
+        "description": "含行程亮点、真实体验、适合人群和内容素材的旅行交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "travel-journal.html",
+        "mediaType": "text/html",
+        "schema": "xiaoyi.rendered-html.v1",
+        "description": "可打开、可打印的旅行电子手帐",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "xiaohongshu-content-studio"
+    ]
+  },
+  "xiaohongshu-content-studio": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "inputs": [
+      {
+        "id": "campaign-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.campaign-brief.v1",
+        "description": "已确认事实边界和渠道策略的营销交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "travel-content-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.travel-content-brief.v1",
+        "description": "包含真实旅行信息和内容素材的旅行交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "content-plan.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.content-plan.v1",
+        "description": "含内容支柱、叙事角度和平台适配建议的内容交接单",
+        "visibility": "internal"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "xiaohongshu-campaign.html",
+        "mediaType": "text/html",
+        "schema": "xiaoyi.rendered-html.v1",
+        "description": "三篇不同角度、可复制发布的小红书内容展示页",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "campaign-launch-director",
+      "travel-journal-designer"
+    ]
+  },
+  "content-creator": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "inputs": [
+      {
+        "id": "data-insight-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.data-insight.v1",
+        "description": "用于确定内容重点的数据洞察",
+        "visibility": "internal"
+      },
+      {
+        "id": "product-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.product-brief.v1",
+        "description": "用于确定品牌叙事的产品定义",
+        "visibility": "internal"
+      },
+      {
+        "id": "travel-content-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.travel-content-brief.v1",
+        "description": "用于跨平台改写的旅行故事和素材",
+        "visibility": "internal"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "content-plan.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.content-plan.v1",
+        "description": "含受众、内容支柱、叙事角度、编辑节奏与平台适配的内容交接单",
+        "visibility": "internal"
+      },
+      {
+        "id": "content-package.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.content-package.v1",
+        "description": "可执行的多平台内容策略和内容初稿",
+        "primary": true,
+        "visibility": "public"
+      }
+    ],
+    "complementsWith": [
+      "data-dashboard-analyst",
+      "research-prd-lead",
+      "travel-journal-designer",
+      "xiaohongshu-content-studio"
+    ]
+  },
+  "doc-writer": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "inputs": [
+      {
+        "id": "data-insight-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.data-insight.v1",
+        "description": "需要文档化的数据洞察",
+        "visibility": "internal"
+      },
+      {
+        "id": "research-evidence.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.research-evidence.v1",
+        "description": "需要转成说明文档的可追溯证据",
+        "visibility": "internal"
+      },
+      {
+        "id": "product-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.product-brief.v1",
+        "description": "需要转成设计文档或用户手册的产品定义",
+        "visibility": "internal"
+      }
+    ],
+    "outputs": [
+      {
+        "id": "professional-document.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.professional-document.v1",
+        "description": "结构清晰、事实准确的专业文档",
+        "primary": true,
+        "visibility": "public"
+      }
+    ]
+  },
+  "a-stock-brain": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": false,
+    "outputs": [
+      {
+        "id": "stock-research-brief.json",
+        "mediaType": "application/json",
+        "schema": "xiaoyi.stock-research.v1",
+        "description": "带数据时间和来源的 A 股投研摘要",
+        "visibility": "internal"
+      },
+      {
+        "id": "stock-research-report.html",
+        "mediaType": "text/html",
+        "schema": "xiaoyi.rendered-html.v1",
+        "description": "A 股投研分析展示页",
+        "primary": true,
+        "visibility": "public"
+      }
+    ]
+  },
+  "habit-dashboard-coach": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "outputs": [
+      {
+        "id": "habit-dashboard.html",
+        "mediaType": "text/html",
+        "schema": "xiaoyi.rendered-html.v1",
+        "description": "可直接使用并在浏览器保存进度的习惯打卡看板",
+        "primary": true,
+        "visibility": "public"
+      }
+    ]
+  },
+  "sop-knowledge-coach": {
+    "contractVersion": "xiaoyi.expert-collaboration.v1",
+    "reusable": true,
+    "outputs": [
+      {
+        "id": "standard-operating-procedure.md",
+        "mediaType": "text/markdown",
+        "schema": "xiaoyi.standard-operating-procedure.v1",
+        "description": "可执行、可培训、可审计的标准作业程序",
+        "primary": true,
+        "visibility": "public"
+      }
+    ]
+  }
+}

@@ -216,14 +216,16 @@ class TeamMonitorHandler(BaseMonitorHandler):
         })
         return base
 
-    async def _lookup_task_body(self, task_id: str) -> tuple[str, str] | None:
-        """Re-query the task's title/content via the monitor's public API.
+    async def _lookup_task_body(
+        self, task_id: str
+    ) -> tuple[str, str, str | None] | None:
+        """Re-query the task's title/content/assignee via the monitor's public API.
 
         Args:
             task_id: The DB task id carried by the monitor event.
 
         Returns:
-            ``(title, content)`` when the task exists, else ``None``. On any
+            ``(title, content, assignee)`` when the task exists, else ``None``. On any
             exception (monitor None / query error) logs a warning and returns
             ``None`` so the caller can still emit the event with ``task_id`` +
             ``status`` (no body) — never blocks the event stream.
@@ -241,16 +243,17 @@ class TeamMonitorHandler(BaseMonitorHandler):
             return None
         if task is None:
             return None
-        return task.title, task.content
+        return task.title, task.content, task.assignee
 
     async def _handle_task(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
         """Converge every task event into the frontend-ready task shape.
 
         The authoritative task status is resolved once here (server-side) so the
         frontend reads ``status`` directly and never re-derives it from the event
-        type. The assignee already rides in ``member_id`` set by the caller.
+        type. Status events may identify the affected member via ``member_id``;
+        ``TASK_CREATED`` instead gets its canonical assignee from the task row.
 
-        For ``TASK_CREATED`` / ``TASK_UPDATED`` only, the title/content are
+        For ``TASK_CREATED`` / ``TASK_UPDATED`` only, the task row is
         re-queried from the DB (via ``_lookup_task_body``) and attached here so
         these events become the single source of truth for the task body — the
         frontend's optimistic card (built from the tool_call ``id``) and the
@@ -279,6 +282,8 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 content_field = _task_text_field("content", body[1])
                 base.update(title_field)
                 base.update(content_field)
+                if event.event_type == MonitorEventType.TASK_CREATED:
+                    base["assignee"] = body[2]
         return base
 
     async def _handle_message(self, base: dict[str, Any], event: MonitorEvent) -> dict[str, Any]:
