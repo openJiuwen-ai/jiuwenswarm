@@ -453,6 +453,35 @@ async def test_same_named_local_package_wins_without_hub_provenance(
     assert [(card["id"], card["source"], card["installed"]) for card in cards] == [
         ("sales-expert", "local", True)
     ]
+    assert cards[0]["avatar"] == "https://example.test/icon.png"
+
+
+@pytest.mark.asyncio
+async def test_catalog_list_keeps_hub_card_when_same_named_local_exists(
+    extension_workspace: Path,
+) -> None:
+    local = (
+        extension_workspace / "plugins" / "plugin_packages" / "local" / "sales-plugin"
+    )
+    local.mkdir(parents=True)
+    (local / "manifest.json").write_text(
+        json.dumps({"package_type": "plugin", "id": "sales-plugin"}),
+        encoding="utf-8",
+    )
+    catalog.upsert_plugin_marketplace_entry(
+        "sales-plugin", installed=False, source="local"
+    )
+    hub = FakeHubAssetPort(
+        _item("plugin-asset-uuid", "plugin", package_name="sales-plugin")
+    )
+
+    cards = await catalog.list_plugin_packages_with_hub(
+        {"filter": "builtin+hub"}, hub_port=hub
+    )
+
+    assert [(card["id"], card["source"], card["avatar"]) for card in cards] == [
+        ("plugin-asset-uuid", "hub", "https://example.test/icon.png")
+    ]
 
 
 @pytest.mark.asyncio
