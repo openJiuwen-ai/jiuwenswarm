@@ -17,6 +17,7 @@ import json
 import logging
 import time
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any
 
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
@@ -124,6 +125,22 @@ def _content_to_str(content: Any) -> str:
         return str(content)
 
 
+@dataclass(frozen=True)
+class EventMeta:
+    """事件的公共标识字段(用于结构确保与自动节点生成)。
+
+    打包 trace/session/interaction 标识字段,避免辅助方法参数过多。
+    """
+
+    trace_id: str
+    session_id: str
+    interaction_seq: int
+    agent_id: str
+    source: str
+    timestamp: float
+    event_type: str
+
+
 class AgentSSASPreprocessor:
     """AgentSSAS 格式解析器。
 
@@ -218,7 +235,7 @@ class AgentSSASPreprocessor:
 
         # 增量构建 Trace / Session / Interaction,并处理自动 node 生成(5.10 节)
         # auto_events 收集自动生成的派生事件(session_start, user_input)
-        trace, session, interaction, auto_events = self._ensure_structures(
+        meta = EventMeta(
             trace_id=trace_id,
             session_id=session_id,
             interaction_seq=interaction_seq,
@@ -227,6 +244,7 @@ class AgentSSASPreprocessor:
             timestamp=timestamp,
             event_type=event_type,
         )
+        trace, session, interaction, auto_events = self._ensure_structures(meta)
 
         # 生成 node_id
         node_id = self._generate_node_id(
@@ -237,7 +255,6 @@ class AgentSSASPreprocessor:
             llm_call_seq=llm_call_seq,
             tool_call_id=tool_call_id,
         )
-
         # 提取 payload 层字段
         tool_name = _safe_str(payload.get("tool_name"))
         content = payload.get("content", {})
@@ -279,14 +296,7 @@ class AgentSSASPreprocessor:
             interaction_seq=interaction_seq,
             interaction=interaction,
         )
-        next_node_id = self._determine_next_node_id(
-            node_type=node_type,
-            event_type=event_type,
-            session_id=session_id,
-            session=session,
-            interaction_seq=interaction_seq,
-            interaction=interaction,
-        )
+        next_node_id = self._determine_next_node_id(node_type=node_type, session=session)
 
         # 构建 EventNode
         event_node = EventNode(
@@ -347,7 +357,8 @@ class AgentSSASPreprocessor:
         # 返回派生事件 + 当前事件
         return auto_events + [main_event]
 
-    def _determine_node_type(self, event_type: str, event_class: str) -> str:
+    @staticmethod
+    def _determine_node_type(event_type: str, event_class: str) -> str:
         """根据 event_type 和 event_class 确定 node_type。
 
         参数:
@@ -364,16 +375,7 @@ class AgentSSASPreprocessor:
             return node_type
         raise ValueError(f"无法识别的 event_type: {event_type!r}")
 
-    def _ensure_structures(
-        self,
-        trace_id: str,
-        session_id: str,
-        interaction_seq: int,
-        agent_id: str,
-        source: str,
-        timestamp: float,
-        event_type: str,
-    ) -> tuple[Trace, Session, Interaction | None, list[UnifiedEvent]]:
+    def _ensure_structures(self, meta: EventMeta) -> tuple[Trace, Session, Interaction | None, list[UnifiedEvent]]:
         """确保 Trace、Session、Interaction 结构存在,处理自动 node 生成。
 
         按文档 5.10 节:
@@ -383,13 +385,7 @@ class AgentSSASPreprocessor:
         自动生成的节点同时封装为 UnifiedEvent 返回,供接入适配模块写入 events 表。
 
         参数:
-            trace_id: 追踪 ID。
-            session_id: 会话 ID。
-            interaction_seq: 交互序号。
-            agent_id: 智能体 ID。
-            source: 上报源。
-            timestamp: 事件时间戳。
-            event_type: 事件类型。
+            meta: 事件公共标识字段(trace/session/interaction/agent/source/时间/类型)。
 
         返回: (Trace, Session, Interaction 或 None, auto_events) 元组。
             auto_events 是自动生成的派生事件列表。
@@ -397,22 +393,22 @@ class AgentSSASPreprocessor:
         auto_events: list[UnifiedEvent] = []
 
         # 确保 Trace 存在
-        trace = self._traces.get(trace_id)
+        trace = self._traces.get(meta.trace_id)
         if trace is None:
             trace = Trace(
-                trace_id=trace_id,
+                trace_id=meta.trace_id,
                 source_info={},
                 sessions=[],
                 all_nodes={},
                 all_data={},
             )
-            self._traces[trace_id] = trace
+            self._traces[meta.trace_id] = trace
 
         # 确保 Session 存在(5.10 节:自动生成 session)
-        session = self._sessions.get(session_id)
+        session = self._sessions.get(meta.session_id)
         if session is not None:
             # 已存在: 移到末尾(LRU 最近使用)
-            self._sessions.move_to_end(session_id)
+            self._sessions.move_to_end(meta.session_id)
         else:
             # 新 session: 检查 LRU 上限, 满则淘汰最久未使用的
             if len(self._sessions) >= _MAX_CACHED_SESSIONS:
@@ -420,33 +416,30 @@ class AgentSSASPreprocessor:
                 self._evict_session_cache(evicted_sid)
                 logger.info("LRU 淘汰 session 缓存: %s", evicted_sid)
             session = Session(
-                session_id=session_id,
+                session_id=meta.session_id,
                 session_node_id="",
                 interactions=[],
             )
-            self._sessions[session_id] = session
+            self._sessions[meta.session_id] = session
             trace.sessions.append(session)
 
             # 自动生成 session 节点(5.10 节)
             auto_event = self._create_auto_session(
                 trace=trace,
-                session_id=session_id,
-                agent_id=agent_id,
-                source=source,
-                timestamp=timestamp,
+                meta=meta,
             )
             if auto_event is not None:
                 auto_events.append(auto_event)
 
         # 确保 Interaction 存在(5.10 节:自动生成 interaction)
         interaction: Interaction | None = None
-        if interaction_seq >= 0:
-            interaction_key = (session_id, interaction_seq)
+        if meta.interaction_seq >= 0:
+            interaction_key = (meta.session_id, meta.interaction_seq)
             interaction = self._interactions.get(interaction_key)
             if interaction is None:
                 interaction = Interaction(
-                    interaction_seq=interaction_seq,
-                    session_id=session_id,
+                    interaction_seq=meta.interaction_seq,
+                    session_id=meta.session_id,
                     interaction_node_id="",
                     tool_call_node_ids=[],
                     llm_call_node_ids=[],
@@ -455,15 +448,11 @@ class AgentSSASPreprocessor:
                 session.interactions.append(interaction)
 
                 # 自动生成 interaction 节点(5.10 节),除非当前事件本身就是 invoke_start
-                if event_type != "invoke_start":
+                if meta.event_type != "invoke_start":
                     auto_event = self._create_auto_interaction(
                         trace=trace,
                         session=session,
-                        session_id=session_id,
-                        interaction_seq=interaction_seq,
-                        agent_id=agent_id,
-                        source=source,
-                        timestamp=timestamp,
+                        meta=meta,
                     )
                     if auto_event is not None:
                         auto_events.append(auto_event)
@@ -486,14 +475,7 @@ class AgentSSASPreprocessor:
         # 清理 last_node_id
         self._last_node_id.pop(session_id, None)
 
-    def _create_auto_session(
-        self,
-        trace: Trace,
-        session_id: str,
-        agent_id: str,
-        source: str,
-        timestamp: float,
-    ) -> UnifiedEvent | None:
+    def _create_auto_session(self, trace: Trace, meta: EventMeta) -> UnifiedEvent | None:
         """自动生成 session 节点(文档 5.10 节)。
 
         当收到第一个事件且对应 Session 尚不存在时,自动生成 session 节点,
@@ -501,13 +483,11 @@ class AgentSSASPreprocessor:
 
         参数:
             trace: 所属 Trace。
-            session_id: 会话 ID。
-            agent_id: 智能体 ID。
-            source: 上报源。
-            timestamp: 事件时间戳。
+            meta: 事件公共标识字段。
 
         返回: 封装为 UnifiedEvent 的 session_start 派生事件。
         """
+        session_id = meta.session_id
         node_id = f"{session_id}_session"
         node = EventNode(
             node_id=node_id,
@@ -516,14 +496,14 @@ class AgentSSASPreprocessor:
             next_node_id="",
             session_id=session_id,
             interaction_seq=-1,
-            agent_id=agent_id,
+            agent_id=meta.agent_id,
             input_content="",
             output_content="",
             action_name="session_start",
             event_type="session_start",
             event_class="lifecycle",
-            source=source or "AgentSSASSecurityRail",
-            timestamp=timestamp or time.time(),
+            source=meta.source or "AgentSSASSecurityRail",
+            timestamp=meta.timestamp or time.time(),
             llm_call_seq=-1,
             tool_call_seq=-1,
             is_risk_event=False,
@@ -545,11 +525,7 @@ class AgentSSASPreprocessor:
         self,
         trace: Trace,
         session: Session,
-        session_id: str,
-        interaction_seq: int,
-        agent_id: str,
-        source: str,
-        timestamp: float,
+        meta: EventMeta,
     ) -> UnifiedEvent | None:
         """自动生成 interaction 节点(文档 5.10 节)。
 
@@ -559,14 +535,12 @@ class AgentSSASPreprocessor:
         参数:
             trace: 所属 Trace。
             session: 所属 Session。
-            session_id: 会话 ID。
-            interaction_seq: 交互序号。
-            agent_id: 智能体 ID。
-            source: 上报源。
-            timestamp: 事件时间戳。
+            meta: 事件公共标识字段。
 
         返回: 封装为 UnifiedEvent 的 user_input 派生事件。
         """
+        session_id = meta.session_id
+        interaction_seq = meta.interaction_seq
         node_id = f"{session_id}_{interaction_seq}_interaction"
         session_node_id = session.session_node_id or ""
         node = EventNode(
@@ -576,14 +550,14 @@ class AgentSSASPreprocessor:
             next_node_id="",
             session_id=session_id,
             interaction_seq=interaction_seq,
-            agent_id=agent_id,
+            agent_id=meta.agent_id,
             input_content="",
             output_content="",
             action_name="user_query",
             event_type="user_input",
             event_class="lifecycle",
-            source=source or "AgentSSASSecurityRail",
-            timestamp=timestamp or time.time(),
+            source=meta.source or "AgentSSASSecurityRail",
+            timestamp=meta.timestamp or time.time(),
             llm_call_seq=-1,
             tool_call_seq=-1,
             is_risk_event=False,
@@ -611,14 +585,15 @@ class AgentSSASPreprocessor:
             event_id=new_event_id(),
         )
 
+    @staticmethod
     def _generate_node_id(
-        self,
         node_type: str,
         session_id: str,
         interaction_seq: int,
-        tool_call_seq: int,
-        llm_call_seq: int,
-        tool_call_id: str,
+        *,
+        tool_call_seq: int = -1,
+        llm_call_seq: int = -1,
+        tool_call_id: str = "",
     ) -> str:
         """根据节点类型和序号生成 node_id(文档 5.5 节)。
 
@@ -628,7 +603,7 @@ class AgentSSASPreprocessor:
             interaction_seq: 交互序号。
             tool_call_seq: 工具调用序号。
             llm_call_seq: LLM 调用序号。
-            tool_call_id: 工具调用唯一标识。
+            tool_call_id: 工具调用唯一标识(保留参数,tool_call 级 ID 由上层维护)。
 
         返回: node_id 字符串。
         """
@@ -643,8 +618,8 @@ class AgentSSASPreprocessor:
         # 未知类型回退:用 session_id 加 node_type
         return f"{session_id}_{node_type}"
 
+    @staticmethod
     def _extract_content_fields(
-        self,
         event_type: str,
         content: dict,
         tool_name: str,
@@ -703,8 +678,8 @@ class AgentSSASPreprocessor:
 
         return input_content, output_content, action_name
 
+    @staticmethod
     def _determine_parent_node_id(
-        self,
         node_type: str,
         session_id: str,
         session: Session,
@@ -743,15 +718,8 @@ class AgentSSASPreprocessor:
 
         return ""
 
-    def _determine_next_node_id(
-        self,
-        node_type: str,
-        event_type: str,
-        session_id: str,
-        session: Session,
-        interaction_seq: int,
-        interaction: Interaction | None,
-    ) -> str:
+    @staticmethod
+    def _determine_next_node_id(node_type: str, session: Session) -> str:
         """确定 next_node_id。
 
         0.1 版本采用简单策略:结束事件(tool_output / llm_output / invoke_end)
@@ -760,11 +728,7 @@ class AgentSSASPreprocessor:
 
         参数:
             node_type: 节点类型。
-            event_type: 事件类型。
-            session_id: 会话 ID。
             session: 所属 Session。
-            interaction_seq: 交互序号。
-            interaction: 所属 Interaction。
 
         返回: next_node_id 字符串(0.1 版本通常返回空字符串)。
         """
@@ -776,8 +740,8 @@ class AgentSSASPreprocessor:
 
         return ""
 
+    @staticmethod
     def _update_interaction(
-        self,
         interaction: Interaction | None,
         node_type: str,
         event_type: str,
@@ -804,8 +768,8 @@ class AgentSSASPreprocessor:
             if node_id not in interaction.llm_call_node_ids:
                 interaction.llm_call_node_ids.append(node_id)
 
+    @staticmethod
     def _update_session(
-        self,
         session: Session,
         node_type: str,
         event_type: str,

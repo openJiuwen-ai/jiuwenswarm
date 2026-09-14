@@ -105,10 +105,8 @@ class EventAggregator:
         aggregated = self._build_toolcall_event(
             node_id=node_id,
             tool_name=tool_name,
-            input_content=input_content,
-            output_content=end_event.event_node.output_content,
-            start_time=start_time,
-            end_time=end_time,
+            contents=(input_content, end_event.event_node.output_content),
+            time_range=(start_time, end_time),
             aux_ids=self._build_aux_ids(end_event),
         )
 
@@ -152,10 +150,8 @@ class EventAggregator:
                         tool_calls.append(self._build_toolcall_event(
                             node_id=stack_node.node_id,
                             tool_name=stack_node.action_name,
-                            input_content=stack_node.input_content,
-                            output_content=stack_node.output_content,
-                            start_time=stack_node.timestamp,
-                            end_time=stack_node.timestamp,
+                            contents=(stack_node.input_content, stack_node.output_content),
+                            time_range=(stack_node.timestamp, stack_node.timestamp),
                             aux_ids=self._build_aux_ids(self._stack[j]),
                         ))
         else:
@@ -164,10 +160,8 @@ class EventAggregator:
 
         aggregated = self._build_llmcall_event(
             node_id=node_id,
-            input_content=input_content,
-            output_content=end_event.event_node.output_content,
-            start_time=start_time,
-            end_time=end_event.event_node.timestamp,
+            contents=(input_content, end_event.event_node.output_content),
+            time_range=(start_time, end_event.event_node.timestamp),
             tool_calls=tool_calls,
             aux_ids=self._build_aux_ids(end_event),
         )
@@ -217,19 +211,15 @@ class EventAggregator:
                 if stack_node.event_type == "llm_output":
                     llm_calls.append(self._build_llmcall_event(
                         node_id=stack_node.node_id,
-                        input_content="",
-                        output_content=stack_node.output_content,
-                        start_time=stack_node.timestamp,
-                        end_time=stack_node.timestamp,
+                        contents=("", stack_node.output_content),
+                        time_range=(stack_node.timestamp, stack_node.timestamp),
                         tool_calls=[],
                         aux_ids=self._build_aux_ids(self._stack[j]),
                     ))
 
         aggregated = self._build_interaction_event(
-            input_content=input_content,
-            output_content=output_content,
-            start_time=start_time,
-            end_time=end_event.event_node.timestamp,
+            contents=(input_content, output_content),
+            time_range=(start_time, end_event.event_node.timestamp),
             llm_calls=llm_calls,
             aux_ids=self._build_aux_ids(end_event),
         )
@@ -262,10 +252,8 @@ class EventAggregator:
     def _build_toolcall_event(
         node_id: str,
         tool_name: str,
-        input_content: str,
-        output_content: str,
-        start_time: float,
-        end_time: float,
+        contents: tuple[str, str],
+        time_range: tuple[float, float],
         aux_ids: dict,
     ) -> dict:
         """构建 one_toolcall_event 聚合事件 dict。
@@ -273,14 +261,14 @@ class EventAggregator:
         参数:
             node_id: 节点唯一标识。
             tool_name: 工具名称。
-            input_content: 工具输入参数。
-            output_content: 工具执行结果。
-            start_time: 开始时间戳。
-            end_time: 结束时间戳。
+            contents: (输入参数, 执行结果) 二元组。
+            time_range: (开始时间戳, 结束时间戳) 二元组。
             aux_ids: 辅助 ID 子结构。
 
         返回: one_toolcall_event dict。
         """
+        input_content, output_content = contents
+        start_time, end_time = time_range
         return {
             "event_type": "one_toolcall_event",
             "event_version": CURRENT_EVENT_VERSION,
@@ -297,10 +285,8 @@ class EventAggregator:
     @staticmethod
     def _build_llmcall_event(
         node_id: str,
-        input_content: str,
-        output_content: str,
-        start_time: float,
-        end_time: float,
+        contents: tuple[str, str],
+        time_range: tuple[float, float],
         tool_calls: list[dict],
         aux_ids: dict,
     ) -> dict:
@@ -308,15 +294,15 @@ class EventAggregator:
 
         参数:
             node_id: 节点唯一标识。
-            input_content: 模型输入内容(messages)。
-            output_content: 模型输出内容(response)。
-            start_time: 开始时间戳。
-            end_time: 结束时间戳。
+            contents: (模型输入 messages, 模型输出 response) 二元组。
+            time_range: (开始时间戳, 结束时间戳) 二元组。
             tool_calls: 工具调用序列。
             aux_ids: 辅助 ID 子结构。
 
         返回: one_llmcall_event dict。
         """
+        input_content, output_content = contents
+        start_time, end_time = time_range
         return {
             "event_type": "one_llmcall_event",
             "event_version": CURRENT_EVENT_VERSION,
@@ -332,25 +318,23 @@ class EventAggregator:
 
     @staticmethod
     def _build_interaction_event(
-        input_content: str,
-        output_content: str,
-        start_time: float,
-        end_time: float,
+        contents: tuple[str, str],
+        time_range: tuple[float, float],
         llm_calls: list[dict],
         aux_ids: dict,
     ) -> dict:
         """构建 one_interaction_event 聚合事件 dict。
 
         参数:
-            input_content: 用户输入内容。
-            output_content: Agent 输出内容。
-            start_time: 开始时间戳。
-            end_time: 结束时间戳。
+            contents: (用户输入, Agent 输出) 二元组。
+            time_range: (开始时间戳, 结束时间戳) 二元组。
             llm_calls: LLM 调用序列。
             aux_ids: 辅助 ID 子结构。
 
         返回: one_interaction_event dict。
         """
+        input_content, output_content = contents
+        start_time, end_time = time_range
         return {
             "event_type": "one_interaction_event",
             "event_version": CURRENT_EVENT_VERSION,
