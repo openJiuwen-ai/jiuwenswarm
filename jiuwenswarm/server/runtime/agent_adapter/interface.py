@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 import inspect
 import logging
@@ -1071,6 +1072,14 @@ class JiuWenSwarm:
         self._heartbeat_service: Any | None = None
         self._permissions_changed_notifier: Callable[[], None] | None = None
         self._permissions_external_input_context_builder: Callable[..., Any] | None = None
+        # Preserve an SDK-declared root Agent across the SkillNet rebuild hook.
+        # Default Agent builds retain their historical no-argument reload path.
+        self._runtime_agent_create_snapshot: tuple[
+            dict[str, Any] | None,
+            str,
+            str | None,
+            dict[str, Any],
+        ] | None = None
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
         self._skilldev_service = None
 
@@ -1238,8 +1247,14 @@ class JiuWenSwarm:
             return "code"
         return "agent"
 
-    async def create_instance(self, config: dict[str, Any] | None = None, *,
-                              mode: str = "agent", sub_mode: str = None) -> None:
+    async def create_instance(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        mode: str = "agent",
+        sub_mode: str = None,
+        agent_definition: dict[str, Any] | None = None,
+    ) -> None:
         """初始化 Agent 实例.
 
         Args:
@@ -1247,8 +1262,26 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
+        runtime_agent_snapshot = (
+            (
+                deepcopy(config) if config is not None else None,
+                mode,
+                sub_mode,
+                deepcopy(agent_definition),
+            )
+            if agent_definition is not None
+            else None
+        )
         adapter = self._ensure_adapter(mode=mode)
-        await adapter.create_instance(config, mode=mode, sub_mode=sub_mode)
+        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        if agent_definition is not None:
+            if mode != "code":
+                raise ValueError(
+                    "custom Agent definitions are supported only in code mode"
+                )
+            create_kwargs["agent_definition"] = dict(agent_definition)
+        await adapter.create_instance(config, **create_kwargs)
+        self._runtime_agent_create_snapshot = runtime_agent_snapshot
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
             self._sdk_name, mode, sub_mode,
@@ -1261,7 +1294,17 @@ class JiuWenSwarm:
 
     async def _on_skillnet_install_complete(self) -> None:
         """Reload the agent and refresh live team skill rails after async install."""
-        await self.create_instance()
+        snapshot = self._runtime_agent_create_snapshot
+        if snapshot is None:
+            await self.create_instance()
+        else:
+            config, mode, sub_mode, definition = deepcopy(snapshot)
+            await self.create_instance(
+                config,
+                mode=mode,
+                sub_mode=sub_mode,
+                agent_definition=definition,
+            )
         await self._reload_team_skill_rails()
 
     @staticmethod

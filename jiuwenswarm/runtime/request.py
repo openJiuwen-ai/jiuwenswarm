@@ -322,6 +322,8 @@ async def prepare_chat_turn(
     *,
     sync_metadata: bool = True,
     metadata_sync: Callable[..., str | None] = sync_chat_request_metadata,
+    agent_definition: dict[str, Any] | None = None,
+    agent_definition_fingerprint: str | None = None,
 ) -> tuple[str, str | None, Any]:
     """Resolve session semantics and select an agent from the shared manager."""
     params = request.params if isinstance(request.params, dict) else {}
@@ -460,12 +462,17 @@ async def prepare_chat_turn(
         raise TypeError(
             "agent_manager must implement atomic get_agent_for_request admission"
         )
-    agent = await get_agent_for_request(
-        request,
-        mode=agent_mode,
-        sub_mode=sub_mode,
-        admit_request=admit_request,
-    )
+    agent_kwargs: dict[str, Any] = {
+        "mode": agent_mode,
+        "sub_mode": sub_mode,
+        "admit_request": admit_request,
+    }
+    if agent_definition is not None:
+        agent_kwargs["agent_definition"] = agent_definition
+        agent_kwargs["agent_definition_fingerprint"] = (
+            agent_definition_fingerprint
+        )
+    agent = await get_agent_for_request(request, **agent_kwargs)
     if agent is None:
         raise ValueError("Failed to get agent")
 

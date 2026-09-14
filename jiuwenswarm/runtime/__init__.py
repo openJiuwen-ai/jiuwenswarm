@@ -5,7 +5,13 @@
 from __future__ import annotations
 
 from importlib import import_module
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from jiuwenswarm.runtime.service import (
+        AgentRuntime as AgentRuntime,
+        RuntimeStateError as RuntimeStateError,
+    )
 
 _EXPORTS = {
     "AgentRuntime": ("jiuwenswarm.runtime.service", "AgentRuntime"),
