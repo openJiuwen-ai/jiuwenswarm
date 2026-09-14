@@ -80,20 +80,20 @@ class TestVerifyCase3ReportEventCollection:
 
         # 1. BEFORE_INVOKE
         ctx1 = _make_mock_ctx(AgentCallbackEvent.BEFORE_INVOKE)
-        await rail._run_and_apply(ctx1, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx1, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # 2. BEFORE_MODEL_CALL
         ctx2 = _make_mock_ctx(
             AgentCallbackEvent.BEFORE_MODEL_CALL, extra=ctx1.extra
         )
-        await rail._run_and_apply(ctx2, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        await rail._run_and_apply(ctx2, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx2.extra["llm_call_seq"] == 0
 
         # 3. BEFORE_TOOL_CALL
         ctx3 = _make_mock_ctx(
             AgentCallbackEvent.BEFORE_TOOL_CALL, extra=ctx2.extra
         )
-        await rail._run_and_apply(ctx3, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        await rail._run_and_apply(ctx3, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
         assert ctx3.extra["tool_call_seq"] == 0
 
         # 检查 ssas_core.db
