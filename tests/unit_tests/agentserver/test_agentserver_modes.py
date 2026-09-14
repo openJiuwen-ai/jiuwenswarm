@@ -3019,6 +3019,8 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
     assert captured["config"]["evolve_enabled"] is False
     assert captured["config"]["inject_enabled"] is True
+    assert captured["config"]["trajectory_export_enabled"] is False
+    assert captured["config"]["trajectory_export_path"] == ""
     assert captured["config"]["embedding"] is None
     assert captured["config"]["dream_enabled"] is False
     assert captured["config"]["dream_interval"] == 5

@@ -702,6 +702,10 @@ react:
     enabled: false          # 默认关闭；true 才挂载 TTSERail（仅 agent 模式）
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
+    # Bench-only: dump invoke messages for post-score induction. Default off.
+    # Must stay false in production; enabling writes full conversation JSON.
+    trajectory_export_enabled: false
+    trajectory_export_path: ""   # empty = TTSE_TRAJECTORY_EXPORT_PATH env, if set
     # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
     dream_enabled: true     # 是否启用静默 Auto-dream
     dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次 dream

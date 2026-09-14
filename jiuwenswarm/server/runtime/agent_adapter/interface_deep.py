@@ -7187,6 +7187,10 @@ class JiuWenSwarmDeepAdapter:
             store_path = self._ttse_bank_path()
             evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
             inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
+            trajectory_export_enabled = coerce_config_bool(
+                ttse_cfg.get("trajectory_export_enabled"), False
+            )
+            trajectory_export_path = str(ttse_cfg.get("trajectory_export_path") or "").strip()
             dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
             try:
                 dream_interval = int(ttse_cfg.get("dream_interval", 20))
@@ -7210,11 +7214,12 @@ class JiuWenSwarmDeepAdapter:
                 consult_rrf_k = 60
             logger.info(
                 "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
-                "inject_enabled=%s dream_enabled=%s dream_interval=%s "
-                "dream_min_hours=%s dream_ttl_days=%s",
+                "inject_enabled=%s trajectory_export_enabled=%s dream_enabled=%s "
+                "dream_interval=%s dream_min_hours=%s dream_ttl_days=%s",
                 store_path,
                 evolve_enabled,
                 inject_enabled,
+                trajectory_export_enabled,
                 dream_enabled,
                 dream_interval,
                 dream_min_hours,
@@ -7248,6 +7253,8 @@ class JiuWenSwarmDeepAdapter:
                     store_path=store_path,
                     evolve_enabled=evolve_enabled,
                     inject_enabled=inject_enabled,
+                    trajectory_export_enabled=trajectory_export_enabled,
+                    trajectory_export_path=trajectory_export_path,
                     embedding=embedding,
                     dream_enabled=bool(dream_enabled),
                     dream_interval=dream_interval,
@@ -7280,19 +7287,31 @@ class JiuWenSwarmDeepAdapter:
         store_path = self._ttse_bank_path()
         evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
         inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
+        trajectory_export_enabled = coerce_config_bool(
+            ttse_cfg.get("trajectory_export_enabled"), False
+        )
+        trajectory_export_path = str(ttse_cfg.get("trajectory_export_path") or "").strip()
         apply_config = getattr(rail, "apply_runtime_config", None)
         if callable(apply_config):
             apply_config(
                 store_path=store_path,
                 evolve_enabled=evolve_enabled,
                 inject_enabled=inject_enabled,
+                trajectory_export_enabled=trajectory_export_enabled,
+                trajectory_export_path=trajectory_export_path,
             )
+        cfg_obj = getattr(rail, "_ttse_config", None)
+        if cfg_obj is not None:
+            cfg_obj.trajectory_export_enabled = trajectory_export_enabled
+            cfg_obj.trajectory_export_path = trajectory_export_path
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
-            "store_path=%s evolve_enabled=%s inject_enabled=%s",
+            "store_path=%s evolve_enabled=%s inject_enabled=%s "
+            "trajectory_export_enabled=%s",
             store_path,
             evolve_enabled,
             inject_enabled,
+            trajectory_export_enabled,
         )
 
     async def _ensure_ttse_rail_registered(self) -> None:
