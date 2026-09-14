@@ -125,6 +125,7 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
+from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
@@ -913,6 +914,7 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
         timestamp=data.get("timestamp", 0.0),
         metadata=metadata,
         user_id=str(data.get("user_id") or "").strip(),
+        agent_ref=data.get("agent_ref"),
     )
 
 
@@ -2340,6 +2342,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method in get_permissions_config_req_methods():
                 await self._handle_permissions_config(ws, request, send_lock)
+                return
+            if request.req_method in get_a4p_req_methods():
+                await self._handle_a4p_request(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.HISTORY_GET:
                 if request.is_stream:
@@ -5694,6 +5699,20 @@ class AgentWebSocketServer:
             # Preserve develop's capture time and outer request error handling.
             self._agent_manager.schedule_permissions_reload(get_config())
 
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_a4p_request(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Handle a4p.* requests forwarded from the Web User Authorizer."""
+        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
+
+        resp = await dispatch_a4p_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -10264,6 +10283,12 @@ class AgentWebSocketServer:
                 reload_kwargs["target_session_id"] = target_session_id
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
+            if isinstance(config_payload, dict):
+                from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                    reconfigure_a4p_runtime,
+                )
+
+                await reconfigure_a4p_runtime(config_payload)
             agent_reload_scopes = {
                 "model",
                 "multimodal",

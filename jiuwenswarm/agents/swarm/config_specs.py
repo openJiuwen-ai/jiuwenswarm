@@ -587,6 +587,8 @@ def _build_team_capability_specs(
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in _COMMON_TOOL_NAMES
     ]
+    if role == "leader":
+        tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
     return rails_specs, tool_specs
 
 
@@ -655,6 +657,8 @@ def _build_code_capability_specs(
         BuiltinToolSpec(type=name, params=_tool_params(name, config))
         for name in _CODE_TOOL_NAMES
     ]
+    if role == "leader":
+        tool_specs.append(BuiltinToolSpec(type=registry.A4P_INTENT_AUTHORIZATION))
     return rails_specs, tool_specs
 
 

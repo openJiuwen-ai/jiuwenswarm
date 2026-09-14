@@ -401,6 +401,11 @@ class CronController:
     async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
         deleted = await self._store.delete_job(job_id, force=force)
         if deleted:
+            from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                remove_cron_intent_token_for_job,
+            )
+
+            remove_cron_intent_token_for_job(job_id)
             await self._scheduler.reload()
         return deleted
 
