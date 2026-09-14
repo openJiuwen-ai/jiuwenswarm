@@ -52,6 +52,10 @@ test('expert catalog renders inside the standard page shell and toolbar', async 
   );
   assert.match(markup, /data-testid="common-page-header"/);
   assert.match(markup, /class="page-toolbar"[^>]*data-testid="page-toolbar"/);
-  assert.match(markup, /class="chat-picker-panel__tabs"[^>]*data-testid="agent-management-primary-tabs"/);
+  // 2026-09-11 页签迁移到共享 ui/Tabs：class 变为 "tabs ..."（role=tablist 不变），
+  // tab 项语义由 data-testid="agent-management-primary-tab" + data-variant 表达
+  assert.match(markup, /class="tabs[^"]*"[^>]*data-testid="agent-management-primary-tabs"/);
+  assert.match(markup, /data-testid="agent-management-primary-tab"[^>]*data-variant="catalog"/);
+  assert.match(markup, /data-testid="agent-management-primary-tab"[^>]*data-variant="mine"/);
   assert.match(markup, /data-testid="agent-management-search"[^>]*class="relative flex-shrink-0"/);
 });

@@ -45,6 +45,22 @@ export type FetchRunProgress = {
   last_error: string | null;
 };
 
+/** get_fetch_run_status 返回的单次运行记录；终端记录会保留 run_id 和起止时间。 */
+export type FetchRunRecord = FetchRunProgress & {
+  run_id: string;
+  started_at: string;
+  finished_at: string | null;
+};
+
+export type FetchRunStatusService = {
+  service_id: string;
+  runs: FetchRunRecord[];
+};
+
+export type FetchRunStatusResponse = {
+  services: FetchRunStatusService[];
+};
+
 export type PersonalContextStatus = {
   configured: boolean;
   collection_enabled: boolean;
@@ -64,6 +80,20 @@ export type PersonalContextStatus = {
     operation: string;
   } | null;
 };
+
+/**
+ * 运行时停止超时不属于图谱发布失败；它应由采集任务页处理。
+ * Core 目前会把 timeout 模板参数缺失渲染成 `<missing:timeout>`，所以这里只匹配稳定字段。
+ */
+export function isFetchStopTimeoutError(
+  error: PersonalContextStatus['last_error'] | undefined,
+): boolean {
+  return (
+    error?.status === 'CONTEXT_PROACTIVE_RUNTIME_TIMEOUT' &&
+    error.operation === 'deactivate_runtime' &&
+    error.message.includes('PersonalContext stop timed out')
+  );
+}
 
 // ── runtime.get_config / patch / select_model 返回的 stored config ─────────
 export type StrategyProfile = 'rules' | 'balanced' | 'agent';
@@ -117,6 +147,7 @@ export type PersonalContextConfig = {
   agent_use_enabled: boolean;
   strategy_profile: StrategyProfile;
   model_index: number | null;
+  model_id: string | null;
   fetch_services: FetchServiceConfig[];
 };
 
@@ -199,6 +230,15 @@ export type ContextSourceDetail = {
  */
 const FETCH_OP_TIMEOUT_MS = 60_000;
 
+/**
+ * 配置变更类 RPC 的客户端超时。create_service 受 _operation_lock 串行，且运行时会
+ * 先 deactivate（上限 30s）再重建，可能与正在等待/执行的 stop 叠加，故放宽到 90s。
+ */
+const FETCH_CONFIG_TIMEOUT_MS = 90_000;
+
+/** 运行历史只读且数据量很小；超时后轮询会跳过后续周期，避免堆积请求。 */
+const FETCH_RUN_STATUS_TIMEOUT_MS = 15_000;
+
 export const pcApi = {
   getStatus: () =>
     webRequest<PersonalContextStatus>('personal_context.runtime.status'),
@@ -239,14 +279,17 @@ export const pcApi = {
     webRequest<PersonalContextConfig>('personal_context.runtime.get_config'),
 
   patchConfig: (patch: { strategy_profile?: StrategyProfile }) =>
-    webRequest<PersonalContextConfig>('personal_context.runtime.patch_config', {
-      patch,
-    }),
+    webRequest<PersonalContextConfig>(
+      'personal_context.runtime.patch_config',
+      { patch },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
+    ),
 
   selectModel: (model_index: number) =>
     webRequest<PersonalContextConfig>(
       'personal_context.runtime.select_model',
       { model_index },
+      { timeoutMs: FETCH_CONFIG_TIMEOUT_MS },
     ),
 
   listServices: () =>
@@ -257,28 +300,28 @@ export const pcApi = {
   createService: (service: FetchServiceConfig) =>
     webRequest<FetchServiceConfig>('personal_context.fetch.create_service', {
       service,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   deleteService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.delete_service', {
       service_id,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   patchService: (service_id: string, patch: FetchServicePatch) =>
     webRequest<FetchServiceConfig>('personal_context.fetch.patch_service', {
       service_id,
       patch,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   startService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.start_service', {
       service_id,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   stopService: (service_id: string) =>
     webRequest<{ ok: true }>('personal_context.fetch.stop_service', {
       service_id,
-    }),
+    }, { timeoutMs: FETCH_CONFIG_TIMEOUT_MS }),
 
   runOne: (service_id: string) =>
     webRequest<{ state: string; service_ids: string[] }>(
@@ -295,6 +338,13 @@ export const pcApi = {
       { service_id },
       // stop_fetch_run 会 await 采集任务真正落停（asyncio.shield），耗时随采集进度不定，放宽超时。
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
+    ),
+
+  getRunStatus: () =>
+    webRequest<FetchRunStatusResponse>(
+      'personal_context.fetch.get_run_status',
+      {},
+      { timeoutMs: FETCH_RUN_STATUS_TIMEOUT_MS },
     ),
 
   getAuthStatus: (provider: string) =>
@@ -444,11 +494,11 @@ export const PROVIDER_ORDER: readonly FetchProvider[] = [
   'gitcode',
 ];
 
-/** 采集模式下拉选项。 */
+/** 采集模式下拉选项（智能体默认置顶，规则模式放在最末）。 */
 export const STRATEGY_OPTIONS: StrategyProfile[] = [
-  'rules',
-  'balanced',
   'agent',
+  'balanced',
+  'rules',
 ];
 
 /** GitHub 可采集资源，与后端 _GITHUB_RESOURCES 对齐（config.py:30）。 */

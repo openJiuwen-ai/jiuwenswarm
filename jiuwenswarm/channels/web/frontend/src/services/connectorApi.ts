@@ -190,8 +190,18 @@ export const connectorApi = {
     const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { id });
     return fromRawDetail(payload.item);
   },
-  install: (id: string): Promise<ConnectorInstallResponse> =>
-    webRequest<ConnectorInstallResponse>('mcp.install', { id }),
+  // mcp.install embeds the connect result used by the same token/OAuth flow.
+  install: async (id: string): Promise<ConnectorInstallResponse> => {
+    const payload = await webRequest<{ type: 'installed'; item: ConnectorInstallResponse['item']; connect?: RawConnectResponse }>(
+      'mcp.install',
+      { id },
+      { timeoutMs: CONNECT_TIMEOUT_MS },
+    );
+    return {
+      ...payload,
+      connect: payload.connect ? fromRawConnect(payload.connect) : undefined,
+    };
+  },
   uninstall: (id: string): Promise<ConnectorUninstallResponse> =>
     webRequest<ConnectorUninstallResponse>('mcp.uninstall', { id }),
   connect: async (name: string): Promise<ConnectorConnectResponse> => {

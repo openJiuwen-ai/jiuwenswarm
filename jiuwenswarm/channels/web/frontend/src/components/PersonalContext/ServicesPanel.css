@@ -22,6 +22,48 @@
   font-size: 12px;
 }
 
+.pc-services__error--dismissible {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+
+.pc-services__error-close {
+  display: flex;
+  flex-shrink: 0;
+  padding: 2px;
+  border: none;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+}
+
+.pc-services__notice--success {
+  position: fixed;
+  top: 10px;
+  right: 16px;
+  z-index: 1000;
+  box-sizing: border-box;
+  height: 34px;
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  padding: 0 12px;
+  overflow: hidden;
+  border-radius: 8px;
+  background: #e6f2d5;
+  color: #191919;
+  font-weight: 400;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.pc-services__success-icon {
+  flex-shrink: 0;
+  margin-right: 8px;
+}
+
 .pc-services__loading {
   display: flex;
   align-items: center;
@@ -370,11 +412,47 @@
 }
 
 /* 左：采样周期 */
+.pc-services__card-schedule {
+  display: flex;
+  flex: 0 1 auto;
+  align-items: center;
+  width: auto;
+  min-width: 0;
+}
+
+.pc-services__card-schedule-divider {
+  flex-shrink: 0;
+  width: 1px;
+  height: 12px;
+  margin: 0 8px;
+  background: #e0e0e0;
+}
+
 .pc-services__card-freq {
-  flex: 0 0 100px;
+  flex: 0 1 auto;
+  width: auto;
+  min-width: 0;
+  max-width: 168px;
   font-size: 12px;
   color: #808080;
   white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.pc-services__card-last-run {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  overflow: hidden;
+  max-width: 168px;
+  font-size: 12px;
+  line-height: 18px;
+  color: #808080;
+  white-space: nowrap;
+}
+
+.pc-services__card-last-run > span:last-child {
   overflow: hidden;
   text-overflow: ellipsis;
 }

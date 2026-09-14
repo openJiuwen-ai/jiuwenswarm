@@ -209,7 +209,9 @@ def validate_cron_model(raw: Any) -> str | None:
     """Validate model name/alias against configured models. Returns canonical model_name or raises.
 
     If the input is an alias, resolves to the underlying ``model_client_config.model_name``
-    so the stored value is always a key AgentServer ``_model_cache`` can look up.
+    (including environment placeholders) so the stored value is always a key
+    AgentServer ``_model_cache`` can look up. An explicitly configured name that
+    resolves to empty is rejected instead of being persisted.
 
     Opencode Zen free models are in-memory only, so a configured-model miss
     also checks the live free-model cache.  A cache failure never blocks the
@@ -220,13 +222,26 @@ def validate_cron_model(raw: Any) -> str | None:
     value = str(raw).strip()
     if not value:
         return None
-    from jiuwenswarm.common.config import get_model_config, get_model_names
+    from jiuwenswarm.common.config import (
+        get_model_config,
+        get_model_names,
+        resolve_env_vars,
+    )
 
     entry = get_model_config(value)
     if entry is not None:
         mcc = entry.get("model_client_config") or {}
-        canonical = (mcc.get("model_name") or "").strip()
-        return canonical if canonical else value
+        configured_name = mcc.get("model_name")
+        if not configured_name:
+            return value
+        canonical = str(resolve_env_vars(configured_name) or "").strip()
+        if not canonical:
+            raise ValueError(
+                f"Configured model {value!r} has a model_client_config.model_name "
+                f"that resolves to an empty value ({configured_name!r}). Set the "
+                "referenced environment variable or configure a concrete model_name."
+            )
+        return canonical
 
     try:
         from jiuwenswarm.server.runtime.opencode_zen import (

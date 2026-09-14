@@ -2,9 +2,10 @@
 
 """Trusted URL provenance adapter for OpenJiuwen's free-search tool.
 
-OpenJiuwen commit ``fd30965b4e1622accef82d212716787c3fe36da9`` does not
+OpenJiuwen commit ``564997732e22fcdd204959b79b38b4768f5220c0`` does not
 expose structured search rows through a public hook. Keep the private seam in
-this module and lock its behavior to the upstream tool with equivalence tests.
+this module and lock its behavior to the upstream request contract with
+equivalence tests.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from typing import Any
 from openjiuwen.harness.tools import WebFreeSearchTool
 from openjiuwen.harness.tools.web import free_search as openjiuwen_free_search
 from openjiuwen.harness.tools.web._common import _safe_int
+from openjiuwen.harness.tools.web.free_search import _FreeSearchRequest
 
 from jiuwenswarm.agents.harness.common.rails.permissions.trusted_search_urls import (
     complete_trusted_search_producer,
@@ -48,7 +50,15 @@ class TrustedWebFreeSearchTool(WebFreeSearchTool):
             try:
                 async with _new_search_session() as session:
                     engine_used, rows = await WebFreeSearchTool._search_free(
-                        session, query, max_results, timeout_seconds
+                        _FreeSearchRequest(
+                            session=session,
+                            query=query,
+                            max_results=max_results,
+                            timeout_seconds=timeout_seconds,
+                            proxy_url=self._proxy_url,
+                            allowed_domains=self._allowed_domains,
+                            enabled_engines=self._enabled_engines,
+                        ),
                     )
             except Exception as exc:  # noqa: BLE001
                 return f"[ERROR]: free search failed: {exc}"

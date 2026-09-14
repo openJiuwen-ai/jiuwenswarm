@@ -104,7 +104,7 @@ class FakeMessageHandler:
         return True
 
     async def schedule_cancel_agent_sessions_on_disconnect(
-        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None
+        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None, mode=None
     ):
         self.scheduled.append((session_keys, stale_request_keys or []))
         self.scheduled_delays.append(delay_seconds)
@@ -121,7 +121,7 @@ class BlockingScheduledDisconnectMessageHandler(FakeMessageHandler):
         self.release_schedule = asyncio.Event()
 
     async def schedule_cancel_agent_sessions_on_disconnect(
-        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None
+        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None, mode=None
     ):
         self.schedule_started.set()
         await self.release_schedule.wait()
@@ -130,6 +130,7 @@ class BlockingScheduledDisconnectMessageHandler(FakeMessageHandler):
             stale_request_keys=stale_request_keys,
             delay_seconds=delay_seconds,
             user_id=user_id,
+            mode=mode,
         )
 
 
@@ -139,7 +140,7 @@ class FailedOnceScheduledDisconnectMessageHandler(FakeMessageHandler):
         self.schedule_attempts = 0
 
     async def schedule_cancel_agent_sessions_on_disconnect(
-        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None
+        self, session_keys, *, stale_request_keys=None, delay_seconds=60.0, user_id=None, mode=None
     ):
         self.schedule_attempts += 1
         if self.schedule_attempts == 1:
@@ -149,6 +150,7 @@ class FailedOnceScheduledDisconnectMessageHandler(FakeMessageHandler):
             stale_request_keys=stale_request_keys,
             delay_seconds=delay_seconds,
             user_id=user_id,
+            mode=mode,
         )
 
 

@@ -639,13 +639,127 @@ def _web_graph_payload(
         edges.append(web_edge)
 
     graph = {"nodes": nodes, "edges": edges}
+
+    # Load skill packs if evolution is enabled
+    pack_nodes = []
+    pack_edges = []
+    pack_member_nodes = []  # Track member skill nodes that need to be added
+    try:
+        from jiuwenswarm.symphony.evolution.pack_store import read_packs
+        from jiuwenswarm.symphony.evolution.store import read_events
+
+        # Build event index for pack trace lookup
+        events_index: dict[str, dict[str, Any]] = {}
+        try:
+            for event in read_events(graph_dir):
+                eid = event.get("event_id", "")
+                if eid:
+                    events_index[eid] = event
+        except Exception:  # noqa: BLE001
+            pass
+
+        packs_data = read_packs(graph_dir)
+        for pack in packs_data.get("packs", []):
+            pack_id = pack.get("pack_id", "")
+            if not pack_id:
+                continue
+
+            # Create pack node
+            pack_node_id = f"pack:{pack_id}"
+            member_ids = pack.get("member_ids", [])
+
+            # Extract query and trace details from associated events
+            group_traces = pack.get("group_traces", [])
+            queries: list[str] = []
+            trace_details: list[dict[str, Any]] = []
+            for trace_id in group_traces:
+                event = events_index.get(trace_id)
+                if not event:
+                    continue
+                q = str(event.get("query") or "").strip()
+                if q and q not in queries:
+                    queries.append(q)
+                detail = str(event.get("detail") or "").strip()
+                if detail:
+                    trace_details.append({
+                        "event_id": trace_id,
+                        "query": q,
+                        "detail": detail,
+                        "outcome": event.get("outcome", ""),
+                        "ts": event.get("ts", ""),
+                    })
+
+            # Use task_description as label (truncated for graph display)
+            task_desc = pack.get("task_description", "")
+            if task_desc:
+                label = task_desc[:50] + "..." if len(task_desc) > 50 else task_desc
+            elif queries:
+                full_label = queries[0]
+                label = full_label[:50] + "..." if len(full_label) > 50 else full_label
+            elif member_ids:
+                label = f"Pack ({len(member_ids)} skills)"
+            else:
+                label = "Skill Pack"
+
+            pack_node = {
+                "id": pack_node_id,
+                "type": "skill_pack",
+                "label": label,
+                "properties": {
+                    "pack_id": pack_id,
+                    "member_ids": member_ids,
+                    "quality": pack.get("quality", {}),
+                    "status": pack.get("status", ""),
+                    "grade": pack.get("grade", ""),
+                    "query": queries[0] if queries else "",
+                    "trace_details": trace_details,
+                    "task_description": pack.get("task_description", ""),
+                    "execution_narrative": pack.get("execution_narrative", ""),
+                },
+            }
+            pack_nodes.append(pack_node)
+
+            # Create contains edges from pack to each member
+            for member_id in member_ids:
+                member_ref = web_node_refs.get(member_id)
+                if not member_ref:
+                    # Member skill not in main graph, create a node for it
+                    member_ref = f"skill:{member_id}"
+                    pack_member_nodes.append({
+                        "id": member_ref,
+                        "type": "skill",
+                        "label": member_id,
+                        "properties": {"id": member_id, "name": member_id},
+                    })
+                pack_edge = {
+                    "source": pack_node_id,
+                    "target": member_ref,
+                    "type": "contains",
+                    "confidence": 1.0,
+                }
+                pack_edges.append(pack_edge)
+    except Exception:
+        # If pack loading fails, continue without packs
+        pass
+
+    result_graph = _graph_with_runtime_weights(graph, dynamic_overlay)
+
+    # Add pack member nodes that are not in the main graph
+    existing_node_ids = {node.get("id") for node in result_graph.get("nodes", [])}
+    for member_node in pack_member_nodes:
+        if member_node["id"] not in existing_node_ids:
+            result_graph["nodes"].append(member_node)
+
+    result_graph["pack_nodes"] = pack_nodes
+    result_graph["pack_edges"] = pack_edges
+
     return {
         "success": True,
         "graph_dir": str(graph_dir),
         "graph_manifest": dict(artifact.get("config") or {}),
         "orchestration_min_edge_confidence": min_edge_confidence,
         "skills": skills,
-        "graph": _graph_with_runtime_weights(graph, dynamic_overlay),
+        "graph": result_graph,
         "diagnostics": {"diagnostics": list(artifact.get("diagnostics") or [])},
     }
 

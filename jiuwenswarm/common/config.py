@@ -846,6 +846,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
     update_config(mutator)
 
 
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（Web RSI 实验入口开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
 def update_enable_free_models_in_config(value: bool) -> None:
     """原子更新 models.enable_free_models（Opencode Zen 免费模型开关）。"""
     def mutator(data: dict[str, Any]) -> dict[str, Any]:

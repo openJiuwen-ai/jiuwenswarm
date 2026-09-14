@@ -1098,6 +1098,15 @@ export class CliPiAppState {
     const hasActiveSubtasks = [...this.activeSubtasks.values()].some(
       (s) => s.status !== "completed" && s.status !== "error",
     );
+    // swarmflow 后台 run 独立于 leader round：round 收尾后 isProcessing/工具/成员
+    // 全部归零，但 run 仍在烧 token。Esc（cancellableWork）与 Ctrl+C
+    // （hasServerTask）都必须把它视为"进行中的工作"，否则后台跑期间两把
+    // 中止键都按不出任何消息（Esc 退化为清空输入框、Ctrl+C 同样只清输入框）。
+    const hasActiveSwarmflowRun =
+      isTeamMode(this.mode) &&
+      this.workflowRuns.some(
+        (wf) => wf.status === "running" || wf.status === "waiting_for_human",
+      );
     // 与「Ctrl+C 强制结束当前任务」对齐：有任一进行中工作则为 true。
     // 包含 activeCommandRequestId 以确保 /btw 等命令请求在等待响应期间
     // 也能被 Esc 取消（WS 请求会被立即中止，避免等待超时）。
@@ -1108,6 +1117,7 @@ export class CliPiAppState {
       hasActiveSubtasks ||
       this.evolutionStatus === "running" ||
       this.activeCommandRequestId !== null ||
+      hasActiveSwarmflowRun ||
       (isTeamMode(this.mode) && isTeamWorking(this.teamMemberEvents, this.teamMessageEvents));
     return {
       connectionStatus: this.connectionStatus,

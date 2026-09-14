@@ -239,14 +239,7 @@ def load_mcp_package(package_dir: Path, *, expected_id: str | None = None) -> Mc
 
 
 def iter_mcp_packages(*package_roots: Path) -> list[McpPackageManifest]:
-    """Load all visible package directories from the supplied roots.
-
-    Invalid packages are logged and skipped so one corrupt marketplace entry
-    cannot hide the rest of the list. Direct resolution remains strict.
-    Duplicate runtime package IDs are rejected instead of silently choosing a
-    built-in or Hub copy. The installer must prevent such collisions before a
-    Hub package reaches its final directory.
-    """
+    """Load visible packages with root precedence; invalid packages are skipped."""
     packages: list[McpPackageManifest] = []
     seen: dict[str, Path] = {}
     for package_root in package_roots:
@@ -263,10 +256,13 @@ def iter_mcp_packages(*package_roots: Path) -> list[McpPackageManifest]:
                 continue
             previous = seen.get(package.package_id)
             if previous is not None:
-                raise McpPackageError(
-                    f"duplicate MCP package id {package.package_id}: "
-                    f"{previous} and {package.root}"
+                logger.warning(
+                    "duplicate MCP package id %s ignored at %s; using %s",
+                    package.package_id,
+                    package.root,
+                    previous,
                 )
+                continue
             seen[package.package_id] = package.root
             packages.append(package)
     return packages
@@ -280,14 +276,8 @@ def resolve_mcp_package(
     target = str(package_id or "").strip()
     if not target:
         return None
-    matches: list[McpPackageManifest] = []
     for package_root in package_roots:
         candidate = Path(package_root) / target
         if candidate.is_dir():
-            matches.append(load_mcp_package(candidate, expected_id=target))
-    if len(matches) > 1:
-        raise McpPackageError(
-            f"duplicate MCP package id {target}: "
-            + " and ".join(str(package.root) for package in matches)
-        )
-    return matches[0] if matches else None
+            return load_mcp_package(candidate, expected_id=target)
+    return None

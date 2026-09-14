@@ -24,8 +24,9 @@ const UNCONFIGURED: PersonalContextConfig = {
   configured: false,
   collection_enabled: false,
   agent_use_enabled: false,
-  strategy_profile: 'rules',
+  strategy_profile: 'agent',
   model_index: null,
+  model_id: null,
   fetch_services: [],
 };
 
@@ -219,6 +220,19 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     try {
       await pcApi.createService(service);
       await get().loadServices();
+    } catch (e) {
+      const requestTimedOut = (e as { code?: unknown })?.code === 'REQUEST_TIMEOUT';
+      if (requestTimedOut) {
+        try {
+          await get().loadServices();
+        } catch {
+          // 保留原始超时错误；刷新失败不应掩盖更关键的事实。
+        }
+        if (get().config.fetch_services.some((item) => item.service_id === service.service_id)) {
+          return;
+        }
+      }
+      throw e;
     } finally {
       set({ pendingWrites: { ...get().pendingWrites, create_service: false } });
     }

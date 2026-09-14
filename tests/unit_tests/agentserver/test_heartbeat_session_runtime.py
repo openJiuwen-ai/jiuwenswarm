@@ -22,7 +22,13 @@ from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime import AgentRuntime
 from jiuwenswarm.runtime.plan import PlanStateResult
-from jiuwenswarm.runtime.session import SessionExecutionEndedError, SessionWorkKind
+from jiuwenswarm.runtime.session import (
+    RuntimeSessionCoordinator,
+    SessionCloseTimeoutError,
+    SessionExecutionEndedError,
+    SessionPersistencePolicy,
+    SessionWorkKind,
+)
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
 SESSION = "existing-session"
@@ -106,15 +112,19 @@ def make_chain(tmp_path, monkeypatch):
             check_post_process_exit=AsyncMock(return_value=[]),
             reset_session=Mock(),
         )
+        coordinator = RuntimeSessionCoordinator()
         runtime = AgentRuntime(
-            agent_manager=manager, initializer=AsyncMock(), plan_controller=plan
+            agent_manager=manager,
+            initializer=AsyncMock(),
+            plan_controller=plan,
+            session_coordinator=coordinator,
         )
 
         async def prepare(request, channel_id, **kwargs):
             request.params["mode"] = mode
             return ("code" if ".code." in mode else "agent"), "normal", agent
 
-        runtime.prepare_chat_turn = prepare
+        runtime._prepare_chat_turn = prepare
         server = AgentWebSocketServer.__new__(AgentWebSocketServer)
         server._runtime = runtime
         server._agent_manager = manager
@@ -161,6 +171,8 @@ def make_chain(tmp_path, monkeypatch):
         )
         return SimpleNamespace(
             runtime=runtime,
+            coordinator=coordinator,
+            prepare_chat_turn=prepare,
             heartbeat=heartbeat,
             server=server,
             agent=agent,
@@ -192,7 +204,7 @@ async def _settle(chain):
 async def _wait_heartbeat_state(chain, expected):
     async with asyncio.timeout(2):
         while True:
-            snapshot = chain.runtime.session_coordinator.snapshot_session(SESSION)
+            snapshot = chain.coordinator.snapshot_session(SESSION)
             heartbeat = next(
                 (
                     item
@@ -207,7 +219,7 @@ async def _wait_heartbeat_state(chain, expected):
 
 
 def _executions(chain):
-    return chain.runtime.session_coordinator.snapshot_session(SESSION).executions
+    return chain.coordinator.snapshot_session(SESSION).executions
 
 
 @contextlib.contextmanager
@@ -332,19 +344,19 @@ async def test_cancel_and_close_drain_agent_and_persist_same_terminal_state(
         await asyncio.wait_for(chain.agent.entered.wait(), 2)
         (execution,) = _executions(chain)
         if cancel_via == "coordinator":
-            unmatched = await chain.runtime.session_coordinator.cancel_execution(
+            unmatched = await chain.coordinator.cancel_execution(
                 SESSION, request_id="other"
             )
             assert unmatched.matched == 0
             assert not chain.agent.closed.is_set()
-            cancelled = await chain.runtime.session_coordinator.cancel_execution(
+            cancelled = await chain.coordinator.cancel_execution(
                 SESSION, request_id=execution.request_id
             )
             assert cancelled.matched == cancelled.cancelled == 1
         elif cancel_via == "heartbeat":
             assert await chain.heartbeat.execution.cancel(execution.request_id)
         elif cancel_via == "session_close":
-            await chain.runtime.session_coordinator.close_session(SESSION)
+            await chain.coordinator.close_session(SESSION)
         else:
             await chain.runtime.close()
         result = await chain.heartbeat.store.get_job(chain.job.id)
@@ -358,7 +370,11 @@ async def test_cancel_and_close_drain_agent_and_persist_same_terminal_state(
 
 @pytest.mark.parametrize(
     "behavior,timeout,error",
-    [("fail", 10, "model failed"), ("block", 0.02, "timed out")],
+    [
+        ("fail", 10, "model failed"),
+        ("block", 0.02, "timed out"),
+        ("ask_ended", 0.02, "timed out"),
+    ],
 )
 async def test_error_and_timeout_are_failed_in_both_runtime_and_store(
     make_chain, behavior, timeout, error
@@ -388,10 +404,10 @@ async def test_heartbeat_interaction_answers_match_execution_and_unblock_schedul
         await asyncio.wait_for(chain.agent.question_seen.wait(), 2)
         if behavior == "ask_ended":
             await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-1"
         )
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "unrelated"
         )
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
@@ -494,7 +510,7 @@ async def test_heartbeat_followup_question_keeps_schedule_blocked(make_chain, mo
             answers=[{"question": "choose", "selected_options": ["A"]}],
         )
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         decision = await chain.heartbeat.scheduler.trigger_run_now(chain.job.id)
@@ -507,7 +523,7 @@ async def test_heartbeat_followup_question_keeps_schedule_blocked(make_chain, mo
             )
 
         chain.agent.deliver_control_input = complete
-        if chain.runtime.session_coordinator.has_control_target(
+        if chain.coordinator.has_control_target(
             SESSION, "question-2"
         ):
             await _user_turn(
@@ -567,7 +583,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
         assert running.run_state.current_run_id is not None
         assert running.run_state.last_run_status is None
         assert running.run_count == 0
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         heartbeat = next(
@@ -583,7 +599,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
 
         release_heartbeat.set()
         await _wait_heartbeat_state(chain, "waiting_for_control")
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         await _user_turn(
@@ -595,7 +611,7 @@ async def test_live_heartbeat_keeps_new_question_emitted_during_answer(
         )
         await _settle(chain)
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         assert await chain.heartbeat.admission.try_begin_heartbeat(
@@ -646,10 +662,10 @@ async def test_live_heartbeat_parent_finishes_before_answer_delivery(
             "succeeded",
         ]
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-1"
         )
-        assert chain.runtime.session_coordinator.snapshot_session(SESSION).state.value == (
+        assert chain.coordinator.snapshot_session(SESSION).state.value == (
             "ready"
         )
         assert await chain.heartbeat.admission.try_begin_heartbeat(
@@ -698,7 +714,7 @@ async def test_failed_heartbeat_answer_restores_interaction_protection(
                 await answer
         assert not chain.heartbeat.admission.is_user_active(SESSION)
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-1"
         )
         assert not await chain.heartbeat.admission.try_begin_heartbeat(
@@ -750,10 +766,10 @@ async def test_followup_question_is_not_retained_when_answer_fails(
                 await answer
 
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert chain.runtime.session_coordinator.has_control_target(
+        assert chain.coordinator.has_control_target(
             SESSION, "question-1"
         )
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         heartbeat = await _wait_heartbeat_state(chain, "waiting_for_control")
@@ -817,10 +833,10 @@ async def test_cancelling_heartbeat_while_answer_runs_cancels_control_child(
 
         executions = _executions(chain)
         assert {item.state.value for item in executions} == {"cancelled"}
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-1"
         )
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
@@ -896,7 +912,8 @@ async def test_late_control_result_from_closed_generation_is_discarded(make_chai
     entered = asyncio.Event()
     cancelled = asyncio.Event()
     release = asyncio.Event()
-    chain.runtime.session_coordinator._cancel_timeout = 0.01
+    chain.coordinator._cancel_timeout = 0.01
+    chain.heartbeat.execution._cancel_timeout_seconds = 0.01
 
     async def deliver(request):
         entered.set()
@@ -924,12 +941,17 @@ async def test_late_control_result_from_closed_generation_is_discarded(make_chai
             )
         )
         await asyncio.wait_for(entered.wait(), 2)
-        await chain.heartbeat.begin_session_delete(SESSION)
+        with pytest.raises(RuntimeError, match="failed to cancel active heartbeat"):
+            await chain.heartbeat.begin_session_delete(SESSION)
         await asyncio.wait_for(cancelled.wait(), 2)
-        await chain.runtime.cleanup_session(
-            channel_id="web", session_id=SESSION, reset_plan_state=False
+        control = next(
+            item
+            for item in _executions(chain)
+            if item.work_kind is SessionWorkKind.CONTROL_INPUT
         )
-        await chain.heartbeat.abort_session_delete(SESSION, channel_id="web")
+        assert control.state.value == "running"
+        assert control.cancellation_requested
+        chain.manager.cleanup_session_runtime.assert_not_awaited()
         release.set()
         with pytest.raises(SessionExecutionEndedError) as excinfo:
             await answer
@@ -938,9 +960,15 @@ async def test_late_control_result_from_closed_generation_is_discarded(make_chai
         assert not isinstance(excinfo.value, asyncio.CancelledError)
 
         assert not chain.heartbeat.admission.has_pending_interaction(SESSION)
-        assert not chain.runtime.session_coordinator.has_control_target(
+        assert not chain.coordinator.has_control_target(
             SESSION, "question-2"
         )
+        await _settle(chain)
+        await chain.heartbeat.begin_session_delete(SESSION)
+        await chain.runtime.cleanup_session(
+            channel_id="web", session_id=SESSION, reset_plan_state=False
+        )
+        await chain.heartbeat.abort_session_delete(SESSION, channel_id="web")
         chain.agent.behavior = "success"
         assert (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))[
             "accepted"
@@ -1087,7 +1115,7 @@ async def test_session_delete_quiesces_managed_run_and_abort_allows_new_generati
         assert current.generation == previous.generation + 1
         assert current.state.value == "succeeded"
         assert (
-            chain.runtime.session_coordinator.get_execution(
+            chain.coordinator.get_execution(
                 previous.execution_id
             ).state.value
             == "cancelled"
@@ -1158,20 +1186,24 @@ async def test_runtime_owner_is_resolved_again_after_host_replacement(make_chain
     chain = await make_chain()
     try:
         old_runtime = chain.runtime
+        old_coordinator = chain.coordinator
         await old_runtime.close()
+        replacement_coordinator = RuntimeSessionCoordinator()
         replacement = AgentRuntime(
             agent_manager=chain.manager,
             initializer=AsyncMock(),
             plan_controller=old_runtime.plan_controller,
+            session_coordinator=replacement_coordinator,
         )
-        replacement.prepare_chat_turn = old_runtime.prepare_chat_turn
+        replacement._prepare_chat_turn = chain.prepare_chat_turn
         replacement.set_admission_controller(chain.heartbeat.admission)
         chain.server._runtime = replacement
         chain.runtime = replacement
+        chain.coordinator = replacement_coordinator
         await chain.heartbeat.scheduler._tick_once()
         result = await _settle(chain)
         assert result.run_state.last_run_status == "succeeded"
-        assert old_runtime.session_coordinator.snapshot_session(SESSION) is None
+        assert old_coordinator.snapshot_session(SESSION) is None
         assert len(_executions(chain)) == 1
     finally:
         await _finish(chain)
@@ -1183,7 +1215,7 @@ async def test_busy_foreground_defers_heartbeat_without_creating_execution(make_
         await chain.heartbeat.admission.begin_user(SESSION)
         decision = await chain.heartbeat.scheduler.trigger_run_now(chain.job.id)
         assert decision["reason"] == "session_busy"
-        assert chain.runtime.session_coordinator.snapshot_session(SESSION) is None
+        assert chain.coordinator.snapshot_session(SESSION) is None
         await chain.heartbeat.admission.end_user(SESSION)
         assert (await chain.heartbeat.scheduler.trigger_run_now(chain.job.id))[
             "accepted"
@@ -1195,7 +1227,9 @@ async def test_busy_foreground_defers_heartbeat_without_creating_execution(make_
 
 async def test_heartbeat_does_not_serialize_active_goal_execution(make_chain):
     chain = await make_chain()
-    await chain.runtime.register_session(session_id=SESSION, channel_id="web")
+    await chain.coordinator.register_session(
+        SESSION, "web", SessionPersistencePolicy.PERSISTENT
+    )
     goal_entered = asyncio.Event()
     goal_release = asyncio.Event()
 
@@ -1204,7 +1238,7 @@ async def test_heartbeat_does_not_serialize_active_goal_execution(make_chain):
         await goal_release.wait()
 
     task = asyncio.create_task(
-        chain.runtime.session_coordinator.run_unary(
+        chain.coordinator.run_unary(
             SESSION,
             "goal-1",
             SessionWorkKind.GOAL_STREAM,
@@ -1288,4 +1322,251 @@ async def test_question_after_followup_parks_heartbeat_is_dropped_loudly(
         assert parked.waiting_control_id == "question-2"
     finally:
         release_heartbeat.set()
+        await _finish(chain)
+
+
+async def test_session_cleanup_waits_for_heartbeat_run_finalization(make_chain):
+    chain = await make_chain()
+    finalizing = asyncio.Event()
+    release_finalization = asyncio.Event()
+    on_run_finished = chain.heartbeat.scheduler.on_run_finished
+
+    async def blocked_finalization(*args, **kwargs):
+        finalizing.set()
+        await release_finalization.wait()
+        return await on_run_finished(*args, **kwargs)
+
+    chain.heartbeat.scheduler.on_run_finished = blocked_finalization
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(finalizing.wait(), 2)
+        cleanup = asyncio.create_task(
+            chain.runtime.cleanup_session(channel_id="web", session_id=SESSION)
+        )
+        await asyncio.sleep(0)
+        assert not cleanup.done()
+
+        release_finalization.set()
+        assert await asyncio.wait_for(cleanup, 2)
+        result = await chain.heartbeat.store.get_job(chain.job.id)
+        assert result.run_state.last_run_status == "succeeded"
+    finally:
+        release_finalization.set()
+        await _finish(chain)
+
+
+async def test_session_cleanup_fails_closed_when_finalization_times_out(make_chain):
+    chain = await make_chain()
+    chain.coordinator._cancel_timeout = 0.01
+    finalizing = asyncio.Event()
+    release_finalization = asyncio.Event()
+    on_run_finished = chain.heartbeat.scheduler.on_run_finished
+
+    async def blocked_finalization(*args, **kwargs):
+        finalizing.set()
+        await release_finalization.wait()
+        return await on_run_finished(*args, **kwargs)
+
+    chain.heartbeat.scheduler.on_run_finished = blocked_finalization
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(finalizing.wait(), 2)
+        with pytest.raises(SessionCloseTimeoutError):
+            await chain.runtime.cleanup_session(
+                channel_id="web", session_id=SESSION
+            )
+        chain.manager.cleanup_session_runtime.assert_not_awaited()
+        snapshot = chain.coordinator.snapshot_session(SESSION)
+        assert snapshot is not None
+        assert snapshot.state.value == "quiescing"
+
+        release_finalization.set()
+        await _settle(chain)
+        assert await chain.runtime.cleanup_session(
+            channel_id="web", session_id=SESSION
+        )
+        chain.manager.cleanup_session_runtime.assert_awaited_once()
+    finally:
+        release_finalization.set()
+        await _finish(chain)
+
+
+async def test_finalization_failure_keeps_owner_until_retry_succeeds(make_chain):
+    chain = await make_chain()
+    failed_once = asyncio.Event()
+    allow_retry = asyncio.Event()
+    on_run_finished = chain.heartbeat.scheduler.on_run_finished
+    calls = 0
+
+    async def flaky_finalization(*args, **kwargs):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            failed_once.set()
+            raise OSError("store unavailable")
+        await allow_retry.wait()
+        return await on_run_finished(*args, **kwargs)
+
+    chain.heartbeat.scheduler.on_run_finished = flaky_finalization
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(failed_once.wait(), 2)
+        current = await chain.heartbeat.store.get_job(chain.job.id)
+        run_id = current.run_state.current_run_id
+        assert run_id is not None
+        assert chain.heartbeat.execution.has_active_run(run_id)
+        assert chain.heartbeat.admission.is_heartbeat_active(SESSION)
+
+        allow_retry.set()
+        result = await _settle(chain)
+        assert calls == 2
+        assert result.run_state.last_run_status == "succeeded"
+        assert not chain.heartbeat.execution.has_active_run(run_id)
+    finally:
+        allow_retry.set()
+        await _finish(chain)
+
+
+async def test_late_cancel_does_not_interrupt_durable_finalization(make_chain):
+    chain = await make_chain()
+    chain.heartbeat.execution._cancel_timeout_seconds = 0.01
+    finalizing = asyncio.Event()
+    release_finalization = asyncio.Event()
+    on_run_finished = chain.heartbeat.scheduler.on_run_finished
+
+    async def blocked_finalization(*args, **kwargs):
+        finalizing.set()
+        await release_finalization.wait()
+        return await on_run_finished(*args, **kwargs)
+
+    chain.heartbeat.scheduler.on_run_finished = blocked_finalization
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(finalizing.wait(), 2)
+        current = await chain.heartbeat.store.get_job(chain.job.id)
+        run_id = current.run_state.current_run_id
+        assert run_id is not None
+        assert not await chain.heartbeat.execution.cancel(run_id)
+        assert chain.heartbeat.execution.has_active_run(run_id)
+        assert (await chain.heartbeat.store.get_job(chain.job.id)).run_state.current_run_id == run_id
+
+        release_finalization.set()
+        result = await _settle(chain)
+        assert result.run_state.last_run_status == "succeeded"
+    finally:
+        release_finalization.set()
+        await _finish(chain)
+
+
+async def test_stop_does_not_dispatch_queued_run(make_chain):
+    chain = await make_chain(behavior="block", concurrency_policy="queue")
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.entered.wait(), 2)
+        queued = await chain.heartbeat.scheduler.trigger_run_now(chain.job.id)
+        assert queued["accepted"]
+        queued_run_id = queued["run_id"]
+
+        await chain.heartbeat.stop()
+
+        persisted = await chain.heartbeat.store.get_job(chain.job.id)
+        assert persisted.run_state.current_run_id is None
+        assert persisted.run_state.queued_run_id == queued_run_id
+        assert len(chain.agent.requests) == 1
+        assert not chain.heartbeat.execution.has_active_run(queued_run_id)
+        assert not chain.heartbeat.execution.active_session_ids()
+
+        chain.agent.behavior = "success"
+        await chain.heartbeat.start()
+        resumed = await _settle(chain)
+        assert resumed.run_state.current_run_id is None
+        assert resumed.run_state.queued_run_id is None
+        assert resumed.run_state.last_run_status == "succeeded"
+        assert chain.agent.requests[-1].request_id == queued_run_id
+    finally:
+        chain.agent.release.set()
+        await _finish(chain)
+
+
+async def test_stop_blocks_queue_handoff_while_scheduler_is_stopping(make_chain):
+    chain = await make_chain(behavior="block", concurrency_policy="queue")
+    scheduler_stop_entered = asyncio.Event()
+    finish_scheduler_stop = asyncio.Event()
+    scheduler_stop = chain.heartbeat.scheduler.stop
+
+    async def delayed_scheduler_stop():
+        scheduler_stop_entered.set()
+        await finish_scheduler_stop.wait()
+        await scheduler_stop()
+
+    chain.heartbeat.scheduler.stop = delayed_scheduler_stop
+    stop_task = None
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.entered.wait(), 2)
+        queued = await chain.heartbeat.scheduler.trigger_run_now(chain.job.id)
+        queued_run_id = queued["run_id"]
+
+        stop_task = asyncio.create_task(chain.heartbeat.stop())
+        await asyncio.wait_for(scheduler_stop_entered.wait(), 2)
+        chain.agent.release.set()
+        async with asyncio.timeout(2):
+            while True:
+                persisted = await chain.heartbeat.store.get_job(chain.job.id)
+                if persisted.run_state.current_run_id is None:
+                    break
+                await asyncio.sleep(0)
+
+        assert persisted.run_state.queued_run_id == queued_run_id
+        assert len(chain.agent.requests) == 1
+
+        finish_scheduler_stop.set()
+        await stop_task
+    finally:
+        chain.agent.release.set()
+        finish_scheduler_stop.set()
+        if stop_task is not None:
+            await stop_task
+        chain.heartbeat.scheduler.stop = scheduler_stop
+        await _finish(chain)
+
+
+async def test_stop_fences_queue_handoff_already_in_finalization(make_chain):
+    chain = await make_chain(behavior="block", concurrency_policy="queue")
+    finalization_started = asyncio.Event()
+    finish_finalization = asyncio.Event()
+    finish_run = chain.heartbeat.store.finish_run
+
+    async def delayed_finish_run(*args, **kwargs):
+        result = await finish_run(*args, **kwargs)
+        finalization_started.set()
+        await finish_finalization.wait()
+        return result
+
+    chain.heartbeat.store.finish_run = delayed_finish_run
+    stop_task = None
+    try:
+        await chain.heartbeat.scheduler._tick_once()
+        await asyncio.wait_for(chain.agent.entered.wait(), 2)
+        queued = await chain.heartbeat.scheduler.trigger_run_now(chain.job.id)
+        queued_run_id = queued["run_id"]
+        chain.agent.release.set()
+        await asyncio.wait_for(finalization_started.wait(), 2)
+
+        stop_task = asyncio.create_task(chain.heartbeat.stop())
+        await asyncio.sleep(0)
+        finish_finalization.set()
+        await stop_task
+
+        persisted = await chain.heartbeat.store.get_job(chain.job.id)
+        assert persisted.run_state.current_run_id is None
+        assert persisted.run_state.queued_run_id == queued_run_id
+        assert len(chain.agent.requests) == 1
+        assert not chain.heartbeat.execution.active_session_ids()
+    finally:
+        chain.agent.release.set()
+        finish_finalization.set()
+        if stop_task is not None:
+            await stop_task
+        chain.heartbeat.store.finish_run = finish_run
         await _finish(chain)

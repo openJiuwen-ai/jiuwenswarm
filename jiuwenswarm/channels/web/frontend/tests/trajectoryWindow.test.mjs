@@ -5,8 +5,7 @@ import test from 'node:test';
 
 import {
   applyTrajectoryDetailRecords,
-  collectHeadRefreshWindow,
-  collectRevisionRefreshWindow,
+  collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
   createTrajectoryWindowState,
@@ -14,7 +13,7 @@ import {
   sameTrajectoryUsageMap,
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
-  stageTrajectoryTracePages,
+  stageTrajectoryChainPages,
   trajectoryContentMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryWindow.mjs';
 
@@ -121,9 +120,8 @@ test('a failed hint batch is requeued for the next recovery drain', async () => 
 import {
   getTrajectoryArchive,
   getTrajectorySessionUsage,
-  getTrajectoryTrace,
-  listTrajectoryTraceRevisions,
-  listTrajectoryTraces,
+  getTrajectorySubjectRecords,
+  listTrajectorySubjects,
 } from '../node_modules/.cache/trajectory-window/trajectoryClient.mjs';
 import {
   exitTrajectoryReplay,
@@ -179,56 +177,22 @@ function hexId(value, width) {
 
 function summary(value, revision = value) {
   return {
-    trace_id: hexId(value, 32),
+    subject_id: `subject-${value}`,
+    display_name: `Subject ${value}`,
+    kind: 'subagent',
+    parent_id: 'main',
+    record_count: 1,
+    trace_count: 1,
+    first_start_time_unix_nano: String(value * 10),
+    last_observed_time_unix_nano: String(value * 10 + 1),
+    first_revision: 1,
     revision,
-    start_time_unix_nano: String(value * 10),
-    end_time_unix_nano: String(value * 10 + 1),
-    span_count: 1,
-    request_id: null,
-    run_id: null,
-    agent_mode: 'agent',
     has_error: false,
+    running: false,
   };
 }
 
-function listPages(items) {
-  const pages = [];
-  for (let offset = 0; offset < items.length; offset += 30) {
-    pages.push(items.slice(offset, offset + 30));
-  }
-  return pages;
-}
 
-async function collectNewPrefix(newCount) {
-  const newItems = Array.from({ length: newCount }, (_, index) => summary(1 + index));
-  const oldItems = Array.from({ length: 30 }, (_, index) => summary(10_000 + index));
-  const pages = listPages([...newItems, ...oldItems]);
-  const loaded = new Map(oldItems.map(item => [item.trace_id, item.revision]));
-  const cursors = [];
-  const controller = new AbortController();
-  const window = await collectHeadRefreshWindow(
-    loaded,
-    STORE_EPOCH,
-    controller.signal,
-    async (cursor) => {
-      cursors.push(cursor);
-      const pageIndex = cursor === null ? 0 : Number(cursor.slice('page-'.length));
-      return {
-        schema_version: 1,
-        session_id: SESSION_ID,
-        store_epoch: STORE_EPOCH,
-        items: pages[pageIndex],
-        next_cursor: pageIndex + 1 < pages.length ? `page-${pageIndex + 1}` : null,
-        revision_cursor: 'revision-baseline',
-      };
-    },
-  );
-  assert.ok(window);
-  return {
-    cursors,
-    selected: selectSummariesNeedingLoad(loaded, window.summaries),
-  };
-}
 
 function otlpRecord(traceId, spanId) {
   return {
@@ -404,119 +368,44 @@ function detailPage({
   };
 }
 
-test('head refresh crosses the page boundary for 31 new traces', async () => {
-  const result = await collectNewPrefix(31);
 
-  assert.deepEqual(result.cursors, [null, 'page-1']);
-  assert.equal(result.selected.length, 31);
-  assert.equal(new Set(result.selected.map(item => item.trace_id)).size, 31);
-});
-
-test('head refresh crosses three fixed-size pages for 61 new traces', async () => {
-  const result = await collectNewPrefix(61);
-
-  assert.deepEqual(result.cursors, [null, 'page-1', 'page-2']);
-  assert.equal(result.selected.length, 61);
-  assert.equal(new Set(result.selected.map(item => item.trace_id)).size, 61);
-});
 
 test('revision feed finds a late update for an already loaded old trace', async () => {
   const oldTrace = summary(80_000, 10);
   const unchangedTrace = summary(80_001, 20);
   const newTrace = summary(80_002, 1);
   const loaded = new Map([
-    [oldTrace.trace_id, oldTrace.revision],
-    [unchangedTrace.trace_id, unchangedTrace.revision],
+    [oldTrace.subject_id, oldTrace.revision],
+    [unchangedTrace.subject_id, unchangedTrace.revision],
   ]);
-  const requestedCursors = [];
+  const requestedFloors = [];
   const controller = new AbortController();
-  const revisions = await collectRevisionRefreshWindow(
-    'revision-10',
+  const revisions = await collectSubjectRefreshWindow(
+    10,
     STORE_EPOCH,
     controller.signal,
-    async (cursor) => {
-      requestedCursors.push(cursor);
-      if (cursor === 'revision-10') {
-        return {
-          schema_version: 1,
-          session_id: SESSION_ID,
-          store_epoch: STORE_EPOCH,
-          reset: false,
-          items: [{ ...oldTrace, revision: 11 }, newTrace],
-          next_cursor: 'revision-page-1',
-          watermark: 'revision-30',
-          has_more: true,
-        };
-      }
+    async (afterRevision) => {
+      requestedFloors.push(afterRevision);
       return {
         schema_version: 1,
         session_id: SESSION_ID,
         store_epoch: STORE_EPOCH,
-        reset: false,
-        items: [{ ...oldTrace, revision: 12 }, unchangedTrace],
-        next_cursor: 'revision-30',
-        watermark: 'revision-30',
-        has_more: false,
+        items: [{ ...oldTrace, revision: 12 }, newTrace, unchangedTrace],
+        watermark: 30,
       };
     },
   );
 
   assert.ok(revisions);
-  assert.deepEqual(requestedCursors, ['revision-10', 'revision-page-1']);
-  assert.equal(revisions.nextCursor, 'revision-30');
+  assert.deepEqual(requestedFloors, [10]);
+  assert.equal(revisions.watermark, 30);
   const selected = selectSummariesNeedingLoad(loaded, revisions.summaries);
   assert.deepEqual(
-    selected.map(item => [item.trace_id, item.revision]),
-    [[oldTrace.trace_id, 12], [newTrace.trace_id, 1]],
+    selected.map(item => [item.subject_id, item.revision]),
+    [[oldTrace.subject_id, 12], [newTrace.subject_id, 1]],
   );
 });
 
-test('trajectory client consumes opaque list and revision cursors', async () => {
-  const requestedUrls = [];
-  const originalFetch = globalThis.fetch;
-  globalThis.fetch = async (input) => {
-    const url = String(input);
-    requestedUrls.push(url);
-    if (url.includes('/revisions?')) {
-      return new Response(JSON.stringify({
-        schema_version: 1,
-        session_id: SESSION_ID,
-        store_epoch: STORE_EPOCH,
-        reset: false,
-        items: [summary(85_001, 8)],
-        next_cursor: 'revision-next',
-        watermark: 'revision-next',
-        has_more: false,
-      }), { status: 200 });
-    }
-    return new Response(JSON.stringify({
-      schema_version: 1,
-      session_id: SESSION_ID,
-      store_epoch: STORE_EPOCH,
-      items: [summary(85_000, 7)],
-      next_cursor: 'list-next',
-      revision_cursor: 'revision-baseline',
-    }), { status: 200 });
-  };
-  try {
-    const list = await listTrajectoryTraces(SESSION_ID, { limit: 30 });
-    const revisions = await listTrajectoryTraceRevisions(SESSION_ID, {
-      afterRevision: 'opaque cursor/with symbols',
-      limit: 100,
-    });
-
-    assert.equal(list.revision_cursor, 'revision-baseline');
-    assert.equal(revisions.next_cursor, 'revision-next');
-    assert.equal(requestedUrls.length, 2);
-    assert.match(requestedUrls[0], /\/traces\?limit=30$/);
-    assert.match(
-      requestedUrls[1],
-      /\/revisions\?after_revision=opaque\+cursor%2Fwith\+symbols&limit=100$/,
-    );
-  } finally {
-    globalThis.fetch = originalFetch;
-  }
-});
 
 test('trajectory client reads session cumulative usage by physical request identity', async () => {
   const originalFetch = globalThis.fetch;
@@ -563,7 +452,7 @@ test('trajectory client accepts the additive provisional detail contract', async
     globalThis.fetch = async () => new Response(JSON.stringify({
       schema_version: 1,
       session_id: SESSION_ID,
-      trace_id: record.trace_id,
+      subject_id: 'main',
       revision: 44,
       reset: false,
       records: [{
@@ -578,7 +467,7 @@ test('trajectory client accepts the additive provisional detail contract', async
       has_more: false,
       next_since_revision: 44,
     }), { status: 200 });
-    const detail = await getTrajectoryTrace(SESSION_ID, record.trace_id);
+    const detail = await getTrajectorySubjectRecords(SESSION_ID, 'main');
 
     assert.equal(detail.records[0].lifecycle, 'provisional');
     assert.equal(detail.records[0].record_revision, 2);
@@ -632,15 +521,14 @@ test('trajectory client rejects missing, blank, and oversized epochs plus missin
         status: 200,
       });
       const request = index < 3
-        ? listTrajectoryTraces(SESSION_ID)
-        : listTrajectoryTraceRevisions(SESSION_ID, {
+        ? listTrajectorySubjects(SESSION_ID)
+        : listTrajectorySubjects(SESSION_ID, {
           afterRevision: 'revision-baseline',
         });
       await assert.rejects(request, error => error.code === 'INVALID_RESPONSE');
       assert.equal(state.buckets.size, 1);
       assert.equal(state.storeEpoch, STORE_EPOCH);
-      assert.equal(state.pageCursor, 'list-page-2');
-      assert.equal(state.revisionCursor, 'revision-9');
+      assert.equal(state.watermark, 9);
       assert.notEqual(state.rawSelection, '');
     }
   } finally {
@@ -658,8 +546,7 @@ function populatedWindowState() {
     rawRecords: new Map([[identity, record]]),
   });
   state.storeEpoch = STORE_EPOCH;
-  state.pageCursor = 'list-page-2';
-  state.revisionCursor = 'revision-9';
+  state.watermark = 9;
   state.listWindowInitialized = true;
   state.rawSelection = identity;
   return state;
@@ -668,51 +555,24 @@ function populatedWindowState() {
 function assertWindowReset(state) {
   assert.equal(state.buckets.size, 0);
   assert.equal(state.storeEpoch, null);
-  assert.equal(state.pageCursor, null);
-  assert.equal(state.revisionCursor, null);
+  assert.equal(state.watermark, 0);
   assert.equal(state.listWindowInitialized, false);
   assert.equal(state.rawSelection, '');
 }
 
-test('same-epoch revision reset still fully clears the browser window', async () => {
-  const controller = new AbortController();
-  const result = await collectRevisionRefreshWindow(
-    'revision-9',
-    STORE_EPOCH,
-    controller.signal,
-    async () => ({
-      schema_version: 1,
-      session_id: SESSION_ID,
-      store_epoch: STORE_EPOCH,
-      reset: true,
-      items: [],
-      next_cursor: 'revision-baseline',
-      watermark: 'revision-baseline',
-      has_more: false,
-    }),
-  );
-  const state = populatedWindowState();
 
-  assert.deepEqual(result, { reset: true, storeEpoch: STORE_EPOCH });
-  resetTrajectoryWindowState(state);
-  assertWindowReset(state);
-});
-
-test('partial retention epoch reset removes buckets, cursors, and raw selection', async () => {
+test('partial retention epoch reset removes buckets, the watermark, and raw selection', async () => {
   const controller = new AbortController();
-  const result = await collectRevisionRefreshWindow(
-    'revision-9',
+  const result = await collectSubjectRefreshWindow(
+    9,
     STORE_EPOCH,
     controller.signal,
     async () => ({
       schema_version: 1,
       session_id: SESSION_ID,
       store_epoch: 'epoch-after-partial-retention',
-      reset: true,
       items: [],
-      next_cursor: 'revision-baseline',
-      watermark: 'revision-baseline',
-      has_more: false,
+      watermark: 0,
     }),
   );
   const state = populatedWindowState();
@@ -727,19 +587,16 @@ test('partial retention epoch reset removes buckets, cursors, and raw selection'
 
 test('an eligible-to-mixed epoch change yields reset and removes old trace state', async () => {
   const controller = new AbortController();
-  const result = await collectRevisionRefreshWindow(
-    'revision-9',
+  const result = await collectSubjectRefreshWindow(
+    9,
     STORE_EPOCH,
     controller.signal,
     async () => ({
       schema_version: 1,
       session_id: SESSION_ID,
       store_epoch: 'epoch-mixed',
-      reset: false,
       items: [],
-      next_cursor: 'revision-baseline',
-      watermark: 'revision-baseline',
-      has_more: false,
+      watermark: 0,
     }),
   );
   const state = populatedWindowState();
@@ -749,83 +606,7 @@ test('an eligible-to-mixed epoch change yields reset and removes old trace state
   assertWindowReset(state);
 });
 
-test('a cross-page head epoch change discards every provisional summary', async () => {
-  const loaded = new Map([[summary(99_999).trace_id, 1]]);
-  const requested = [];
-  const controller = new AbortController();
-  const result = await collectHeadRefreshWindow(
-    loaded,
-    STORE_EPOCH,
-    controller.signal,
-    async (cursor) => {
-      requested.push(cursor);
-      if (cursor === null) {
-        return {
-          schema_version: 1,
-          session_id: SESSION_ID,
-          store_epoch: STORE_EPOCH,
-          items: [summary(1)],
-          next_cursor: 'page-1',
-          revision_cursor: 'revision-1',
-        };
-      }
-      return {
-        schema_version: 1,
-        session_id: SESSION_ID,
-        store_epoch: 'epoch-after-retention',
-        items: [],
-        next_cursor: null,
-        revision_cursor: 'revision-new',
-      };
-    },
-  );
 
-  assert.deepEqual(requested, [null, 'page-1']);
-  assert.deepEqual(result, { reset: true, storeEpoch: 'epoch-after-retention' });
-  assert.equal('summaries' in result, false);
-});
-
-test('a cross-page revision epoch change discards the fixed-window first page', async () => {
-  const requested = [];
-  const controller = new AbortController();
-  const result = await collectRevisionRefreshWindow(
-    'revision-1',
-    STORE_EPOCH,
-    controller.signal,
-    async (cursor) => {
-      requested.push(cursor);
-      if (cursor === 'revision-1') {
-        return {
-          schema_version: 1,
-          session_id: SESSION_ID,
-          store_epoch: STORE_EPOCH,
-          reset: false,
-          items: [summary(1)],
-          next_cursor: 'revision-page-1',
-          watermark: 'revision-20',
-          has_more: true,
-        };
-      }
-      return {
-        schema_version: 1,
-        session_id: SESSION_ID,
-        store_epoch: 'epoch-replaced-between-pages',
-        reset: true,
-        items: [],
-        next_cursor: 'revision-new-baseline',
-        watermark: 'revision-new-baseline',
-        has_more: false,
-      };
-    },
-  );
-
-  assert.deepEqual(requested, ['revision-1', 'revision-page-1']);
-  assert.deepEqual(result, {
-    reset: true,
-    storeEpoch: 'epoch-replaced-between-pages',
-  });
-  assert.equal('summaries' in result, false);
-});
 
 test('load-earlier has one panel-level flight for two synchronous entry points', async () => {
   const coordinator = createTrajectoryOperationCoordinator();
@@ -851,43 +632,6 @@ test('load-earlier has one panel-level flight for two synchronous entry points',
   assert.deepEqual(busy, [true, false]);
 });
 
-test('head refresh waits for the shared load-earlier flight before reading its cursor', async () => {
-  const coordinator = createTrajectoryOperationCoordinator();
-  let pageCursor = 'list-page-2';
-  let earlierCalls = 0;
-  let resolveEarlierRequest;
-  const earlierRequest = new Promise(resolve => {
-    resolveEarlierRequest = resolve;
-  });
-  const earlierPromise = coordinator.runLoadEarlier(async (generation) => {
-    earlierCalls += 1;
-    const nextCursor = await earlierRequest;
-    if (!coordinator.isCurrent(generation)) return false;
-    pageCursor = nextCursor;
-    return true;
-  }, () => {});
-
-  const headGeneration = coordinator.currentGeneration();
-  const headPromise = (async () => {
-    const pendingEarlier = coordinator.pendingLoadEarlier(headGeneration);
-    if (pendingEarlier !== null) await pendingEarlier;
-    if (!coordinator.isCurrent(headGeneration)) return null;
-    return pageCursor;
-  })();
-
-  assert.equal(earlierCalls, 1);
-  let headSettled = false;
-  void headPromise.finally(() => {
-    headSettled = true;
-  });
-  await Promise.resolve();
-  assert.equal(headSettled, false);
-
-  resolveEarlierRequest('list-page-3');
-  assert.equal(await earlierPromise, true);
-  assert.equal(await headPromise, 'list-page-3');
-  assert.equal(earlierCalls, 1);
-});
 
 test('generation invalidation restores busy and rejects stale load-earlier writes', async () => {
   const coordinator = createTrajectoryOperationCoordinator();
@@ -899,9 +643,9 @@ test('generation invalidation restores busy and rejects stale load-earlier write
     resolveOldRequest = resolve;
   });
   const oldPromise = coordinator.runLoadEarlier(async (generation) => {
-    const nextCursor = await oldRequest;
+    const nextWatermark = await oldRequest;
     if (controller.signal.aborted || !coordinator.isCurrent(generation)) return false;
-    state.pageCursor = nextCursor;
+    state.watermark = nextWatermark;
     return true;
   }, value => busy.push(value));
 
@@ -920,9 +664,9 @@ test('generation invalidation restores busy and rejects stale load-earlier write
   );
   assert.deepEqual(busy, [true, false, true]);
 
-  resolveOldRequest('stale-page');
+  resolveOldRequest(99);
   assert.equal(await oldPromise, false);
-  assert.equal(state.pageCursor, null);
+  assert.equal(state.watermark, 0);
   assert.deepEqual(busy, [true, false, true]);
 
   resolveNewRequest(true);
@@ -930,61 +674,6 @@ test('generation invalidation restores busy and rejects stale load-earlier write
   assert.deepEqual(busy, [true, false, true, false]);
 });
 
-test('a failed revision page yields no advanced cursor and retries from the baseline', async () => {
-  const controller = new AbortController();
-  const requestedCursors = [];
-  await assert.rejects(
-    collectRevisionRefreshWindow(
-      'revision-baseline',
-      STORE_EPOCH,
-      controller.signal,
-      async (cursor) => {
-        requestedCursors.push(cursor);
-        if (cursor === 'revision-baseline') {
-          return {
-            schema_version: 1,
-            session_id: SESSION_ID,
-            store_epoch: STORE_EPOCH,
-            reset: false,
-            items: [summary(86_000, 2)],
-            next_cursor: 'revision-page-1',
-            watermark: 'revision-watermark',
-            has_more: true,
-          };
-        }
-        throw new Error('revision page two failed');
-      },
-    ),
-    /revision page two failed/,
-  );
-
-  const retried = await collectRevisionRefreshWindow(
-    'revision-baseline',
-    STORE_EPOCH,
-    controller.signal,
-    async (cursor) => {
-      requestedCursors.push(cursor);
-      return {
-        schema_version: 1,
-        session_id: SESSION_ID,
-        store_epoch: STORE_EPOCH,
-        reset: false,
-        items: [summary(86_000, 3)],
-        next_cursor: 'revision-watermark',
-        watermark: 'revision-watermark',
-        has_more: false,
-      };
-    },
-  );
-
-  assert.ok(retried);
-  assert.deepEqual(requestedCursors, [
-    'revision-baseline',
-    'revision-page-1',
-    'revision-baseline',
-  ]);
-  assert.equal(retried.nextCursor, 'revision-watermark');
-});
 
 test('head and revision windows deduplicate one trace at its highest revision', () => {
   const target = summary(90_000, 3);
@@ -1025,7 +714,7 @@ test('detail pages stage 1001 records and retain an oversize raw descriptor', as
   });
   const controller = new AbortController();
   let calls = 0;
-  const stagedPromise = stageTrajectoryTracePages(
+  const stagedPromise = stageTrajectoryChainPages(
     current,
     controller.signal,
     async (sinceRevision) => {
@@ -1080,7 +769,7 @@ test('a later detail-page failure leaves the current bucket untouched', async ()
   const controller = new AbortController();
 
   await assert.rejects(
-    stageTrajectoryTracePages(current, controller.signal, async () => {
+    stageTrajectoryChainPages(current, controller.signal, async () => {
       calls += 1;
       if (calls === 1) {
         return detailPage({
@@ -1112,7 +801,7 @@ test('progressive detail publish exposes only consumed page revisions before a l
   const controller = new AbortController();
 
   await assert.rejects(
-    stageTrajectoryTracePages(
+    stageTrajectoryChainPages(
       current,
       controller.signal,
       async () => {
@@ -1143,7 +832,7 @@ test('progressive detail publish advances each page cursor and reaches target on
   const published = [];
   let calls = 0;
   const controller = new AbortController();
-  const staged = await stageTrajectoryTracePages(
+  const staged = await stageTrajectoryChainPages(
     undefined,
     controller.signal,
     async (sinceRevision) => {
@@ -1199,7 +888,7 @@ test('aborting after a staged detail page never returns a publishable bucket', a
   });
   const controller = new AbortController();
   let calls = 0;
-  const stagedPromise = stageTrajectoryTracePages(
+  const stagedPromise = stageTrajectoryChainPages(
     current,
     controller.signal,
     async () => {

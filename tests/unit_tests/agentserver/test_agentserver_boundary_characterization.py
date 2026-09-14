@@ -15,7 +15,7 @@ from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.runtime import SessionProvisionState
+from jiuwenswarm.runtime.session_provisioner import SessionProvisionState
 from jiuwenswarm.server.agent_ws_server import AdapterRegistry, AgentWebSocketServer
 from jiuwenswarm.server.runtime.agent_adapter import (
     interface_deep as interface_deep_module,
@@ -668,7 +668,7 @@ async def test_chat_answer_exception_keeps_legacy_unary_error_wire(
                 return None
 
         class InteractionRuntime(AgentRuntime):
-            async def prepare_chat_turn(
+            async def _prepare_chat_turn(
                 self,
                 _request: AgentRequest,
                 _channel_id: str,

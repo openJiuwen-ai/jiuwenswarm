@@ -120,6 +120,8 @@ export interface ModelEntry {
   endpoint_profile?: string;
   /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
   is_agentos?: boolean;
+  /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
+  is_free?: boolean;
 }
 
 export interface VendorPreset {

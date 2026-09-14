@@ -55,14 +55,13 @@ class SessionExecutionRegistry:
         if handle.state.terminal:
             return
         handle.state = SessionExecutionState.WAITING_FOR_CONTROL
-        if not handle.retain_task_while_waiting:
+        if not handle.retain_owner_task:
             handle.task = None
 
     @staticmethod
     def resume_waiting(handle: SessionExecutionHandle) -> None:
         if handle.state is SessionExecutionState.WAITING_FOR_CONTROL:
             handle.state = SessionExecutionState.RUNNING
-        handle.waiting_control_id = None
 
     def mark_terminal(
         self,
@@ -77,13 +76,27 @@ class SessionExecutionRegistry:
             handle.terminal_event.set()
             return
         handle.state = state
+        handle.waiting_control_id = None
         handle.finished_at = time.monotonic()
         if error is not None:
             handle.error = str(error)
-        handle.task = None
+        if not handle.retain_owner_task:
+            handle.task = None
         handle.terminal_event.set()
-        self._terminal.append(handle.execution_id)
+        if handle.task is None or handle.task.done():
+            self._terminal.append(handle.execution_id)
         self._evict_terminal()
+
+    def release_owner_task(
+        self, handle: SessionExecutionHandle, task: object
+    ) -> None:
+        """Move a terminal execution into history after its owner has exited."""
+        if handle.task is not task:
+            return
+        handle.task = None
+        if handle.state.terminal:
+            self._terminal.append(handle.execution_id)
+            self._evict_terminal()
 
     def get(self, execution_id: str) -> SessionExecutionHandle | None:
         self._evict_terminal()
@@ -145,7 +158,11 @@ class SessionExecutionRegistry:
             if not expired and not over_capacity:
                 break
             self._terminal.popleft()
-            if handle is not None and handle.state.terminal:
+            if (
+                handle is not None
+                and handle.state.terminal
+                and (handle.task is None or handle.task.done())
+            ):
                 self._remove(handle)
 
     def _remove(self, handle: SessionExecutionHandle) -> None:

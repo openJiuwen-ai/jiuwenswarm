@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, AsyncIterator, Awaitable, Callable, TypeVar
 
 from jiuwenswarm.runtime.session.execution_registry import SessionExecutionRegistry
@@ -14,6 +14,7 @@ from jiuwenswarm.runtime.session.model import (
     CloseSessionResult,
     RuntimeSessionSnapshot,
     RuntimeSessionState,
+    SessionCloseTimeoutError,
     SessionExecutionEndedError,
     SessionExecutionHandle,
     SessionExecutionSnapshot,
@@ -33,6 +34,10 @@ class _SessionRecord:
     persistence_policy: SessionPersistencePolicy
     generation: int
     state: RuntimeSessionState = RuntimeSessionState.READY
+    control_ready: asyncio.Event = field(default_factory=asyncio.Event)
+
+    def __post_init__(self) -> None:
+        self.control_ready.set()
 
 
 @dataclass(slots=True)
@@ -100,19 +105,82 @@ class RuntimeSessionCoordinator:
         *,
         suspension_key: Callable[[T], str | None] | None = None,
         wait_for_terminal: bool = False,
+        timeout_scope: asyncio.Timeout | None = None,
+        timeout_error: str = "execution deadline exceeded",
     ) -> T:
         record = self._require_open_session(session_id)
         handle = self._new_execution(record, request_id, work_kind)
-        handle.retain_task_while_waiting = wait_for_terminal
+        handle.retain_owner_task = wait_for_terminal
+        return await self._run_unary(
+            record,
+            handle,
+            operation,
+            suspension_key,
+            wait_for_terminal=wait_for_terminal,
+            timeout_scope=timeout_scope,
+            timeout_error=timeout_error,
+        )
 
+    def submit_unary(
+        self,
+        session_id: str,
+        request_id: str,
+        work_kind: SessionWorkKind,
+        operation: Callable[[], Awaitable[T]],
+        *,
+        suspension_key: Callable[[T], str | None] | None = None,
+    ) -> SessionExecutionSnapshot:
+        """Queue owned work and return before the operation completes."""
+        record = self._require_open_session(session_id)
+        existing = self._registry.select(
+            session_id=session_id,
+            request_id=request_id,
+            generation=record.generation,
+        )
+        if existing:
+            if existing[-1].work_kind is not work_kind:
+                raise ValueError(
+                    f"request_id already belongs to {existing[-1].work_kind.value}"
+                )
+            return existing[-1].snapshot()
+        handle = self._new_execution(record, request_id, work_kind)
+
+        async def submitted() -> None:
+            if work_kind is SessionWorkKind.SESSION_MESSAGE:
+                await record.control_ready.wait()
+            await self._run_unary(record, handle, operation, suspension_key)
+
+        task = asyncio.create_task(submitted())
+        handle.task = task
+        task.add_done_callback(self._consume_task)
+        return handle.snapshot()
+
+    async def _run_unary(
+        self,
+        record: _SessionRecord,
+        handle: SessionExecutionHandle,
+        operation: Callable[[], Awaitable[T]],
+        suspension_key: Callable[[T], str | None] | None,
+        *,
+        wait_for_terminal: bool = False,
+        timeout_scope: asyncio.Timeout | None = None,
+        timeout_error: str = "execution deadline exceeded",
+    ) -> T:
         async def tracked() -> T:
             self._registry.mark_running(handle)
             record.state = RuntimeSessionState.ACTIVE
             try:
                 value = await operation()
             except asyncio.CancelledError as exc:
+                timed_out = timeout_scope is not None and timeout_scope.expired()
                 self._registry.mark_terminal(
-                    handle, SessionExecutionState.CANCELLED, error=exc
+                    handle,
+                    (
+                        SessionExecutionState.FAILED
+                        if timed_out
+                        else SessionExecutionState.CANCELLED
+                    ),
+                    error=timeout_error if timed_out else exc,
                 )
                 raise
             except BaseException as exc:
@@ -121,6 +189,13 @@ class RuntimeSessionCoordinator:
                 )
                 raise
             else:
+                if timeout_scope is not None and timeout_scope.expired():
+                    self._registry.mark_terminal(
+                        handle,
+                        SessionExecutionState.FAILED,
+                        error=timeout_error,
+                    )
+                    raise TimeoutError(timeout_error)
                 control_id = (
                     suspension_key(value) if suspension_key is not None else None
                 )
@@ -137,9 +212,13 @@ class RuntimeSessionCoordinator:
                 self._refresh_session_state(record)
 
         try:
-            if work_kind.scheduled:
+            if handle.work_kind.scheduled:
                 return await self._scheduler.submit_and_wait(handle, tracked)
             handle.task = asyncio.current_task()
+            if handle.retain_owner_task and handle.task is not None:
+                handle.task.add_done_callback(
+                    lambda task: self._registry.release_owner_task(handle, task)
+                )
             value = await tracked()
             if wait_for_terminal and not handle.state.terminal:
                 handle.task = asyncio.current_task()
@@ -151,12 +230,21 @@ class RuntimeSessionCoordinator:
             return value
         except asyncio.CancelledError:
             handle.cancellation_requested = True
-            if work_kind.scheduled:
+            if handle.work_kind.scheduled:
                 await self._scheduler.cancel_handles(
                     [handle], wait_timeout=self._cancel_timeout
                 )
             if not handle.state.terminal:
-                self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED)
+                timed_out = timeout_scope is not None and timeout_scope.expired()
+                self._registry.mark_terminal(
+                    handle,
+                    (
+                        SessionExecutionState.FAILED
+                        if timed_out
+                        else SessionExecutionState.CANCELLED
+                    ),
+                    error=timeout_error if timed_out else None,
+                )
             await self._cancel_descendants(handle)
             self._refresh_session_state(record)
             raise
@@ -164,7 +252,11 @@ class RuntimeSessionCoordinator:
             await self._cancel_descendants(handle)
             raise
         finally:
-            if not work_kind.scheduled and handle.task is asyncio.current_task():
+            if (
+                not handle.work_kind.scheduled
+                and not handle.retain_owner_task
+                and handle.task is asyncio.current_task()
+            ):
                 handle.task = None
 
     def record_interaction(
@@ -182,6 +274,7 @@ class RuntimeSessionCoordinator:
         ):
             if handle.state is SessionExecutionState.RUNNING:
                 self._registry.mark_awaiting_control(handle, control_id)
+                self._refresh_control_gate(record)
                 return True
         return False
 
@@ -332,6 +425,7 @@ class RuntimeSessionCoordinator:
                     )
                     if control_id:
                         self._registry.mark_awaiting_control(handle, control_id)
+                        self._refresh_control_gate(record)
                     await queue.put(_StreamItem(value=item))
             except asyncio.CancelledError as exc:
                 self._registry.mark_terminal(
@@ -413,15 +507,17 @@ class RuntimeSessionCoordinator:
             active_only=True,
         )
         handles = self._with_descendants(handles)
-        for handle in handles:
-            handle.cancellation_requested = True
-        direct = [handle for handle in handles if not handle.work_kind.scheduled]
+        direct = [handle for handle in handles if self._requires_direct_cancel(handle)]
         work = [handle for handle in handles if handle.work_kind.scheduled]
+        direct_ids = {handle.execution_id for handle in direct}
+        for handle in handles:
+            if handle.execution_id not in direct_ids:
+                handle.cancellation_requested = True
         timed_out = await self._scheduler.cancel_handles(
             work,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
         )
-        direct_timeouts = await self._cancel_direct_handles(
+        direct_timeouts = await self._request_direct_cancel(
             direct,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
         )
@@ -433,6 +529,9 @@ class RuntimeSessionCoordinator:
                 self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED)
             if handle.state is SessionExecutionState.CANCELLED:
                 cancelled += 1
+        record = self._sessions.get(session_id)
+        if record is not None:
+            self._refresh_session_state(record)
         return CancelExecutionResult(
             matched=len(handles), cancelled=cancelled, timed_out=timed_out
         )
@@ -449,31 +548,58 @@ class RuntimeSessionCoordinator:
             return CloseSessionResult(session_id, generation, False)
         target_generation = record.generation
         record.state = RuntimeSessionState.QUIESCING
-        active = self._registry.select(
+        executions = self._registry.select(
             session_id=session_id,
             generation=target_generation,
-            active_only=True,
         )
-        direct = [handle for handle in active if not handle.work_kind.scheduled]
-        direct_timeouts = await self._cancel_direct_handles(
+        active = [handle for handle in executions if not handle.state.terminal]
+        settling = [
+            handle
+            for handle in executions
+            if handle.state.terminal
+            and handle.retain_owner_task
+            and handle.task is not None
+            and not handle.task.done()
+        ]
+        direct = [handle for handle in active if self._requires_direct_cancel(handle)]
+        direct_timeouts = await self._request_direct_cancel(
             direct,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
         )
-        _existed, timed_out = await self._scheduler.close_session(
+        scheduler_existed, timed_out = await self._scheduler.close_session(
             session_id,
             generation=target_generation,
             wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
         )
-        timed_out = (*timed_out, *direct_timeouts)
+        if not scheduler_existed:
+            settling.extend(
+                handle
+                for handle in active
+                if handle.work_kind.scheduled
+                and handle.task is not None
+                and not handle.task.done()
+            )
+        settling_timeouts = await self._wait_for_handles(
+            settling,
+            wait_timeout=self._cancel_timeout if wait_timeout is None else wait_timeout,
+        )
+        timed_out = (*timed_out, *direct_timeouts, *settling_timeouts)
         for handle in self._registry.select(
             session_id=session_id, generation=target_generation, active_only=True
         ):
             handle.cancellation_requested = True
             if handle.execution_id not in timed_out and not handle.state.terminal:
                 self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED)
+        if timed_out:
+            return CloseSessionResult(
+                session_id,
+                target_generation,
+                True,
+                tuple(dict.fromkeys(timed_out)),
+            )
         if self._sessions.get(session_id) is record:
             record.state = RuntimeSessionState.CLOSED
-        return CloseSessionResult(session_id, target_generation, True, timed_out)
+        return CloseSessionResult(session_id, target_generation, True)
 
     def get_execution(self, execution_id: str) -> SessionExecutionSnapshot | None:
         handle = self._registry.get(execution_id)
@@ -485,21 +611,25 @@ class RuntimeSessionCoordinator:
 
     async def close(self) -> None:
         async with self._lock:
-            if not self._accepting:
-                return
             self._accepting = False
             records = tuple(self._sessions.values())
         errors: list[BaseException] = []
+        timed_out: list[str] = []
         for record in records:
             if record.state is RuntimeSessionState.CLOSED:
                 continue
             try:
-                await self.close_session(
+                result = await self.close_session(
                     record.session_id,
                     generation=record.generation,
                 )
+                timed_out.extend(result.timed_out)
             except BaseException as exc:
                 errors.append(exc)
+        if timed_out:
+            raise SessionCloseTimeoutError(
+                "runtime", tuple(dict.fromkeys(timed_out))
+            )
         try:
             await self._scheduler.close(wait_timeout=self._cancel_timeout)
         except BaseException as exc:
@@ -508,6 +638,8 @@ class RuntimeSessionCoordinator:
             raise errors[0]
 
     def _require_open_session(self, session_id: str) -> _SessionRecord:
+        from jiuwenswarm.server.runtime.session.lifecycle import guard
+        guard(session_id)
         if not self._accepting:
             raise RuntimeError("session coordinator is closed")
         record = self._sessions.get(session_id)
@@ -562,6 +694,12 @@ class RuntimeSessionCoordinator:
         self._registry.register(handle)
         record.state = RuntimeSessionState.ACTIVE
         return handle
+
+    @staticmethod
+    def _requires_direct_cancel(handle: SessionExecutionHandle) -> bool:
+        if handle.work_kind is SessionWorkKind.SESSION_MESSAGE:
+            return True
+        return not handle.work_kind.scheduled
 
     @staticmethod
     async def _cancel_direct_handles(
@@ -694,23 +832,75 @@ class RuntimeSessionCoordinator:
         ]
         if not descendants:
             return
-        for handle in descendants:
-            handle.cancellation_requested = True
+        timed_out = {handle.execution_id for handle in descendants}
         try:
-            await self._cancel_direct_handles(
-                descendants,
-                wait_timeout=self._cancel_timeout,
+            timed_out = set(
+                await self._request_direct_cancel(
+                    descendants,
+                    wait_timeout=self._cancel_timeout,
+                )
             )
         finally:
-            # Both callers are already unwinding an exception, so the await above
-            # can be interrupted before the children settle. They are cancelled
-            # either way -- skipping this bookkeeping would leave them active in
-            # the registry and pin the Session in ACTIVE forever.
             for handle in descendants:
-                if not handle.state.terminal:
+                if handle.execution_id not in timed_out and not handle.state.terminal:
                     self._registry.mark_terminal(
                         handle, SessionExecutionState.CANCELLED
                     )
+        if timed_out:
+            await self._wait_for_handles_uninterruptibly(descendants)
+
+    @staticmethod
+    async def _wait_for_handles(
+        handles: list[SessionExecutionHandle],
+        *,
+        wait_timeout: float | None,
+    ) -> tuple[str, ...]:
+        tasks = {
+            handle.execution_id: handle.task
+            for handle in handles
+            if handle.task is not None and not handle.task.done()
+        }
+        if not tasks:
+            return ()
+        _done, pending = await asyncio.wait(set(tasks.values()), timeout=wait_timeout)
+        return tuple(
+            execution_id
+            for execution_id, task in tasks.items()
+            if task in pending
+        )
+
+    async def _request_direct_cancel(
+        self,
+        handles: list[SessionExecutionHandle],
+        *,
+        wait_timeout: float | None,
+    ) -> tuple[str, ...]:
+        pending = [handle for handle in handles if handle.cancellation_requested]
+        fresh = [handle for handle in handles if not handle.cancellation_requested]
+        for handle in fresh:
+            handle.cancellation_requested = True
+        cancelled_timeouts = await self._cancel_direct_handles(
+            fresh, wait_timeout=wait_timeout
+        )
+        pending_timeouts = await self._wait_for_handles(
+            pending, wait_timeout=wait_timeout
+        )
+        return (*cancelled_timeouts, *pending_timeouts)
+
+    @staticmethod
+    async def _wait_for_handles_uninterruptibly(
+        handles: list[SessionExecutionHandle],
+    ) -> None:
+        pending = {
+            handle.task
+            for handle in handles
+            if handle.task is not None and not handle.task.done()
+        }
+        while pending:
+            try:
+                _done, pending = await asyncio.wait(pending)
+            except asyncio.CancelledError:
+                continue
 
     def _refresh_session_state(self, record: _SessionRecord) -> None:
         if self._sessions.get(record.session_id) is not record:
@@ -722,7 +912,33 @@ class RuntimeSessionCoordinator:
             generation=record.generation,
             active_only=True,
         )
+        self._refresh_control_gate(record, active)
         record.state = RuntimeSessionState.ACTIVE if active else RuntimeSessionState.READY
+
+    def _refresh_control_gate(
+        self,
+        record: _SessionRecord,
+        active: list[SessionExecutionHandle] | None = None,
+    ) -> None:
+        if active is None:
+            active = self._registry.select(
+                session_id=record.session_id,
+                generation=record.generation,
+                active_only=True,
+            )
+        if any(handle.waiting_control_id for handle in active):
+            record.control_ready.clear()
+        else:
+            record.control_ready.set()
+
+    @staticmethod
+    def _consume_task(task: asyncio.Task[Any]) -> None:
+        if not task.done():
+            return
+        try:
+            task.result()
+        except (asyncio.CancelledError, Exception):
+            pass
 
     def _snapshot(self, record: _SessionRecord) -> RuntimeSessionSnapshot:
         return RuntimeSessionSnapshot(

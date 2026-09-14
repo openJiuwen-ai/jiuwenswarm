@@ -90,6 +90,13 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
+        "proactive_recommendation",
+        # RSI pushes contain the complete node/progress payload.  Reducing
+        # them to {session_id, content} would make the evolution tree appear
+        # empty in the browser.
+        "rsi.training.status.changed",
+        "rsi.training.progress",
+        "rsi.training.tree.delta",
     }
 )
 
@@ -739,11 +746,22 @@ class WebChannel(BaseWsChannel):
                 continue
             key = (session_id, trace_id)
             current = self._trajectory_pending_updates.get(key)
-            revision = int(getattr(update, "revision", 0))
-            current_revision = (
-                int(getattr(current, "revision", 0)) if current is not None else -1
+            # Records and frames advance on separate watermarks, so a hint
+            # bringing new frames for an unchanged record has to outrank the
+            # one it is coalesced against rather than tie with it.
+            incoming = (
+                int(getattr(update, "revision", 0)),
+                int(getattr(update, "frame_seq", 0)),
             )
-            if revision >= current_revision:
+            held = (
+                (
+                    int(getattr(current, "revision", 0)),
+                    int(getattr(current, "frame_seq", 0)),
+                )
+                if current is not None
+                else (-1, -1)
+            )
+            if incoming >= held:
                 self._trajectory_pending_updates[key] = update
         task = self._trajectory_send_task
         if self._trajectory_pending_updates and (task is None or task.done()):
@@ -779,6 +797,7 @@ class WebChannel(BaseWsChannel):
                 "session_id": session_id,
                 "trace_id": str(getattr(update, "trace_id", "") or ""),
                 "revision": int(getattr(update, "revision", 0)),
+                "frame_seq": int(getattr(update, "frame_seq", 0)),
                 "store_epoch": getattr(update, "store_epoch", None),
                 "lifecycle": str(getattr(update, "lifecycle", "final") or "final"),
             }

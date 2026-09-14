@@ -29,6 +29,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import 
 from jiuwenswarm.extensions.agentos.auth.common import (
     extract_headers,
     extract_token,
+    extract_token_from_path_and_headers,
     get_remote_addr,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
@@ -475,14 +476,28 @@ class AgentOSRouterClient(AgentServerClient):
             fields["error"] = error
         log_agentos(logger, level, event, **fields)
 
-    async def on_connect(self, ws: Any) -> AuthResult | None:
-        channel = self._ws_channel_name(ws)
-        remote = get_remote_addr(ws)
-        if self._auth_client is None:
+    @property
+    def auth_enabled(self) -> bool:
+        return self._auth_client is not None
+
+    @staticmethod
+    def _header_user_id(headers: Mapping[str, str]) -> str:
+        lowered = {str(k).lower(): str(v or "") for k, v in headers.items()}
+        return str(lowered.get("x-user-id", "") or "").strip()
+
+    async def _verify_request_token(
+        self,
+        *,
+        token: str | None,
+        headers: Mapping[str, str],
+        remote: str,
+        channel: str,
+    ) -> AuthResult:
+        auth_client = self._auth_client
+        if not self.auth_enabled or auth_client is None:
             # auth 未启用时回落使用握手头里的 X-User-Id，
             # 否则 user_id 为空会跳过连接计数/延迟清理，导致 agent 泄漏不回收。
-            headers = {k.lower(): v for k, v in extract_headers(ws).items()}
-            fallback_user_id = str(headers.get("x-user-id", "") or "").strip()
+            fallback_user_id = self._header_user_id(headers)
             fields: dict[str, Any] = {
                 "user_id": fallback_user_id,
                 "channel": channel,
@@ -495,15 +510,13 @@ class AgentOSRouterClient(AgentServerClient):
                 success=True,
                 user_id=fallback_user_id,
             )
-        token = extract_token(ws)
-        headers = extract_headers(ws)
         context = AuthContext(
-            channel_type="",
-            credentials={"token": token} if token else {},
-            headers=headers,
+            channel_type=channel,
+            credentials={"token": token or ""},
+            headers=dict(headers),
             remote_addr=remote,
         )
-        result = await self._auth_client.authenticate(context)
+        result = await auth_client.authenticate(context)
         if result.success:
             log_agentos(
                 logger,
@@ -526,6 +539,42 @@ class AgentOSRouterClient(AgentServerClient):
                 remote=remote,
                 error=error_code or result.error or "unauthorized",
             )
+        return result
+
+    async def authenticate_http(
+        self,
+        *,
+        path: str,
+        headers: Mapping[str, str],
+        remote: str = "",
+        channel: str = "file-api",
+        allow_query_token: bool = True,
+    ) -> AuthResult:
+        """IAM-verify an HTTP request token. Skips when ``auth_enabled`` is false.
+
+        ``/file-api/download?token=`` carries a file-location token, not an IAM
+        credential; callers must pass ``allow_query_token=False`` on that path.
+        """
+        token_path = path if allow_query_token else urllib.parse.urlparse(path).path
+        token = extract_token_from_path_and_headers(token_path, headers)
+        return await self._verify_request_token(
+            token=token,
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+
+    async def on_connect(self, ws: Any) -> AuthResult | None:
+        channel = self._ws_channel_name(ws)
+        remote = get_remote_addr(ws)
+        headers = extract_headers(ws)
+        result = await self._verify_request_token(
+            token=extract_token(ws),
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+        if not result.success:
             close = getattr(ws, "close", None)
             if callable(close):
                 ret = close(code=1008, reason="unauthorized")

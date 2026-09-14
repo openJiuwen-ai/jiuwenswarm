@@ -17,6 +17,7 @@ import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -530,7 +531,7 @@ export function ModelsSettings() {
           onSave={async (next) => {
             const nextModels = dialog.model
               ? models.map((current) => (current === dialog.model ? next : current))
-              : [...models, next];
+              : addEditableModel(models, next);
             await saveModels(nextModels, dialog.model ? 'model.edit' : 'model.add', { errorScope: 'caller' });
           }}
         />

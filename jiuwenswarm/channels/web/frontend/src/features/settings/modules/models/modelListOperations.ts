@@ -42,6 +42,16 @@ export function removeEditableModel(models: ModelEntry[], target: ModelEntry): M
   return models.filter((model) => model !== target);
 }
 
+export function addEditableModel(models: ModelEntry[], model: ModelEntry): ModelEntry[] {
+  const primaryModel = getEditableModels(models)[0];
+  if (primaryModel?.model_name.trim() !== 'your-model-name') return [...models, model];
+
+  return promotePrimaryModel(
+    models.filter((candidate) => candidate !== primaryModel).concat(model),
+    model,
+  );
+}
+
 export function promotePrimaryModel(models: ModelEntry[], target: ModelEntry): ModelEntry[] {
   return [
     { ...target, is_default: true },

@@ -89,7 +89,7 @@ else:
 
 
 @contextmanager
-def _file_lock(data_path: Path) -> Iterator[None]:
+def file_lock(data_path: Path) -> Iterator[None]:
     """跨进程文件锁。锁文件为 ``<data_path>.lock``,与数据文件分离,
     因此数据文件的原子替换不会破坏锁。
     """
@@ -118,6 +118,7 @@ class Project:
     pinned: bool = False
     pin_order: int = 0
     hidden: bool = False
+    archived_at: float = 0.0
     created_at: float = 0.0
     updated_at: float = 0.0
     # 工作模式："code" 或 "work"；旧数据兜底为 "work"
@@ -143,6 +144,7 @@ class Project:
             pinned=bool(d.get("pinned", False)),
             pin_order=int(d.get("pin_order", 0)),
             hidden=bool(d.get("hidden", False)),
+            archived_at=float(d.get("archived_at") or (d.get("updated_at", 0) if d.get("hidden") else 0)),
             created_at=float(d.get("created_at", 0.0)),
             updated_at=float(d.get("updated_at", 0.0)),
             work_mode=work_mode,
@@ -236,8 +238,11 @@ def _mutate(fn: Callable[[list[dict[str, Any]]], _T]) -> _T:
     """
     global _CACHE
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         projects = _read_disk_locked(path)
+        for project in projects:
+            if project.get("hidden") and not project.get("archived_at"):
+                project["archived_at"] = project.get("updated_at", 0)
         result = fn(projects)
         _write_disk_locked(path, projects)
         with _CACHE_LOCK:
@@ -253,7 +258,7 @@ def _load_cache(cache_bust: bool = False) -> list[dict[str, Any]]:
             if _CACHE is not None:
                 return [dict(p) for p in _CACHE]
     path = _projects_file()
-    with _file_lock(path):
+    with file_lock(path):
         raw = _read_disk_locked(path)
         # 惰性迁移:为缺 work_mode 的老项目推断并写回磁盘。
         # from_dict 已能在读取时兜底,但持久化可避免后续每次读都重复推断,
@@ -882,11 +887,13 @@ def create_or_restore_project(
 
         if path_match is not None:
             if path_match.get("hidden"):
-                # 命中同 work_mode 的隐藏项目 → 自动恢复
-                path_match["hidden"] = False
-                path_match["name"] = name
-                path_match["updated_at"] = _now()
-                return Project.from_dict(path_match), True
+                from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+                # details 携带 project_id，前端据此调用 project.unarchive 恢复。
+                raise LifecycleError(
+                    "PROJECT_ARCHIVED",
+                    "restore archived project explicitly before using its directory",
+                    {"project_id": str(path_match.get("project_id") or "")},
+                )
             # 命中同 work_mode 的可见项目 → 冲突
             raise ProjectDirConflict(project_dir)
         # 无匹配 → 新建
@@ -990,13 +997,14 @@ def restore_project(project_id: str) -> Project | None:
             if p.get("name") == target_name:
                 raise ProjectNameConflict(str(target_name or ""))
         target["hidden"] = False
+        target.pop("archived_at", None)
         target["updated_at"] = _now()
         return Project.from_dict(target)
 
     return _mutate(_do)
 
 
-def hide_project(project_id: str) -> Project | None:
+def hide_project(project_id: str, *, archived_at: float | None = None) -> Project | None:
     """原子地隐藏(软删除)项目(锁内完成 hidden 翻转与置顶取消,关闭 TOCTOU 窗口)。
 
     项目不存在或已是隐藏时返回 ``None``(调用方通常已预检存在性与可见状态)。
@@ -1013,6 +1021,7 @@ def hide_project(project_id: str) -> Project | None:
         if target.get("hidden"):
             return None
         target["hidden"] = True
+        target["archived_at"] = archived_at if archived_at is not None else _now()
         # 隐藏项目自动取消置顶: 隐藏项目不应出现在置顶区
         if target.get("pinned"):
             target["pinned"] = False
@@ -1021,6 +1030,21 @@ def hide_project(project_id: str) -> Project | None:
         return Project.from_dict(target)
 
     return _mutate(_do)
+
+
+def delete_project(project_id: str) -> None:
+    """Remove only the registry record, never the user's working directory."""
+    if is_default_project_id(project_id):
+        raise ValueError("default project cannot be deleted")
+
+    def _do(projects: list[dict[str, Any]]) -> None:
+        target = next((p for p in projects if p.get("project_id") == project_id), None)
+        if target is not None:
+            if not target.get("hidden"):
+                raise ValueError("project must be archived before deletion")
+            projects.remove(target)
+
+    _mutate(_do)
 
 
 def reindex_project_pin_orders() -> None:

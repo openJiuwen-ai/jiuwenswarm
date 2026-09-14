@@ -27,6 +27,7 @@ from jiuwenswarm.server.runtime.gateway_adapter.base import (
     build_error_response,
 )
 from jiuwenswarm.server.runtime.session import project_store
+from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError, projection as lifecycle_projection
 from jiuwenswarm.server.runtime.session.session_metadata import (
     collect_all_sessions_metadata,
 )
@@ -85,6 +86,9 @@ def _project_info_payload(
             "pin_order": 0,
             "is_default": True,
             "hidden": False,
+            "lifecycle_operation": None,
+            "execution_blocked": False,
+            "stop_pending": False,
             "work_mode": (
                 DEFAULT_TUI_WORK_MODE
                 if default_id == DEFAULT_PROJECT_ID_CODE
@@ -105,6 +109,8 @@ def _project_info_payload(
         "pin_order": project.pin_order,
         "is_default": False,
         "hidden": project.hidden,
+        "archived_at": getattr(project, "archived_at", 0),
+        **lifecycle_projection("project", project.project_id),
         "work_mode": getattr(project, "work_mode", "") or DEFAULT_WEB_WORK_MODE,
         "git": git,
         "session_count": statistics["session_count"],
@@ -473,84 +479,6 @@ def _create_project(
         "work_mode": project.work_mode or DEFAULT_WEB_WORK_MODE,
         "git": info["git"],
         "project": info,
-    }, None, None
-
-
-def _remove_project(
-    params: dict[str, Any]
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Soft-delete a project and count its affected Web sessions."""
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    if is_default_project_id(project_id):
-        return None, "default project cannot be removed", "FORBIDDEN"
-    project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
-        return None, "project not found", "NOT_FOUND"
-    if project.hidden:
-        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
-
-    projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_ids = {item.project_id for item in projects if not item.hidden}
-    affected = 0
-    for session in collect_all_sessions_metadata():
-        if (
-            session.get("channel_id") == "web"
-            and not session.get("pinned")
-            and _attribute_session_project(session, visible_ids) == project_id
-        ):
-            affected += 1
-    hidden = project_store.hide_project(project_id)
-    if hidden is None:
-        return {"project_id": project_id, "hidden": True, "affected_sessions": 0}, None, None
-    project_store.reindex_project_pin_orders()
-    return {
-        "project_id": project_id,
-        "hidden": True,
-        "affected_sessions": affected,
-    }, None, None
-
-
-def _restore_project(
-    params: dict[str, Any]
-) -> tuple[dict[str, Any] | None, str | None, str | None]:
-    """Restore a hidden project and count its returning Web sessions."""
-    project_id = str(params.get("project_id") or "").strip()
-    if not project_id:
-        return None, "project_id is required", "BAD_REQUEST"
-    if is_default_project_id(project_id):
-        return None, "default project cannot be restored", "FORBIDDEN"
-    project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None:
-        return None, "project not found", "NOT_FOUND"
-    if not project.hidden:
-        return None, "project is not hidden", "CONFLICT"
-
-    projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_ids = set()
-    for item in projects:
-        if not item.hidden or item.project_id == project_id:
-            visible_ids.add(item.project_id)
-    affected = 0
-    for session in collect_all_sessions_metadata():
-        if (
-            session.get("channel_id") == "web"
-            and not session.get("pinned")
-            and _attribute_session_project(session, visible_ids) == project_id
-        ):
-            affected += 1
-    try:
-        restored = project_store.restore_project(project_id)
-    except project_store.ProjectNameConflict:
-        return None, "project name already exists", "CONFLICT"
-    if restored is None:
-        return None, "project is not hidden", "CONFLICT"
-    return {
-        "project_id": restored.project_id,
-        "restored": True,
-        "work_mode": restored.work_mode or DEFAULT_WEB_WORK_MODE,
-        "affected_sessions": affected,
     }, None, None
 
 
@@ -1228,6 +1156,10 @@ async def _run_threaded(
     """
     try:
         result = await asyncio.to_thread(fn, *args, **fn_kwargs)
+    except LifecycleError as exc:
+        return build_error_response(
+            request, str(exc), code=exc.code, extra=exc.details
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("[ProjectAdapter] %s failed: %s", label, exc)
         return build_error_response(request, str(exc), code="INTERNAL_ERROR")
@@ -1279,8 +1211,6 @@ class ProjectAdapter(GatewayAdapter):
             ReqMethod.PROJECT_CREATE.value,
             ReqMethod.PROJECT_RENAME.value,
             ReqMethod.PROJECT_PIN.value,
-            ReqMethod.PROJECT_REMOVE.value,
-            ReqMethod.PROJECT_RESTORE.value,
             ReqMethod.PROJECT_GIT_STATUS.value,
             ReqMethod.PROJECT_GIT_PROBE.value,
             ReqMethod.PROJECT_GIT_INIT.value,
@@ -1299,6 +1229,13 @@ class ProjectAdapter(GatewayAdapter):
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
         params = _request_params(request)
+        if method not in {ReqMethod.PROJECT_LIST, ReqMethod.PROJECT_INFO, ReqMethod.PROJECT_PINNED_SESSIONS,
+                          ReqMethod.PROJECT_GET_SESSIONS, ReqMethod.PROJECT_GET_CRON_SESSIONS}:
+            from jiuwenswarm.server.runtime.session.lifecycle import guard
+            try:
+                guard(project_id=str(params.get("project_id") or ""))
+            except LifecycleError as exc:
+                return build_error_response(request, str(exc), code=exc.code)
 
         if method == ReqMethod.PROJECT_GIT_DISCARD_TURN_CHANGES:
             return await _run_threaded(
@@ -1357,10 +1294,6 @@ class ProjectAdapter(GatewayAdapter):
             return await _run_threaded(
                 request, "project.create", _create_project, params, request.channel_id,
             )
-        if method == ReqMethod.PROJECT_REMOVE:
-            return await _run_threaded(request, "project.remove", _remove_project, params)
-        if method == ReqMethod.PROJECT_RESTORE:
-            return await _run_threaded(request, "project.restore", _restore_project, params)
         if method == ReqMethod.PROJECT_PINNED_SESSIONS:
             return await _run_threaded(
                 request, "project.pinned_sessions", _load_pinned_sessions,

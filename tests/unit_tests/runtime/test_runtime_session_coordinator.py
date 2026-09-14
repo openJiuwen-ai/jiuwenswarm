@@ -85,6 +85,188 @@ async def test_latest_first_within_session_and_parallel_across_sessions() -> Non
 
 
 @pytest.mark.asyncio
+async def test_submitted_session_message_starts_without_active_execution() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    completed = asyncio.Event()
+
+    async def message() -> str:
+        completed.set()
+        return "delivered"
+
+    queued = coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        message,
+    )
+
+    assert queued.state is SessionExecutionState.QUEUED
+    await asyncio.wait_for(completed.wait(), timeout=1)
+    await asyncio.sleep(0)
+    finished = coordinator.get_execution(queued.execution_id)
+    assert finished is not None
+    assert finished.state is SessionExecutionState.SUCCEEDED
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_session_messages_wait_for_control_and_keep_fifo_order() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    order: list[str] = []
+
+    assert await coordinator.run_unary(
+        "session-a",
+        "question",
+        SessionWorkKind.CHAT_UNARY,
+        lambda: asyncio.sleep(0, result="ask"),
+        suspension_key=lambda _value: "control-1",
+    ) == "ask"
+
+    first = coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        lambda: asyncio.sleep(0, result=order.append("first")),
+    )
+    second = coordinator.submit_unary(
+        "session-a",
+        "message-2",
+        SessionWorkKind.SESSION_MESSAGE,
+        lambda: asyncio.sleep(0, result=order.append("second")),
+    )
+    await asyncio.sleep(0.01)
+    assert order == []
+    assert coordinator.get_execution(first.execution_id).state is SessionExecutionState.QUEUED
+    assert coordinator.get_execution(second.execution_id).state is SessionExecutionState.QUEUED
+
+    control_started = asyncio.Event()
+    release_control = asyncio.Event()
+
+    async def answer() -> str:
+        control_started.set()
+        await release_control.wait()
+        return "answered"
+
+    control = asyncio.create_task(
+        coordinator.deliver_control("session-a", "control-1", answer)
+    )
+    await control_started.wait()
+    await asyncio.sleep(0.01)
+    assert order == []
+    release_control.set()
+    assert await control == "answered"
+    for _ in range(100):
+        if len(order) == 2:
+            break
+        await asyncio.sleep(0.01)
+    assert order == ["first", "second"]
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_session_message_waits_for_heartbeat_interaction() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    interaction_recorded = asyncio.Event()
+    release_heartbeat = asyncio.Event()
+    message_started = asyncio.Event()
+
+    async def heartbeat() -> None:
+        assert coordinator.record_interaction(
+            "session-a", "heartbeat-1", "control-1"
+        )
+        interaction_recorded.set()
+        await release_heartbeat.wait()
+
+    heartbeat_task = asyncio.create_task(
+        coordinator.run_unary(
+            "session-a",
+            "heartbeat-1",
+            SessionWorkKind.HEARTBEAT,
+            heartbeat,
+        )
+    )
+    await interaction_recorded.wait()
+    coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        lambda: asyncio.sleep(0, result=message_started.set()),
+    )
+
+    await asyncio.sleep(0.01)
+    assert not message_started.is_set()
+
+    await coordinator.cancel_execution("session-a", request_id="heartbeat-1")
+    with pytest.raises(asyncio.CancelledError):
+        await heartbeat_task
+    await asyncio.wait_for(message_started.wait(), timeout=1)
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_submitted_session_message_is_idempotent_by_request_id() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    release = asyncio.Event()
+
+    first = coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        release.wait,
+    )
+    duplicate = coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        release.wait,
+    )
+
+    assert duplicate.execution_id == first.execution_id
+    release.set()
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_cancel_session_message_while_it_waits_for_control() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+    await coordinator.run_unary(
+        "session-a",
+        "question",
+        SessionWorkKind.CHAT_UNARY,
+        lambda: asyncio.sleep(0, result="ask"),
+        suspension_key=lambda _value: "control-1",
+    )
+    ran = False
+
+    async def message() -> None:
+        nonlocal ran
+        ran = True
+
+    queued = coordinator.submit_unary(
+        "session-a",
+        "message-1",
+        SessionWorkKind.SESSION_MESSAGE,
+        message,
+    )
+    result = await coordinator.cancel_execution(
+        "session-a",
+        execution_id=queued.execution_id,
+    )
+
+    assert result.matched == result.cancelled == 1
+    assert ran is False
+    cancelled = coordinator.get_execution(queued.execution_id)
+    assert cancelled is not None
+    assert cancelled.state is SessionExecutionState.CANCELLED
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
 async def test_contextvars_are_captured_for_each_queued_operation() -> None:
     coordinator = RuntimeSessionCoordinator()
     await _register(coordinator)
@@ -326,6 +508,28 @@ async def test_old_generation_completion_does_not_clear_new_generation() -> None
         "same", generation=first_snapshot.generation
     )
     assert close_result.timed_out
+    closing_snapshot = await coordinator.register_session(
+        "same", "process", SessionPersistencePolicy.PERSISTENT
+    )
+    assert closing_snapshot.generation == first_snapshot.generation
+    assert closing_snapshot.state is RuntimeSessionState.QUIESCING
+    retry_result = await coordinator.close_session(
+        "same", generation=first_snapshot.generation
+    )
+    assert retry_result.timed_out == close_result.timed_out
+    assert not old.done()
+    assert coordinator.snapshot_session("same").state is RuntimeSessionState.QUIESCING
+    with pytest.raises(RuntimeError, match="not accepting work"):
+        await coordinator.run_unary(
+            "same", "new", SessionWorkKind.CHAT_UNARY, lambda: asyncio.sleep(0)
+        )
+    release.set()
+    assert await old == "old"
+    assert not (
+        await coordinator.close_session(
+            "same", generation=first_snapshot.generation
+        )
+    ).timed_out
     second_snapshot = await coordinator.register_session(
         "same", "process", SessionPersistencePolicy.PERSISTENT
     )
@@ -333,12 +537,80 @@ async def test_old_generation_completion_does_not_clear_new_generation() -> None
     assert await coordinator.run_unary(
         "same", "new", SessionWorkKind.CHAT_UNARY, lambda: asyncio.sleep(0, "new")
     ) == "new"
-    release.set()
-    assert await old == "old"
     current = coordinator.snapshot_session("same")
     assert current is not None
     assert current.generation == second_snapshot.generation
     assert current.state is RuntimeSessionState.READY
+    await coordinator.close()
+
+
+@pytest.mark.asyncio
+async def test_retained_terminal_owner_is_not_evicted_before_task_exit() -> None:
+    coordinator = RuntimeSessionCoordinator(
+        registry=SessionExecutionRegistry(terminal_capacity=0),
+        cancel_timeout=0.01,
+    )
+    await _register(coordinator)
+    operation_finished = asyncio.Event()
+    release_owner = asyncio.Event()
+
+    async def owner() -> None:
+        await coordinator.run_unary(
+            "session-a",
+            "heartbeat",
+            SessionWorkKind.HEARTBEAT,
+            lambda: asyncio.sleep(0),
+            wait_for_terminal=True,
+        )
+        operation_finished.set()
+        await release_owner.wait()
+
+    task = asyncio.create_task(owner())
+    await operation_finished.wait()
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    assert any(item.request_id == "heartbeat" for item in snapshot.executions)
+    assert (await coordinator.close_session("session-a")).timed_out
+
+    release_owner.set()
+    await task
+    assert coordinator.get_execution(snapshot.executions[0].execution_id) is None
+
+
+@pytest.mark.asyncio
+async def test_swallowed_deadline_cancellation_is_still_failed() -> None:
+    coordinator = RuntimeSessionCoordinator()
+    await _register(coordinator)
+
+    async def swallow_cancel() -> str:
+        try:
+            await asyncio.sleep(1)
+        except asyncio.CancelledError:
+            return "late success"
+
+    async def run() -> None:
+        deadline = asyncio.timeout(0.01)
+        async with deadline:
+            await coordinator.run_unary(
+                "session-a",
+                "heartbeat",
+                SessionWorkKind.HEARTBEAT,
+                swallow_cancel,
+                wait_for_terminal=True,
+                timeout_scope=deadline,
+                timeout_error="heartbeat timed out",
+            )
+
+    with pytest.raises(TimeoutError, match="heartbeat timed out"):
+        await asyncio.create_task(run())
+
+    snapshot = coordinator.snapshot_session("session-a")
+    assert snapshot is not None
+    execution = next(
+        item for item in snapshot.executions if item.request_id == "heartbeat"
+    )
+    assert execution.state is SessionExecutionState.FAILED
+    assert execution.error == "heartbeat timed out"
     await coordinator.close()
 
 
@@ -722,6 +994,10 @@ async def test_control_input_cancellation_does_not_cancel_parent_work() -> None:
     with pytest.raises(asyncio.CancelledError):
         await control_task
 
+    assert await coordinator.deliver_control(
+        "session-a", "answer", lambda: asyncio.sleep(0, result="answered")
+    ) == "answered"
+
     finish_parent.set()
     assert await anext(stream) == "done"
     with pytest.raises(StopAsyncIteration):
@@ -823,8 +1099,7 @@ async def test_control_result_after_parent_ended_raises_typed_error() -> None:
 
 
 @pytest.mark.asyncio
-async def test_descendant_bookkeeping_survives_interrupted_cancel_wait() -> None:
-    """An interrupted cleanup await must not leave descendants active."""
+async def test_interrupted_descendant_cancel_keeps_child_tracked() -> None:
     coordinator = RuntimeSessionCoordinator()
     await _register(coordinator)
     record = coordinator._sessions["session-a"]
@@ -848,10 +1123,13 @@ async def test_descendant_bookkeeping_survives_interrupted_cancel_wait() -> None
     finally:
         del coordinator._cancel_direct_handles
 
-    assert child.state is SessionExecutionState.CANCELLED
+    assert child.state is SessionExecutionState.RUNNING
     assert child.cancellation_requested is True
     still_active = coordinator._registry.select(
         session_id="session-a", generation=record.generation, active_only=True
     )
-    assert [handle.execution_id for handle in still_active] == [parent.execution_id]
+    assert {handle.execution_id for handle in still_active} == {
+        parent.execution_id,
+        child.execution_id,
+    }
     await coordinator.close()
