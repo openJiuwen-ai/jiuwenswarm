@@ -490,11 +490,26 @@ def _patch_sdk_read_timeouts() -> None:
 
         setattr(module, factory_name, factory_with_read_timeout)
 
-    for cls, method_name in (
-        (SseClient, "_do_connect"),
+    connect_targets: list[tuple[type, str]] = [
         (StreamableHttpClient, "connect"),
-    ):
+    ]
+    # 真实 SseClient 在 owner-task 的 _do_connect 里建 transport；单测假类可能只有 connect。
+    if hasattr(SseClient, "_do_connect"):
+        connect_targets.append((SseClient, "_do_connect"))
+    elif hasattr(SseClient, "connect"):
+        connect_targets.append((SseClient, "connect"))
+    else:
+        logger.debug("[mcp-timeout] SseClient has neither _do_connect nor connect; skip stamp")
+
+    for cls, method_name in connect_targets:
         if (cls, method_name) in _wrapped_connects:
+            continue
+        if not hasattr(cls, method_name):
+            logger.debug(
+                "[mcp-timeout] skip wrapping %s.%s (attribute missing)",
+                getattr(cls, "__name__", cls),
+                method_name,
+            )
             continue
         _wrapped_connects.add((cls, method_name))
         orig_method = getattr(cls, method_name)
