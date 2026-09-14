@@ -223,7 +223,7 @@ def test_ttse_eager_and_mount_agree_on_enabled_default(ttse, expect_mounted, exp
     assert ("ttse_consult" in rail.eager_tools) is expect_eager
 
 
-def test_shipped_config_omits_ttse_consult_from_first_turn_schema():
+def test_shipped_config_puts_ttse_consult_in_first_turn_schema():
     config_path = Path(__file__).parents[3] / "jiuwenswarm/resources/config.yaml"
     config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
 
@@ -233,8 +233,8 @@ def test_shipped_config_omits_ttse_consult_from_first_turn_schema():
     )
 
     assert rail is not None
-    assert config["react"]["ttse"]["enabled"] is False
-    assert "ttse_consult" not in rail.eager_tools
+    assert config["react"]["ttse"]["enabled"] is True
+    assert "ttse_consult" in rail.eager_tools
 
 
 def test_deep_adapter_builds_usage_reporting_task_planning_rail():

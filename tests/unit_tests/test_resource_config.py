@@ -48,13 +48,15 @@ def test_default_telemetry_config_is_disabled_and_documents_unified_fields():
     }
 
 
-def test_default_ttse_config_is_disabled():
+def test_default_ttse_config_is_enabled():
     repo_root = Path(__file__).resolve().parents[2]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
 
     react = yaml.safe_load(config_file.read_text(encoding="utf-8"))["react"]
 
-    assert react["ttse"]["enabled"] is False
+    assert react["ttse"]["enabled"] is True
+    assert react["evolution"]["enabled"] is True
+    assert react["ttse"]["dream_interval"] == 50
     assert react["ttse"]["trajectory_export_enabled"] is False
-    assert react["ttse"]["trajectory_export_path"] == ""
+    assert "trajectory_export_path" not in react["ttse"]
     assert "ttse_consult" not in react["tool_lazy_load"]["eager_tools"]

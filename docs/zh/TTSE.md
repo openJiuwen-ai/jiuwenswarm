@@ -2,17 +2,17 @@
 
 TTSE（Two-Track Self-Evolution）从对话轨迹归纳环境事实（FACT）与能力选择提示（TIP），注入系统 prompt。它与 [Skill 正文演进](Skill自演进.md) 相互独立：**不改 SKILL.md，也没有审批弹窗**。
 
-由 `react.ttse.enabled` 控制，**仅 agent 模式**生效（code / team 不挂载）。随包模板与缺省值均为 **默认关闭**，避免未评估就产生额外归纳 LLM 成本。显式设置 `enabled: true` 后才会挂载 `TTSERail`，并把 `ttse_consult` 放入首轮 schema（无需 `tools_search`）。
+由 `react.ttse.enabled` 控制，**仅 agent 模式**生效（code / team 不挂载）。随包模板 **默认开启**：挂载 `TTSERail`，并把 `ttse_consult` 放入首轮 schema（无需 `tools_search`）。设 `enabled: false` 可关闭。
 
 ```yaml
 react:
   ttse:
-    enabled: false          # agent 模式是否挂载 TTSERail
+    enabled: true           # agent 模式是否挂载 TTSERail
     evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
     inject_enabled: true    # 是否注入系统 prompt
     # Auto-dream（静默整理经验库，不劫持用户回合）
     dream_enabled: true     # 是否启用 Auto-dream
-    dream_interval: 20      # 每 N 次非 follow-up 任务迭代尝试一次
+    dream_interval: 50      # 每 N 次非 follow-up 任务迭代尝试一次
     dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
     dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
     # 语义 dedup / Auto-dream / ttse_consult 混合召回；三段齐全时 BM25+embedding，否则 BM25 兜底
