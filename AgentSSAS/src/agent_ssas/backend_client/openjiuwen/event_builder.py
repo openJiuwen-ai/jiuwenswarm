@@ -93,8 +93,9 @@ class EventBuilder:
         }
         return mapping.get(event, event.value)
 
+    @staticmethod
     def _extract_content(
-        self, ctx: AgentCallbackContext, event: AgentCallbackEvent
+        ctx: AgentCallbackContext, event: AgentCallbackEvent
     ) -> dict[str, Any]:
         """按事件类型提取交互内容类字段。"""
         content: dict[str, Any] = {}
