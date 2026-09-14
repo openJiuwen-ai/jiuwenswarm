@@ -6987,7 +6987,7 @@ class JiuWenSwarmDeepAdapter:
             else:
                 backend = AgentSSASBackend(ssas_config)
                 # initialize() 是 async, 在同步上下文中用事件循环驱动
-                # 注: 复用模块级 asyncio 导入(第 11 行),不再函数内重复 import
+                # 注: 复用模块级 asyncio 导入(第 11 行),不再函数内重复 import(避免标识符遮蔽)
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
