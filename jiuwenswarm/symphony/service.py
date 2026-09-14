@@ -546,7 +546,15 @@ def set_swarm_symphony_service(service: SwarmSymphonyService | None) -> None:
 
 
 def _graph_needs_build(status: dict[str, Any]) -> bool:
-    if not bool(status.get("exists", False)) or bool(status.get("stale", False)):
+    if not bool(status.get("exists", False)):
+        return True
+    # A cancelled refresh must not be revived implicitly by the next ordinary
+    # task.  Keep using the last atomically published graph until the user (or
+    # an explicit refresh action) starts a new build.
+    build_progress = status.get("build_progress")
+    if isinstance(build_progress, dict) and build_progress.get("status") == "cancelled":
+        return False
+    if bool(status.get("stale", False)):
         return True
     for key in ("added_count", "changed_count", "removed_count"):
         try:
