@@ -2521,6 +2521,7 @@ def test_code_member_builds_declaratively_without_post_processing(
         workspace=WorkspaceSpec(root_path=str(tmp_path), language="en"),
     )
     spec = build_member_deep_agent_spec(config, "code.team", "leader", base)
+    assert spec.auto_create_workspace is False
 
     import jiuwenswarm.server.runtime.agent_adapter.interface_code as interface_code
 

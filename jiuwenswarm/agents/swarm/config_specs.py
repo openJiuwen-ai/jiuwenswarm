@@ -918,6 +918,10 @@ def build_member_deep_agent_spec(
         )
 
         update["system_prompt"] = build_code_system_prompt()
+        # JiuwenSwarm provisions code workspaces before member construction.
+        # Rebuilding one in DeepAgent would reject the app-owned absolute
+        # coding-memory mount as an unsafe workspace-relative path.
+        update["auto_create_workspace"] = False
 
     return base_spec.model_copy(update=update)
 
