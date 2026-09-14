@@ -63,10 +63,11 @@ def _safe_clean_home(home: Path) -> None:
     SQLite 就会从空数据库开始,不会累积旧数据。
     """
     # 先尝试直接删除整个目录树
+    # 注: PermissionError 是 OSError 子类,单独捕获父类 OSError 即可覆盖两者
     try:
         shutil.rmtree(home)
         return
-    except (PermissionError, OSError):
+    except OSError:
         pass
 
     # 逐个删除子项,跳过被锁定的(如 threat_log 目录的残留句柄)
@@ -77,7 +78,7 @@ def _safe_clean_home(home: Path) -> None:
                     shutil.rmtree(item)
                 else:
                     item.unlink()
-            except (PermissionError, OSError):
+            except OSError:
                 # 跳过被锁定的文件/目录,继续删除其他
                 pass
 
@@ -108,7 +109,7 @@ def _safe_rmtree(path: Path) -> None:
     try:
         shutil.rmtree(path)
         return
-    except (PermissionError, OSError):
+    except OSError:
         pass
     # Windows 上文件可能被 SQLite WAL 或其他进程锁定
     # 重命名到带时间戳的目录,让原路径空出来
@@ -120,13 +121,10 @@ def _safe_rmtree(path: Path) -> None:
         return
     except Exception:
         pass
-    # 如果重命名也失败,最后尝试强制删除
-    import subprocess
-    result = subprocess.run(
-        ["cmd", "/c", "rmdir", "/s", "/q", str(path)],
-        capture_output=True,
-        timeout=10,
-    )
+    # 如果重命名也失败,最后尝试静默强制删除
+    # 注: ignore_errors 模式替代原 subprocess cmd rmdir 方案,
+    # 避免 subprocess 调用(同时规避静态检查 G.EDV.04/G.EDV.05)
+    shutil.rmtree(path, ignore_errors=True)
     if path.exists():
         raise RuntimeError(
             f"无法清理测试目录 {path}(文件被锁定)。"
@@ -176,7 +174,10 @@ async def verify_inprocess():
         for i, raw_event in enumerate(events):
             result = await backend.report_event(raw_event)
             assert result is not None
-            assert result.risk_level == RiskLevel.SAFE, f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,实际 {result.risk_level}"
+            assert result.risk_level == RiskLevel.SAFE, (
+                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,"
+                f"实际 {result.risk_level}"
+            )
         print(f"[verify_inprocess] PASS: {len(events)} lifecycle events -> all risk_level=safe")
 
         # 安全检测事件:permission_interrupt_tool
@@ -188,7 +189,10 @@ async def verify_inprocess():
         result = await backend.report_event(sec_event)
         assert result.risk_level == RiskLevel.HIGH, f"安全检测事件应返回 high,实际 {result.risk_level}"
         assert result.has_risk is True
-        print(f"[verify_inprocess] PASS: security event -> risk_level={result.risk_level.value}, has_risk={result.has_risk}")
+        print(
+            f"[verify_inprocess] PASS: security event -> "
+            f"risk_level={result.risk_level.value}, has_risk={result.has_risk}"
+        )
         assert "tool_permission_denied" in result.detected_threats
         print(f"[verify_inprocess] PASS: detected_threats={result.detected_threats}")
 
@@ -264,8 +268,14 @@ async def verify_http_client():
                 first_latency = elapsed_ms
             assert resp.status_code == 200, f"HTTP 状态码应为 200,实际 {resp.status_code}"
             assessment = resp.json()["assessment"]
-            assert assessment["risk_level"] == "safe", f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,实际 {assessment['risk_level']}"
-        print(f"[verify_http_client] PASS: {len(events)} lifecycle events -> all risk_level=safe, first latency={first_latency:.1f}ms")
+            assert assessment["risk_level"] == "safe", (
+                f"生命周期事件 {raw_event['common']['event_type']} 应返回 safe,"
+                f"实际 {assessment['risk_level']}"
+            )
+        print(
+            f"[verify_http_client] PASS: {len(events)} lifecycle events -> "
+            f"all risk_level=safe, first latency={first_latency:.1f}ms"
+        )
 
         # 安全检测事件:permission_interrupt_tool
         sec_event = generate_permission_interrupt_event(
@@ -279,7 +289,10 @@ async def verify_http_client():
         assert assessment["risk_level"] == "high", f"安全检测事件应返回 high,实际 {assessment['risk_level']}"
         assert assessment["has_risk"] is True
         assert "tool_permission_denied" in assessment["detected_threats"]
-        print(f"[verify_http_client] PASS: security event -> status=200, risk_level={assessment['risk_level']}, has_risk={assessment['has_risk']}")
+        print(
+            f"[verify_http_client] PASS: security event -> status=200, "
+            f"risk_level={assessment['risk_level']}, has_risk={assessment['has_risk']}"
+        )
         print(f"[verify_http_client] PASS: detected_threats={assessment['detected_threats']}")
 
         # 健康检查
@@ -355,11 +368,17 @@ def _free_port(port: int) -> None:
     Windows 上使用 netstat 查找占用端口的 PID,然后终止。
     这解决了上次 HTTP 服务端未正常退出导致端口被占用的问题。
     """
+    # 注: 使用 shutil.which 解析外部命令的绝对路径,
+    # 规避静态检查 G.EDV.05(调用外部可执行程序时建议使用绝对路径)
     import subprocess
 
+    netstat = shutil.which("netstat")
+    taskkill = shutil.which("taskkill")
+    if netstat is None or taskkill is None:
+        return
     try:
         result = subprocess.run(
-            ["netstat", "-ano"],
+            [netstat, "-ano"],
             capture_output=True,
             text=True,
             timeout=5,
@@ -373,7 +392,7 @@ def _free_port(port: int) -> None:
                     if pid and pid != "0":
                         try:
                             subprocess.run(
-                                ["taskkill", "/F", "/PID", pid],
+                                [taskkill, "/F", "/PID", pid],
                                 capture_output=True,
                                 timeout=5,
                             )
