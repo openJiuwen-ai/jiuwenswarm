@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
@@ -189,10 +189,94 @@ function StatPill({ icon, label, count }: { icon: React.ReactNode; label: string
   );
 }
 
-function Th({ children, first }: { children: React.ReactNode; first?: boolean }) {
+// ─── 表格列宽布局 & 拖拽调整 ─────────────────────────────────────────────────
+// 布局（table-layout: fixed + colgroup）：各列 width / minWidth 配置在组件内 columns 数组里
+// （antd Column API 同名字段），colgroup 解析优先级 = 拖拽后宽度 > 配置 width > auto；
+// project 只配 minWidth 不配 width——fixed 布局下无 width 的列吸收全部剩余空间（表格列的
+// flex-1 等价物）；Actions 列无宽度配置、按内容自适应（渲染后量宽写回 colgroup，否则 auto
+// 的它会跟 project 平分剩余空间）。表格最小宽度走 CSS 原生路径：project 表头内容的
+// min-width（= 各列指定宽 + project 下限）参与 fixed 布局的原生最小宽度计算，容器不足时
+// 表格原生撑开、外层横向滚动兜底，project 永远分得到 ≥130px 不会被压成 0。
+// 拖拽对齐 antd resizable 表格：拖表头右缘调整列宽（热区跨边框居中），松手宽度即固定；
+// 拖宽仅会话内有效（不持久化），刷新后恢复列配置默认值。
+// 列标识与表头顺序一致
+const RESIZABLE_COLS = ['name', 'project', 'schedule', 'status', 'timezone', 'channel'] as const;
+type ResizableColKey = (typeof RESIZABLE_COLS)[number];
+
+// 非 project / Actions 列的默认宽度与最小宽度（px），拖拽下限也是它
+const MIN_COL_WIDTH = 130;
+const DEFAULT_COL_WIDTH = 130;
+interface ColState {
+  width: number;
+  hasResized: boolean;
+}
+
+type ColStates = Record<ResizableColKey, ColState>;
+
+const DEFAULT_COL_STATE: ColStates = {
+  name: { width: 0, hasResized: false },
+  project: { width: 0, hasResized: false },
+  schedule: { width: 0, hasResized: false },
+  status: { width: 0, hasResized: false },
+  timezone: { width: 0, hasResized: false },
+  channel: { width: 0, hasResized: false },
+};
+
+// antd columns 式列配置：colgroup / 表头 / 单元格全部由一份数组驱动，加列、调宽度、改渲染只改这里
+interface CronColumnDef {
+  /** 列标识：可调列用 RESIZABLE_COLS 里的 key，最后一列固定 'actions'（不参与调整、按内容自适应） */
+  key: ResizableColKey | 'actions';
+  /** 表头文案 i18n key */
+  titleKey: string;
+  /** 列宽度（px）：拖拽后的会话内宽度优先于它；不传时兜底 minWidth。不要指望 auto 列——
+   *  colgroup 刻意不产出 auto（防 1px 假溢出，见 colgroup 处注释），自适应由表格 w-full
+   *  的按比例分摊承担：想要某列更宽就给更大的 width，宽屏上比例自动放大 */
+  width?: number;
+  /** 最小列宽度（px）：拖拽下限 + 未配 width 时的兜底列宽；缺省回落到 MIN_COL_WIDTH */
+  minWidth?: number;
+  /** <td> 上的 data-testid；testid 挂在更内层元素上的列（name / actions）不传 */
+  tdTestId?: string;
+  /** 悬停提示（跟随行数据）；不需要的列不传 */
+  tdTitle?: (job: CronTaskUI) => string | undefined;
+  /** <td> 的 className（各列内容形态不同，逐一显式声明） */
+  tdClassName: string;
+  /** 单元格渲染 */
+  render: (job: CronTaskUI) => React.ReactNode;
+}
+
+function Th({
+  children,
+  first,
+  colKey,
+  onResizeStart,
+  resizing,
+}: {
+  children: React.ReactNode;
+  first?: boolean;
+  colKey?: ResizableColKey;
+  onResizeStart?: (e: React.MouseEvent) => void;
+  resizing?: boolean;
+}) {
   return (
-    <th className="py-3 font-medium">
-      <span className={`inline-block ${first ? 'px-4' : 'border-l border-border pl-4 pr-4'}`}>{children}</span>
+    <th className="group/th relative py-3 font-medium" data-testid={colKey ? `cron-th-${colKey}` : undefined}>
+      {/* max-w-full + truncate：fixed 布局下列宽再窄，表头文字也只单行省略号，绝不换行撑高表头 */}
+      <span className={`inline-block max-w-full truncate ${first ? 'px-4' : 'border-l border-border pl-4 pr-4'}`}>
+        {children}
+      </span>
+      {/* 拖拽热区跨列边框居中（antd resizable 同款：宽 16px、向右越界 8px，命中更容易） */}
+      {colKey && (
+        <div
+          onMouseDown={onResizeStart}
+          data-testid={`cron-th-resize-${colKey}`}
+          className="group/handle absolute inset-y-0 -right-2 z-10 w-4 cursor-col-resize select-none"
+        >
+          <span
+            className={`absolute inset-y-0 left-1/2 w-0.5 -translate-x-1/2 bg-border transition-opacity ${
+              resizing ? 'opacity-100' : 'opacity-0 group-hover/handle:opacity-100'
+            }`}
+          />
+        </div>
+      )}
     </th>
   );
 }
@@ -303,6 +387,76 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     null,
   );
   const [confirmBusy, setConfirmBusy] = useState(false);
+
+  // 列宽调整状态：仅会话内有效，不持久化（刷新后恢复列配置默认值）
+  const [colStates, setColStates] = useState<ColStates>(() => ({ ...DEFAULT_COL_STATE }));
+  const [resizingColKey, setResizingColKey] = useState<ResizableColKey | null>(null);
+  const resizingCol = useRef<{ col: ResizableColKey; startX: number; startWidth: number } | null>(null);
+  const tableRef = useRef<HTMLTableElement>(null);
+
+  // Actions 列宽测量：fixed 布局下 auto 列会被平分剩余空间，需要量出按钮行实际内容宽度
+  // （w-max 使其不受列宽影响）后以显式 px 写回 colgroup。不设依赖数组：每次渲染都校准一次
+  // （语言切换等导致按钮文案宽度变化时自动跟随），宽度未变时 setState 会自行 bail out。
+  // ceil 而非 round：div 是 w-max 不随列宽收缩，ceil 保证列宽 ≥ 内容实际宽度，杜绝
+  // 亚像素部分向上传播成 1px 假溢出；bail-out 只容忍"变窄"方向的 1px（列比内容宽不会
+  // 溢出），变宽必须立刻跟上，否则 w-max 内容会重新溢出列
+  const [actionsWidth, setActionsWidth] = useState<number | null>(null);
+  useLayoutEffect(() => {
+    const div = tableRef.current?.querySelector<HTMLElement>('[data-testid="cron-job-actions"]');
+    if (!div) return;
+    const w = Math.ceil(div.getBoundingClientRect().width);
+    setActionsWidth((prev) => (prev != null && w <= prev && prev - w <= 1 ? prev : w));
+  });
+
+  // 列宽拖拽：表格自首次渲染起就是 fixed 布局、所有列均有显式宽度，拖拽只改目标列。
+  // 宽容器下表格 w-full 会把剩余空间按比例分摊到各列（见 colgroup 处注释），列的渲染宽
+  // ≠ 配置宽，因此 mousedown 一律按当前渲染宽落定为显式宽度，否则拖拽第一步会跳回配置宽。
+  // 拖拽下限取列配置的 minWidth（缺省回落 MIN_COL_WIDTH）；拖宽仅会话内有效，不持久化
+  const handleResizeStart = useCallback(
+    (colDef: CronColumnDef) => (e: React.MouseEvent) => {
+      e.preventDefault();
+      if (colDef.key === 'actions') return;
+      const col = colDef.key;
+      const minWidth = colDef.minWidth ?? MIN_COL_WIDTH;
+      const th = tableRef.current?.querySelector<HTMLElement>(`[data-testid="cron-th-${col}"]`);
+      const rendered = th ? Math.ceil(th.getBoundingClientRect().width) : 0;
+      const configured =
+        colStates[col].hasResized && colStates[col].width > 0
+          ? colStates[col].width
+          : (colDef.width ?? minWidth);
+      const startWidth = Math.max(minWidth, rendered > 0 ? rendered : configured);
+      if (!(colStates[col].hasResized && colStates[col].width === startWidth)) {
+        setColStates((prev) => ({ ...prev, [col]: { width: startWidth, hasResized: true } }));
+      }
+      resizingCol.current = { col, startX: e.clientX, startWidth };
+      setResizingColKey(col);
+
+      const onMove = (move: MouseEvent) => {
+        if (!resizingCol.current) return;
+        const delta = move.clientX - resizingCol.current.startX;
+        const newW = Math.max(minWidth, resizingCol.current.startWidth + delta);
+        setColStates((prev) => {
+          if (prev[col].width === newW) return prev;
+          return { ...prev, [col]: { ...prev[col], width: newW, hasResized: true } };
+        });
+      };
+
+      const onUp = () => {
+        resizingCol.current = null;
+        setResizingColKey(null);
+        document.removeEventListener('mousemove', onMove);
+        document.removeEventListener('mouseup', onUp);
+        document.body.style.userSelect = '';
+        document.body.style.cursor = '';
+      };
+
+      document.body.style.userSelect = 'none';
+      document.body.style.cursor = 'col-resize';
+      document.addEventListener('mousemove', onMove);
+      document.addEventListener('mouseup', onUp);
+    },
+    [colStates],
+  );
 
   const channelLabel = useCallback(
     (targets: string) => (KNOWN_TARGET_KEYS.includes(targets) ? t(`cron.targets.${targets}`) : targets),
@@ -758,8 +912,349 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     return Number.isNaN(parsed.getTime()) ? value : parsed.toLocaleString();
   }
 
+  // 列配置（antd columns 式，单一数据源）：colgroup / 表头 / 单元格全部由它 map 出来
+  const columns: CronColumnDef[] = [
+    {
+      key: 'name',
+      titleKey: 'cron.table.name',
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdClassName: 'overflow-hidden px-4 py-3 text-text',
+      render: (job) => {
+        const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
+        return (
+          <div className="flex items-center gap-1">
+            {/* 名称过长由列宽 + truncate 控制，colgroup 决定列宽；max-w 不再硬编码像素，
+                min-w-0 让 flex 子项收缩到列宽而非将整列撑大。徽标 shrink-0 不被裁掉。 */}
+            <span className="min-w-0 truncate" title={job.name} data-testid="cron-job-name">
+              {job.name}
+            </span>
+            {isProactive && (
+              <span
+                className="inline-flex shrink-0 items-center rounded-full bg-cron-auto-managed-surface px-1.5 py-0.5 text-[10px] font-medium text-cron-auto-managed-text"
+                title={t('cron.autoManagedHint') ?? undefined}
+                data-testid="cron-job-auto-managed-badge"
+              >
+                {t('cron.autoManaged')}
+              </span>
+            )}
+          </div>
+        );
+      },
+    },
+    {
+      key: 'project',
+      titleKey: 'cron.table.project',
+      // 与其余列一致固定 130px：不再让 project 做唯一的 auto 列吸收剩余空间——auto 列的
+      // min-content 会参与 fixed 布局的表格最小宽度计算，是容器宽度足够时仍冒出 1px 横向
+      // 滚动条的来源；全部列显式定宽后 fixed 布局宽度完全确定，容器更宽时由各列均分拉伸
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdTestId: 'cron-job-project',
+      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
+      tdTitle: (job) => job.projectName ?? t('cron.table.noProject') ?? undefined,
+      render: (job) => job.projectName ?? t('cron.table.noProject'),
+    },
+    {
+      key: 'schedule',
+      titleKey: 'cron.table.schedule',
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdTestId: 'cron-job-schedule',
+      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
+      render: (job) => scheduleLabel(job.cronExpr),
+    },
+    {
+      key: 'status',
+      titleKey: 'cron.table.status',
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdClassName: 'px-4 py-3',
+      render: (job) => {
+        // proactive 自动维护 job 的整体开关由 config 控制（关了就删除，不在列表里），
+        // 因此这里只有两态：过期 → 过期；否则 → 启用，不显示"禁用"中间态
+        // （沿用 upstream 提交 59cf6de7 的约束）
+        const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
+        return <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />;
+      },
+    },
+    {
+      key: 'timezone',
+      titleKey: 'cron.table.timezone',
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdTestId: 'cron-job-timezone',
+      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
+      render: (job) => job.timezone,
+    },
+    {
+      key: 'channel',
+      titleKey: 'cron.table.channel',
+      width: DEFAULT_COL_WIDTH,
+      minWidth: MIN_COL_WIDTH,
+      tdTestId: 'cron-job-channel',
+      tdClassName: 'overflow-hidden truncate px-4 py-3 text-text',
+      render: (job) => channelLabel(job.deliveryChannel),
+    },
+    {
+      key: 'actions',
+      titleKey: 'cron.table.actions',
+      tdClassName: 'relative py-3',
+      render: (job) => {
+        const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
+        return (
+          <>
+            {/* w-max + px-4：容器始终按「内容+内边距」单行宽度渲染，供 useLayoutEffect 量取
+                Actions 列应有列宽（fixed 布局下 auto 的它否则会跟 project 平分剩余空间）；
+                whitespace-nowrap：被挤压时按钮文字不许换行，行高必须稳定 */}
+            <div
+              className="flex w-max items-center gap-3 whitespace-nowrap px-4"
+              data-testid="cron-job-actions"
+              data-variant={job.id}
+            >
+              {/* proactive job 没有真正的"停止"态（enabled 由 config 驱动，不是用户可切的
+                开关，同 StatusBadge 的 enabled 判断），立即执行的禁用条件不看它的 enabled */}
+              {job.expired || (!isProactive && !job.enabled) ? (
+                <span
+                  className="text-sm text-text-muted/50 cursor-not-allowed select-none"
+                  title={
+                    t(job.expired ? 'cron.errors.expiredCannotRunNow' : 'cron.errors.disabledCannotRunNow') ?? undefined
+                  }
+                  data-testid="cron-job-run-now-btn"
+                  data-variant="disabled"
+                >
+                  {t('cron.table.runNow')}
+                </span>
+              ) : (
+                <button
+                  onClick={() => setConfirmState({ type: 'runNow', job })}
+                  data-testid="cron-job-run-now-btn"
+                  data-variant="enabled"
+                  className="text-sm text-cron-action-link hover:opacity-80"
+                >
+                  {t('cron.table.runNow')}
+                </button>
+              )}
+              <button
+                onClick={() => {
+                  void loadChannels();
+                  setDrawer({ mode: 'edit', initial: jobToForm(job), jobId: job.id });
+                }}
+                data-testid="cron-job-edit-btn"
+                className="text-sm text-cron-action-link hover:opacity-80"
+              >
+                {t('cron.table.edit')}
+              </button>
+              {isProactive ? (
+                <span
+                  className="text-sm text-text-muted/50 cursor-not-allowed select-none"
+                  title={t('cron.autoManagedToggleDisabled') ?? undefined}
+                  data-testid="cron-job-stop-btn"
+                  data-variant="disabled"
+                >
+                  {t('cron.table.stop')}
+                </span>
+              ) : job.expired ? (
+                <span
+                  className="text-sm text-text-muted/50 cursor-not-allowed select-none"
+                  title={t('cron.errors.expiredCannotEnable') ?? undefined}
+                  data-testid="cron-job-start-btn"
+                  data-variant="disabled"
+                >
+                  {t('cron.table.start')}
+                </span>
+              ) : job.enabled ? (
+                <button
+                  onClick={() => setConfirmState({ type: 'stop', job })}
+                  data-testid="cron-job-stop-btn"
+                  data-variant="enabled"
+                  className="text-sm text-cron-action-link hover:opacity-80"
+                >
+                  {t('cron.table.stop')}
+                </button>
+              ) : (
+                <button
+                  onClick={() => void handleStart(job)}
+                  data-testid="cron-job-start-btn"
+                  data-variant="enabled"
+                  className="text-sm text-cron-action-link hover:opacity-80"
+                >
+                  {t('cron.table.start')}
+                </button>
+              )}
+              <div className="relative" ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
+                <button
+                  onClick={() => setRowMenuJobId(rowMenuJobId === job.id ? null : job.id)}
+                  data-testid="cron-job-more-btn"
+                  className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
+                >
+                  {t('cron.table.more')} <ChevronDown size={13} />
+                </button>
+                {rowMenuJobId === job.id && (
+                  <div
+                    className="absolute right-0 top-[calc(100%+4px)] z-20 w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                    data-testid="cron-job-more-menu"
+                  >
+                    <button
+                      onClick={() => {
+                        setRowMenuJobId(null);
+                        void toggleSessionsPopover(job);
+                      }}
+                      data-testid="cron-job-more-triggered-sessions-btn"
+                      className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                    >
+                      {t('cron.table.triggeredSessions')}
+                    </button>
+                    <button
+                      onClick={() => {
+                        setRowMenuJobId(null);
+                        void togglePreviewPopover(job);
+                      }}
+                      data-testid="cron-job-more-preview-btn"
+                      className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                    >
+                      {t('cron.previewAction')}
+                    </button>
+                    {isProactive ? (
+                      <span
+                        className="block w-full px-3 py-2 text-left text-sm text-text-muted/50 cursor-not-allowed"
+                        title={t('cron.autoManagedToggleDisabled') ?? undefined}
+                        data-testid="cron-job-more-delete-btn"
+                        data-variant="disabled"
+                      >
+                        {t('cron.delete')}
+                      </span>
+                    ) : (
+                      <button
+                        onClick={() => {
+                          setRowMenuJobId(null);
+                          setConfirmState({ type: 'delete', job });
+                        }}
+                        data-testid="cron-job-more-delete-btn"
+                        data-variant="enabled"
+                        className="block w-full px-3 py-2 text-left text-sm text-danger hover:bg-bg-hover"
+                      >
+                        {t('cron.delete')}
+                      </button>
+                    )}
+                    {CRON_HISTORY_UI_ENABLED && (
+                      <button
+                        onClick={() => {
+                          setRowMenuJobId(null);
+                          setSuccess(t('cron.history.comingSoon'));
+                        }}
+                        data-testid="cron-job-more-history-btn"
+                        className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                      >
+                        {t('cron.table.history')}
+                      </button>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+            {sessionsPopoverJobId === job.id && (
+              <div
+                ref={sessionsPopoverRef}
+                className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                data-testid="cron-sessions-popover"
+              >
+                <div
+                  className="px-3 py-1.5 text-xs font-bold text-text-muted"
+                  data-testid="cron-sessions-popover-title"
+                >
+                  {t('cron.table.triggeredSessions')}
+                </div>
+                {triggeredSessionsLoading[job.id] && (
+                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-loading">
+                    {t('common.loading')}
+                  </div>
+                )}
+                {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0 && (
+                  <div className="max-h-64 overflow-y-auto">
+                    {triggeredSessions[job.id].map((s) => (
+                      <button
+                        key={s.session_id}
+                        onClick={() => {
+                          setSessionsPopoverJobId(null);
+                          onSelectSession(s);
+                        }}
+                        className="block w-full truncate px-3 py-2 text-left text-sm text-text hover:bg-bg-hover"
+                        title={s.title}
+                        data-testid="cron-sessions-popover-item"
+                        data-variant={s.session_id}
+                      >
+                        {s.title || s.session_id}
+                      </button>
+                    ))}
+                  </div>
+                )}
+                {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) === 0 && (
+                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-empty">
+                    {t('cron.table.noTriggeredSessions')}
+                  </div>
+                )}
+              </div>
+            )}
+            {previewPopoverJobId === job.id && (
+              <div
+                ref={previewPopoverRef}
+                className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                data-testid="cron-preview-popover"
+              >
+                <div
+                  className="truncate px-3 py-1.5 text-xs font-bold text-text-muted"
+                  title={job.name}
+                  data-testid="cron-preview-popover-title"
+                >
+                  {job.name}
+                </div>
+                {previewLoading[job.id] && (
+                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-loading">
+                    {t('cron.preview.loading')}
+                  </div>
+                )}
+                {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) > 0 && (
+                  <div className="px-3 py-2 text-xs text-text">
+                    {previewRuns[job.id].map((item, index) => (
+                      <div
+                        key={`${job.id}-${index}`}
+                        className="py-0.5"
+                        data-testid="cron-preview-popover-run-item"
+                        data-variant={index + 1}
+                      >
+                        {t('cron.preview.label', { index: index + 1 })}：{formatPreviewTime(item.push_at)}
+                      </div>
+                    ))}
+                  </div>
+                )}
+                {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) === 0 && (
+                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-empty">
+                    {t('cron.preview.empty')}
+                  </div>
+                )}
+              </div>
+            )}
+          </>
+        );
+      },
+    },
+  ];
+
+  // 表格最小宽度不用 JS 计算（内联 minWidth 会参与滚动条相关的布局反馈，是 x 滚动条
+  // 临界宽度抖动的根源）：全列在 colgroup 显式定宽（宽度解析见下，刻意不产出 auto 列），
+  // 窄容器下 fixed 布局按列宽总和原生撑开表格、外层横向滚动兜底；宽容器下 w-full 把
+  // 剩余空间按各列 width 比例分摊（等效 antd flex 列）
+
   return (
-    <div className="flex-1 min-h-0 relative overflow-y-auto" data-testid="cron-panel" data-session-id={sessionId}>
+    // scrollbar-gutter:stable：竖向滚动条出现/消失不再挤压内容宽度。没有它，table 横向滚动条
+    // 出现会撑高面板内容 → 面板竖向滚动条出现 → 内容宽度变窄 → 表格更贴 min-width → 横向滚动条
+    // 翻转 → 高度又变 → 在临界宽度附近来回抖动（x 滚动条快速切换闪烁的根源）
+    <div
+      className="flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
+      data-testid="cron-panel"
+      data-session-id={sessionId}
+    >
       {success && (
         <div
           className="pointer-events-none absolute top-3 left-1/2 -translate-x-1/2 z-20"
@@ -1041,317 +1536,72 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
           <>
             <div
               ref={tableWrapperRef}
-              className="overflow-visible rounded-lg border border-border"
+              className="overflow-x-auto rounded-lg border border-[var(--color-border-default)]"
               data-testid="cron-jobs-table"
             >
-              <table className="w-full border-collapse text-sm">
+              <table ref={tableRef} className="w-full border-collapse text-sm" style={{ tableLayout: 'fixed' }}>
+                <colgroup>
+                  {columns.map((col) => {
+                    if (col.key === 'actions') {
+                      return (
+                        <col key={col.key} style={{ width: actionsWidth != null ? `${actionsWidth}px` : 'auto' }} />
+                      );
+                    }
+                    const s = colStates[col.key];
+                    // 宽度解析：拖拽后的会话内宽度（>0 防御）> 配置 width > 兜底显式宽。
+                    // 刻意不产出 auto 列（antd 式 flex 列语义由别处承担）：fixed 布局下 auto
+                    // 列宽度来自「容器宽 - 显式列总和」的减法与分配舍入，高 DPI/亚像素下
+                    // 可能把表格右缘撑出 ~1px 假溢出——空间充足也出 1px 横向滚动条的元凶
+                    // （实测去掉 auto 列即消失）。自适应不需要 auto：全列显式定宽 + 表格
+                    // w-full，宽容器下剩余空间按各列 width 比例分摊（等效 antd flex 列），
+                    // 窄容器下按列宽总和撑开、外层横向滚动兜底；想要某列更宽就给更大 width
+                    const w =
+                      s.hasResized && s.width > 0
+                        ? `${s.width}px`
+                        : col.width != null
+                          ? `${col.width}px`
+                          : `${col.minWidth ?? DEFAULT_COL_WIDTH}px`;
+                    return <col key={col.key} style={{ width: w }} />;
+                  })}
+                </colgroup>
                 <thead>
                   <tr
                     className="border-b border-border bg-cron-table-header-surface text-left text-text"
                     data-testid="cron-jobs-table-header"
                   >
-                    <Th first>{t('cron.table.name')}</Th>
-                    <Th>{t('cron.table.project')}</Th>
-                    <Th>{t('cron.table.schedule')}</Th>
-                    <Th>{t('cron.table.status')}</Th>
-                    <Th>{t('cron.table.timezone')}</Th>
-                    <Th>{t('cron.table.channel')}</Th>
-                    <Th>{t('cron.table.actions')}</Th>
+                    {columns.map((col, idx) => (
+                      <Th
+                        key={col.key}
+                        first={idx === 0}
+                        colKey={col.key === 'actions' ? undefined : col.key}
+                        onResizeStart={col.key === 'actions' ? undefined : handleResizeStart(col)}
+                        resizing={col.key !== 'actions' && resizingColKey === col.key}
+                      >
+                        {t(col.titleKey)}
+                      </Th>
+                    ))}
                   </tr>
                 </thead>
                 <tbody>
-                  {paginatedJobs.map((job) => {
-                    const isProactive = job.id === PROACTIVE_AUTO_JOB_ID;
-                    return (
-                      <tr
-                        key={job.id}
-                        className="border-b border-border last:border-0"
-                        data-testid="cron-job-row"
-                        data-variant={job.id}
-                      >
-                        <td className="px-4 py-3 text-text">
-                          <div className="flex items-center gap-1">
-                            {/* 名称过长（超过 maxLength=64 加限制前的存量任务可能更长）会撑宽整列/整张表
-                              （bug004 追加问题）；这里用 CSS truncate + title 纯展示层截断，不改
-                              job.name 本身，hover 仍可看到全名。max-w 限制只加在文本节点自己身上，
-                              不包住徽标，避免徽标被一起裁掉——徽标始终 shrink-0 独立展示。 */}
-                            <span className="max-w-[200px] truncate" title={job.name} data-testid="cron-job-name">
-                              {job.name}
-                            </span>
-                            {isProactive && (
-                              <span
-                                className="inline-flex shrink-0 items-center rounded-full bg-cron-auto-managed-surface px-1.5 py-0.5 text-[10px] font-medium text-cron-auto-managed-text"
-                                title={t('cron.autoManagedHint') ?? undefined}
-                                data-testid="cron-job-auto-managed-badge"
-                              >
-                                {t('cron.autoManaged')}
-                              </span>
-                            )}
-                          </div>
+                  {paginatedJobs.map((job) => (
+                    <tr
+                      key={job.id}
+                      className="border-b border-border last:border-0"
+                      data-testid="cron-job-row"
+                      data-variant={job.id}
+                    >
+                      {columns.map((col) => (
+                        <td
+                          key={col.key}
+                          className={col.tdClassName}
+                          data-testid={col.tdTestId}
+                          title={col.tdTitle?.(job)}
+                        >
+                          {col.render(job)}
                         </td>
-                        <td className="px-4 py-3 text-text" data-testid="cron-job-project">
-                          {job.projectName ?? t('cron.table.noProject')}
-                        </td>
-                        <td className="px-4 py-3 text-text" data-testid="cron-job-schedule">
-                          {scheduleLabel(job.cronExpr)}
-                        </td>
-                        {/* proactive 自动维护 job 的整体开关由 config 控制（关了就删除，不在列表里），
-                          因此这里只有两态：过期 → 过期；否则 → 启用，不显示"禁用"中间态
-                          （沿用 upstream 提交 59cf6de7 的约束） */}
-                        <td className="px-4 py-3">
-                          <StatusBadge enabled={isProactive ? !job.expired : job.enabled} expired={job.expired} />
-                        </td>
-                        <td className="px-4 py-3 text-text" data-testid="cron-job-timezone">
-                          {job.timezone}
-                        </td>
-                        <td className="px-4 py-3 text-text" data-testid="cron-job-channel">
-                          {channelLabel(job.deliveryChannel)}
-                        </td>
-                        <td className="relative px-4 py-3">
-                          <div className="flex items-center gap-3">
-                            {/* proactive job 没有真正的"停止"态（enabled 由 config 驱动，不是用户可切的
-                              开关，同 StatusBadge 的 enabled 判断），立即执行的禁用条件不看它的 enabled */}
-                            {job.expired || (!isProactive && !job.enabled) ? (
-                              <span
-                                className="text-sm text-text-muted/50 cursor-not-allowed select-none"
-                                title={
-                                  t(
-                                    job.expired
-                                      ? 'cron.errors.expiredCannotRunNow'
-                                      : 'cron.errors.disabledCannotRunNow',
-                                  ) ?? undefined
-                                }
-                                data-testid="cron-job-run-now-btn"
-                                data-variant="disabled"
-                              >
-                                {t('cron.table.runNow')}
-                              </span>
-                            ) : (
-                              <button
-                                onClick={() => setConfirmState({ type: 'runNow', job })}
-                                data-testid="cron-job-run-now-btn"
-                                data-variant="enabled"
-                                className="text-sm text-cron-action-link hover:opacity-80"
-                              >
-                                {t('cron.table.runNow')}
-                              </button>
-                            )}
-                            <button
-                              onClick={() => {
-                                void loadChannels();
-                                setDrawer({ mode: 'edit', initial: jobToForm(job), jobId: job.id });
-                              }}
-                              data-testid="cron-job-edit-btn"
-                              className="text-sm text-cron-action-link hover:opacity-80"
-                            >
-                              {t('cron.table.edit')}
-                            </button>
-                            {isProactive ? (
-                              <span
-                                className="text-sm text-text-muted/50 cursor-not-allowed select-none"
-                                title={t('cron.autoManagedToggleDisabled') ?? undefined}
-                                data-testid="cron-job-stop-btn"
-                                data-variant="disabled"
-                              >
-                                {t('cron.table.stop')}
-                              </span>
-                            ) : job.expired ? (
-                              <span
-                                className="text-sm text-text-muted/50 cursor-not-allowed select-none"
-                                title={t('cron.errors.expiredCannotEnable') ?? undefined}
-                                data-testid="cron-job-start-btn"
-                                data-variant="disabled"
-                              >
-                                {t('cron.table.start')}
-                              </span>
-                            ) : job.enabled ? (
-                              <button
-                                onClick={() => setConfirmState({ type: 'stop', job })}
-                                data-testid="cron-job-stop-btn"
-                                data-variant="enabled"
-                                className="text-sm text-cron-action-link hover:opacity-80"
-                              >
-                                {t('cron.table.stop')}
-                              </button>
-                            ) : (
-                              <button
-                                onClick={() => void handleStart(job)}
-                                data-testid="cron-job-start-btn"
-                                data-variant="enabled"
-                                className="text-sm text-cron-action-link hover:opacity-80"
-                              >
-                                {t('cron.table.start')}
-                              </button>
-                            )}
-                            <div className="relative" ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
-                              <button
-                                onClick={() => setRowMenuJobId(rowMenuJobId === job.id ? null : job.id)}
-                                data-testid="cron-job-more-btn"
-                                className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
-                              >
-                                {t('cron.table.more')} <ChevronDown size={13} />
-                              </button>
-                              {rowMenuJobId === job.id && (
-                                <div
-                                  className="absolute right-0 top-[calc(100%+4px)] z-20 w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                                  data-testid="cron-job-more-menu"
-                                >
-                                  <button
-                                    onClick={() => {
-                                      setRowMenuJobId(null);
-                                      void toggleSessionsPopover(job);
-                                    }}
-                                    data-testid="cron-job-more-triggered-sessions-btn"
-                                    className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
-                                  >
-                                    {t('cron.table.triggeredSessions')}
-                                  </button>
-                                  <button
-                                    onClick={() => {
-                                      setRowMenuJobId(null);
-                                      void togglePreviewPopover(job);
-                                    }}
-                                    data-testid="cron-job-more-preview-btn"
-                                    className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
-                                  >
-                                    {t('cron.previewAction')}
-                                  </button>
-                                  {isProactive ? (
-                                    <span
-                                      className="block w-full px-3 py-2 text-left text-sm text-text-muted/50 cursor-not-allowed"
-                                      title={t('cron.autoManagedToggleDisabled') ?? undefined}
-                                      data-testid="cron-job-more-delete-btn"
-                                      data-variant="disabled"
-                                    >
-                                      {t('cron.delete')}
-                                    </span>
-                                  ) : (
-                                    <button
-                                      onClick={() => {
-                                        setRowMenuJobId(null);
-                                        setConfirmState({ type: 'delete', job });
-                                      }}
-                                      data-testid="cron-job-more-delete-btn"
-                                      data-variant="enabled"
-                                      className="block w-full px-3 py-2 text-left text-sm text-danger hover:bg-bg-hover"
-                                    >
-                                      {t('cron.delete')}
-                                    </button>
-                                  )}
-                                  {CRON_HISTORY_UI_ENABLED && (
-                                    <button
-                                      onClick={() => {
-                                        setRowMenuJobId(null);
-                                        setSuccess(t('cron.history.comingSoon'));
-                                      }}
-                                      data-testid="cron-job-more-history-btn"
-                                      className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
-                                    >
-                                      {t('cron.table.history')}
-                                    </button>
-                                  )}
-                                </div>
-                              )}
-                            </div>
-                          </div>
-                          {sessionsPopoverJobId === job.id && (
-                            <div
-                              ref={sessionsPopoverRef}
-                              className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                              data-testid="cron-sessions-popover"
-                            >
-                              <div
-                                className="px-3 py-1.5 text-xs font-bold text-text-muted"
-                                data-testid="cron-sessions-popover-title"
-                              >
-                                {t('cron.table.triggeredSessions')}
-                              </div>
-                              {triggeredSessionsLoading[job.id] && (
-                                <div
-                                  className="px-3 py-2 text-sm text-text-muted"
-                                  data-testid="cron-sessions-popover-loading"
-                                >
-                                  {t('common.loading')}
-                                </div>
-                              )}
-                              {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0 && (
-                                <div className="max-h-64 overflow-y-auto">
-                                  {triggeredSessions[job.id].map((s) => (
-                                    <button
-                                      key={s.session_id}
-                                      onClick={() => {
-                                        setSessionsPopoverJobId(null);
-                                        onSelectSession(s);
-                                      }}
-                                      className="block w-full truncate px-3 py-2 text-left text-sm text-text hover:bg-bg-hover"
-                                      title={s.title}
-                                      data-testid="cron-sessions-popover-item"
-                                      data-variant={s.session_id}
-                                    >
-                                      {s.title || s.session_id}
-                                    </button>
-                                  ))}
-                                </div>
-                              )}
-                              {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) === 0 && (
-                                <div
-                                  className="px-3 py-2 text-sm text-text-muted"
-                                  data-testid="cron-sessions-popover-empty"
-                                >
-                                  {t('cron.table.noTriggeredSessions')}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                          {previewPopoverJobId === job.id && (
-                            <div
-                              ref={previewPopoverRef}
-                              className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                              data-testid="cron-preview-popover"
-                            >
-                              <div
-                                className="truncate px-3 py-1.5 text-xs font-bold text-text-muted"
-                                title={job.name}
-                                data-testid="cron-preview-popover-title"
-                              >
-                                {job.name}
-                              </div>
-                              {previewLoading[job.id] && (
-                                <div
-                                  className="px-3 py-2 text-sm text-text-muted"
-                                  data-testid="cron-preview-popover-loading"
-                                >
-                                  {t('cron.preview.loading')}
-                                </div>
-                              )}
-                              {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) > 0 && (
-                                <div className="px-3 py-2 text-xs text-text">
-                                  {previewRuns[job.id].map((item, index) => (
-                                    <div
-                                      key={`${job.id}-${index}`}
-                                      className="py-0.5"
-                                      data-testid="cron-preview-popover-run-item"
-                                      data-variant={index + 1}
-                                    >
-                                      {t('cron.preview.label', { index: index + 1 })}：{formatPreviewTime(item.push_at)}
-                                    </div>
-                                  ))}
-                                </div>
-                              )}
-                              {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) === 0 && (
-                                <div
-                                  className="px-3 py-2 text-sm text-text-muted"
-                                  data-testid="cron-preview-popover-empty"
-                                >
-                                  {t('cron.preview.empty')}
-                                </div>
-                              )}
-                            </div>
-                          )}
-                        </td>
-                      </tr>
-                    );
-                  })}
+                      ))}
+                    </tr>
+                  ))}
                 </tbody>
               </table>
             </div>
