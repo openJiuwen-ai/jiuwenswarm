@@ -1308,7 +1308,6 @@ async def test_completed_marker_accepts_p_numbered_sections_beneath_wrapper_head
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len("# Final"),
         "workflow_llm_token_usage": sdk_usage,
     }
 
@@ -1377,7 +1376,6 @@ async def test_completed_marker_accepts_sdk_final_report_after_degraded_section(
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len("# Final"),
     }
 
 
@@ -1452,7 +1450,6 @@ async def test_completed_marker_accepts_formal_sdk_end_result_when_section_done_
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len("# Final"),
     }
 
 
@@ -1515,7 +1512,6 @@ async def test_completed_marker_delivers_large_sdk_end_result(tmp_path: Path):
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len("# Final"),
     }
     write_artifacts.assert_awaited_once()
 
@@ -1665,7 +1661,6 @@ async def test_completed_report_delivers_markdown_html_and_hidden_bundle(tmp_pat
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len("# Final"),
         "html_style_status": "fallback",
         "html_style_phase": "invoke_llm",
         "html_style_reason_code": "llm_call_failed",
@@ -1753,7 +1748,6 @@ async def test_completed_native_html_delivers_exactly_one_brief_file(tmp_path: P
         "status": "completed",
         "conversation_id": "C1",
         "report_delivered": True,
-        "report_chars": len(native_html),
     }
     write_html.assert_awaited_once_with(native_html, "brief.md")
     markdown_writer.assert_not_awaited()
@@ -2862,7 +2856,6 @@ async def test_large_completed_marker_above_streamreader_limit_is_supported(tmp_
         )
         outcome = json.loads(await dt.deepresearch_stream._func(action="start", query="q"))
     assert outcome["status"] == "completed"
-    assert outcome["report_chars"] == len(report)
 
 
 @pytest.mark.asyncio
