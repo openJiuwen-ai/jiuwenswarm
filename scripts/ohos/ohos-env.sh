@@ -7,7 +7,25 @@
 # 机器专属覆盖（可选，勿提交 git）：同目录 ohos-env.local.sh
 
 # ---------- 可配置路径（机器专属见 ohos-env.local.sh）----------
-OHOS_HNP_ROOT=${OHOS_HNP_ROOT:-/data/service/hnp}
+# HNP 根自动探测（2026-09 真机发现）：部分机型的 HNP 安装在
+# /data/app/el1/bundle/100/hnppublic 而非 /data/service/hnp。显式设置
+# OHOS_HNP_ROOT 时完全尊重；未设置时按候选探测，全 misses 才用旧默认。
+_ohos_detect_hnp_root() {
+  if [ -n "${OHOS_HNP_ROOT:-}" ] && [ -d "$OHOS_HNP_ROOT" ]; then
+    echo "$OHOS_HNP_ROOT"
+    return 0
+  fi
+  for _r in \
+    /data/service/hnp \
+    /data/app/el1/bundle/100/hnppublic; do
+    if [ -d "$_r/python.org/python_3.12/bin" ]; then
+      echo "$_r"
+      return 0
+    fi
+  done
+  echo "${OHOS_HNP_ROOT:-/data/service/hnp}"
+}
+OHOS_HNP_ROOT=$(_ohos_detect_hnp_root)
 OHOS_HNP_BIN=${OHOS_HNP_BIN:-$OHOS_HNP_ROOT/bin}
 OHOS_HNP_LIB=${OHOS_HNP_LIB:-$OHOS_HNP_ROOT/lib}
 OHOS_HNP_PYTHON=${OHOS_HNP_PYTHON:-$OHOS_HNP_ROOT/python.org/python_3.12/bin/python3.12}
@@ -182,6 +200,30 @@ _ohos_resolve_openssl_dir() {
       return 0
     fi
   done
+  # OH-flavored openssl fallback (2026-09 device finding): some HNP builds ship
+  # OH-renamed libs (libssloh.so.3 / libcryptooh.so.3) inside the python lib dir
+  # and no standard-name openssl anywhere. Build a symlink shim so OPENSSL_DIR
+  # consumers (wheel preload, native builds) find libssl.so.3.
+  _py_lib=$(dirname "${OHOS_REAL_PYTHON:-$0}")/../lib
+  if [ -f "$_py_lib/libssloh.so.3" ] || [ -f "$_py_lib/libcryptooh.so.3" ]; then
+    _shim_root=${OHOS_OPENSSL_SHIM_DIR:-$HOME/.ohos-sslshim}
+    mkdir -p "$_shim_root/lib" 2>/dev/null || _shim_root=/data/local/tmp/sslshim
+    mkdir -p "$_shim_root/lib" 2>/dev/null || return 1
+    _made=0
+    for _pair in "libssl.so.3:libssloh.so.3" "libcrypto.so.3:libcryptooh.so.3"; do
+      _std=${_pair%%:*}
+      _oh=${_pair##*:}
+      if [ -f "$_py_lib/$_oh" ] && [ ! -e "$_shim_root/lib/$_std" ]; then
+        ln -s "$_py_lib/$_oh" "$_shim_root/lib/$_std" && _made=$((_made + 1))
+      elif [ -e "$_shim_root/lib/$_std" ]; then
+        _made=$((_made + 1))
+      fi
+    done
+    if [ "$_made" -ge 1 ]; then
+      echo "$_shim_root"
+      return 0
+    fi
+  fi
   return 1
 }
 

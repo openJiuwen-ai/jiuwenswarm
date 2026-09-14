@@ -38,6 +38,17 @@ if [ -n "$_verify_ld" ]; then
   export LD_LIBRARY_PATH="$_verify_ld"
 fi
 
+# TLS trust anchors (2026-09 device finding): some OHOS images ship a system CA
+# bundle at /etc/ssl/certs/cacert.pem while python's default verify path points
+# to the non-existent /etc/ssl/cert.pem — outbound HTTPS (model API gateways)
+# then fails with SSLCertVerificationError. Export the existing bundle when the
+# variables are not already set; guarded so non-OHOS-ish layouts are untouched.
+if [ -f /etc/ssl/certs/cacert.pem ]; then
+  : "${SSL_CERT_FILE:=/etc/ssl/certs/cacert.pem}"
+  : "${REQUESTS_CA_BUNDLE:=/etc/ssl/certs/cacert.pem}"
+  export SSL_CERT_FILE REQUESTS_CA_BUNDLE
+fi
+
 if ! "$PYTHON" -c 'import openjiuwen, jiuwenswarm' >/dev/null 2>&1; then
   printf '[ohos-agentserver] ERROR: core Python imports failed\n' >&2
   exit 1

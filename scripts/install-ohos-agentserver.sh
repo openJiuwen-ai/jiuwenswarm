@@ -24,7 +24,11 @@
 #   GIT_EXECUTABLE     显式指定 git 路径（pip git+ 依赖 clone 时用）
 #   OPENJIUWEN_USE_HARMONYOS_PYPROJECT=1  默认从 clone 的 harmonyos/pyproject.toml 做 -e 安装
 #   USE_LOCAL_OPENJIUWEN=1  本地 pip install --no-deps -e $AGENT_CORE_PATH
-#   OPENJIUWEN_GIT_REPO / OPENJIUWEN_GIT_REF  默认 openJiuwen/agent-core @ enterprise-dev
+#   OPENJIUWEN_LINEAGE openjiuwen 血统（默认 dev-stable，与主 pyproject.toml 对齐；
+#                      =enterprise-dev 时启用离线 wheel wheels/openjiuwen_harmonyos-0.1.10，
+#                      该 wheel 为 enterprise-dev 血统，与 dev-stable jiuwenswarm 有
+#                      90 项模块缺口（2026-09 真机实测），仅限回退用途）
+#   OPENJIUWEN_GIT_REPO / OPENJIUWEN_GIT_REF  默认 openJiuwen/agent-core @ dev-stable
 #   DEEPSEARCH_PATH     本地 deepsearch 仓库（优先于 Git；仓库根或 deepsearch/ 子项目）
 #   DEEPSEARCH_GIT_REPO / DEEPSEARCH_GIT_REF  默认 openJiuwen/deepsearch @ enterprise_dev
 #   DEEPSEARCH_NO_DEPS=1  鸿蒙默认不安装 DeepSearch 的桌面端传递依赖（设为 0 可恢复完整依赖安装）
@@ -62,9 +66,15 @@ else
   EDITABLE_FLAG="-e"
 fi
 AGENT_CORE_PATH=${AGENT_CORE_PATH:-$OFFICE_CLAW/agent-core}
+# openjiuwen 血统开关：dev-stable（默认，与主 pyproject.toml 一致）或
+# enterprise-dev（旧离线 wheel 血统）。wheels/openjiuwen_harmonyos-0.1.10 属
+# enterprise-dev 血统，装到 dev-stable jiuwenswarm 上会缺 90 个模块（2026-09
+# 真机实测：agent_teams 全套/agent_evolving/harness.rails 等），因此仅在显式
+# 选择 enterprise-dev 血统时才走离线 wheel。
+OPENJIUWEN_LINEAGE=${OPENJIUWEN_LINEAGE:-dev-stable}
 OPENJIUWEN_GIT_REPO=${OPENJIUWEN_GIT_REPO:-https://gitcode.com/openJiuwen/agent-core.git}
-OPENJIUWEN_GIT_REF=${OPENJIUWEN_GIT_REF:-enterprise-dev}
-OPENJIUWEN_SPEC=${OPENJIUWEN_SPEC:-openjiuwen-harmonyos @ git+${OPENJIUWEN_GIT_REPO}@${OPENJIUWEN_GIT_REF}#subdirectory=harmonyos}
+OPENJIUWEN_GIT_REF=${OPENJIUWEN_GIT_REF:-dev-stable}
+OPENJIUWEN_SPEC=${OPENJIUWEN_SPEC:-openjiuwen @ git+${OPENJIUWEN_GIT_REPO}@${OPENJIUWEN_GIT_REF}}
 DEEPSEARCH_PATH=${DEEPSEARCH_PATH:-}
 DEEPSEARCH_GIT_REPO=${DEEPSEARCH_GIT_REPO:-https://gitcode.com/openJiuwen/deepsearch.git}
 DEEPSEARCH_GIT_REF=${DEEPSEARCH_GIT_REF:-enterprise_dev}
@@ -381,6 +391,13 @@ install_openjiuwen() {
   # 的 enterprise-dev 分支持续重构（harmonyos/ 已是纯 pyproject 壳，代码挪到
   # 仓库根，文件位置漂移），git/本地源的版本与目录结构不可控；离线 wheel
   # 保证各打包机装出的 openjiuwen 与实测版本逐字节一致。
+  # 血统门槛（2026-09 真机实测补充）：该 wheel 是 enterprise-dev 血统，与
+  # dev-stable jiuwenswarm 存在 90 项模块缺口（75 缺失模块 + 15 缺失符号），
+  # 装上后 AgentServer 启动链必然失败。仅当显式 OPENJIUWEN_LINEAGE=enterprise-dev
+  # （回退用途）时才允许走离线 wheel；默认 dev-stable 血统走 git/本地源。
+  if [ "$OPENJIUWEN_LINEAGE" != "enterprise-dev" ]; then
+    log "openjiuwen lineage=$OPENJIUWEN_LINEAGE: skip offline wheel (enterprise-dev only), use git/local source"
+  else
   for _w in "$WHEEL_DIR"/openjiuwen_harmonyos-*.whl; do
     [ -f "$_w" ] || continue
     if [ "$(head -c 2 "$_w" 2>/dev/null)" != "PK" ]; then
@@ -397,6 +414,7 @@ install_openjiuwen() {
     log "openjiuwen: 离线 wheel 安装验证 OK (agent_teams/context.py)"
     return 0
   done
+  fi
 
   if [ "$USE_LOCAL_OPENJIUWEN" = "1" ]; then
     _local=$(resolve_agent_core_path) || die "USE_LOCAL_OPENJIUWEN=1 but AGENT_CORE_PATH not found (set AGENT_CORE_PATH=$OFFICE_CLAW/agent-core)"
@@ -437,6 +455,67 @@ install_openjiuwen() {
   2) export GIT_EXECUTABLE=/path/to/git
   3) copy agent-core to $OFFICE_CLAW/agent-core then USE_LOCAL_OPENJIUWEN=1
   4) Windows zip: https://gitcode.com/openJiuwen/agent-core/-/tree/enterprise-dev"
+}
+
+install_pymilvus_stub() {
+  # pymilvus 的依赖链（orjson Rust-native）在鸿蒙不可装；dev-stable
+  # checkpointer/context_evolver 仅 import 其符号（2026-09 真机实测全链通过
+  # 的 stub 方案）。真实 pymilvus 不得进入 requirements-harmony.txt。
+  if [ "$REUSE_INSTALLED" = "1" ] && [ "$FORCE_REINSTALL" != "1" ] \
+    && runtime_imports_ok "import pymilvus; from pymilvus.client.utils import is_successful"; then
+    log "SKIP installed: pymilvus (or real pymilvus present)"
+    return 0
+  fi
+  _stub_src="$REPO_ROOT/sitepatch/pymilvus_stub"
+  [ -d "$_stub_src" ] || { log "WARN: pymilvus stub source not found: $_stub_src"; return 0; }
+  _sp=$("$PYTHON" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null)
+  [ -n "$_sp" ] || { log "WARN: cannot resolve site-packages for pymilvus stub"; return 0; }
+  rm -rf "$_sp/pymilvus"
+  cp -r "$_stub_src" "$_sp/pymilvus"
+  if runtime_imports_ok "import pymilvus; from pymilvus.client.utils import is_successful; from pymilvus import utility, connections, Collection, MilvusClient; from pymilvus.milvus_client import IndexParams; from pymilvus.client.types import LoadState"; then
+    log "pymilvus stub installed (sitepatch/pymilvus_stub)"
+  else
+    die "pymilvus stub install verification failed"
+  fi
+}
+
+install_grpcio_best_effort() {
+  # grpcio 无鸿蒙 wheel；pip 源码构建必然失败（需完整 grpc 构建链）。
+  # 优先从 HNP python site-packages 拷贝（HNP 自带 OHOS 原生构建的
+  # grpcio 1.68.1 + grpcio.libs，2026-09 真机 Tier 3 全链验证）；HNP 无
+  # 此包时回退 pip（musllinux aarch64 wheel 未来就绪后自动生效）。
+  # 已知风险（真机记录）：HNP grpcio 基于 protobuf 5.x 构建，venv 若装
+  # protobuf 6.x 可能在 grpc 深层路径冲突——真机全链未复现，保持观察。
+  # 此步 best-effort，不阻断安装。
+  if runtime_imports_ok "import grpc"; then
+    log "SKIP installed: grpcio"
+    return 0
+  fi
+  _hnp_sp="${OHOS_HNP_ROOT:-}/python.org/python_3.12/lib/python3.12/site-packages"
+  if [ -d "$_hnp_sp/grpc" ] && [ -d "$_hnp_sp/grpcio.libs" ]; then
+    _sp=$("$PYTHON" -c 'import site; print(site.getsitepackages()[0])' 2>/dev/null)
+    if [ -n "$_sp" ]; then
+      for _item in grpc grpcio.libs; do
+        rm -rf "$_sp/$_item"
+        cp -r "$_hnp_sp/$_item" "$_sp/$_item" || true
+      done
+      for _di in "$_hnp_sp"/grpcio-*.dist-info; do
+        [ -d "$_di" ] || continue
+        rm -rf "$_sp/$(basename "$_di")"
+        cp -r "$_di" "$_sp/$(basename "$_di")" || true
+      done
+      if runtime_imports_ok "import grpc"; then
+        log "grpcio: copied from HNP site-packages (OHOS native build)"
+        return 0
+      fi
+      log "grpcio: HNP copy did not import cleanly, trying pip..."
+    fi
+  fi
+  if pip_in_venv grpcio >/dev/null 2>&1 && runtime_imports_ok "import grpc"; then
+    log "grpcio: pip install OK"
+    return 0
+  fi
+  log "WARN: grpcio unavailable (HNP copy + pip both failed); continuing — milvus features are stubbed anyway"
 }
 
 run_wheel_preload_phase() {
@@ -505,6 +584,8 @@ fi
 if [ "${SKIP_PHASE2:-0}" != "1" ]; then
   log "======== phase 2: openjiuwen --no-deps ========"
   install_openjiuwen
+  install_pymilvus_stub
+  install_grpcio_best_effort
   if ! "$PYTHON" -c "import openjiuwen; print('openjiuwen OK', openjiuwen.__file__)" 2>/dev/null; then
     log "WARN: import openjiuwen failed (may need phase 3 deps)"
   fi
