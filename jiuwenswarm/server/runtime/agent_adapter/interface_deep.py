@@ -2127,6 +2127,16 @@ class OfficeClawMcpBuiltinNameConflict(RuntimeError):
         self.existing_id = existing_id
 
 
+@dataclass
+class _RequestMcpToolBuffers:
+    """One-request MCP tool-install accumulators (G.FNM.03)."""
+
+    tool_ids: list[str]
+    tool_names: list[str]
+    registered_tools: list[RequestScopedOfficeClawMcpTool]
+    seen_names: set[str]
+
+
 class JiuWenSwarmDeepAdapter:
     SESSION_ADAPTER_IDLE_TTL_SEC = 2 * 60 * 60
     SESSION_ADAPTER_EVICT_BATCH_SIZE = 3
@@ -4124,15 +4134,16 @@ class JiuWenSwarmDeepAdapter:
         request: AgentRequest,
         raw_config: dict[str, Any],
         request_scope: str,
-        tool_ids: list[str],
-        tool_names: list[str],
-        registered_tools: list[RequestScopedOfficeClawMcpTool],
-        seen_names: set[str],
+        buffers: _RequestMcpToolBuffers,
         *,
         yield_to_existing: bool = False,
     ) -> str:
         """Register identity-pinned office-claw system tools. Returns invocation_id or '-'."""
 
+        tool_ids = buffers.tool_ids
+        tool_names = buffers.tool_names
+        registered_tools = buffers.registered_tools
+        seen_names = buffers.seen_names
         params = validate_office_claw_mcp_config(raw_config)
         tool_defs = await list_office_claw_mcp_tools(params)
         for tool_def in tool_defs:
@@ -4199,16 +4210,17 @@ class JiuWenSwarmDeepAdapter:
         request: AgentRequest,
         request_mcp_servers: dict[str, dict[str, Any]],
         request_scope: str,
-        tool_ids: list[str],
-        tool_names: list[str],
-        registered_tools: list[RequestScopedOfficeClawMcpTool],
-        seen_names: set[str],
+        buffers: _RequestMcpToolBuffers,
         invocation_id: str,
         *,
         skip_office_claw: bool = False,
     ) -> str:
         """Register request_mcp_servers tools. Returns possibly updated invocation_id."""
 
+        tool_ids = buffers.tool_ids
+        tool_names = buffers.tool_names
+        registered_tools = buffers.registered_tools
+        seen_names = buffers.seen_names
         for server_name, server_config in request_mcp_servers.items():
             # office-claw 已由 Source1 处理。
             if server_name == "office-claw" and skip_office_claw:
@@ -4396,6 +4408,12 @@ class JiuWenSwarmDeepAdapter:
         tool_names: list[str] = []
         registered_tools: list[RequestScopedOfficeClawMcpTool] = []
         seen_names: set[str] = set()
+        install_buffers = _RequestMcpToolBuffers(
+            tool_ids=tool_ids,
+            tool_names=tool_names,
+            registered_tools=registered_tools,
+            seen_names=seen_names,
+        )
         invocation_id = "-"
         try:
             for server_name, tool_defs, connect_params in snapshots:
@@ -4497,10 +4515,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     leftover_servers,
                     request_scope,
-                    tool_ids,
-                    tool_names,
-                    registered_tools,
-                    seen_names,
+                    install_buffers,
                     invocation_id,
                     skip_office_claw=office_claw_config is not None,
                 )
@@ -4509,10 +4524,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     office_claw_config,
                     request_scope,
-                    tool_ids,
-                    tool_names,
-                    registered_tools,
-                    seen_names,
+                    install_buffers,
                     yield_to_existing=True,
                 )
             pinned_invocation = "" if invocation_id == "-" else invocation_id
@@ -4666,6 +4678,12 @@ class JiuWenSwarmDeepAdapter:
             # seen_names 跨两源去重：Source1(可信自带 office-claw)重名→fail-fast；
             # Source2(用户连接器)重名→仅跳过该工具，不中断整次注册。
             seen_names: set[str] = set()
+            install_buffers = _RequestMcpToolBuffers(
+                tool_ids=tool_ids,
+                tool_names=tool_names,
+                registered_tools=registered_tools,
+                seen_names=seen_names,
+            )
 
             # --- Source 1: 自带 office-claw MCP（identity-pinned）。 ---
             if raw_config is not None:
@@ -4673,10 +4691,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     raw_config,
                     request_scope,
-                    tool_ids,
-                    tool_names,
-                    registered_tools,
-                    seen_names,
+                    install_buffers,
                 )
 
             # --- Source 2: 用户连接器（request_mcp_servers）。 ---
@@ -4686,10 +4701,7 @@ class JiuWenSwarmDeepAdapter:
                     request,
                     request_mcp_servers,
                     request_scope,
-                    tool_ids,
-                    tool_names,
-                    registered_tools,
-                    seen_names,
+                    install_buffers,
                     invocation_id,
                     skip_office_claw=raw_config is not None,
                 )
