@@ -216,6 +216,93 @@ async def test_hub_mcp_list_show_install_and_uninstall(tmp_path: Path, monkeypat
 
 
 @pytest.mark.anyio
+async def test_merged_list_follows_builtin_sort_rule(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """Sort merged Hub and built-in cards with the same marketplace rule."""
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+
+    def fake_local(mcp_filter: str) -> list[dict]:
+        assert mcp_filter == "builtin"
+        return [
+            {"name": "zebra", "source": "built_in"},
+            {"name": "huaweiyun-mcp", "source": "built_in"},
+            {"name": "apple", "source": "built_in"},
+        ]
+
+    monkeypatch.setattr(marketplace.registry, "list_marketplace_mcps", fake_local)
+
+    cards = await marketplace.list_mcps_with_hub(hub_port=FakeHub())
+
+    assert [card["name"] for card in cards] == [
+        "huaweiyun-mcp",
+        "apple",
+        "hub-mcp",
+        "zebra",
+    ]
+
+
+@pytest.mark.anyio
+async def test_merged_list_prefers_builtin_when_hub_package_conflicts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A stale Hub directory cannot override the built-in package source."""
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        marketplace.registry,
+        "list_marketplace_mcps",
+        lambda mcp_filter: [{"name": "duplicate", "source": "built_in"}],
+    )
+    (tmp_path / "mcp" / "mcp_hub" / "duplicate").mkdir(parents=True)
+    marketplace._state().upsert(
+        marketplace.HubInstallRecord(
+            asset_id="mcp-asset-uuid",
+            package_id="duplicate",
+            kind="mcp",
+            version="1.0.0",
+            checksum_sha256="abc123",
+            installed_at="2026-09-02T00:00:00Z",
+        )
+    )
+
+    cards = await marketplace.list_mcps_with_hub(hub_port=FakeHub())
+
+    assert len(cards) == 1
+    assert cards[0]["source"] == "built_in"
+    assert cards[0]["installed"] is True
+
+
+@pytest.mark.anyio
+async def test_show_prefers_builtin_when_hub_package_conflicts(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A conflicting Hub install cannot override built-in detail resolution."""
+    monkeypatch.setattr(marketplace, "get_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        marketplace.registry,
+        "get_mcp",
+        lambda name: {"name": name, "source": "built_in"},
+    )
+    (tmp_path / "mcp" / "mcp_hub" / "duplicate").mkdir(parents=True)
+    marketplace._state().upsert(
+        marketplace.HubInstallRecord(
+            asset_id="mcp-asset-uuid",
+            package_id="duplicate",
+            kind="mcp",
+            version="1.0.0",
+            checksum_sha256="abc123",
+            installed_at="2026-09-02T00:00:00Z",
+        )
+    )
+
+    detail = await marketplace.show_mcp_with_hub("duplicate", hub_port=FakeHub())
+
+    assert detail["source"] == "built_in"
+    assert detail["id"] == "duplicate"
+    assert detail["installed"] is True
+
+
+@pytest.mark.anyio
 async def test_list_falls_back_to_local_when_hub_is_unavailable(
     tmp_path: Path, monkeypatch
 ) -> None:
