@@ -36,8 +36,8 @@ def test_ensure_team_shared_skills_initialized_links_global_skills(tmp_path, mon
         (skill_dir / "SKILL.md").write_text(f"---\nname: {skill_name}\n---\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     # Create team workspace config
@@ -76,8 +76,8 @@ def test_existing_skill_entry_is_not_replaced(tmp_path, monkeypatch):
     skill_dir.mkdir()
     (skill_dir / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     team_workspace = tmp_path / "team_workspace"
@@ -112,8 +112,8 @@ def test_refresh_team_shared_skill_links_adds_new_global_skill(tmp_path, monkeyp
     (skill_a / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     team_shared_skills = tmp_path / "team_workspace" / "skills"
@@ -140,8 +140,8 @@ def test_ensure_team_shared_skills_ready_for_session_registers_refresh_target(tm
     (skill_a / "SKILL.md").write_text("---\nname: skill-a\n---\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     team_workspace = tmp_path / "team_workspace"
@@ -179,8 +179,8 @@ def test_refresh_team_shared_skill_links_prunes_removed_global_skill(tmp_path, m
     (skill_b / "SKILL.md").write_text("---\nname: skill-b\n---\n", encoding="utf-8")
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.team.team_manager.get_agent_skills_dir",
-        lambda: global_skills_dir,
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [global_skills_dir],
     )
 
     team_shared_skills = tmp_path / "team_workspace" / "skills"
@@ -196,6 +196,76 @@ def test_refresh_team_shared_skill_links_prunes_removed_global_skill(tmp_path, m
     assert manager.refresh_team_shared_skill_links("sess-1")
     _assert_link_points_to(team_shared_skills / "skill-a", skill_a)
     assert not os.path.lexists(team_shared_skills / "skill-b")
+
+
+def test_team_shared_skills_pruned_to_enabled_allowlist(tmp_path, monkeypatch):
+    """With ENABLED_SKILLS set, team links outside the allowlist are removed."""
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    shared = tmp_path / "office-claw-skills"
+    for name in ("skill-a", "skill-b", "skill-c"):
+        skill_dir = shared / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [shared],
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager._enabled_skill_names",
+        lambda: {"skill-a", "skill-c"},
+    )
+
+    target = tmp_path / "team_workspace" / "skills"
+    target.mkdir(parents=True)
+    team_manager.TeamManager._sync_team_skills_from_sources(target)
+
+    assert (target / "skill-a").exists()
+    assert (target / "skill-c").exists()
+    assert not os.path.lexists(target / "skill-b")
+
+
+def test_team_shared_skills_sync_spans_multiple_sources(tmp_path, monkeypatch):
+    """Links from earlier sources survive later sources' prune passes."""
+    from jiuwenswarm.agents.harness.team import team_manager
+
+    builtin = tmp_path / "office-claw-skills"
+    user = tmp_path / "user-skills"
+    for name in ("libai", "pptx-craft"):
+        skill_dir = builtin / name
+        skill_dir.mkdir(parents=True)
+        (skill_dir / "SKILL.md").write_text(f"---\nname: {name}\n---\n", encoding="utf-8")
+    skill_dir = user / "skill-writer"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: skill-writer\n---\n", encoding="utf-8")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.resolve_agent_registered_skill_dirs",
+        lambda: [builtin, user],
+    )
+
+    target = tmp_path / "team_workspace" / "skills"
+    team_manager.TeamManager._sync_team_skills_from_sources(target)
+
+    # Skills from BOTH sources stay linked — interleaved prune+link would let
+    # the second source's prune delete the first source's links.
+    assert (target / "libai").exists()
+    assert (target / "pptx-craft").exists()
+    assert (target / "skill-writer").exists()
+    assert (target / "libai").resolve() == (builtin / "libai").resolve()
+    assert (target / "skill-writer").resolve() == (user / "skill-writer").resolve()
+
+
+def test_enabled_skill_names_accept_semicolon_separators(monkeypatch):
+    """``_enabled_skill_names`` splits on ';' like SkillUseRail._normalize_name_list."""
+    from jiuwenswarm.agents.harness.team.team_manager import TeamManager
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.enabled_skills_from_environ",
+        lambda: "skill-a; skill-b ,skill-c",
+    )
+    assert TeamManager._enabled_skill_names() == {"skill-a", "skill-b", "skill-c"}
 
 
 def test_remove_skill_dir_link_keeps_ordinary_directory(tmp_path):
