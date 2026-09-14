@@ -225,7 +225,7 @@ class TestPermissionInterruptDenyFlow:
         async def _capturing_report(event_dict):
             captured_events.append(event_dict)
             # 返回 SecurityAllow,与 EventReporter.report 正常行为一致
-            from openjiuwen.harness.rails.security.base_security_rail import SecurityAllow
+            # 注: 复用模块级导入的 SecurityAllow(第 84 行),不再函数内重复导入
             return SecurityAllow()
 
         rail._event_reporter.report = _capturing_report
