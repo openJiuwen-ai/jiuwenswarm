@@ -32,11 +32,15 @@ from jiuwenswarm.agents.harness.common.rails.response_prompt_rail import (
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
+from jiuwenswarm.agents.harness.common.rails.llm_retry_notify_rail import (
+    TeamMemberNotifyingLLMRetryRail,
+)
 
 # No-parameter swarm-owned rail type names; namespaced under "swarm.".
 RESPONSE_PROMPT = "swarm.response_prompt"
 STREAM_EVENT = "swarm.stream_event"
 AVATAR_PROMPT = "swarm.avatar_prompt"
+TEAM_MEMBER_LLM_RETRY = "swarm.team_member_llm_retry"
 
 
 class ResponsePromptInput(ConstructionInput):
@@ -77,8 +81,25 @@ harness_element(
     builder=AvatarPromptRail,
 )
 
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=TEAM_MEMBER_LLM_RETRY,
+    description="Retries transient model-call failures for dispatched team members.",
+)
+def _build_team_member_llm_retry_rail(
+    params: dict[str, Any],
+    context: Any,
+) -> TeamMemberNotifyingLLMRetryRail:
+    del params, context
+    return TeamMemberNotifyingLLMRetryRail(
+        max_retries=3,
+        retry_transient_invoke_errors=True,
+    )
+
 __all__ = [
     "RESPONSE_PROMPT",
     "STREAM_EVENT",
     "AVATAR_PROMPT",
+    "TEAM_MEMBER_LLM_RETRY",
 ]

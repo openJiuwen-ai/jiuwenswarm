@@ -25,6 +25,11 @@ _TRANSIENT_MESSAGE_MARKERS = (
     "read timeout",
     "connect timeout",
 )
+_MEMBER_NETWORK_404_MARKERS = (
+    "async stream error",
+    "notfounderror",
+    "error code: 404",
+)
 
 
 def _parent_accepts_retry_transient_invoke_errors() -> bool:
@@ -194,4 +199,15 @@ class NotifyingLLMRetryRail(LLMRetryRail):
             )
 
 
-__all__ = ["NotifyingLLMRetryRail"]
+class TeamMemberNotifyingLLMRetryRail(NotifyingLLMRetryRail):
+    """Team-agent retry rail for the observed async-stream 404 transport shape."""
+
+    @classmethod
+    def _looks_like_transient_invoke(cls, exc: BaseException | None) -> bool:
+        if super()._looks_like_transient_invoke(exc):
+            return True
+        message = str(exc or "").lower()
+        return all(marker in message for marker in _MEMBER_NETWORK_404_MARKERS)
+
+
+__all__ = ["NotifyingLLMRetryRail", "TeamMemberNotifyingLLMRetryRail"]

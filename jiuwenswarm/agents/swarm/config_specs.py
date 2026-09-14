@@ -440,6 +440,13 @@ def _tool_params(name: str, config: dict[str, Any]) -> dict[str, Any]:
     return builder(config) if builder else {}
 
 
+def _llm_retry_enabled(config: dict[str, Any]) -> bool:
+    """Reuse the existing adapter-level retry guard for team members."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    return retry.get("enabled", False) is True
+
+
 def _team_common_rail_names(role: str) -> tuple[str, ...]:
     """Shared chat-team rails; leaders omit harness todo planning."""
     if role == "leader":
@@ -497,6 +504,8 @@ def _build_team_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _team_common_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(RailSpec(type=registry.TEAM_MEMBER_LLM_RETRY))
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
@@ -581,6 +590,8 @@ def _build_code_capability_specs(
         RailSpec(type=name, params=_rail_params(name, config))
         for name in _code_base_rail_names(role)
     ]
+    if role in {"leader", "teammate"} and _llm_retry_enabled(config):
+        rails_specs.append(RailSpec(type=registry.TEAM_MEMBER_LLM_RETRY))
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
