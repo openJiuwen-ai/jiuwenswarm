@@ -38,9 +38,9 @@ def test_member_rail_matches_only_the_observed_404_stream_shape() -> None:
 
 
 @pytest.mark.asyncio
-async def test_member_rail_requests_exactly_three_retries() -> None:
+async def test_member_rail_requests_configured_retry_budget() -> None:
     rail = TeamMemberNotifyingLLMRetryRail(
-        max_retries=3,
+        max_retries=2,
         backoff_seconds=[0.0],
         notify_user_on_retry=False,
         notify_user_on_exhausted=False,
@@ -50,10 +50,10 @@ async def test_member_rail_requests_exactly_three_retries() -> None:
     )
     context, requests = _retry_context(exception)
 
-    for _ in range(4):
+    for _ in range(3):
         await rail.on_model_exception(context)
 
-    assert requests == [0.0, 0.0, 0.0]
+    assert requests == [0.0, 0.0]
 
 
 @pytest.mark.parametrize("mode", ["team", "code.team", "team.plan"])
@@ -79,15 +79,47 @@ def test_member_retry_provider_is_disabled_without_the_existing_guard_switch() -
     assert registry.TEAM_MEMBER_LLM_RETRY not in {spec.type for spec in rails}
 
 
-def test_member_retry_provider_builds_three_retry_rail() -> None:
+def test_member_retry_provider_uses_configured_retry_settings() -> None:
+    config = {
+        "execution_guard": {
+            "llm_retry_rail": {
+                "enabled": True,
+                "max_retries": 2,
+                "backoff_seconds": [0.0, 0.25],
+                "repeat_min_pattern_chars": 3,
+                "repeat_max_pattern_chars": 32,
+                "repeat_min_count": 4,
+                "repeat_min_total_chars": 80,
+                "repeat_window_chars": 512,
+                "single_char_repeat_count": 90,
+                "retry_transient_invoke_errors": False,
+                "notify_user_on_retry": False,
+                "notify_user_on_exhausted": False,
+            }
+        }
+    }
     register_swarm_providers()
-    rail = RailSpec(type=registry.TEAM_MEMBER_LLM_RETRY).build(
+    rails, _ = build_member_capability_specs(config, "team", "teammate")
+    retry_spec = next(
+        spec for spec in rails if spec.type == registry.TEAM_MEMBER_LLM_RETRY
+    )
+    rail = retry_spec.build(
         language="cn",
         context=SwarmBuildContext(session_id="s1", mode="team"),
     )
 
     assert isinstance(rail, TeamMemberNotifyingLLMRetryRail)
-    assert rail.max_retries == 3
+    assert rail.max_retries == 2
+    assert rail.backoff_seconds == [0.0, 0.25]
+    assert rail.repeat_min_pattern_chars == 3
+    assert rail.repeat_max_pattern_chars == 32
+    assert rail.repeat_min_count == 4
+    assert rail.repeat_min_total_chars == 80
+    assert rail.repeat_window_chars == 512
+    assert rail.single_char_repeat_count == 90
+    assert rail.retry_transient_invoke_errors is False
+    assert rail.notify_user_on_retry is False
+    assert rail.notify_user_on_exhausted is False
 
 
 def test_swarmflow_worker_inherits_the_team_retry_rail() -> None:

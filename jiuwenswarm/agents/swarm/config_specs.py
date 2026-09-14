@@ -377,6 +377,27 @@ def _member_evolution_rail_params(config: dict[str, Any]) -> dict[str, Any]:
     }
 
 
+def _llm_retry_params(config: dict[str, Any]) -> dict[str, Any]:
+    """Project the existing adapter retry settings into a serializable RailSpec."""
+    guard = _config_section(config, "execution_guard")
+    retry = _config_section(guard, "llm_retry_rail")
+    params: dict[str, Any] = {
+        "max_retries": retry.get("max_retries", 2),
+        "repeat_min_pattern_chars": retry.get("repeat_min_pattern_chars", 2),
+        "repeat_max_pattern_chars": retry.get("repeat_max_pattern_chars", 64),
+        "repeat_min_count": retry.get("repeat_min_count", 6),
+        "repeat_min_total_chars": retry.get("repeat_min_total_chars", 160),
+        "repeat_window_chars": retry.get("repeat_window_chars", 1024),
+        "single_char_repeat_count": retry.get("single_char_repeat_count", 100),
+        "retry_transient_invoke_errors": retry.get("retry_transient_invoke_errors", True),
+        "notify_user_on_retry": retry.get("notify_user_on_retry", True),
+        "notify_user_on_exhausted": retry.get("notify_user_on_exhausted", True),
+    }
+    if "backoff_seconds" in retry:
+        params["backoff_seconds"] = retry["backoff_seconds"]
+    return params
+
+
 # Per-element attribute params, keyed by provider name; empty for parameterless.
 _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.DISABLED_TOOLS: lambda c: {
@@ -395,6 +416,7 @@ _RAIL_PARAM_BUILDERS: dict[str, Callable[[dict[str, Any]], dict[str, Any]]] = {
     registry.TEAM_PERMISSION_POLICY: lambda c: {
         "permissions_config": _config_section(c, "permissions"),
     },
+    registry.TEAM_MEMBER_LLM_RETRY: _llm_retry_params,
     registry.CODE_CODING_MEMORY: lambda c: {
         "embed_config": _config_section(c, "embed")
     },
@@ -505,7 +527,12 @@ def _build_team_capability_specs(
         for name in _team_common_rail_names(role)
     ]
     if role in {"leader", "teammate"} and _llm_retry_enabled(config):
-        rails_specs.append(RailSpec(type=registry.TEAM_MEMBER_LLM_RETRY))
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
     if role == "leader":
         rails_specs.append(RailSpec(type=registry.STRUCTURED_ASK_USER))
 
@@ -591,7 +618,12 @@ def _build_code_capability_specs(
         for name in _code_base_rail_names(role)
     ]
     if role in {"leader", "teammate"} and _llm_retry_enabled(config):
-        rails_specs.append(RailSpec(type=registry.TEAM_MEMBER_LLM_RETRY))
+        rails_specs.append(
+            RailSpec(
+                type=registry.TEAM_MEMBER_LLM_RETRY,
+                params=_rail_params(registry.TEAM_MEMBER_LLM_RETRY, config),
+            )
+        )
 
     if is_team_plan_leader:
         rails_specs.append(RailSpec(type=registry.TEAM_PLAN_APPROVAL))
