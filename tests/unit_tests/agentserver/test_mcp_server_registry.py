@@ -300,6 +300,27 @@ async def test_snapshot_unknown_and_empty(registry: McpServerRegistry, monkeypat
         await registry.snapshot_for_chat(["missing"])
 
 
+def _stub_office_claw_system_tools(monkeypatch, tools=None):
+    tools = tools or [
+        {
+            "name": "office_claw_post_message",
+            "description": "post",
+            "input_params": {},
+        }
+    ]
+    monkeypatch.setattr(interface_deep, "list_office_claw_mcp_tools", AsyncMock(return_value=tools))
+    monkeypatch.setattr(
+        interface_deep,
+        "validate_office_claw_mcp_config",
+        lambda config, environ=None: {
+            "command": "node",
+            "args": ["mcp.js"],
+            "cwd": "/tmp",
+            "env": {"OFFICE_CLAW_INVOCATION_ID": "inv-1"},
+        },
+    )
+
+
 @pytest.mark.asyncio
 async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
     reset_mcp_server_registry_for_tests()
@@ -316,12 +337,10 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
 
     seen: dict[str, object] = {}
 
-    async def fake_registry(self, request, names):
+    async def fake_registry(self, request, names, office_claw_config=None):
         seen["names"] = names
+        seen["office_claw"] = office_claw_config
         return None
-
-    async def fake_legacy(*args, **kwargs):
-        raise AssertionError("legacy path must not run")
 
     monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_register_mcp_from_registry", fake_registry)
     request = AgentRequest(
@@ -332,17 +351,26 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
             "query": "hi",
             "mcp_server_list": ["chrome-devtools"],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
         },
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
     assert result is None
     assert seen["names"] == ["chrome-devtools"]
+    assert seen["office_claw"]["command"] == "node"
 
 
 @pytest.mark.asyncio
-async def test_chat_empty_list_skips_legacy(monkeypatch) -> None:
-    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._instance = SimpleNamespace()
+async def test_chat_empty_list_keeps_office_claw_mcp(monkeypatch) -> None:
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _stub_office_claw_system_tools(monkeypatch)
+    monkeypatch.setattr(
+        interface_deep,
+        "list_request_mcp_server_tools",
+        AsyncMock(side_effect=AssertionError("empty list must not use request_mcp_servers")),
+    )
+    adapter = _bare_session_adapter()
     request = AgentRequest(
         request_id="r1",
         channel_id="officeclaw",
@@ -350,10 +378,64 @@ async def test_chat_empty_list_skips_legacy(monkeypatch) -> None:
         params={
             "mcp_server_list": [],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
         },
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert result is not None
+    assert result.tool_names == ("office_claw_post_message",)
+    assert result.invocation_id == "inv-1"
+
+
+@pytest.mark.asyncio
+async def test_chat_empty_list_without_office_claw_skips() -> None:
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r1",
+        channel_id="officeclaw",
+        session_id="s1",
+        params={"mcp_server_list": []},
+    )
+    result = await adapter.register_request_scoped_office_claw_mcp(request)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_chat_mcp_server_list_wins_name_collision(monkeypatch) -> None:
+    from jiuwenswarm.common.mcp_config import _clear_live_office_claw_allowlists_for_tests
+
+    registry = reset_mcp_server_registry_for_tests()
+
+    async def discover(name, config):
+        return (
+            [{"name": "office_claw_post_message", "description": "from-registry", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        discover,
+    )
+    await registry.add_servers([_stdio_cfg()])
+    _stub_office_claw_system_tools(monkeypatch)
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r-clash",
+        channel_id="officeclaw",
+        session_id="s-clash",
+        params={
+            "mcp_server_list": ["chrome-devtools"],
+            "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+        },
+    )
+    registration = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert registration is not None
+    assert registration.tool_names == ("office_claw_post_message",)
+    assert registration.tool_ids[0].startswith(MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX)
+    _clear_live_office_claw_allowlists_for_tests()
 
 
 @pytest.mark.asyncio
@@ -702,11 +784,7 @@ async def test_chat_registry_path_skips_discovery_and_keeps_global_worker(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
         boom,
     )
-    monkeypatch.setattr(
-        interface_deep,
-        "list_office_claw_mcp_tools",
-        AsyncMock(side_effect=AssertionError("legacy office-claw discovery must not run")),
-    )
+    _stub_office_claw_system_tools(monkeypatch)
     monkeypatch.setattr(
         interface_deep,
         "list_request_mcp_server_tools",
@@ -725,13 +803,16 @@ async def test_chat_registry_path_skips_discovery_and_keeps_global_worker(
             "query": "hi",
             "mcp_server_list": ["chrome-devtools"],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
         },
     )
     registration = await adapter.register_request_scoped_office_claw_mcp(request)
     assert registration is not None
     assert discover_calls == []
-    assert registration.tool_names == ("page_snapshot",)
+    assert registration.tool_names == ("page_snapshot", "office_claw_post_message")
+    assert registration.invocation_id == "inv-1"
     assert registration.tool_ids[0].startswith(MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX)
+    assert registration.tool_ids[1].startswith("office-claw-request-")
     tool = resource_manager.tools[registration.tool_ids[0]]
     assert tool._use_global_pool is True
 
