@@ -40,6 +40,13 @@ except ImportError:
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
 
+def _positive_timeout_s(raw: Any, *, minimum: float = 0.0) -> float | None:
+    """Return a normalized positive timeout, rejecting bool and invalid values."""
+    if isinstance(raw, (int, float)) and not isinstance(raw, bool) and raw > minimum:
+        return float(raw)
+    return None
+
+
 def extract_enabled_mcp_server_entries(
     config_base: dict[str, Any],
 ) -> list[dict[str, Any]]:
@@ -104,8 +111,8 @@ def build_mcp_server_config(
         env = entry.get("env")
         if isinstance(env, dict):
             params["env"] = {str(k): str(v) for k, v in env.items()}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
+        timeout_s = _positive_timeout_s(entry.get("timeout_s"))
+        if timeout_s is not None and int(timeout_s) > 0:
             params["timeout_s"] = int(timeout_s)
         payload["server_path"] = f"stdio://{name}"
         payload["params"] = params
@@ -118,8 +125,8 @@ def build_mcp_server_config(
         headers = entry.get("headers")
         if isinstance(headers, dict):
             params["headers"] = {str(k): str(v) for k, v in headers.items()}
-        timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
+        timeout_s = _positive_timeout_s(entry.get("timeout_s"))
+        if timeout_s is not None and int(timeout_s) > 0:
             params["timeout_s"] = int(timeout_s)
         if params:
             payload["params"] = params
@@ -611,8 +618,9 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     params = {}
     # 前端（Relay/officeAce）下发的单连接器调用超时（秒）：透传到 params，
     # 供 _run_mcp_worker 按 call_tool 超时使用；非法值忽略，回落到默认 300s。
-    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and timeout_s > 0:
-        params["timeout_s"] = timeout_s
+    timeout_value = _positive_timeout_s(timeout_s)
+    if timeout_value is not None:
+        params["timeout_s"] = timeout_value
     if isinstance(env, dict) and env:
         params["env"] = {
             str(k): str(v) for k, v in env.items() if k is not None and v is not None
@@ -911,13 +919,9 @@ async def _run_mcp_worker(
     client_type = str(params.get("_mcp_client_type") or "").lower() or "stdio"
     # 单连接器调用超时：前端（Relay/officeAce）下发的 timeout_s 经 create_mcp_tool
     # 透传进 params；未下发或非法时回落到 300s 默认值。
-    _timeout_raw = params.get("timeout_s")
     call_timeout_s = (
-        float(_timeout_raw)
-        if isinstance(_timeout_raw, (int, float))
-        and not isinstance(_timeout_raw, bool)
-        and _timeout_raw > 0
-        else _MCP_CALL_TOOL_TIMEOUT_S
+        _positive_timeout_s(params.get("timeout_s"))
+        or _MCP_CALL_TOOL_TIMEOUT_S
     )
 
     async with AsyncExitStack() as stack:
@@ -1058,16 +1062,18 @@ async def _enter_remote_mcp_session(
     client = client_cls(rebuild_cfg)
     # mcp_call_timeout_patch 把 SseClient/StreamableHttpClient 的 call_tool/list_tools
     # 包了内层 anyio.fail_after：不经 ToolMgr._create_client 自建的 client 不会被打
-    # _jws_call_timeout，内层按 300s 默认先掐断，令 params["timeout_s"] 失效。按
-    # _run_mcp_worker 的口径（下发合法值直接生效）在此补打。
-    _stamp_raw = params.get("timeout_s")
-    if (
-        isinstance(_stamp_raw, (int, float))
-        and not isinstance(_stamp_raw, bool)
-        and _stamp_raw > 0
-    ):
-        setattr(client, "_jws_call_timeout", float(_stamp_raw))
-    connected = await client.connect(timeout=_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S)
+    # _jws_call_timeout，缺少实例标记时会回落到 patch 的 30s 默认值，令 request-scoped
+    # 的 300s 默认失效。自建 client 必须显式写入有效的 request-scoped 值。
+    call_timeout_s = (
+        _positive_timeout_s(params.get("timeout_s"))
+        or _MCP_CALL_TOOL_TIMEOUT_S
+    )
+    setattr(client, "_jws_call_timeout", call_timeout_s)
+    discovery_timeout = max(
+        _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
+        call_timeout_s,
+    )
+    connected = await client.connect(timeout=discovery_timeout)
     if not connected:
         raise RuntimeError(
             f"remote MCP client connect returned false: {rebuild_cfg.server_path}"
@@ -1851,13 +1857,11 @@ async def list_request_mcp_server_tools(
     # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
     # （npx 冷启动首次 initialize/list_tools 可远超 300s；下发值过小则仍以 300s 兜底）。
     _discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
-    _timeout_raw = params.get("timeout_s")
-    if (
-        isinstance(_timeout_raw, (int, float))
-        and not isinstance(_timeout_raw, bool)
-        and _timeout_raw > _discovery_timeout
-    ):
-        _discovery_timeout = float(_timeout_raw)
+    timeout_override = _positive_timeout_s(
+        params.get("timeout_s"), minimum=_discovery_timeout
+    )
+    if timeout_override is not None:
+        _discovery_timeout = timeout_override
 
     stack = AsyncExitStack()
     try:
@@ -1929,33 +1933,28 @@ async def _list_remote_mcp_connector_tools(
         "auth_query_params": dict(getattr(server_cfg, "auth_query_params", {}) or {}),
         "params": _connector_params,
     }
-    _connector_timeout = _connector_params.get("timeout_s")
-    if (
-        isinstance(_connector_timeout, (int, float))
-        and not isinstance(_connector_timeout, bool)
-        and _connector_timeout > 0
-    ):
+    _connector_timeout = _positive_timeout_s(_connector_params.get("timeout_s"))
+    if _connector_timeout is not None:
         connect_params["timeout_s"] = _connector_timeout
 
     # 发现阶段超时：连接器下发 timeout_s 时取 max(下发值, 300s)——下发值只放宽不收紧
     # （与 stdio 分支的发现超时语义一致）。
     discovery_timeout = _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
-    if (
-        isinstance(_connector_timeout, (int, float))
-        and not isinstance(_connector_timeout, bool)
-        and _connector_timeout > discovery_timeout
-    ):
-        discovery_timeout = float(_connector_timeout)
+    timeout_override = _positive_timeout_s(
+        _connector_timeout, minimum=discovery_timeout
+    )
+    if timeout_override is not None:
+        discovery_timeout = timeout_override
 
     # _run_mcp_worker 用 connect_params 字段经 _build_remote_mcp_config 重建 client。
     rebuild_cfg = _build_remote_mcp_config(server_name, connect_params, client_type)
     client = client_cls(rebuild_cfg)
-    # 同 _enter_remote_mcp_session：自建 client 不经 ToolMgr._create_client，需补打
-    # _jws_call_timeout，否则 mcp_call_timeout_patch 的内层 300s 默认会先掐断长调用。
-    if isinstance(_connector_timeout, (int, float)) and not isinstance(
-        _connector_timeout, bool
-    ) and _connector_timeout > 0:
-        setattr(client, "_jws_call_timeout", float(_connector_timeout))
+    # 同 _enter_remote_mcp_session：自建 client 必须显式覆盖 HTTP patch 默认值。
+    setattr(
+        client,
+        "_jws_call_timeout",
+        _connector_timeout or _MCP_CALL_TOOL_TIMEOUT_S,
+    )
     connected = False
     try:
         try:
