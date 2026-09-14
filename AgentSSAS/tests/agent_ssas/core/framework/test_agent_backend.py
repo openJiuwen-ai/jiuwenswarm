@@ -262,11 +262,8 @@ class TestAgentSSASBackend:
         await backend.initialize()  # 启动清理应删除过期事件
 
         events = await backend._storage.get_events()  # pylint: disable=protected-access
-        raw_events = [
-            r
-            for r in backend._storage._conn.execute(  # pylint: disable=protected-access
-                "SELECT data FROM raw_events"
-            ).fetchall()
-        ]
+        raw_events = backend._storage._conn.execute(  # pylint: disable=protected-access
+            "SELECT data FROM raw_events"
+        ).fetchall()
         assert all(e["event_id"] != "stale_event" for e in events)
         assert len(raw_events) == 0
