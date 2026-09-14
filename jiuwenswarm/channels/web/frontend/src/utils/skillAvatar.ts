@@ -14,7 +14,7 @@ const avatarPalette = [
 
 export interface AvatarStyle {
   firstChar: string;
-  /** 头像容器内联样式：surface 色 20% 背景 + surface 色实色外扩描边 + 配套 text 色文字；尺寸/圆角/字号由调用方 className 控制 */
+  /** 头像容器内联样式：surface 色 20% 背景 + surface 色实色 inset 描边 + 配套 text 色文字；尺寸/圆角/字号由调用方 className 控制 */
   style: CSSProperties;
 }
 
@@ -39,10 +39,7 @@ export function getSkillAvatar(name: string): AvatarStyle {
     firstChar,
     style: {
       backgroundColor: hexToRgba(surface, 0.2),
-      // 描边用外扩 1px 的 box-shadow 实现而不是 border：border 要么占掉盒子内部空间（内容被
-      // 挤成 46px，即"内缩"），要么把布局尺寸撑到 50px；box-shadow 不占布局，内容保持完整
-      // 尺寸，1px surface 实色描边沿圆角向外扩一圈。
-      boxShadow: `0 0 0 1px ${surface}`,
+      boxShadow: `inset 0 0 0 1px ${surface}`,
       color: text,
     },
   };

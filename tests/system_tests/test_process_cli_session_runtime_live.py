@@ -136,10 +136,78 @@ async def test_process_cli_two_turn_session_resume_live(
 
     assert len(_RecordingClient.instances) == 2
     for client in _RecordingClient.instances:
-        snapshot = client.runtime.session_coordinator.snapshot_session(session_id)
+        snapshot = client.runtime._session_coordinator.snapshot_session(session_id)
         assert snapshot is not None
         assert snapshot.state is RuntimeSessionState.CLOSED
         assert all(execution.state.terminal for execution in snapshot.executions)
+
+
+@pytest.mark.asyncio
+@pytest.mark.skipif(
+    not _LIVE_ENABLED,
+    reason="requires a configured model for cross-Session delivery",
+)
+@pytest.mark.parametrize(
+    ("mode", "work_mode"),
+    [("agent.work.normal", "work"), ("agent.code.normal", "code")],
+)
+async def test_unloaded_persisted_session_message_live(
+    tmp_path: Path,
+    mode: str,
+    work_mode: str,
+) -> None:
+    session_ids: list[str] = []
+    for prompt, turn_mode, turn_work_mode in (
+        ("只回复：SOURCE_SESSION_READY", "agent.work.normal", "work"),
+        ("只回复：TARGET_SESSION_READY", mode, work_mode),
+    ):
+        output = io.StringIO()
+        result = await app.run(
+            _args(
+                tmp_path,
+                session_id=None,
+                mode=turn_mode,
+                work_mode=turn_work_mode,
+                prompt=prompt,
+            ),
+            stdout=output,
+            stderr=io.StringIO(),
+        )
+        assert result == 0
+        document = json.loads(output.getvalue())
+        _assert_terminal_response(document)
+        session_ids.append(str(document["session_id"]))
+
+    source_session_id, target_session_id = session_ids
+    before = load_history_records(target_session_id)
+    client = InProcessRuntimeClient()
+    try:
+        receipt = await client.runtime.send_session_message(
+            source_session_id=source_session_id,
+            target_session_id=target_session_id,
+            content="只回复：CROSS_SESSION_MESSAGE_OK",
+            request_id=f"live-cross-session-{work_mode}",
+        )
+        deadline = asyncio.get_running_loop().time() + 180
+        while True:
+            execution = client.runtime.get_session_execution(receipt.execution_id)
+            assert execution is not None
+            if execution.state.terminal:
+                break
+            if asyncio.get_running_loop().time() >= deadline:
+                pytest.fail("cross-Session execution did not finish")
+            await asyncio.sleep(0.1)
+
+        assert execution.state is SessionExecutionState.SUCCEEDED
+        after = load_history_records(target_session_id)
+        assert len(after) > len(before)
+        assert "CROSS_SESSION_MESSAGE_OK" in json.dumps(after, ensure_ascii=False)
+    finally:
+        await client.cleanup_session(
+            channel_id="process_cli",
+            session_id=target_session_id,
+        )
+        await client.close()
 
 
 @pytest.mark.asyncio
@@ -196,7 +264,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             event
             async for event in client.stream(original)
         ]
-        waiting = client.runtime.session_coordinator.snapshot_session(session_id)
+        waiting = client.runtime._session_coordinator.snapshot_session(session_id)
         assert waiting is not None
         execution = next(
             execution
@@ -246,7 +314,7 @@ async def test_single_agent_ask_user_resume_after_stream_end_live(
             for event in resumed_events
         )
         assert expected_text in resumed_text
-        completed = client.runtime.session_coordinator.snapshot_session(session_id)
+        completed = client.runtime._session_coordinator.snapshot_session(session_id)
         assert completed is not None
         assert all(execution.state.terminal for execution in completed.executions)
     finally:

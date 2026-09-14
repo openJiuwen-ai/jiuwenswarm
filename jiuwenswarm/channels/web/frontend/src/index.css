@@ -114,6 +114,21 @@ body.workspace-resize-active iframe {
   pointer-events: none;
 }
 
+@layer components {
+  .form-label {
+    @apply block text-sm text-text-strong;
+    line-height: 22px;
+  }
+}
+
+.border-input {
+  border: 1px solid var(--color-border-input-strong);
+}
+
+.border-input:hover:not(:disabled) {
+  border-color: var(--color-border-strong);
+}
+
 /* ===========================================
    Animations
    =========================================== */
@@ -180,7 +195,6 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes pulse-subtle {
-
   0%,
   100% {
     opacity: 1;
@@ -192,7 +206,6 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes glow-pulse {
-
   0%,
   100% {
     box-shadow: var(--effect-glow-pulse-rest);
@@ -204,7 +217,6 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes chatStreamPulse {
-
   0%,
   100% {
     border-color: var(--color-border-default);
@@ -216,7 +228,6 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes chatReadingDot {
-
   0%,
   80%,
   100% {
@@ -231,7 +242,6 @@ body.workspace-resize-active iframe {
 }
 
 @keyframes blink {
-
   0%,
   100% {
     opacity: 1;
@@ -251,7 +261,6 @@ body.workspace-resize-active iframe {
    =========================================== */
 
 @layer components {
-
   /* Shell Layout */
   .shell {
     height: 100vh;
@@ -426,6 +435,15 @@ body.workspace-resize-active iframe {
     padding-block: 8px;
   }
 
+  .dropdown-menu::before {
+    content: '';
+    position: absolute;
+    top: -0.25rem;
+    left: 0;
+    right: 0;
+    height: 0.25rem;
+  }
+
   .dropdown-menu-item {
     display: flex;
     align-items: center;
@@ -471,7 +489,6 @@ body.workspace-resize-active iframe {
     overflow: hidden;
     background: var(--color-surface-card);
     padding-top: 32px;
-    padding-bottom: 24px;
   }
 
   /* 限宽骨架：页面不滚动的固定区（header/toolbar 等）使用，
@@ -492,19 +509,50 @@ body.workspace-resize-active iframe {
 
   /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
      故在 100% 基础上扣 96-16=80px，与 .page-shell（100%-96px）内容线严格对齐 */
-  .page-scroll>*,
-  .detail-body>* {
+  .page-scroll > *,
+  .detail-body > * {
     width: min(1400px, calc(100% - 80px));
     margin-right: auto;
     margin-left: auto;
   }
 
   /* 详情页统一滚动容器（agent/skill/connector detail）：同 .page-scroll 通栏滚动，
-     子元素通过 > * 规则限宽 1400px 并居中 */
+     子元素通过 > * 规则限宽 1400px 并居中；纵向间距由 flex gap 统一为 32px。
+     子元素 flex-shrink:0——flex 子项默认可收缩，内容超高时会被压进容器内导致
+     overflow-y-auto 永不溢出、页面无法滚动；配合调用方去掉页签区 flex-1（basis 0
+     会吸干/压瘪剩余空间），子元素高度恒为内容高，滚动行为与块流版本一致。
+     AgentEditor 的 detail-body 只有一个 inner 包裹子元素，间距不受影响 */
   .detail-body {
+    display: flex;
+    flex-direction: column;
+    gap: 32px;
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
     padding-top: 25px;
+  }
+
+  .detail-body > * {
+    flex-shrink: 0;
+  }
+
+  /* skill 详情加载中的整区域状态视图：参考 agent-management-detail--state，
+     但用 flex:1 + min-height:0 真正撑满详情可用区域，数据到达前后外层结构不位移，避免页面抖动。
+     返回按钮贴容器顶部，文案区 flex:1 占满剩余空间并在其中水平垂直居中 */
+  .skill-detail-state {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    flex-direction: column;
+    color: var(--color-text-secondary);
+  }
+
+  .skill-detail-state p {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin: 0;
   }
 
   /* 统一返回按钮（agent/skill/connector detail）。
@@ -535,6 +583,75 @@ body.workspace-resize-active iframe {
   .detail-back svg {
     width: 12px;
     height: 12px;
+  }
+
+  /* 统一详情页能力 chip 行（agent/connector detail 共用）：32px 药丸形态，
+     规格源自 agent-management 详情页能力 chip（原 .agent-management-chip）。
+     行容器负责换行与间距，chip 本身只管单体形态 */
+  .detail-chip-row {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+  }
+
+  .detail-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 32px;
+    border-radius: 4px;
+    background: var(--color-tag-surface);
+    color: var(--color-text-primary);
+    padding: 0 16px;
+    font-size: 14px;
+    line-height: 22px;
+  }
+
+  /* 可点变体（扩展示例药丸等）：hover 复刻扩展模块原药丸的 accent 蓝反馈——
+     底样式无边框，用 inset 描边等价原 border 变色 */
+  .detail-chip--link {
+    cursor: pointer;
+  }
+
+  .detail-chip--link:hover {
+    color: var(--color-chat-accent);
+    box-shadow: inset 0 0 0 1px var(--color-chat-accent);
+  }
+
+  /* 详情页快捷输入/示例列表（agent/connector detail 共用）：单列栅格，每项独占一行，
+     限宽 696px（规格源自 agent-management 详情页快捷输入 .agent-management-prompt-list，
+     2026-09-11 提升为共享类）；行内 chip 复用 .detail-chip 规格，可点态加 .detail-chip--link */
+  .detail-prompt-list {
+    display: grid;
+    max-width: 696px;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 8px;
+  }
+
+  /* 整行可点的快捷输入 chip（grid 子项自动拉满整行）：文案与右侧动作图标两端对齐，
+     文案超长单行省略 */
+  .detail-chip--spread {
+    justify-content: space-between;
+    gap: 16px;
+    text-align: left;
+  }
+
+  .detail-chip--spread > span:first-child {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  /* chip 内右侧动作图标位（发送等）：纯装饰、颜色继承行文字，hover 时跟随变 accent */
+  .detail-chip__icon {
+    display: inline-flex;
+    width: 24px;
+    height: 24px;
+    flex: 0 0 auto;
+    align-items: center;
+    justify-content: center;
+    color: inherit;
   }
 
   .page-content .chat-picker-panel__tabs {
@@ -810,7 +927,7 @@ body.workspace-resize-active iframe {
     height: 12px;
   }
 
-  .chat-reading-indicator__dots>span {
+  .chat-reading-indicator__dots > span {
     display: inline-block;
     width: 6px;
     height: 6px;
@@ -822,11 +939,11 @@ body.workspace-resize-active iframe {
     will-change: transform, opacity;
   }
 
-  .chat-reading-indicator__dots>span:nth-child(2) {
+  .chat-reading-indicator__dots > span:nth-child(2) {
     animation-delay: 0.15s;
   }
 
-  .chat-reading-indicator__dots>span:nth-child(3) {
+  .chat-reading-indicator__dots > span:nth-child(3) {
     animation-delay: 0.3s;
   }
 
@@ -891,7 +1008,7 @@ body.workspace-resize-active iframe {
     background: var(--color-surface-card, transparent);
   }
 
-  .chat-markdown-table-wrap>table {
+  .chat-markdown-table-wrap > table {
     width: 100%;
     min-width: 28rem;
     margin: 0;
@@ -947,7 +1064,7 @@ body.workspace-resize-active iframe {
     margin-block: 0;
   }
 
-  .chat-markdown p+p {
+  .chat-markdown p + p {
     margin-top: 1em;
   }
 
@@ -983,7 +1100,7 @@ body.workspace-resize-active iframe {
     margin: 0;
   }
 
-  .proactive-card-content p+p {
+  .proactive-card-content p + p {
     margin-top: 0.5rem;
   }
 
@@ -1013,8 +1130,10 @@ body.workspace-resize-active iframe {
     border: 1px solid var(--color-chat-task-queue-border);
     border-radius: 18px 18px 0 0;
     background-color: var(--color-surface-page);
-    background-image: linear-gradient(rgba(var(--color-chat-composer-surface-rgb), 0.96),
-        rgba(var(--color-chat-composer-surface-rgb), 0.96));
+    background-image: linear-gradient(
+      rgba(var(--color-chat-composer-surface-rgb), 0.96),
+      rgba(var(--color-chat-composer-surface-rgb), 0.96)
+    );
     box-shadow: var(--effect-chat-task-queue-highlight);
     animation: rise 0.3s var(--ease-out);
   }
@@ -1274,11 +1393,11 @@ body.workspace-resize-active iframe {
     --tw-prose-links: var(--color-action-primary);
   }
 
-  .team-message-markdown> :first-child {
+  .team-message-markdown > :first-child {
     margin-top: 0;
   }
 
-  .team-message-markdown> :last-child {
+  .team-message-markdown > :last-child {
     margin-bottom: 0;
   }
 
@@ -1286,13 +1405,13 @@ body.workspace-resize-active iframe {
     display: inline;
   }
 
-  .team-message-markdown--inline>p:first-child {
+  .team-message-markdown--inline > p:first-child {
     display: inline;
     margin: 0;
   }
 
   /* ====== Member detail body (team-area / subagent shared) ====== */
-  .member-detail-body>* {
+  .member-detail-body > * {
     max-width: max(720px, calc(100% - 640px));
     margin-left: auto;
     margin-right: auto;
@@ -1393,7 +1512,7 @@ body.workspace-resize-active iframe {
     padding: 7px 4px;
   }
 
-  .team-event-group-row--activity+.team-event-group-row--activity {
+  .team-event-group-row--activity + .team-event-group-row--activity {
     border-top: 1px solid rgba(var(--color-border-default-rgb), 0.64);
   }
 
@@ -1542,7 +1661,7 @@ body.workspace-resize-active iframe {
     position: relative;
   }
 
-  .chat-timeline>* {
+  .chat-timeline > * {
     margin-top: 0;
     margin-bottom: 0;
   }
@@ -1562,12 +1681,12 @@ body.workspace-resize-active iframe {
     gap: 0;
   }
 
-  .tool-group-frame:not(.tool-group-frame--team)>.tool-group-frame__avatar {
+  .tool-group-frame:not(.tool-group-frame--team) > .tool-group-frame__avatar {
     flex: 0 0 32px;
     width: 32px;
   }
 
-  .tool-group-frame:not(.tool-group-frame--team)>.min-w-0 {
+  .tool-group-frame:not(.tool-group-frame--team) > .min-w-0 {
     flex: 1 1 auto;
     min-width: 0;
   }
@@ -1608,7 +1727,7 @@ body.workspace-resize-active iframe {
     overflow-wrap: anywhere;
   }
 
-  .tool-tree__section+.tool-tree__section {
+  .tool-tree__section + .tool-tree__section {
     margin-top: 4px;
   }
 
@@ -1788,12 +1907,16 @@ body.workspace-resize-active iframe {
   .completed-work-chip__label {
     font-variant-numeric: tabular-nums;
     min-width: 0;
-    transition: opacity 0.28s ease, transform 0.28s ease;
+    transition:
+      opacity 0.28s ease,
+      transform 0.28s ease;
   }
 
   .completed-work-chip .tool-tree-item__disclosure {
     opacity: 0.7;
-    transition: transform 0.22s ease, opacity 0.18s ease;
+    transition:
+      transform 0.22s ease,
+      opacity 0.18s ease;
   }
 
   .reasoning-col {
@@ -1858,7 +1981,9 @@ body.workspace-resize-active iframe {
     word-break: break-word;
     opacity: 0;
     transform: translateY(-4px);
-    transition: opacity 0.22s ease, transform 0.22s ease;
+    transition:
+      opacity 0.22s ease,
+      transform 0.22s ease;
   }
 
   .reasoning-panel__collapse.is-open .reasoning-panel__body {
@@ -1890,7 +2015,7 @@ body.workspace-resize-active iframe {
     animation: timeline-collapse-open 0.3s ease;
   }
 
-  .timeline-collapse.is-open>.timeline-collapse-inner>* {
+  .timeline-collapse.is-open > .timeline-collapse-inner > * {
     animation: timeline-collapse-drop 0.22s ease;
   }
 
@@ -1918,12 +2043,14 @@ body.workspace-resize-active iframe {
 
   /* 执行中：不转圈，改用一条明亮窄带从左到右扫过灰字（对比更强、更明显）。 */
   .tool-tree__header-line-text.is-running {
-    background: linear-gradient(100deg,
-        var(--tool-muted, var(--color-text-secondary)) 0%,
-        var(--tool-muted, var(--color-text-secondary)) 42%,
-        var(--color-text-primary) 50%,
-        var(--tool-muted, var(--color-text-secondary)) 58%,
-        var(--tool-muted, var(--color-text-secondary)) 100%);
+    background: linear-gradient(
+      100deg,
+      var(--tool-muted, var(--color-text-secondary)) 0%,
+      var(--tool-muted, var(--color-text-secondary)) 42%,
+      var(--color-text-primary) 50%,
+      var(--tool-muted, var(--color-text-secondary)) 58%,
+      var(--tool-muted, var(--color-text-secondary)) 100%
+    );
     background-size: 220% 100%;
     -webkit-background-clip: text;
     background-clip: text;
@@ -1957,7 +2084,7 @@ body.workspace-resize-active iframe {
     color: var(--color-action-primary-hover);
   }
 
-  .tool-tree-item+.tool-tree-item {
+  .tool-tree-item + .tool-tree-item {
     margin-top: 4px;
   }
 
@@ -2001,7 +2128,9 @@ body.workspace-resize-active iframe {
     justify-content: center;
     color: var(--tool-muted, var(--color-text-secondary));
     opacity: 0;
-    transition: transform 0.22s ease, opacity 0.16s ease;
+    transition:
+      transform 0.22s ease,
+      opacity 0.16s ease;
   }
 
   .tool-tree-item__disclosure svg {
@@ -2044,7 +2173,9 @@ body.workspace-resize-active iframe {
     border-radius: 8px;
     opacity: 0;
     transform: translateY(-4px);
-    transition: opacity 0.22s ease, transform 0.22s ease;
+    transition:
+      opacity 0.22s ease,
+      transform 0.22s ease;
   }
 
   .tool-tree-item__collapse.is-open .tool-tree-item__detail-wrap {
@@ -2308,7 +2439,6 @@ body.workspace-resize-active iframe {
   }
 
   @media (prefers-reduced-motion: reduce) {
-
     .chat-timeline,
     .completed-work-col,
     .reasoning-col,
@@ -2317,7 +2447,7 @@ body.workspace-resize-active iframe {
     .timeline-collapse,
     .reasoning-panel__body,
     .timeline-collapse.is-open,
-    .timeline-collapse.is-open>.timeline-collapse-inner>*,
+    .timeline-collapse.is-open > .timeline-collapse-inner > *,
     .tool-tree-item__disclosure,
     .tool-tree-item__collapse,
     .tool-tree-item__detail-wrap,
@@ -2352,7 +2482,6 @@ body.workspace-resize-active iframe {
 
 /* Voice recording pulse */
 @keyframes voice-pulse {
-
   0%,
   100% {
     box-shadow: var(--effect-voice-pulse-start);

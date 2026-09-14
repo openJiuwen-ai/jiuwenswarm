@@ -1075,10 +1075,21 @@ class PersonalContextHostAPI:
                     normalized_provider,
                     current_credentials[_REPOSITORY_PAT_FIELDS[normalized_provider]],
                 )
-            await self._apply_configuration_locked(
+            created_config = next(
+                item
+                for item in candidate.fetch_services
+                if item.service_id not in existing_ids
+            )
+            await self._apply_live_update_locked(
                 candidate,
                 stored,
                 _serialize_config(stored),
+                apply=lambda: self._personal_context._append_fetch_service_config(  # pylint: disable=protected-access
+                    created_config,
+                ),
+                rollback=lambda: self._personal_context._remove_fetch_service_config(  # pylint: disable=protected-access
+                    created_config.service_id,
+                ),
             )
             normalized_services = cast(
                 list[dict[str, object]],
@@ -1243,11 +1254,10 @@ class PersonalContextHostAPI:
             if service_id is None or not isinstance(run_id, str) or not run_id.strip():
                 _raise_host_error("run_id requires service_id and a non-empty string")
         normalized_id = service_id.strip() if service_id is not None else None
-        async with self._operation_lock:
-            return await self._personal_context.get_fetch_run_status(
-                normalized_id,
-                run_id=run_id,
-            )
+        return await self._personal_context.get_fetch_run_status(
+            normalized_id,
+            run_id=run_id,
+        )
 
     async def set_fetch_service_enabled(
         self,

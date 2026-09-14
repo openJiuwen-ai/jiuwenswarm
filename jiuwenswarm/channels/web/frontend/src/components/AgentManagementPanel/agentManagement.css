@@ -1,7 +1,6 @@
-.page-content[data-testid="agent-management-panel"] {
+.page-content[data-testid='agent-management-panel'] {
   --agent-content-max: 1400px;
   --agent-page-gutter: 32px;
-  --agent-radius-chip: 4px;
   --agent-opacity-disabled: 0.45;
   --agent-opacity-muted: 0.55;
   --agent-opacity-hidden: 0;
@@ -14,16 +13,15 @@
   color: var(--color-text-primary);
 }
 
-[data-testid="agent-management-panel"][data-variant="catalog"],
-[data-testid="agent-management-panel"][data-variant="mine"],
-[data-testid="agent-management-panel"][data-variant="detail"],
-[data-testid="agent-management-panel"][data-variant="create"] {
+[data-testid='agent-management-panel'][data-variant='catalog'],
+[data-testid='agent-management-panel'][data-variant='mine'],
+[data-testid='agent-management-panel'][data-variant='detail'],
+[data-testid='agent-management-panel'][data-variant='create'] {
   overflow-y: hidden;
   scrollbar-gutter: auto;
 }
 
-[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
-[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail {
+[data-testid='agent-management-panel'][data-variant='create'] .agent-management-editor {
   transform: translateX(4px);
 }
 
@@ -43,35 +41,6 @@
   line-height: 36px;
 }
 
-
-
-.agent-management-detail-tabs button {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.agent-management-detail-tabs button::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: transparent;
-  content: '';
-}
-
-.agent-management-detail-tabs button.is-active {
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
-.agent-management-detail-tabs button.is-active::after {
-  background: var(--color-text-primary);
-}
-
 .agent-management-primary-actions {
   display: flex;
   align-items: center;
@@ -82,40 +51,6 @@
 
 .agent-management-create-menu {
   position: relative;
-}
-
-.agent-management-create-menu__popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 20;
-  width: max-content;
-  min-width: 131px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-card);
-  box-shadow: var(--effect-shadow-md);
-  padding: 6px;
-}
-
-.agent-management-create-menu__popover button {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: 8px 12px;
-  text-align: left;
-  cursor: pointer;
-  font-size: 14px;
-  white-space: nowrap;
-}
-
-.agent-management-create-menu__popover button:hover,
-.agent-management-create-menu__popover button:focus-visible {
-  background: var(--color-action-secondary);
-  outline: 0;
 }
 
 .agent-management-button {
@@ -198,45 +133,6 @@
   background: var(--color-feedback-success);
 }
 
-.agent-management-card__update-tooltip {
-  position: absolute;
-  bottom: calc(100% + 12px);
-  left: 50%;
-  z-index: 5;
-  width: max-content;
-  max-width: 220px;
-  border-radius: var(--radius-md);
-  background: var(--color-text-strong);
-  box-shadow: var(--effect-shadow-md);
-  color: var(--color-text-inverse);
-  padding: 10px 16px;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 20px;
-  opacity: var(--agent-opacity-hidden);
-  pointer-events: none;
-  transform: translate(-50%, 4px);
-  transition:
-    opacity var(--duration-fast) var(--ease-out),
-    transform var(--duration-fast) var(--ease-out);
-}
-
-.agent-management-card__update-tooltip::after {
-  position: absolute;
-  bottom: -6px;
-  left: 50%;
-  width: 12px;
-  height: 12px;
-  background: var(--color-text-strong);
-  content: '';
-  transform: translateX(-50%) rotate(45deg);
-}
-
-.page-card:hover .agent-management-card__update-tooltip {
-  opacity: var(--agent-opacity-visible);
-  transform: translate(-50%, 0);
-}
-
 .agent-management-card__actions {
   display: flex;
   gap: 8px;
@@ -287,38 +183,7 @@
   opacity: var(--agent-opacity-disabled);
 }
 
-.agent-management-avatar {
-  display: inline-flex;
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--color-action-primary-subtle);
-  color: var(--color-text-link);
-}
-
-.agent-management-avatar img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.agent-management-tag,
-.agent-management-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  border-radius: var(--radius-sm);
-  background: var(--color-action-secondary);
-  color: var(--color-text-secondary);
-  padding: 0 8px;
-  font-size: 12px;
-  line-height: 18px;
-}
+/* 详情页头像已迁移到共享组件 ui/EntityHeader（.entity-header__avatar） */
 
 .agent-management-state,
 .agent-management-detail--state {
@@ -337,6 +202,44 @@
   margin: 0;
 }
 
+/* 详情加载中：参考 .skill-detail-state（index.css）——flex:1 撑满详情可用区域，
+   返回按钮贴顶（.detail-back 自带限宽居中），文案区 flex:1 占满剩余空间并水平垂直居中，
+   避免返回按钮/文案悬在页面垂直中部；错误态仍沿用上方整体居中样式 */
+.agent-management-detail--state[data-variant='loading'] {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='loading'] p {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 详情错误态：与加载态同构——返回按钮贴顶，文案+重试按钮整体在剩余空间垂直居中
+   （auto margin 分摊剩余空间实现居中，不改 DOM 结构） */
+.agent-management-detail--state[data-variant='error'] {
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .detail-back {
+  margin-bottom: auto;
+}
+
+.agent-management-detail--state[data-variant='error'] p {
+  margin: 16px 0 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .agent-management-button {
+  margin: 16px 0 auto;
+}
+
 .agent-management-inline-error,
 .agent-management-form-error {
   border: 1px solid var(--color-border-danger);
@@ -348,40 +251,6 @@
 
 .agent-management-inline-error {
   margin: 16px 0 0;
-}
-
-.agent-management-pagination {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  margin-top: 24px;
-  color: var(--color-text-secondary);
-  font-size: 13px;
-}
-
-.agent-management-pagination__buttons {
-  display: flex;
-  align-items: center;
-  gap: 12px;
-}
-
-.agent-management-pagination__buttons button {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-sm);
-  background: var(--color-surface-card);
-  color: var(--color-text-primary);
-  cursor: pointer;
-}
-
-.agent-management-pagination__buttons button:disabled {
-  cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
 }
 
 .agent-management-editor {
@@ -399,7 +268,6 @@
 
 /* detail-body 已移至 index.css 统一管理（限宽由 .detail-body > * 规则承担） */
 
-
 .agent-management-editor h1 {
   font-size: 20px;
   line-height: 30px;
@@ -407,68 +275,9 @@
 
 /* detail-back 已移至 index.css 统一管理 */
 
-.agent-management-detail__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
+/* 详情头部（identity/标题/徽标）已迁移到共享组件 ui/EntityHeader */
 
-.agent-management-detail__identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 16px;
-}
-
-.agent-management-detail__identity > div {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-}
-
-.agent-management-detail__identity h1 {
-  margin: 0 0 1px;
-  color: var(--color-text-primary);
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 30px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-avatar--detail {
-  width: 32px;
-  height: 32px;
-  flex-basis: 32px;
-  border-radius: var(--radius-md);
-}
-
-.agent-management-detail__badges,
-.agent-management-chip-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.agent-management-detail__badges {
-  gap: 17px;
-}
-
-.agent-management-detail__badges .agent-management-tag {
-  color: var(--color-text-primary);
-  padding-right: 4px;
-  padding-left: 4px;
-}
-
-.agent-management-source,
-.agent-management-installed {
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 18px;
-}
+/* 详情页能力 chip 已迁移到共享类 ui 层 index.css（.detail-chip-row / .detail-chip） */
 
 .agent-management-detail__actions {
   display: flex;
@@ -477,15 +286,23 @@
   flex: 0 0 auto;
 }
 
+/* 详情头部操作按钮统一 28px 高、药丸形（含带边框的连接/使用/安装按钮，对齐 use-btn） */
+.agent-management-detail__actions .agent-management-button {
+  min-height: 28px;
+  border-radius: var(--radius-full);
+}
+
 .agent-management-detail-action--install {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
 .agent-management-detail-action--use {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
@@ -535,21 +352,12 @@
   color: var(--color-text-secondary);
 }
 
-.agent-management-detail-section {
-  margin-top: 31px;
-}
-
-.agent-management-detail-section--prompts {
-  margin-top: 32px;
-}
-
-.agent-management-detail-section h2,
-.agent-management-detail-capability-group h2 {
-  margin: 0 0 8px;
-  color: var(--color-text-primary);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 28px;
+/* 详情体（.detail-body）已改为 flex+gap 统一 32px 间距：详情页内的提示条清零自带 margin，
+   避免与 gap 叠加；列表页 index.tsx 的提示条不在 .agent-management-detail 内，保留原间距 */
+.agent-management-detail .agent-management-inline-error,
+.agent-management-detail .agent-management-inline-notice,
+.agent-management-detail .agent-management-connection-warning {
+  margin: 0;
 }
 
 .agent-management-form-section h2 {
@@ -560,322 +368,17 @@
   line-height: 22px;
 }
 
-.agent-management-detail-description {
-  max-width: 100%;
-  min-width: 0;
-  margin: 0;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
+/* 详情页能力 chip（原 .agent-management-detail .agent-management-chip）已迁移到
+   共享类 index.css（.detail-chip），规格不变：32px 药丸 / tag-surface 底 / 14px */
 
-.agent-management-detail-capabilities {
-  display: block;
-  margin-top: 32px;
-}
+/* 详情页快捷输入列表/行（原 .agent-management-prompt-list / .agent-management-prompt /
+   .agent-management-prompt__icon）已迁移到共享类 index.css：容器 .detail-prompt-list +
+   chip .detail-chip.detail-chip--link.detail-chip--spread + 图标位 .detail-chip__icon，
+   chip 规格与连接器详情示例统一为 32px 药丸（原 40px 带边框行不再保留）。 */
 
-.agent-management-detail-capability-group {
-  min-width: 0;
-}
-
-.agent-management-detail-capability-group h2 {
-  margin-bottom: 8px;
-}
-
-.agent-management-detail-capability-group .agent-management-chip {
-  min-height: 32px;
-  border-radius: var(--agent-radius-chip);
-  background: var(--color-sidebar-nav-hover);
-  color: var(--color-text-primary);
-  padding: 0 16px;
-  font-size: 14px;
-  line-height: 22px;
-}
-
-.agent-management-detail-capability-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.agent-management-detail-capability-grid .agent-management-capability-card {
-  min-height: 116px;
-}
-
-.agent-management-detail-capability-group+.agent-management-detail-capability-group {
-  margin-top: 32px;
-}
-
-.agent-management-prompt-list {
-  display: grid;
-  max-width: 696px;
-  grid-template-columns: minmax(0, 1fr);
-  gap: 8px;
-}
-
-.agent-management-prompt {
-  display: flex;
-  min-width: 0;
-  min-height: 40px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border: 1px solid var(--color-sidebar-nav-hover);
-  border-radius: var(--radius-md);
-  background: var(--color-task-card-surface);
-  color: var(--color-chat-supporting-text);
-  padding: 0 16px;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-prompt span {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-prompt__send {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 auto;
-  align-items: center;
-  justify-content: center;
-  border: 0;
-  background: transparent;
-  color: var(--color-chat-supporting-text);
-  padding: 0;
-  cursor: pointer;
-}
-
-.agent-management-prompt__send:disabled {
+.agent-management-detail .detail-chip--link:disabled {
   cursor: not-allowed;
   opacity: var(--agent-opacity-disabled);
-}
-
-.agent-management-detail-tabs {
-  display: flex;
-  gap: 32px;
-  margin-top: 32px;
-  border-bottom: 1px solid var(--color-border-default);
-}
-
-.agent-management-detail-tabs button {
-  min-height: 42px;
-  padding: 0 0 12px;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  min-width: 64px;
-}
-
-.agent-management-detail-tabs button:disabled {
-  cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
-}
-
-.agent-management-detail-content {
-  min-width: 0;
-  max-width: 100%;
-  padding-top: 21px;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.agent-management-detail-content :where(pre) {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.agent-management-detail-content h1,
-.agent-management-detail-content h2,
-.agent-management-detail-content h3 {
-  margin: 0 0 8px;
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
-.agent-management-detail-content h1 {
-  font-size: 18px;
-  line-height: 28px;
-}
-
-.agent-management-detail-content h2 {
-  font-size: 18px;
-  line-height: 28px;
-}
-
-.agent-management-detail-content h3 {
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-detail-content p {
-  margin: 0 0 24px;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-file-preview {
-  height: 650px;
-  margin-top: 24px;
-}
-
-.agent-management-file-preview--unavailable {
-  display: flex;
-  height: auto;
-  min-height: 240px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-surface-card);
-}
-
-.agent-management-file-tree {
-  min-width: 0;
-  min-height: 0;
-}
-
-.agent-management-file-entry {
-  display: flex;
-  width: 100%;
-  min-height: 36px;
-  margin-bottom: 8px;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-right: 8px;
-  cursor: pointer;
-  text-align: left;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-file-tree>div>.agent-management-file-entry,
-.agent-management-file-entry.is-skill-definition {
-  margin-bottom: 6px;
-}
-
-.agent-management-file-entry:hover,
-.agent-management-file-entry.is-selected {
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-}
-
-.agent-management-file-entry.is-unsupported {
-  color: var(--color-text-tertiary);
-}
-
-.agent-management-file-entry__chevron {
-  display: inline-flex;
-  width: 14px;
-  flex: 0 0 14px;
-  align-items: center;
-  justify-content: center;
-}
-
-.agent-management-file-entry__icon {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  align-items: center;
-  justify-content: center;
-}
-
-.agent-management-file-entry__icon>svg {
-  flex: 0 0 auto;
-}
-
-.agent-management-file-entry__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-file-content {
-  display: flex;
-  min-height: 0;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.agent-management-file-content__header {
-  display: flex;
-  flex: 0 0 58px;
-  min-height: 58px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid var(--color-border-default);
-  padding: 0 23px;
-  color: var(--color-text-strong);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 28px;
-}
-
-.agent-management-file-content__header>* {
-  position: relative;
-  top: -2px;
-}
-
-.agent-management-file-content__header > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-file-content__actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-
-.agent-management-file-content__actions button {
-  display: inline-flex;
-  min-width: 30px;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 0 6px;
-  cursor: pointer;
-}
-
-.agent-management-file-content__actions button:hover:not(:disabled) {
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-}
-
-.agent-management-file-content__actions button:disabled {
-  cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
-}
-
-.agent-management-file-content__body {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: 15px;
 }
 
 .agent-management-markdown {
@@ -885,164 +388,9 @@
   line-height: 24px;
 }
 
-.agent-management-markdown__frontmatter {
-  max-width: 100%;
-  margin: 0 0 20px;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  color: var(--color-text-secondary);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.agent-management-markdown__body {
-  min-width: 0;
-  color: var(--color-text-primary);
-  font-size: 14px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body> :first-child {
-  margin-top: 0;
-}
-
-.agent-management-markdown__body> :last-child {
-  margin-bottom: 0;
-}
-
-.agent-management-markdown__body :where(h1, h2, h3, h4, h5, h6) {
-  color: var(--color-text-strong);
-  font-weight: 600;
-}
-
-.agent-management-markdown__body :where(h1) {
-  margin: 0 0 16px;
-  font-size: 20px;
-  line-height: 28px;
-}
-
-.agent-management-markdown__body :where(h2) {
-  margin: 24px 0 8px;
-  font-size: 18px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(h3) {
-  margin: 20px 0 8px;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(p) {
-  margin: 0 0 12px;
-  font-size: 14px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(ul, ol) {
-  margin: 0 0 16px;
-  padding-left: 22px;
-}
-
-.agent-management-markdown__body :where(li + li) {
-  margin-top: 4px;
-}
-
-.agent-management-markdown__body :where(blockquote) {
-  border-left-color: var(--color-border-strong);
-  color: var(--color-text-secondary);
-}
-
-.agent-management-markdown__body :where(:not(pre) > code) {
-  border-radius: var(--radius-sm);
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-  padding: 2px 5px;
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  white-space: break-spaces;
-}
-
-.agent-management-markdown__body :where(pre) {
-  max-width: 100%;
-  margin: 16px 0;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  padding: 12px 14px;
-}
-
-.agent-management-markdown__body :where(pre code) {
-  background: transparent;
-  padding: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre;
-}
-
-.agent-management-code {
-  max-width: 100%;
-  min-height: 100%;
-  margin: 0;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  color: var(--color-text-primary);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre;
-}
-
-.agent-management-code-preview {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-}
-
-.agent-management-code-preview .cm-editor {
-  height: 100%;
-}
-
-.agent-management-detail-content :where(code)::before,
-.agent-management-detail-content :where(code)::after,
 .agent-management-markdown :where(code)::before,
 .agent-management-markdown :where(code)::after {
   content: none !important;
-}
-
-.agent-management-file-state {
-  display: flex;
-  min-height: 120px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 12px;
-  color: var(--color-text-secondary);
-  padding: 16px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.agent-management-file-state p {
-  margin: 0;
-}
-
-.agent-management-file-state--error {
-  color: var(--color-feedback-danger);
 }
 
 .agent-management-editor__header {
@@ -1110,17 +458,17 @@
   margin-top: 32px;
 }
 
-.agent-management-editor>.agent-management-form-section:first-of-type {
+.agent-management-editor > .agent-management-form-section:first-of-type {
   margin-top: 32px;
 }
 
-.agent-management-form-section>h2 {
+.agent-management-form-section > h2 {
   margin-bottom: 24px;
   font-size: 18px;
   line-height: 28px;
 }
 
-.agent-management-editor>.agent-management-form-section:first-of-type>h2 {
+.agent-management-editor > .agent-management-form-section:first-of-type > h2 {
   margin-bottom: 16px;
   line-height: 28px;
 }
@@ -1148,7 +496,7 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid>.agent-management-form-field--wide {
+.agent-management-form-grid > .agent-management-form-field--wide {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1158,11 +506,11 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid>.agent-management-form-field--runtime-id {
+.agent-management-form-grid > .agent-management-form-field--runtime-id {
   order: 5;
 }
 
-.agent-management-form-grid>.agent-management-form-field--tag-picker {
+.agent-management-form-grid > .agent-management-form-field--tag-picker {
   gap: 2px;
   margin-bottom: 16px;
   min-width: 0;
@@ -1261,7 +609,7 @@
   font: inherit;
 }
 
-.agent-management-tag--selected>button {
+.agent-management-tag--selected > button {
   display: inline-flex;
   width: 16px;
   height: 16px;
@@ -1422,7 +770,7 @@
   line-height: 1.7;
 }
 
-.agent-management-form-grid>label:has(.agent-management-persona) {
+.agent-management-form-grid > label:has(.agent-management-persona) {
   gap: 14px;
 }
 
@@ -1477,27 +825,27 @@
   line-height: 22px;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h1,
-.agent-management-persona-rendered .agent-management-markdown>h2,
-.agent-management-persona-rendered .agent-management-markdown>h3 {
+.agent-management-persona-rendered .agent-management-markdown > h1,
+.agent-management-persona-rendered .agent-management-markdown > h2,
+.agent-management-persona-rendered .agent-management-markdown > h3 {
   color: var(--color-text-strong);
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h1 {
+.agent-management-persona-rendered .agent-management-markdown > h1 {
   margin: 0 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h2 {
+.agent-management-persona-rendered .agent-management-markdown > h2 {
   margin: 24px 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>p {
+.agent-management-persona-rendered .agent-management-markdown > p {
   margin: 0 0 24px;
   font-size: 16px;
   line-height: 24px;
@@ -1637,8 +985,8 @@
   text-align: left;
 }
 
-.agent-management-capability-card>span:nth-child(2),
-.agent-management-selection-card>span:nth-child(2) {
+.agent-management-capability-card > span:nth-child(2),
+.agent-management-selection-card > span:nth-child(2) {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -1741,7 +1089,7 @@
   font-size: 20px;
 }
 
-.agent-management-selected-capabilities .agent-management-capability-card>small {
+.agent-management-selected-capabilities .agent-management-capability-card > small {
   display: -webkit-box;
   width: 100%;
   height: 44px;
@@ -1775,19 +1123,19 @@
   padding: 24px;
 }
 
-.agent-management-upload-dialog>header,
-.agent-management-upload-dialog>footer {
+.agent-management-upload-dialog > header,
+.agent-management-upload-dialog > footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
 }
 
-.agent-management-upload-dialog>header {
+.agent-management-upload-dialog > header {
   justify-content: space-between;
 }
 
-.agent-management-upload-dialog>header h2 {
+.agent-management-upload-dialog > header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 18px;
@@ -1800,7 +1148,7 @@
   box-shadow: none;
 }
 
-.agent-management-upload-dialog>header button {
+.agent-management-upload-dialog > header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -1814,8 +1162,8 @@
   cursor: pointer;
 }
 
-.agent-management-upload-dialog>header button:hover,
-.agent-management-upload-dialog>header button:focus-visible {
+.agent-management-upload-dialog > header button:hover,
+.agent-management-upload-dialog > header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -1869,7 +1217,7 @@
   border-color: var(--color-border-danger);
 }
 
-.agent-management-upload-picker>span {
+.agent-management-upload-picker > span {
   color: var(--color-chat-supporting-text);
   font-size: 13px;
   line-height: 20px;
@@ -1884,12 +1232,12 @@
   text-align: left;
 }
 
-.agent-management-upload-picker__selected>svg {
+.agent-management-upload-picker__selected > svg {
   flex: 0 0 22px;
   color: var(--color-text-secondary);
 }
 
-.agent-management-upload-picker__selected>div {
+.agent-management-upload-picker__selected > div {
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -1948,20 +1296,20 @@
   line-height: 18px;
 }
 
-.agent-management-upload-dialog>footer .agent-management-button {
+.agent-management-upload-dialog > footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-upload-dialog>footer .agent-management-button--primary {
+.agent-management-upload-dialog > footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-upload-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
@@ -1996,8 +1344,8 @@
   box-shadow: var(--effect-shadow-xl);
 }
 
-.agent-management-selection-dialog>header,
-.agent-management-selection-dialog>footer {
+.agent-management-selection-dialog > header,
+.agent-management-selection-dialog > footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2006,7 +1354,7 @@
   padding: 16px 24px;
 }
 
-.agent-management-selection-dialog>header h2 {
+.agent-management-selection-dialog > header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 16px;
@@ -2166,7 +1514,7 @@
   box-shadow: none;
 }
 
-.agent-management-selection-dialog>header button {
+.agent-management-selection-dialog > header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -2180,8 +1528,8 @@
   cursor: pointer;
 }
 
-.agent-management-selection-dialog>header button:hover,
-.agent-management-selection-dialog>header button:focus-visible {
+.agent-management-selection-dialog > header button:hover,
+.agent-management-selection-dialog > header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -2210,32 +1558,32 @@
   margin: 0;
 }
 
-.agent-management-selection-dialog>footer {
+.agent-management-selection-dialog > footer {
   border-top: 1px solid var(--color-border-default);
   border-bottom: 0;
   color: var(--color-text-secondary);
   font-size: 14px;
 }
 
-.agent-management-selection-dialog>footer .agent-management-button {
+.agent-management-selection-dialog > footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-selection-dialog>footer .agent-management-button--primary {
+.agent-management-selection-dialog > footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-selection-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-selection-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
 
-.agent-management-selection-dialog>footer>div {
+.agent-management-selection-dialog > footer > div {
   display: flex;
   gap: 12px;
 }
@@ -2338,7 +1686,7 @@
   color: var(--color-text-link);
 }
 
-.agent-management-skill-option>span:last-child {
+.agent-management-skill-option > span:last-child {
   display: flex;
   min-width: 0;
   flex-direction: column;
@@ -2430,26 +1778,8 @@
 }
 
 @media (max-width: 800px) {
-  .page-content[data-testid="agent-management-panel"] {
+  .page-content[data-testid='agent-management-panel'] {
     --agent-page-gutter: 20px;
-  }
-
-  .agent-management-detail__header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .agent-management-detail__identity {
-    width: 100%;
-  }
-
-  .agent-management-detail__identity h1 {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow-wrap: anywhere;
-    text-overflow: ellipsis;
-    white-space: normal;
   }
 
   .agent-management-primary-actions {
@@ -2457,9 +1787,6 @@
     padding-bottom: 16px;
   }
 
-  .agent-management-detail-capabilities,
-  .agent-management-detail-capability-grid,
-  .agent-management-prompt-list,
   .agent-management-skill-options,
   .agent-management-selected-capabilities,
   .agent-management-selection-grid {
@@ -2475,7 +1802,7 @@
     min-height: 160px;
   }
 
-  [data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+  [data-testid='agent-management-panel'][data-variant='mine'] .agent-management-card {
     height: auto;
   }
 
@@ -2492,10 +1819,5 @@
 @media (max-width: 560px) {
   .agent-management-card {
     height: auto;
-  }
-
-  .agent-management-pagination {
-    align-items: flex-start;
-    flex-direction: column;
   }
 }

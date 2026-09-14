@@ -5,17 +5,14 @@ import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, Exter
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
 // 用在"删除"上不对，见下方按钮渲染处的 icon 条件。
-// 跟左侧导航栏"技能"入口用同一个图标（SessionSidebar/index.tsx 的 nav.skills），而不是随手挑一个
-// lucide 图标——用户明确要求技能展示区的图标要跟左侧栏"技能"视觉统一。
-import SkillIcon from '../../assets/agent-management/agent-skill.svg?react';
 import { useConnectorStore } from '../../stores/connectorStore';
 import { NewConversationIcon } from './icons';
 import { getSkillAvatar } from '../../utils/skillAvatar';
-import { EntityAvatar } from './EntityAvatar';
+import { DetailPromptChip, DetailSection, EntityHeader, PageCard } from '../ui';
 import { ConnectTokenModal } from './ConnectTokenModal';
 import { CliAuthModal } from './CliAuthModal';
 import { ConfirmDialog } from './ConfirmDialog';
-import { PillButton, DetailLinkButton } from './Buttons';
+import { IconAvatar, PillButton, DetailLinkButton } from './Buttons';
 import { deriveCardState, deriveMcpAvailability } from './mcpState';
 import type { ConnectorConnectResponse, ConnectorIntegrationType } from '../../types/connector';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
@@ -223,24 +220,25 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
       </button>
 
       <div className="detail-body relative flex-1 min-h-0 overflow-y-auto pb-6">
-        <div className="mb-6 flex items-start justify-between">
-          <div className="flex items-center gap-3">
-            <EntityAvatar
-              iconUrl={connector.icon ?? undefined}
-              avatar={avatar}
-              className="flex h-10 w-10 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-semibold"
-            />
-            <h1 className="text-[20px] font-semibold leading-8 text-text">{connector.displayName}</h1>
-            <span
-              data-tooltip={detail?.cliSpecPresent ? t('connectorMarket.detail.cliSpecPresentHint') : undefined}
-              data-testid="connector-market-mcp-detail-integration-type"
-              data-variant={connector.integrationType}
-              className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] leading-4 text-text-muted"
-            >
-              {detail?.cliSpecPresent && <Terminal size={11} />}
-              {t(integrationTypeLabelKey(connector.integrationType))}
-            </span>
-            {cardState === 'error' && (
+        {/* 头部：与 skill/agent 详情共用的 EntityHeader（头像/标题 20px/30px/标签行/操作区）。
+            2026-09-11 集成类型徽标从 titleEnd 移入 tags 标签行，统一走 EntityHeader 的
+            结构化标签（.entity-header__tag 标准 tag 视觉），titleEnd 只留瞬态 error 提示 */}
+        <EntityHeader
+          testId="connector-market-mcp-detail-header"
+          avatar={connector.icon ? <img src={connector.icon} alt="" /> : avatar}
+          title={connector.displayName}
+          titleTestId="connector-market-mcp-detail-name"
+          tags={[
+            {
+              label: t(integrationTypeLabelKey(connector.integrationType)),
+              icon: detail?.cliSpecPresent ? <Terminal size={11} /> : undefined,
+              testId: 'connector-market-mcp-detail-integration-type',
+              variant: connector.integrationType,
+              tooltip: detail?.cliSpecPresent ? t('connectorMarket.detail.cliSpecPresentHint') : undefined,
+            },
+          ]}
+          titleEnd={
+            cardState === 'error' ? (
               <span
                 className="flex items-center gap-1 text-[12px] text-danger"
                 data-testid="connector-market-mcp-detail-state-error"
@@ -248,80 +246,81 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                 <AlertCircle size={14} />
                 {t('connectorMarket.card.stateError')}
               </span>
-            )}
-          </div>
-
-          <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
-            {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
+            ) : undefined
+          }
+          actions={
+            <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
+              {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
-            {isCustomize && onEdit && (
-              <DetailLinkButton
-                icon={<Pencil size={14} />}
-                label={t('connectorMarket.card.edit')}
-                onClick={onEdit}
-                disabled={busy}
-              />
-            )}
-            {installed && (
-              // 2026-08-19 用户明确要求：自定义 MCP 断联态（isDeleteMode，即已经解绑过一次）这个
-              // 按钮不只是文案变"卸载"，点击后要走真删除（handleDelete/mcp.delete_custom），图标也
-              // 要换成垃圾桶 Trash2——Unlink2 是"解绑"语义，用在"删除"上不对。只在 isDeleteMode 时
-              // 切换，built_in 走 error 态落进 installed&&!linked 时（"从没连上过"，不是"卸载"
-              // 语境）维持原来的解绑图标/文案/行为。
-              <DetailLinkButton
-                icon={isDeleteMode ? <Trash2 size={14} /> : <Unlink2 size={14} />}
-                label={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
-                onClick={() => setConfirmUnbind(true)}
-                danger
-                disabled={busy}
-              />
-            )}
-            {installed && (
-              // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
-              // 之前只在 installing 时禁用，未连接时点击会静默触发一次后台连接（handleUse 里
-              // linked===false 分支），容易让用户误以为按钮坏了或者不清楚点了发生了什么。
-              <button
-                type="button"
-                onClick={handleUse}
-                disabled={installing || !linked}
-                // disabled:hover:text-text 优先级比裸 hover: 高（多一层 :disabled 伪类，选择器更
-                // 精确），专门用来盖掉禁用态下鼠标悬停仍然变蓝的问题——原生 disabled 属性不保证
-                // 阻止 :hover 伪类生效，具体行为跟浏览器有关，不能只靠 disabled 属性本身。
-                className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-text"
-                data-testid="connector-market-mcp-detail-use"
-              >
-                <NewConversationIcon size={14} />
-                {t('connectorMarket.card.use')}
-              </button>
-            )}
-            {!installed && !installing && (
-              <PillButton
-                icon={<Plus size={14} />}
-                label={cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
-                onClick={handleInstall}
-              />
-            )}
-            {installing && (
-              <PillButton
-                icon={<Loader2 size={14} className="animate-spin" />}
-                label={t('connectorMarket.card.installing')}
-                disabled
-              />
-            )}
-          </div>
-        </div>
+              {isCustomize && onEdit && (
+                <DetailLinkButton
+                  icon={<Pencil size={14} />}
+                  label={t('connectorMarket.card.edit')}
+                  onClick={onEdit}
+                  disabled={busy}
+                />
+              )}
+              {installed && (
+                // 2026-08-19 用户明确要求：自定义 MCP 断联态（isDeleteMode，即已经解绑过一次）这个
+                // 按钮不只是文案变"卸载"，点击后要走真删除（handleDelete/mcp.delete_custom），图标也
+                // 要换成垃圾桶 Trash2——Unlink2 是"解绑"语义，用在"删除"上不对。只在 isDeleteMode 时
+                // 切换，built_in 走 error 态落进 installed&&!linked 时（"从没连上过"，不是"卸载"
+                // 语境）维持原来的解绑图标/文案/行为。
+                <DetailLinkButton
+                  icon={isDeleteMode ? <Trash2 size={14} /> : <Unlink2 size={14} />}
+                  label={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
+                  onClick={() => setConfirmUnbind(true)}
+                  danger
+                  disabled={busy}
+                />
+              )}
+              {installed && (
+                // 2026-08-19 用户明确要求：断联态（installed && !linked）"使用"按钮要置灰不可点——
+                // 之前只在 installing 时禁用，未连接时点击会静默触发一次后台连接（handleUse 里
+                // linked===false 分支），容易让用户误以为按钮坏了或者不清楚点了发生了什么。
+                <button
+                  type="button"
+                  onClick={handleUse}
+                  disabled={installing || !linked}
+                  // disabled:hover:text-text 优先级比裸 hover: 高（多一层 :disabled 伪类，选择器更
+                  // 精确），专门用来盖掉禁用态下鼠标悬停仍然变蓝的问题——原生 disabled 属性不保证
+                  // 阻止 :hover 伪类生效，具体行为跟浏览器有关，不能只靠 disabled 属性本身。
+                  className="flex items-center gap-1 text-[13px] text-text hover:text-[color:var(--color-chat-accent)] disabled:cursor-not-allowed disabled:opacity-60 disabled:hover:text-text"
+                  data-testid="connector-market-mcp-detail-use"
+                >
+                  <NewConversationIcon size={14} />
+                  {t('connectorMarket.card.use')}
+                </button>
+              )}
+              {!installed && !installing && (
+                <PillButton
+                  icon={<Plus size={14} />}
+                  label={cardState === 'error' ? t('connectorMarket.card.retry') : t('connectorMarket.card.install')}
+                  onClick={handleInstall}
+                />
+              )}
+              {installing && (
+                <PillButton
+                  icon={<Loader2 size={14} className="animate-spin" />}
+                  label={t('connectorMarket.card.installing')}
+                  disabled
+                />
+              )}
+            </div>
+          }
+        />
 
         {/* "已安装+未连接"断联提示——新方案要求这个中间态在详情页左上角图标名称下方展示一行提示，
           "连接MCP"按钮复用 handleInstall（和顶部安装按钮走同一个 connect 调用）。
-          2026-08-19 用户明确要求的视觉调整：整行加浅红底（精确色值 #FCE3E1，不用现有
-          danger-subtle token——那个是 10% 透明度红叠加在卡片背景上换算出来的颜色，跟用户给的
-          实际色值有肉眼可辨的偏差，这里按用户给的精确值来，不凑近似）；前面的断联图标从线框
+          2026-08-19 用户明确要求的视觉调整：整行加浅红底（精确色值 #FCE3E1，已落为语义 token
+          --color-feedback-danger-banner——不用 danger-subtle，那个是 10% 透明度红叠加在卡片
+          背景上换算出来的颜色，跟用户给的实际色值有肉眼可辨的偏差）；前面的断联图标从线框
           Unlink 换成"红圆底+白色X"这种更常见的错误态图标（用 bg-danger 圆形 + 白色 X 手搭，
           lucide 没有现成的实心圆+X 组合图标）；"连接MCP"文字从红色改成蓝色（用跟全局一致的
           accent 蓝 token）。 */}
         {installed && !linked && (
           <div
-            className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted"
+            className="flex items-center gap-1.5 rounded-lg bg-[color:var(--color-feedback-danger-banner)] px-3 py-2 text-[13px] text-text-muted"
             data-testid="connector-market-mcp-detail-disconnect-banner"
           >
             <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
@@ -360,55 +359,47 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           />
         )}
 
-        <div className="mb-8">
-          <h2
-            className="mb-4 text-[16px] font-semibold leading-6 text-text"
-            data-testid="connector-market-mcp-detail-basic-info-title"
-          >
-            {t('connectorMarket.detail.sections.basicInfo')}
-          </h2>
-          <p className="text-[12px] leading-[18px] text-text">{detail?.description ?? ''}</p>
-        </div>
+        <DetailSection
+          titleTestId="connector-market-mcp-detail-basic-info-title"
+          title={t('connectorMarket.detail.sections.basicInfo')}
+        >
+          <p>{detail?.description ?? ''}</p>
+        </DetailSection>
 
         {detail?.examples && detail.examples.length > 0 && (
-          <div className="mb-8">
-            <h2
-              className="mb-4 text-[16px] font-semibold leading-6 text-text"
-              data-testid="connector-market-mcp-detail-examples-title"
-            >
-              {t('connectorMarket.detail.sections.examples')}
-            </h2>
-            <div className="flex flex-wrap gap-2" data-testid="connector-market-mcp-detail-examples">
+          <DetailSection
+            titleTestId="connector-market-mcp-detail-examples-title"
+            title={t('connectorMarket.detail.sections.examples')}
+          >
+            {/* 共享组件 ui/DetailPromptChip：icon 在右、与专家详情快捷输入完全同款；容器
+              .detail-prompt-list 每项独占一行（限宽 696px）。可点态传 onClick（hover 描边+
+              文字变 accent 蓝），不可点态退化为纯展示 span */}
+            <div className="detail-prompt-list" data-testid="connector-market-mcp-detail-examples">
               {/* 未连接/连接失败态下，这个 MCP 在会话里根本用不了（跟顶部"会话使用"按钮的 linked
                 门控是同一个判断），示例点了跳过去也没意义——之前只判断 onUseExample 有没有传，
                 没管 MCP 当下能不能真用，2026-08-12 用户实测发现禁用态下示例还能点，改成两个
                 条件都满足才可点。 */}
               {detail.examples.map((example) =>
                 onUseExample && linked ? (
-                  <button
+                  <DetailPromptChip
                     key={example}
-                    type="button"
+                    text={example}
+                    icon={<NewConversationIcon size={12} />}
                     onClick={() => onUseExample(example, runtimeName, connector.displayName)}
-                    data-testid="connector-market-mcp-detail-example"
-                    data-variant={example}
-                    className="flex items-center gap-1.5 rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted transition-colors hover:border-[color:var(--color-chat-accent)] hover:text-[color:var(--color-chat-accent)]"
-                  >
-                    <NewConversationIcon size={12} />
-                    {example}
-                  </button>
+                    testId="connector-market-mcp-detail-example"
+                    variant={example}
+                  />
                 ) : (
-                  <span
+                  <DetailPromptChip
                     key={example}
-                    data-testid="connector-market-mcp-detail-example"
-                    data-variant={example}
-                    className="rounded-full border border-border bg-bg-muted px-3 py-1 text-[12px] leading-[18px] text-text-muted"
-                  >
-                    {example}
-                  </span>
+                    text={example}
+                    testId="connector-market-mcp-detail-example"
+                    variant={example}
+                  />
                 ),
               )}
             </div>
-          </div>
+          </DetailSection>
         )}
 
         {connector.source === 'customize' && detail && (
@@ -416,13 +407,10 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           // （2026-08-18 已接上，见 onEdit/RegisterMcpPage editName 回填），这里维持只读摘要，
           // 不在这块小卡片里直接改。env/headers 只展示 key，不展示 value——即使后端
           // 这两个字段是明文返回的（给编辑表单回填用），只读场景没必要把密钥渲染到页面上。
-          <div className="mb-8">
-            <h2
-              className="mb-4 text-[16px] font-semibold leading-6 text-text"
-              data-testid="connector-market-mcp-detail-connection-config-title"
-            >
-              {t('connectorMarket.detail.sections.connectionConfig')}
-            </h2>
+          <DetailSection
+            titleTestId="connector-market-mcp-detail-connection-config-title"
+            title={t('connectorMarket.detail.sections.connectionConfig')}
+          >
             <div
               className="space-y-2 rounded-xl border border-border bg-card p-4 text-[12px] leading-5"
               data-testid="connector-market-mcp-detail-connection-config"
@@ -474,84 +462,57 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                 </div>
               )}
             </div>
-          </div>
+          </DetailSection>
         )}
 
         {installed && skills && skills.length > 0 && (
-          <div className="mb-8">
-            <h2
-              className="mb-4 text-[16px] font-semibold leading-6 text-text"
-              data-testid="connector-market-mcp-detail-skills-title"
-            >
-              {t('connectorMarket.detail.sections.skills')}
-            </h2>
+          <DetailSection
+            titleTestId="connector-market-mcp-detail-skills-title"
+            title={t('connectorMarket.detail.sections.skills')}
+          >
+            {/* 技能卡片同样复用 ui/PageCard（字母头像走 getSkillAvatar，PageCard 标准形态）；
+              testid/variant 沿用原 CapabilityGrid 卡片（connector-market-mcp-detail-skill） */}
             <div
               className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
               data-testid="connector-market-mcp-detail-skills"
             >
               {skills.map((skill) => (
-                <div
+                <PageCard
                   key={skill.name}
-                  className="relative rounded-xl border border-border bg-card p-4"
-                  data-testid="connector-market-mcp-detail-skill"
-                  data-variant={skill.name}
-                >
-                  <div className="mb-1.5 flex items-center gap-2.5">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[7.5px] border border-connector-tool-icon-border bg-connector-tool-icon-surface text-text-muted">
-                      <SkillIcon aria-hidden width={16} height={16} />
-                    </span>
-                    <span className="text-[14px] font-semibold leading-[22px] text-text">{skill.name}</span>
-                  </div>
-                  {/* min-h-5（=leading-5，20px）：desc 为空字符串时 <p> 没有任何行内内容，不会
-                    撑出一个 line box，浏览器会把它渲染成 0 高度，导致这张卡片比旁边有描述的卡片
-                    矮一截（2026-08-21 用户反馈）。固定 min-height 让描述有没有内容都占同样的高度。 */}
-                  <p
-                    className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
-                    title={skill.description}
-                  >
-                    {skill.description}
-                  </p>
-                </div>
+                  avatar={getSkillAvatar(skill.name)}
+                  title={skill.name}
+                  description={skill.description}
+                  testId="connector-market-mcp-detail-skill"
+                  variant={skill.name}
+                />
               ))}
             </div>
-          </div>
+          </DetailSection>
         )}
 
         {installed && tools && tools.length > 0 && (
-          <div className="mb-8">
-            <h2
-              className="mb-4 text-[16px] font-semibold leading-6 text-text"
-              data-testid="connector-market-mcp-detail-tools-title"
-            >
-              {t('connectorMarket.detail.sections.tools')}
-            </h2>
+          <DetailSection
+            titleTestId="connector-market-mcp-detail-tools-title"
+            title={t('connectorMarket.detail.sections.tools')}
+          >
+            {/* 工具卡片统一复用 ui/PageCard（列表页同款卡片组件），不改其任何样式；
+              testid/variant 沿用原 CapabilityGrid 卡片（connector-market-mcp-detail-tool） */}
             <div
               className="grid grid-cols-1 gap-4 md:grid-cols-2 xl:grid-cols-3"
               data-testid="connector-market-mcp-detail-tools"
             >
               {tools.map((tool) => (
-                <div
+                <PageCard
                   key={tool.name}
-                  className="relative rounded-xl border border-border bg-card p-4"
-                  data-testid="connector-market-mcp-detail-tool"
-                  data-variant={tool.name}
-                >
-                  <div className="mb-1.5 flex items-center gap-2.5">
-                    <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[7.5px] border border-connector-tool-icon-border bg-connector-tool-icon-surface text-text-muted">
-                      <Wrench size={16} />
-                    </span>
-                    <span className="text-[14px] font-semibold leading-[22px] text-text">{tool.name}</span>
-                  </div>
-                  <p
-                    className="min-h-5 truncate text-[13px] leading-5 text-[color:var(--color-text-placeholder)]"
-                    title={tool.description}
-                  >
-                    {tool.description}
-                  </p>
-                </div>
+                  avatar={<IconAvatar icon={<Wrench size={21} />} />}
+                  title={tool.name}
+                  description={tool.description}
+                  testId="connector-market-mcp-detail-tool"
+                  variant={tool.name}
+                />
               ))}
             </div>
-          </div>
+          </DetailSection>
         )}
 
         {tokenTarget && (

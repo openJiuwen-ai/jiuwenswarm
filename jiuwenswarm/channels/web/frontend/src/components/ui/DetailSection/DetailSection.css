@@ -1,0 +1,28 @@
+/* 详情页"标题 + 内容"区块（skill/agent 详情共用，DetailSection）。
+   标题 18px/28px semibold（用户指定）、下距 8px；
+   内容文字 14px/20px text-primary（原 Tailwind text-sm text-text）。
+   区块间距由容器 .detail-body 的 flex gap 统一 32px，此处不再设 margin。 */
+.detail-section {
+  min-width: 0;
+}
+
+.detail-section__title {
+  margin: 0 0 8px;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+.detail-section__body {
+  min-width: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 20px;
+}
+
+.detail-section__body > p {
+  margin: 0;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+}

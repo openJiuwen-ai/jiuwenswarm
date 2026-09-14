@@ -83,7 +83,7 @@
   flex: 0 0 auto;
   height: 68px;
   align-items: center;
-  padding: 0 16px 0 8px;
+  padding: 0 16px 0 16px;
   box-sizing: border-box;
 }
 
@@ -203,7 +203,7 @@
   line-height: 32px;
   align-items: center;
   padding: 0 8px;
-  gap: 0 4px;
+  gap: 0 8px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -211,7 +211,7 @@
   font-size: 14px;
   cursor: pointer;
   text-align: left;
-  margin: 0 8px;
+  margin: 0 16px;
 }
 
 .conversation-sidebar__new svg {
@@ -242,15 +242,12 @@
   min-height: 0;
   flex: 1 1 auto;
   overflow-y: auto;
-  padding: 24px 8px 8px;
-  scrollbar-color: transparent transparent;
-  scrollbar-width: thin;
+  /* 恒定预留 4px 滚动条槽位（scrollbar-gutter: stable），无溢出时槽位也在、只是空着，
+     右侧视觉恒为 12px padding + 4px 槽 = 16px，滚动条出现/消失不再引发帧差抖动。
+     注意：不要给该容器加 scrollbar-width/scrollbar-color，Chrome 121+ 会因此忽略下方 webkit 定制。 */
+  scrollbar-gutter: stable;
+  padding: 24px 12px 8px 16px;
   box-sizing: border-box;
-}
-
-.conversation-sidebar__body:hover,
-.conversation-sidebar__body:focus-within {
-  scrollbar-color: var(--color-scrollbar-thumb) transparent;
 }
 
 .conversation-sidebar__body::-webkit-scrollbar {
@@ -483,6 +480,10 @@
   flex: 0 0 auto;
 }
 
+.conversation-entity-row__chevron {
+  color: var(--color-text-meta);
+}
+
 .conversation-entity-row__text {
   display: flex;
   min-width: 0;
@@ -589,7 +590,7 @@
   height: 32px;
   align-items: center;
   gap: 8px;
-  padding: 0 10px 0 32px;
+  padding: 0 0 0 32px;
   border: 0;
   border-radius: 8px;
   background: transparent;
@@ -990,7 +991,7 @@
   display: flex;
   height: 32px;
   align-items: center;
-  gap: 6px;
+  gap: 8px;
   padding: 0 8px;
   border-radius: 8px;
   cursor: pointer;
@@ -1001,28 +1002,24 @@
   padding: 0 6px 0 32px;
 }
 
+.conversation-sidebar__cron-row:hover {
+  background: var(--color-sidebar-nav-active);
+}
+
 /* 项目下的定时任务触发会话与空态：与定时任务文字对齐 */
 .conversation-sidebar__session-wrapper--nested .conversation-sidebar__cron-sessions .conversation-list-item__main {
-  padding-left: 44px;
+  padding-left: 52px;
 }
 
 .conversation-sidebar__session-wrapper--nested .conversation-sidebar__cron-sessions-empty {
-  padding-left: 44px;
-}
-
-.conversation-sidebar__cron-row:hover {
-  background: var(--color-surface-hover);
-}
-
-.conversation-sidebar__cron-row.is-expanded {
-  background: var(--color-surface-hover);
+  padding-left: 52px;
 }
 
 .conversation-sidebar__cron-row-icon {
   width: 14px;
   height: 14px;
   flex: 0 0 auto;
-  opacity: 0.7;
+  color: var(--color-text-primary);
 }
 
 .conversation-sidebar__cron-row-name {
@@ -1035,10 +1032,10 @@
 }
 
 .conversation-sidebar__cron-row-chevron {
-  width: 12px;
-  height: 12px;
+  width: 14px;
+  height: 14px;
   flex: 0 0 auto;
-  opacity: 0.5;
+  color: var(--color-text-meta);
 }
 
 /* 定时任务触发会话列表 */
@@ -1046,7 +1043,6 @@
   display: flex;
   flex-direction: column;
   gap: 1px;
-  padding-left: 8px;
 }
 
 .conversation-sidebar__cron-sessions-loading,

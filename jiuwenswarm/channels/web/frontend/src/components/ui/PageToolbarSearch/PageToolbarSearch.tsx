@@ -5,6 +5,8 @@ export interface PageToolbarSearchProps extends InputHTMLAttributes<HTMLInputEle
   inputTestId?: string;
   clearTestId?: string;
   onClear?: () => void;
+  /** 宽度测量容器选择器，默认 '.app-page-body'；页面不在 app-page-body 内时（如 CronPanel）传自己的页面根节点 */
+  measureSelector?: string;
 }
 
 const WIDTH_STEPS: Array<[number, number]> = [
@@ -21,12 +23,20 @@ function resolveWrapperWidth(containerWidth: number): number {
   return 200;
 }
 
-export function PageToolbarSearch({ wrapperTestId, inputTestId, clearTestId, onClear, className, ...rest }: PageToolbarSearchProps) {
+export function PageToolbarSearch({
+  wrapperTestId,
+  inputTestId,
+  clearTestId,
+  onClear,
+  measureSelector,
+  className,
+  ...rest
+}: PageToolbarSearchProps) {
   const wrapperRef = useRef<HTMLDivElement | null>(null);
   const [width, setWidth] = useState(200);
 
   useEffect(() => {
-    const container = wrapperRef.current?.closest('.app-page-body');
+    const container = wrapperRef.current?.closest(measureSelector ?? '.app-page-body');
     if (!container) return undefined;
     const observer = new ResizeObserver((entries) => {
       const entry = entries[entries.length - 1];
@@ -34,7 +44,7 @@ export function PageToolbarSearch({ wrapperTestId, inputTestId, clearTestId, onC
     });
     observer.observe(container);
     return () => observer.disconnect();
-  }, []);
+  }, [measureSelector]);
 
   const hasValue = String(rest.value ?? '').length > 0;
   const showClear = !!onClear && hasValue;
@@ -48,7 +58,7 @@ export function PageToolbarSearch({ wrapperTestId, inputTestId, clearTestId, onC
       <input
         data-testid={inputTestId}
         {...rest}
-        className={`w-full pl-8 ${showClear ? 'pr-7' : 'pr-3'} py-1.5 rounded-[6px] border border-border text-[12px] text-text placeholder:text-[color:var(--color-text-placeholder)] focus-visible:outline-none focus-visible:shadow-none${className ? ` ${className}` : ''}`}
+        className={`w-full pl-8 ${showClear ? 'pr-7' : 'pr-3'} py-1.5 rounded-[6px] border border-[color:var(--color-border-toolbar-input)] text-[12px] text-text placeholder:text-[color:var(--color-text-placeholder)] focus-visible:outline-none focus-visible:shadow-none${className ? ` ${className}` : ''}`}
       />
       {showClear && (
         <button

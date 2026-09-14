@@ -57,8 +57,8 @@ from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_mana
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import persist_cli_trusted_directory
 from jiuwenswarm.extensions.hooks_context import AgentServerChatHookContext
 from jiuwenswarm.server.runtime.agent_manager import AgentManager, ACP_DEFAULT_CAPABILITIES
-from jiuwenswarm.runtime import (
-    AgentRuntime,
+from jiuwenswarm.runtime import AgentRuntime
+from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateInput,
     SessionForkInput,
     SessionProvisionCommitContext,
