@@ -50,14 +50,23 @@ This patch is applied once at process startup (from
      is stamped onto the client instance as ``_jws_call_timeout`` and honored
      by (A). Falls back to ``DEFAULT_CALL_TIMEOUT`` when unset.
 
+  C. AbilityManager 外层 ``anyio.fail_after`` → 无 cancel scope 的截止时间
+     + ``tool.invoke`` 用 ``asyncio.wait_for``（不改 agent-core 源码，等价于
+     把 AM 超时从 fail_after 换成 wait_for，修复 TC_MCP_CALL_014 第 3 轮）。
+
+  D. ``disconnect`` / ``_do_disconnect`` 在 finally 中强制清会话，避免 aclose
+     失败留下半死连接。
+
 Both transforms are idempotent: a module-level ``_PATCHED`` guard makes the
 whole function a no-op on repeat calls.
 """
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import contextvars
 from contextlib import AsyncExitStack
-from typing import Any
+from typing import Any, Optional
 
 from openjiuwen.core.common.logging import logger
 
@@ -68,6 +77,14 @@ _PATCHED = False
 _wrapped_methods: set[tuple[type, str]] = set()
 #: Fallback per-call timeout (seconds) when ``--timeout_s`` is not supplied.
 DEFAULT_CALL_TIMEOUT = 30.0
+
+# AbilityManager 外层曾用 anyio.fail_after 包 tool.invoke；MCP 重连若落在该
+# cancel scope 内，退出时会抛 cancel scope（TC_MCP_CALL_014 第 3 轮）。
+# 补丁把 fail_after 换成「无 cancel scope + contextvar 截止时间」，再由
+# tool.invoke 包装层用 asyncio.wait_for 真正限时——效果等同改 agent-core。
+_am_call_timeout: contextvars.ContextVar[Optional[float]] = contextvars.ContextVar(
+    "jws_ability_manager_call_timeout", default=None
+)
 
 # MCP 对端重启 / 半死连接时 SDK 常见报错（对齐 browser-move 补丁口径）。
 _RETRYABLE_DEAD_SESSION_MARKERS: tuple[str, ...] = (
@@ -194,6 +211,99 @@ async def _abandon_session(client: Any, *, context: str) -> None:
         "[mcp-timeout] abandoned MCP session without aclose (%s): %s",
         context,
         getattr(client, "_server_path", "?"),
+    )
+
+
+def _wrap_disconnect_always_invalidate(cls: type, method_name: str) -> None:
+    """disconnect / _do_disconnect：aclose 失败也清掉半死会话（对齐 agent-core 修复）。"""
+    if (cls, method_name) in _wrapped_methods:
+        return
+    if not hasattr(cls, method_name):
+        return
+    _wrapped_methods.add((cls, method_name))
+    orig = getattr(cls, method_name)
+
+    async def wrapped(self, *args, **kwargs):
+        try:
+            return await orig(self, *args, **kwargs)
+        finally:
+            force_invalidate_mcp_client(self)
+
+    setattr(cls, method_name, wrapped)
+
+
+def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None:
+    """AbilityManager 路径下用 wait_for 限时，避免外层 fail_after 的 cancel scope。"""
+    if (cls, f"am_timeout:{method_name}") in _wrapped_methods:
+        return
+    if not hasattr(cls, method_name):
+        return
+    _wrapped_methods.add((cls, f"am_timeout:{method_name}"))
+    orig = getattr(cls, method_name)
+
+    async def wrapped(self, *args, **kwargs):
+        timeout = _am_call_timeout.get()
+        if timeout is None:
+            return await orig(self, *args, **kwargs)
+        return await asyncio.wait_for(orig(self, *args, **kwargs), timeout=timeout)
+
+    setattr(cls, method_name, wrapped)
+
+
+def _patch_ability_manager_fail_after() -> None:
+    """把 AbilityManager 模块内的 anyio.fail_after 换成无 cancel scope 的截止时间。
+
+    若 agent-core 已改为 wait_for（源码不再调用 fail_after），本补丁仍安全：
+    只替换模块命名空间里的 fail_after，不影响已写死的 wait_for 路径。
+    """
+    import openjiuwen.core.single_agent.ability_manager as am_mod
+
+    @contextlib.contextmanager
+    def _fail_after_without_cancel_scope(delay, *args, **kwargs):
+        del args, kwargs
+        # anyio.fail_after(None) 原语义：不设截止
+        if delay is None:
+            yield
+            return
+        try:
+            timeout = float(delay)
+        except (TypeError, ValueError):
+            yield
+            return
+        if timeout <= 0:
+            yield
+            return
+        token = _am_call_timeout.set(timeout)
+        try:
+            yield
+        finally:
+            _am_call_timeout.reset(token)
+
+    # 仅替换 AbilityManager 模块绑定的名字，避免影响 stdio MCP 等其它 fail_after 用法
+    am_mod.anyio.fail_after = _fail_after_without_cancel_scope  # type: ignore[method-assign]
+
+    # invoke 包装：在 AM 截止时间内用 wait_for（覆盖 MCP / 普通 Tool / 请求级工具）
+    from openjiuwen.core.foundation.tool.base import Tool
+    from openjiuwen.core.foundation.tool.mcp.base import MCPTool
+
+    _wrap_invoke_with_am_timeout(Tool)
+    _wrap_invoke_with_am_timeout(MCPTool)
+    try:
+        from openjiuwen.core.foundation.tool.function.function import Function
+
+        _wrap_invoke_with_am_timeout(Function)
+    except Exception as exc:  # noqa: BLE001 — 可选依赖，缺了就跳过
+        logger.debug("[mcp-timeout] Function invoke wrap skipped: %r", exc)
+    try:
+        from jiuwenswarm.common.mcp_config import RequestScopedOfficeClawMcpTool
+
+        _wrap_invoke_with_am_timeout(RequestScopedOfficeClawMcpTool)
+    except Exception as exc:  # noqa: BLE001
+        logger.debug("[mcp-timeout] RequestScoped invoke wrap skipped: %r", exc)
+
+    logger.info(
+        "[mcp-timeout] AbilityManager fail_after → wait_for bridge applied "
+        "(no cancel scope on current task)"
     )
 
 
@@ -430,6 +540,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     for cls in (StreamableHttpClient, SseClient):
         _wrap_with_timeout(cls, "call_tool")
         _wrap_with_timeout(cls, "list_tools")
+        # aclose 失败也必须清会话（原 SDK 只在 success 路径清理）
+        _wrap_disconnect_always_invalidate(cls, "disconnect")
+    # SseClient 真正清连接在 owner-task 的 _do_disconnect
+    _wrap_disconnect_always_invalidate(SseClient, "_do_disconnect")
 
     # (B) Thread config.params["timeout_s"] (--timeout_s) onto each client so
     # (A) can pick it up. Browser-move 仅劫持自身 MCP server，不再全局替换
@@ -464,7 +578,17 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # (no type: ignore needed).
     setattr(ToolMgr, "_create_client", staticmethod(_create_client_with_timeout))
 
+    # (C) AbilityManager 外层 fail_after → wait_for 桥（不改 agent-core）
+    try:
+        _patch_ability_manager_fail_after()
+    except Exception as exc:  # noqa: BLE001 — 单测假模块环境可能无 AbilityManager
+        logger.warning(
+            "[mcp-timeout] AbilityManager fail_after bridge skipped: %r",
+            exc,
+        )
+
     logger.info(
-        "[mcp-timeout] patch applied (default_timeout=%.1fs, covered=StreamableHttpClient,SseClient)",
+        "[mcp-timeout] patch applied (default_timeout=%.1fs, "
+        "covered=StreamableHttpClient,SseClient,AbilityManager)",
         default_timeout,
     )

@@ -556,3 +556,63 @@ async def test_sse_timeout_reports_timeout_not_cancelled(
     assert not isinstance(ei.value, asyncio.CancelledError)
     assert client._session is None
     assert client._is_disconnected is True
+
+
+@pytest.mark.asyncio
+async def test_am_invoke_wrap_honors_contextvar_timeout() -> None:
+    """AbilityManager 桥：contextvar 截止时间经 invoke 包装走 wait_for。"""
+    import asyncio
+
+    class _SlowTool:
+        async def invoke(self, *args, **kwargs):
+            del args, kwargs
+            await asyncio.sleep(1.0)
+            return "done"
+
+    # 清 idempotency，避免与其它用例抢同一 (cls, key)
+    key = (_SlowTool, "am_timeout:invoke")
+    timeout_patch._wrapped_methods.discard(key)
+    timeout_patch._wrap_invoke_with_am_timeout(_SlowTool)
+
+    tool = _SlowTool()
+    token = timeout_patch._am_call_timeout.set(0.05)
+    try:
+        with pytest.raises(asyncio.TimeoutError):
+            await tool.invoke({})
+    finally:
+        timeout_patch._am_call_timeout.reset(token)
+
+
+@pytest.mark.asyncio
+async def test_disconnect_wrap_clears_session_when_aclose_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """disconnect finally 清会话：aclose 失败也不留半死连接。"""
+    StreamableHttpClient, _, _ = _install_fake_transport_modules(monkeypatch)
+
+    async def boom_disconnect(self, *, timeout=-1):
+        del self, timeout
+        raise RuntimeError("aclose failed")
+
+    monkeypatch.setattr(StreamableHttpClient, "disconnect", boom_disconnect, raising=False)
+    timeout_patch._PATCHED = False
+    timeout_patch._wrapped_methods.clear()
+    timeout_patch.apply_mcp_call_timeout_patch(default_timeout=1.0)
+
+    client = object.__new__(StreamableHttpClient)
+    client._session = object()
+    client._client = object()
+    client._read = object()
+    client._write = object()
+    client._is_disconnected = False
+    client._exit_stack = AsyncExitStack()
+    client._auth_provider = object()
+    client._server_path = "http://example/mcp"
+
+    with pytest.raises(RuntimeError, match="aclose failed"):
+        await client.disconnect()
+
+    assert client._session is None
+    assert client._client is None
+    assert client._is_disconnected is True
+    assert client._jws_needs_reconnect is True
