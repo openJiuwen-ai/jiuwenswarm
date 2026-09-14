@@ -379,18 +379,10 @@ class PolicyEngine:
 
     @staticmethod
     def _is_file_access_tool(lower_subject: str) -> bool:
+        # 注: for 子句必须保持单行(推导式子句跨行会触发 G.EXP.04)
         return any(
             name in lower_subject
-            for name in (
-                "cat",
-                "file",
-                "grep",
-                "head",
-                "read",
-                "tail",
-                "write",
-                "workspace",
-            )
+            for name in ("cat", "file", "grep", "head", "read", "tail", "write", "workspace")
         )
 
     @staticmethod
