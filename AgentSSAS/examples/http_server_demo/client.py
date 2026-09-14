@@ -21,6 +21,10 @@ import time
 import urllib.request
 from typing import Any
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 BASE_URL = "http://127.0.0.1:8443"
 
 
@@ -162,20 +166,20 @@ def main() -> None:
     # 1. 健康检查
     with urllib.request.urlopen(f"{BASE_URL}/health", timeout=10) as response:
         health = json.loads(response.read().decode("utf-8"))
-        print(f"[demo] GET /health -> {health}")
+        logger.info(f"[demo] GET /health -> {health}")
 
     # 2. 逐条上报事件,打印返回的 RiskAssessment
     for raw_event in build_events():
         result = post_event(BASE_URL, raw_event)
         assessment = result["assessment"]
         event_type = raw_event["common"]["event_type"]
-        print(
+        logger.info(
             f"[demo] event={event_type:<26} "
             f"risk_level={assessment['risk_level']:<8} "
             f"has_risk={assessment['has_risk']}"
         )
 
-    print("[demo] 完成。事件与告警已落盘到服务端存储目录(默认 ~/.jiuwenswarm/ssas)。")
+    logger.info("[demo] 完成。事件与告警已落盘到服务端存储目录(默认 ~/.jiuwenswarm/ssas)。")
 
 
 if __name__ == "__main__":

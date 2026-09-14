@@ -27,6 +27,10 @@ from typing import Any
 from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBackend
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def make_event(
     event_type: str,
@@ -149,7 +153,7 @@ def build_events() -> list[dict[str, Any]]:
 async def main() -> None:
     # 1. 配置: 默认遵循 JIUWENSWARM_HOME 约定(~/.jiuwenswarm/ssas)
     config = AgentSSASConfig.from_dict(None)
-    print(f"[demo] 存储路径: {config.storage_path}")
+    logger.info(f"[demo] 存储路径: {config.storage_path}")
 
     # 2. 创建并初始化后端(扫描并加载检测模块)
     backend = AgentSSASBackend(config)
@@ -159,7 +163,7 @@ async def main() -> None:
         for raw_event in build_events():
             assessment = await backend.report_event(raw_event)
             event_type = raw_event["common"]["event_type"]
-            print(
+            logger.info(
                 f"[demo] event={event_type:<26} "
                 f"risk_level={assessment.risk_level.value:<8} "
                 f"has_risk={assessment.has_risk}"
@@ -172,11 +176,11 @@ async def main() -> None:
     # 5. 展示落盘数据
     storage = Path(config.storage_path)
     db = storage / "ssas_core.db"
-    print(f"[demo] SQLite 数据库: {db} ({'存在' if db.exists() else '缺失'})")
+    logger.info(f"[demo] SQLite 数据库: {db} ({'存在' if db.exists() else '缺失'})")
     threat_log_dir = storage / "reports" / "threat_log"
     if threat_log_dir.exists():
         for log_file in sorted(threat_log_dir.glob("*.json")):
-            print(f"[demo] OCSF 威胁日志: {log_file}")
+            logger.info(f"[demo] OCSF 威胁日志: {log_file}")
 
 
 if __name__ == "__main__":

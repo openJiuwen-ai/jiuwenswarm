@@ -19,6 +19,10 @@ import uvicorn
 from agent_ssas.core.framework.access_adapter.http_server import create_app
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
 
+import logging
+
+logger = logging.getLogger(__name__)
+
 
 def main() -> None:
     # demo 默认仅监听本机回环地址;环境变量(SSAS_HTTP_HOST 等)仍可覆盖
@@ -29,9 +33,9 @@ def main() -> None:
         }
     )
     app = create_app(config)
-    print(f"[demo] AgentSSAS HTTP 服务启动: http://{config.http_host}:{config.http_port}")
-    print(f"[demo] 事件上报端点: POST http://{config.http_host}:{config.http_port}/api/v1/events")
-    print(f"[demo] 存储路径: {config.storage_path}")
+    logger.info(f"[demo] AgentSSAS HTTP 服务启动: http://{config.http_host}:{config.http_port}")
+    logger.info(f"[demo] 事件上报端点: POST http://{config.http_host}:{config.http_port}/api/v1/events")
+    logger.info(f"[demo] 存储路径: {config.storage_path}")
     uvicorn.run(app, host=config.http_host, port=config.http_port, log_level="info")
 
 
