@@ -4121,13 +4121,198 @@ class JiuWenSwarmDeepAdapter:
         request_env = params.get("env") if isinstance(params.get("env"), dict) else {}
         return str(request_env.get("OFFICE_CLAW_INVOCATION_ID") or "").strip() or "-"
 
+    @staticmethod
+    def _leftover_request_mcp_servers(
+        request_mcp_servers: dict[str, dict[str, Any]] | None,
+        covered_names: list[str],
+    ) -> tuple[dict[str, dict[str, Any]] | None, list[str]]:
+        """Drop servers already named in mcp_server_list; keep leftovers such as pptx-mcp."""
+
+        if not request_mcp_servers:
+            return None, []
+        covered = set(covered_names)
+        dropped = [name for name in request_mcp_servers if name in covered]
+        leftover = {
+            name: config
+            for name, config in request_mcp_servers.items()
+            if name not in covered
+        }
+        return (leftover or None), dropped
+
+    async def _append_request_mcp_server_tools(
+        self,
+        request: AgentRequest,
+        request_mcp_servers: dict[str, dict[str, Any]],
+        request_scope: str,
+        tool_ids: list[str],
+        tool_names: list[str],
+        registered_tools: list[RequestScopedOfficeClawMcpTool],
+        seen_names: set[str],
+        invocation_id: str,
+        *,
+        skip_office_claw: bool = False,
+    ) -> str:
+        """Register request_mcp_servers tools. Returns possibly updated invocation_id."""
+
+        for server_name, server_config in request_mcp_servers.items():
+            # office-claw 已由 Source1 处理。
+            if server_name == "office-claw" and skip_office_claw:
+                continue
+            try:
+                connector_tool_defs, connector_params = (
+                    await list_request_mcp_server_tools(
+                        server_name, server_config
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                    "discovery error: request_id=%s error=%s",
+                    server_name,
+                    request.request_id,
+                    exc,
+                )
+                continue
+            if not connector_tool_defs:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                    "no tools: request_id=%s",
+                    server_name,
+                    request.request_id,
+                )
+                continue
+            # 单连接器失败不中断注册，但若其全部工具都注册失败则升 error（避免静默缺工具）。
+            _connector_registered = 0
+            for tool_def in connector_tool_defs:
+                tool_name = str(tool_def.get("name") or "").strip()
+                if not tool_name or tool_name in seen_names:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                        "duplicate/invalid tool name '%s' skipped (a tool "
+                        "with this name is already registered by an "
+                        "earlier connector/office-claw): request_id=%s",
+                        server_name,
+                        tool_name,
+                        request.request_id,
+                    )
+                    continue
+                seen_names.add(tool_name)
+                tool_id = (
+                    f"office-claw-request-{request_scope}."
+                    f"{server_name}.{tool_name}"
+                )
+                card = ToolCard(
+                    id=tool_id,
+                    name=tool_name,
+                    description=str(tool_def.get("description") or ""),
+                    input_params=tool_def.get("input_params") or {},
+                )
+                # connector_params 是经 create_mcp_tool 安全层过滤的连接参数
+                # （stdio 启动参数，或 sse/streamable-http 连接描述 + _mcp_client_type）；
+                # 首次 invoke 按 (request_id, server_name) 起长生命周期进程/连接并复用。
+                tool = RequestScopedOfficeClawMcpTool(
+                    card, connector_params, request.request_id, server_name
+                )
+                add_result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
+                is_ok = getattr(add_result, "is_ok", None)
+                add_succeeded = True
+                if callable(is_ok):
+                    add_succeeded = bool(is_ok())
+                elif isinstance(add_result, bool):
+                    add_succeeded = add_result
+                if not add_succeeded:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                        "tool '%s' resource_mgr.add_tool failed: request_id=%s",
+                        server_name,
+                        tool_name,
+                        request.request_id,
+                    )
+                    continue
+                tool_ids.append(tool_id)
+                tool_names.append(tool_name)
+                registered_tools.append(tool)
+                try:
+                    self._install_office_claw_ability_card(card)
+                except OfficeClawMcpBuiltinNameConflict as exc:
+                    # 与内置工具撞名（如 filesystem 连接器的 read_file 撞内置
+                    # read_file）：仅跳过该工具，不回滚整次注册——否则已注册好
+                    # 的同连接器/其他连接器工具会被一并清掉，导致 tools_search 0命中
+                    # 注意：仅对“内置撞名”降级，对外部短名冲突（foreign request-scoped）仍 raise
+                    # RuntimeError 走外层 fail-closed 回滚。
+                    try:
+                        tool_ids.pop()
+                        tool_names.pop()
+                        registered_tools.pop()
+                    except IndexError:
+                        pass
+                    try:
+                        Runner.resource_mgr.remove_tool(tool_id)
+                    except Exception as cleanup_exc:
+                        logger.warning(
+                            "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                            "tool '%s' shadow-skip resource cleanup failed: "
+                            "request_id=%s error=%s",
+                            server_name,
+                            tool_name,
+                            request.request_id,
+                            cleanup_exc,
+                        )
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                        "tool '%s' shadows a built-in tool, skipped: "
+                        "request_id=%s existing_id=%s new_id=%s",
+                        server_name,
+                        tool_name,
+                        request.request_id,
+                        exc.existing_id,
+                        tool_id,
+                    )
+                    continue
+                _connector_registered += 1
+                if (
+                    server_name == "office-claw"
+                    and invocation_id == "-"
+                ):
+                    connector_env = (
+                        connector_params.get("env")
+                        if isinstance(connector_params.get("env"), dict)
+                        else {}
+                    )
+                    invocation_id = (
+                        str(
+                            connector_env.get("OFFICE_CLAW_INVOCATION_ID") or ""
+                        ).strip()
+                        or "-"
+                    )
+            if _connector_registered == 0:
+                logger.error(
+                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connector "
+                    "'%s' registered 0/%d tools — all failed (duplicate "
+                    "names or add_tool errors); invoke of its tools will "
+                    "find nothing: request_id=%s",
+                    server_name,
+                    len(connector_tool_defs),
+                    request.request_id,
+                )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
+                "registered: request_id=%s tools=%s",
+                server_name,
+                request.request_id,
+                [str(t.get("name") or "") for t in connector_tool_defs],
+            )
+
+        return invocation_id
+
     async def _register_mcp_from_registry(
         self,
         request: AgentRequest,
         server_names: list[str],
         office_claw_config: dict[str, Any] | None = None,
+        leftover_servers: dict[str, dict[str, Any]] | None = None,
     ) -> OfficeClawMcpRegistration | None:
-        """从进程缓存安装用户 MCP；同轮可再贴 office_claw_mcp，撞名时名单优先。"""
+        """从进程缓存安装用户 MCP；名单未覆盖的 request_mcp_servers 和 office_claw_mcp 同轮再贴，撞名时名单优先。"""
 
         if self._instance is None:
             logger.warning(
@@ -4232,6 +4417,18 @@ class JiuWenSwarmDeepAdapter:
                     request.request_id,
                     [str(t.get("name") or "") for t in tool_defs],
                 )
+            if leftover_servers:
+                invocation_id = await self._append_request_mcp_server_tools(
+                    request,
+                    leftover_servers,
+                    request_scope,
+                    tool_ids,
+                    tool_names,
+                    registered_tools,
+                    seen_names,
+                    invocation_id,
+                    skip_office_claw=office_claw_config is not None,
+                )
             if office_claw_config is not None:
                 invocation_id = await self._append_identity_pinned_office_claw_tools(
                     request,
@@ -4319,26 +4516,42 @@ class JiuWenSwarmDeepAdapter:
     ) -> OfficeClawMcpRegistration | None:
         """Install Relay MCP tools for one request.
 
-        ``mcp_server_list`` 只读缓存贴用户连接器；``office_claw_mcp`` 是系统
-        通道，同轮仍注册，撞名时名单优先。有名单时忽略 ``request_mcp_servers``。
+        ``mcp_server_list`` 只读缓存贴用户连接器；名单未覆盖的
+        ``request_mcp_servers``（如 pptx-mcp）和 ``office_claw_mcp`` 同轮仍注册，
+        撞名时名单优先。
         """
 
         server_list = extract_mcp_server_list(request.params)
         raw_config = extract_office_claw_mcp(request.params)
         request_mcp_servers = extract_request_mcp_servers(request.params)
         if server_list is not None:
-            if request_mcp_servers is not None:
+            leftover, dropped = self._leftover_request_mcp_servers(
+                request_mcp_servers, server_list
+            )
+            if dropped:
                 logger.warning(
                     "[JiuWenSwarmDeepAdapter] mcp_server_list present; ignoring "
-                    "request_mcp_servers: request_id=%s",
+                    "request_mcp_servers already covered by the list: "
+                    "request_id=%s names=%s",
                     request.request_id,
+                    dropped,
                 )
-                request_mcp_servers = None
+            if leftover:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] keeping leftover request_mcp_servers "
+                    "not in mcp_server_list: request_id=%s names=%s",
+                    request.request_id,
+                    list(leftover),
+                )
+            request_mcp_servers = leftover
             if server_list:
                 return await self._register_mcp_from_registry(
-                    request, server_list, office_claw_config=raw_config
+                    request,
+                    server_list,
+                    office_claw_config=raw_config,
+                    leftover_servers=leftover,
                 )
-            if raw_config is None:
+            if raw_config is None and leftover is None:
                 logger.info(
                     "[JiuWenSwarmDeepAdapter] mcp_server_list empty; skipping user MCP: "
                     "request_id=%s",
@@ -4347,7 +4560,7 @@ class JiuWenSwarmDeepAdapter:
                 return None
             logger.info(
                 "[JiuWenSwarmDeepAdapter] mcp_server_list empty; registering "
-                "office_claw_mcp only: request_id=%s",
+                "office_claw_mcp / leftover request_mcp_servers: request_id=%s",
                 request.request_id,
             )
 
@@ -4394,154 +4607,17 @@ class JiuWenSwarmDeepAdapter:
             # --- Source 2: 用户连接器（request_mcp_servers）。 ---
             # 单连接器失败不中断整次注册（对齐 Relay 的 per-connector skip 语义）。
             if request_mcp_servers is not None:
-                for server_name, server_config in request_mcp_servers.items():
-                    # office-claw 已由 Source1 处理。
-                    if server_name == "office-claw" and raw_config is not None:
-                        continue
-                    try:
-                        connector_tool_defs, connector_params = (
-                            await list_request_mcp_server_tools(
-                                server_name, server_config
-                            )
-                        )
-                    except Exception as exc:
-                        logger.warning(
-                            "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                            "discovery error: request_id=%s error=%s",
-                            server_name,
-                            request.request_id,
-                            exc,
-                        )
-                        continue
-                    if not connector_tool_defs:
-                        logger.info(
-                            "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                            "no tools: request_id=%s",
-                            server_name,
-                            request.request_id,
-                        )
-                        continue
-                    # 单连接器失败不中断注册，但若其全部工具都注册失败则升 error（避免静默缺工具）。
-                    _connector_registered = 0
-                    for tool_def in connector_tool_defs:
-                        tool_name = str(tool_def.get("name") or "").strip()
-                        if not tool_name or tool_name in seen_names:
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                                "duplicate/invalid tool name '%s' skipped (a tool "
-                                "with this name is already registered by an "
-                                "earlier connector/office-claw): request_id=%s",
-                                server_name,
-                                tool_name,
-                                request.request_id,
-                            )
-                            continue
-                        seen_names.add(tool_name)
-                        tool_id = (
-                            f"office-claw-request-{request_scope}."
-                            f"{server_name}.{tool_name}"
-                        )
-                        card = ToolCard(
-                            id=tool_id,
-                            name=tool_name,
-                            description=str(tool_def.get("description") or ""),
-                            input_params=tool_def.get("input_params") or {},
-                        )
-                        # connector_params 是经 create_mcp_tool 安全层过滤的连接参数
-                        # （stdio 启动参数，或 sse/streamable-http 连接描述 + _mcp_client_type）；
-                        # 首次 invoke 按 (request_id, server_name) 起长生命周期进程/连接并复用。
-                        tool = RequestScopedOfficeClawMcpTool(
-                            card, connector_params, request.request_id, server_name
-                        )
-                        add_result = Runner.resource_mgr.add_tool(tool, tag="office-claw")
-                        is_ok = getattr(add_result, "is_ok", None)
-                        add_succeeded = True
-                        if callable(is_ok):
-                            add_succeeded = bool(is_ok())
-                        elif isinstance(add_result, bool):
-                            add_succeeded = add_result
-                        if not add_succeeded:
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                                "tool '%s' resource_mgr.add_tool failed: request_id=%s",
-                                server_name,
-                                tool_name,
-                                request.request_id,
-                            )
-                            continue
-                        tool_ids.append(tool_id)
-                        tool_names.append(tool_name)
-                        registered_tools.append(tool)
-                        try:
-                            self._install_office_claw_ability_card(card)
-                        except OfficeClawMcpBuiltinNameConflict as exc:
-                            # 与内置工具撞名（如 filesystem 连接器的 read_file 撞内置
-                            # read_file）：仅跳过该工具，不回滚整次注册——否则已注册好
-                            # 的同连接器/其他连接器工具会被一并清掉，导致 tools_search 0命中
-                            # 注意：仅对“内置撞名”降级，对外部短名冲突（foreign request-scoped）仍 raise
-                            # RuntimeError 走外层 fail-closed 回滚。
-                            try:
-                                tool_ids.pop()
-                                tool_names.pop()
-                                registered_tools.pop()
-                            except IndexError:
-                                pass
-                            try:
-                                Runner.resource_mgr.remove_tool(tool_id)
-                            except Exception as cleanup_exc:
-                                logger.warning(
-                                    "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                                    "tool '%s' shadow-skip resource cleanup failed: "
-                                    "request_id=%s error=%s",
-                                    server_name,
-                                    tool_name,
-                                    request.request_id,
-                                    cleanup_exc,
-                                )
-                            logger.warning(
-                                "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                                "tool '%s' shadows a built-in tool, skipped: "
-                                "request_id=%s existing_id=%s new_id=%s",
-                                server_name,
-                                tool_name,
-                                request.request_id,
-                                exc.existing_id,
-                                tool_id,
-                            )
-                            continue
-                        _connector_registered += 1
-                        if (
-                            server_name == "office-claw"
-                            and invocation_id == "-"
-                        ):
-                            connector_env = (
-                                connector_params.get("env")
-                                if isinstance(connector_params.get("env"), dict)
-                                else {}
-                            )
-                            invocation_id = (
-                                str(
-                                    connector_env.get("OFFICE_CLAW_INVOCATION_ID") or ""
-                                ).strip()
-                                or "-"
-                            )
-                    if _connector_registered == 0:
-                        logger.error(
-                            "[JiuWenSwarmDeepAdapter] request-scoped MCP connector "
-                            "'%s' registered 0/%d tools — all failed (duplicate "
-                            "names or add_tool errors); invoke of its tools will "
-                            "find nothing: request_id=%s",
-                            server_name,
-                            len(connector_tool_defs),
-                            request.request_id,
-                        )
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] request-scoped MCP connector '%s' "
-                        "registered: request_id=%s tools=%s",
-                        server_name,
-                        request.request_id,
-                        [str(t.get("name") or "") for t in connector_tool_defs],
-                    )
+                invocation_id = await self._append_request_mcp_server_tools(
+                    request,
+                    request_mcp_servers,
+                    request_scope,
+                    tool_ids,
+                    tool_names,
+                    registered_tools,
+                    seen_names,
+                    invocation_id,
+                    skip_office_claw=raw_config is not None,
+                )
 
             registration = OfficeClawMcpRegistration(
                 request_id=request.request_id,

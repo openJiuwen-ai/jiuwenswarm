@@ -287,6 +287,26 @@ def test_extract_mcp_server_list() -> None:
         extract_mcp_server_list({"mcp_server_list": "chrome"})
 
 
+def test_leftover_request_mcp_servers_drops_covered_names() -> None:
+    leftover, dropped = JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(
+        {
+            "chrome-devtools": {"command": "dup"},
+            "pptx-mcp": {"command": "pptx"},
+        },
+        ["chrome-devtools"],
+    )
+    assert dropped == ["chrome-devtools"]
+    assert leftover == {"pptx-mcp": {"command": "pptx"}}
+    assert JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(
+        {"pptx-mcp": {"command": "pptx"}},
+        [],
+    ) == ({"pptx-mcp": {"command": "pptx"}}, [])
+    assert JiuWenSwarmDeepAdapter._leftover_request_mcp_servers(None, ["chrome-devtools"]) == (
+        None,
+        [],
+    )
+
+
 @pytest.mark.asyncio
 async def test_snapshot_unknown_and_empty(registry: McpServerRegistry, monkeypatch) -> None:
     monkeypatch.setattr(
@@ -337,9 +357,12 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
 
     seen: dict[str, object] = {}
 
-    async def fake_registry(self, request, names, office_claw_config=None):
+    async def fake_registry(
+        self, request, names, office_claw_config=None, leftover_servers=None
+    ):
         seen["names"] = names
         seen["office_claw"] = office_claw_config
+        seen["leftover"] = leftover_servers
         return None
 
     monkeypatch.setattr(JiuWenSwarmDeepAdapter, "_register_mcp_from_registry", fake_registry)
@@ -351,13 +374,19 @@ async def test_chat_prefers_mcp_server_list(monkeypatch) -> None:
             "query": "hi",
             "mcp_server_list": ["chrome-devtools"],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
-            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
+            "request_mcp_servers": {
+                "mcpServers": {
+                    "chrome-devtools": {"command": "dup"},
+                    "pptx-mcp": {"command": "pptx"},
+                }
+            },
         },
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
     assert result is None
     assert seen["names"] == ["chrome-devtools"]
     assert seen["office_claw"]["command"] == "node"
+    assert seen["leftover"] == {"pptx-mcp": {"command": "pptx"}}
 
 
 @pytest.mark.asyncio
@@ -365,11 +394,6 @@ async def test_chat_empty_list_keeps_office_claw_mcp(monkeypatch) -> None:
     resource_manager = _ResourceManager()
     monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
     _stub_office_claw_system_tools(monkeypatch)
-    monkeypatch.setattr(
-        interface_deep,
-        "list_request_mcp_server_tools",
-        AsyncMock(side_effect=AssertionError("empty list must not use request_mcp_servers")),
-    )
     adapter = _bare_session_adapter()
     request = AgentRequest(
         request_id="r1",
@@ -378,7 +402,6 @@ async def test_chat_empty_list_keeps_office_claw_mcp(monkeypatch) -> None:
         params={
             "mcp_server_list": [],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
-            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
         },
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
@@ -398,6 +421,102 @@ async def test_chat_empty_list_without_office_claw_skips() -> None:
     )
     result = await adapter.register_request_scoped_office_claw_mcp(request)
     assert result is None
+
+
+@pytest.mark.asyncio
+async def test_chat_empty_list_keeps_leftover_pptx(monkeypatch) -> None:
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _stub_office_claw_system_tools(monkeypatch)
+    leftover_calls: list[str] = []
+
+    async def leftover_discover(name, config):
+        leftover_calls.append(name)
+        return (
+            [{"name": "pptx_edit", "description": "edit", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["pptx.js"]},
+        )
+
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", leftover_discover)
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r-empty-pptx",
+        channel_id="officeclaw",
+        session_id="s-empty-pptx",
+        params={
+            "mcp_server_list": [],
+            "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+            "request_mcp_servers": {
+                "mcpServers": {"pptx-mcp": {"command": "node", "args": ["pptx.js"]}}
+            },
+        },
+    )
+    result = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert leftover_calls == ["pptx-mcp"]
+    assert result is not None
+    assert result.tool_names == ("office_claw_post_message", "pptx_edit")
+
+
+@pytest.mark.asyncio
+async def test_chat_mcp_server_list_keeps_leftover_pptx(monkeypatch) -> None:
+    from jiuwenswarm.common.mcp_config import _clear_live_office_claw_allowlists_for_tests
+
+    registry = reset_mcp_server_registry_for_tests()
+
+    async def registry_discover(name, config):
+        return (
+            [{"name": "page_snapshot", "description": "snap", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        )
+
+    leftover_calls: list[str] = []
+
+    async def leftover_discover(name, config):
+        leftover_calls.append(name)
+        return (
+            [{"name": "pptx_edit", "description": "edit", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["pptx.js"]},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        registry_discover,
+    )
+    await registry.add_servers([_stdio_cfg()])
+    _stub_office_claw_system_tools(monkeypatch)
+    monkeypatch.setattr(interface_deep, "list_request_mcp_server_tools", leftover_discover)
+    resource_manager = _ResourceManager()
+    monkeypatch.setattr(interface_deep.Runner, "resource_mgr", resource_manager)
+    _clear_live_office_claw_allowlists_for_tests()
+    adapter = _bare_session_adapter()
+    request = AgentRequest(
+        request_id="r-pptx",
+        channel_id="officeclaw",
+        session_id="s-pptx",
+        params={
+            "query": "hi",
+            "mcp_server_list": ["chrome-devtools"],
+            "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
+            "request_mcp_servers": {
+                "mcpServers": {
+                    "chrome-devtools": {"command": "node"},
+                    "pptx-mcp": {"command": "node", "args": ["pptx.js"]},
+                }
+            },
+        },
+    )
+    registration = await adapter.register_request_scoped_office_claw_mcp(request)
+    assert leftover_calls == ["pptx-mcp"]
+    assert registration is not None
+    assert registration.tool_names == (
+        "page_snapshot",
+        "pptx_edit",
+        "office_claw_post_message",
+    )
+    assert registration.tool_ids[0].startswith(MCP_REGISTRY_REQUEST_TOOL_ID_PREFIX)
+    assert ".pptx-mcp.pptx_edit" in registration.tool_ids[1]
+    assert registration.tool_ids[2].startswith("office-claw-request-")
+    _clear_live_office_claw_allowlists_for_tests()
 
 
 @pytest.mark.asyncio
@@ -803,7 +922,9 @@ async def test_chat_registry_path_skips_discovery_and_keeps_global_worker(
             "query": "hi",
             "mcp_server_list": ["chrome-devtools"],
             "office_claw_mcp": {"command": "node", "args": ["x.js"], "cwd": "/tmp"},
-            "request_mcp_servers": {"mcpServers": {"user": {"command": "node"}}},
+            "request_mcp_servers": {
+                "mcpServers": {"chrome-devtools": {"command": "node"}}
+            },
         },
     )
     registration = await adapter.register_request_scoped_office_claw_mcp(request)
