@@ -125,7 +125,12 @@ class SkillToolkit:
         limit: int,
     ) -> list[dict[str, Any]]:
         """从内置技能目录中模糊匹配 query，返回未安装的内置技能列表。"""
-        from jiuwenswarm.common.utils import get_builtin_skills_dir, get_agent_skills_dir
+        if is_enterprise():
+            return []
+        from jiuwenswarm.common.utils import (
+            get_agent_skills_dir,
+            get_builtin_skills_dir,
+        )
 
         builtin_dir = get_builtin_skills_dir()
         user_skills_dir = get_agent_skills_dir()
@@ -395,10 +400,24 @@ class SkillToolkit:
                     "items": [],
                     "detail": "query is required",
                 }
+            if is_enterprise() and normalized_source == "builtin":
+                return {
+                    "success": False,
+                    "source": normalized_source,
+                    "items": [],
+                    "error_code": "builtin_not_available",
+                    "detail": "builtin skills are not available in enterprise edition",
+                }
 
             search_limit = self._safe_int(limit, 10)
             installed_names = self._get_installed_names()
-            sources = sorted(_SEARCHABLE_SOURCES) if normalized_source == _AUTO_SOURCE else [normalized_source]
+            sources = (
+                sorted(_SEARCHABLE_SOURCES)
+                if normalized_source == _AUTO_SOURCE
+                else [normalized_source]
+            )
+            if is_enterprise():
+                sources = [item for item in sources if item != "builtin"]
             items: list[dict[str, Any]] = []
             errors: list[str] = []
             any_success = False
@@ -554,6 +573,14 @@ class SkillToolkit:
                     ),
                 }
             normalized_source = self._normalize_source(raw_source)
+            if is_enterprise() and normalized_source == "builtin":
+                return {
+                    "success": False,
+                    "source": normalized_source,
+                    "installed": False,
+                    "error_code": "builtin_not_available",
+                    "detail": "builtin skills are not available in enterprise edition",
+                }
             if normalized_source == _AUTO_SOURCE:
                 return {
                     "success": False,
@@ -838,6 +865,53 @@ class SkillToolkit:
     def get_tools(self) -> list[Tool]:
         """Return skill-management tools for agent registration."""
 
+        enterprise = is_enterprise()
+        search_sources = ["auto", "skillnet", "clawhub", "teamskillshub"]
+        install_sources = ["skillnet", "clawhub", "teamskillshub"]
+        if not enterprise:
+            search_sources.append("builtin")
+            install_sources.append("builtin")
+
+        search_description = (
+            "从 SkillNet、ClawHub、TeamSkillsHub 搜索可安装技能。"
+            "将返回的 identifier 用于 install_skill"
+            "（SkillNet URL、ClawHub slug、TeamSkillsHub asset_id）。"
+        )
+        install_description = (
+            "安装技能。对于通过 search_skill 找到的技能，传入其 identifier "
+            "及匹配的 source。"
+        )
+        search_source_description = (
+            "Skill source to search. Defaults to skillnet. "
+            "Use auto to search all available sources."
+        )
+        install_source_description = (
+            "Explicit source matching search_skill items. "
+            "Use teamskillshub for Team Skills Hub."
+        )
+        if not enterprise:
+            search_description = (
+                "从 SkillNet、ClawHub、TeamSkillsHub 及内置目录搜索可安装技能。"
+                "将返回的 identifier 用于 install_skill"
+                "（SkillNet URL、ClawHub slug、TeamSkillsHub asset_id，"
+                "source 为 builtin 时则为技能名）。"
+            )
+            install_description = (
+                "安装技能。对于通过 search_skill 找到的技能，传入其 identifier "
+                "及匹配的 source。对于内置技能（本地已提供但尚未安装），"
+                "直接使用 source='builtin' 并将 identifier 设为技能名——无需先搜索。"
+            )
+            search_source_description = (
+                "Skill source to search. Defaults to skillnet. "
+                "Use auto to search all sources including builtin. "
+                "Use builtin to search locally available builtin skills."
+            )
+            install_source_description = (
+                "Explicit source matching search_skill items, or 'builtin' "
+                "for locally available skills that don't need online search. "
+                "Use teamskillshub for Team Skills Hub."
+            )
+
         def make_tool(name: str, description: str, input_params: dict, func: Callable[..., Any]) -> Tool:
             # 统一用 LocalFunction 包装，保持与现有 toolkit 注册方式一致。
             card = ToolCard(
@@ -851,24 +925,15 @@ class SkillToolkit:
         return [
             make_tool(
                 name="search_skill",
-                description=(
-                    "从 SkillNet、ClawHub、TeamSkillsHub 及内置目录搜索可安装技能。"
-                    "将返回的 identifier 用于 install_skill"
-                    "（SkillNet URL、ClawHub slug、TeamSkillsHub asset_id，"
-                    "source 为 builtin 时则为技能名）。"
-                ),
+                description=search_description,
                 input_params={
                     "type": "object",
                     "properties": {
                         "query": {"type": "string", "description": "Search query for the skill."},
                         "source": {
                             "type": "string",
-                            "enum": ["auto", "skillnet", "clawhub", "teamskillshub", "builtin"],
-                            "description": (
-                                "Skill source to search. Defaults to skillnet. "
-                                "Use auto to search all sources including builtin. "
-                                "Use builtin to search locally available builtin skills."
-                            ),
+                            "enum": search_sources,
+                            "description": search_source_description,
                             "default": "skillnet",
                         },
                         "limit": {
@@ -883,11 +948,7 @@ class SkillToolkit:
             ),
             make_tool(
                 name="install_skill",
-                description=(
-                    "安装技能。对于通过 search_skill 找到的技能，传入其 identifier "
-                    "及匹配的 source。对于内置技能（本地已提供但尚未安装），"
-                    "直接使用 source='builtin' 并将 identifier 设为技能名——无需先搜索。"
-                ),
+                description=install_description,
                 input_params={
                     "type": "object",
                     "properties": {
@@ -896,12 +957,8 @@ class SkillToolkit:
                         },
                         "source": {
                             "type": "string",
-                            "enum": ["skillnet", "clawhub", "teamskillshub", "builtin"],
-                            "description": (
-                                "Explicit source matching search_skill items, or 'builtin' "
-                                "for locally available skills that don't need online search. "
-                                "Use teamskillshub for Team Skills Hub."
-                            ),
+                            "enum": install_sources,
+                            "description": install_source_description,
                         },
                         "timeout_sec": {
                             "type": "integer",

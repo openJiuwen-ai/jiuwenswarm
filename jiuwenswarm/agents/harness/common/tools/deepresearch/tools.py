@@ -142,7 +142,6 @@ _PROTOCOL_FIXED_KEYS = frozenset(
         "questions",
         "reasoning_content",
         "report",
-        "report_chars",
         "report_delivered",
         "response_content",
         "response_content_type",
@@ -2502,7 +2501,6 @@ async def _consume_stream(
                 "status": "completed",
                 "conversation_id": chunk.get("conversation_id", outcome_cid),
                 "report_delivered": True,
-                "report_chars": len(response_content),
             }
             if html_style_status in {"applied", "fallback"}:
                 completed_outcome["html_style_status"] = html_style_status

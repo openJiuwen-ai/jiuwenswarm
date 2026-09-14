@@ -551,6 +551,16 @@ def wants_stream(request: Any, params: dict[str, Any]) -> bool:
 
 def build_fastapi_app(server: AgentHTTPServer) -> Any:
     """构建 FastAPI 应用并注册全部路由。"""
+    from jiuwenswarm.common.security.link_mtls import (
+        LinkMTLSConfig,
+    )
+
+    link_mtls = LinkMTLSConfig.from_env(role="agentserver")
+    response_type = EventSourceResponse
+    if link_mtls.enforced:
+        from jiuwenswarm.server.transports.link_sse_response import LinkEventSourceResponse
+
+        response_type = LinkEventSourceResponse
     app = FastAPI(
         title="JiuwenSwarm AgentServer HTTP API",
         version="1.0.0",
@@ -569,6 +579,11 @@ def build_fastapi_app(server: AgentHTTPServer) -> Any:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    if link_mtls.enforced:
+        from openjiuwen_runtime.foundation.security.link_stream_guard import LinkBindingMiddleware
+
+        app.add_middleware(LinkBindingMiddleware, authorize=link_mtls.authorize_request)
 
     def _make_endpoint(spec: RouteSpec) -> Callable:
         async def endpoint(request: Request) -> JSONResponse:
@@ -607,12 +622,14 @@ def build_fastapi_app(server: AgentHTTPServer) -> Any:
             name=f"{spec.verb} {spec.path}",
         )
 
-    _register_special_routes(app, server)
+    _register_special_routes(app, server, response_type=response_type)
     logger.info("[AgentHTTPRoutes] 已注册 %d 条声明式路由 + 特殊路由", len(ROUTES))
     return app
 
 
-def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
+def _register_special_routes(
+    app: Any, server: AgentHTTPServer, *, response_type=EventSourceResponse,
+) -> None:
     """注册流式与通用透传接口。"""
 
     @app.get(f"{API_PREFIX}/health")
@@ -645,8 +662,9 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
         qp = request.query_params
         session_filter = qp.get("session_id") or ctx.session_id
         channel_filter = qp.get("channel_id")
-        # 信任边界假设：此头仅由内部 Gateway 设置，可被伪造；若端点可能暴露给
-        # 不受信任客户端，需改用 mTLS/共享密钥等强验证。
+        # 该头只表达 Gateway 是否支持反向 RPC，不再单独承担身份认证：
+        # enforce 模式下本请求已先经过 mTLS 与 binding guard；off/observe 模式
+        # 继续保留旧兼容语义，部署侧不得把本内部端点暴露给不受信任网络。
         reverse_rpc_capable = (
             request.headers.get("x-jiuwen-push-consumer") == "gateway"
         )
@@ -695,14 +713,14 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
                 registry.unregister(subscriber_id)
 
         # sse_starlette 自带 ping（默认 15s 注释帧）保活，无需自行实现心跳。
-        return EventSourceResponse(_events(), headers={"X-Request-Id": ctx.request_id})
+        return response_type(_events(), headers={"X-Request-Id": ctx.request_id})
 
     async def _chat(request: Request, method: str) -> Any:
         params = await collect_params(request)
         ctx = request_context(request)
         session_id = ctx.session_id or params.get("session_id")
         if wants_stream(request, params):
-            return EventSourceResponse(
+            return response_type(
                 server.iter_stream(
                     method,
                     params,
@@ -744,7 +762,7 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
     async def history_stream(request: Request) -> Any:  # noqa: ANN202
         params = await collect_params(request)
         ctx = request_context(request)
-        return EventSourceResponse(
+        return response_type(
             server.iter_stream(
                 ReqMethod.HISTORY_GET.value,
                 params,
@@ -781,7 +799,7 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
         params.pop("method", None)
         session_id = ctx.session_id or params.get("session_id")
         if wants_stream(request, params):
-            return EventSourceResponse(
+            return response_type(
                 server.iter_stream(
                     method,
                     params,
@@ -831,7 +849,7 @@ def _register_special_routes(app: Any, server: AgentHTTPServer) -> None:
             # 信封自称流式：必须走 SSE。用非流式 sink 接会静默丢内容 ——
             # 业务层全程 send_chunk，而 UnaryHTTPSink 只记 send_unary/send_wire 的帧，
             # 结果是 HTTP 200 + data:null，调用方拿到"成功"却什么也没有。
-            return EventSourceResponse(
+            return response_type(
                 server.iter_raw_envelope(
                     json.dumps(envelope, ensure_ascii=False), request_id=request_id
                 ),

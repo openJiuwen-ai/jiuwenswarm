@@ -25,6 +25,7 @@ source "manager_handler.sh"
 source "web_handler.sh"
 source "runtime_handler.sh"
 source "patch_handler.sh"
+source "link_mtls_handler.sh"
 
 process_up() {
     # MODULES是ALL_MODULES的子集，启动顺序正着来
@@ -55,6 +56,7 @@ process_up() {
             render_${fname}_files
         else
             check_${fname}_up_dependency
+            case "$module" in GATEWAY|RUNTIME|MANAGER) link_mtls_prepare ;; esac
             render_${fname}_files
             deploy_${fname}
         fi
@@ -93,8 +95,13 @@ process_restart() {
 
 # ==================== Main function ====================
 main() {
+    local default_admin_password="${DEPLOY_VARS[IDENTITY_ADMIN_PASSWORD]}"
+    local default_user1_password="${DEPLOY_VARS[IDENTITY_USER1_PASSWORD]}"
     read_env_from_file "${CUSTOM_ENV_FILE}" "DEPLOY_VARS"
+    DEPLOY_VARS[IDENTITY_ADMIN_PASSWORD]="${DEPLOY_VARS[IDENTITY_ADMIN_PASSWORD]:-$default_admin_password}"
+    DEPLOY_VARS[IDENTITY_USER1_PASSWORD]="${DEPLOY_VARS[IDENTITY_USER1_PASSWORD]:-$default_user1_password}"
     parse_args "$@"
+    link_mtls_check
     detect_os
     check_dependency
     process_${CMD}

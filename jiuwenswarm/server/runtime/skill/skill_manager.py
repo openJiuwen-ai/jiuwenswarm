@@ -533,10 +533,13 @@ class SkillManager:
         self._register_builtin_skill_sources()
         # 把手动拷入 skills 目录、未经任何安装流程登记的本地技能，自动补登记到
         # local_skills，使其与"导入本地技能"完全等价（可展示/卸载/查看详情/禁用）。
+        # 必须先于企业版 builtin 清理执行，避免未登记的手工技能与历史 builtin
+        # 共用目录名时因没有状态记录保护而被误删。
         self._register_unmanaged_local_skills()
-        # 企业版：把仓库内置技能复制进 tenant workspace 并登记为 builtin（不可卸载），
-        # 使"我的技能"与个人版一致地展示内置技能（个人版走 _scan_builtin_skills 可浏览）。
-        self._register_builtin_skills()
+        # 企业版不提供仓库内置技能。升级时仅清理由旧版本登记的 builtin，
+        # 企业预置（prebuilt）、用户安装（user）及已补登记的 local 均保留。
+        if is_enterprise():
+            self._remove_enterprise_builtin_skills()
         # SkillNet 异步安装：install 立即返回 install_id，后台下载；完成后调用 hook 重载 Agent
         self._skillnet_install_complete_hook: Callable[[], Awaitable[None]] | None = None
 
@@ -767,8 +770,7 @@ class SkillManager:
         # 使其无需重启 server、刷新"我的技能"即可显示（与导入本地技能一致）。
         await asyncio.to_thread(self._register_unmanaged_local_skills)
         local = self._scan_local_skills()
-        # 内置技能（仓内内置）两版都扫描展示；企业版不再跳过 builtin。
-        builtin = self._scan_builtin_skills()
+        builtin = [] if is_enterprise() else self._scan_builtin_skills()
         marketplace = [] if is_enterprise() else self._scan_marketplace_skills()
         out: dict[str, Any] = {"skills": local + builtin + marketplace}
         if bool(params.get("with_installed", False)):
@@ -912,7 +914,7 @@ class SkillManager:
                 ) or self._resolve_skill_display_name(meta.get("name", ""))
                 meta["is_builtin"] = self._is_builtin_skill(meta.get("name", ""), self._get_installed_plugins(), child)
                 builtin_dir = get_builtin_skills_dir()
-                if builtin_dir.exists():
+                if not is_enterprise() and builtin_dir.exists():
                     builtin_skill_path = builtin_dir / child.name
                     meta["is_builtin_source"] = builtin_skill_path.exists() and builtin_skill_path.is_dir()
                 else:
@@ -1284,6 +1286,12 @@ class SkillManager:
             name: skill 名称
             force: 可选，是否强制覆盖重装。冲突时传 force=True 会删除旧目录后重新安装。
         """
+        if is_enterprise():
+            return {
+                "success": False,
+                "error_code": "builtin_not_available",
+                "detail": "企业版不提供内置技能",
+            }
         name = params.get("name", "")
         force = bool(params.get("force", False))
         if not name:
@@ -4333,13 +4341,13 @@ class SkillManager:
             # 如果提供了 skill_path，直接判断该路径是否在 builtin_dir 下
             if skill_path is not None:
                 builtin_dir = get_builtin_skills_dir()
-                if builtin_dir.exists():
+                if not is_enterprise() and builtin_dir.exists():
                     return skill_path.resolve().parent == builtin_dir.resolve()
                 return False
 
             # 没有提供 skill_path 时，回退到通过 skill_name 判断（兼容旧代码）
             builtin_dir = get_builtin_skills_dir()
-            if builtin_dir.exists():
+            if not is_enterprise() and builtin_dir.exists():
                 builtin_skill_path = _safe_child_path(builtin_dir, skill_name, "skill")
                 return builtin_skill_path.exists() and builtin_skill_path.is_dir()
             return False
@@ -4482,7 +4490,7 @@ class SkillManager:
             # 判断是否为内置技能（传入 child 路径，通过实际路径判断）
             meta["is_builtin"] = self._is_builtin_skill(meta.get("name", ""), self._get_installed_plugins(), child)
             builtin_dir = get_builtin_skills_dir()
-            if builtin_dir.exists():
+            if not is_enterprise() and builtin_dir.exists():
                 builtin_skill_path = builtin_dir / child.name
                 meta["is_builtin_source"] = builtin_skill_path.exists() and builtin_skill_path.is_dir()
             else:
@@ -4500,6 +4508,8 @@ class SkillManager:
         返回的技能列表仅包含那些存在于内置目录但尚未在用户目录中的技能。
         """
         results: list[dict] = []
+        if is_enterprise():
+            return results
         builtin_dir = get_builtin_skills_dir()
         user_skills_dir = self._skills_dir
 
@@ -6515,8 +6525,13 @@ class SkillManager:
             name = self._resolve_skill_name(child, md, meta)
             if not name:
                 continue
-            # 排除内置技能（用户目录下与 builtin 目录同名的文件夹），避免改变其来源/行为。
-            if builtin_exists and (builtin_dir / child.name).is_dir():
+            # 个人版排除内置技能；企业版不提供 builtin，同名用户/预置技能应按自身
+            # 记录展示，不能仅因仓库内存在同名目录就被误判或跳过。
+            if (
+                not is_enterprise()
+                and builtin_exists
+                and (builtin_dir / child.name).is_dir()
+            ):
                 continue
             # 已被 local_skills 或 installed_plugins 认领的 name 跳过。
             # 注意：历史重名 ClawHub 孤儿（两条 slug 目录但记录被覆盖只剩一条）
@@ -6537,82 +6552,140 @@ class SkillManager:
         if changed:
             self._refresh_agent_data_indexes()
 
-    def _register_builtin_skills(self) -> None:
-        """企业版：把仓库内置技能复制进 tenant workspace 并登记为 builtin（不可卸载）。
+    @staticmethod
+    def _is_builtin_installation_record(record: dict[str, Any]) -> bool:
+        """识别由旧企业版写入的 builtin 记录，避免误删其它来源。"""
+        source_type = str(record.get("source_type") or "").strip().lower()
+        if source_type in {"prebuilt", "user"}:
+            return False
+        if source_type == "builtin":
+            return True
+        if source_type:
+            return False
+        source = str(record.get("source") or "").strip().lower()
+        marketplace = str(record.get("marketplace") or "").strip().lower()
+        origin = str(record.get("origin") or "").strip().lower()
+        return (
+            source == "builtin"
+            or marketplace == "builtin"
+            or origin.startswith("builtin:")
+        )
 
-        个人版不执行——内置技能由 ``_scan_builtin_skills`` 以"可浏览、未安装"形态
-        展示。幂等：builtin 只填真空——同名已有完整记录（prebuilt/user/builtin 就绪）
-        一律跳过；仅修复 entity 残缺的 builtin。优先级 prebuilt > user > builtin，
-        避免把管理面下发的 prebuilt 改写为 builtin 后与白名单 sync 互相翻转。
+    @staticmethod
+    def _installation_entity_dir(record: dict[str, Any]) -> str:
+        """读取账本记录实际占用的目录名；无效值返回空串。"""
+        entity_dir = str(record.get("entity_dir") or "").strip()
+        if not entity_dir:
+            origin = str(record.get("origin") or "").strip()
+            origin_lower = origin.lower()
+            if origin_lower.startswith(("builtin:", "local:")):
+                entity_dir = origin.split(":", 1)[1].strip()
+            elif origin_lower.startswith("clawhub:"):
+                entity_dir = origin.rsplit("/", 1)[-1].split(":", 1)[-1].strip()
+        if not entity_dir:
+            entity_dir = str(record.get("name") or "").strip()
+        try:
+            return _safe_path_name(entity_dir, "skill")
+        except ValueError:
+            return ""
+
+    def _collect_non_builtin_entities(
+        self,
+        records: list[dict[str, Any]],
+    ) -> set[str]:
+        """收集非 builtin 记录认领的目录，清理时必须保留。"""
+        entities: set[str] = set()
+        for record in records:
+            if self._is_builtin_installation_record(record):
+                continue
+            entity_dir = self._installation_entity_dir(record)
+            if entity_dir:
+                entities.add(entity_dir)
+        return entities
+
+    def _remove_skill_entity_copies(self, entity_dir: str) -> bool:
+        """删除当前 workspace 和镜像中的同一技能实体。"""
+        removed = True
+        roots = [self._skills_dir, *self._get_mirror_skills_dirs()]
+        for root in roots:
+            entity_path = _safe_child_path(root, entity_dir, "skill")
+            if entity_path.is_dir():
+                removed = _safe_rmtree(entity_path) and removed
+        return removed
+
+    def _drop_builtin_state_records(
+        self,
+        removed_record_ids: set[int],
+        removed_names: set[str],
+    ) -> None:
+        """从状态中删除已成功清理实体的 builtin 记录及孤立配置。"""
+        plugins = self._state.get("installed_plugins", [])
+        local_skills = self._state.get("local_skills", [])
+        self._state["installed_plugins"] = [
+            record for record in plugins if id(record) not in removed_record_ids
+        ]
+        self._state["local_skills"] = [
+            record for record in local_skills if id(record) not in removed_record_ids
+        ]
+        remaining_records = [
+            *self._state["installed_plugins"],
+            *self._state["local_skills"],
+        ]
+        remaining_names = {
+            str(record.get("name") or "").strip()
+            for record in remaining_records
+            if isinstance(record, dict)
+        }
+        configs = self._state.get("skill_configs")
+        if isinstance(configs, dict):
+            for name in removed_names - remaining_names:
+                configs.pop(name, None)
+
+    @_state_transactional
+    def _remove_enterprise_builtin_skills(self) -> None:
+        """清理旧企业版 builtin 状态及其独占目录。
+
+        仅来源明确为 builtin 的历史记录参与清理。若同一实体目录同时被
+        prebuilt/user/local 记录认领，则只移除 builtin 记录并保留目录。
         """
         if not is_enterprise():
             return
-        builtin_dir = get_builtin_skills_dir()
-        if not builtin_dir.exists() or not builtin_dir.is_dir():
+
+        plugins = self._state.get("installed_plugins", [])
+        local_skills = self._state.get("local_skills", [])
+        records = [
+            record
+            for record in [*plugins, *local_skills]
+            if isinstance(record, dict)
+        ]
+        builtin_records = [
+            record
+            for record in records
+            if self._is_builtin_installation_record(record)
+        ]
+        if not builtin_records:
             return
 
-        changed = False
-        for child in sorted(builtin_dir.iterdir(), key=lambda p: p.name.lower()):
-            if not child.is_dir() or child.name.startswith("_"):
-                continue
-            md = self._try_find_skill_file(child)
-            if md is None:
-                continue
-            meta = self._parse_skill_md(md)
-            if meta is None:
-                continue
-            name = self._resolve_skill_name(child, md, meta)
-            if not name:
-                continue
-
-            existing = self._find_skill_installation(name=name)
-            existing_type = str(existing.get("source_type") or "").strip() if existing else ""
-            if existing is not None:
-                if existing_type == "builtin" and not self._skill_installation_entity_ready(
-                    existing
-                ):
-                    # builtin 记录残缺（entity 目录丢失）：走下方路径重新复制并登记。
-                    pass
-                else:
-                    # 同名已有完整记录（prebuilt/user/builtin 就绪）：builtin 只填真空，
-                    # 不改写其它来源的登记类型（优先级 prebuilt > user > builtin）。
-                    continue
-
-            dest = _safe_child_path(self._skills_dir, child.name, "skill")
-            if not (dest.is_dir() and (dest / "SKILL.md").is_file()):
-                if dest.exists():
-                    _safe_rmtree(dest)
-                try:
-                    shutil.copytree(child, dest)
-                except Exception as exc:
-                    logger.warning(
-                        "[SkillManager] 复制内置技能失败: name=%s error=%s", name, exc
-                    )
-                    continue
-
-            try:
-                self.record_skill_installation(
-                    name=name,
-                    source_type="builtin",
-                    source="builtin",
-                    origin=f"builtin:{child.name}",
-                    version=str(meta.get("version") or "").strip(),
-                    entity_dir=child.name,
-                )
-                changed = True
-            except SkillNameConflictError as exc:
+        protected_entities = self._collect_non_builtin_entities(records)
+        removed_record_ids: set[int] = set()
+        removed_names: set[str] = set()
+        for record in builtin_records:
+            entity_dir = self._installation_entity_dir(record)
+            owns_entity = entity_dir and entity_dir not in protected_entities
+            if owns_entity and not self._remove_skill_entity_copies(entity_dir):
                 logger.warning(
-                    "[SkillManager] 内置技能登记冲突（同名其它来源）: name=%s error=%s",
-                    name,
-                    exc,
+                    "[SkillManager] 企业版 builtin 目录清理失败，保留记录等待重试: %s",
+                    entity_dir,
                 )
-            except Exception as exc:
-                logger.warning(
-                    "[SkillManager] 内置技能登记失败: name=%s error=%s", name, exc
-                )
+                continue
+            removed_record_ids.add(id(record))
+            name = str(record.get("name") or "").strip()
+            if name:
+                removed_names.add(name)
 
-        if changed:
-            self._refresh_agent_data_indexes()
+        self._drop_builtin_state_records(removed_record_ids, removed_names)
+        self._save_state()
+        self._refresh_agent_data_indexes()
 
     def _apply_enabled_config(
         self,

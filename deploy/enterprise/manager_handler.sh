@@ -28,6 +28,14 @@ gen_identity_file() {
     render_config_template "${template_file}" "${file}" "DEPLOY_VARS"
     enable_dev_mode_if_needed ${file} identity
 
+    # yq quotes arbitrary password characters correctly in the generated YAML.
+    IDENTITY_ADMIN_PASSWORD="${DEPLOY_VARS[IDENTITY_ADMIN_PASSWORD]}" \
+    IDENTITY_USER1_PASSWORD="${DEPLOY_VARS[IDENTITY_USER1_PASSWORD]}" \
+        yq eval '(. | select(.kind == "Deployment") | .spec.template.spec.containers[0].env) += [
+            {"name": "IDENTITY_ADMIN_PASSWORD", "value": strenv(IDENTITY_ADMIN_PASSWORD)},
+            {"name": "IDENTITY_USER1_PASSWORD", "value": strenv(IDENTITY_USER1_PASSWORD)}
+        ]' -i "${file}"
+
     if [ "${DEPLOY_VARS["DB_TYPE"]}" == "postgresql" ]; then
         yq eval '
         select(.kind == "Deployment").spec.template.spec.containers[0].env += [
@@ -45,6 +53,9 @@ render_manager_files() {
     render_secret_configmap
     ensure_available_port "MANAGER_SERVER_NODE_PORT" "MANAGER_WEB_NODE_PORT"
     gen_manager_server_file
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" != off ]]; then
+        link_mtls_render manager "${CONFIG[MANAGER_SERVER_FILE]}"
+    fi
     gen_identity_file
 
     local manager_web_template_file="${CONFIG["MANAGER_WEB_TEMPLATE_FILE"]}"

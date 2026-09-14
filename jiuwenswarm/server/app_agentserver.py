@@ -218,6 +218,8 @@ async def _run(host: str, port: int) -> None:
 
 
 async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None:
+    from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+    link_mtls = LinkMTLSConfig.from_env(role="agentserver")  # fail before starting any listener
     from openjiuwen.core.runner import Runner
     from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
     from jiuwenswarm.agents.harness.team.remote_member_bootstrap import run_teammate_bootstrap_daemon
@@ -315,7 +317,10 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         host=host,
         port=port
     )
-    await server.start()
+    if link_mtls.enforced:
+        await server.start(listen=False)
+    else:
+        await server.start()
 
     # ---------- ProactiveEngine 初始化 ----------
     # 适配逻辑（建专用 agent + 触发主 agent 回调）封装在 proactive_adapter，
@@ -337,7 +342,7 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
         )
 
         http_enabled, http_host, http_port = resolve_http_server_settings(host)
-        if http_enabled:
+        if http_enabled or link_mtls.enforced:
             candidate = AgentHTTPServer(server, host=http_host, port=http_port)
             # start() 自身不抛异常；失败返回 False，WebSocket 主链路不受影响。
             http_server = candidate if await candidate.start() else None
@@ -346,10 +351,20 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
                 "[AgentServer] HTTP 入口未开启（config.yaml http_server.enabled 或 AGENT_HTTP_ENABLED）"
             )
     except Exception as exc:  # noqa: BLE001 - HTTP 入口不可用不应阻断 WS 主链路
+        if link_mtls.enforced:
+            await server.stop()
+            raise RuntimeError("AgentServer enforce HTTPS startup failed; no WS fallback") from exc
         logger.error("[AgentServer] HTTP 入口启动失败，仅 WebSocket 可用: %s", exc, exc_info=True)
         http_server = None
 
-    if http_server is not None:
+    if link_mtls.enforced and http_server is None:
+        await server.stop()
+        raise RuntimeError("AgentServer enforce requires a working HTTPS listener")
+
+    if link_mtls.enforced:
+        logger.info("[AgentServer] ready: https://%s:%s/api/v1; plaintext WS disabled",
+                    host, http_server.port)
+    elif http_server is not None:
         logger.info(
             "[AgentServer] ready: ws://%s:%s + http://%s:%s/api/v1  Ctrl+C to stop",
             host,

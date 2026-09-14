@@ -267,18 +267,54 @@ class ImagePrepareNode(PlanNode):
             logger.error("[P6.5] output_dir 为空，跳过图片准备")
             return {"image_map_path": ""}
 
-        # 生图能力检测：读 P2 写的 imagegen_status.json
-        ai_supported = await self._read_imagegen_status(self, output_dir)
-        if ai_supported and "ai" not in image_sources:
-            image_sources.append("ai")
-            logger.info("[P6.5] imagegen_status.supported=true，已添加 ai 源")
+        # ── 意图信号：读 P2.4 写的 image_requirements.json ──
+        requirements = await self._read_image_requirements(self, output_dir)
+        if requirements is not None:
+            image_mode = requirements.get("mode", "none")
+        else:
+            # 兼容旧文件：无 image_requirements.json 时读旧 imagegen_status.json
+            legacy = await self._read_imagegen_status(self, output_dir)
+            image_mode = "desired" if legacy else "none"
 
-        # 门控
+        # ── 能力信号：真实探测工具（对齐 visual-image.md，supported 语义归 P6.5）──
+        ai_supported = self.has_tool("generate_image")
+        if output_dir:
+            try:
+                content = json.dumps(
+                    {"supported": ai_supported, "probe": "has_tool"},
+                    ensure_ascii=False,
+                )
+                await PptCommon.write_file(
+                    self, f"{output_dir}/imagegen_status.json",
+                    content, label="imagegen_status",
+                )
+                logger.info(
+                    "[P6.5] imagegen_status.json 已写入 (supported=%s)", ai_supported
+                )
+            except Exception as e:
+                if isinstance(e, AbortError):
+                    raise
+                logger.warning("[P6.5] 写 imagegen_status.json 失败: %s", e)
+
+        # ── 门控：双信号（意图 × 能力）──
+        user_wants = image_mode == "desired"
+        if user_wants and ai_supported and "ai" not in image_sources:
+            image_sources.append("ai")
+            logger.info("[P6.5] 意图=desired + 工具可用，已添加 ai 源")
+
         local_ok = bool(image_paths)
-        ai_ok = "ai" in image_sources and ai_supported
+        ai_ok = user_wants and ai_supported
         if not local_ok and not ai_ok:
-            logger.info("[P6.5] 无可用图片来源（local=%s, ai=%s），跳过", local_ok, ai_ok)
-            return {"image_map_path": ""}
+            if image_mode == "forbidden":
+                reason = "用户明确禁图"
+            elif image_mode == "none":
+                reason = "用户未要求配图"
+            elif not ai_supported:
+                reason = "要求配图但 AI 生图能力不可用（generate_image 未注册）"
+            else:
+                reason = f"无可用来源 (local={local_ok}, ai={ai_ok})"
+            logger.info("[P6.5] 图片准备跳过：%s", reason)
+            return {"image_map_path": "", "image_skip_reason": reason}
 
         image_map_path = f"{output_dir}/image_map.json"
         for attempt in range(_MAX_RETRIES):
@@ -684,7 +720,7 @@ class ImagePrepareNode(PlanNode):
 
     @staticmethod
     async def _read_imagegen_status(node: "ImagePrepareNode", output_dir: str) -> bool:
-        """读 P2 写的 imagegen_status.json，返回 supported 字段。"""
+        """读 imagegen_status.json，返回 supported 字段（兼容旧 P2 写的意图布尔）。"""
         status_path = f"{output_dir}/imagegen_status.json"
         raw = await PptCommon.read_file(node, status_path, label="imagegen_status")
         if not raw:
@@ -697,6 +733,24 @@ class ImagePrepareNode(PlanNode):
                 raise
             logger.warning("[P6.5] 解析 imagegen_status.json 失败: %s", e)
             return False
+
+    @staticmethod
+    async def _read_image_requirements(
+        node: "ImagePrepareNode", output_dir: str
+    ) -> dict[str, Any] | None:
+        """读 P2.4 写的 image_requirements.json（意图信号）。不存在返回 None。"""
+        req_path = f"{output_dir}/image_requirements.json"
+        raw = await PptCommon.read_file(node, req_path, label="image_requirements")
+        if not raw:
+            return None
+        try:
+            data = json.loads(raw)
+            return data if isinstance(data, dict) else None
+        except Exception as e:
+            if isinstance(e, AbortError):
+                raise
+            logger.warning("[P6.5] 解析 image_requirements.json 失败: %s", e)
+            return None
 
     async def _cleanup(self, output_dir: str) -> None:
         targets = [Path(output_dir) / f for f in _INTERMEDIATE_FILES]

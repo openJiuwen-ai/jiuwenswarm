@@ -102,6 +102,7 @@ declare -ga MODULES=()
 declare -A DEPLOY_VARS=(
     # for dev mode, mount code purpose
     ["MODE"]="product"
+    ["JIUWENSWARM_LINK_MTLS_MODE"]="off"
     ["IS_MOUNT_WEB_CODE"]="false"
     ["IS_MOUNT_MANAGER_WEB_CODE"]="false"
     ["CLAW_POD_CODE_PATH"]="/app/jiuwenswarm"
@@ -151,6 +152,8 @@ declare -A DEPLOY_VARS=(
     ["IDENTITY_REST_PORT"]="8770"
     ["IDENTITY_SEED_ADMIN"]="true"
     ["IDENTITY_SEED_USER1"]="true"
+    ["IDENTITY_ADMIN_PASSWORD"]="admin"
+    ["IDENTITY_USER1_PASSWORD"]="user1"
     ["IDENTITY_FEDERATION_DEMO_ENABLED"]="false"
     ["IDENTITY_FEDERATION_PUBLIC_PATH_PREFIX"]="/idp"
     ["IDENTITY_FEDERATION_REQUEST_TTL"]="300"
@@ -171,6 +174,8 @@ declare -A DEPLOY_VARS=(
     ["MANAGER_SERVER_REPLICAS"]="1"
     ["MANAGER_WEB_NAME"]="jiuwenclaw-manager-web"
     ["MANAGER_WEB_PORT"]="5273"
+    # nginx 动态上游 DNS；多数集群为 kube-dns / CoreDNS 此 Service 名
+    ["MANAGER_WEB_RESOLVER"]="kube-dns.kube-system.svc.cluster.local"
     ["MANAGER_WS_PORT"]="8766"
     ["MINIO_IMAGE"]="minio/minio-arm64:RELEASE.2024-12-18T13-15-44Z"
     ["MINIO_NAME"]="minio"

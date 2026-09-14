@@ -43,6 +43,7 @@ from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 from openjiuwen.harness.workspace.workspace import Workspace
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _AGENT_CARD_ID,
@@ -538,7 +539,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             language=self._resolve_runtime_language(),
             enable_read_image_multimodal=DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL,
             kv_cache_affinity_config=_deep_agent_kv_cache_affinity_config(config, model),
-            auto_create_workspace=False,
+            auto_create_workspace=is_enterprise(),
             completion_timeout=config.get("completion_timeout", 3600.0),
         )
 

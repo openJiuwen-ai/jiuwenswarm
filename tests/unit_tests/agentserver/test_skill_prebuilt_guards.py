@@ -569,6 +569,51 @@ def test_register_builtin_skills_does_not_flip_prebuilt(
     assert "builtin copy" not in skill_md
 
 
+def test_enterprise_startup_removes_only_builtin_installations(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """企业升级清理 builtin 时必须保留 prebuilt/user/未登记本地技能。"""
+    from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+
+    monkeypatch.delenv("JIUWENSWARM_EDITION", raising=False)
+    workspace = tmp_path / "tenant_ws"
+    manager = SkillManager(workspace_dir=str(workspace))
+    for name, source_type in (
+        ("builtin-only", "builtin"),
+        ("managed-skill", "prebuilt"),
+        ("user-skill", "user"),
+    ):
+        _write_managed_skill(workspace, name)
+        manager.record_skill_installation(
+            name=name,
+            source_type=source_type,
+            source=source_type,
+            origin=f"{source_type}:{name}",
+        )
+    (workspace / "skills" / "builtin-only" / "SKILL.md").write_text(
+        "---\nname: manually-copied\ndescription: local\n---\n",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    reloaded = SkillManager(workspace_dir=str(workspace))
+
+    records = {
+        row["name"]: row["source_type"]
+        for row in reloaded.list_skill_installations()
+    }
+    assert records == {"managed-skill": "prebuilt", "user-skill": "user"}
+    assert {
+        row["name"] for row in reloaded.get_local_skills()
+    } == {"manually-copied"}
+    assert (workspace / "skills" / "builtin-only" / "SKILL.md").is_file()
+    assert (workspace / "skills" / "managed-skill" / "SKILL.md").is_file()
+    assert (workspace / "skills" / "user-skill" / "SKILL.md").is_file()
+    payload = asyncio.run(reloaded.handle_skills_list({}))
+    assert all(item.get("source") != "builtin" for item in payload["skills"])
+
+
 def test_workspace_state_cleanup_removes_only_prebuilt(tmp_path: Path) -> None:
     from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
     from jiuwenswarm.server.runtime.skill.skill_prebuilt import (

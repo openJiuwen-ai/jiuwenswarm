@@ -31,15 +31,18 @@ spec:
             - name: MANAGER_WEB_PORT
               value: "<<MANAGER_WEB_PORT>>"
             - name: MANAGER_WEB_PROXY_TARGET
-              value: "http://<<MANAGER_SERVER_NAME>>:<<MANAGER_REST_PORT>>"
+              value: "http://<<MANAGER_SERVER_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<MANAGER_REST_PORT>>"
             - name: MANAGER_WEB_IDP_TARGET
-              value: "http://<<IDENTITY_NAME>>:<<IDENTITY_REST_PORT>>"
+              value: "http://<<IDENTITY_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<IDENTITY_REST_PORT>>"
             - name: MANAGER_WEB_USER_WEB_TARGET
-              value: "http://<<WEB_NAME>>:<<WEB_HTTP_PORT>>"
+              value: "http://<<WEB_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<WEB_HTTP_PORT>>"
             - name: MANAGER_WEB_GATEWAY_HTTP_TARGET
-              value: "http://<<GATEWAY_NAME>>:<<GATEWAY_WEB_HTTP_PORT>>"
+              value: "http://<<GATEWAY_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<GATEWAY_WEB_HTTP_PORT>>"
             - name: MANAGER_WEB_GATEWAY_WS_TARGET
-              value: "http://<<GATEWAY_NAME>>:<<WEB_PORT>>"
+              value: "http://<<GATEWAY_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<WEB_PORT>>"
+            # nginx 变量 proxy_pass 需要 resolver；K8s 默认指向集群 DNS
+            - name: MANAGER_WEB_RESOLVER
+              value: "<<MANAGER_WEB_RESOLVER>>"
             - name: TZ
               value: "<<TIMEZONE>>"
 

@@ -693,7 +693,12 @@ class AgentHTTPServer:
         """
         import uvicorn
 
-        bindable = self._find_bindable_port()
+        from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig, LinkMTLSError
+
+        link_mtls = LinkMTLSConfig.from_env(role="agentserver")
+        if link_mtls.enforced and not is_port_available(self._host, self._port):
+            raise LinkMTLSError("enforce listener port is occupied; refusing automatic port drift")
+        bindable = self._port if link_mtls.enforced else self._find_bindable_port()
         if bindable is None:
             logger.error(
                 "[AgentHTTPServer] 端口 %s:%s 起连续 %d 个候选均被占用，HTTP 入口未启动"
@@ -712,6 +717,11 @@ class AgentHTTPServer:
             self._port = bindable
 
         app = self.build_app()
+        if link_mtls.mode.value == "observe":
+            logger.info(
+                "[AgentHTTPServer] link mTLS observe preflight complete; "
+                "data path remains HTTP"
+            )
         config = uvicorn.Config(
             app,
             host=self._host,
@@ -719,6 +729,7 @@ class AgentHTTPServer:
             log_level="info",
             access_log=False,
             lifespan="on",
+            **link_mtls.uvicorn_ssl_kwargs(),
         )
         self._server = uvicorn.Server(config)
 
@@ -753,7 +764,8 @@ class AgentHTTPServer:
             return False
 
         logger.info(
-            "[AgentHTTPServer] 已启动: http://%s:%s%s", self._host, self._port, API_PREFIX
+            "[AgentHTTPServer] 已启动: %s://%s:%s%s",
+            "https" if link_mtls.enforced else "http", self._host, self._port, API_PREFIX
         )
         return True
 

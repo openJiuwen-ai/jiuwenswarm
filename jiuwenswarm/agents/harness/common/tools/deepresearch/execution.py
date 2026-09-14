@@ -648,7 +648,7 @@ def _outline_sections(outline_text: str) -> list[str]:
 
 
 def _completion_content(
-    state: Mapping[str, Any], report_chars: Any, html_style_status: Any = None
+    state: Mapping[str, Any], html_style_status: Any = None
 ) -> str:
     file_name = str(state.get("file_name") or "研究报告").strip()
     title = re.sub(r"\.(?:md|markdown)$", "", file_name, flags=re.IGNORECASE)
@@ -658,10 +658,8 @@ def _completion_content(
         f"{title or '研究报告'}已成功生成并交付。",
     ]
     sections = state.get("outline_sections")
-    if isinstance(report_chars, int) or isinstance(sections, list):
+    if isinstance(sections, list):
         lines.extend(["", "**报告概览**："])
-    if isinstance(report_chars, int):
-        lines.append(f"- **报告字符数**：{report_chars:,} 字")
     normalized_sections = [
         str(section).strip()
         for section in (sections if isinstance(sections, list) else [])
@@ -841,7 +839,6 @@ async def _handle_outcome(
             content="DeepResearch 返回了不支持的交互节点，任务已停止。",
         )
     if status == "completed" and outcome.get("report_delivered") is True:
-        report_chars = outcome.get("report_chars")
         html_style_status = outcome.get("html_style_status")
         if html_style_status not in {"applied", "fallback"}:
             html_style_status = None
@@ -854,7 +851,7 @@ async def _handle_outcome(
         ):
             html_style_phase = None
             html_style_reason_code = None
-        content = _completion_content(state, report_chars, html_style_status)
+        content = _completion_content(state, html_style_status)
         completed_updates: dict[str, Any] = {"conversation_id": conversation_id}
         if html_style_status is not None:
             completed_updates["html_style_status"] = html_style_status

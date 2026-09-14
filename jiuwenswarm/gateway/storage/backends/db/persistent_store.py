@@ -6,6 +6,14 @@ from __future__ import annotations
 from typing import Any
 
 from jiuwenswarm.gateway.storage.backends.db.connection import PersistentDbConnection
+from jiuwenswarm.gateway.storage.backends.db.bool_codec import (
+    normalize_boolean_columns_for_read,
+    normalize_boolean_columns_for_write,
+)
+from jiuwenswarm.gateway.storage.backends.db.datetime_codec import (
+    normalize_datetime_columns_for_read,
+    normalize_datetime_columns_for_write,
+)
 from jiuwenswarm.gateway.storage.backends.db.records import row_to_dict
 from jiuwenswarm.gateway.storage.errors import StorageUnavailableError
 from jiuwenswarm.gateway.storage.registry.store_registry import StoreRegistry
@@ -34,6 +42,18 @@ class DbPersistentBackend:
     async def close(self) -> None:
         await self._connection.close()
 
+    @staticmethod
+    def _write(handler: Any, table: str, data: dict[str, Any]) -> dict[str, Any]:
+        data = normalize_datetime_columns_for_write(handler, table, data)
+        return normalize_boolean_columns_for_write(handler, table, data)
+
+    @staticmethod
+    def _read(handler: Any, table: str, row: Any) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        data = normalize_datetime_columns_for_read(handler, table, row_to_dict(row))
+        return normalize_boolean_columns_for_read(handler, table, data)
+
     async def list(
         self,
         name: str,
@@ -44,24 +64,27 @@ class DbPersistentBackend:
         offset: int = 0,
     ) -> list[dict[str, Any]]:
         handler = await self._connection.ensure_ready()
+        table = self._table(name)
         rows = await handler.list_records(
-            self._table(name),
-            dict(filters or {}),
+            table,
+            self._write(handler, table, dict(filters or {})),
             limit=10_000 if limit is None else limit,
             offset=offset,
             order_by=order_by,
         )
-        return [row_to_dict(row) for row in rows or []]
+        return [self._read(handler, table, row) for row in rows or []]
 
     async def get(self, name: str, key: dict[str, Any]) -> dict[str, Any] | None:
         handler = await self._connection.ensure_ready()
-        row = await handler.get(self._table(name), dict(key))
-        return None if row is None else row_to_dict(row)
+        table = self._table(name)
+        row = await handler.get(table, self._write(handler, table, dict(key)))
+        return self._read(handler, table, row)
 
     async def create(self, name: str, record: dict[str, Any]) -> dict[str, Any]:
         handler = await self._connection.ensure_ready()
-        created = await handler.create(self._table(name), dict(record))
-        return row_to_dict(created)
+        table = self._table(name)
+        created = await handler.create(table, self._write(handler, table, dict(record)))
+        return self._read(handler, table, created)
 
     async def update(
         self,
@@ -71,16 +94,20 @@ class DbPersistentBackend:
     ) -> dict[str, Any] | None:
         """按主键浅合并 ``updates``；找不到记录返回 None。不删字段。"""
         handler = await self._connection.ensure_ready()
+        table = self._table(name)
         updated = await handler.update(
-            self._table(name),
-            dict(key),
-            dict(updates),
+            table,
+            self._write(handler, table, dict(key)),
+            self._write(handler, table, dict(updates)),
         )
-        return None if updated is None else row_to_dict(updated)
+        return self._read(handler, table, updated)
 
     async def delete(self, name: str, key: dict[str, Any]) -> bool:
         handler = await self._connection.ensure_ready()
-        return bool(await handler.delete(self._table(name), dict(key)))
+        table = self._table(name)
+        return bool(
+            await handler.delete(table, self._write(handler, table, dict(key)))
+        )
 
 
 __all__ = ["DbPersistentBackend"]

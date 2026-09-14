@@ -707,6 +707,7 @@ function AppContent() {
             description: n.description,
             formatted_args: n.formatted_args,
             display_name: n.display_name,
+            source_skill: n.source_skill,
             memberName: n.memberName,
           },
           { startedAt: item.at }
@@ -1434,6 +1435,7 @@ function AppContent() {
                 description: n.description,
                 formatted_args: n.formatted_args,
                 display_name: n.display_name,
+                source_skill: n.source_skill,
                 memberName: n.memberName,
               },
               { startedAt: item.at }

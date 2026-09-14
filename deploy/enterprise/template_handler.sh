@@ -61,9 +61,11 @@ render_config_template(){
 }
 
 # Append a single hostPath code mount (volume + volumeMount) to the first
-# container of every Deployment in <file>. 
+# container of every Deployment in <file>.
+# 第 5 个参数可选：hostPath.type，默认 Directory；单文件用 File。
 add_code_mount() {
     local file="$1" name="$2" host_path="$3" mount_path="$4"
+    local host_type="${5:-Directory}"
     yq eval '
         select(.kind == "Deployment").spec.template.spec.containers[0].volumeMounts
             |= ((. // []) + [{
@@ -77,7 +79,7 @@ add_code_mount() {
                 "name": "'"${name}"'",
                 "hostPath": {
                     "path": "'"${host_path}"'",
-                    "type": "Directory"
+                    "type": "'"${host_type}"'"
                 }
             }])
     ' -i "${file}"
@@ -95,6 +97,15 @@ mount_runtime_code() {
     add_code_mount "$1" "runtime-code" \
         "${DEPLOY_VARS["RUNTIME_CODE_PATH"]}" \
         "${DEPLOY_VARS["RUNTIME_POD_CODE_PATH"]}"
+}
+
+# manager-web：把仓库 nginx 模板盖到镜像内 entrypoint 读取的路径。
+mount_manager_web_nginx_template() {
+    [ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ] && return
+    add_code_mount "$1" "manager-web-nginx-template" \
+        "${DEPLOY_VARS["RUNTIME_CODE_PATH"]}/docker/manager-web.nginx.conf.template" \
+        "/etc/nginx/templates/default.conf.template" \
+        "File"
 }
 
 mount_runtime_pkg() {
@@ -135,6 +146,7 @@ enable_dev_mode_if_needed() {
         manager-web)
             [ "${DEPLOY_VARS["IS_MOUNT_MANAGER_WEB_CODE"]}" != "true" ] && return
             mount_runtime_code "${file}"
+            mount_manager_web_nginx_template "${file}"
             ;;
         *)
             warning "enable_dev_mode_if_needed: unknown component '${comp}', skipping"

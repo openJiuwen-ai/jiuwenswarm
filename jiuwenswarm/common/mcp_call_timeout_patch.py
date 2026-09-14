@@ -50,15 +50,24 @@ This patch is applied once at process startup (from
      MCP 侧 ``call completed``，但第 3 轮结果仍被该异常盖成失败
      （TC_MCP_CALL_014）。与 ``mcp_config._run_mcp_worker`` 对 remote
      的超时策略一致。
-  B. Monkeypatch ``ToolMgr._create_client`` so ``config.params["timeout_s"]``
-     is stamped onto the client instance as ``_jws_call_timeout`` and honored
-     by (A). Falls back to ``DEFAULT_CALL_TIMEOUT`` when unset.
 
-  C. AbilityManager 外层 ``anyio.fail_after`` → 无 cancel scope 的截止时间
+     同时把解析后的超时以 ``timeout + 5`` 写入 client 方法的 ``timeout``
+     kwarg（内层天花板），外层 ``wait_for`` 仍用精确超时，避免 SseClient
+     默认 60s 提前掐断，并保证 pooled worker 的外层截止先触发。
+  B. Monkeypatch ``ToolMgr._create_client`` so ``config.params["timeout_s"]``
+     (i.e. ``/mcp add ... --timeout_s N``) is stamped onto the client instance
+     as ``_jws_call_timeout`` and honored by (A). Falls back to
+     ``DEFAULT_CALL_TIMEOUT`` when unset.
+  C. Wrap the MCP SDK factory functions (``mcp.client.sse.sse_client`` /
+     ``mcp.client.streamable_http.streamablehttp_client``) so connections
+     created for a client with a stamped ``_jws_call_timeout`` get an
+     ``sse_read_timeout`` of at least that value, instead of the SDK's 300s
+     default — long tool calls (SSE result stream / held streamable-http
+     response) would otherwise be dropped mid-call after 300 idle seconds.
+  D. AbilityManager 外层 ``anyio.fail_after`` → 无 cancel scope 的截止时间
      + ``tool.invoke`` 用 ``asyncio.wait_for``（不改 agent-core 源码，等价于
      把 AM 超时从 fail_after 换成 wait_for，修复 TC_MCP_CALL_014 第 3 轮）。
-
-  D. ``disconnect`` / ``_do_disconnect`` 在 finally 中强制清会话，避免 aclose
+  E. ``disconnect`` / ``_do_disconnect`` 在 finally 中强制清会话，避免 aclose
      失败留下半死连接。
 
 Both transforms are idempotent: a module-level ``_PATCHED`` guard makes the
@@ -79,6 +88,16 @@ _PATCHED = False
 # _PATCHED, so we don't stamp attributes onto function objects (which would
 # need a mypy ``[attr-defined]`` type-ignore).
 _wrapped_methods: set[tuple[type, str]] = set()
+# (module, name) SDK factory functions already wrapped, and (cls, name)
+# client connect methods already wrapped — same idempotency purpose.
+_wrapped_factories: set[tuple[object, str]] = set()
+_wrapped_connects: set[tuple[type, str]] = set()
+#: Set while a client with a stamped ``_jws_call_timeout`` is establishing its
+#: transport, so the SDK factory wrappers can lift ``sse_read_timeout`` to the
+#: per-connector timeout (see ``_patch_sdk_read_timeouts``).
+_pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.ContextVar(
+    "_jws_pending_sdk_read_timeout", default=None
+)
 #: Fallback per-call timeout (seconds) when ``--timeout_s`` is not supplied.
 DEFAULT_CALL_TIMEOUT = 30.0
 
@@ -420,6 +439,121 @@ def _patch_ability_manager_fail_after() -> None:
     )
 
 
+def _stamp_is_valid(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0
+
+
+def _patch_sdk_read_timeouts() -> None:
+    """Lift the MCP SDK transports' ``sse_read_timeout`` to the connector timeout.
+
+    The SDK builds one httpx client per connection with
+    ``httpx.Timeout(timeout, read=sse_read_timeout)`` where ``sse_read_timeout``
+    defaults to 300s. A long tool call exceeds it silently: on SSE the result
+    is delivered on the event stream, on streamable-http the POST response is
+    held until the tool finishes — either way an idle read of more than 300s
+    drops the connection mid-call. openjiuwen's clients don't expose the
+    parameter, so wrap the module-level factory functions and raise
+    ``sse_read_timeout`` to the client's stamped ``_jws_call_timeout`` when one
+    is present. The stamp is surfaced to the factories through a ContextVar set
+    by wrapping the clients' connect paths (SseClient builds its transport
+    inside ``_do_connect`` on the owner task; StreamableHttpClient inside
+    ``connect``), which run in the same task that invokes the factory.
+    """
+    import mcp.client.sse as mcp_sse_module
+    import mcp.client.streamable_http as mcp_streamable_http_module
+    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
+    from openjiuwen.core.foundation.tool.mcp.client.streamable_http_client import (
+        StreamableHttpClient,
+    )
+
+    for module, factory_name in (
+        (mcp_sse_module, "sse_client"),
+        (mcp_streamable_http_module, "streamablehttp_client"),
+    ):
+        if (module, factory_name) in _wrapped_factories:
+            continue
+        _wrapped_factories.add((module, factory_name))
+        orig_factory = getattr(module, factory_name)
+
+        def factory_with_read_timeout(*args: Any, orig=orig_factory, name=factory_name, **kwargs: Any):
+            hint = _pending_sdk_read_timeout.get()
+            if _stamp_is_valid(hint):
+                current = kwargs.get("sse_read_timeout")
+                if not _stamp_is_valid(current) or float(current) < float(hint):
+                    kwargs["sse_read_timeout"] = float(hint)
+                    logger.info(
+                        "[mcp-timeout] raised %s sse_read_timeout to %.1fs for this connection",
+                        name,
+                        float(hint),
+                    )
+            return orig(*args, **kwargs)
+
+        setattr(module, factory_name, factory_with_read_timeout)
+
+    for cls, method_name in (
+        (SseClient, "_do_connect"),
+        (StreamableHttpClient, "connect"),
+    ):
+        if (cls, method_name) in _wrapped_connects:
+            continue
+        _wrapped_connects.add((cls, method_name))
+        orig_method = getattr(cls, method_name)
+
+        async def method_with_read_timeout(self, *args: Any, orig=orig_method, **kwargs: Any):
+            hint = getattr(self, "_jws_call_timeout", None)
+            token = (
+                _pending_sdk_read_timeout.set(float(hint)) if _stamp_is_valid(hint) else None
+            )
+            try:
+                return await orig(self, *args, **kwargs)
+            finally:
+                if token is not None:
+                    _pending_sdk_read_timeout.reset(token)
+
+        setattr(cls, method_name, method_with_read_timeout)
+
+
+def _patch_sse_disconnect_guard() -> None:
+    """Keep ``SseClient.disconnect`` best-effort cleanup.
+
+    openjiuwen's ``_do_disconnect`` wraps the session/transport ``__aexit__``
+    calls in ``asyncio.wait_for``, which executes them in a new asyncio Task.
+    The contexts were entered on the SSE owner task, so exiting them from
+    wait_for's task trips anyio's cancel-scope invariant; the broken teardown
+    then surfaces as a ``CancelledError`` raised from ``_submit``'s future —
+    a BaseException that sails past the ``except Exception`` handlers around
+    discovery cleanup (``_list_remote_mcp_connector_tools``) and the pooled
+    worker's exit-stack callback, aborting SSE connector registration outright.
+    Disconnect is cleanup: swallow the future-cancel flavor, log it, and
+    report failure. A genuine cancellation of the running task (``cancelling``
+    count > 0) still propagates.
+    """
+    import asyncio as _asyncio
+
+    from openjiuwen.core.foundation.tool.mcp.client.sse_client import SseClient
+
+    if (SseClient, "disconnect-guard") in _wrapped_connects:
+        return
+    _wrapped_connects.add((SseClient, "disconnect-guard"))
+    orig_disconnect = getattr(SseClient, "disconnect")
+
+    async def disconnect_guarded(self, *args: Any, orig=orig_disconnect, **kwargs: Any):
+        try:
+            return await orig(self, *args, **kwargs)
+        except _asyncio.CancelledError:
+            task = _asyncio.current_task()
+            cancelling = getattr(task, "cancelling", None)
+            if callable(cancelling) and cancelling() > 0:
+                raise
+            logger.warning(
+                "[mcp-timeout] SseClient.disconnect aborted by transport teardown "
+                "(pre-existing anyio cancel-scope conflict); treated as failed cleanup",
+            )
+            return False
+
+    setattr(SseClient, "disconnect", disconnect_guarded)
+
+
 def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) -> None:
     """Apply the per-call MCP timeout patch. Idempotent per process."""
     global _PATCHED
@@ -522,6 +656,10 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
         async def wrapped(self, *args, **kwargs):
             timeout = _resolve_timeout(self, kwargs.get("timeout"))
+            # 内层（如 SseClient 自带 wait_for）用 timeout+5 作天花板，避免仍按
+            # 默认 60s 提前掐断；外层 wait_for 用精确 timeout，与 pooled worker
+            # 的外层截止对齐，保证先触发外层 TimeoutError。
+            kwargs.setdefault("timeout", timeout + 5.0)
 
             async def _invoke_once():
                 # remote HTTP transport：用 asyncio.wait_for，不用 anyio.fail_after。
@@ -674,6 +812,9 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
     # SseClient 真正清连接在 owner-task 的 _do_disconnect
     _wrap_disconnect_always_invalidate(SseClient, "_do_disconnect")
 
+    _patch_sdk_read_timeouts()
+    _patch_sse_disconnect_guard()
+
     # (B) Thread config.params["timeout_s"] (--timeout_s) onto each client so
     # (A) can pick it up. Browser-move 仅劫持自身 MCP server，不再全局替换
     # _create_client，因此企业远程 MCP 仍会走到本 stamp。
@@ -718,6 +859,6 @@ def apply_mcp_call_timeout_patch(default_timeout: float = DEFAULT_CALL_TIMEOUT) 
 
     logger.info(
         "[mcp-timeout] patch applied (default_timeout=%.1fs, "
-        "covered=StreamableHttpClient,SseClient,AbilityManager)",
+        "covered=StreamableHttpClient,SseClient,AbilityManager,sdk_read_timeouts)",
         default_timeout,
     )

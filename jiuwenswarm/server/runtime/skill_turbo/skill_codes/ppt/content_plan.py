@@ -759,9 +759,21 @@ async def _run_p42_quick_research(node: PlanNode, inputs: dict[str, Any]) -> Non
     if not isinstance(response_a, str) or not response_a.strip():
         raise ContentPlanError("P4.2a 失败：LLM 返回为空")
 
-    query_items = _parse_p42a_queries(response_a, has_source_material=has_source_material)
+    topic = str(inputs.get("topic", "")).strip()
+    payload = PptCommon.parse_json_payload(response_a)
+    if not isinstance(payload, dict):
+        # P4.2a JSON 解析失败（流式输出杂散空 fence 等场景）。
+        # 仅「无源素材且 topic 非空」时降级为 topic 单查询继续快速调研
+        logger.warning(
+            "[P4.2a] JSON 解析失败；raw（截断）：%s",
+            _truncate_text(response_a, 500),
+        )
+        if has_source_material or not topic:
+            raise ContentPlanError("P4.2a 解析失败：LLM 未返回有效 JSON")
+        query_items = [{"dimension": "综合", "query": topic}]
+    else:
+        query_items = _parse_p42a_queries(response_a, has_source_material=has_source_material)
     entity = _extract_entity(response_a)
-    topic = str(inputs.get("topic", ""))
     all_used_queries: list[str] = [item["query"] for item in query_items]
 
     # R0：初始并行搜索

@@ -132,7 +132,6 @@ async def test_new_query_starts_sdk_directly():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 42,
         "workflow_llm_token_usage": sdk_usage,
     }
     with patch.object(
@@ -455,7 +454,6 @@ async def test_feedback_answer_resumes_once_and_returns_direct_completion():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 12345,
     }
 
     with patch.object(
@@ -470,7 +468,6 @@ async def test_feedback_answer_resumes_once_and_returns_direct_completion():
         )
 
     assert result["kind"] == "completed"
-    assert "12,345" in result["content"]
     assert "✅ **深度研究已完成！**" in result["content"]
     assert "智能家电报告已成功生成并交付" in result["content"]
     assert saved[0]["phase"] == "resuming_feedback"
@@ -523,7 +520,6 @@ async def test_completion_warns_when_html_style_falls_back():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 42,
         "html_style_status": "fallback",
         "html_style_phase": "invoke_llm",
         "html_style_reason_code": "llm_call_failed",
@@ -582,7 +578,6 @@ async def test_terminal_result_preserves_all_sdk_timing_windows():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 42,
         "timing": {
             "schema_version": 2,
             "runner_total_ms": 340,
@@ -692,7 +687,6 @@ async def test_outline_is_presented_once_then_confirmed_without_main_agent():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 100,
     }
     outline_answer = {
         "status": "answered",
@@ -920,7 +914,6 @@ async def test_same_outer_tool_call_survives_multiple_native_interrupts():
         "status": "completed",
         "conversation_id": "conversation-1",
         "report_delivered": True,
-        "report_chars": 321,
     }
     second = _rail_ctx(
         result=None,
@@ -941,6 +934,6 @@ async def test_same_outer_tool_call_survives_multiple_native_interrupts():
     await rail.after_tool_call(second)
 
     assert second.force_finish_requests[0]["result_type"] == "answer"
-    assert "321" in second.force_finish_requests[0]["output"]
+    assert "✅ **深度研究已完成！**" in second.force_finish_requests[0]["output"]
     assert session.state[DEEPRESEARCH_EXECUTION_STATE_KEY] == {}
     assert session.state[DEEPRESEARCH_EXECUTION_ALIAS_KEY] == {}
