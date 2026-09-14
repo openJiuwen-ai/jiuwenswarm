@@ -6142,6 +6142,20 @@ class PPTPageGenNode(PlanNode):
             final_page_files = list(qa_result.get("final_page_files") or page_files)
             fix_report = str(qa_result.get("fix_report") or "")
 
+        if missing_pages:
+            outline_pages_for_clean = worker_inputs.get("outline_pages") or {}
+            final_file_set = set(final_page_files)
+
+            def _is_structural_on_disk(page_num: int) -> bool:
+                if f"page-{page_num}.pptx.html" not in final_file_set:
+                    return False
+                page_type = _detect_page_type(
+                    str(outline_pages_for_clean.get(page_num) or "")
+                )
+                return page_type in _STRUCTURAL_TEMPLATE_PAGE_TYPES
+
+            missing_pages = [p for p in missing_pages if not _is_structural_on_disk(p)]
+
         if qa_status == "failed":
             ppt_gen_status = "failed"
         elif missing_pages or low_density_pages or qa_status == "partial":
