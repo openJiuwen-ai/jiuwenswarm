@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from collections import defaultdict
+from collections.abc import Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
 from copy import deepcopy
@@ -12,6 +14,8 @@ from threading import Lock
 from typing import Any, Dict, Iterator, List, Optional
 
 from jiuwenswarm.common.reasoning_injector import inject_reasoning_params
+
+LLM_IDENTITY_SCHEMA_VERSION = "JiuwenSwarm-llm-identity-v1"
 
 
 @dataclass(frozen=True)
@@ -36,16 +40,21 @@ class LLMConfig:
             models = {}
         default_models = models.get("defaults")
         has_default_model = (
-            isinstance(default_models, list)
-            and bool(default_models)
+            isinstance(default_models, list) and bool(default_models)
         ) or isinstance(models.get("default"), dict)
         if not has_default_model:
-            raise RuntimeError("No JiuwenSwarm default model is configured in config.yaml.")
+            raise RuntimeError(
+                "No JiuwenSwarm default model is configured in config.yaml."
+            )
 
         defaults = get_default_models(config)
         if not defaults:
-            raise RuntimeError("No JiuwenSwarm default model is configured in config.yaml.")
-        entry = next((item for item in defaults if item.get("is_default") is True), defaults[0])
+            raise RuntimeError(
+                "No JiuwenSwarm default model is configured in config.yaml."
+            )
+        entry = next(
+            (item for item in defaults if item.get("is_default") is True), defaults[0]
+        )
         return cls.from_model_entry(entry or {})
 
     @classmethod
@@ -113,6 +122,32 @@ class LLMConfig:
         request_config["temperature"] = self.temperature
         request_config["top_p"] = self.top_p
         return request_config
+
+    def create_model(self):
+        """Create the native openJiuwen model used by orchestration."""
+
+        from openjiuwen.core.foundation.llm import (
+            Model,
+            ModelClientConfig,
+            ModelRequestConfig,
+        )
+
+        return Model(
+            model_client_config=ModelClientConfig(**self.model_client_kwargs()),
+            model_config=ModelRequestConfig(**self.model_request_kwargs()),
+        )
+
+    def identity_digest(self) -> str:
+        """Hash every effective client/request setting without exposing values."""
+
+        return _stable_identity_sha256(
+            {
+                "schema_version": LLM_IDENTITY_SCHEMA_VERSION,
+                "backend": self.backend,
+                "client_config": self.model_client_kwargs(),
+                "request_config": self.model_request_kwargs(),
+            }
+        )
 
 
 @dataclass(frozen=True)
@@ -230,6 +265,20 @@ def create_llm_client(config: LLMConfig) -> "JiuwenSwarmChatClient":
     return JiuwenSwarmChatClient(config)
 
 
+def create_model_response_observer(config: LLMConfig):
+    """Bridge native orchestration model responses to the existing usage tracker."""
+
+    def observe(response: Any, stage: str, operation: str | None) -> None:
+        with llm_usage_context(stage, operation):
+            _record_usage_from_response(
+                config=config,
+                response=response,
+                operation=operation or "orchestration",
+            )
+
+    return observe
+
+
 def thinking_disabled_request_overrides() -> Dict[str, Any]:
     """Return isolated provider-compatible controls that disable thinking."""
     return {
@@ -309,19 +358,8 @@ class JiuwenSwarmChatClient:
         timeout: Optional[int],
         request_overrides: Optional[Dict[str, Any]],
     ) -> Any:
-        from openjiuwen.core.foundation.llm import (
-            Model,
-            ModelClientConfig,
-            ModelRequestConfig,
-        )
-
         if self._model is None:
-            self._model = Model(
-                model_client_config=ModelClientConfig(
-                    **self.config.model_client_kwargs()
-                ),
-                model_config=ModelRequestConfig(**self.config.model_request_kwargs()),
-            )
+            self._model = self.config.create_model()
 
         invoke_kwargs: Dict[str, Any] = {}
         if timeout is not None:
@@ -338,6 +376,41 @@ class JiuwenSwarmChatClient:
             ],
             **invoke_kwargs,
         )
+
+
+def _stable_identity_sha256(value: Any) -> str:
+    canonical = _canonical_identity_value(value)
+    serialized = json.dumps(
+        canonical,
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(serialized.encode("utf-8")).hexdigest()
+
+
+def _canonical_identity_value(value: Any) -> Any:
+    if isinstance(value, Mapping):
+        return {
+            str(key): _canonical_identity_value(item)
+            for key, item in sorted(value.items(), key=lambda pair: str(pair[0]))
+        }
+    if isinstance(value, (list, tuple)):
+        return [_canonical_identity_value(item) for item in value]
+    if isinstance(value, (set, frozenset)):
+        normalized = [_canonical_identity_value(item) for item in value]
+        return sorted(
+            normalized,
+            key=lambda item: json.dumps(
+                item,
+                ensure_ascii=False,
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+        )
+    if value is None or isinstance(value, (str, int, float, bool)):
+        return value
+    return str(value)
 
 
 def _record_usage_from_response(

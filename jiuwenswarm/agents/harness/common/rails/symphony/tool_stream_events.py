@@ -20,11 +20,11 @@ from jiuwenswarm.common.utils import logger
 class SymphonyToolStreamHandler:
     """Own Symphony-specific stream progress and completion behavior."""
 
-    COMPOSE_TOOL_NAME = "symphony_compose_score"
+    COMPOSE_TOOL_NAME = "symphony_compose_graph"
     _PROGRESS_TOKEN_KEY = "_symphony_tool_progress_token"
     _RESULT_FIELDS = (
-        "score_status",
-        "score_build",
+        "graph_status",
+        "graph_build",
         "direct_display",
         "continue_after_display",
         "followup_action",

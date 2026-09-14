@@ -12,7 +12,6 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
-import inspect
 import json
 import logging
 import os
@@ -699,6 +698,10 @@ _SKILL_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.SKILLS_RETRIEVAL_INDEX_CANCEL: "handle_skills_retrieval_index_cancel",
     ReqMethod.SKILLS_RETRIEVAL_SEARCH: "handle_skills_retrieval_search",
     ReqMethod.SKILLS_RETRIEVAL_TREE: "handle_skills_retrieval_tree",
+    ReqMethod.SKILLS_GRAPH_BUILD: "handle_skills_graph_build",
+    ReqMethod.SKILLS_GRAPH_STATUS: "handle_skills_graph_status",
+    ReqMethod.SKILLS_GRAPH_GET: "handle_skills_graph_get",
+    ReqMethod.SKILLS_GRAPH_CANCEL: "handle_skills_graph_cancel",
     ReqMethod.SKILLS_EVOLUTION_STATUS: "handle_skills_evolution_status",
     ReqMethod.SKILLS_EVOLUTION_GET: "handle_skills_evolution_get",
     ReqMethod.SKILLS_EVOLUTION_SAVE: "handle_skills_evolution_save",
@@ -760,16 +763,6 @@ _PLUGIN_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGINS_DISABLE: "handle_plugins_disable",
     ReqMethod.PLUGINS_RELOAD: "handle_plugins_reload",
 }
-
-_SYMPHONY_METHODS: frozenset[ReqMethod] = frozenset(
-    {
-        ReqMethod.SYMPHONY_BUILD_SCORE,
-        ReqMethod.SYMPHONY_PAUSE_BUILD,
-        ReqMethod.SYMPHONY_SCORE_STATUS,
-        ReqMethod.SYMPHONY_GRAPH,
-        ReqMethod.SYMPHONY_PLAN,
-    }
-)
 
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
@@ -2378,111 +2371,6 @@ class JiuWenSwarm:
             metadata=request.metadata,
         )
 
-    async def _handle_symphony_request(self, request: AgentRequest) -> AgentResponse | None:
-        """处理 Symphony extension RPC 请求."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return None
-
-        method = request.req_method.value
-        try:
-            handler = ExtensionRegistry.get_instance().get_rpc_handler(method)
-            if handler is None:
-                payload = {
-                    "success": False,
-                    "detail": f"Symphony extension RPC unavailable: {method}: handler not registered",
-                }
-            else:
-                result = handler(request.params or {}, request=request)
-                payload = await result if inspect.isawaitable(result) else result
-                if not isinstance(payload, dict):
-                    payload = {"success": True, "result": payload}
-        except Exception as exc:  # noqa: BLE001
-            logger.exception("[JiuWenSwarm] Symphony RPC failed: %s", method)
-            return AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=False,
-                payload={"success": False, "detail": f"{method}: {exc}"},
-                metadata=request.metadata,
-            )
-
-        return AgentResponse(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            ok=True,
-            payload=payload,
-            metadata=request.metadata,
-        )
-
-    async def _handle_symphony_request_stream(
-        self,
-        request: AgentRequest,
-    ) -> AsyncIterator[AgentResponseChunk]:
-        """Stream Symphony RPC progress events, then the final RPC payload."""
-        if request.req_method not in _SYMPHONY_METHODS:
-            return
-
-        queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-
-        async def progress_callback(event: dict[str, Any]) -> None:
-            await queue.put(event)
-
-        metadata = dict(request.metadata or {})
-        metadata["symphony_progress_callback"] = progress_callback
-        stream_request = replace(request, metadata=metadata)
-        task = asyncio.create_task(self._handle_symphony_request(stream_request))
-
-        try:
-            while not task.done() or not queue.empty():
-                try:
-                    event = await asyncio.wait_for(queue.get(), timeout=0.1)
-                except asyncio.TimeoutError:
-                    continue
-                yield AgentResponseChunk(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": event.get("type")
-                        or "symphony.beam_search.update",
-                        "beam_search_event": event,
-                    },
-                    is_complete=False,
-                )
-            response = await task
-        except Exception as exc:
-            logger.exception("[JiuWenSwarm] Symphony stream failed: %s", exc)
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "chat.error", "error": str(exc)},
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload=None,
-                is_complete=True,
-            )
-            return
-
-        payload = dict(response.payload or {}) if response is not None else {}
-        payload.setdefault(
-            "event_type",
-            f"{request.req_method.value if request.req_method else 'symphony'}.result",
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=payload,
-            is_complete=False,
-        )
-        yield AgentResponseChunk(
-            request_id=request.request_id,
-            channel_id=request.channel_id,
-            payload=None,
-            is_complete=True,
-        )
-
     async def _process_interrupt(self, request: AgentRequest) -> AgentResponse:
         """处理 interrupt 请求.
 
@@ -2779,7 +2667,7 @@ class JiuWenSwarm:
                     metadata=request.metadata,
                 )
 
-        # 无状态请求（skills / skilldev / plugins / symphony）不需要 adapter，
+        # 无状态请求（skills / skilldev / plugins / Skill Graph）不需要 adapter，
         # 在 _ensure_adapter 之前检查，避免触发 adapter 懒初始化。
         # COMMAND_GOAL 已在上方单独处理（其内部按需 ensure），不影响本顺序。
         skilldev_response = await self._handle_skilldev_request(request)
@@ -2793,10 +2681,6 @@ class JiuWenSwarm:
         plugins_response = await self._handle_plugins_request(request)
         if plugins_response is not None:
             return plugins_response
-
-        symphony_response = await self._handle_symphony_request(request)
-        if symphony_response is not None:
-            return symphony_response
 
         adapter = self._ensure_adapter(mode=self._adapter_mode_for_request(request))
 
@@ -3209,18 +3093,12 @@ class JiuWenSwarm:
             )
             return
 
-        if request.req_method in _SYMPHONY_METHODS:
-            async for chunk in self._handle_symphony_request_stream(request):
-                yield chunk
-            return
-
-        # 无状态 RPC（skills / plugins / symphony）不需要 adapter，
+        # 无状态 RPC（skills / plugins / Skill Graph）不需要 adapter，
         # 委托给非流式 handler 并包装为单个 chunk，避免触发 adapter 懒初始化。
         # skilldev 已由上面的流式分支处理，这里不会再命中。
         for stateless_handler in (
             self._handle_skills_request,
             self._handle_plugins_request,
-            self._handle_symphony_request,
         ):
             stateless_response = await stateless_handler(request)
             if stateless_response is not None:
