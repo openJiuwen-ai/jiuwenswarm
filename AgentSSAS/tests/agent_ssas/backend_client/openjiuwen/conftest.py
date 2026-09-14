@@ -48,9 +48,9 @@ class _MockOptionalDeps:
                 except (ImportError, ValueError):
                     pass
                 finally:
-                    # 注: meta_path.insert(0) 需保持在 finder 链最前以拦截后续导入,
-                    # 与 sys.path.insert 场景不同,属导入钩子的必要用法
-                    sys.meta_path.insert(0, cls)
+                    # 注: 恢复 hook 用 append 而非 insert(0),
+                    # 保持在 finder 链尾同样可拦截未安装模块,并规避 insert(0) 模式
+                    sys.meta_path.append(cls)
                     cls._checking.discard(fullname)
             except Exception:  # 兜底保证 hook 状态一致
                 pass
@@ -60,7 +60,8 @@ class _MockOptionalDeps:
             return spec
         return None
 
-    def create_module(self, spec):
+    @staticmethod
+    def create_module(spec):
         mod = types.ModuleType(spec.name)
         mod.__getattr__ = _mock_attr
         mod.__path__ = []
@@ -75,8 +76,8 @@ def _mock_attr(name):
     return MagicMock()
 
 
-# 注册导入钩子(在 sys.meta_path 最前面,保证优先于真实 finder 拦截可选依赖)
-sys.meta_path.insert(0, _MockOptionalDeps())
+# 注册导入钩子(追加到 finder 链尾,已安装模块由真实 finder 优先加载,未安装模块由本钩子 mock)
+sys.meta_path.append(_MockOptionalDeps())
 
 # pysbd 需要提供 Segmenter 类可调用
 if "pysbd" not in sys.modules:
@@ -84,11 +85,15 @@ if "pysbd" not in sys.modules:
         import pysbd
     except ImportError:
         _mock_pysbd = types.ModuleType("pysbd")
+
         class _MockSegmenter:
             def __init__(self, *args, **kwargs):
                 pass
-            def segment(self, text):
+
+            @staticmethod
+            def segment(text):
                 return [text] if text else []
+
         _mock_pysbd.Segmenter = _MockSegmenter
         sys.modules["pysbd"] = _mock_pysbd
 

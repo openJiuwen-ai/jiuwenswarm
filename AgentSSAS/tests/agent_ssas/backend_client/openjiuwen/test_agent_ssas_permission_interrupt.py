@@ -49,17 +49,17 @@ class _MockOptionalDeps:
                 except (ImportError, ValueError):
                     pass
                 finally:
-                    # 注: meta_path.insert(0) 需保持在 finder 链最前以拦截后续导入,
-                    # 与 sys.path.insert 场景不同,属导入钩子的必要用法
-                    sys.meta_path.insert(0, cls)
+                    # 注: 恢复 hook 用 append 而非 insert(0),
+                    # 保持在 finder 链尾同样可拦截未安装模块,并规避 insert(0) 模式
+                    sys.meta_path.append(cls)
                     cls._checking.discard(fullname)
             except Exception:  # 兜底保证 hook 状态一致
                 pass
             from importlib.machinery import ModuleSpec
             return ModuleSpec(fullname, _MockOptionalDeps())
         return None
-
-    def create_module(self, spec):
+    @staticmethod
+    def create_module(spec):
         mod = types.ModuleType(spec.name)
         mod.__getattr__ = _mock_attr
         mod.__path__ = []
@@ -74,7 +74,7 @@ def _mock_attr(name):
     return _MagicMock()
 
 
-sys.meta_path.insert(0, _MockOptionalDeps())
+sys.meta_path.append(_MockOptionalDeps())
 
 if "pysbd" not in sys.modules:
     try:
@@ -85,8 +85,8 @@ if "pysbd" not in sys.modules:
         class _MockSegmenter:
             def __init__(self, *args, **kwargs):
                 pass
-
-            def segment(self, text):
+            @staticmethod
+            def segment(text):
                 return [text] if text else []
 
         _mock_pysbd.Segmenter = _MockSegmenter
@@ -220,9 +220,7 @@ class TestPermissionInterruptDenyFlow:
         assert isinstance(common["tool_call_seq"], int)
         assert common["source"] == "AgentSSASSecurityRail"
         assert common["tool_call_id"] == "call_test_001"
-
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_no_security_event_when_skip_tool_false():
         """_skip_tool 为 False 时,BEFORE_TOOL_CALL 作为生命周期事件通过。"""
@@ -252,9 +250,7 @@ class TestPermissionInterruptDenyFlow:
         assert raw_event["common"]["event_class"] == "lifecycle"
         # 不应有安全检测字段
         assert "risk_source" not in raw_event["payload"]
-
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_fail_open_when_backend_exception():
         """后端异常时返回 SecurityAllow(fail-open)。"""
@@ -278,9 +274,7 @@ class TestPermissionInterruptDenyFlow:
         decision = ctx.extra.get("_interrupt_decision")
         assert decision is not None
         assert isinstance(decision, SecurityAllow)
-
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_interaction_seq_increments_across_invokes():
         """多次 invoke 的 interaction_seq 递增。"""
@@ -302,9 +296,7 @@ class TestPermissionInterruptDenyFlow:
         pool = rail._id_manager._session_interaction_seqs  # pylint: disable=protected-access
         seq_val = pool.get("__no_session__", -1)
         assert seq_val == 1
-
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_llm_call_seq_increments_within_invoke():
         """同一 invoke 内多次 LLM 调用,llm_call_seq 递增。"""
@@ -332,9 +324,7 @@ class TestPermissionInterruptDenyFlow:
         ctx_model2.inputs.tools = []
         await rail._run_and_apply(ctx_model2, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx_model2.extra["llm_call_seq"] == 1
-
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_tool_call_seq_increments_for_multiple_tools():
         """同一 LLM 调用内多次工具调用,tool_call_seq 递增。"""
