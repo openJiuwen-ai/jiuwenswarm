@@ -6987,7 +6987,7 @@ class JiuWenSwarmDeepAdapter:
             else:
                 backend = AgentSSASBackend(ssas_config)
                 # initialize() 是 async, 在同步上下文中用事件循环驱动
-                import asyncio
+                # 注: 复用模块级 asyncio 导入(第 11 行),不再函数内重复 import
                 try:
                     loop = asyncio.get_event_loop()
                     if loop.is_running():
@@ -7002,7 +7002,11 @@ class JiuWenSwarmDeepAdapter:
                 backend=backend,
                 policy_name=ssas_config.decision_policy,
             )
-            logger.info("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s", ssas_config.mode, ssas_config.decision_policy)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create success, mode=%s, policy=%s",
+                ssas_config.mode,
+                ssas_config.decision_policy,
+            )
             return rail
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] AgentSSASSecurityRail create failed: %s", exc)
