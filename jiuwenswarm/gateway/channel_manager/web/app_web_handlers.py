@@ -67,6 +67,7 @@ from jiuwenswarm.common.config import (
     update_skill_retrieval_in_config,
     update_symphony_in_config,
     update_permissions_profile_in_config,
+    update_a4p_in_config,
     update_setup_guide_enabled_in_config,
     update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
@@ -1259,6 +1260,11 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
     return None
 
 
+_A4P_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
+    "a4p_enabled": (("enabled",), "bool", False),
+    "a4p_require_user_signature": (("require_user_signature",), "bool", False),
+}
+
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "symphony_enabled": (("enabled",), "bool", False),
 }
@@ -1387,6 +1393,17 @@ def _flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat = {"swarmflow_enabled": "true" if enabled else "false"}
     if budget is not None:
         flat["swarmflow_budget"] = str(budget)
+    return flat
+
+
+def _flatten_a4p_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
+    section = raw.get("a4p") if isinstance(raw.get("a4p"), dict) else {}
+    flat: dict[str, str] = {}
+    for key, (path, value_type, default) in _A4P_CONFIG_SPECS.items():
+        value = _get_nested_config_value(section, path, default)
+        flat[key] = "true" if value_type == "bool" and bool(value) else (
+            "false" if value_type == "bool" else str(value or "")
+        )
     return flat
 
 
@@ -1588,6 +1605,16 @@ def _build_symphony_config_update(params: dict[str, Any]) -> dict[str, Any]:
 def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
+        if key not in params:
+            continue
+        value = _coerce_config_panel_value(params[key], value_type, default)
+        _set_nested_config_value(updates, path, value)
+    return updates
+
+
+def _build_a4p_config_update(params: dict[str, Any]) -> dict[str, Any]:
+    updates: dict[str, Any] = {}
+    for key, (path, value_type, default) in _A4P_CONFIG_SPECS.items():
         if key not in params:
             continue
         value = _coerce_config_panel_value(params[key], value_type, default)
@@ -3077,6 +3104,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
             )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
+            payload.update(_flatten_a4p_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
             if not payload.get("free_search_ddg_enabled"):
@@ -3105,6 +3133,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("memory_forbidden_description", "")
             payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
+            for key, (_, value_type, default) in _A4P_CONFIG_SPECS.items():
+                payload.setdefault(
+                    key,
+                    ("true" if default else "false")
+                    if value_type == "bool"
+                    else str(default or ""),
+                )
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
@@ -3443,6 +3478,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 yaml_updated.extend(k for k in _SYMPHONY_CONFIG_KEYS if k in params)
             except Exception as e:
                 logger.warning("[config.set] 写回 symphony 失败: %s", e)
+
+        a4p_updates = _build_a4p_config_update(params)
+        if a4p_updates:
+            try:
+                update_a4p_in_config(a4p_updates)
+                yaml_updated.extend(k for k in _A4P_CONFIG_SPECS if k in params)
+            except Exception as e:
+                logger.warning("[config.set] 写回 a4p 失败: %s", e)
 
         try:
             skill_retrieval_updates = _build_skill_retrieval_config_update(params)
@@ -7332,6 +7375,103 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_perm("permissions.rules.delete", _PermReq.PERMISSIONS_RULES_DELETE)
     _register_perm("permissions.approval_overrides.get", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_GET)
     _register_perm("permissions.approval_overrides.delete", _PermReq.PERMISSIONS_APPROVAL_OVERRIDES_DELETE)
+
+    async def _forward_a4p_to_agent(ws, req_id, params, session_id, *, req_method):
+        """Forward an A4P User Authorizer RPC over the session's logical Web route."""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        if not isinstance(req_method, ReqMethod):
+            await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
+            return
+        ac = _resolve(agent_client)
+        if ac is None or not getattr(ac, "server_ready", False):
+            await channel.send_response(
+                ws, req_id, ok=False, error="Agent server is not ready", code="AGENT_NOT_READY"
+            )
+            return
+
+        route_metadata: dict[str, Any] = {
+            "ws_id": str(getattr(ws, "_jiuwen_ws_id", "") or ""),
+        }
+        route = None
+        try:
+            routes = await channel.routing_keys_for_ws(ws)
+            route = next(
+                (item for item in reversed(routes) if item.session_id == session_id),
+                None,
+            )
+            if route is not None:
+                route_metadata["app_id"] = route.app_id
+                route_metadata["agent_ref"] = {
+                    "mode": route.agent_ref.mode,
+                    "id": route.agent_ref.id,
+                }
+        except Exception:
+            logger.warning("[a4p] failed to resolve Web authorizer route", exc_info=True)
+        if route is None:
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="No Web authorizer route is registered for this session",
+                code="A4P_WEB_SESSION_REQUIRED",
+            )
+            return
+
+        env = e2a_from_agent_fields(
+            request_id=str(req_id) if req_id else "",
+            channel_id="web",
+            session_id=session_id,
+            req_method=req_method,
+            params=dict(params) if isinstance(params, dict) else {},
+            metadata=route_metadata,
+        )
+        try:
+            resp = await ac.send_request(env)
+        except Exception as exc:
+            logger.exception("[a4p] forward to agent failed: %s", exc)
+            await channel.send_response(ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR")
+            return
+        if not resp.ok:
+            payload = resp.payload if isinstance(resp.payload, dict) else {}
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error=str(payload.get("error") or "request failed"),
+                code=str(payload.get("code") or "BAD_REQUEST"),
+            )
+            return
+        await channel.send_response(
+            ws,
+            req_id,
+            ok=True,
+            payload=resp.payload if isinstance(resp.payload, dict) else {},
+        )
+
+    from jiuwenswarm.common.schema.message import ReqMethod as _A4PReq
+
+    def _register_a4p(method_name: str, req_method: Any) -> None:
+        async def _handler(ws, req_id, params, session_id):
+            await _forward_a4p_to_agent(
+                ws, req_id, params, session_id, req_method=req_method
+            )
+
+        channel.register_method(method_name, _handler)
+
+    _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
+    _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
+    _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)
+    _register_a4p("a4p.webauthn.credentials.get", _A4PReq.A4P_WEBAUTHN_CREDENTIALS_GET)
+    _register_a4p(
+        "a4p.webauthn.registration.options",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_OPTIONS,
+    )
+    _register_a4p(
+        "a4p.webauthn.registration.verify",
+        _A4PReq.A4P_WEBAUTHN_REGISTRATION_VERIFY,
+    )
 
     async def _memory_forbidden_get(ws, req_id, params, session_id, user_id=None):
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request

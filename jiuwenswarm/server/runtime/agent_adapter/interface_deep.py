@@ -342,6 +342,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
     TOOL_PERMISSION_CHANNEL_ID,
     TOOL_PERMISSION_REQUEST_ID,
 )
+from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+    build_authorization_execution_context,
+)
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
@@ -1905,6 +1909,8 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool: WebPaidSearchTool | None = None
         self._symphony_tools: list[Any] = []
         self._symphony_tools_registered: bool = False
+        self._a4p_tools: list[Any] = []
+        self._a4p_tools_registered: bool = False
         self._symphony_orchestration_rail = None
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
@@ -5980,6 +5986,30 @@ class JiuWenSwarmDeepAdapter:
             enabled=enabled,
             create_fn=lambda: mark_stateless(SymphonyToolkit().get_tools(config_base)),
             warn_label="symphony tools",
+        )
+
+    def _sync_a4p_tools_for_runtime(
+        self,
+        config_base: dict[str, Any],
+        channel: str,
+        session_id: str | None,
+    ) -> None:
+        """Expose A4P only when this session has an interactive Web authorizer."""
+        from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+        from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
+
+        execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+        authorizer_available = bool(
+            channel == "web"
+            and execution_context is not None
+            and execution_context.is_interactive_web
+        )
+        self._a4p_tools, self._a4p_tools_registered = self._sync_tool_group(
+            current_tools=self._a4p_tools,
+            registered=self._a4p_tools_registered,
+            enabled=is_a4p_enabled(config_base) and authorizer_available,
+            create_fn=lambda: get_tools(session_id=session_id),
+            warn_label="A4P intent authorization tool",
         )
 
     @staticmethod
@@ -11374,9 +11404,27 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("cwd_seed")
 
+        self._sync_a4p_tools_for_runtime(
+            get_config(),
+            resolved_channel,
+            runtime_config.session_id,
+        )
+
         if self._runtime_prompt_rail:
+            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
+                runtime_config.session_id
+            )
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
+            self._runtime_prompt_rail.set_a4p_authorizer_available(
+                bool(
+                    execution_context is not None
+                    and execution_context.is_interactive_web
+                )
+            )
+            self._runtime_prompt_rail.set_request_metadata(
+                runtime_config.request_metadata if bind_request else None
+            )
             self._runtime_prompt_rail.set_trusted_dirs(
                 runtime_config.trusted_dirs if bind_request else None
             )
@@ -14486,6 +14534,11 @@ class JiuWenSwarmDeepAdapter:
         if equipment_error is not None:
             return equipment_error
 
+        authorization_context = build_authorization_execution_context(
+            request,
+            agent_id=self._agent_name,
+            mode=mode,
+        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -14535,6 +14588,7 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
+        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -14743,6 +14797,10 @@ class JiuWenSwarmDeepAdapter:
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
             reset_session_messaging_route(session_message_context_token)
+            AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                authorization_context.session_id,
+                authorization_context.request_id,
+            )
             self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
@@ -14840,6 +14898,11 @@ class JiuWenSwarmDeepAdapter:
                 reset_team_heartbeat_service,
             )
 
+            authorization_context = build_authorization_execution_context(
+                request,
+                agent_id=self._agent_name,
+                mode=mode,
+            )
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(
                 resolved_model,
@@ -14908,6 +14971,11 @@ class JiuWenSwarmDeepAdapter:
                 self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
                 self._runtime_prompt_rail.set_mode(mode)
                 self._runtime_prompt_rail.set_session_id(session_id)
+                self._runtime_prompt_rail.set_channel(resolved_channel)
+                self._runtime_prompt_rail.set_a4p_authorizer_available(
+                    authorization_context.is_interactive_web
+                )
+                self._runtime_prompt_rail.set_request_metadata(request.metadata)
             self._write_runtime_state(
                 mode=mode,
                 language=resolved_language,
@@ -14922,6 +14990,7 @@ class JiuWenSwarmDeepAdapter:
             token_heartbeat_service = bind_team_heartbeat_service(
                 getattr(self, "_heartbeat_service", None)
             )
+            AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
             try:
                 team_stream = process_team_message_stream(request, inputs, self._instance)
                 async with aclosing(team_stream):
@@ -14935,6 +15004,10 @@ class JiuWenSwarmDeepAdapter:
                 reset_current_multimodal_image_files(image_files_token)
                 reset_team_heartbeat_service(token_heartbeat_service)
                 cleanup_permission_context(token_perm)
+                AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                    authorization_context.session_id,
+                    authorization_context.request_id,
+                )
             return
 
         # Auto-Harness 模式处理
@@ -15215,6 +15288,11 @@ class JiuWenSwarmDeepAdapter:
             )
             return
 
+        authorization_context = build_authorization_execution_context(
+            request,
+            agent_id=self._agent_name,
+            mode=mode,
+        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -15264,6 +15342,7 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
+        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -16113,6 +16192,10 @@ class JiuWenSwarmDeepAdapter:
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
+            AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                authorization_context.session_id,
+                authorization_context.request_id,
+            )
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)

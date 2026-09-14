@@ -18,9 +18,11 @@ from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
+    _build_a4p_config_update,
     _build_external_cli_publish_url,
     _detect_external_cli_agent,
     _flatten_external_cli_agents_for_config_panel,
+    _flatten_a4p_for_config_panel,
     _flatten_modes_team_for_config_panel,
     _flatten_symphony_for_config_panel,
     _inject_external_cli_publish_url,
@@ -32,6 +34,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 
 
 class FakeWebChannel:
@@ -43,6 +46,7 @@ class FakeWebChannel:
         self.connect_handler = None
         self.disconnect_handler = None
         self.busy_sessions: set[str] = set()
+        self.routing_keys: list[RoutingKey] = []
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -70,6 +74,79 @@ class FakeWebChannel:
     async def send_event(self, ws, event, payload=None):
         # lifecycle_handlers 在 session.delete 等成功后广播完成事件（§5.10.11）。
         self.events.append((event, dict(payload or {})))
+
+    async def routing_keys_for_ws(self, ws):
+        return list(self.routing_keys)
+
+
+def test_a4p_config_panel_maps_signature_mode() -> None:
+    assert _flatten_a4p_for_config_panel({}) == {
+        "a4p_enabled": "false",
+        "a4p_require_user_signature": "false",
+    }
+    assert _flatten_a4p_for_config_panel(
+        {"a4p": {"enabled": True, "require_user_signature": True}}
+    ) == {
+        "a4p_enabled": "true",
+        "a4p_require_user_signature": "true",
+    }
+    assert _build_a4p_config_update(
+        {"a4p_enabled": "true", "a4p_require_user_signature": "true"}
+    ) == {"enabled": True, "require_user_signature": True}
+
+
+@pytest.mark.asyncio
+async def test_a4p_rpc_uses_current_websocket_route() -> None:
+    class _AgentClient:
+        server_ready = True
+
+        def __init__(self) -> None:
+            self.envelope = None
+
+        async def send_request(self, envelope):
+            self.envelope = envelope
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    channel.routing_keys = [
+        RoutingKey(
+            user_id="local",
+            channel_id="web",
+            app_id="app-1",
+            agent_ref=AgentRef(mode="team", id="research"),
+            session_id="session-1",
+        )
+    ]
+    agent_client = _AgentClient()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
+    ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
+
+    await channel.methods["a4p.authorization.complete"](
+        ws,
+        "rpc-1",
+        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        "session-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert agent_client.envelope.channel_context == {
+        "ws_id": "ws-1",
+        "app_id": "app-1",
+        "agent_ref": {"mode": "team", "id": "research"},
+    }
+
+
+@pytest.mark.asyncio
+async def test_a4p_rpc_rejects_websocket_without_session_route() -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True))
+    )
+    await channel.methods["a4p.authorization.pending"](
+        SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", {}, "session-1"
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
 
 
 class FakeAgentClient:

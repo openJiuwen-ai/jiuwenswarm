@@ -364,6 +364,14 @@ class ReqMethod(Enum):
     MEMORY_FORBIDDEN_GET = "memory.forbidden.get"
     MEMORY_FORBIDDEN_SET = "memory.forbidden.set"
 
+    # A4P 授权桥接（Web User Authorizer → AgentServer A4PServer）
+    A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
+    A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
+    A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_WEBAUTHN_CREDENTIALS_GET = "a4p.webauthn.credentials.get"
+    A4P_WEBAUTHN_REGISTRATION_OPTIONS = "a4p.webauthn.registration.options"
+    A4P_WEBAUTHN_REGISTRATION_VERIFY = "a4p.webauthn.registration.verify"
+
     CHANNEL_FEISHU_GET_CONF = "channel.feishu.get_conf"
     CHANNEL_FEISHU_SET_CONF = "channel.feishu.set_conf"
 

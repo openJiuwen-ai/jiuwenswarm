@@ -1115,6 +1115,8 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   ]);
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
     'a2ui_enabled',
+    'a4p_enabled',
+    'a4p_require_user_signature',
     'asr_api_base',
     'asr_api_key',
     'asr_model',
