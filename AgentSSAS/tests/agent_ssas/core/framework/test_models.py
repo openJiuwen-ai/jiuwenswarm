@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# framework core model tests (gate-recheck)
 
 """数据模型单元测试。
 
