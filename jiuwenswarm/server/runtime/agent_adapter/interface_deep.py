@@ -9146,6 +9146,19 @@ class JiuWenSwarmDeepAdapter:
             tool_cards.append(registered.card)
             existing_names.add(tname)
 
+    def _build_skill_toolkit(self) -> SkillToolkit:
+        """SkillToolkit 工厂：profile 子类可替换为变体（如 flash 的折叠安装版）。"""
+        return SkillToolkit(
+            manager=self._skill_manager,
+            service_id=self._service_id,
+            agent_id=self._agent_id,
+            on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+        )
+
+    def _tool_card_drop_names(self) -> frozenset[str]:
+        """按名从 ``_get_tool_cards`` 结果剔除的工具（profile 裁剪点，默认不剔除）。"""
+        return frozenset()
+
     async def _get_tool_cards(self, agent_id: str):
         """Get tool cards."""
         tool_cards = []
@@ -9277,12 +9290,7 @@ class JiuWenSwarmDeepAdapter:
                 )
 
         try:
-            skill_toolkit = SkillToolkit(
-                manager=self._skill_manager,
-                service_id=self._service_id,
-                agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
-            )
+            skill_toolkit = self._build_skill_toolkit()
             skill_tool_names: list[str] = []
             for tool in skill_toolkit.get_tools():
                 registered = self._register_shared_tool(tool)
@@ -9353,6 +9361,21 @@ class JiuWenSwarmDeepAdapter:
 
         # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
         self._append_extra_tool_cards(tool_cards)
+
+        drop_names = self._tool_card_drop_names()
+        if drop_names:
+            dropped_count = len(tool_cards)
+            tool_cards = [
+                card
+                for card in tool_cards
+                if str(getattr(card, "name", "") or "") not in drop_names
+            ]
+            dropped_count -= len(tool_cards)
+            if dropped_count:
+                logger.info(
+                    "[JiuWenSwarmDeepAdapter] dropped %d tool card(s) by profile",
+                    dropped_count,
+                )
 
         return tool_cards
 
