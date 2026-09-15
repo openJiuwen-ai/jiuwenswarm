@@ -127,7 +127,8 @@ async def test_task_tool_ask_is_control_silent_after_engine(tmp_path) -> None:
     "allow", "reject", "deny", "session_deny", "fail_closed", "forged",
     "changed_args", "undiscovered", "bad_mapping",
 ])
-async def test_real_core_nested_permission_resume(tmp_path, case):
+@pytest.mark.parametrize("target_name", ["probe_target", "cron_list_jobs"])
+async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
     """Real Core dispatch and AutoPermission; only model/base policy are doubles."""
     data, executed, callbacks = {}, [], []
     session = SimpleNamespace(
@@ -166,18 +167,18 @@ async def test_real_core_nested_permission_resume(tmp_path, case):
     progressive.init(agent)
     target = LocalFunction(
         card=ToolCard(
-            id="nested-target", name="probe_target", description="In-memory target",
+            id="nested-target", name=target_name, description="In-memory target",
             input_params={"type": "object", "properties": {"value": {"type": "integer"}}},
             exposure=ToolExposure.DEFERRED,
         ),
         func=lambda value: executed.append(value) or "done",
     )
     manager.add_ability(target.card, target)
-    progressive._authorize_discovered_tools(session, ["probe_target"])
+    progressive._authorize_discovered_tools(session, [target_name])
     calls = [
         ToolCall(
             id=f"outer-{i}", type="function", name="tool_call",
-            arguments=json.dumps({"name": "probe_target", "args": {"value": i}}),
+            arguments=json.dumps({"name": target_name, "args": {"value": i}}),
         ) for i in range(2)
     ]
     ctx = AgentCallbackContext(agent=agent, session=session, extra={})
@@ -240,7 +241,7 @@ async def test_real_core_nested_permission_resume(tmp_path, case):
             execute_original = execute
 
             async def execute(context, tool_calls, sdk_session, _context):
-                tool_calls[0].arguments = json.dumps({"name": "probe_target", "args": {"value": 99}})
+                tool_calls[0].arguments = json.dumps({"name": target_name, "args": {"value": 99}})
                 return await execute_original(context, tool_calls, sdk_session, _context)
         elif case == "undiscovered":
             data["__progressive_discovered_tool_names__"] = []
@@ -271,6 +272,8 @@ async def test_real_core_nested_permission_resume(tmp_path, case):
             ))
             assert final is None and not queue.has_live(root_session_id="session-a")
             assert executed == ([0, 1] if case == "allow" else [1])
+            if target_name == "cron_list_jobs":
+                assert reviewer.requests == []
             # The same run context cannot authorize a second outer re-entry.
             again = await execute(ctx, calls[1], session, None)
             assert isinstance(again[0][0], ToolInterruptException)
@@ -281,7 +284,7 @@ async def test_real_core_nested_permission_resume(tmp_path, case):
         reset_root_permission_request(token)
         await callback_manager.clear()
         progressive.uninit(agent)
-        for name in ("probe_target", "tool_call"):
+        for name in (target_name, "tool_call"):
             if manager.get(name) is not None:
                 manager.remove_ability(name)
 
