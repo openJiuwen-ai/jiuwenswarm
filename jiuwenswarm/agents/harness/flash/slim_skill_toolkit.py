@@ -85,7 +85,11 @@ class SlimSkillToolkit(SkillToolkit):
 
         def make_tool(name: str, description: str, input_params: dict, func) -> Tool:
             card = ToolCard(
-                id=name,
+                # 共享注册表按 card.id 先到先得：agent 模式 prewarm 先启动
+                # 注册了 stock 版 search_skill，同名 id 的 slim 版永远注册
+                # 不进去（后注册为 no-op）。id 区分、name 保持不变，两个
+                # profile 各取各的实例。
+                id=f"{name}_slim",
                 name=name,
                 description=description,
                 input_params=input_params,

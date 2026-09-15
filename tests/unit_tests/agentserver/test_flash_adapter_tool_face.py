@@ -176,6 +176,24 @@ def test_tool_card_drop_names_flash_only() -> None:
     assert deep._tool_card_drop_names() == frozenset()
 
 
+def test_slim_search_skill_card_id_distinct_from_stock() -> None:
+    """slim search_skill 卡 id 必须与 stock 版区分。
+
+    共享注册表按 card.id 先到先得，agent 模式 prewarm 先注册 stock 版
+    "search_skill"；若 slim 版同 id，后注册为 no-op，flash 会话调到的
+    将是不带 install 参数的 stock 实例。name 保持不变（模型可见面不变）。
+    """
+    from jiuwenswarm.agents.harness.flash.slim_skill_toolkit import (
+        SlimSkillToolkit,
+    )
+
+    toolkit = SlimSkillToolkit(manager=None, service_id="svc", agent_id="ag")
+    tools = toolkit.get_tools()
+
+    assert [t.card.name for t in tools] == ["search_skill"]
+    assert tools[0].card.id != "search_skill"
+
+
 # ── 统一 todo 工具（get action） ─────────────────────────────────────
 
 
