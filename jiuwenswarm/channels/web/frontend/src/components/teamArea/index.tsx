@@ -4,13 +4,14 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { FileCheck2, FileText, Minimize2 } from 'lucide-react';
+import { Building2, FileCheck2, FileText, Minimize2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message } from '../../types';
 import { ArtifactsPanel, useSessionArtifactsCount } from '../ArtifactsPanel';
 import { TaskPlanningPanel } from './TaskPlanningPanel';
 import { TeamMembersPanel } from './TeamMembersPanel';
+import { OrgInfoPanel } from './OrgInfoPanel';
 import teamProcessIcon from '../../assets/team-process.svg';
 import teamIcon from '../../assets/team.svg';
 import {
@@ -170,6 +171,11 @@ function ExpandedTeamArea({
         }]
       : []),
     ...(reviewPanel ? [{ key: 'review' as const, label: t('codeMode.review'), icon: <FileCheck2 size={16} /> }] : []),
+    {
+      key: 'org' as const,
+      label: t('team.org.tab'),
+      icon: <Building2 size={16} />,
+    },
   ];
 
   return (
@@ -221,6 +227,8 @@ function ExpandedTeamArea({
           </div>
         ) : resolvedTab === 'review' && reviewPanel ? (
           <div className="flex min-w-0 flex-1 overflow-hidden">{reviewPanel}</div>
+        ) : resolvedTab === 'org' ? (
+          <OrgInfoPanel className="min-w-0 flex-1" />
         ) : (
           <TeamMembersPanel
             variant="expanded"

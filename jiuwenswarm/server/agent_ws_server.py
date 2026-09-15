@@ -1848,6 +1848,12 @@ class AgentWebSocketServer:
             if request.req_method == ReqMethod.TEAM_MEMBERS_GET:
                 await self._handle_team_members_get(ws, request, send_lock)
                 return
+            if request.req_method == ReqMethod.TEAM_LIST:
+                await self._handle_team_list(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.ORG_SNAPSHOT:
+                await self._handle_org_snapshot(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.COMMAND_ADD_DIR:
                 await self._handle_command_add_dir(ws, request, send_lock)
                 return
@@ -5115,12 +5121,26 @@ class AgentWebSocketServer:
         channel_id = request.channel_id or "web"
         empty_payload = {"members": [], "tasks": [], "team_id": None}
 
+        # ``team_name`` 显式指定了要看的 team（team 选择器切 team 时就是这么调的）。
+        requested_team_name = str(params.get("team_name") or "").strip()
+
         team_manager = get_team_manager(channel_id)
         monitor_handler = team_manager.get_monitor_handler(session_id) if session_id else None
 
+        # TeamManager 的 monitor 表按 session_id 索引，一个 session 只保住最后一个
+        # monitor；而 TeamRuntimePool 允许一个 session 同时挂多个 team（专家团就是
+        # 每个 team 一条 `org-expert-*` 记录）。此时 session 级的 live 快照属于
+        # *另一个* team，直接返回会把别队的成员/任务画到当前选中的 team 上。
+        monitor_team = monitor_handler.team_id if monitor_handler is not None else None
+        live_matches_request = (
+            monitor_handler is not None
+            and monitor_handler.is_running
+            and (not requested_team_name or monitor_team == requested_team_name)
+        )
+
         snapshot: dict[str, Any] | None = None
         source = "empty"
-        if monitor_handler is not None and monitor_handler.is_running:
+        if live_matches_request:
             try:
                 snapshot = await monitor_handler.get_team_snapshot()
                 if snapshot is not None:
@@ -5134,6 +5154,34 @@ class AgentWebSocketServer:
             tasks = payload.get("tasks")
             return tasks if isinstance(tasks, list) else []
 
+        # 请求的 team 活着、但 session 级 monitor 不是它（多 team 并发的会话）：另开一个
+        # 精确绑定 (team_name, session_id) 的只读 monitor 读一次。单个 monitor 实例会读
+        # 全量成员/消息，会话一多就是 N 倍 DB 开销，所以只在"请求的 team 不是当前
+        # monitor"这个确实需要区分的场景才走这条路，且用完即弃。
+        if snapshot is None and requested_team_name and session_id:
+            try:
+                from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+                scoped_monitor = await GLOBAL_RUNNER.get_agent_team_monitor(
+                    team_name=requested_team_name,
+                    session_id=session_id,
+                )
+                if scoped_monitor is not None:
+                    scoped_snapshot = await TeamMonitorHandler(
+                        scoped_monitor, session_id
+                    ).get_team_snapshot()
+                    if scoped_snapshot is not None:
+                        snapshot = scoped_snapshot
+                        source = "live-scoped"
+            except Exception as e:
+                logger.warning(
+                    "[AgentWebSocketServer] team.snapshot (scoped live) failed: "
+                    "session_id=%s team_name=%s error=%s",
+                    session_id,
+                    requested_team_name,
+                    e,
+                )
+
         # History restore often hits this RPC after the monitor has stopped, OR
         # while a live handler is still registered but already returns a truthy
         # empty board ({tasks: [], members: [], team_id: ...}). `if not snapshot`
@@ -5141,7 +5189,7 @@ class AgentWebSocketServer:
         # title/content. Fall back whenever live has no tasks.
         needs_db = snapshot is None or not _snapshot_tasks(snapshot)
         if needs_db and session_id:
-            team_name = str(params.get("team_name") or "").strip()
+            team_name = requested_team_name
             if not team_name:
                 team_name = str(
                     team_manager.get_active_team_name(session_id) or ""
@@ -5194,6 +5242,348 @@ class AgentWebSocketServer:
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
+
+    async def _team_list_entries(self, session_id: str, channel_id: str) -> list[dict[str, Any]]:
+        """Collect every team that currently belongs to ``session_id``.
+
+        Two sources are merged because a session can hold several teams, and
+        they do not live in the same registry:
+
+        * the Runner-owned ``TeamRuntimePool`` — the multi-team object pool,
+          keyed by ``team_name``, entries bound to ``current_session_id``;
+        * ``TeamManager``'s per-session markers (``_active_team_names`` /
+          ``_pending_team_names``) plus session metadata ``team_name``, which
+          cover sessions whose runtime has not been pooled yet (or is already
+          torn down but still resumable).
+
+        Later sources only fill gaps, so a pooled entry keeps its live state.
+        """
+        from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.server.runtime.session.session_metadata import get_session_metadata
+
+        entries: dict[str, dict[str, Any]] = {}
+
+        def _upsert(team_name: str, *, state: str, **extra: Any) -> None:
+            team_name = str(team_name or "").strip()
+            if not team_name:
+                return
+            existing = entries.get(team_name)
+            if existing is None:
+                entries[team_name] = {
+                    "team_id": team_name,
+                    "team_name": team_name,
+                    "display_name": None,
+                    "state": state,
+                    "leader_id": None,
+                    "organization_id": None,
+                    "is_leader": True,
+                    "capabilities": [],
+                    "source": extra.get("source") or "runtime",
+                }
+                existing = entries[team_name]
+            for key, value in extra.items():
+                if value is not None and existing.get(key) in (None, [], ""):
+                    existing[key] = value
+            # A live pool entry outranks a local marker, and running outranks
+            # paused; never downgrade the state we already recorded.
+            if state == "running" or existing.get("state") in (None, ""):
+                existing["state"] = state
+
+        runner_pool = None
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            runtime_mgr = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
+            runner_pool = getattr(runtime_mgr, "pool", None)
+        except Exception as e:
+            logger.warning("[AgentWebSocketServer] team.list pool lookup failed: %s", e)
+
+        if runner_pool is not None and session_id:
+            try:
+                for active in await runner_pool.teams_for_session(session_id):
+                    backend = getattr(active.agent, "team_backend", None)
+                    if backend is not None and not getattr(backend, "is_leader", True):
+                        # Only leader-backed teams are addressable as a unit.
+                        continue
+                    organization_id = getattr(
+                        getattr(backend, "org_task_manager", None), "organization_id", None
+                    )
+                    _upsert(
+                        active.team_name,
+                        state=getattr(getattr(active, "state", None), "value", None) or "running",
+                        display_name=getattr(getattr(active.agent, "card", None), "name", None),
+                        leader_id=getattr(backend, "leader_member_name", None),
+                        organization_id=organization_id,
+                        source="pool",
+                    )
+            except Exception as e:
+                logger.warning(
+                    "[AgentWebSocketServer] team.list pool read failed: session_id=%s error=%s",
+                    session_id,
+                    e,
+                )
+
+        team_manager = get_team_manager(channel_id)
+        if session_id:
+            session_info = team_manager.get_runtime_team_snapshot().get(session_id)
+            if session_info:
+                _upsert(
+                    str(session_info.get("team_name") or ""),
+                    state="running" if session_info.get("state") == "active" else "pending",
+                    source="manager",
+                )
+
+            active_name = team_manager.get_active_team_name(session_id)
+            if active_name:
+                _upsert(active_name, state="running", source="manager")
+            pending_name = vars(team_manager).get("_pending_team_names", {}).get(session_id)
+            if pending_name:
+                _upsert(pending_name, state="pending", source="manager")
+
+            metadata = get_session_metadata(session_id) or {}
+            metadata_team_name = str(metadata.get("team_name") or "").strip()
+            if metadata_team_name:
+                _upsert(metadata_team_name, state="configured", source="metadata")
+
+        for entry in entries.values():
+            if not entry.get("organization_id"):
+                org_id = self._lookup_session_org_binding(session_id, entry["team_id"])
+                if org_id:
+                    entry["organization_id"] = org_id
+
+        return list(entries.values())
+
+    @staticmethod
+    def _lookup_session_org_binding(session_id: str, team_id: str) -> str | None:
+        """Best-effort organization id for a team, read off its live backend."""
+        if not session_id or not team_id:
+            return None
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            runtime_mgr = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
+            pool = getattr(runtime_mgr, "pool", None)
+            teams = getattr(pool, "_teams", None)
+            if not isinstance(teams, dict):
+                return None
+            active = teams.get(team_id)
+            if active is None or getattr(active, "current_session_id", None) != session_id:
+                return None
+            backend = getattr(active.agent, "team_backend", None)
+            organization_id = getattr(
+                getattr(backend, "org_task_manager", None), "organization_id", None
+            )
+            return str(organization_id) if organization_id else None
+        except Exception:
+            return None
+
+    async def _handle_team_list(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """List the teams belonging to one session, for the team selector."""
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        channel_id = request.channel_id or "web"
+
+        teams: list[dict[str, Any]] = []
+        try:
+            if session_id:
+                teams = await self._team_list_entries(session_id, channel_id)
+        except Exception as e:
+            logger.warning(
+                "[AgentWebSocketServer] team.list failed: session_id=%s error=%s", session_id, e
+            )
+
+        default_team_id = None
+        if teams:
+            default_team_id = next(
+                (t["team_id"] for t in teams if t.get("state") == "running"),
+                teams[0]["team_id"],
+            )
+        logger.info(
+            "[AgentWebSocketServer] team.list session_id=%s teams_count=%s", session_id or "-", len(teams)
+        )
+
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=True,
+            payload={"session_id": session_id, "teams": teams, "default_team_id": default_team_id},
+        )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_org_snapshot(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        """Return organization + task-pool state for the right-hand info box.
+
+        ``organization_id`` may be supplied directly by the caller; when it is
+        absent we resolve it from the team's live backend, since a team carries
+        its own ``org_task_manager`` once it has been bound to an organization.
+        """
+        params = request.params if isinstance(request.params, dict) else {}
+        session_id = str(params.get("session_id") or request.session_id or "").strip()
+        team_id = str(params.get("team_id") or "").strip()
+        organization_id = str(params.get("organization_id") or "").strip()
+        channel_id = request.channel_id or "web"
+        empty_payload: dict[str, Any] = {
+            "organization": None,
+            "tasks": [],
+            "unclaimed_tasks": [],
+            "pending_reviews": [],
+            "stats": {},
+        }
+
+        if not organization_id and session_id:
+            organization_id = self._lookup_session_org_binding(session_id, team_id) or ""
+
+        if not organization_id:
+            payload: dict[str, Any] = dict(empty_payload)
+        else:
+            payload = await self._build_org_snapshot(
+                session_id=session_id,
+                team_id=team_id,
+                organization_id=organization_id,
+            )
+
+        logger.info(
+            "[AgentWebSocketServer] org.snapshot session_id=%s team_id=%s organization_id=%s tasks=%s",
+            session_id or "-",
+            team_id or "-",
+            organization_id or "-",
+            len(payload.get("tasks") or []),
+        )
+
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=channel_id,
+            ok=True,
+            payload=payload,
+        )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _build_org_snapshot(
+        self,
+        *,
+        session_id: str,
+        team_id: str,
+        organization_id: str,
+    ) -> dict[str, Any]:
+        """Read one organization's spec + task pool through its process manager."""
+        from openjiuwen.agent_teams.organization.pool import get_process_org_manager
+
+        empty_payload: dict[str, Any] = {
+            "organization": None,
+            "tasks": [],
+            "unclaimed_tasks": [],
+            "pending_reviews": [],
+            "stats": {},
+        }
+
+        backend = self._resolve_team_backend(session_id, team_id)
+        db = getattr(backend, "db", None)
+        if db is None:
+            logger.warning(
+                "[AgentWebSocketServer] org.snapshot has no db handle: session_id=%s team_id=%s",
+                session_id or "-",
+                team_id or "-",
+            )
+            return empty_payload
+
+        manager = get_process_org_manager(
+            organization_id=organization_id,
+            db=db,
+            messager=getattr(backend, "messager", None),
+            session_id=session_id or None,
+        )
+        task_pool = manager.task_pool
+
+        organization = await manager.get_organization()
+        if organization is None:
+            return empty_payload
+
+        tasks = await task_pool.list_tasks(limit=200)
+        unclaimed = [t for t in tasks if t.unclaimed is not None]
+        open_tasks = [t for t in tasks if str(t.status) == "OPEN"]
+
+        pending_reviews: list[dict[str, Any]] = []
+        if team_id:
+            try:
+                pending_reviews = await task_pool.list_pending_reviews(team_id=team_id, limit=50)
+            except Exception as e:
+                logger.warning(
+                    "[AgentWebSocketServer] org.snapshot pending reviews failed: "
+                    "organization_id=%s team_id=%s error=%s",
+                    organization_id,
+                    team_id,
+                    e,
+                )
+
+        status_counts: dict[str, int] = {}
+        for task in tasks:
+            key = str(task.status)
+            status_counts[key] = status_counts.get(key, 0) + 1
+
+        return {
+            "organization": {
+                "organization_id": organization.organization_id,
+                "display_name": organization.display_name,
+                "description": organization.description,
+                "owner_team_id": organization.owner_team_id,
+                "owner_leader_id": organization.owner_leader_id,
+                "leaders": [
+                    {
+                        "organization_id": leader.organization_id,
+                        "team_id": leader.team_id,
+                        "leader_id": leader.leader_id,
+                        "leader_member_name": leader.leader_member_name,
+                        "capabilities": list(leader.capabilities or []),
+                    }
+                    for leader in organization.leaders
+                ],
+                "metadata": dict(organization.metadata or {}),
+                "unclaimed_task_policy": organization.unclaimed_task_policy.model_dump(),
+            },
+            "tasks": [task.brief() | {"description": task.description[:280]} for task in tasks],
+            "unclaimed_tasks": [task.brief() for task in unclaimed],
+            "pending_reviews": pending_reviews,
+            "stats": {
+                "total": len(tasks),
+                "open": len(open_tasks),
+                "unclaimed": len(unclaimed),
+                "pending_reviews": len(pending_reviews),
+                "by_status": status_counts,
+            },
+        }
+
+    @staticmethod
+    def _resolve_team_backend(session_id: str, team_id: str) -> Any | None:
+        """Return the live TeamBackend for a team, or ``None`` when not pooled."""
+        if not session_id:
+            return None
+        try:
+            from openjiuwen.core.runner.runner import GLOBAL_RUNNER
+
+            runtime_mgr = getattr(GLOBAL_RUNNER, "_team_runtime_manager", None)
+            pool = getattr(runtime_mgr, "pool", None)
+            teams = getattr(pool, "_teams", None)
+            if not isinstance(teams, dict):
+                return None
+            candidates = [teams[team_id]] if team_id and team_id in teams else list(teams.values())
+            for active in candidates:
+                if getattr(active, "current_session_id", None) != session_id:
+                    continue
+                backend = getattr(active.agent, "team_backend", None)
+                if backend is not None:
+                    return backend
+        except Exception as e:
+            logger.warning(
+                "[AgentWebSocketServer] resolve team backend failed: session_id=%s team_id=%s error=%s",
+                session_id,
+                team_id,
+                e,
+            )
+        return None
 
     async def _handle_team_mq_publish(
         self,

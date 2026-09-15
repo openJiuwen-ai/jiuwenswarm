@@ -28,6 +28,10 @@ import {
 } from '../../features/chatTimeline/buildTurnTimeline';
 
 const EMPTY_REASONING: ReasoningSegment[] = [];
+/** 会话视图（会话 + team）未建立时的兜底；每次 `new Map()` 会让 memo 失效。 */
+const EMPTY_TOOL_EXECUTIONS: Map<string, ToolExecution> = new Map();
+const EMPTY_TOOL_CALL_IDS: string[] = [];
+
 
 interface MessageListProps {
   messages: Message[];
@@ -348,11 +352,14 @@ export function ChatTimelineList({
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
   const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  // 推理段与消息同源：都取「会话 + 当前选中 team」这条视图。这一行决定了切换下拉后
+  // 左栏展示的到底是谁的思考过程。
+  const conversationRuntime = useChatStore((s) => s.getTeamRuntime(activeSessionId, activeTeamId));
+  // processing / history 是「这一轮」的状态，不属于某个 team 的对话内容，仍按会话取。
   const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
   const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
-  const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
-  );
+  const storeReasoningSegments = conversationRuntime?.reasoningSegments ?? EMPTY_REASONING;
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const reasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
   const renderItems = useMemo(
@@ -689,8 +696,11 @@ export function ChatTimelineList({
 
 export function MessageList({ messages, renderAfterMessage }: MessageListProps) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
+  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  // 工具执行与消息同源：都取当前会话视图，避免出现「消息是 A team 的、工具卡片是主视图的」。
+  const conversationRuntime = useChatStore((s) => s.getTeamRuntime(activeSessionId, activeTeamId));
+  const toolExecutions = conversationRuntime?.toolExecutions ?? EMPTY_TOOL_EXECUTIONS;
+  const toolExecutionOrder = conversationRuntime?.toolExecutionOrder ?? EMPTY_TOOL_CALL_IDS;
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => toolExecutionOrder
