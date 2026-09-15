@@ -4,13 +4,14 @@ from __future__ import annotations
 
 from typing import Any, Literal, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 
 class ModelSelection(BaseModel):
     model_config = ConfigDict(extra="forbid")
     type: Literal["model", "model_group"]
     id: str
+    route_id: str | None = None
 
     @field_validator("id")
     @classmethod
@@ -19,6 +20,22 @@ class ModelSelection(BaseModel):
         if not value:
             raise ValueError("id must not be empty")
         return value
+
+    @field_validator("route_id")
+    @classmethod
+    def validate_route_id(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        value = value.strip()
+        if not value:
+            raise ValueError("route_id must not be empty")
+        return value
+
+    @model_validator(mode="after")
+    def validate_route_scope(self) -> "ModelSelection":
+        if self.type == "model" and self.route_id is not None:
+            raise ValueError("route_id is only valid for a model_group selection")
+        return self
 
 
 class ResolvedModel(BaseModel):

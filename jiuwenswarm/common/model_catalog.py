@@ -143,7 +143,10 @@ class ModelCatalog:
                 continue
             public = {}
             for key in _PUBLIC_GROUP_KEYS:
-                public[key] = group.get(key)
+                value = deepcopy(group.get(key))
+                if key == "routing" and isinstance(value, dict):
+                    value.pop("num_retries", None)
+                public[key] = value
             result.append(public)
         return result
 

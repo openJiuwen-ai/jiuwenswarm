@@ -33,7 +33,8 @@ def _config():
                 {"route_id": "primary", "model_id": "mdl_a"},
                 {"route_id": "backup", "model_id": "mdl_b", "enabled": False},
             ],
-            "request_config": {"temperature": .5}, "routing": {"strategy": "ordered-failover"},
+            "request_config": {"temperature": .5},
+            "routing": {"strategy": "ordered-failover", "num_retries": 3},
         }],
     }}
 
@@ -144,7 +145,8 @@ def test_catalog_finds_agent_and_team_references(monkeypatch, tmp_path):
 
 
 def test_default_group_wins_and_keeps_route_order():
-    resolved = ModelSelectionResolver(ModelCatalog(_config())).resolve(None)
+    catalog = ModelCatalog(_config())
+    resolved = ModelSelectionResolver(catalog).resolve(None)
     assert isinstance(resolved, ResolvedModelGroup)
     assert [route.route_id for route in resolved.routes] == ["primary", "backup"]
     assert resolved.routes[0].enabled is True
@@ -152,6 +154,8 @@ def test_default_group_wins_and_keeps_route_order():
     assert resolved.routes[0].model.endpoint_profile == "deepseek"
     assert resolved.routes[0].model.fallback_tag == "chat"
     assert resolved.routes[0].model.model_description == "primary model"
+    assert resolved.routing["num_retries"] == 0
+    assert "num_retries" not in catalog.list_public_groups()[0]["routing"]
 
 
 def test_explicit_disabled_group_does_not_fall_back():
@@ -161,6 +165,72 @@ def test_explicit_disabled_group_does_not_fall_back():
     with pytest.raises(ModelSelectionError) as caught:
         resolver.resolve(ModelSelection(type="model_group", id="mgp_a"))
     assert caught.value.code == MODEL_SELECTION_DISABLED
+
+
+def test_explicit_group_route_resolves_only_that_route():
+    resolved = ModelSelectionResolver(ModelCatalog(_config())).resolve(
+        ModelSelection(type="model_group", id="mgp_a", route_id="primary")
+    )
+
+    assert isinstance(resolved, ResolvedModelGroup)
+    assert resolved.model_group_id == "mgp_a"
+    assert [route.route_id for route in resolved.routes] == ["primary"]
+    assert resolved.routing["num_retries"] == 0
+
+
+def test_explicit_group_route_rejects_unknown_or_disabled_route():
+    resolver = ModelSelectionResolver(ModelCatalog(_config()))
+
+    with pytest.raises(ModelSelectionError) as unknown:
+        resolver.resolve(ModelSelection(type="model_group", id="mgp_a", route_id="missing"))
+    assert unknown.value.code == "MODEL_SELECTION_NOT_FOUND"
+
+    with pytest.raises(ModelSelectionError) as disabled:
+        resolver.resolve(ModelSelection(type="model_group", id="mgp_a", route_id="backup"))
+    assert disabled.value.code == MODEL_SELECTION_DISABLED
+
+
+def test_single_model_selection_rejects_route_id():
+    with pytest.raises(ValueError):
+        ModelSelection(type="model", id="mdl_a", route_id="primary")
+
+
+def test_group_route_selection_round_trips_session_store(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import model_selection_store
+
+    monkeypatch.setattr(model_selection_store, "get_agent_sessions_dir", lambda: tmp_path)
+    selection = ModelSelection(type="model_group", id="mgp_a", route_id="primary")
+
+    model_selection_store.set_session_model_selection("session-a", selection)
+
+    assert model_selection_store.get_session_model_selection("session-a") == selection
+
+
+def test_manual_route_overrides_tag_filter_and_compiles_selected_member():
+    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+
+    config = _config()
+    group = config["models"]["groups"][0]
+    group["routes"][1]["enabled"] = True
+    group["routing"] = {
+        "strategy": "tag-filtered",
+        "strategy_kwargs": {"fallback_tag": "non-matching-tag"},
+    }
+    resolver = ModelSelectionResolver(ModelCatalog(config))
+    for route_id, model_id in [("primary", "mdl_a"), ("backup", "mdl_b")]:
+        resolved = resolver.resolve(ModelSelection(type="model_group", id="mgp_a", route_id=route_id))
+        assert resolved.routing["strategy"] == "ordered-failover"
+        assert "strategy_kwargs" not in resolved.routing
+        try:
+            client, _ = compile_model_selection(resolved)
+        except ModelSelectionError as exc:
+            assert exc.code == "MODEL_RUNTIME_UNAVAILABLE"
+            pytest.skip("agent-core compiler unavailable")
+        router = client.intelli_router
+        assert router.model_group_id == "mgp_a"
+        assert router.num_retries == 0
+        assert [(route.route_id, route.model_id) for route in router.deployments] == [(route_id, model_id)]
+    assert group["routing"]["strategy"] == "tag-filtered"
 
 
 def test_validation_rejects_complete_catalog_conflicts_and_forbidden_fields():
@@ -222,4 +292,5 @@ def test_compiler_adapter_matches_final_core_dto():
     assert router.deployments[0].model_id == "mdl_a"
     assert router.deployments[0].provider == "deepseek"
     assert router.deployments[0].model_name == "a"
+    assert router.num_retries == 0
     assert request_cfg is not None

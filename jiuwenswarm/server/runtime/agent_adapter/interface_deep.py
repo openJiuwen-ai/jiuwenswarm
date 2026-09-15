@@ -6379,7 +6379,8 @@ class JiuWenSwarmDeepAdapter:
             try:
                 from jiuwenswarm.common.model_selection import ModelSelection
                 selection = ModelSelection.model_validate(raw_selection)
-                return f"{selection.type}:{selection.id}"
+                suffix = f":{selection.route_id}" if selection.route_id else ""
+                return f"{selection.type}:{selection.id}{suffix}"
             except ValidationError as exc:
                 raise ValueError(f"invalid model_selection: {exc}") from exc
         requested = str(params.get("model_name") or "").strip()
@@ -6391,7 +6392,8 @@ class JiuWenSwarmDeepAdapter:
                 from jiuwenswarm.server.runtime.session.model_selection_store import get_session_model_selection
                 selection = get_session_model_selection(session_id)
                 if selection is not None:
-                    return f"{selection.type}:{selection.id}"
+                    suffix = f":{selection.route_id}" if selection.route_id else ""
+                    return f"{selection.type}:{selection.id}{suffix}"
             except ValueError:
                 logger.warning("invalid session id while resolving model selection: %r", session_id)
         return self._session_stored_model_name(getattr(request, "session_id", None))
@@ -6414,8 +6416,9 @@ class JiuWenSwarmDeepAdapter:
                 ModelExecutionContext,
                 ModelSelectionResolver,
             )
-            selection_type, selection_id = requested.split(":", 1)
-            selection = ModelSelection(type=selection_type, id=selection_id)
+            selection_type, selection_id, *route_parts = requested.split(":", 2)
+            route_id = route_parts[0] if route_parts else None
+            selection = ModelSelection(type=selection_type, id=selection_id, route_id=route_id)
             checker = getattr(self, "_model_selection_can_access", None)
             can_access = None
             if callable(checker):
@@ -6426,13 +6429,13 @@ class JiuWenSwarmDeepAdapter:
                 ModelExecutionContext(can_access=can_access),
             )
         if requested.startswith("model_group:"):
-            group_id = requested.split(":", 1)[1]
-            cached = self._model_group_cache.get(group_id)
+            cache_key = requested.removeprefix("model_group:")
+            cached = self._model_group_cache.get(cache_key)
             if cached is not None and getattr(self, "_model_selection_can_access", None) is None:
                 return cached
             from jiuwenswarm.server.runtime.model_compiler_adapter import build_model_from_selection
             model = build_model_from_selection(resolved_selection)
-            self._model_group_cache[group_id] = model
+            self._model_group_cache[cache_key] = model
             return model
         if requested.startswith("model:"):
             model_id = requested.split(":", 1)[1]

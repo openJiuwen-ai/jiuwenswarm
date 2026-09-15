@@ -10,6 +10,7 @@ from jiuwenswarm.common.model_errors import (
     MODEL_GROUP_INVALID,
     MODEL_SELECTION_DISABLED,
     MODEL_SELECTION_FORBIDDEN,
+    MODEL_SELECTION_NOT_FOUND,
     ModelSelectionError,
 )
 from jiuwenswarm.common.model_selection import (
@@ -103,6 +104,20 @@ class ModelSelectionResolver:
         group = self.catalog.get_group(selected.id)
         if not group.get("enabled", True):
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model group {selected.id!r} is disabled")
+        group_routes = group.get("routes") or []
+        if selected.route_id is not None:
+            selected_routes = [route for route in group_routes if route.get("route_id") == selected.route_id]
+            if not selected_routes:
+                raise ModelSelectionError(
+                    MODEL_SELECTION_NOT_FOUND,
+                    f"unknown route_id {selected.route_id!r} in model group {selected.id!r}",
+                )
+            if not selected_routes[0].get("enabled", True):
+                raise ModelSelectionError(
+                    MODEL_SELECTION_DISABLED,
+                    f"route {selected.route_id!r} in model group {selected.id!r} is disabled",
+                )
+            group_routes = selected_routes
         routes = [
             ResolvedRoute(
                 route_id=route["route_id"],
@@ -113,14 +128,23 @@ class ModelSelectionResolver:
                 rpm=route.get("rpm"),
                 timeout=route.get("timeout"),
             )
-            for route in group.get("routes") or []
+            for route in group_routes
         ]
         if not routes:
             raise ModelSelectionError(MODEL_GROUP_INVALID, f"model group {selected.id!r} has no routes")
+        routing = dict(group.get("routing") or {})
+        if selected.route_id is not None:
+            # Manual selection has already narrowed the group to one route.
+            # Group-level tag filters must not reject that explicit choice.
+            routing["strategy"] = "ordered-failover"
+            routing.pop("strategy_kwargs", None)
+        # A model group selects one route for the request. Retrying another
+        # route is disabled because models may have different context windows.
+        routing["num_retries"] = 0
         return ResolvedModelGroup(
             model_group_id=selected.id,
             routes=routes,
             request_config=group.get("request_config") or {},
-            routing=group.get("routing") or {},
+            routing=routing,
         )
 
