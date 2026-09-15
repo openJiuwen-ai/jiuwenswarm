@@ -10,12 +10,12 @@
 }
 
 .panel-tab-icon-btn:hover {
-  background: var(--color-surface-hover);
+  background: var(--color-tool-tab-active-bg);
   border-radius: 10.67px;
 }
 
 .panel-tab-icon-btn--collapse {
-  background: var(--color-surface-hover);
+  background: var(--color-tool-tab-active-bg);
   border-radius: 10.67px;
 }
 
@@ -28,7 +28,7 @@
   border-bottom: 1px solid var(--color-border-default);
   background: var(--color-surface-card);
   padding-left: 24px;
-  padding-right: 16px;
+  padding-right: 24px;
 }
 
 .single-agent-tool-tabs__list {
@@ -58,7 +58,7 @@
 
 .single-agent-tool-tab:not(.single-agent-tool-tab--active):hover,
 .single-agent-tool-tab:not(.single-agent-tool-tab--active):focus-visible {
-  background: var(--color-tool-tab-hover-bg);
+  background: var(--color-tool-tab-active-bg);
   border-radius: 8px;
 }
 
@@ -195,6 +195,7 @@
 
 .subagent-expanded-panel {
   display: flex;
+  flex: 1;
   height: 100%;
   min-width: 0;
   overflow: hidden;
@@ -250,7 +251,7 @@
 
 .subagent-assignment {
   width: fit-content;
-  margin: 16px 0 var(--subagent-content-gap);
+  margin: 16px 0 var(--subagent-content-gap) auto;
   border-radius: var(--radius-xl);
   background: var(--color-surface-muted);
   padding: 16px 20px;
@@ -292,7 +293,6 @@
   min-width: 0;
   align-items: flex-start;
   gap: var(--subagent-inline-gap);
-  margin: var(--subagent-content-gap) 0 24px;
 }
 
 .subagent-message__body {
@@ -307,7 +307,6 @@
 }
 
 .subagent-message__content {
-  margin-top: 8px;
   font-size: var(--font-size-sm);
   line-height: 1.75;
 }

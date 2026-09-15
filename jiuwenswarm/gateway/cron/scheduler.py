@@ -29,6 +29,7 @@ from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
+from jiuwenswarm.runtime.cron.cron_expr import next_cron_datetime
 
 logger = logging.getLogger(__name__)
 
@@ -215,22 +216,7 @@ def _format_cron_broadcast_text(*, job_name: str, text: str, is_placeholder: boo
 
 
 def _cron_next_push_dt(cron_expr: str, base_dt: datetime) -> datetime:
-    # Lazy import so the rest of the system can still run without cron enabled.
-    from croniter import croniter  # type: ignore
-
-    # Support Quartz 7-field format: second minute hour day month dow year
-    # croniter default is minute hour day month dow second year
-    field_count = len(cron_expr.strip().split())
-    second_at_beginning = field_count == 7
-
-    it = croniter(cron_expr, base_dt, second_at_beginning=second_at_beginning)
-    nxt = it.get_next(datetime)
-    if not isinstance(nxt, datetime):
-        raise RuntimeError("croniter returned invalid datetime")
-    if nxt.tzinfo is None:
-        # Keep tz-consistent; base_dt is tz-aware in our usage.
-        return nxt.replace(tzinfo=base_dt.tzinfo)
-    return nxt
+    return next_cron_datetime(cron_expr, base_dt)
 
 
 @dataclass(frozen=True, order=True)
@@ -265,6 +251,11 @@ class CronSchedulerService:
         self._jobs: dict[str, CronJob] = {}
         self._events: list[tuple[float, int, _Event]] = []
         self._seq = 0
+        self._lifecycle_mutation_lock = asyncio.Lock()
+        self._lifecycle_last_reconcile = 0.0
+        self._lifecycle_owners: set[str] = {""}
+        from jiuwenswarm.gateway.cron.lifecycle_owners import LifecycleOwners
+        self._lifecycle_owner_store = LifecycleOwners(store.path)
         self._runs: dict[str, CronRunState] = {}  # run_id -> state
         self._run_tasks: dict[str, asyncio.Task] = {}
         # run_id -> job_id.  A run skipped during crash recovery must stay
@@ -624,6 +615,142 @@ class CronSchedulerService:
         self._sync_store_mtime()
         self._reload_event.set()
 
+    async def reconcile_project_lifecycles(self) -> None:
+        """Resume interrupted Gateway stages before admitting new cron work."""
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+        jobs = await self._store.list_jobs()
+        owners = self._lifecycle_owners | self._lifecycle_owner_store.read() | {str(job.user_id or "") for job in jobs}
+        for owner in owners:
+            self.remember_lifecycle_owner(owner)
+        for owner in owners:
+            async def call(method, params, *, owner=owner):
+                return await fetch_agent_unary(
+                    agent_client=self._agent_client,
+                    req_method=ReqMethod(method),
+                    params=params,
+                    session_id=None,
+                    user_id=owner or None,
+                    channel_id="__cron__",
+                    timeout_seconds=120,
+                )
+            ok, inventory = await call("project.lifecycle", {"inventory": True})
+            if not ok:
+                continue
+            for project in inventory.get("projects", []):
+                operation = project.get("operation") or {}
+                pending = operation and operation.get("status") != "completed"
+                if not pending and (not project.get("hidden") or operation.get("status") == "completed"):
+                    continue
+                if pending and not operation.get("retryable", True):
+                    continue
+                project_id = project["project_id"]
+                action = operation.get("kind", "archive") if pending else "archive"
+                if pending and action == "archive":
+                    # Archive failures require an explicit retry, never stop work
+                    # or silently archive later after a busy response.
+                    continue
+                try:
+                    if action == "unarchive":
+                        await call("project.unarchive", {"project_id": project_id})
+                        continue
+                    ok, token = await call(
+                        f"project.{action}",
+                        {"project_id": project_id, "_lifecycle_stage": "prepare"},
+                    )
+                    if not ok or "operation_id" not in token:
+                        continue
+                    all_jobs = await self._store.list_jobs()
+                    matching = [
+                        job
+                        for job in all_jobs
+                        if job.project_id == project_id and str(job.user_id or "") == owner
+                    ]
+                    planned = list(
+                        dict.fromkeys(
+                            [*operation.get("planned_cron_job_ids", []), *(job.id for job in matching)]
+                        )
+                    )
+                    saved, _ = await call("project.lifecycle", {**token, "planned_cron_job_ids": planned})
+                    if not saved:
+                        continue
+                    stopped = 0
+                    for job in matching:
+                        if job.enabled:
+                            await self._store.update_job(job.id, {"enabled": False})
+                            stopped += 1
+                    await self.reload()
+                    if action == "delete":
+                        await self.stop_project_runs(project_id, owner)
+                    completed = list(operation.get("completed_items", {}).get("cron", []))
+                    for job in matching:
+                        if action == "delete":
+                            await self._store.delete_job(job.id)
+                        if job.id not in completed:
+                            completed.append(job.id)
+                        saved, failure = await call("project.lifecycle", {**token, "completed_cron_job_ids": completed})
+                        if not saved:
+                            raise RuntimeError(failure.get("error", "checkpoint failed"))
+                    await self.reload()
+                    await call(
+                        f"project.{action}",
+                        {
+                            **token,
+                            "_lifecycle_stage": "finish",
+                            "stopped_cron_jobs": stopped,
+                            "deleted_cron_jobs": len(planned),
+                            "completed_cron_job_ids": completed,
+                        },
+                    )
+                except Exception as exc:
+                    logger.warning("project lifecycle recovery deferred: %s: %s", project_id, exc)
+                    if "token" in locals() and token.get("operation_id"):
+                        await call("project.lifecycle", {**token, "failed": True, "error": str(exc),
+                                                         "phase": "delete_cron" if action == "delete" else "stop_cron"})
+
+    def remember_lifecycle_owner(self, user_id: str | None) -> None:
+        owner = str(user_id or "")
+        self._lifecycle_owner_store.remember(owner)
+        self._lifecycle_owners.add(owner)
+
+    async def project_execution_allowed(self, project_id: str | None, user_id: str | None = None) -> bool:
+        self.remember_lifecycle_owner(user_id)
+        if not project_id or project_id in {"default", "default_code"}:
+            return True
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+        ok, payload = await fetch_agent_unary(
+            agent_client=self._agent_client, req_method=ReqMethod.PROJECT_LIFECYCLE,
+            params={"project_id": project_id}, session_id=None, user_id=user_id,
+            channel_id="__cron__", timeout_seconds=10,
+        )
+        return bool(ok and payload.get("exists") and not payload.get("execution_blocked", True))
+
+    def has_running_project_sessions(self, project_id: str, user_id: str | None = None) -> bool:
+        """Read in-flight cron runs, including those still creating a session."""
+        for state in self._runs.values():
+            if (
+                state.exec_project_id == project_id
+                and str(state.exec_user_id or "") == str(user_id or "")
+            ):
+                task = self._run_tasks.get(state.run_id)
+                if task is not None and not task.done():
+                    return True
+        return False
+
+    async def stop_project_runs(self, project_id: str, user_id: str | None = None) -> None:
+        matching = [state for state in list(self._runs.values())
+                    if state.exec_project_id == project_id and str(state.exec_user_id or "") == str(user_id or "")]
+        tasks = []
+        for state in matching:
+            await self._cancel_agent_session(state, reason="project_archive")
+            task = self._run_tasks.get(state.run_id)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                raise RuntimeError("cron runs are still stopping")
+
     async def trigger_run_now(self, job_id: str) -> str:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])
@@ -633,6 +760,8 @@ class CronSchedulerService:
         job = self._jobs.get(job_id) or await self._store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
+        if not await self.project_execution_allowed(job.project_id, job.user_id):
+            raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
         wake_dt = now
@@ -813,6 +942,10 @@ class CronSchedulerService:
     async def _loop(self) -> None:
         while self._running:
             try:
+                if self._now_fn() - self._lifecycle_last_reconcile >= 10:
+                    self._lifecycle_last_reconcile = self._now_fn()
+                    async with self._lifecycle_mutation_lock:
+                        await self.reconcile_project_lifecycles()
                 if not self._events:
                     self._reload_event.clear()
                     try:
@@ -855,6 +988,12 @@ class CronSchedulerService:
 
     async def _handle_event(self, ev: _Event) -> None:
         job = self._jobs.get(ev.job_id)
+        if (
+            job is not None
+            and ev.kind == "wake"
+            and not await self.project_execution_allowed(job.project_id, job.user_id)
+        ):
+            return
 
         # Handle proactive.tick mode: send WebSocket request to AgentServer
         if job is not None and job.mode == "proactive.tick" and ev.kind == "wake":
@@ -1052,6 +1191,8 @@ class CronSchedulerService:
             await self._on_push_update(job, ev.run_id)
 
     async def _on_wake(self, job: CronJob, run_id: str) -> None:
+        if not await self.project_execution_allowed(job.project_id, job.user_id):
+            return
         state = self._runs.get(run_id)
         if state is None:
             tz = ZoneInfo(job.timezone)
@@ -1165,6 +1306,11 @@ class CronSchedulerService:
                     params["model_name"] = job.model_name
                 if job.model_selection:
                     params["model_selection"] = dict(job.model_selection)
+                # 会话级 MCP 选择：注入 chat.send 的 ``mcp`` 字段，走 AgentServer
+                # 与 chat-session 相同的 reconcile_session_mcp 通道（增量注册/注销）；
+                # 未配置（None）时保持既有行为（仅 init 全局默认集）。
+                if job.mcp:
+                    params["mcp"] = list(job.mcp)
                 envelope = e2a_from_agent_fields(
                     request_id=f"cron-{run_id}",
                     channel_id=channel_id,

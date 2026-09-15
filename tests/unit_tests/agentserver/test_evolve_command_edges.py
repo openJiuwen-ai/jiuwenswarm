@@ -12,6 +12,16 @@ from openjiuwen.extensions.observability.demand import (
 )
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+from jiuwenswarm.symphony.llm import SYMPHONY_LLM_CONFIG_REF_KEY
+
+
+def _assert_symphony_request_model_context(inputs: dict) -> None:
+    run = inputs["run"]
+    assert run["kind"] == "normal"
+    assert set(run["context"]["extra"]) == {SYMPHONY_LLM_CONFIG_REF_KEY}
+    reference = run["context"]["extra"][SYMPHONY_LLM_CONFIG_REF_KEY]
+    assert isinstance(reference, str)
+    assert len(reference) == 64
 
 
 @pytest.mark.anyio
@@ -858,7 +868,9 @@ async def test_non_stream_error_answer_returns_failure_instead_of_empty_success(
 
     assert response.ok is False
     assert response.payload == {"error": "Error code: 401 - model access denied"}
-    assert seen_inputs == [{"query": "run task"}]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "run task"
+    _assert_symphony_request_model_context(seen_inputs[0])
 
 
 @pytest.mark.anyio
@@ -891,9 +903,10 @@ async def test_agent_non_stream_slash_followup_continues_into_runner(monkeypatch
         {"query": "/evolve code-runner"},
     )
 
-    assert seen_inputs == [
-        {"query": "review and evolve code-runner", "_invoke_turn_id": "req-followup"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and evolve code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup"
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert response.ok is True
     assert response.payload == {"content": "agent completed"}
 
@@ -931,9 +944,10 @@ async def test_agent_stream_slash_followup_continues_into_runner(monkeypatch):
     ):
         chunks.append(chunk)
 
-    assert seen_inputs == [
-        {"query": "review and simplify code-runner", "_invoke_turn_id": "req-followup-stream"}
-    ]
+    assert len(seen_inputs) == 1
+    assert seen_inputs[0]["query"] == "review and simplify code-runner"
+    assert seen_inputs[0]["_invoke_turn_id"] == "req-followup-stream"
+    _assert_symphony_request_model_context(seen_inputs[0])
     assert chunks[0].payload == {"event_type": "chat.delta", "content": "agent delta"}
     assert chunks[-1].is_complete is True
 

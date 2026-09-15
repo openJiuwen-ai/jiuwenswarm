@@ -1,4 +1,4 @@
-export type AgentSource = 'builtin' | 'local';
+export type AgentSource = 'builtin' | 'local' | 'hub';
 
 export type AgentConnectionState = 'connected' | 'disconnected' | 'connecting';
 
@@ -8,6 +8,8 @@ export type RequestStatus = 'idle' | 'loading' | 'success' | 'error';
 
 export type AgentCatalogItem = {
   id: string;
+  runtimePackageName: string;
+  hubAssetId?: string;
   displayName: string;
   description: string;
   category: string;
@@ -18,6 +20,7 @@ export type AgentCatalogItem = {
   updateAvailable?: boolean;
   tags: Array<{ id: string; label: string }>;
   avatarUrl: string | null;
+  version?: string;
 };
 
 export type AgentCapability = {

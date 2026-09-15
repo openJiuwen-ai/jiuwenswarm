@@ -5,8 +5,6 @@ from __future__ import annotations
 import asyncio
 import ast
 import contextlib
-import inspect
-import textwrap
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -14,6 +12,11 @@ import pytest
 
 from jiuwenswarm.server import agent_ws_server as server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+
+AGENT_WS_SERVER_PATH = (
+    Path(__file__).parents[3] / "jiuwenswarm" / "server" / "agent_ws_server.py"
+)
 
 
 class _FakePersonalContextHost:
@@ -69,13 +72,18 @@ def _server(monkeypatch: pytest.MonkeyPatch) -> AgentWebSocketServer:
 
 
 def test_personal_context_cancellation_handlers_do_not_raise_inside_except() -> None:
-    # Parsing the full 10k-line server can exhaust CPython 3.11's AST recursion budget.
+    tree = ast.parse(AGENT_WS_SERVER_PATH.read_text(encoding="utf-8"))
+    functions = {
+        node.name: node
+        for node in ast.walk(tree)
+        if isinstance(node, (ast.AsyncFunctionDef, ast.FunctionDef))
+    }
+
     for function_name in (
         "_start_personal_context_best_effort",
         "_stop_personal_context_best_effort",
     ):
-        source = inspect.getsource(getattr(AgentWebSocketServer, function_name))
-        function = ast.parse(textwrap.dedent(source)).body[0]
+        function = functions[function_name]
         for handler in ast.walk(function):
             if not isinstance(handler, ast.ExceptHandler):
                 continue

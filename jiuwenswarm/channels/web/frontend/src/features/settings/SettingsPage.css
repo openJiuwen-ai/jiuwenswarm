@@ -270,6 +270,12 @@
   flex: 0 0 auto;
 }
 
+.settings-experimental-cli__install-running--success {
+  color: var(--color-feedback-success);
+  border-color: var(--color-feedback-success);
+  background: var(--color-feedback-success-subtle);
+}
+
 .settings-model-dialog {
   width: min(620px, calc(100vw - 32px));
 }
@@ -351,7 +357,7 @@
 
 .settings-model-provider-select__trigger:disabled {
   color: var(--color-text-tertiary);
-  background: var(--color-surface-muted);
+  background: var(--color-surface-card);
   cursor: not-allowed;
 }
 
@@ -530,7 +536,7 @@
 
 .settings-model-name-field__combo > input:disabled {
   color: var(--color-text-tertiary);
-  background: var(--color-surface-muted);
+  background: var(--color-surface-card);
   cursor: not-allowed;
 }
 
@@ -927,7 +933,8 @@
   gap: 12px;
 }
 
-.settings-page .ui-input,
+.settings-page .ui-input:not(.ui-input--affixed),
+.settings-page .ui-input-affix-wrapper,
 .settings-page .ui-select,
 .settings-page .ui-textarea {
   min-height: 42px;

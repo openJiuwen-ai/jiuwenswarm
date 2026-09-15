@@ -52,7 +52,6 @@ def _settings(database_root: Path) -> TrajectoryStoreSettings:
         queue_size=32,
         batch_size=8,
         flush_interval_ms=10,
-        poll_interval_ms=2000,
     )
 
 

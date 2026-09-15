@@ -128,21 +128,10 @@ _models_ready_callbacks: list = []
 def _zen_free_models_enabled() -> bool:
     """Whether Zen free-model fetching is turned on.
 
-    Reads ``models.enable_free_models`` from config.yaml (default ``true``).
-    Returns ``True`` (enabled) on any config-read failure so start-up is never
-    broken.
+    Hard-disabled: ignore ``models.enable_free_models`` so frontend/config
+    cannot turn the probe back on.
     """
-    try:
-        from jiuwenswarm.common.config import get_config
-        cfg = get_config() or {}
-        val = (cfg.get("models") or {}).get("enable_free_models", None)
-        if val is None:
-            return True
-        if isinstance(val, bool):
-            return val
-        return str(val).strip().lower() not in ("0", "false", "no", "off")
-    except Exception:  # noqa: BLE001 - config unavailable; default on
-        return True
+    return False
 
 
 def _is_free_model(model_meta: dict[str, Any]) -> bool:
@@ -392,7 +381,16 @@ async def warm_zen_free_models(*, reason: str) -> None:
     On failure, schedules a background retry loop that keeps retrying
     (high-frequency then low-frequency) until success or the free-models
     toggle is turned off, so free models auto-recover without a restart.
+
+    When ``models.enable_free_models`` is off, returns immediately: no Zen
+    fetch, no startup probe, no background retry.
     """
+    if not _zen_free_models_enabled():
+        logger.info(
+            "[OpencodeZen] fetching disabled; skipping warm (reason=%s)",
+            reason,
+        )
+        return
     try:
         await asyncio.wait_for(
             asyncio.to_thread(_populate_zen_free_entries),

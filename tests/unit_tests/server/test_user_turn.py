@@ -6,6 +6,12 @@ from __future__ import annotations
 
 import json
 
+import pytest
+
+from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
+    HOST_USER_ORIGIN_EXTERNAL,
+    HOST_USER_ORIGIN_INTERNAL,
+)
 from jiuwenswarm.server.runtime.agent_adapter.user_turn import UserTurn
 
 
@@ -82,6 +88,51 @@ def test_render_marks_system_channels_and_drops_files():
     assert envelope["source"] == "system"
     assert envelope["type"] == "cron"
     assert "files_updated_by_user" not in envelope
+
+
+@pytest.mark.parametrize("origin_kind", [HOST_USER_ORIGIN_EXTERNAL, HOST_USER_ORIGIN_INTERNAL])
+def test_render_marks_heartbeat_automation_and_adds_zh_task_boundary(origin_kind):
+    turn = _turn(
+        origin_kind=origin_kind,
+        metadata={"automation": {"kind": "heartbeat", "run_id": "run-1"}},
+    )
+
+    rendered = turn.render()
+    envelope = _envelope(rendered)
+
+    assert rendered.startswith(
+        "当前为 Heartbeat 自动任务：仅执行 content 明确指定的任务；"
+        "除非 content 明确要求，否则不得改变任务目标或管理 Heartbeat 任务：\n"
+    )
+    assert envelope["source"] == "system"
+    assert envelope["type"] == "heartbeat"
+    assert envelope["origin_kind"] == origin_kind
+    assert "files_updated_by_user" not in envelope
+
+
+def test_render_adds_english_heartbeat_task_boundary():
+    rendered = _turn(
+        language="en",
+        metadata={"automation": {"kind": "heartbeat", "run_id": "run-1"}},
+    ).render()
+
+    assert rendered.startswith(
+        "This is an automated Heartbeat task. Execute only the task explicitly "
+        "specified in content; do not change its objective or manage Heartbeat "
+        "jobs unless content explicitly requires it:\n"
+    )
+
+
+def test_render_heartbeat_preserves_explicit_management_request():
+    text = "执行到最后一轮时删除这条 Heartbeat 任务"
+    envelope = _envelope(
+        _turn(
+            text=text,
+            metadata={"automation": {"kind": "heartbeat", "run_id": "run-1"}},
+        ).render()
+    )
+
+    assert envelope["content"] == text
 
 
 def test_render_includes_trusted_dirs_and_skills():

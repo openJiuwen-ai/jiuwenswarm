@@ -47,7 +47,7 @@
 }
 
 .categoryTabs__scroll[data-hidden='true'] {
-  visibility: hidden;
+  display: none;
 }
 
 .categoryTabs__scroll--prev {

@@ -1100,6 +1100,14 @@ function parseHistoryTimelineEntry(
         role: 'assistant',
         content,
         timestamp: at,
+        ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
+          ? { presentation: 'tool_result' as const }
+          : {}),
+        // Full-duplex chat.final records are spoken replies, including earlier acknowledgements.
+        // Infer from the persisted channel so existing conversations also retain their replies.
+        ...(record.channel_id === 'video_duplex' || payload.channel_id === 'video_duplex'
+          ? { keepExpanded: true }
+          : {}),
         ...(completedAt ? { completedAt } : {}),
         ...(isProactiveRecommendation ? { isProactiveRecommendation } : {}),
         ...(isProactiveRecommendation && histProactiveType

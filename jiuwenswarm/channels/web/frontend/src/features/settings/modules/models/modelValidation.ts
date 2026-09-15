@@ -59,7 +59,6 @@ export function validateModelDraft(
 
   const others = models.filter(
     (model) =>
-      model.is_free !== true &&
       model.is_agentos !== true &&
       (editingOriginIndex === undefined || model.origin_index !== editingOriginIndex),
   );

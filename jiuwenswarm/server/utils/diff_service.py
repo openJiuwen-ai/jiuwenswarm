@@ -1790,15 +1790,40 @@ class DiffService:
             kept.append(full)
         return "".join(kept), large_files
 
-    def _get_untracked_files(
-        self,
-        project_dir: str,
-        max_files: int = MAX_FILES,
+    def _list_untracked_paths(self, repo_dir: str) -> list[str]:
+        """枚举仓库内全部 untracked 相对路径（不读取文件内容）。
+
+        core.quotepath=false 让 git 对非 ASCII 字节直接输出原始 UTF-8 文件名
+        （而非八进制转义串），否则中文路径无法对应磁盘真实路径。但 ASCII 控制字符
+        （如 TAB）无论该设置如何都会被加引号并 C 转义（如 "dir\tfile.txt"），
+        仍需 _unquote_git_path 解码才能对应磁盘真实文件。
+        """
+        output = self._run_git_command(
+            repo_dir,
+            ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"],
+        )
+        if not output or not output.strip():
+            return []
+        paths: list[str] = []
+        for line in output.strip().splitlines():
+            rel_path = line.strip()
+            if not rel_path:
+                continue
+            rel_path = DiffService._unquote_git_path(rel_path)
+            if self._is_internal_untracked_path(rel_path):
+                continue
+            paths.append(rel_path)
+        return paths
+
+    @staticmethod
+    def _build_untracked_entries(
+        repo_dir: str,
+        rel_paths: list[str],
         *,
         include_hunks: bool = True,
         hunk_paths: set[str] | None = None,
     ) -> dict[str, dict[str, Any]]:
-        """获取未跟踪文件列表，并读取内容计算行数与 hunk.
+        """为指定的 untracked 相对路径构建条目，读取内容计算行数与 hunk.
 
         与 tracked 文件走 ``git diff HEAD`` 不同，untracked 文件不在 git
         索引中、无 old_content 可 diff。尤其 unborn HEAD（仓库无任何
@@ -1813,28 +1838,9 @@ class DiffService:
         与 tracked 文件 ``_split_large_file_diffs`` 口径一致；1MB 以内整
         文件作为新增 hunk 返回，不做行截断。
         """
-        # core.quotepath=false 让 git 对非 ASCII 字节直接输出原始 UTF-8 文件名
-        # （而非八进制转义串），否则中文路径无法对应磁盘真实路径。但 ASCII 控制字符
-        # （如 TAB）无论该设置如何都会被加引号并 C 转义（如 "dir\tfile.txt"），
-        # 仍需 _unquote_git_path 解码才能对应磁盘真实文件。
-        output = self._run_git_command(
-            project_dir,
-            ["-c", "core.quotepath=false", "ls-files", "--others", "--exclude-standard"],
-        )
-        if not output or not output.strip():
-            return {}
-
         files: dict[str, dict[str, Any]] = {}
-        for rel_path in output.strip().splitlines():
-            if len(files) >= max_files:
-                break
-            rel_path = rel_path.strip()
-            if not rel_path:
-                continue
-            rel_path = DiffService._unquote_git_path(rel_path)
-            if self._is_internal_untracked_path(rel_path):
-                continue
-            abs_path = str(Path(project_dir) / rel_path)
+        for rel_path in rel_paths:
+            abs_path = str(Path(repo_dir) / rel_path)
 
             entry: dict[str, Any] = {
                 "filePath": abs_path,
@@ -1942,6 +1948,24 @@ class DiffService:
             result.add(rel)
         return result or None
 
+    @staticmethod
+    def _project_priority_prefix(repo_dir: str, project_dir: str) -> str | None:
+        """项目目录严格位于仓库根之内时，返回仓库根下的项目目录相对路径前缀。
+
+        用于"项目目录是外层仓库子目录"的场景（探测 ``--show-toplevel``
+        继承了父级仓库，如家目录被预置为仓库）：统计范围是整个仓库，
+        预览排序时优先展示项目目录内的文件。项目目录即仓库根时返回
+        ``None``（无需排序）。
+        """
+        try:
+            rel = os.path.relpath(str(Path(project_dir).resolve()), repo_dir)
+        except (ValueError, OSError):
+            return None
+        rel = rel.replace("\\", "/")
+        if not rel or rel == "." or rel.startswith("../"):
+            return None
+        return rel.rstrip("/") + "/"
+
     def get_git_diff(
         self,
         project_dir: str | None,
@@ -1953,9 +1977,14 @@ class DiffService:
         """获取工作区相对于 HEAD 的 git diff，含未跟踪文件行数.
 
         已跟踪文件走 ``git diff HEAD``；untracked 文件（含 unborn HEAD
-        仓库无 commit 场景）由 ``_get_untracked_files`` 读取内容计算行数
+        仓库无 commit 场景）由 ``_build_untracked_entries`` 读取内容计算行数
         与 hunk，并累加进 stats，避免工作区仅有新增文件时 lines_added
         恒为 0。
+
+        项目目录位于仓库根的子目录时（探测继承外层仓库），统计范围仍是
+        整个仓库：``files`` 预览按 ``MAX_FILES`` 截断且项目目录内文件优先，
+        并通过 ``files_truncated`` / ``files_limit`` 提示实际文件数超出
+        预览上限。
 
         Args:
             project_dir: 项目目录路径.
@@ -1964,9 +1993,14 @@ class DiffService:
             {
                 "stats": {"filesChanged": int, "linesAdded": int, "linesRemoved": int},
                 "files": { file_path: { "filePath": str, "hunks": [...],
-                    "isNewFile": bool, "linesAdded": int, "linesRemoved": int } }
+                    "isNewFile": bool, "linesAdded": int, "linesRemoved": int } },
+                "files_truncated": bool,
+                "files_limit": int,
             }
-            如果不是 git 仓库或没有任何改动，返回 None.
+            ``stats.filesChanged`` 为实际变更文件总数；``files_truncated``
+            为 True 时 ``files`` 仅包含按优先级排序的前 ``files_limit`` 个
+            文件（项目目录内文件优先）。如果不是 git 仓库或没有任何改动，
+            返回 None.
         """
         if not project_dir:
             return None
@@ -1977,6 +2011,10 @@ class DiffService:
             return None
         effective_include_files = include_files or include_hunks
         requested_hunk_paths = self._normalize_hunk_paths(repo_dir, hunk_paths)
+        priority_prefix = self._project_priority_prefix(repo_dir, project_dir)
+
+        def _is_priority(rel_path: str) -> bool:
+            return priority_prefix is not None and rel_path.startswith(priority_prefix)
 
         files: dict[str, dict[str, Any]] = {}
         total_files_changed = 0
@@ -1994,13 +2032,20 @@ class DiffService:
             # 文件数过多，仅返回统计以避免加载数百 MB 内容
             return {
                 "stats": {
-                    "filesChanged": shortstat_stats["filesChanged"],
+                    "filesChanged": (
+                        shortstat_stats["filesChanged"]
+                        + len(self._list_untracked_paths(repo_dir))
+                    ),
                     "linesAdded": shortstat_stats["linesAdded"],
                     "linesRemoved": shortstat_stats["linesRemoved"],
                 },
                 "files": {},
+                "files_truncated": True,
+                "files_limit": MAX_FILES,
             }
 
+        per_file_stats: dict[str, dict[str, int | bool]] = {}
+        per_file_status: dict[str, str] = {}
         if has_tracked_changes and not effective_include_files and shortstat_stats:
             total_files_changed += shortstat_stats["filesChanged"]
             total_added += shortstat_stats["linesAdded"]
@@ -2022,85 +2067,109 @@ class DiffService:
                     per_file_status.update(
                         self._parse_git_porcelain_status(porcelain_status_output or "")
                     )
-                else:
-                    per_file_status = {}
 
-                all_hunks: dict[str, list[dict[str, Any]]] = {}
-                large_files: set[str] = set()
-                if include_hunks:
-                    # 一次 ``git diff`` 会先把所有文件的 patch 聚合到一个字符串，
-                    # 即使稍后跳过 >1MB 的文件也已经造成峰值内存。按文件流式获取，
-                    # 超过阈值后停止保留 stdout；前端详情层通常只传当前选中的路径，
-                    # 因此也避免为未查看文件生成 patch。
-                    if requested_hunk_paths is None:
-                        detail_paths = list(per_file_stats)[:MAX_FILES]
-                    else:
-                        detail_paths = sorted(
-                            path for path in requested_hunk_paths
-                            if path in per_file_stats
-                        )
-                    for rel_path in detail_paths:
-                        diff_output, is_large = self._run_git_diff_limited(
-                            repo_dir,
-                            ["--literal-pathspecs", "diff", "HEAD", "--", rel_path],
-                        )
-                        if is_large:
-                            large_files.add(rel_path)
-                            continue
-                        if not diff_output:
-                            continue
-                        filtered_output, file_large = self._split_large_file_diffs(diff_output)
-                        large_files.update(file_large)
-                        if filtered_output:
-                            all_hunks.update(self._parse_git_diff_hunks(filtered_output))
+        # 2. untracked 全量路径（只列路径不读内容，行数仅统计预览内的文件），
+        #    保证 stats.filesChanged 是实际总数而非预览截断后的数量。
+        untracked_paths = self._list_untracked_paths(repo_dir)
+        total_files_changed += len(untracked_paths)
 
-                if not effective_include_files:
-                    per_file_stats = {}
-                for rel_path, stats in list(per_file_stats.items())[:MAX_FILES]:
-                    abs_path = str(Path(repo_dir) / rel_path)
-                    is_binary = bool(stats.get("isBinary", False))
-                    is_large = rel_path in large_files
-                    if is_binary or is_large:
-                        hunks = []
-                    else:
-                        hunks = all_hunks.get(rel_path, [])
-                    lines_added = stats["added"]
-                    lines_removed = stats["removed"]
+        # 3. 预览选择: 项目目录内文件优先（tracked 与 untracked 合并排序），
+        #    上限 MAX_FILES，避免项目外文件（外层仓库场景）占满预览名额。
+        tracked_ordered = sorted(per_file_stats, key=lambda p: not _is_priority(p))
+        untracked_ordered = sorted(untracked_paths, key=lambda p: not _is_priority(p))
+        if effective_include_files:
+            selected: list[str] = []
+            for group in (
+                [p for p in tracked_ordered if _is_priority(p)],
+                [p for p in untracked_ordered if _is_priority(p)],
+                [p for p in tracked_ordered if not _is_priority(p)],
+                [p for p in untracked_ordered if not _is_priority(p)],
+            ):
+                if len(selected) >= MAX_FILES:
+                    break
+                selected.extend(group[: MAX_FILES - len(selected)])
+            selected_tracked = [p for p in selected if p in per_file_stats]
+            selected_untracked = [p for p in selected if p not in per_file_stats]
+        else:
+            # summary 层不返回文件列表；untracked 行数统计仍取前 MAX_FILES 个
+            # （项目目录优先），与旧口径保持一致。
+            selected = []
+            selected_tracked = []
+            selected_untracked = untracked_ordered[:MAX_FILES]
 
-                    files[abs_path] = {
-                        "filePath": abs_path,
-                        "status": per_file_status.get(rel_path, "modified"),
-                        "hunks": hunks,
-                        "isNewFile": per_file_status.get(rel_path) == "added",
-                        "isDeletedFile": per_file_status.get(rel_path) == "deleted",
-                        "isBinary": is_binary,
-                        "isLargeFile": is_large,
-                        "isTruncated": False,
-                        "isUntracked": False,
-                        "linesAdded": lines_added,
-                        "linesRemoved": lines_removed,
-                        "lastEditTime": None,
-                    }
+        # 4. tracked 预览条目 + hunks
+        all_hunks: dict[str, list[dict[str, Any]]] = {}
+        large_files: set[str] = set()
+        if selected_tracked and include_hunks:
+            # 一次 ``git diff`` 会先把所有文件的 patch 聚合到一个字符串，
+            # 即使稍后跳过 >1MB 的文件也已经造成峰值内存。按文件流式获取，
+            # 超过阈值后停止保留 stdout；前端详情层通常只传当前选中的路径，
+            # 因此也避免为未查看文件生成 patch。
+            if requested_hunk_paths is None:
+                detail_paths = selected_tracked[:MAX_FILES]
+            else:
+                detail_paths = sorted(
+                    path for path in requested_hunk_paths
+                    if path in per_file_stats
+                )
+            for rel_path in detail_paths:
+                diff_output, is_large = self._run_git_diff_limited(
+                    repo_dir,
+                    ["--literal-pathspecs", "diff", "HEAD", "--", rel_path],
+                )
+                if is_large:
+                    large_files.add(rel_path)
+                    continue
+                if not diff_output:
+                    continue
+                filtered_output, file_large = self._split_large_file_diffs(diff_output)
+                large_files.update(file_large)
+                if filtered_output:
+                    all_hunks.update(self._parse_git_diff_hunks(filtered_output))
 
-        untracked_files = self._get_untracked_files(
+        # 5. untracked 预览条目（仅读取选中文件的内容）
+        untracked_entries = self._build_untracked_entries(
             repo_dir,
-            max_files=max(0, MAX_FILES - len(files)) if effective_include_files else MAX_FILES,
+            selected_untracked,
             include_hunks=include_hunks,
             hunk_paths=requested_hunk_paths,
         )
-        if not effective_include_files:
-            untracked_stats_files = untracked_files
-            untracked_files = {}
-        else:
-            untracked_stats_files = untracked_files
-        for file_path, entry in untracked_files.items():
-            entry["status"] = "added"
-            files[file_path] = entry
-        total_files_changed += len(untracked_stats_files)
-        # untracked 文件无 git diff 可统计，_get_untracked_files 已按文件内容
+        # 6. 按 selected 顺序组装 files（项目目录内文件优先），tracked/untracked 交错。
+        for rel_path in selected:
+            abs_path = str(Path(repo_dir) / rel_path)
+            tracked_stats = per_file_stats.get(rel_path)
+            if tracked_stats is not None:
+                is_binary = bool(tracked_stats.get("isBinary", False))
+                is_large = rel_path in large_files
+                if is_binary or is_large:
+                    hunks = []
+                else:
+                    hunks = all_hunks.get(rel_path, [])
+
+                files[abs_path] = {
+                    "filePath": abs_path,
+                    "status": per_file_status.get(rel_path, "modified"),
+                    "hunks": hunks,
+                    "isNewFile": per_file_status.get(rel_path) == "added",
+                    "isDeletedFile": per_file_status.get(rel_path) == "deleted",
+                    "isBinary": is_binary,
+                    "isLargeFile": is_large,
+                    "isTruncated": False,
+                    "isUntracked": False,
+                    "linesAdded": tracked_stats["added"],
+                    "linesRemoved": tracked_stats["removed"],
+                    "lastEditTime": None,
+                }
+            else:
+                entry = untracked_entries.get(abs_path)
+                if entry is None:
+                    continue
+                entry["status"] = "added"
+                files[abs_path] = entry
+        # untracked 文件无 git diff 可统计，_build_untracked_entries 已按文件内容
         # 计算行数；此处补回 stats，避免 unborn HEAD 等场景下 lines_added 恒为 0。
-        total_added += sum(int(f.get("linesAdded", 0) or 0) for f in untracked_stats_files.values())
-        total_removed += sum(int(f.get("linesRemoved", 0) or 0) for f in untracked_stats_files.values())
+        total_added += sum(int(f.get("linesAdded", 0) or 0) for f in untracked_entries.values())
+        total_removed += sum(int(f.get("linesRemoved", 0) or 0) for f in untracked_entries.values())
 
         if total_files_changed <= 0 and not files:
             return None
@@ -2112,6 +2181,8 @@ class DiffService:
                 "linesRemoved": total_removed,
             },
             "files": files,
+            "files_truncated": total_files_changed > MAX_FILES,
+            "files_limit": MAX_FILES,
         }
 
     @staticmethod

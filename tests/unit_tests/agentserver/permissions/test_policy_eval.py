@@ -7,7 +7,7 @@ from __future__ import annotations
 from types import SimpleNamespace
 from typing import Any
 
-from openjiuwen.harness.security.models import PermissionLevel, PermissionResult
+from openjiuwen.harness.security import PermissionLevel, PermissionResult
 
 from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
     OpenJiuwenPolicyEvaluator,

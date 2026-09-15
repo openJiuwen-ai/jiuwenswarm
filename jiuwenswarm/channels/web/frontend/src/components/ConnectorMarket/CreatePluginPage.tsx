@@ -9,7 +9,7 @@ import { computeMySkills, buildInstalledSkillNames, filterEnabledMySkills } from
 import { EntityAvatar } from './EntityAvatar';
 import { PickerModal, type PickerItem } from './PickerModal';
 
-const DESCRIPTION_MAX = 226;
+const DESCRIPTION_MAX = 512;
 
 // 头像上传入口暂时隐藏：后端 plugin_packages.create 没有头像/图标字段
 // （backend-requests.md 需求9），选中的图片只能本地预览、保存不了。等后端支持后把这个
@@ -56,7 +56,7 @@ interface CreatePluginPageProps {
 // 头像选择：点击可以真的打开文件选择器并本地预览（上一轮这里只是个纯静态图标，点了没反应），
 // 但 plugin_packages.* 完全没有图标字段（backend-requests.md 需求9），选中的图片选不进
 // create() 的参数里，只能停留在本地预览——选好图片后额外提示一句，不让用户误以为真的保存了。
-// 选择弹窗内的图标沿用 getSkillAvatar（跟技能面板同一套实心圆+白字母头像，2026-08-19 整合，
+// 选择弹窗内的图标沿用 getSkillAvatar（跟技能面板同一套头像样式，2026-08-19 整合，
 // 见 utils/skillAvatar.ts 头部注释），但用户要求整体放大——从原来的 h-6 w-6 提到 h-8 w-8。
 function toSkillPickerItems(items: SkillItem[]): PickerItem[] {
   return items.map((skill): PickerItem => {
@@ -67,7 +67,7 @@ function toSkillPickerItems(items: SkillItem[]): PickerItem[] {
       name: label,
       description: skill.description,
       render: () => (
-        <span className={`flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[14px] font-semibold text-text-inverse ${avatar.color}`}>
+        <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-[14px] font-semibold text-text-inverse" style={avatar.style}>
           {avatar.firstChar}
         </span>
       ),
@@ -90,7 +90,7 @@ function toMcpPickerItem(mcp: { name: string; displayName: string; description: 
       <EntityAvatar
         iconUrl={mcp.icon ?? undefined}
         avatar={avatar}
-        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold"
+        className="flex h-8 w-8 shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold"
       />
     ),
   };
@@ -356,7 +356,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
                   <Trash2 size={15} />
                 </button>
                 <div className="mb-1.5 flex items-center gap-2.5 pr-6">
-                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-black text-text-inverse ${avatar.color}`}>
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[16px] font-black text-text-inverse" style={avatar.style}>
                     {avatar.firstChar}
                   </span>
                   <span className="text-[14px] font-semibold leading-[22px] text-text">{label}</span>
@@ -394,7 +394,7 @@ export function CreatePluginPage({ onBack, onCreated }: CreatePluginPageProps) {
                   <Trash2 size={15} />
                 </button>
                 <div className="mb-1.5 flex items-center gap-2.5 pr-6">
-                  <span className={`flex h-9 w-9 shrink-0 items-center justify-center rounded-lg text-[13px] font-semibold text-text-inverse ${avatar.color}`}>
+                  <span className="flex h-9 w-9 shrink-0 items-center justify-center rounded-[10px] text-[13px] font-semibold text-text-inverse" style={avatar.style}>
                     {avatar.firstChar}
                   </span>
                   <span className="text-[14px] font-semibold leading-[22px] text-text">{mcp.displayName}</span>

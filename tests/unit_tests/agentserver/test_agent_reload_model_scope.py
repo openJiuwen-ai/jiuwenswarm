@@ -13,6 +13,8 @@ channel 的 agent。
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from jiuwenswarm.server.runtime import agent_manager as agent_manager_module
@@ -89,8 +91,10 @@ async def test_model_scope_fans_out_to_all_channels_even_with_target_channel(mon
 
 
 @pytest.mark.asyncio
-async def test_multimodal_scope_fans_out_to_all_channels_even_with_target_channel(
+@pytest.mark.parametrize("scope", ["multimodal", "search"])
+async def test_global_tool_scope_fans_out_to_all_channels_even_with_target_channel(
     monkeypatch,
+    scope,
 ):
     web_agent = FakeAgent()
     xiaoyi_agent = FakeAgent()
@@ -103,7 +107,7 @@ async def test_multimodal_scope_fans_out_to_all_channels_even_with_target_channe
         {"models": {"vision": {}}},
         {"VISION_ENABLED": "true"},
         target_channel_id="web",
-        reload_scopes={"multimodal"},
+        reload_scopes={scope},
     )
 
     assert len(web_agent.reload_calls) == 1
@@ -133,6 +137,33 @@ async def test_non_model_scope_still_narrows_to_target_channel(monkeypatch):
     assert xiaoyi_agent.reload_calls == [], (
         "non-model scopes must still narrow to target_channel (no regression)"
     )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("scopes", [None, {"multimodal"}, {"search"}])
+@pytest.mark.parametrize("key", ["first-test-key", ""])
+async def test_search_key_changes_refresh_all_sessions_and_mcp_after_env_update(monkeypatch, scopes, key):
+    import os
+    from jiuwenswarm.agents.harness.common.tools import mcp_toolkits
+
+    monkeypatch.setenv("BOCHA_API_KEY", "old-test-key")
+    observed = []
+    refresh = MagicMock(side_effect=lambda: observed.append(os.environ.get("BOCHA_API_KEY")))
+    monkeypatch.setattr(mcp_toolkits, "refresh_mcp_paid_search_tools", refresh)
+    web_agent, im_agent = FakeAgent(), FakeAgent()
+    manager, _ = _build_manager(
+        monkeypatch, agents={"web": {"agent": web_agent}, "im": {"agent": im_agent}},
+    )
+    await manager.reload_agents_config(
+        {}, {"BOCHA_API_KEY": key}, target_channel_id="web",
+        target_session_id="one-session", reload_scopes=scopes,
+    )
+    assert observed == [key]
+    for agent in (web_agent, im_agent):
+        assert len(agent.reload_calls) == 1
+        kwargs = agent.reload_calls[0]["kwargs"]
+        assert "target_session_id" not in kwargs
+        assert kwargs.get("reload_scopes") == (scopes | {"search"} if scopes else None)
 
 
 @pytest.mark.asyncio

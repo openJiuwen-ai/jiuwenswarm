@@ -27,8 +27,7 @@ def test_config_defaults_keep_legacy_installations_disabled(tmp_path: Path) -> N
         retention_days=7,
         queue_size=4096,
         batch_size=64,
-        flush_interval_ms=200,
-        poll_interval_ms=2000,
+        flush_interval_ms=500,
     )
     test_logger.info("legacy configs require the packaged explicit trajectory opt-in")
 

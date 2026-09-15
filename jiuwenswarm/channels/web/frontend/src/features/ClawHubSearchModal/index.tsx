@@ -344,7 +344,7 @@ export function ClawHubSearchModal({
                       {viewMode === "list" ? (
                         <>
                           <div className="flex items-center gap-3 min-w-0 flex-1">
-                            <div data-testid="claw-hub-search-modal-result-avatar-embedded" className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`}>
+                            <div data-testid="claw-hub-search-modal-result-avatar-embedded" className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style}>
                               {avatar.firstChar}
                             </div>
                             <div className="min-w-0 flex-1">
@@ -386,7 +386,7 @@ export function ClawHubSearchModal({
                       ) : (
                         <>
                           <div className="flex items-start gap-3 flex-shrink-0">
-                            <div data-testid="claw-hub-search-modal-result-avatar-embedded" className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm`}>
+                            <div data-testid="claw-hub-search-modal-result-avatar-embedded" className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold text-sm" style={avatar.style}>
                               {avatar.firstChar}
                             </div>
                             <div className="min-w-0 flex-1">
@@ -678,7 +678,7 @@ export function ClawHubSearchModal({
                         className="p-4 rounded-lg border border-border bg-panel flex items-start justify-between gap-4"
                       >
                         <div className="flex items-center gap-3 min-w-0 flex-1">
-                          <div data-testid="claw-hub-search-modal-result-avatar-modal" className={`w-10 h-10 rounded-lg ${avatar.color} flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold`}>
+                          <div data-testid="claw-hub-search-modal-result-avatar-modal" className="w-10 h-10 rounded-[10px] flex items-center justify-center flex-shrink-0 text-text-inverse font-semibold" style={avatar.style}>
                             {avatar.firstChar}
                           </div>
                           <div className="min-w-0 flex-1">

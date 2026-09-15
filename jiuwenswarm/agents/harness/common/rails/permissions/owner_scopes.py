@@ -121,6 +121,8 @@ async def check_avatar_permission(
     session_id: str | None,
     *,
     permission_config: dict,
+    use_installed_permissions: bool = False,
+    installed_engine: Any = None,
 ) -> str:
     """单工具 owner_scopes 权限检查。返回 "allow" 或 "deny"（ASK 自动降级为 DENY）。
 
@@ -133,8 +135,16 @@ async def check_avatar_permission(
     Returns:
         "allow" 或 "deny"
     """
-    from openjiuwen.harness.security.core import PermissionEngine as OJPermissionEngine
-    from openjiuwen.harness.security.models import PermissionLevel as OJPermissionLevel
+    from openjiuwen.harness.security import PermissionEngine as OJPermissionEngine
+    from openjiuwen.harness.security import PermissionLevel as OJPermissionLevel
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
+        load_global_permissions,
+        load_session_permissions,
+        load_user_permissions,
+    )
     from jiuwenswarm.common.utils import get_workspace_dir
 
     perm_ctx = TOOL_PERMISSION_CONTEXT.get()
@@ -142,9 +152,22 @@ async def check_avatar_permission(
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    perm_cfg = permission_config if isinstance(permission_config, dict) else {}
-    engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
-    owner_scopes = perm_cfg.get("owner_scopes")
+    if use_installed_permissions:
+        # Keep owner scopes and path evaluation on the same installed epoch.
+        global_perms = permission_config
+        engine = installed_engine
+        if not callable(getattr(engine, "evaluate_global_policy_directly", None)):
+            return "deny"
+    else:
+        global_perms = load_global_permissions()
+        perm_cfg = compose_host_effective_permissions(
+            global_permissions=global_perms,
+            user_permissions=load_user_permissions(),
+            session_permissions=load_session_permissions(session_id),
+            session_id=session_id,
+        )
+        engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
+    owner_scopes = global_perms.get("owner_scopes")
     logger.info(
         "[check_avatar_permission] tool=%s channel=%s user=%s owner_scopes_type=%s owner_scopes_keys=%s",
         tool_name, perm_ctx.channel_id, perm_ctx.principal_user_id,
@@ -172,6 +195,8 @@ async def check_avatar_permission(
         global_level_value = global_level.value if global_level is not None else None
     except Exception as exc:
         logger.warning("[check_avatar_permission] evaluate_global_policy_directly failed: %s", exc)
+        if use_installed_permissions:
+            return "deny"
         global_level_value = None
 
     if level is None:
@@ -227,24 +252,27 @@ def _resolve_owner_scope_level(
 
 
 def _match_args(pattern: str, tool_args: dict[str, Any]) -> bool:
-    """简化的参数模式匹配（复用 openjiuwen harness patterns）。"""
+    """简化的参数模式匹配（复用 openjiuwen permission_engine matchers）。"""
     try:
-        from openjiuwen.harness.security.patterns import (
-            match_command,
-            match_path,
-            match_wildcard as match_pattern,
-            match_url,
+        from openjiuwen.harness.security.permission_engine.toolguard.pattern_matchers import (
+            CommandMatcher,
+            PathMatcher,
+            PatternMatcher,
+            URLMatcher,
         )
+        command_matcher = CommandMatcher()
+        path_matcher = PathMatcher()
+        url_matcher = URLMatcher()
         for key, value in tool_args.items():
             if not isinstance(value, str):
                 continue
-            if key in ("command", "cmd") and match_command(pattern, value):
+            if key in ("command", "cmd") and command_matcher.match_command(pattern, value):
                 return True
-            if key == "url" and match_url(pattern, value):
+            if key == "url" and url_matcher.match_url(pattern, value):
                 return True
-            if key in {"path", "file_path"} and match_path(pattern, value):
+            if key in {"path", "file_path"} and path_matcher.match_path(pattern, value):
                 return True
-            if match_pattern(pattern, value):
+            if PatternMatcher.match(pattern, value):
                 return True
         return False
     except Exception:

@@ -7,6 +7,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 from collections.abc import Sequence
 from pathlib import Path
 from types import SimpleNamespace
@@ -17,11 +18,17 @@ from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     session_database_path,
 )
-from jiuwenswarm.observability.models import TraceRecordData, WriteBatchResult
+from jiuwenswarm.observability.models import (
+    StreamFrameData,
+    TraceRecordData,
+    WriteBatchResult,
+)
 from jiuwenswarm.observability.sink import (
+    _SESSION_WRITER_IDLE_SECONDS,
     CommitCallback,
     TrajectoryRecordSink,
     TrajectorySessionSinkRouter,
+    _SessionWriter,
 )
 from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryStore
 
@@ -36,7 +43,6 @@ def _settings(database_root: Path, *, flush_interval_ms: int = 20) -> Trajectory
         queue_size=64,
         batch_size=8,
         flush_interval_ms=flush_interval_ms,
-        poll_interval_ms=2000,
     )
 
 
@@ -127,18 +133,22 @@ async def test_router_writes_and_reads_each_session_database(
     assert first_path.is_file()
     assert second_path.is_file()
     reader = AsyncTrajectoryReader(root, session_scoped=True)
-    first_items, _cursor = await reader.list_traces(
-        "session-a",
-        limit=10,
-        cursor=None,
+    first_items, _epoch, _cursor = await reader.list_subjects("session-a")
+    second_items, _epoch, _cursor = await reader.list_subjects("session-b")
+    # Each session owns its own database, so each side sees exactly one chain
+    # and that chain holds only its own session's record.
+    assert [item["subject_id"] for item in first_items] == ["main"]
+    assert [item["subject_id"] for item in second_items] == ["main"]
+    assert [item["record_count"] for item in first_items] == [1]
+    assert [item["record_count"] for item in second_items] == [1]
+    first_chain = await reader.get_subject_records(
+        "session-a", "main", since_revision=0, limit=10
     )
-    second_items, _cursor = await reader.list_traces(
-        "session-b",
-        limit=10,
-        cursor=None,
+    second_chain = await reader.get_subject_records(
+        "session-b", "main", since_revision=0, limit=10
     )
-    assert [item["trace_id"] for item in first_items] == [first_trace]
-    assert [item["trace_id"] for item in second_items] == [second_trace]
+    assert [record["trace_id"] for record in first_chain["records"]] == [first_trace]
+    assert [record["trace_id"] for record in second_chain["records"]] == [second_trace]
     assert router.stats().queued == 0
     test_logger.info("router drained two sessions into independently readable files")
 
@@ -159,9 +169,9 @@ async def test_router_holds_sessionless_child_until_owned_root_arrives(
     assert router.close(timeout=5) is True
 
     reader = AsyncTrajectoryReader(root, session_scoped=True)
-    detail = await reader.get_trace_records(
+    detail = await reader.get_subject_records(
         "session-owner",
-        trace_id,
+        "main",
         since_revision=0,
         limit=10,
     )
@@ -185,7 +195,11 @@ class _ControlledStore:
     def delete_expired(self, *, now: int | None = None) -> int:
         return 0
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         self.write_started.set()
         if self.blocked:
             self.release_write.wait(timeout=10)
@@ -278,29 +292,33 @@ def test_session_delete_waits_only_for_target_ingress(tmp_path: Path) -> None:
     test_logger.info("Session deletion did not join the process-wide ingress queue")
 
 
-def test_idle_retirement_keeps_route_registered_when_join_times_out(
+def test_idle_retirement_keeps_writer_registered_when_close_times_out(
     tmp_path: Path,
 ) -> None:
     router = TrajectorySessionSinkRouter(_settings(tmp_path / "sessions"))
 
-    class _TimedOutRoute:
+    class _TimedOutSink:
         def __init__(self) -> None:
             self.stop_requested = False
 
-        def can_retire(self, now: float) -> bool:
+        def is_idle(self) -> bool:
             return True
 
         def request_stop(self) -> None:
             self.stop_requested = True
 
-        def join(self, timeout: float) -> bool:
+        def close(self, *, timeout: float = 15.0) -> bool:
             return False
 
-    route = _TimedOutRoute()
-    router._routes["session-a"] = route
+    sink = _TimedOutSink()
+    writer = _SessionWriter(
+        sink=sink,
+        last_activity=time.monotonic() - _SESSION_WRITER_IDLE_SECONDS - 1,
+    )
+    router._writers["session-a"] = writer
 
     router._retire_idle_routes()
 
-    assert route.stop_requested is True
-    assert router._routes["session-a"] is route
+    assert sink.stop_requested is True
+    assert router._writers["session-a"] is writer
     test_logger.info("timed-out idle writer stayed registered against duplication")

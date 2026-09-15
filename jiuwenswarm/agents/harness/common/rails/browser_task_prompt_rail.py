@@ -25,6 +25,7 @@ class BrowserTaskPromptRail(SubagentRail):
             enable_async_subagent=enable_async_subagent,
             enable_subagent_runtime=enable_subagent_runtime,
             task_prompt_extension=self._task_prompt_extension,
+            synchronous_subagent_types={"browser_agent"},
         )
 
     def _task_prompt_extension(

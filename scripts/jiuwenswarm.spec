@@ -145,10 +145,49 @@ if not os.path.isdir(web_dist) or not os.listdir(web_dist):
 datas = webview_datas + [
     (os.path.join(project_root, "jiuwenswarm", "channels", "web", "frontend", "dist"), "jiuwenswarm/channels/web/frontend/dist"),
 ]
-datas += collect_resources_data_files(
+_playwright_mcp_resource_dir = os.path.join(
+    project_root,
+    "jiuwenswarm",
+    "resources",
+    "runtime",
+    "playwright-mcp",
+)
+_playwright_mcp_zip = os.path.join(
+    _playwright_mcp_resource_dir,
+    "playwright-mcp-0.0.78.zip",
+)
+_playwright_mcp_manifest = os.path.join(_playwright_mcp_resource_dir, "manifest.json")
+for _required_playwright_resource in (_playwright_mcp_zip, _playwright_mcp_manifest):
+    if not os.path.isfile(_required_playwright_resource):
+        raise SystemExit(
+            "ERROR: bundled Playwright MCP resource is missing: "
+            f"{_required_playwright_resource}. Run scripts/update_playwright_mcp_runtime.py."
+        )
+
+_resource_datas = collect_resources_data_files(
     os.path.join(project_root, "jiuwenswarm", "resources"),
     "jiuwenswarm/resources",
 )
+# Keep the ZIP explicit: generic PyInstaller resource patterns historically
+# covered only text data, while the browser runtime must remain a real file.
+datas += [
+    (
+        _playwright_mcp_zip,
+        "jiuwenswarm/resources/runtime/playwright-mcp",
+    )
+]
+datas += [
+    item
+    for item in _resource_datas
+    if os.path.normcase(os.path.abspath(item[0]))
+    != os.path.normcase(os.path.abspath(_playwright_mcp_zip))
+]
+datas += [
+    (
+        os.path.join(project_root, "OPEN_SOURCE_SOFTWARE_NOTICE.md"),
+        ".",
+    )
+]
 datas += collect_data_files(
     "certifi",
     include_py_files=False,
@@ -205,6 +244,7 @@ http2_submodules = [
 
 # 部分包需要显式声明隐藏导入
 hiddenimports = webview_hiddenimports + http2_submodules + [
+    "matplotlib",  # 论文 reporting 阶段生成结果图
     "pandas",  # pymilvus 依赖
     # ``--doctor`` imports these targets dynamically before business imports.
     # Keep them explicit so the installed executable can diagnose a broken
@@ -240,7 +280,6 @@ hiddenimports = webview_hiddenimports + http2_submodules + [
 # 排除不需要的模块以减小体积（pandas 为 pymilvus/openjiuwen 所需，不可排除）
 excludes = [
     "tkinter",
-    "matplotlib",
     "scipy",
     "numpy.tests",
     # External CLI SDKs and their native executables are optional runtimes.
@@ -273,6 +312,14 @@ icon_path = os.path.join(
 # the binary placed here.
 import sysconfig as _sysconfig
 _bundled_binaries = []
+
+# 论文 reporting 阶段会动态生成 PDF 结果图。显式收集 matplotlib，避免
+# PyInstaller 因延迟导入或 backend/font 数据遗漏导致冻结包运行失败。
+_matplotlib_datas, _matplotlib_binaries, _matplotlib_hidden = collect_all("matplotlib")
+datas += _matplotlib_datas
+hiddenimports += _matplotlib_hidden
+_bundled_binaries += _matplotlib_binaries
+
 _ruff_suffix = ".exe" if sys.platform == "win32" else ""
 _ruff_scripts_dir = _sysconfig.get_path("scripts")
 _ruff_candidates = []

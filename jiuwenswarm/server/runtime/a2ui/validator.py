@@ -183,32 +183,6 @@ def _entry_is_object_like(entry: dict[str, Any]) -> bool:
     return False
 
 
-def _iter_image_url_literals(value: Any) -> list[str]:
-    urls: list[str] = []
-    if isinstance(value, dict):
-        image = value.get("Image")
-        if isinstance(image, dict):
-            url = image.get("url")
-            if isinstance(url, dict) and isinstance(url.get("literalString"), str):
-                urls.append(url["literalString"])
-        for nested in value.values():
-            urls.extend(_iter_image_url_literals(nested))
-    elif isinstance(value, list):
-        for nested in value:
-            urls.extend(_iter_image_url_literals(nested))
-    return urls
-
-
-def _validate_image_runtime_semantics(messages: list[dict[str, Any]]) -> None:
-    for url in _iter_image_url_literals(messages):
-        if url.startswith("https://upload.wikimedia.org/wikipedia/commons/thumb/"):
-            raise ValueError(
-                "A2UI Image.url must use a stable image URL. Hard-coded Wikimedia "
-                "thumbnail URLs are often guessed and can return 404; use a verified "
-                "HTTPS image URL or a Wikimedia Commons Special:FilePath URL instead."
-            )
-
-
 def _validate_template_runtime_semantics(messages: list[dict[str, Any]]) -> None:
     data_model_index = _build_data_model_index(messages)
     for message in messages:
@@ -277,7 +251,6 @@ def validate_a2ui_messages(catalog: Any, messages: list[dict[str, Any]]) -> None
         raise ValueError("A2UI message list is empty")
     catalog.validator.validate(messages)
     _validate_template_runtime_semantics(messages)
-    _validate_image_runtime_semantics(messages)
 
 
 def validate_a2ui_response(

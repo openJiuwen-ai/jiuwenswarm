@@ -4,10 +4,14 @@ export type SidebarNavKey =
   | 'chat'
   | 'skills'
   | 'agents'
+  | 'teams'
   | 'sessions'
   | 'cron'
+  | 'personalContext'
+  | 'personalContextSettings'
   | 'settings'
-  | 'updatepanel';
+  | 'updatepanel'
+  | 'experiments';
 
 export const DEFAULT_FRONTEND_PLATFORM: FrontendPlatform = 'web';
 

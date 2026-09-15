@@ -17,11 +17,13 @@ Three gaps fixed:
 from __future__ import annotations
 
 import os
-import shutil
+import json
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
+
+from tests.unit_tests.agentserver.mcp.manifest_helpers import write_manifest
 
 
 # ---------------------------------------------------------------------------
@@ -38,6 +40,29 @@ def _write_pkg(root: Path, *, files: dict[str, str] | None = None,
         p.write_text(content, encoding="utf-8")
     for d in dirs or []:
         (pkg / d).mkdir(parents=True, exist_ok=True)
+    if "skills" in (dirs or []):
+        (pkg / "skills" / "SKILL.md").write_text("# Test skill", encoding="utf-8")
+    if files and "cli.json" in files:
+        write_manifest(
+            pkg,
+            "cli",
+            credentials_type="token" if "token-schema.json" in files else "cli-oauth",
+            skills="skills" in (dirs or []),
+        )
+    elif files and "mcp.json" in files:
+        server = next(iter(json.loads(files["mcp.json"])["mcpServers"].values()))
+        write_manifest(
+            pkg,
+            "stdio-mcp" if server.get("command") else "remote-mcp",
+            skills="skills" in (dirs or []),
+        )
+    else:
+        write_manifest(
+            pkg,
+            "skill-only",
+            credentials_type="token" if files and "token-schema.json" in files else None,
+            skills="skills" in (dirs or []),
+        )
     return pkg
 
 
@@ -62,11 +87,13 @@ def test_detect_skill_only_when_skills_only_no_schema(tmp_path: Path) -> None:
     assert _detect_integration_type(pkg) == "skill-only"
 
 
-def test_detect_remote_when_no_skills_no_mcp_no_cli(tmp_path: Path) -> None:
-    """No cli.json, no mcp.json, no skills/ → remote-mcp fallback."""
+def test_skill_only_manifest_without_skills_is_invalid(tmp_path: Path) -> None:
+    """A skill-only manifest without a declared SKILL.md is invalid."""
+    from jiuwenswarm.server.runtime.mcp.package_manifest import McpPackageError
     from jiuwenswarm.server.runtime.mcp.registry import _detect_integration_type
     pkg = _write_pkg(tmp_path)  # empty package
-    assert _detect_integration_type(pkg) == "remote-mcp"
+    with pytest.raises(McpPackageError, match="SKILL.md"):
+        _detect_integration_type(pkg)
 
 
 def test_connect_skill_only_credentialless_connects(tmp_path: Path, monkeypatch) -> None:
@@ -75,8 +102,11 @@ def test_connect_skill_only_credentialless_connects(tmp_path: Path, monkeypatch)
     only one. Regression for the connect path's skill-only branch."""
     from jiuwenswarm.server.runtime.mcp import registry
     from jiuwenswarm.server.runtime.mcp import state_store
-    pkg = _write_pkg(tmp_path, dirs=["skills"])  # no token-schema
+    _write_pkg(tmp_path, dirs=["skills"])  # no token-schema
     monkeypatch.setattr(registry, "_packages_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.mcp.credential._packages_dir", lambda: tmp_path
+    )
     monkeypatch.setattr(registry, "_install_bundled_skills_safe",
                         lambda n: ["ctrip-wendao"])
     monkeypatch.setattr(state_store, "upsert_mcp_record", lambda *a, **kw: None)
@@ -96,9 +126,9 @@ def test_connect_empty_package_raises(tmp_path: Path, monkeypatch) -> None:
     """A package with no cli.json/mcp.json AND no skills/ raises — there is
     nothing to connect. The skill-only branch's empty-package guard."""
     from jiuwenswarm.server.runtime.mcp import registry
-    pkg = _write_pkg(tmp_path)  # truly empty
+    _write_pkg(tmp_path)  # truly empty
     monkeypatch.setattr(registry, "_packages_dir", lambda: tmp_path)
-    with pytest.raises(ValueError, match="no skills directory"):
+    with pytest.raises(ValueError, match="SKILL.md"):
         registry.connect_mcp("ctrip-wendao")
 
 

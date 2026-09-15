@@ -949,6 +949,50 @@ class TestSubagentCapture:
         apply_task_tool_debug_patch()
         apply_task_tool_debug_patch()  # second call must be a no-op
         assert getattr(TaskTool, "debug_trace_patch_applied", False) is True
+        assert getattr(TaskTool, "debug_trace_patch_mode", "") == "dispatch_only"
+        assert TaskTool.invoke.__module__ == "openjiuwen.harness.tools.subagent.task_tool"
+
+    def test_task_tool_patch_forwards_sdk_session(self, monkeypatch):
+        from openjiuwen.harness.tools.subagent.task_tool import TaskTool
+
+        from jiuwenswarm.server.runtime import debug_trace
+        from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
+            apply_task_tool_debug_patch,
+        )
+
+        apply_task_tool_debug_patch()
+        session = object()
+        captured: dict[str, Any] = {}
+
+        class DebugLogger:
+            @staticmethod
+            def captures_subagent_flow() -> bool:
+                return True
+
+        async def fake_invoke_subagent_with_trace(subagent, **kwargs):
+            captured.update(kwargs)
+            return {"output": "ok", "result_type": "answer"}
+
+        monkeypatch.setattr(debug_trace, "get_debug_trace_logger", lambda: DebugLogger())
+        monkeypatch.setattr(
+            debug_trace,
+            "invoke_subagent_with_trace",
+            fake_invoke_subagent_with_trace,
+        )
+
+        result = asyncio.run(
+            TaskTool._invoke_subagent(
+                object(),
+                object(),
+                {"query": "q"},
+                parent_session_id="parent-session",
+                session=session,
+            )
+        )
+
+        assert result["output"] == "ok"
+        assert captured["session"] is session
+        assert captured["session_id"] == "parent-session"
 
     # Sub-agent rail attachment moved into the SDK
     # (``openjiuwen.harness.observability.rail``); it is covered by

@@ -147,13 +147,18 @@ class _FakeHost:
             },
         )
 
+    async def stop_fetch_run(self, service_id: str) -> dict[str, object]:
+        return self._record("stop_fetch_run", service_id, {"ok": True})
+
     async def get_fetch_run_status(
         self,
         service_id: str | None = None,
+        *,
+        run_id: str | None = None,
     ) -> dict[str, object]:
         return self._record(
             "get_fetch_run_status",
-            service_id,
+            (service_id, run_id) if run_id is not None else service_id,
             {"service_id": service_id, "state": "RUNNING"},
         )
 
@@ -170,10 +175,14 @@ class _FakeHost:
             },
         )
 
-    async def authorize_provider(self, provider: str) -> dict[str, object]:
+    async def authorize_provider(
+        self,
+        provider: str,
+        credentials: dict[str, object] | None = None,
+    ) -> dict[str, object]:
         return self._record(
             "authorize_provider",
-            provider,
+            (provider, credentials),
             {
                 "provider": provider,
                 "state": "authorized",
@@ -286,6 +295,20 @@ SERVICE_PAYLOAD: dict[str, object] = {
     "credentials": {},
 }
 
+GITHUB_SERVICE_PAYLOAD: dict[str, object] = {
+    "service_id": "github-main",
+    "provider": "github",
+    "enabled": False,
+    "interval_seconds": 3_600,
+    "max_items_per_run": 100,
+    "time_range": {"mode": "all"},
+    "source": {
+        "owner": "openjiuwen",
+        "repo": "personal-context",
+        "resources": ["readme", "issues", "pull_requests", "commits", "code"],
+    },
+}
+
 
 PERSONAL_CONTEXT_HOST_CALLS = [
     (ReqMethod.PERSONAL_CONTEXT_RUNTIME_STATUS, {}, "get_status", None, None),
@@ -389,6 +412,13 @@ PERSONAL_CONTEXT_HOST_CALLS = [
         None,
     ),
     (
+        ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN,
+        {"service_id": "github-main"},
+        "stop_fetch_run",
+        "github-main",
+        {"ok": True},
+    ),
+    (
         ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS,
         {"service_id": "github-main"},
         "get_fetch_run_status",
@@ -412,9 +442,22 @@ PERSONAL_CONTEXT_HOST_CALLS = [
         ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
         {"provider": "feishu"},
         "authorize_provider",
-        "feishu",
+        ("feishu", None),
         {
             "provider": "feishu",
+            "state": "authorized",
+            "verification_url": None,
+            "expires_at": None,
+            "error": None,
+        },
+    ),
+    (
+        ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
+        {"provider": "github", "credentials": {"token": "github-canary"}},
+        "authorize_provider",
+        ("github", {"token": "github-canary"}),
+        {
+            "provider": "github",
             "state": "authorized",
             "verification_url": None,
             "expires_at": None,
@@ -445,11 +488,11 @@ PERSONAL_CONTEXT_HOST_CALLS = [
 ]
 
 
-def test_agentserver_registers_exact_24_personal_context_methods() -> None:
+def test_agentserver_registers_exact_25_personal_context_methods() -> None:
     assert server_module._PERSONAL_CONTEXT_REQ_METHODS == {
         item for item in ReqMethod if item.value.startswith("personal_context.")
     }
-    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 24
+    assert len(server_module._PERSONAL_CONTEXT_REQ_METHODS) == 25
 
 
 @pytest.mark.asyncio
@@ -573,6 +616,12 @@ async def test_runtime_switch_callback_failure_is_fail_open(
             ("delete_fetch_service", "local-files-1"),
         ),
         (
+            ReqMethod.PERSONAL_CONTEXT_FETCH_STOP_RUN,
+            {"service_id": "   "},
+            {"service_id": "local-files-1"},
+            ("stop_fetch_run", "local-files-1"),
+        ),
+        (
             ReqMethod.PERSONAL_CONTEXT_FETCH_GET_AUTHORIZATION_STATUS,
             {},
             {"provider": "feishu"},
@@ -589,6 +638,12 @@ async def test_runtime_switch_callback_failure_is_fail_open(
             {"provider": 1},
             {"provider": "feishu"},
             ("get_authorization_status", "feishu"),
+        ),
+        (
+            ReqMethod.PERSONAL_CONTEXT_FETCH_AUTHORIZE_PROVIDER,
+            {"provider": "github", "credentials": "not-an-object"},
+            {"provider": "github", "credentials": {"token": "github-canary"}},
+            ("authorize_provider", ("github", {"token": "github-canary"})),
         ),
     ],
 )
@@ -625,6 +680,28 @@ async def test_source_management_bad_request_keeps_connection_available(
     assert len(ws.sent) == 2
     assert ws.sent[1]["status"] == "succeeded"
     assert ws.sent[1]["is_final"] is True
+
+
+@pytest.mark.asyncio
+async def test_repository_create_payload_is_public_and_has_no_credentials(
+    capture_wire: None,
+) -> None:
+    _server_instance, host = _server()
+    ws = _FakeWebSocket()
+
+    assert "credentials" not in GITHUB_SERVICE_PAYLOAD
+    await handle_personal_context_request(
+        host,
+        ws,
+        _request(
+            ReqMethod.PERSONAL_CONTEXT_FETCH_CREATE_SERVICE,
+            {"service": GITHUB_SERVICE_PAYLOAD},
+        ),
+        asyncio.Lock(),
+    )
+
+    assert host.calls == [("create_fetch_service", GITHUB_SERVICE_PAYLOAD)]
+    assert "credentials" not in ws.sent[0]["body"]["result"]
 
 
 @pytest.mark.asyncio
@@ -934,3 +1011,20 @@ async def test_handler_propagates_cancellation(capture_wire: None) -> None:
             _request(ReqMethod.PERSONAL_CONTEXT_RUNTIME_STATUS),
             asyncio.Lock(),
         )
+
+
+@pytest.mark.asyncio
+async def test_run_history_query_forwards_run_id(capture_wire):
+    _server_instance, host = _server()
+    ws = _FakeWebSocket()
+    await handle_personal_context_request(
+        host,
+        ws,
+        _request(
+            ReqMethod.PERSONAL_CONTEXT_FETCH_GET_RUN_STATUS,
+            {"service_id": "notes", "run_id": "a" * 32},
+        ),
+        asyncio.Lock(),
+    )
+    assert host.calls == [("get_fetch_run_status", ("notes", "a" * 32))]
+    assert ws.sent[0]["status"] == "succeeded"

@@ -17,6 +17,7 @@ from jiuwenswarm.symphony.service import (
     SwarmSymphonyService,
     get_swarm_symphony_service,
 )
+from jiuwenswarm.symphony.llm import LLMConfig, current_request_llm_config
 
 logger = logging.getLogger(__name__)
 
@@ -50,8 +51,13 @@ class _ComposeGraphLocalFunction(LocalFunction):
 class SymphonyToolkit:
     """Expose the process-local Symphony service as model-callable tools."""
 
-    def __init__(self, service: SwarmSymphonyService | None = None) -> None:
+    def __init__(
+        self,
+        service: SwarmSymphonyService | None = None,
+        llm_config_provider: Callable[[], LLMConfig | None] | None = None,
+    ) -> None:
         self._service = service
+        self._llm_config_provider = llm_config_provider or current_request_llm_config
 
     @staticmethod
     def _resolve_timeout_s(default_s: float = 1800.0) -> float:
@@ -123,6 +129,29 @@ class SymphonyToolkit:
             "detail": "Symphony is disabled by config: symphony.enabled=false",
         }
 
+    def _llm_config_kwargs(
+        self,
+        operation: str,
+    ) -> tuple[dict[str, Any], dict[str, Any] | None]:
+        try:
+            llm_config = self._llm_config_provider()
+        except Exception as exc:  # noqa: BLE001 - tool boundary returns a payload
+            logger.exception(
+                "Symphony request model resolution failed: %s",
+                operation,
+            )
+            return {}, {
+                "success": False,
+                "reason": "llm_config_unavailable",
+                "retryable": False,
+                "operation": operation,
+                "detail": (
+                    f"symphony.{operation}: request-selected model configuration "
+                    f"is unavailable ({type(exc).__name__})"
+                ),
+            }
+        return ({"llm_config": llm_config} if llm_config is not None else {}), None
+
     async def graph_status(self) -> dict[str, Any]:
         if not self.is_enabled():
             return self._disabled_payload("symphony_read_graph")
@@ -131,9 +160,14 @@ class SymphonyToolkit:
     async def refresh_graph(self) -> dict[str, Any]:
         if not self.is_enabled():
             return self._disabled_payload("symphony_refresh_graph")
+        kwargs: dict[str, Any] = {"progress": current_tool_progress()}
+        llm_kwargs, error = self._llm_config_kwargs("refresh_graph")
+        if error is not None:
+            return error
+        kwargs.update(llm_kwargs)
         return await self._call_service(
             "refresh_graph",
-            progress=current_tool_progress(),
+            **kwargs,
         )
 
     @classmethod
@@ -162,6 +196,7 @@ class SymphonyToolkit:
             "error",
             "timed_out",
             "retryable",
+            "build_status",
             "operation",
             "timeout_s",
         ):
@@ -264,13 +299,16 @@ class SymphonyToolkit:
         normalized_candidate_skill_ids = _normalize_candidate_skill_ids(
             candidate_skill_ids
         )
-        payload = await self._call_service(
-            "plan",
-            query_text,
-            mode=mode_text or None,
-            candidate_skill_ids=normalized_candidate_skill_ids,
-            progress=current_tool_progress(),
-        )
+        kwargs: dict[str, Any] = {
+            "mode": mode_text or None,
+            "candidate_skill_ids": normalized_candidate_skill_ids,
+            "progress": current_tool_progress(),
+        }
+        llm_kwargs, error = self._llm_config_kwargs("plan")
+        if error is not None:
+            return self._compact_plan_payload(error)
+        kwargs.update(llm_kwargs)
+        payload = await self._call_service("plan", query_text, **kwargs)
         if isinstance(payload, dict):
             return self._compact_plan_payload(payload)
         return payload

@@ -4,10 +4,6 @@ from __future__ import annotations
 
 import ast
 import asyncio
-import io
-import textwrap
-import threading
-import tokenize
 from pathlib import Path
 
 import pytest
@@ -24,104 +20,6 @@ def _source(path: str) -> str:
     return Path(path).read_text(encoding="utf-8")
 
 
-def _parse_imports_without_recursion(source: str) -> ast.Module:
-    """Parse import statements individually for old CPython versions.
-
-    CPython 3.11.8 and earlier can fail while constructing the AST of a large
-    module, even when the source is valid.  The import statements are small
-    independent units, so parsing those units separately preserves the static
-    check without exercising that interpreter limit.
-    """
-    lines = source.splitlines(keepends=True)
-    body: list[ast.stmt] = []
-    statement_start = True
-    import_start_line: int | None = None
-    import_start_column = 0
-    bracket_depth = 0
-
-    for token in tokenize.generate_tokens(io.StringIO(source).readline):
-        if import_start_line is not None:
-            if token.type == tokenize.OP:
-                if token.string in "([{":
-                    bracket_depth += 1
-                elif token.string in ")]}":
-                    bracket_depth -= 1
-            if token.type == tokenize.NEWLINE and bracket_depth == 0:
-                first_line = lines[import_start_line - 1][import_start_column:]
-                continuation = "".join(lines[import_start_line : token.end[0]])
-                snippet = textwrap.dedent(
-                    first_line + continuation
-                ).strip()
-                body.extend(ast.parse(snippet).body)
-                import_start_line = None
-                statement_start = True
-            continue
-
-        if token.type in {
-            tokenize.INDENT,
-            tokenize.DEDENT,
-            tokenize.NL,
-            tokenize.COMMENT,
-        }:
-            continue
-        if token.type == tokenize.NEWLINE:
-            statement_start = True
-            continue
-        if token.type == tokenize.OP:
-            if token.string in "([{":
-                bracket_depth += 1
-            elif token.string in ")]}":
-                bracket_depth -= 1
-            if token.string in {":", ";"} and bracket_depth == 0:
-                statement_start = True
-                continue
-        if (
-            statement_start
-            and token.type == tokenize.NAME
-            and token.string in {"from", "import"}
-        ):
-            import_start_line = token.start[0]
-            import_start_column = token.start[1]
-            bracket_depth = 0
-            statement_start = False
-            continue
-        statement_start = False
-
-    return ast.Module(body=body, type_ignores=[])
-
-
-def _parse(source: str) -> ast.Module:
-    """在全新线程中执行 ast.parse，规避 CPython gh-106905。
-
-    Python 3.11.8 之前的版本存在已知 bug：调用点递归较深时（pytest 下约
-    110 层），大文件 AST 构造会触发内部递归上限，且错误路径漏减计数器，
-    最终把正常解析报成 ``SystemError: AST constructor recursion depth
-    mismatch``。新线程从接近 0 的递归深度开始；若文件仍触发该错误，则
-    逐条解析 import 语句作为兼容回退。
-    """
-    outcome: dict[str, object] = {}
-
-    def _run() -> None:
-        try:
-            outcome["tree"] = ast.parse(source)
-        except BaseException as exc:  # noqa: BLE001 - 原样传回主线程重新抛出
-            outcome["error"] = exc
-
-    worker = threading.Thread(target=_run, daemon=True)
-    worker.start()
-    worker.join()
-    error = outcome.get("error")
-    if isinstance(error, BaseException):
-        if isinstance(error, SystemError) and "AST constructor recursion depth mismatch" in str(
-            error
-        ):
-            return _parse_imports_without_recursion(source)
-        raise error
-    tree = outcome.get("tree")
-    assert isinstance(tree, ast.Module)
-    return tree
-
-
 def test_deep_adapter_imports_core_personal_context_rail_only() -> None:
     module = (
         Path(__file__).parents[3]
@@ -131,7 +29,7 @@ def test_deep_adapter_imports_core_personal_context_rail_only() -> None:
         / "agent_adapter"
         / "interface_deep.py"
     )
-    tree = _parse(_source(str(module)))
+    tree = ast.parse(_source(str(module)))
     imports = [
         node
         for node in ast.walk(tree)
@@ -412,3 +310,61 @@ class _FakeManagedAgent:
         self.refresh_count += 1
         if self.fail_refresh:
             raise RuntimeError("refresh failed")
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("normal,plan", [("code.normal", "code.plan"), ("agent.code.normal", "agent.code.plan")])
+async def test_code_modes_use_shared_personal_context_switch_and_cleanup(monkeypatch, normal, plan):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    agent = _FakeAgent()
+    adapter = object.__new__(JiuwenSwarmCodeAdapter)
+    adapter.__dict__.update(_adapter(agent, runtime_enabled=False).__dict__)
+    adapter._is_code_agent = True
+    # Existing unrelated code rails are already registered for this lightweight instance.
+    for name in ("_task_planning_rail", "_skill_evolution_rail", "_evolution_interrupt_rail"):
+        setattr(adapter, name, None)
+    for name in ("_subagent_rail", "_project_memory_rail", "_coding_memory_rail"):
+        setattr(adapter, name, object())
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    await adapter._update_rails_for_mode(normal)
+    assert agent.register_attempts == []
+    assert adapter._last_mode == normal
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+    rail = adapter._personal_context_rail
+    assert rail is not None
+    await adapter._update_rails_for_mode(plan)
+    assert adapter._personal_context_rail is rail
+    assert agent.register_attempts == [rail]
+    adapter.set_personal_context_runtime_enabled(False)
+    await adapter.refresh_personal_context_rail()
+    assert adapter._personal_context_rail is None
+    assert agent.unregister_attempts == [rail]
+    adapter.set_personal_context_runtime_enabled(True)
+    await adapter.refresh_personal_context_rail()
+    assert adapter._personal_context_rail is not None
+    await adapter._sync_personal_context_rail("cleanup")
+    assert adapter._personal_context_rail is None
+
+
+@pytest.mark.asyncio
+async def test_code_session_adapters_receive_existing_switch_broadcast(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
+
+    root = object.__new__(JiuwenSwarmCodeAdapter)
+    child = object.__new__(JiuwenSwarmCodeAdapter)
+    for adapter in (root, child):
+        adapter.__dict__.update(_adapter(_FakeAgent(), runtime_enabled=False).__dict__)
+        adapter._is_code_agent = True
+        adapter._last_mode = "code.normal"
+    root._is_session_scoped_adapter = False
+    root._session_adapters = {"code-session": child}
+    monkeypatch.setattr(interface_deep, "PersonalContextRail", _FakeRail)
+    root.set_personal_context_runtime_enabled(True)
+    await root.refresh_personal_context_rail()
+    assert root._personal_context_rail is not None
+    assert child._personal_context_rail is not None
+    root.set_personal_context_runtime_enabled(False)
+    await root.refresh_personal_context_rail()
+    assert root._personal_context_rail is None
+    assert child._personal_context_rail is None

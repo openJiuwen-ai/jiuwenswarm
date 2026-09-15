@@ -7,12 +7,39 @@ from __future__ import annotations
 import asyncio
 import os
 import re
+from contextvars import ContextVar
 from html import unescape
-from urllib.parse import parse_qs, unquote, urlparse
+from urllib.parse import parse_qs, unquote, urljoin, urlparse
 
 import requests
 import urllib3
 from openjiuwen.core.foundation.tool import tool
+from openjiuwen.core.foundation.tool.function.function import LocalFunction
+
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.url_safety import (
+    unsafe_public_https_url_reason,
+)
+
+_PUBLIC_HTTPS_FETCH: ContextVar[bool] = ContextVar("public_https_fetch", default=False)
+
+
+class _PermissionAwareFetch(LocalFunction):
+    """Carry this invocation's URL restriction without changing its schema."""
+
+    accepts_tool_callback_context = True
+
+    async def invoke(self, inputs, **kwargs):
+        ctx = kwargs.pop("_tool_callback_context", None)
+        token = _PUBLIC_HTTPS_FETCH.set(
+            getattr(ctx, PUBLIC_HTTPS_FETCH_CONTEXT_ATTR, False) is True
+        )
+        try:
+            return await super().invoke(inputs, **kwargs)
+        finally:
+            _PUBLIC_HTTPS_FETCH.reset(token)
 
 _USER_AGENT = (
     "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
@@ -188,9 +215,35 @@ def _normalize_url(url: str) -> str:
     return f"https://{decoded}"
 
 
-def _fetch_via_jina_reader_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
+def _check_fetch_url(url: str) -> None:
+    reason = unsafe_public_https_url_reason(urlparse(url))
+    if reason:
+        raise ValueError(reason)
+
+
+def _fetch_response(url: str, timeout_seconds: int, *, public_https: bool) -> requests.Response:
+    if not public_https:
+        return _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+    # URL eligibility only: no DNS, peer or firewall policy. Keep requests' limit.
+    for _ in range(requests.models.DEFAULT_REDIRECT_LIMIT + 1):
+        _check_fetch_url(url)
+        response = _http_get(
+            url, headers=_REQUEST_HEADERS, timeout=timeout_seconds, allow_redirects=False
+        )
+        if not response.is_redirect:
+            return response
+        try:
+            url = urljoin(response.url, response.headers["Location"])
+        finally:
+            response.close()
+    raise requests.TooManyRedirects("Exceeded the default redirect limit")
+
+
+def _fetch_via_jina_reader_sync(
+    url: str, timeout_seconds: int, *, public_https: bool = False,
+) -> dict[str, str | int]:
     reader_url = f"https://r.jina.ai/{url}"
-    response = _http_get(reader_url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+    response = _fetch_response(reader_url, timeout_seconds, public_https=public_https)
     response.raise_for_status()
     return {
         "url": url,
@@ -200,10 +253,13 @@ def _fetch_via_jina_reader_sync(url: str, timeout_seconds: int) -> dict[str, str
     }
 
 
-def _fetch_webpage_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
-    response = _http_get(url, headers=_REQUEST_HEADERS, timeout=timeout_seconds)
+def _fetch_webpage_sync(
+    url: str, timeout_seconds: int, *, public_https: bool = False,
+) -> dict[str, str | int]:
+    response = _fetch_response(url, timeout_seconds, public_https=public_https)
     if response.status_code in {401, 403, 429}:
-        return _fetch_via_jina_reader_sync(url, timeout_seconds)
+        response.close()
+        return _fetch_via_jina_reader_sync(url, timeout_seconds, public_https=public_https)
     response.raise_for_status()
 
     text = _decode_response_text(response)
@@ -226,15 +282,8 @@ def _fetch_webpage_sync(url: str, timeout_seconds: int) -> dict[str, str | int]:
     }
 
 
-@tool(
-    name="mcp_fetch_webpage",
-    description=(
-        "Fetch webpage text content from URL. Returns status/title/plain text content. "
-        "Set max_chars=0 to disable output clipping. "
-        "Use a larger timeout_seconds for slow websites."
-    ),
-)
 async def mcp_fetch_webpage(url: str, max_chars: int = 0, timeout_seconds: int = 30) -> str:
+    raw_url = (url or "").strip()
     url = _normalize_url(url)
     if not url:
         return "[ERROR]: url cannot be empty."
@@ -258,7 +307,13 @@ async def mcp_fetch_webpage(url: str, max_chars: int = 0, timeout_seconds: int =
     timeout_seconds = max(1, min(timeout_seconds, max_timeout_seconds))
 
     try:
-        data = await asyncio.to_thread(_fetch_webpage_sync, url, timeout_seconds)
+        public_https = _PUBLIC_HTTPS_FETCH.get()
+        if public_https:
+            wrapper_url = raw_url if raw_url.startswith(("http://", "https://")) else f"https://{raw_url}"
+            _check_fetch_url(wrapper_url)
+        data = await asyncio.to_thread(
+            _fetch_webpage_sync, url, timeout_seconds, public_https=public_https
+        )
     except Exception as exc:
         return f"[ERROR]: failed to fetch webpage: {exc}"
 
@@ -271,3 +326,16 @@ async def mcp_fetch_webpage(url: str, max_chars: int = 0, timeout_seconds: int =
     lines.append("Content:")
     lines.append(_clip_text(str(data.get("content", "") or ""), max_chars) or "[empty]")
     return "\n".join(lines)
+
+
+mcp_fetch_webpage = _PermissionAwareFetch(
+    card=tool(
+        name="mcp_fetch_webpage",
+        description=(
+            "Fetch webpage text content from URL. Returns status/title/plain text content. "
+            "Set max_chars=0 to disable output clipping. "
+            "Use a larger timeout_seconds for slow websites."
+        ),
+    )(mcp_fetch_webpage).card,
+    func=mcp_fetch_webpage,
+)

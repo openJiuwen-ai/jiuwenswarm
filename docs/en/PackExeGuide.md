@@ -5,7 +5,7 @@ This guide explains how to build a desktop app with **uv**, **PyInstaller**, and
 ## Prerequisites
 
 - **uv**: Python package manager used by the project
-- **Node.js**: **Build-time only** for the web UI; the shipped app does not require Node at runtime
+- **Node.js 22.11.0**: builds the web UI and is bundled for browser runtime use; normal app use does not require a system Node installation
 - **Target-machine network access**: Setup uses Microsoft's download service when WebView2 Runtime is missing; an unavailable network does not block the main installation
 - **Windows**: `onedir` output for Inno Setup installers
 - **macOS**: `.app` bundle and `.dmg`

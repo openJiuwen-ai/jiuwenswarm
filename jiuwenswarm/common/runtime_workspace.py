@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 
 from jiuwenswarm.common.projectless_workspace import (
@@ -71,6 +71,55 @@ def resolve_runtime_workspace_paths(
     )
 
 
+def bind_session_runtime_workspace(
+    *,
+    internal_workspace_dir: str | Path,
+    project_dir: str | None,
+    session_id: str,
+) -> RuntimeWorkspacePaths:
+    """Bind a session explicitly; this may allocate its projectless workspace.
+
+    The session owner calls this during preparation and retains the returned
+    value. Request validation must use that value, not allocate another root.
+    """
+    if not isinstance(session_id, str) or not session_id.strip():
+        raise ValueError("runtime_workspace_session_missing")
+    return resolve_runtime_workspace_paths(
+        internal_workspace_dir=internal_workspace_dir,
+        project_dir=project_dir,
+        workspace_dir=None,
+        cwd=None,
+        session_id=session_id,
+        task_name=None,
+        bind_request=True,
+    )
+
+
+def resolve_bound_runtime_workspace_paths(
+    binding: RuntimeWorkspacePaths,
+    *,
+    project_dir: str | None,
+    workspace_dir: str | None,
+    cwd: str | None,
+) -> RuntimeWorkspacePaths:
+    """Validate a request against its stable root without rebinding the session.
+
+    Keep the original binding immutable. Only an explicit project's existing
+    in-root cwd can vary; projectless requests retain their bound work cwd.
+    """
+    for declared in (project_dir, workspace_dir):
+        root = _optional_path(declared)
+        if root is not None and root != binding.runtime_workspace_root:
+            raise ValueError("runtime_workspace_changed:new_session_required")
+    if not binding.is_projectless and cwd:
+        return replace(
+            binding,
+            cwd=_cwd_inside_root(cwd, binding.runtime_workspace_root)
+            or binding.runtime_workspace_root,
+        )
+    return binding
+
+
 def _resolved_path(value: str | Path) -> Path:
     return Path(value).expanduser().resolve()
 
@@ -91,4 +140,9 @@ def _cwd_inside_root(cwd: str | None, root: Path) -> Path | None:
     return candidate
 
 
-__all__ = ["RuntimeWorkspacePaths", "resolve_runtime_workspace_paths"]
+__all__ = [
+    "RuntimeWorkspacePaths",
+    "bind_session_runtime_workspace",
+    "resolve_bound_runtime_workspace_paths",
+    "resolve_runtime_workspace_paths",
+]

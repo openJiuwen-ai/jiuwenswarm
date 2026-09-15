@@ -23,13 +23,15 @@ export interface LocalizedText {
   en: string;
 }
 
-export type PluginPackageSource = 'local' | 'builtin';
+export type PluginPackageSource = 'local' | 'builtin' | 'hub';
 
 /** 包级连接态，语义同 MCP 侧 ConnectorSummary.connectionState（v2 §2.1/§3.1）。 */
 export type PluginConnectionState = 'connected' | 'disconnected' | 'connecting';
 
 export interface PluginPackageSummary {
   id: string;
+  runtimePackageName: string;
+  hubAssetId?: string;
   displayName: LocalizedText;
   displayDescription: LocalizedText;
   /** 分类；来自 manifest.category；后端缺省为 ""——前端按"未分类"归进"其他"桶处理。 */
@@ -43,6 +45,7 @@ export interface PluginPackageSummary {
    * chat.send（§1.3 硬拒绝），装了但未连接走"已装重连"（§1.6.4）。
    */
   connectionState: PluginConnectionState;
+  version?: string;
 }
 
 export interface PluginCapabilityRef {

@@ -125,6 +125,7 @@ class VideoDuplexApplicationPlugin(ApplicationPluginExtension):
             WebSocketRouteContribution(
                 path=QWEN_OMNI_PROXY_PATH,
                 endpoint=serve_qwen_omni_websocket,
+                available_when_disabled=True,
             ),
         )
 

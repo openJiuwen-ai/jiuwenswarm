@@ -3,6 +3,7 @@
 """Unit tests for utils module."""
 
 import importlib
+import json
 import os
 import sys
 from pathlib import Path
@@ -254,6 +255,35 @@ class TestSourceRecordMasking:
         finally:
             self._restore_state(state)
 
+    def test_cloud_credential_keys_masked(self):
+        """access_key / secret_key / project_id (e.g. HUAWEI_ACCESS_KEY) are
+        masked — the bare ``_KEY`` suffix form was a gap before access[_-]?key
+        / secret[_-]?key / project[_-]?id were added to the keyword list."""
+        raw = (
+            "params={'env': {'HUAWEI_ACCESS_KEY': 'HPUASSNLEYPK55WDLS5X', "
+            "'HUAWEI_PROJECT_ID': '4e273616d7724562be9c286f916cf417', "
+            "'HUAWEI_SECRET_KEY': 'xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb'}}"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "HPUASSNLEYPK55WDLS5X" not in masked, "HUAWEI_ACCESS_KEY leaked"
+        assert "xXznbRtIRS2Zq1QctJ0YgRErGeXP613rPnukZPtb" not in masked, "HUAWEI_SECRET_KEY leaked"
+        assert "4e273616d7724562be9c286f916cf417" not in masked, "HUAWEI_PROJECT_ID leaked"
+        assert masked.count("******") == 3, "all three credential fields must be masked"
+
+    def test_cli_flag_credentials_masked(self):
+        """Command-line flags serialized as list elements (pydantic repr of
+        args=['--token', 'xxx', '--api-key', 'yyy']) are masked — KV patterns
+        only match ``key:value`` / ``key=value``, not ``'--flag', 'value'``."""
+        raw = (
+            "args=['--token', 'tok-secret', '--api-key', 'ak-secret', "
+            "'--access-key', 'ak2-secret', '--secret-key', 'sk-secret']"
+        )
+        masked = utils._sanitize_log_text(raw)
+        assert "tok-secret" not in masked, "--token value leaked"
+        assert "ak-secret" not in masked, "--api-key value leaked"
+        assert "ak2-secret" not in masked, "--access-key value leaked"
+        assert "sk-secret" not in masked, "--secret-key value leaked"
+
     def test_install_is_idempotent(self):
         """Repeated install_source_record_masking calls are safe (no-op after first)."""
         import logging
@@ -302,6 +332,64 @@ def test_prepare_workspace_does_not_copy_legacy_heartbeat_template(
     )
 
     assert not (workspace_dir / "agent" / "workspace" / "HEARTBEAT.md").exists()
+
+
+def test_prepare_workspace_copies_rsi_program_dataset_creator(
+    tmp_path: Path,
+) -> None:
+    """Initial workspace preparation includes the new built-in skill."""
+    workspace_dir = tmp_path / ".jiuwenswarm"
+
+    utils.prepare_workspace(
+        overwrite=False,
+        preferred_language="en",
+        workspace_dir=workspace_dir,
+    )
+
+    assert (
+        workspace_dir
+        / "agent"
+        / "workspace"
+        / "skills"
+        / "rsi-program-dataset-creator"
+        / "SKILL.md"
+    ).is_file()
+
+
+def test_ensure_default_builtin_skills_installs_program_evolution_design(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """New built-in skills are copied into an existing workspace on startup."""
+    builtin_dir = tmp_path / "builtin-skills"
+    user_skills_dir = tmp_path / "user-skills"
+    source_skill = builtin_dir / "rsi-program-dataset-creator"
+    source_skill.mkdir(parents=True)
+    (source_skill / "SKILL.md").write_text(
+        "---\nname: rsi-program-dataset-creator\ndescription: test\n---\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
+    monkeypatch.setattr(utils, "get_agent_skills_dir", lambda: user_skills_dir)
+
+    utils.ensure_default_builtin_skills()
+
+    installed_skill = user_skills_dir / "rsi-program-dataset-creator"
+    assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
+        source_skill / "SKILL.md"
+    ).read_text(encoding="utf-8")
+    state = json.loads(
+        (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
+    )
+    assert any(
+        item.get("name") == "rsi-program-dataset-creator"
+        and item.get("source") == "builtin"
+        for item in state["installed_plugins"]
+    )
+
+    installed_skill.joinpath("SKILL.md").write_text("user edit\n", encoding="utf-8")
+    utils.ensure_default_builtin_skills()
+    assert installed_skill.joinpath("SKILL.md").read_text(encoding="utf-8") == "user edit\n"
 
 
 class TestConstants:

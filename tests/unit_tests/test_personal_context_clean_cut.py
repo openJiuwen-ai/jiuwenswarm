@@ -20,7 +20,7 @@ def test_personal_context_api_inventory_and_legacy_removal() -> None:
         "personal_context.fetch.stop_" + "scheduler",
     }
 
-    assert len(methods) == 24
+    assert len(methods) == 25
     assert methods.isdisjoint(removed_methods)
     assert not any(item.value.startswith(legacy_prefix) for item in ReqMethod)
 
@@ -47,7 +47,10 @@ async def test_legacy_config_file_is_not_read(tmp_path: Path) -> None:
     await host.start()
     status = await host.get_status()
 
+    # Ignore the legacy file and wait for explicit user configuration.
     assert status.configured is False
     assert status.state == "CREATED"
+    assert status.collection_enabled is False
     assert host._config_path == home / "personal_context.yaml"
     assert not host._config_path.exists()
+    assert legacy_config.is_file()

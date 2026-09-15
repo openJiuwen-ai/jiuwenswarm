@@ -633,36 +633,71 @@ def test_projectless_task_workspace_detection_includes_agent_and_code_not_team()
     assert not JiuWenSwarmDeepAdapter._is_projectless_agent_mode("team")
 
 
-@pytest.mark.asyncio
-async def test_agent_manager_uses_project_dir_not_workspace_dir_for_identity(
-    monkeypatch,
-):
-    manager = object.__new__(AgentManager)
-    captured: dict[str, object] = {}
+@pytest.fixture
+def manual_manager_lookup(monkeypatch):
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_manager.get_config",
+        lambda: {"permissions": {"mode": "manual"}},
+    )
+    manager = AgentManager()
+    seen_requests = []
 
-    async def get_agent(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace(process_message=AsyncMock(return_value="ok"))
+    async def process_message(request):
+        seen_requests.append(request)
+        return "ok"
+
+    async def process_message_stream(request):
+        seen_requests.append(request)
+        yield "ok"
+
+    lookup = AsyncMock(return_value=SimpleNamespace(
+        process_message=process_message,
+        process_message_stream=process_message_stream,
+    ))
 
     monkeypatch.setattr(manager, "wait_for_session_prewarm", AsyncMock())
-    monkeypatch.setattr(manager, "get_agent", get_agent)
+    monkeypatch.setattr(manager, "get_agent", lookup)
+    return manager, lookup, seen_requests
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("streaming", [False, True], ids=["non-stream", "stream"])
+@pytest.mark.parametrize("mode", ["agent", "code", "team", "auto_harness"])
+@pytest.mark.parametrize(
+    ("project_fields", "expected_project"),
+    [
+        pytest.param(
+            {"project_dir": "C:/projects/pi", "workspace_dir": "C:/internal/workspace"},
+            "C:/projects/pi", id="project-and-workspace",
+        ),
+        pytest.param(
+            {"workspace_dir": "C:/internal/workspace"}, None, id="workspace-only",
+        ),
+        pytest.param({}, None, id="neither"),
+    ],
+)
+async def test_agent_manager_uses_project_dir_not_workspace_dir_for_identity(
+    manual_manager_lookup, streaming, mode, project_fields, expected_project,
+):
+    manager, lookup, seen_requests = manual_manager_lookup
+    params = {"mode": mode, **project_fields}
     request = SimpleNamespace(
         session_id="session-manager",
         channel_id="web",
-        params={
-            "mode": "code",
-            "project_dir": "C:/projects/pi",
-            "workspace_dir": "C:/internal/workspace",
-        },
+        params=params,
     )
+    original_fields = vars(request).copy()
 
-    assert await manager.process_message(request) == "ok"
-    assert captured["mode"] == "code"
-    assert captured["project_dir"] == "C:/projects/pi"
+    if streaming:
+        assert [chunk async for chunk in manager.process_message_stream(request)] == ["ok"]
+    else:
+        assert await manager.process_message(request) == "ok"
 
-    request.params = {
-        "mode": "code",
-        "workspace_dir": "C:/internal/workspace",
-    }
-    assert await manager.process_message(request) == "ok"
-    assert captured["project_dir"] is None
+    lookup.assert_awaited_once_with(
+        channel_id="web", mode=mode, project_dir=expected_project, sub_mode=None,
+    )
+    assert seen_requests == [request]
+    assert seen_requests[0] is request
+    assert vars(request) == original_fields
+    assert request.params is params
+    assert params == {"mode": mode, **project_fields}

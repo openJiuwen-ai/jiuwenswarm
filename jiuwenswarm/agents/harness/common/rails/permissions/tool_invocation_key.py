@@ -24,29 +24,6 @@ def normalize_tool_invocation_text(name: str, value: Any, *, maximum: int = 512)
 
 
 @dataclass(frozen=True)
-class AgentOwnerBinding:
-    """Canonical host identity for an ordinary Agent executor."""
-
-    runtime_mode: str
-    agent_id: str
-    kind: Literal["agent"] = "agent"
-
-    def __post_init__(self) -> None:
-        if self.kind != "agent":
-            raise ValueError("invalid agent owner kind")
-        object.__setattr__(
-            self,
-            "runtime_mode",
-            normalize_tool_invocation_text("runtime_mode", self.runtime_mode),
-        )
-        object.__setattr__(
-            self,
-            "agent_id",
-            normalize_tool_invocation_text("agent_id", self.agent_id),
-        )
-
-
-@dataclass(frozen=True)
 class ToolInvocationKeyV1:
     """Additive wire identity shared by all events for one invocation."""
 

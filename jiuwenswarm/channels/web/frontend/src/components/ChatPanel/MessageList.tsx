@@ -168,7 +168,6 @@ function CompletedWorkChip({
       : formatStreakSummaryLabel(t, thinkingCount, toolCount, outcomeTone);
   // 图标统一用 status-waiting 时钟资源，状态色仍由 is-success/is-partial/is-error 通过 currentColor 区分。
   const applyOutcome = variant === 'streak';
-  const showPartialBadge = applyOutcome && outcomeTone === 'partial';
   const toneClass = !applyOutcome
     ? 'is-success'
     : outcomeTone === 'error'
@@ -195,15 +194,6 @@ function CompletedWorkChip({
         <WaitingStatusIcon />
       </span>
       <span className="completed-work-chip__label" data-testid="chat-panel-completed-work-chip-label">{label}</span>
-      {showPartialBadge ? (
-        <span
-          className="completed-work-chip__badge is-partial"
-          data-testid="chat-panel-completed-work-chip-badge"
-          data-variant="partial"
-        >
-          {t('chatUi.workOutcomePartial')}
-        </span>
-      ) : null}
       <span className={clsx('tool-tree-item__disclosure', expanded && 'is-open')} aria-hidden="true">
         <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="1.8">
           <path strokeLinecap="round" strokeLinejoin="round" d="m8 6 4 4-4 4" />

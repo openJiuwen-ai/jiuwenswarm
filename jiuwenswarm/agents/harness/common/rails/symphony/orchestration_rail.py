@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Mapping
 from typing import Any, Callable
 
 from openjiuwen.core.single_agent.ability_manager import AbilityExecutionError
@@ -16,9 +17,16 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.symphony.llm import (
+    SYMPHONY_LLM_CONFIG_REF_KEY,
+    bind_request_llm_config,
+    reset_request_llm_config,
+)
+
 _ConfigBaseProvider = dict[str, Any] | Callable[[], dict[str, Any] | None] | None
 _SHORTLIST_EXTRA_KEY = "symphony_candidate_skill_ids"
 _GRAPH_BUILD_TIMEOUT_EXTRA_KEY = "symphony_graph_build_timeout"
+_REQUEST_LLM_TOKEN_ATTR = "_symphony_request_llm_config_token"
 _GRAPH_TOOL_NAMES = frozenset(
     {
         "symphony_compose_graph",
@@ -38,6 +46,17 @@ _MANUAL_GRAPH_BUILD_CONTENT = {
         "With many skills, building the Skill Graph can take a while and timed out in this session. "
         "Go to My Skills > Skill Graph, click Incremental Build, and wait for it to finish; then resend your task. "
         "To avoid another timeout, this round will not call the graph-building tools again."
+    ),
+}
+
+_GRAPH_PREPARING_CONTENT = {
+    "cn": (
+        "技能图谱正在构建，请等待页面构建完成后重新发送任务。"
+        "本轮不会重复调用图谱工具。"
+    ),
+    "en": (
+        "The Skill Graph is currently being built. Wait for the build to finish, "
+        "then resend your task. This round will not call the graph tools again."
     ),
 }
 
@@ -69,17 +88,55 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self._sync_orchestration_guidance(ctx)
 
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
+        self._bind_request_model(ctx)
         self._inject_shortlisted_candidates(ctx)
 
     async def after_tool_call(self, ctx: AgentCallbackContext) -> None:
-        self._terminate_structured_graph_build_timeout(ctx)
-        self._remember_successful_skill_view(ctx)
+        try:
+            self._terminate_structured_graph_preparing(ctx)
+            self._terminate_structured_graph_build_timeout(ctx)
+            self._remember_successful_skill_view(ctx)
+        finally:
+            self._reset_request_model(ctx)
 
     async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
         """Turn the outer AbilityManager timeout into the same terminal result."""
-        if not self._is_graph_tool_call(ctx) or not self._is_outer_graph_timeout(ctx):
+        try:
+            if not self._is_graph_tool_call(ctx) or not self._is_outer_graph_timeout(ctx):
+                return
+            self._terminate_graph_build_timeout(ctx, self._outer_timeout_payload(ctx))
+        finally:
+            self._reset_request_model(ctx)
+
+    def _bind_request_model(self, ctx: AgentCallbackContext) -> None:
+        if not self._is_graph_tool_call(ctx):
             return
-        self._terminate_graph_build_timeout(ctx, self._outer_timeout_payload(ctx))
+        reference = self._request_model_reference(ctx)
+        if not reference:
+            return
+        # AbilityManager executes parallel tool calls in separate asyncio
+        # tasks. Store the reset token on the per-tool callback context while
+        # the ContextVar itself keeps each task's selected model isolated.
+        setattr(ctx, _REQUEST_LLM_TOKEN_ATTR, bind_request_llm_config(reference))
+
+    @staticmethod
+    def _reset_request_model(ctx: AgentCallbackContext) -> None:
+        token = getattr(ctx, _REQUEST_LLM_TOKEN_ATTR, None)
+        if token is None:
+            return
+        reset_request_llm_config(token)
+        setattr(ctx, _REQUEST_LLM_TOKEN_ATTR, None)
+
+    @staticmethod
+    def _request_model_reference(ctx: AgentCallbackContext) -> str:
+        run_context = ctx.extra.get("run_context")
+        if isinstance(run_context, Mapping):
+            extra = run_context.get("extra")
+        else:
+            extra = getattr(run_context, "extra", None)
+        if not isinstance(extra, Mapping):
+            return ""
+        return str(extra.get(SYMPHONY_LLM_CONFIG_REF_KEY) or "").strip()
 
     def _sync_orchestration_guidance(self, ctx: AgentCallbackContext) -> None:
         builder = self.system_prompt_builder
@@ -141,6 +198,44 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return
         self._terminate_graph_build_timeout(ctx, result)
 
+    def _terminate_structured_graph_preparing(
+        self,
+        ctx: AgentCallbackContext,
+    ) -> None:
+        if not self._is_graph_tool_call(ctx):
+            return
+        inputs = ctx.inputs
+        if not isinstance(inputs, ToolCallInputs):
+            return
+        result = inputs.tool_result
+        if not isinstance(result, dict) or result.get("reason") != "graph_preparing":
+            return
+        if (
+            result.get("direct_display") is True
+            and result.get("followup_action") == "wait_graph_build"
+        ):
+            return
+
+        payload = dict(result)
+        payload.update(
+            {
+                "success": False,
+                "reason": "graph_preparing",
+                "retryable": False,
+                "build_status": "running",
+                "direct_display": True,
+                "continue_after_display": False,
+                "followup_action": "wait_graph_build",
+                "content": self._graph_preparing_content(),
+            }
+        )
+        inputs.tool_result = payload
+        # Reuse the existing invocation marker that removes both graph tools.
+        ctx.extra[_GRAPH_BUILD_TIMEOUT_EXTRA_KEY] = True
+        ctx.request_force_finish(
+            {"output": payload["content"], "result_type": "answer"}
+        )
+
     def _terminate_graph_build_timeout(
         self,
         ctx: AgentCallbackContext,
@@ -183,6 +278,10 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     def _manual_graph_build_content(self) -> str:
         language = getattr(self.system_prompt_builder, "language", "cn") or "cn"
         return _MANUAL_GRAPH_BUILD_CONTENT["en" if language == "en" else "cn"]
+
+    def _graph_preparing_content(self) -> str:
+        language = getattr(self.system_prompt_builder, "language", "cn") or "cn"
+        return _GRAPH_PREPARING_CONTENT["en" if language == "en" else "cn"]
 
     @classmethod
     def _is_graph_tool_call(cls, ctx: AgentCallbackContext) -> bool:

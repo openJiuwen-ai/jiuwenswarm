@@ -99,6 +99,7 @@ print('UNEXPECTED_RUNTIME_CORE=' + repr(unexpected))
 def test_runtime_lazy_public_exports_remain_discoverable() -> None:
     import jiuwenswarm.runtime as runtime
 
+    assert set(runtime.__all__) == {"AgentRuntime", "RuntimeStateError"}
     assert set(runtime.__all__) <= set(dir(runtime))
     assert runtime.AgentRuntime.__name__ == "AgentRuntime"
 
@@ -246,7 +247,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         node
         for node in ast.walk(tree)
         if isinstance(node, ast.AsyncFunctionDef)
-        and node.name == "_handle_session_delete"
+        and node.name == "_handle_lifecycle_request"
     ]
     assert len(handlers) == 1
     handler = handlers[0]
@@ -255,12 +256,9 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         for node in ast.walk(handler)
         if isinstance(node, ast.Call)
         and isinstance(node.func, ast.Attribute)
-        and node.func.attr == "delete_session"
-        and isinstance(node.func.value, ast.Call)
-        and isinstance(node.func.value.func, ast.Attribute)
-        and isinstance(node.func.value.func.value, ast.Name)
-        and node.func.value.func.value.id == "self"
-        and node.func.value.func.attr == "_execution_runtime"
+        and node.func.attr == "session"
+        and isinstance(node.func.value, ast.Name)
+        and node.func.value.id == "service"
     ]
     assert len(runtime_delete_calls) == 1
 
@@ -281,7 +279,7 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         "commit_session_delete",
         "commit_trajectory_session_delete",
         "delete_session_runtime",
-        "evict_plan_session",
+        "release_session_kvc",
         "get_agent_nowait",
         "get_agent_sessions_dir",
         "get_session_metadata",
@@ -302,7 +300,6 @@ def test_agentserver_session_delete_is_transport_only() -> None:
         "openjiuwen.core.runner",
         "jiuwenswarm.agents.harness.team",
         "jiuwenswarm.observability.session_delete",
-        "jiuwenswarm.server.runtime.session",
         "jiuwenswarm.server.runtime.team_binding_store",
         "shutil",
     )
@@ -322,3 +319,45 @@ def test_agentserver_session_delete_is_transport_only() -> None:
                 violations.append(f"{node.lineno}: import {node.module}")
 
     assert violations == []
+
+
+def test_agentserver_session_switch_is_runtime_adapter_only() -> None:
+    source = PROJECT_ROOT / "jiuwenswarm" / "server" / "agent_ws_server.py"
+    tree = ast.parse(source.read_text(encoding="utf-8"), filename=str(source))
+    handlers = [
+        node
+        for node in ast.walk(tree)
+        if isinstance(node, ast.AsyncFunctionDef)
+        and node.name == "_handle_session_switch"
+    ]
+    assert len(handlers) == 1
+    handler = handlers[0]
+    called_attributes = {
+        node.func.attr
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute)
+    }
+    called_names = {
+        node.func.id
+        for node in ast.walk(handler)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name)
+    }
+
+    assert {
+        "_execution_runtime",
+        "prepare_session_switch",
+        "commit_session_provision",
+    } <= called_attributes
+    assert {
+        "SessionSwitchInput",
+        "SessionProvisionCommitContext",
+        "encode_agent_response_for_wire",
+        "send_wire_payload",
+    } <= called_names
+    assert {
+        "_prepare_session_switch_owner",
+        "_dispatch_session_switch_kvc",
+        "prepare_session_switch",
+    }.isdisjoint(called_names)
+    assert "get_team_manager" not in called_names
+    assert "resolve_session_switch_context" not in called_names

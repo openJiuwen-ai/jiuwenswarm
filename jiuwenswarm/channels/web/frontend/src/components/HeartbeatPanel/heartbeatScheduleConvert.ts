@@ -4,7 +4,7 @@ import type { HeartbeatScheduleDTO, HeartbeatScheduleKind } from '../../types/he
 export interface HeartbeatScheduleFormValue {
   kind: HeartbeatScheduleKind;
   intervalSeconds: number; // interval 用
-  cronExpr: string; // cron 用，标准 5 段（分 时 日 月 周），不是 CronPanel 的 7 段格式
+  cronExpr: string; // cron 用，支持 5 段 crontab 或普通 Cron 任务使用的 7 段格式
   timezone: string; // cron 用；也作为整个表单/任务顶层 timezone 的唯一来源，见 HeartbeatTaskDrawer
   onceDate: string; // once 用，YYYY-MM-DD，本地时区
   onceTime: string; // once 用，HH:mm，本地时区

@@ -8,7 +8,7 @@ function cleanModelText(text: string): string {
 }
 
 interface SearchStatusItem {
-  status: 'running' | 'queued' | 'failed';
+  status: 'waiting' | 'running' | 'queued' | 'failed';
 }
 
 export function searchAwareToolStatus(
@@ -59,6 +59,13 @@ export function mergeSearchProgressJob(
   const incoming = payload.progress_history?.length
     ? payload.progress_history
     : payload.progress ? [payload.progress] : [];
+  const lastSequence = Math.max(0, ...(existing?.progress || []).map((entry) => entry.sequence));
+  const incomingSequence = Math.max(0, ...incoming.map((entry) => entry.sequence));
+  const keepStatus = existing && (
+    incomingSequence < lastSequence
+    || existing.status === 'completed' || existing.status === 'failed'
+    || (existing.status === 'running' && payload.status === 'queued')
+  );
   const progressByKey = new Map(
     (existing?.progress || []).map((entry) => [
       `${entry.sequence}:${entry.stage}:${entry.tool_call_id || ''}`,
@@ -72,7 +79,7 @@ export function mergeSearchProgressJob(
   const updated: SearchProgressJob = {
     id: jobId,
     query: payload.query?.trim() || existing?.query || '',
-    status: payload.status || existing?.status || 'running',
+    status: keepStatus ? existing.status : payload.status || existing?.status || 'running',
     latencyMs: payload.latency_ms ?? existing?.latencyMs,
     progress: [...progressByKey.values()].sort((left, right) => left.sequence - right.sequence),
   };
@@ -93,6 +100,6 @@ export function selectSearchProgressJob(
 export function searchProgressOptionLabel(job: SearchProgressJob, position: number): string {
   const query = job.query.replace(/\s+/g, ' ').trim() || '未命名搜索';
   const summary = query.length > 26 ? `${query.slice(0, 26)}...` : query;
-  const status = job.status === 'running' ? '进行中' : job.status === 'completed' ? '已完成' : '失败';
+  const status = job.status === 'queued' ? '排队中' : job.status === 'running' ? '进行中' : job.status === 'completed' ? '已完成' : '失败';
   return `${position}. ${summary} (${status})`;
 }

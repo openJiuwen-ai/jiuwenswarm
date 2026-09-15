@@ -13,6 +13,7 @@ from jiuwenswarm.agents.harness.common.tools.symphony_toolkits import (
     SymphonyToolkit,
 )
 from jiuwenswarm.symphony.service import SwarmSymphonyService
+from jiuwenswarm.symphony.llm import LLMConfig
 
 
 def _minimal_planned_graph(status="ready"):
@@ -110,6 +111,78 @@ async def test_plan_passes_mode_and_deduplicated_candidates():
         "mode": "beam",
         "candidate_skill_ids": ["skill-a", "Skill B"],
         "progress": None,
+    }
+
+
+@pytest.mark.asyncio
+async def test_plan_passes_request_selected_model_config_to_service():
+    selected = LLMConfig(model="selected-model")
+    seen = {}
+
+    async def handler(query, **kwargs):
+        seen.update({"query": query, **kwargs})
+        return {"success": True, "planned_graph": _minimal_planned_graph()}
+
+    result = await SymphonyToolkit(
+        SimpleNamespace(plan=handler),
+        llm_config_provider=lambda: selected,
+    ).plan("compose")
+
+    assert result["success"] is True
+    assert seen["llm_config"] is selected
+
+
+@pytest.mark.asyncio
+async def test_refresh_passes_request_selected_model_config_to_service():
+    selected = LLMConfig(model="selected-model")
+    seen = {}
+
+    async def handler(**kwargs):
+        seen.update(kwargs)
+        return {"success": True}
+
+    result = await SymphonyToolkit(
+        SimpleNamespace(refresh_graph=handler),
+        llm_config_provider=lambda: selected,
+    ).refresh_graph()
+
+    assert result["success"] is True
+    assert seen["llm_config"] is selected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("operation", "method_name"),
+    [("plan", "plan"), ("refresh_graph", "refresh_graph")],
+)
+async def test_request_model_resolution_failure_is_a_structured_tool_result(
+    operation,
+    method_name,
+):
+    async def handler(*args, **kwargs):
+        del args, kwargs
+        raise AssertionError("service must not run with an unresolved request model")
+
+    toolkit = SymphonyToolkit(
+        SimpleNamespace(**{method_name: handler}),
+        llm_config_provider=lambda: (_ for _ in ()).throw(ValueError("invalid")),
+    )
+
+    result = (
+        await toolkit.plan("compose")
+        if operation == "plan"
+        else await toolkit.refresh_graph()
+    )
+
+    assert result == {
+        "success": False,
+        "reason": "llm_config_unavailable",
+        "retryable": False,
+        "operation": operation,
+        "detail": (
+            f"symphony.{operation}: request-selected model configuration "
+            "is unavailable (ValueError)"
+        ),
     }
 
 
@@ -253,6 +326,31 @@ async def test_plan_reports_service_failure():
 
     assert result["success"] is False
     assert "service unavailable" in result["detail"]
+
+
+@pytest.mark.asyncio
+async def test_plan_preserves_graph_preparing_status():
+    async def handler(*args, **kwargs):
+        del args, kwargs
+        return {
+            "success": False,
+            "reason": "graph_preparing",
+            "retryable": False,
+            "build_status": "running",
+            "operation": "plan",
+            "detail": "技能总谱正在构建。",
+        }
+
+    result = await SymphonyToolkit(SimpleNamespace(plan=handler)).plan("compose")
+
+    assert result == {
+        "success": False,
+        "reason": "graph_preparing",
+        "retryable": False,
+        "build_status": "running",
+        "operation": "plan",
+        "detail": "技能总谱正在构建。",
+    }
 
 
 @pytest.mark.asyncio

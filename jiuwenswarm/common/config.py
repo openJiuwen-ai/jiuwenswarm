@@ -9,6 +9,7 @@ import threading
 import time
 import uuid
 from copy import deepcopy
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Optional
 
@@ -447,6 +448,18 @@ def _config_lock_path(config_path: Path) -> Path:
     return config_path.with_name(f"{config_path.stem}.lock")
 
 
+@contextmanager
+def config_write_lock(*, lock_timeout: float = 10.0):
+    """Share the Global write boundary with layered permission transactions."""
+    if not _CONFIG_WRITE_LOCK.acquire(timeout=lock_timeout):
+        raise TimeoutError("config write lock timed out")
+    try:
+        with portalocker.Lock(str(_config_lock_path(CONFIG_YAML_PATH)), timeout=lock_timeout):
+            yield
+    finally:
+        _CONFIG_WRITE_LOCK.release()
+
+
 def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     """跨进程互斥地读-改-写 config.yaml。
 
@@ -458,19 +471,15 @@ def update_config(mutator, *, lock_timeout: float = 10.0) -> Any:
     否则同进程二次获取锁将死锁。如需在写盘后读取展示数据，请在 update_config
     返回后另起一次独立调用（此时锁已释放，安全）。
     """
-    with _CONFIG_WRITE_LOCK:
-        with portalocker.Lock(
-            str(_config_lock_path(CONFIG_YAML_PATH)),
-            timeout=lock_timeout,
-        ):
-            data = load_yaml_round_trip(CONFIG_YAML_PATH)
-            if data is None:
-                data = {}
-            new_data = mutator(data)
-            if new_data is None:
-                return data
-            dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
-            return new_data
+    with config_write_lock(lock_timeout=lock_timeout):
+        data = load_yaml_round_trip(CONFIG_YAML_PATH)
+        if data is None:
+            data = {}
+        new_data = mutator(data)
+        if new_data is None:
+            return data
+        dump_yaml_round_trip(CONFIG_YAML_PATH, new_data)
+        return new_data
 
 
 # Backward-compat aliases — downstream modules import the underscore-prefixed names
@@ -787,12 +796,32 @@ def update_skill_retrieval_in_config(updates: dict[str, Any]) -> None:
 
 
 def update_permissions_enabled_in_config(value: bool) -> None:
-    """更新 permissions.enabled（工具安全护栏开关）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["enabled"] = value
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    """Persist the legacy permission switch as a canonical manual profile."""
+    update_permissions_profile_in_config("default" if value else "full_access")
+
+
+def update_permissions_profile_in_config(profile: str) -> None:
+    """Atomically persist the Web permission profile to runtime fields."""
+    runtime_values = {
+        "default": (True, "manual"),
+        "automatic": (True, "auto"),
+        "full_access": (False, "manual"),
+    }
+    try:
+        enabled, mode = runtime_values[profile]
+    except KeyError as exc:
+        raise ValueError(f"invalid permissions_profile: {profile}") from exc
+
+    def _mutate(data: dict[str, Any]) -> dict[str, Any]:
+        permissions = data.get("permissions")
+        if not isinstance(permissions, dict):
+            permissions = {}
+            data["permissions"] = permissions
+        permissions["enabled"] = enabled
+        permissions["mode"] = mode
+        return data
+
+    update_config(_mutate)
 
 
 def update_auto_recap_enabled_in_config(value: bool) -> None:
@@ -811,6 +840,19 @@ def update_setup_guide_enabled_in_config(value: bool) -> None:
         if not isinstance(section, dict):
             section = {}
             data["setup_guide"] = section
+        section["enabled"] = value
+        return data
+
+    update_config(mutator)
+
+
+def update_rsi_enabled_in_config(value: bool) -> None:
+    """原子更新 rsi.enabled（Web RSI 实验入口开关）。"""
+    def mutator(data: dict[str, Any]) -> dict[str, Any]:
+        section = data.get("rsi")
+        if not isinstance(section, dict):
+            section = {}
+            data["rsi"] = section
         section["enabled"] = value
         return data
 
@@ -846,6 +888,15 @@ def update_trajectory_ui_in_config(enabled: bool) -> None:
     if "trajectory_ui" not in data or data["trajectory_ui"] is None:
         data["trajectory_ui"] = {}
     data["trajectory_ui"]["enabled"] = bool(enabled)
+    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+
+def update_task_full_duplex_in_config(enabled: bool) -> None:
+    """Update the Task-chat Full-duplex entry switch in config.yaml."""
+    data = load_yaml_round_trip(CONFIG_YAML_PATH)
+    if "experimental" not in data or data["experimental"] is None:
+        data["experimental"] = {}
+    data["experimental"]["task_full_duplex_enabled"] = bool(enabled)
     dump_yaml_round_trip(CONFIG_YAML_PATH, data)
 
 
@@ -901,13 +952,15 @@ def update_permissions_owner_scopes_in_config(
     deny_guidance_message: str | None = None,
 ) -> None:
     """更新 permissions.owner_scopes（及可选 deny_guidance_message）并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["owner_scopes"] = owner_scopes
-    if deny_guidance_message is not None:
-        data["permissions"]["deny_guidance_message"] = deny_guidance_message
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["owner_scopes"] = owner_scopes
+        if deny_guidance_message is not None:
+            data["permissions"]["deny_guidance_message"] = deny_guidance_message
+        return data
+
+    update_config(_mutate)
 
 
 def get_permissions_deny_guidance() -> str:
@@ -918,11 +971,13 @@ def get_permissions_deny_guidance() -> str:
 
 def update_permissions_deny_guidance_in_config(msg: str) -> None:
     """更新 permissions.deny_guidance_message 并写回。"""
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["deny_guidance_message"] = msg
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["deny_guidance_message"] = msg
+        return data
+
+    update_config(_mutate)
 
 
 # ---------- Web UI：permissions.tools / rules / approval_overrides ----------
@@ -944,11 +999,14 @@ def get_permissions_tools() -> dict[str, Any]:
 def replace_permissions_tools_in_config(tools: Any) -> None:
     """整表替换 ``permissions.tools``；值仅允许 ``allow|ask|deny``（或 legacy ``{\"*\": level}``）。"""
     normalized = _validate_tools_map(tools)
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    data["permissions"]["tools"] = normalized
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
+
+    def _mutate(data):
+        if "permissions" not in data:
+            data["permissions"] = {}
+        data["permissions"]["tools"] = normalized
+        return data
+
+    update_config(_mutate)
 
 
 def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, Any]:
@@ -965,17 +1023,23 @@ def update_permissions_tool_in_config(tool_name: str, level: Any) -> dict[str, A
     if not name:
         raise ValueError("tool name must be non-empty")
     piece = _validate_tools_map({name: level})
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    existing = data["permissions"].get("tools")
-    if not isinstance(existing, dict):
-        existing = {}
-    merged = {str(k): v for k, v in existing.items()}
-    merged[name] = piece[name]
-    data["permissions"]["tools"] = merged
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return {"tools": dict(merged)}
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        existing = data["permissions"].get("tools")
+        if not isinstance(existing, dict):
+            existing = {}
+        merged = {str(k): v for k, v in existing.items()}
+        merged[name] = piece[name]
+        data["permissions"]["tools"] = merged
+        result = {"tools": dict(merged)}
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_tool_in_config(tool_name: str) -> bool:
@@ -983,23 +1047,29 @@ def delete_permissions_tool_in_config(tool_name: str) -> bool:
     name = str(tool_name).strip()
     if not name:
         raise ValueError("tool name must be non-empty")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    tools = data["permissions"].get("tools")
-    if not isinstance(tools, dict):
-        return False
-    key_to_drop = None
-    for k in tools:
-        if str(k).strip() == name:
-            key_to_drop = k
-            break
-    if key_to_drop is None:
-        return False
-    new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
-    data["permissions"]["tools"] = new_tools
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        tools = data["permissions"].get("tools")
+        if not isinstance(tools, dict):
+            return None
+        key_to_drop = None
+        for k in tools:
+            if str(k).strip() == name:
+                key_to_drop = k
+                break
+        if key_to_drop is None:
+            return None
+        new_tools = {k: v for k, v in tools.items() if k != key_to_drop}
+        data["permissions"]["tools"] = new_tools
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _validate_tools_map(tools: Any) -> dict[str, str]:
@@ -1059,18 +1129,24 @@ def create_permissions_rule_in_config(rule: dict[str, Any]) -> dict[str, Any]:
         raise ValueError("pattern must be non-empty")
     _normalize_rule_severity_action(stored)
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
-        raise ValueError(f"rule id already exists: {rid}")
-    rules.append(stored)
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return stored
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        if any(isinstance(r, dict) and str(r.get("id") or "").strip() == rid for r in rules):
+            raise ValueError(f"rule id already exists: {rid}")
+        rules.append(stored)
+        data["permissions"]["rules"] = rules
+        result = stored
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> dict[str, Any]:
@@ -1081,44 +1157,50 @@ def update_permissions_rule_in_config(rule_id: str, patch: dict[str, Any]) -> di
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        data["permissions"] = {}
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        rules = []
-    idx: int | None = None
-    for i, r in enumerate(rules):
-        if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
-            idx = i
-            break
-    if idx is None:
-        raise ValueError(f"rule not found: {rid}")
+    result = False
 
-    merged: dict[str, Any] = dict(rules[idx])
-    for k, v in patch.items():
-        if k == "id":
-            continue
-        if k not in _RULE_MUTABLE_KEYS:
-            continue
-        if v is None:
-            merged.pop(k, None)
-        else:
-            merged[k] = v
-    merged["id"] = rid
-    if "tools" in merged:
-        merged["tools"] = _normalize_rule_tools(merged["tools"])
-    if "pattern" in merged:
-        merged["pattern"] = str(merged["pattern"]).strip()
-    if not merged.get("tools"):
-        raise ValueError("tools must be a non-empty list")
-    if not merged.get("pattern"):
-        raise ValueError("pattern must be non-empty")
-    _normalize_rule_severity_action(merged)
-    rules[idx] = merged
-    data["permissions"]["rules"] = rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return merged
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            data["permissions"] = {}
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            rules = []
+        idx: int | None = None
+        for i, r in enumerate(rules):
+            if isinstance(r, dict) and str(r.get("id") or "").strip() == rid:
+                idx = i
+                break
+        if idx is None:
+            raise ValueError(f"rule not found: {rid}")
+
+        merged: dict[str, Any] = dict(rules[idx])
+        for k, v in patch.items():
+            if k == "id":
+                continue
+            if k not in _RULE_MUTABLE_KEYS:
+                continue
+            if v is None:
+                merged.pop(k, None)
+            else:
+                merged[k] = v
+        merged["id"] = rid
+        if "tools" in merged:
+            merged["tools"] = _normalize_rule_tools(merged["tools"])
+        if "pattern" in merged:
+            merged["pattern"] = str(merged["pattern"]).strip()
+        if not merged.get("tools"):
+            raise ValueError("tools must be a non-empty list")
+        if not merged.get("pattern"):
+            raise ValueError("pattern must be non-empty")
+        _normalize_rule_severity_action(merged)
+        rules[idx] = merged
+        data["permissions"]["rules"] = rules
+        result = merged
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_rule_in_config(rule_id: str) -> bool:
@@ -1126,18 +1208,24 @@ def delete_permissions_rule_in_config(rule_id: str) -> bool:
     rid = str(rule_id or "").strip()
     if not rid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    rules = data["permissions"].get("rules")
-    if not isinstance(rules, list):
-        return False
-    new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
-    if len(new_rules) == len(rules):
-        return False
-    data["permissions"]["rules"] = new_rules
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        rules = data["permissions"].get("rules")
+        if not isinstance(rules, list):
+            return None
+        new_rules = [r for r in rules if not (isinstance(r, dict) and str(r.get("id") or "").strip() == rid)]
+        if len(new_rules) == len(rules):
+            return None
+        data["permissions"]["rules"] = new_rules
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def delete_permissions_approval_override_in_config(override_id: str) -> bool:
@@ -1145,18 +1233,24 @@ def delete_permissions_approval_override_in_config(override_id: str) -> bool:
     oid = str(override_id or "").strip()
     if not oid:
         raise ValueError("id is required")
-    data = load_yaml_round_trip(CONFIG_YAML_PATH)
-    if "permissions" not in data:
-        return False
-    ov = data["permissions"].get("approval_overrides")
-    if not isinstance(ov, list):
-        return False
-    new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
-    if len(new_ov) == len(ov):
-        return False
-    data["permissions"]["approval_overrides"] = new_ov
-    dump_yaml_round_trip(CONFIG_YAML_PATH, data)
-    return True
+    result = False
+
+    def _mutate(data):
+        nonlocal result
+        if "permissions" not in data:
+            return None
+        ov = data["permissions"].get("approval_overrides")
+        if not isinstance(ov, list):
+            return None
+        new_ov = [x for x in ov if not (isinstance(x, dict) and str(x.get("id") or "").strip() == oid)]
+        if len(new_ov) == len(ov):
+            return None
+        data["permissions"]["approval_overrides"] = new_ov
+        result = True
+        return data
+
+    update_config(_mutate)
+    return result
 
 
 def _normalize_rule_tools(raw: Any) -> list[str]:
@@ -1566,7 +1660,7 @@ def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, A
             "timeout": 1800,
             "verify_ssl": False,
         },
-        "model_config_obj": {"temperature": 0.95},
+        "model_config_obj": {},
     }
     if alias:
         entry["alias"] = alias
@@ -1653,7 +1747,7 @@ def ensure_defaults_list_in_config() -> list[dict[str, Any]]:
                     "client_provider": "${MODEL_PROVIDER}",
                     "endpoint_profile": "${ENDPOINT_PROFILE:-openai}",
                 },
-                "model_config_obj": {"temperature": 0.95},
+                "model_config_obj": {},
                 "is_default": True,
             }]
         models["defaults"] = defaults_list
@@ -2279,27 +2373,29 @@ def _mcp_name_in_config_yaml(name: str) -> bool:
                for s in get_config_yaml_mcp_servers())
 
 
-def upsert_mcp_server(server: dict[str, Any]) -> tuple[dict[str, Any], bool]:
-    """Upsert a TUI-managed MCP, routing by source: update in place if the
-    name already lives in config.yaml (legacy stock) or state.json (TUI-
-    created / web-connected); otherwise create new in state.json.
+def upsert_mcp_server(
+    server: dict[str, Any], *, state: str = "connected"
+) -> tuple[dict[str, Any], bool]:
+    """Upsert a TUI-managed MCP by source: config.yaml (legacy stock) is
+    updated in place; otherwise the record is created/updated in state.json.
 
-    TUI ``add``/``update`` lands here. New MCPs always go to state.json
-    (``enabled`` defaults to the payload's ``enabled``, True for TUI add) —
-    config.yaml is no longer a creation target, only legacy stock edited
-    in place. Returns ``(entry, created)``. Raises ``ValueError`` if no name.
+    ``state`` defaults to ``connected``; the command.mcp add/update handlers
+    pass ``"connecting"`` so a live-connect probe can validate reachability
+    before the record is flipped to ``connected``. Returns ``(entry, created)``.
+    Raises ``ValueError`` if no name.
     """
     name = str(server.get("name", "")).strip()
     if not name:
         raise ValueError("MCP server name is required")
-    # Legacy stock in config.yaml: update in place (keeps its source).
+    # config.yaml entries carry no connection_state (treated as live when
+    # present), so ``state`` only routes through to state.json.
     if _mcp_name_in_config_yaml(name):
         return upsert_mcp_server_in_config(server)
     # Else state.json is the creation/update home for TUI MCPs.
     from jiuwenswarm.server.runtime.mcp.state_store import upsert_mcp_record
     prior = _mcp_name_in_state(name)
     enabled = bool(server.get("enabled", True)) if "enabled" in server else None
-    rec = upsert_mcp_record(name, server, state="connected",
+    rec = upsert_mcp_record(name, server, state=state,
                             integration_type=_integration_type_for(server),
                             enabled=enabled)
     # Shape a config-like entry for the response (carries enabled through).
@@ -2820,16 +2916,33 @@ def _ensure_sandbox_runtime_shape(runtime: Any) -> dict[str, Any]:
     return out
 
 
+def resolve_sandbox_enabled(sandbox: Any) -> bool:
+    """Resolve host-owned sandbox enablement without mutating configuration."""
+
+    if not isinstance(sandbox, dict):
+        return False
+    if "enabled" in sandbox:
+        return bool(sandbox["enabled"])
+    return (
+        str(sandbox.get("type") or "").strip().lower() == "jiuwenbox"
+        and bool(str(sandbox.get("url") or "").strip())
+        and bool(str(sandbox.get("control_token_path") or "").strip())
+    )
+
+
 def get_sandbox_runtime() -> dict[str, Any]:
     """返回 sandbox runtime 当前内容 (含缺省字段填充)。
 
-    直接从 ``sandbox.<key>`` 扁平字段读; 字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
+    直接从 ``sandbox.<key>`` 扁平字段读。``enabled`` 缺失时从已配置的
+    JiuwenBox 端点推导，其他字段缺失时用 ``_SANDBOX_RUNTIME_DEFAULTS``。
     """
     cfg = get_config() or {}
     sandbox = cfg.get("sandbox")
     if not isinstance(sandbox, dict):
         return _ensure_sandbox_runtime_shape(None)
     raw = {key: sandbox[key] for key in _SANDBOX_RUNTIME_KEYS if key in sandbox}
+    if "enabled" not in raw:
+        raw["enabled"] = resolve_sandbox_enabled(sandbox)
     return _ensure_sandbox_runtime_shape(raw)
 
 
@@ -3289,8 +3402,11 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
     if "sandbox" not in data or not isinstance(data.get("sandbox"), dict):
         data["sandbox"] = {}
     sandbox_block = data["sandbox"]
-    # 写入扁平 runtime 字段, 每次 update 都把全集刷一遍, 保证 yaml 形状稳定。
+    # 写入扁平 runtime 字段。enabled 只持久化调用方的显式更新，
+    # 避免将 get_sandbox_runtime() 的派生值反写为新配置。
     for key in _SANDBOX_RUNTIME_KEYS:
+        if key == "enabled" and "enabled" not in patch:
+            continue
         sandbox_block[key] = merged[key]
     _dump_yaml_round_trip(_CONFIG_YAML_PATH, data)
     return merged

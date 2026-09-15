@@ -41,6 +41,7 @@ class _MetadataWriteOptions:
     preserve_rebound_fields: bool = False
     rebind_gen_at_enqueue: int | None = None
     merge_fields: frozenset[str] | None = None
+    lifecycle_generation: int | None = None
 
 
 # ---------- 异步写入队列(与 session_history 保持一致的模式) ----------
@@ -60,6 +61,7 @@ _FILE_LOCK = threading.RLock()
 
 # 内存缓存: 解决异步写入时读取到陈旧磁盘数据的竞态条件
 _METADATA_CACHE: dict[str, dict[str, Any]] = {}
+_METADATA_CACHE_GENERATIONS: dict[str, int] = {}
 _CACHE_LOCK = threading.Lock()
 
 # 会话级 project 重绑版本号: 每次 rebind_session_project 自增。
@@ -408,9 +410,20 @@ def _read_metadata(session_id: str, cache_bust: bool = False) -> dict[str, Any]:
         session_id: 会话 ID
         cache_bust: 强制跳过缓存，直接从磁盘读取（用于跨进程同步场景，如 session.list）
     """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    lifecycle_state = lc.state("session", session_id)
+    generation = lifecycle_state.get("generation", 0)
+    if lifecycle_state.get("write_blocked") or lc.session_paths(session_id)[1].exists():
+        return lc.raw_metadata(session_id)
     if not cache_bust:
         with _CACHE_LOCK:
             cached = _METADATA_CACHE.get(session_id)
+            cached_generation = _METADATA_CACHE_GENERATIONS.get(session_id, generation)
+            if cached_generation != generation and not (
+                lifecycle_state.get("blocked") and cached_generation == lifecycle_state.get("drain_generation")
+            ):
+                _METADATA_CACHE.pop(session_id, None)
+                cached = None
             if cached is not None:
                 return cached.copy()
     # cache_bust=True 或缓存没有数据时，强制读磁盘
@@ -475,6 +488,19 @@ def _read_metadata_file_in(session_dir: Path) -> dict[str, Any]:
 
 
 def _write_metadata_sync(
+    session_id: str, metadata: dict[str, Any], options: _MetadataWriteOptions | None = None
+) -> dict[str, Any]:
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    project_id = lc.project_id_for(metadata)
+    with lc.resource_lock("project", project_id), lc.resource_lock("session", session_id):
+        previous = lc.raw_metadata(session_id)
+        if not previous or lc.project_id_for(previous) != project_id:
+            lc.guard(project_id=project_id)
+        lc.write_guard(session_id, options.lifecycle_generation if options else None)
+        return _write_metadata_unfenced(session_id, metadata, options)
+
+
+def _write_metadata_unfenced(
     session_id: str,
     metadata: dict[str, Any],
     options: _MetadataWriteOptions | None = None,
@@ -616,6 +642,9 @@ def _ensure_worker_started() -> None:
             while True:
                 sid, metadata, options = _METADATA_QUEUE.get()
                 try:
+                    if sid is None:
+                        metadata.set()
+                        continue
                     # rebind 版本检查已下沉到 _write_metadata_sync 内部, 持
                     # _FILE_LOCK 后重比 gen, 消除"gen 比较与文件写入"的 TOCTOU 窗口(P3)。
                     written = _write_metadata_sync(sid, metadata, options)
@@ -637,6 +666,17 @@ def _ensure_worker_started() -> None:
         _WORKER_STARTED = True
 
 
+def flush_pending_writes(timeout: float = 10) -> bool:
+    _ensure_worker_started()
+    deadline = time.monotonic() + timeout
+    barrier = threading.Event()
+    try:
+        _METADATA_QUEUE.put((None, barrier, None), timeout=timeout)
+    except queue.Full:
+        return False
+    return barrier.wait(max(0, deadline - time.monotonic()))
+
+
 def _enqueue_write(
     session_id: str,
     metadata: dict[str, Any],
@@ -655,14 +695,18 @@ def _enqueue_write(
     """
     # 立即更新缓存,确保后续读取能看到最新状态
     # 入队前捕获 rebind 版本号: worker 处理时据此判断本快照是否早于一次重绑
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    generation = lc.state("session", session_id).get("generation", 0)
     rebind_gen_at_enqueue = _get_rebind_gen(session_id)
     if preserve_pin_fields:
         metadata = _merge_pin_fields_from_disk(session_id, metadata)
     with _CACHE_LOCK:
         _METADATA_CACHE[session_id] = metadata.copy()
+        _METADATA_CACHE_GENERATIONS[session_id] = generation
     options = _MetadataWriteOptions(
         preserve_pin_fields=preserve_pin_fields,
         rebind_gen_at_enqueue=rebind_gen_at_enqueue,
+        lifecycle_generation=generation,
         merge_fields=merge_fields,
     )
     if sync_write:
@@ -792,6 +836,7 @@ def update_session_metadata(
     sync: bool = False,
     sync_write: bool = False,
     work_mode: str | None = None,
+    session_equipment: dict[str, Any] | None = None,
 ) -> None:
     """更新会话元数据(异步写入,不阻塞调用方)
 
@@ -869,6 +914,8 @@ def update_session_metadata(
         # 首次创建时写入 channel_metadata
         if channel_metadata:
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -932,6 +979,8 @@ def update_session_metadata(
         # channel_metadata 仅在首次为空时补充写入（不覆盖）
         if channel_metadata and not metadata.get("channel_metadata"):
             metadata["channel_metadata"] = channel_metadata
+        if session_equipment is not None:
+            metadata["session_equipment"] = copy.deepcopy(session_equipment)
 
         # 更新最后消息时间(可由 touch_last_message_at=False 关闭,供置顶重编号等
         # 非消息操作复用本函数而不腐蚀 last_message_at 语义)
@@ -1170,6 +1219,9 @@ def get_session_metadata(
             ``False``,避免读路径触发写盘副作用,同时仍享受推断能力(存量会话
             缺 ``project_id`` 时可从 ``project_dir`` 反查补全,避免误拒)。
     """
+    from jiuwenswarm.server.runtime.session import lifecycle as lc
+    if lc.state("session", session_id).get("write_blocked") or lc.session_paths(session_id)[1].exists():
+        return lc.raw_metadata(session_id)
     metadata = _read_metadata(session_id, cache_bust)
     if isinstance(metadata, dict) and metadata:
         metadata = _apply_metadata_defaults_with_inference(
@@ -1182,6 +1234,75 @@ def get_session_metadata(
         metadata.setdefault("team_template_id", "")
         metadata.setdefault("agent_group_name", "")
     return metadata
+
+
+def _normalize_session_equipment_names(value: Any) -> list[str]:
+    """Return stable, de-duplicated package names for a metadata snapshot."""
+    if not isinstance(value, list):
+        return []
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in value:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out
+
+
+def save_session_equipment(
+    session_id: str,
+    *,
+    agent_template_name: Any = "",
+    plugin_names: Any = None,
+    mcp: Any = None,
+) -> None:
+    """Persist the effective chat equipment after a successful mount."""
+    if not isinstance(session_id, str) or not session_id.strip():
+        return
+    snapshot = {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(plugin_names),
+        "mcp": _normalize_session_equipment_names(mcp),
+    }
+    if get_session_equipment(session_id, cache_bust=True) == snapshot:
+        return
+    update_session_metadata(
+        session_id=session_id,
+        session_equipment=snapshot,
+        touch_last_message_at=False,
+        cache_bust=True,
+        sync_write=True,
+    )
+
+
+def get_session_equipment(
+    session_id: str,
+    *,
+    cache_bust: bool = False,
+) -> dict[str, Any]:
+    """Read a normalized chat equipment snapshot, or an empty mapping."""
+    metadata = get_session_metadata(session_id, cache_bust=cache_bust)
+    raw = metadata.get("session_equipment") if isinstance(metadata, dict) else None
+    if not isinstance(raw, dict):
+        return {}
+    agent_template_name = raw.get("agent_template_name")
+    return {
+        "agent_template_name": (
+            agent_template_name.strip()
+            if isinstance(agent_template_name, str)
+            else ""
+        ),
+        "plugin_names": _normalize_session_equipment_names(raw.get("plugin_names")),
+        "mcp": _normalize_session_equipment_names(raw.get("mcp")),
+    }
 
 
 # 会话级 pin 重编号全局序列化锁:保障「设置目标 → 收集所有置顶 → 重编号 → 写回」全过程原子性。
@@ -1354,6 +1475,7 @@ def remove_session_metadata_cache(session_id: str) -> None:
     """Remove cached session metadata after the session directory is deleted."""
     with _CACHE_LOCK:
         _METADATA_CACHE.pop(session_id, None)
+        _METADATA_CACHE_GENERATIONS.pop(session_id, None)
     with _REBIND_GEN_LOCK:
         _SESSION_REBIND_GEN.pop(session_id, None)
 
@@ -1649,7 +1771,10 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
 
-        sessions.append(metadata)
+        from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
+        if visible(metadata):
+            metadata.update(projection("session", session_id, project_id=project_id_for(metadata)))
+            sessions.append(metadata)
 
     # 按最后消息时间倒序排序
     sessions.sort(key=lambda x: x.get("last_message_at", 0), reverse=True)
@@ -1737,5 +1862,8 @@ def collect_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
-        result.append(meta)
+        from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
+        if visible(meta):
+            meta.update(projection("session", sid, project_id=project_id_for(meta)))
+            result.append(meta)
     return result

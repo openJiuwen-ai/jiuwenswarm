@@ -75,11 +75,24 @@ def test_schedule_cron_rejects_invalid_expr() -> None:
         HeartbeatSchedule.from_dict({"type": "cron", "cron_expr": "not a cron"})
 
 
-def test_schedule_cron_rejects_seven_field_expression() -> None:
-    with pytest.raises(ValueError, match="must have exactly 5 fields"):
+def test_schedule_cron_accepts_seven_field_expression() -> None:
+    s = HeartbeatSchedule.from_dict(
+        {"type": "cron", "cron_expr": "0 0 9 * * ? *"}
+    )
+    assert s.cron_expr == "0 0 9 * * ? *"
+
+
+def test_schedule_cron_rejects_invalid_seven_field_expression() -> None:
+    with pytest.raises(ValueError, match="invalid cron expression"):
         HeartbeatSchedule.from_dict(
-            {"type": "cron", "cron_expr": "0 0 9 * * ? *"}
+            {"type": "cron", "cron_expr": "60 0 9 * * ? *"}
         )
+
+
+@pytest.mark.parametrize("expr", ["0 9 * *", "0 0 9 * * ?"])
+def test_schedule_cron_rejects_unsupported_field_counts(expr: str) -> None:
+    with pytest.raises(ValueError, match="must have 5 or 7 fields"):
+        HeartbeatSchedule.from_dict({"type": "cron", "cron_expr": expr})
 
 
 def test_schedule_cron_requires_expr() -> None:
@@ -153,6 +166,27 @@ def test_job_roundtrip_preserves_fields() -> None:
     assert job2.concurrency_policy == "queue"
     assert job2.session_deleted_policy == "completed"
     assert job2.kind == "heartbeat"
+
+
+def test_job_roundtrip_preserves_unlimited_max_runs() -> None:
+    job = _make_interval_job(max_runs=None)
+    restored = HeartbeatJob.from_dict(job.to_dict())
+
+    assert restored.max_runs is None
+
+
+def test_job_from_dict_preserves_historical_millisecond_once() -> None:
+    data = _make_interval_job(
+        enabled=False,
+        status=STATUS_DISABLED,
+        next_run_at=None,
+    ).to_dict()
+    data["schedule"] = {"type": "once", "run_at": 1_788_091_200_000}
+
+    job = HeartbeatJob.from_dict(data)
+
+    assert job.schedule.run_at == 1_788_091_200_000
+    assert job.status == STATUS_DISABLED
 
 
 def test_job_from_dict_requires_mandatory_fields() -> None:

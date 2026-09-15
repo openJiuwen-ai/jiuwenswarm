@@ -9,6 +9,8 @@ import logging
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from openjiuwen.core.kv_cache.kv_cache_config import KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS
+
 from jiuwenswarm.server.runtime.session import session_history, session_metadata
 from jiuwenswarm.server.utils.utils import is_team_params
 
@@ -32,7 +34,16 @@ async def cancel_pending_tasks() -> None:
     for task in tasks:
         task.cancel()
     if tasks:
-        await asyncio.gather(*tasks, return_exceptions=True)
+        done, pending = await asyncio.wait(
+            tasks, timeout=KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS
+        )
+        for task in done:
+            _log_product_guard_task(task)
+        if pending:
+            logger.warning(
+                "KVC product task cleanup timed out (%s tasks); continue shutdown",
+                len(pending),
+            )
     try:
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_task_guard import (
             get_session_kv_cache_task_guard,
@@ -43,13 +54,15 @@ async def cancel_pending_tasks() -> None:
         logger.warning("[ProductKVCacheHooks] task guard cleanup failed: %s", exc)
 
 
-async def evict_plan_session(
+async def release_session_kvc(
     *,
     session_id: str,
+    is_team: bool = False,
 ) -> bool:
-    """Best-effort evict for a permanently deleted non-Team session."""
+    """Release cache after the lifecycle owner drains work, without deleting history."""
     try:
         from openjiuwen.core.session.agent import create_agent_session
+        from openjiuwen.core.session.agent_team import create_agent_team_session
         from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider import (
             is_kv_cache_affinity_enabled,
         )
@@ -59,14 +72,18 @@ async def evict_plan_session(
 
         if not is_kv_cache_affinity_enabled():
             return False
-        session = create_agent_session(
+        runtime = get_kv_cache_runtime()
+        if runtime is None:
+            return False
+        factory = create_agent_team_session if is_team else create_agent_session
+        session = factory(
             session_id=session_id,
-            kv_cache_runtime=get_kv_cache_runtime(),
+            kv_cache_runtime=runtime,
         )
         return await session.release_kvc()
     except Exception as exc:
         logger.warning(
-            "[ProductKVCacheHooks] Plan session evict failed; preserving delete: "
+            "[ProductKVCacheHooks] Session KVC release failed; preserving delete: "
             "session_id=%s error=%s",
             session_id,
             exc,

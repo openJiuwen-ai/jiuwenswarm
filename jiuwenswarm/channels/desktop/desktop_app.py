@@ -8,6 +8,7 @@ import json
 import logging
 import mimetypes
 import os
+import secrets
 import shlex
 import shutil
 import signal
@@ -22,6 +23,7 @@ from ctypes import wintypes
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, BinaryIO, Callable
+from urllib.parse import quote
 
 from logging.handlers import RotatingFileHandler
 
@@ -69,7 +71,7 @@ AGENT_CHILD_FLAG = "--desktop-run-agent"
 GATEWAY_CHILD_FLAG = "--desktop-run-gateway"
 UPDATE_HELPER_FLAG = "--desktop-install-update"
 DESKTOP_ENV_FLAG = "JIUWENSWARM_DESKTOP"
-STARTUP_TIMEOUT_SECONDS = 45.0
+STARTUP_TIMEOUT_SECONDS = 120.0
 STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS + 15.0
 PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
 DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024
@@ -397,9 +399,16 @@ def _build_child_env(
     name: str,
     ports: dict[str, int],
     startup_diagnostics_dir: Path | None = None,
+    desktop_token: str = "",
 ) -> dict[str, str]:
     env = os.environ.copy()
     env[DESKTOP_ENV_FLAG] = "1"
+    # 桌面锁定: 仅 web 静态服务的对话页面入口需要校验 token,
+    # 其他子进程不注入, API/WS 保持原有访问规则。
+    if desktop_token and name == "web":
+        env["JIUWENSWARM_DESKTOP_TOKEN"] = desktop_token
+    else:
+        env.pop("JIUWENSWARM_DESKTOP_TOKEN", None)
     env["JIUWENSWARM_RUNTIME_WORKSPACE_READY"] = "1"
     # Desktop now starts Gateway directly, so preserve the original launcher
     # command here instead of relying on jiuwenswarm.app to add it. The
@@ -443,10 +452,11 @@ def _start_process(
     command: list[str],
     ports: dict[str, int],
     startup_diagnostics_dir: Path | None = None,
+    desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
     kwargs: dict[str, object] = {
-        "env": _build_child_env(name, ports, startup_diagnostics_dir),
+        "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
         "stdout": subprocess.DEVNULL,
         "stderr": subprocess.DEVNULL,
     }
@@ -779,6 +789,10 @@ class DesktopRuntime:
         self.ports = dict(ports)
         self.frontend_port = int(ports["frontend"])
         self.backend_port = int(ports["web"])
+        # 桌面锁定: 每次启动生成 token, 仅注入 web 子进程;
+        # 窗口首次导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie 后凭 Cookie
+        # 访问, 浏览器直接打开对话页面时返回 403。
+        self.desktop_token = secrets.token_urlsafe(32)
         self.processes: dict[str, subprocess.Popen[bytes]] = {}
         self.window = None
         self._lock = threading.Lock()
@@ -813,6 +827,15 @@ class DesktopRuntime:
 
     @property
     def frontend_url(self) -> str:
+        # 带 ?dt=<token>: web 静态服务据此下发 HttpOnly Cookie 引导桌面会话。
+        return (
+            f"http://{self.frontend_host}:{self.frontend_port}"
+            f"/?dt={quote(self.desktop_token, safe='')}"
+        )
+
+    @property
+    def frontend_display_url(self) -> str:
+        """不含 token 的展示用 URL (日志等场景, 避免泄露 token)。"""
         return f"http://{self.frontend_host}:{self.frontend_port}"
 
     @staticmethod
@@ -895,6 +918,7 @@ class DesktopRuntime:
             command,
             self.ports,
             startup_diagnostics_dir=self._startup_diagnostics_dir,
+            desktop_token=self.desktop_token,
         )
         with self._lock:
             shutting_down = self._is_shutting_down
@@ -1019,9 +1043,16 @@ class DesktopRuntime:
 
         web_ready_notified = False
         terminated_after_error = False
-        while any(waiter.is_alive() for waiter in waiters):
-            for waiter in waiters:
-                waiter.join(timeout=0.1)
+
+        def _notify_and_terminate_once() -> None:
+            """Single iteration of the waiter loop's side effects.
+
+            在锁内读取快照后触发导航/终结; 退出循环后必须再执行一次:
+            三个 waiter 若在主循环首次判断 is_alive() 前全部结束(测试中
+            mock 的失败路径瞬时完成), 循环体一次都不会执行, web_ready
+            通知会被整个跳过。
+            """
+            nonlocal web_ready_notified, terminated_after_error
             with errors_lock:
                 has_errors = bool(errors)
                 web_ok = web_ready_ok
@@ -1035,6 +1066,13 @@ class DesktopRuntime:
                 _terminate_process_tree(gateway_process)
                 _terminate_process_tree(web_process)
                 terminated_after_error = True
+
+        while any(waiter.is_alive() for waiter in waiters):
+            for waiter in waiters:
+                waiter.join(timeout=0.1)
+            _notify_and_terminate_once()
+        # 所有 waiter 已结束: 用最终状态补一次检查, 覆盖循环从未运行的情况。
+        _notify_and_terminate_once()
 
         with errors_lock:
             startup_errors = list(errors)
@@ -1088,7 +1126,7 @@ class DesktopRuntime:
             name="desktop-backend-pair-watch",
             daemon=True,
         ).start()
-        logger.info("[desktop] services ready: %s", self.frontend_url)
+        logger.info("[desktop] services ready: %s", self.frontend_display_url)
 
     def _run_doctor_after_failure(self) -> dict[str, object] | None:
         if not getattr(sys, "frozen", False):
@@ -1721,8 +1759,6 @@ class DesktopRuntime:
     };
   }
   window.dispatchEvent(new CustomEvent('jiuwen-desktop-ready'));
-  if (window.__JIUWEN_DESKTOP_DND__) return;
-  window.__JIUWEN_DESKTOP_DND__ = true;
   function hasFiles(dt) {
     if (!dt || !dt.types) return false;
     try {
@@ -1731,25 +1767,68 @@ class DesktopRuntime:
       return false;
     }
   }
-  function accept(e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+  // Distinguish an app-internal HTML5 drag (queue reorder, etc.) from an OS file
+  // drag. 'Files' alone is NOT reliable: dragging an <img> element makes Chromium
+  // inject a spurious 'Files'/'text/uri-list' entry. Chromium tags every drag
+  // that originated inside the renderer with 'chromium/x-drag-id'; OS file drags
+  // from Explorer never carry it. App drag sources also set an explicit marker.
+  function isInternalDrag(dt) {
+    if (!dt || !dt.types) return false;
+    try {
+      var t = Array.from(dt.types);
+      if (t.indexOf('application/x-jiuwen-internal-drag') !== -1) return true;
+      return t.indexOf('chromium/x-drag-id') !== -1;
+    } catch (err) {
+      return false;
+    }
   }
-  function endDrag() {
-    window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+  // NB: the frontend (localFilePicker.ts installDesktopFileDragAccept) uses the
+  // same __JIUWEN_DESKTOP_DND__ flag as its own guard and usually sets it before
+  // this script runs, so this block must stay skip-safe (the frontend installs
+  // equivalent window listeners) and must NOT gate the document blockers below.
+  if (!window.__JIUWEN_DESKTOP_DND__) {
+    window.__JIUWEN_DESKTOP_DND__ = true;
+    function accept(e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      try { e.dataTransfer.dropEffect = 'copy'; } catch (err) {}
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:true}}));
+    }
+    function endDrag() {
+      window.dispatchEvent(new CustomEvent('jiuwen-desktop-file-drag', {detail:{active:false}}));
+    }
+    // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
+    window.addEventListener('dragenter', accept, true);
+    window.addEventListener('dragover', accept, true);
+    window.addEventListener('dragenter', accept, false);
+    window.addEventListener('dragover', accept, false);
+    window.addEventListener('drop', function (e) {
+      if (!hasFiles(e.dataTransfer)) return;
+      e.preventDefault();
+      endDrag();
+    }, true);
   }
-  // Capture: ensure preventDefault early. Bubble on window: win over React dropEffect=none.
-  window.addEventListener('dragenter', accept, true);
-  window.addEventListener('dragover', accept, true);
-  window.addEventListener('dragenter', accept, false);
-  window.addEventListener('dragover', accept, false);
-  window.addEventListener('drop', function (e) {
-    if (!hasFiles(e.dataTransfer)) return;
-    e.preventDefault();
-    endDrag();
-  }, true);
+  // App-internal HTML5 drags (e.g. queue reorder) carry no OS files. pywebview's
+  // document bridge deep-serializes the page DOM per event and stalls WebView2;
+  // these document listeners run before the bridge's (mark precedes bind), so
+  // stopImmediatePropagation keeps non-file drags off the serialization path.
+  // Separate guard: must still be installed when the frontend already claimed
+  // __JIUWEN_DESKTOP_DND__.
+  if (!window.__JIUWEN_DESKTOP_DND_BLOCK__) {
+    window.__JIUWEN_DESKTOP_DND_BLOCK__ = true;
+    function blockInternalDrag(e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+    }
+    document.addEventListener('dragenter', blockInternalDrag, false);
+    document.addEventListener('dragover', blockInternalDrag, false);
+    document.addEventListener('drop', function (e) {
+      if (!isInternalDrag(e.dataTransfer)) return;
+      e.stopImmediatePropagation();
+      // Preserve the anti-navigation default prevention the bridge used to give.
+      e.preventDefault();
+    }, false);
+  }
 })();
 """
         )
@@ -1972,43 +2051,68 @@ class DesktopRuntime:
                         cleanup_exc,
                     )
 
-    @staticmethod
-    def _show_download_complete(file_path: str) -> None:
-        """下载完成后提醒用户并打开文件所在文件夹。"""
+    def _show_download_complete(self, file_path: str) -> None:
+        """Show a confirmation owned by the desktop window on its UI thread."""
         try:
+            if self.window is None or (os.name != "nt" and sys.platform != "darwin"):
+                return
+
+            # Match the frontend's localStorage language detector and Chinese default.
+            language = self.window.evaluate_js("localStorage.getItem('i18nextLng')")
+            english = isinstance(language, str) and language.split("-")[0] == "en"
+            title = "Download complete" if english else "下载完成"
+            message = (
+                f"File saved to:\n{file_path}\n\nOpen the containing folder?"
+                if english else f"文件已下载到:\n{file_path}\n\n是否打开所在文件夹？"
+            )
             if os.name == "nt":
-                # Windows: 弹窗询问是否打开文件夹
-                result = ctypes.windll.user32.MessageBoxW(
-                    0,
-                    f"文件已下载到:\n{file_path}\n\n是否打开所在文件夹？",
-                    "下载完成",
-                    0x44  # MB_YESNO + MB_ICONINFORMATION
+                from System import Action  # type: ignore[import-not-found]
+                from System.Windows.Forms import (  # type: ignore[import-not-found]
+                    DialogResult, MessageBox, MessageBoxButtons, MessageBoxIcon,
                 )
-                if result == 6:  # IDYES
-                    # 打开文件夹并选中文件
-                    explorer_path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe")
-                    subprocess.Popen(
-                        [explorer_path, "/select,", file_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                        creationflags=_creationflags(),
+
+                native_window = self.window.native
+
+                def confirm_windows() -> None:
+                    result = MessageBox.Show(
+                        native_window, message, title,
+                        MessageBoxButtons.YesNo, MessageBoxIcon.Information,
                     )
-            elif sys.platform == "darwin":
-                # macOS: 弹窗询问
-                result = subprocess.run(
-                    ["/usr/bin/osascript", "-e", f'''
-                    display alert "下载完成" message "文件已下载到:\\n{file_path}\\n\\n是否打开所在文件夹？" buttons {"取消", "打开文件夹"} default button "打开文件夹" as informational
-                    '''],
-                    capture_output=True,
-                    text=True,
-                )
-                if "打开文件夹" in result.stdout:
-                    # 打开文件夹并选中文件
-                    subprocess.Popen(
-                        ["/usr/bin/open", "-R", file_path],
-                        stdout=subprocess.DEVNULL,
-                        stderr=subprocess.DEVNULL,
-                    )
+                    if result == DialogResult.Yes:
+                        explorer_path = os.path.join(os.environ.get("WINDIR", r"C:\Windows"), "explorer.exe")
+                        subprocess.Popen(
+                            [explorer_path, "/select,", file_path],
+                            stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL,
+                            creationflags=_creationflags(),
+                        )
+
+                native_window.Invoke(Action(confirm_windows))
+            else:
+                import AppKit  # type: ignore[import-not-found]
+                from PyObjCTools import AppHelper  # type: ignore[import-not-found]
+
+                native_window = self.window.native
+
+                def confirm_macos() -> None:
+                    alert = AppKit.NSAlert.alloc().init()
+                    alert.setMessageText_(title)
+                    alert.setInformativeText_(message)
+                    alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
+                    alert.addButtonWithTitle_("Open folder" if english else "打开文件夹")
+                    alert.addButtonWithTitle_("Cancel" if english else "取消")
+
+                    def completed(response: int) -> None:
+                        if response == AppKit.NSAlertFirstButtonReturn:
+                            subprocess.Popen(
+                                ["/usr/bin/open", "-R", file_path],
+                                stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL,
+                            )
+
+                    alert.beginSheetModalForWindow_completionHandler_(native_window, completed)
+
+                AppHelper.callAfter(confirm_macos)
         except Exception as exc:  # noqa: BLE001
             logger.error("[desktop] failed to show download complete: %s", exc)
 

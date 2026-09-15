@@ -12,7 +12,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from openjiuwen.harness.security.host import PermissionSceneHookInput
+from openjiuwen.harness.security import PermissionSceneHookInput
 
 from jiuwenswarm.common.permission_tools import normalize_permission_tool_name
 from jiuwenswarm.agents.harness.common.rails.permissions.send_file_path_guard import (

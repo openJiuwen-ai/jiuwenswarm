@@ -24,6 +24,10 @@ function createContext(sessionId, inputLine) {
   };
 }
 
+test('/btw is not registered by the Web frontend', () => {
+  assert.equal(findSlashCommand('btw'), undefined);
+});
+
 test('/persist is registered and delegates new-session creation to the existing submit path', async () => {
   const command = findSlashCommand('persist');
   assert.ok(command);
@@ -102,4 +106,21 @@ test('/plan cannot enter plan mode while a goal is unfinished', () => {
 
   assert.equal(result, 'blocked_by_goal');
   assert.deepEqual(stores.calls, [['ensurePlanRuntime', 'session-1']]);
+});
+
+test('/plan cannot toggle while the session is busy (processing / awaiting ask_user)', () => {
+  const openStores = createPlanAndGoalStores({ planActive: false });
+  assert.equal(
+    togglePlanFromSlash('session-1', openStores.planStore, openStores.goalStore, true),
+    'blocked_by_busy',
+  );
+  assert.deepEqual(openStores.calls, [['ensurePlanRuntime', 'session-1']]);
+
+  // 关闭方向同样被拦（ask_user 待回答时 isProcessing 已回 false，旧闸门会漏放）。
+  const closeStores = createPlanAndGoalStores({ planActive: true });
+  assert.equal(
+    togglePlanFromSlash('session-1', closeStores.planStore, closeStores.goalStore, true),
+    'blocked_by_busy',
+  );
+  assert.deepEqual(closeStores.calls, [['ensurePlanRuntime', 'session-1']]);
 });

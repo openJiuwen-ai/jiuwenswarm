@@ -17,7 +17,7 @@ import remarkGfm from 'remark-gfm';
 import { classifyPrompt } from '../InteractionSlot/promptRouting';
 
 interface InlineQuestionCardProps {
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 // 后端会给带选项的问题末尾追加一个「自定义输入」选项（interrupt_helpers._build_multi_questions）。
@@ -129,7 +129,7 @@ function PlanApprovalActions({
 export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const pendingQuestion = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.pendingQuestion ?? null);
+  const pendingQuestion = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.pendingQuestions[0] ?? null);
   const [selections, setSelections] = useState<Map<number, string>>(new Map());
   const [customInputs, setCustomInputs] = useState<Map<number, string>>(new Map());
   const [submitted, setSubmitted] = useState(false);
@@ -176,11 +176,11 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
     (selMap: Map<number, string>) => {
       if (!pendingQuestion) return;
       setSubmitted(true);
-      onSubmit(pendingQuestion.request_id, buildAnswers(selMap), pendingQuestion.source);
-      const sid = useChatStore.getState().activeSessionId;
-      if (sid) {
-        useChatStore.getState().setPendingQuestion(sid, null);
-      }
+      void onSubmit(
+        pendingQuestion.request_id,
+        buildAnswers(selMap),
+        pendingQuestion.source,
+      ).finally(() => setSubmitted(false));
     },
     [pendingQuestion, buildAnswers, onSubmit]
   );
@@ -250,7 +250,7 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
       if (!pendingQuestion || submitted) return;
       setSubmitted(true);
       const question = pendingQuestion.questions[0];
-      onSubmit(
+      void onSubmit(
         pendingQuestion.request_id,
         [
           {
@@ -259,12 +259,8 @@ export function InlineQuestionCard({ onSubmit }: InlineQuestionCardProps) {
             custom_input: customInput,
           },
         ],
-        pendingQuestion.source
-      );
-      const sid = useChatStore.getState().activeSessionId;
-      if (sid) {
-        useChatStore.getState().setPendingQuestion(sid, null);
-      }
+        pendingQuestion.source,
+      ).finally(() => setSubmitted(false));
     },
     [pendingQuestion, submitted, onSubmit]
   );

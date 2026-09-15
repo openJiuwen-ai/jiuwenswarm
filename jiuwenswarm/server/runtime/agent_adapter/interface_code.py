@@ -47,7 +47,7 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
-from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool
+from openjiuwen.harness.tools import WebFetchWebpageTool, WebPaidSearchTool, is_paid_search_enabled
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
@@ -68,7 +68,9 @@ from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
 from jiuwenswarm.server.runtime.agent_adapter.trusted_web_search import (
     TrustedWebFreeSearchTool,
 )
-from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
+from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
+    apply_permission_trusted_dirs,
+)
 from jiuwenswarm.agents.harness.common.browser_defaults import (
     DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
 )
@@ -484,6 +486,15 @@ _CODE_PLAN_ALLOWED_TOOLS: list[str] = [
     "bash",
     "write_file",
     "edit_file",
+    # Symphony is a planning capability. Keep the progressive-tool bridge
+    # reachable in plan mode, then allow only the three graph operations when
+    # the nested call re-enters AgentModeRail; unrelated deferred tools remain
+    # blocked by this allow-list.
+    "tool_search",
+    "tool_call",
+    "symphony_read_graph",
+    "symphony_refresh_graph",
+    "symphony_compose_graph",
 ]
 
 
@@ -513,6 +524,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         "FileSystemRail",  # 别名
         "DesignRail",  # SDD 状态机（wave-1），受 modes.code.sdd.enabled 门控
         "SubagentRail",
+        "SymphonyOrchestrationRail",
         # The AgentServer-owned Job Heartbeat Rail is always mounted above.
         # Treat a same-named resource entry as fixed so it cannot be mounted a
         # second time (or resolve to agent-core's deprecated RunKind rail).
@@ -543,6 +555,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._custom_code_spec_active: bool = False
         self._session_instance_spec: DeepAgentSpec | None = None
         self._session_instance_build_context: BuildContext | None = None
+        self._session_instance_agent_definition: dict[str, Any] | None = None
 
     # ─── Language override ────────────────────────
 
@@ -591,12 +604,61 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _session_instance_extra_create_kwargs(self) -> dict[str, Any]:
         """Propagate an explicit Spec through lazy root and session builds."""
-        if self._session_instance_spec is None:
-            return {}
-        return {
-            "spec": self._session_instance_spec,
-            "build_context": self._session_instance_build_context,
+        if self._session_instance_spec is not None:
+            return {
+                "spec": self._session_instance_spec,
+                "build_context": self._session_instance_build_context,
+            }
+        if self._session_instance_agent_definition is not None:
+            return {
+                "agent_definition": dict(
+                    self._session_instance_agent_definition
+                )
+            }
+        return {}
+
+    @staticmethod
+    def _apply_runtime_agent_definition(
+        spec: DeepAgentSpec,
+        definition: dict[str, Any],
+    ) -> DeepAgentSpec:
+        """Overlay SDK identity fields on the complete product Code Spec.
+
+        Starting from the configured product Spec preserves its permission,
+        security, resilience, tool and extension rails. The declarative Agent
+        changes only identity, instructions and supported execution limits;
+        ``tools='*'`` retains the governed configured set.
+        """
+        if definition.get("tools") != "*":
+            raise ValueError("custom Agent tools must use the configured set")
+        name = str(definition.get("name") or "").strip()
+        instructions = str(definition.get("instructions") or "")
+        if not name or not instructions.strip():
+            raise ValueError("custom Agent name and instructions are required")
+
+        card = spec.card or AgentCard(name=name, id=_AGENT_CARD_ID)
+        card_updates: dict[str, Any] = {"name": name}
+        description = definition.get("description")
+        if isinstance(description, str) and description.strip():
+            card_updates["description"] = description.strip()
+        card = card.model_copy(deep=True, update=card_updates)
+
+        base_prompt = str(spec.system_prompt or "").rstrip()
+        instruction_prompt = instructions.strip()
+        system_prompt = (
+            f"{base_prompt}\n\n# Agent Instructions\n{instruction_prompt}"
+            if base_prompt
+            else instruction_prompt
+        )
+        updates: dict[str, Any] = {
+            "card": card,
+            "system_prompt": system_prompt,
+            "skills": list(definition.get("skills") or ()),
         }
+        max_iterations = definition.get("max_iterations")
+        if max_iterations is not None:
+            updates["max_iterations"] = max_iterations
+        return spec.model_copy(deep=True, update=updates)
 
     def _prepare_custom_code_build_context(
         self,
@@ -783,6 +845,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         sub_mode: str = None,
         spec: DeepAgentSpec | None = None,
         build_context: BuildContext | None = None,
+        agent_definition: dict[str, Any] | None = None,
     ) -> None:
         """Build Code mode from config.yaml or a caller-supplied DeepAgentSpec.
 
@@ -797,6 +860,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             raise TypeError("build_context must be a BuildContext")
         if spec is None and build_context is not None:
             raise ValueError("build_context requires a custom spec")
+        if spec is not None and agent_definition is not None:
+            raise ValueError("spec and agent_definition are mutually exclusive")
+        if agent_definition is not None and not isinstance(agent_definition, dict):
+            raise TypeError("agent_definition must be a dict")
         if spec is not None:
             # Treat caller input like config.yaml: snapshot it at the API
             # boundary so later caller mutations cannot change deferred root
@@ -813,7 +880,12 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._session_instance_sub_mode = sub_mode
         self._session_instance_spec = spec
         self._session_instance_build_context = build_context
-        self._custom_code_spec_active = spec is not None
+        self._session_instance_agent_definition = (
+            deepcopy(agent_definition) if agent_definition is not None else None
+        )
+        self._custom_code_spec_active = (
+            spec is not None or agent_definition is not None
+        )
         # Channel id drives the MCP load strategy (see the init gate below and
         # JiuWenSwarmDeepAdapter._sync_mcp_servers_for_runtime): TUI loads the
         # global-default set on init, web loads nothing. Mirror the deep
@@ -827,6 +899,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
         self._instance_overrides = dict(config or {}) if isinstance(config, dict) else {}
         config_base = get_config()
+        self._config_base_cache = config_base.copy()
         self._refresh_multimodal_configs(config_base)
         config = config_base.get('react', {}).copy()
         self._config_cache = config.copy()
@@ -890,6 +963,11 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             self._code_agent_spec, self._code_build_context = (
                 self._build_code_spec_snapshot(config_base, config, model)
             )
+            if agent_definition is not None:
+                self._code_agent_spec = self._apply_runtime_agent_definition(
+                    self._code_agent_spec,
+                    agent_definition,
+                )
         else:
             code_agent_spec.register_code_spec_providers()
             self._code_build_context = self._prepare_custom_code_build_context(
@@ -918,6 +996,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         self._instance.ability_manager.set_owner_id(tool_owner_id)
         self._code_spec_rails = list(self._instance.configured_rails())
         self._tool_cards = self._collect_code_spec_tool_cards()
+        # Symphony is configured outside modes.code.tools. Reuse the same
+        # canonical capability sync as reload, and do it before rail startup so
+        # the first ProgressiveTool index already contains the graph tools.
+        # A caller-supplied Spec remains authoritative and receives no implicit
+        # tools from the product config.
+        if spec is None:
+            self._sync_symphony_tools_for_runtime(config_base)
 
         # 改动3：让 agent 初始化（ensure_initialized）在独立线程 + 独立事件循环里跑，
         # 主事件循环在初始化的十几秒里保持响应，esc 的 cancel 不再堵队列、后端能尽快停。
@@ -1092,6 +1177,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 "[JiuwenSwarmCodeAdapter] rollback initialization failed: %s",
                 exc,
             )
+
+    def _sync_multimodal_tools_for_runtime(self) -> None:
+        """Code mode excludes multimodal tools, including during scoped reloads.
+
+        Keep the inherited snapshot refresh and session fan-out behavior without
+        allowing the deep adapter's reload path to register these capabilities.
+        """
 
     async def reload_agent_config(
         self,
@@ -1348,7 +1440,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             if getattr(tool, "card", None) is not None
         }
         with self._code_spec_config_scope(config_base):
-            self._sync_multimodal_tools_for_runtime()
             self._sync_paid_search_tool_for_runtime()
             self._sync_symphony_tools_for_runtime(config_base)
             self._sync_skill_retrieval_tools_for_runtime(config_base)
@@ -1417,22 +1508,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo("_skill_retrieval_prompt_rail", self._build_skill_retrieval_prompt_rail),
+            _RailBuildInfo(
+                "_symphony_orchestration_rail",
+                self._build_symphony_orchestration_rail,
+            ),
             _RailBuildInfo("_stream_event_rail", self._build_stream_event_rail),
             _RailBuildInfo("_security_rail", self._build_security_rail),
             _RailBuildInfo("_heartbeat_rail", self._build_heartbeat_rail),
             _RailBuildInfo("_lsp_rail", self._build_lsp_rail_via_config),
             _RailBuildInfo("_project_memory_rail", self._build_project_memory_rail),
-            _RailBuildInfo(
-                "_permission_rail",
-                build_permission_rail,
-                {
-                    "config": config_base,
-                    "llm": self._model,
-                    "model_name": config_base.get("models", {}).get(
-                        "default", {}
-                    ).get("model_client_config", {}).get("model_name", "gpt-4"),
-                },
-            ),
+            *self._permission_interrupt_rail_infos(config_base),
             _RailBuildInfo("_code_filesystem_rail", self._build_filesystem_rail),
             _RailBuildInfo("_coding_memory_rail", self._build_coding_memory_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
@@ -1856,9 +1941,13 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         workspace = self._workspace_dir or "./"
         sys_operation = self._sys_operation
         subagents: list[Any] = []
+        browser_enabled = self._browser_runtime_enabled()
         self._browser_runtime_settings = None
         self._browser_runtime_security_profile = None
-        self._sync_browser_runtime_environment(config_base)
+        self._sync_browser_runtime_environment(
+            config_base,
+            runtime_enabled=browser_enabled,
+        )
 
         statusline_setup_cfg = (
             subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
@@ -1946,7 +2035,6 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             # browser_agent
             browser_agent_cfg = subagents_cfg.get("browser_agent")
 
-            browser_enabled = self._browser_runtime_enabled()
             if browser_enabled:
                 if not str(os.getenv("BROWSER_DRIVER") or "").strip():
                     os.environ["BROWSER_DRIVER"] = "managed"
@@ -2036,6 +2124,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     "[JiuwenSwarmCodeAdapter] CodingMemoryRail (re)registered for %s",
                     mode,
                 )
+
+        self._last_mode = mode
+        await self._sync_personal_context_rail(mode)
 
     def _build_code_agent_rail(self) -> CodeAgentRail | None:
         """构建 CodeAgentRail，管理 /agents 创建的自定义 agent。"""
@@ -2158,13 +2249,16 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             )
             if self._eternal_conversation_enabled and self._context_processor_rail is not None:
                 self.shutdown_context_session_memory(self._context_processor_rail)
-        # PermissionInterruptRail: per-request trusted_dirs 注入，使 external_directory
-        # 检查将这些子树视为 internal 而跳过 ask/deny（与 RuntimePromptRail 对齐）。
+        # PermissionInterruptRail: session 任务目录是 workspace；project_dir 并入 trusted_dirs。
         # 用 getattr 兼容绕过 __init__ 的测试构造（_permission_rail 仅在 rail 构建流程赋值）。
         permission_rail = getattr(self, "_permission_rail", None)
         if permission_rail is not None:
             try:
-                permission_rail.set_trusted_dirs(runtime_config.trusted_dirs)
+                apply_permission_trusted_dirs(
+                    permission_rail,
+                    trusted_dirs=runtime_config.trusted_dirs,
+                    project_dir=runtime_config.project_dir or self._project_dir,
+                )
             except Exception:
                 logger.debug(
                     "[JiuwenSwarmCodeAdapter] permission_rail.set_trusted_dirs failed",
@@ -2307,10 +2401,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _build_paid_search_tool(self, agent_id: str) -> WebPaidSearchTool | None:
         """条件注册付费搜索工具：有任意一个付费 API Key 才注册."""
-        if not any(
-            os.environ.get(key)
-            for key in ("BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY")
-        ):
+        if not is_paid_search_enabled():
             logger.info("[JiuwenSwarmCodeAdapter] web_paid_search skipped: no paid search API key")
             return None
         tool = WebPaidSearchTool(
@@ -2322,6 +2413,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
 
     def _sync_paid_search_tool_for_runtime(self) -> None:
         """Sync paid search while respecting ``modes.code.tools``."""
+        self._invalidate_stale_paid_search_tool()
         configured_tools = (
             self._active_code_config()
             .get("modes", {})
@@ -2329,18 +2421,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             .get("tools")
             or []
         )
-        paid_search_env_keys = (
-            "BOCHA_API_KEY",
-            "PERPLEXITY_API_KEY",
-            "SERPER_API_KEY",
-            "JINA_API_KEY",
-        )
-        has_paid_search_key = False
-        for key in paid_search_env_keys:
-            if os.environ.get(key):
-                has_paid_search_key = True
-                break
-        enabled = "web_paid_search" in configured_tools and has_paid_search_key
+        enabled = "web_paid_search" in configured_tools and is_paid_search_enabled()
         agent_id = self._tool_owner_id()
         tools, self._paid_search_registered = self._sync_tool_group(
             current_tools=(

@@ -8,6 +8,17 @@ THE OPEN SOURCE SOFTWARE IN THIS PRODUCT IS DISTRIBUTED IN THE HOPE THAT IT WILL
 
 ## Copyright Notice and License Texts
 
+### Bundled Playwright MCP runtime
+
+The browser-free runtime archive contains the following production packages resolved by the tracked npm lockfile. It does not contain Chromium, Firefox, WebKit, or downloaded browser executables.
+
+| Software | Version | License | Provenance |
+|---|---:|---|---|
+| @playwright/mcp | 0.0.78 | Apache-2.0 | npm package `@playwright/mcp` |
+| playwright | 1.62.0-alpha-1783623505000 | Apache-2.0 | npm package `playwright` |
+| playwright-core | 1.62.0-alpha-1783623505000 | Apache-2.0 | npm package `playwright-core` |
+| fsevents (optional; omitted from the cross-platform archive) | 2.3.2 | MIT | npm package `fsevents` |
+
 ### Software: Python 3.11.x, 3.12.x, 3.13.x
 
 **License:** Python Software Foundation License V2
@@ -42,7 +53,7 @@ THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS "AS IS" AND 
 
 ### License: Apache License V2.0
 
-**Software:** tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers
+**Software:** @playwright/mcp, playwright, playwright-core, tenacity, pypdfium2, requests, pytest-asyncio, coverage, aiofiles, aiohttp, aiosignal, chromadb, fastmcp, frozenlist, grpcio, huggingface-hub, openai, opentelemetry-api, opentelemetry-sdk, pymilvus, py-key-value-aio, py-key-value-shared, python-multipart, tzdata, websocket-client, yarl, cryptography (Apache-2.0 OR BSD-3-Clause), cyclopts, dashscope, diskcache, distro, elasticsearch, elastic-transport, flatbuffers, googleapis-common-protos, hf-xet, importlib-metadata, importlib-resources, jsonschema-path, kubernetes, openapi-spec-validator, opentelemetry-proto, pathable, prometheus-client, propcache, safetensors, sortedcontainers, tokenizers, transformers
 
 **Apache License**
 **Version 2.0, January 2004**
@@ -88,7 +99,7 @@ You may add Your own copyright statement to Your modifications and may provide a
 
 ### License: MIT License
 
-**Software:** json_repair, rapidfuzz, markdown-it-py, beautifulsoup4, python-docx, fastapi, pydantic, pydantic-settings, sqlalchemy, pytest, pytest-cov, pytest-mock, PyYAML, charset-normalizer, exceptiongroup, h11, httpx-sse, iniconfig, jsonschema, mdurl, more-itertools, platformdirs, pluggy, pydantic-core, redis, referencing, rich, typing-inspection, urllib3, zipp, aioitertools, attrs, beartype, cacheout, cachetools, cffi, docstring-parser, filelock, greenlet, humanfriendly, jaraco.classes, jaraco.context, jaraco.functools, jiter, keyring, langchain-core, langgraph, langsmith, pysbd, pytz, rpds-py, shellingham, six, slack-bolt, slack-sdk, tomli, typer, typer-slim, watchfiles, wsproto
+**Software:** fsevents, json_repair, rapidfuzz, markdown-it-py, beautifulsoup4, python-docx, fastapi, pydantic, pydantic-settings, sqlalchemy, pytest, pytest-cov, pytest-mock, PyYAML, charset-normalizer, exceptiongroup, h11, httpx-sse, iniconfig, jsonschema, mdurl, more-itertools, platformdirs, pluggy, pydantic-core, redis, referencing, rich, typing-inspection, urllib3, zipp, aioitertools, attrs, beartype, cacheout, cachetools, cffi, docstring-parser, filelock, greenlet, humanfriendly, jaraco.classes, jaraco.context, jaraco.functools, jiter, keyring, langchain-core, langgraph, langsmith, pysbd, pytz, rpds-py, shellingham, six, slack-bolt, slack-sdk, tomli, typer, typer-slim, watchfiles, wsproto
 
 **The MIT License**
 

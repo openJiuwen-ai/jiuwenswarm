@@ -10,12 +10,12 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 import pytest
 
 from jiuwenswarm.common.utils import prepare_workspace
+from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package
 
 
 @pytest.fixture()
@@ -54,25 +54,33 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
 
     mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
-    assert (mcp_builtins / "index.json").is_file(), "index.json 缺失"
-    # 至少有几个真实 MCP 包目录.
+    assert not (mcp_builtins / "index.json").exists()
+    assert not (mcp_builtins / "manifest.json").exists()
+    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip()
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
-    assert len(pkg_dirs) >= 10, f"包目录太少: {len(pkg_dirs)}"
+    assert pkg_dirs
+    packages = [load_mcp_package(package) for package in pkg_dirs]
+    assert {package.package_id for package in packages} == {p.name for p in pkg_dirs}
+    assert not any(
+        path.name in {"index.json", "connector-meta.json"}
+        for path in mcp_builtins.rglob("*")
+    )
 
 
-def test_list_marketplace_orders_huawei_first(temp_workspace: Path) -> None:
-    """解压后 mcp.list 应把 huaweiyun-mcp / harmonyos-mcp 排在最前."""
+def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None:
+    """解压后的内置 MCP 包应能被 marketplace 正常加载和展示."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
     # 重置 registry 缓存路径指向临时工作区.
     import jiuwenswarm.server.runtime.mcp.registry as reg
-    from jiuwenswarm.common.utils import get_workspace_dir
     # registry 的 _packages_dir 依赖 get_workspace_dir, 已被 fixture 重定向.
-    names = [m["name"] for m in reg.list_marketplace_mcps("builtin")]
+    items = reg.list_marketplace_mcps("builtin")
+    names = [item["name"] for item in items]
     assert names, "空列表"
-    assert names[0] in ("huaweiyun-mcp", "harmonyos-mcp"), f"置顶失效, 首: {names[0]}"
-    assert names[1] in ("huaweiyun-mcp", "harmonyos-mcp"), f"第二非华为系: {names[1]}"
-    # 确认两个华为系都在且相邻置顶.
-    assert set(names[:2]) == {"huaweiyun-mcp", "harmonyos-mcp"}
+    assert all(item["source"] == "built_in" for item in items)
+    details = [reg.get_mcp(name) for name in names]
+    assert all(detail is not None for detail in details)
+    assert all(detail["display_name"] for detail in details if detail is not None)
+    assert all(detail["examples"] for detail in details if detail is not None)
 
 
 def test_second_prepare_skips_when_version_matches(temp_workspace: Path) -> None:
@@ -99,7 +107,7 @@ def test_prepare_workspace_leaves_no_seed_zip_leftover(temp_workspace: Path) -> 
     ws_root = temp_workspace / "agent" / "workspace"
     leftovers = list(ws_root.glob("mcp_builtins*.zip"))
     assert not leftovers, f"seed zip leaked to workspace root: {leftovers}"
-    # 解压目录仍在, 且内容完整。
+    # 解压目录仍在。
     mcp_builtins = ws_root / "mcp" / "mcp_builtins"
-    assert (mcp_builtins / "index.json").is_file()
-
+    assert mcp_builtins.is_dir()
+    assert not (mcp_builtins / "index.json").exists()

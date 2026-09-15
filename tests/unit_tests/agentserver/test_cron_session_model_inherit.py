@@ -129,6 +129,138 @@ def test_extract_legacy_params_model_name_from_payload_block() -> None:
 
 
 # ---------------------------------------------------------------------------
+# _extract_legacy_params 透传 mcp（会话级 MCP 选择）
+# ---------------------------------------------------------------------------
+
+
+def test_extract_legacy_params_passthrough_mcp() -> None:
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    params = _new_format_params(model_name=None)
+    params["mcp"] = ["feishu-doc", "github"]
+    out = _extract_legacy_params(params, context=context, require_schedule=True)
+    assert out.get("mcp") == ["feishu-doc", "github"]
+
+
+def test_extract_legacy_params_mcp_from_payload_block() -> None:
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    params = _new_format_params(model_name=None)
+    params["payload"]["mcp"] = ["netease-mail"]
+    out = _extract_legacy_params(params, context=context, require_schedule=True)
+    assert out.get("mcp") == ["netease-mail"]
+
+
+@pytest.mark.parametrize("require_schedule", [True, False], ids=["create", "update"])
+@pytest.mark.parametrize("location", ["top_level", "payload"])
+def test_extract_legacy_params_preserves_empty_mcp(
+    monkeypatch: pytest.MonkeyPatch, require_schedule: bool, location: str,
+) -> None:
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    params = _new_format_params(model_name=None)
+    if location == "top_level":
+        params["mcp"] = []
+        params["payload"]["mcp"] = ["nested-mcp"]
+    else:
+        params["payload"]["mcp"] = []
+    out = _extract_legacy_params(params, context=context, require_schedule=require_schedule)
+    assert out["mcp"] == []
+    if require_schedule:
+        _patch_session_equipment(monkeypatch, {"mcp": ["feishu-doc"]})
+        inherited = _CronToolsCronBackend._inherit_session_mcp(out, context=context)
+        assert inherited["mcp"] == []
+
+
+def test_extract_legacy_params_ignores_malformed_mcp() -> None:
+    """混入非字符串/空串元素的 mcp 不透传（交给会话快照继承或规范化）。"""
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    params = _new_format_params(model_name=None)
+    params["mcp"] = ["ok", 123, ""]
+    out = _extract_legacy_params(params, context=context, require_schedule=True)
+    assert "mcp" not in out
+
+
+# ---------------------------------------------------------------------------
+# _inherit_session_mcp：复用 chat-session 的会话级 MCP 选择
+# ---------------------------------------------------------------------------
+
+
+def _patch_session_equipment(monkeypatch: pytest.MonkeyPatch, equipment: dict[str, Any]) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_equipment",
+        lambda sid, cache_bust=False: equipment,
+    )
+
+
+def test_inherit_session_mcp_fills_from_session_equipment(monkeypatch: pytest.MonkeyPatch) -> None:
+    _patch_session_equipment(
+        monkeypatch,
+        {"agent_template_name": "", "plugin_names": [], "mcp": ["feishu-doc", "github"]},
+    )
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    payload = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *"},
+        context=context,
+    )
+    assert payload.get("mcp") == ["feishu-doc", "github"]
+
+
+def test_inherit_session_mcp_respects_explicit_selection(monkeypatch: pytest.MonkeyPatch) -> None:
+    """显式传 mcp（含空列表=不用 MCP）不被继承覆盖。"""
+    _patch_session_equipment(
+        monkeypatch,
+        {"agent_template_name": "", "plugin_names": [], "mcp": ["feishu-doc"]},
+    )
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    payload = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *", "mcp": ["explicit-mcp"]},
+        context=context,
+    )
+    assert payload.get("mcp") == ["explicit-mcp"]
+
+    payload_empty = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *", "mcp": []},
+        context=context,
+    )
+    assert payload_empty.get("mcp") == []
+
+
+def test_inherit_session_mcp_no_equipment_keeps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """会话无 MCP 选择时不注入（执行时保持既有全局默认集行为）。"""
+    _patch_session_equipment(monkeypatch, {})
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    payload = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *"},
+        context=context,
+    )
+    assert "mcp" not in payload
+
+
+def test_inherit_session_mcp_read_failure_keeps_payload(monkeypatch: pytest.MonkeyPatch) -> None:
+    """会话 equipment 读取失败不阻断创建。"""
+
+    def _boom(sid: str, cache_bust: bool = False) -> dict[str, Any]:
+        raise RuntimeError("metadata unavailable")
+
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_session_equipment",
+        _boom,
+    )
+    context = CronToolContext(channel_id="web", session_id="web_sess_1")
+    payload = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *"},
+        context=context,
+    )
+    assert "mcp" not in payload
+
+
+def test_inherit_session_mcp_without_context() -> None:
+    payload = _CronToolsCronBackend._inherit_session_mcp(
+        {"name": "x", "cron_expr": "0 9 * * *"},
+        context=None,
+    )
+    assert "mcp" not in payload
+
+
+# ---------------------------------------------------------------------------
 # _inherit_session_model：直接复用 chat-session 的模型配置
 # ---------------------------------------------------------------------------
 

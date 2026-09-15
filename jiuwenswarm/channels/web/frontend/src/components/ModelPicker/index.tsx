@@ -36,9 +36,8 @@ export default function ModelPicker({
     {
       id: 'configured',
       label: t('chat.modelSelector.configured'),
-      models: models.filter((model) => model.is_free !== true),
+      models,
     },
-    { id: 'free', label: t('chat.modelSelector.free'), models: models.filter((model) => model.is_free === true) },
   ];
 
   useEffect(() => {

@@ -11,12 +11,19 @@ import { ChatPanel } from './components/ChatPanel';
 import { SessionSidebar } from './components/SessionSidebar';
 import { SkillPanel } from './components/SkillPanel';
 import { AgentManagementPanel } from './components/AgentManagementPanel';
+import { RsiPage } from './features/rsi/RsiPage';
+import {
+  normalizeRSIEnabled,
+  setRSIFeatureEnabled,
+  useRSIFeatureEnabled,
+} from './features/rsi/featureConfig';
 import { SessionsPanel } from './components/SessionsPanel';
 import CronPanel from './components/CronPanel';
 import HeartbeatPanel from './components/HeartbeatPanel';
 import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
+import { PersonalContextPanel } from './components/PersonalContext';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -33,7 +40,7 @@ import {
 } from './features/shareImageExport';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
-import { FEATURE_APP_UPDATER_UI } from './featureFlags';
+import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
 import {
   beginHistoryRestore,
   fetchHistoryPage,
@@ -47,7 +54,7 @@ import {
   type FetchHistoryPageResult,
 } from './features/historyRestore';
 import { prefetchHistoryPages } from './features/historyPagination';
-import { isPlanWireMode } from './features/planMode/wireMode';
+import { isPlanWireMode, resolvePlanWireMode } from './features/planMode/wireMode';
 import { queueOrAddGoalObjectiveMessage } from './features/goalPendingObjectiveBubble';
 import { LoginPage } from './features/auth/LoginPage';
 import { LogoutButton } from './features/auth/LogoutButton';
@@ -63,10 +70,18 @@ import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
 import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session } from './types';
-import type {
-  ExternalCliAgentKind,
-  ExternalCliDependencyInstallStatus,
+import type { WorkMode } from './features/workspace/projectTypes';
+import {
+  EXTERNAL_CLI_AGENT_KINDS,
+  type ExternalCliAgentKind,
+  type ExternalCliDependencyInstallStatus,
+  type ExternalCliDetectResult,
+  type ExternalCliPendingChoice,
 } from './components/ExternalCliAgentsSection';
+import {
+  loadExternalCliPendingChoices,
+  persistExternalCliPendingChoices,
+} from './features/settings/modules/experimental/externalCliInstallState';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -78,6 +93,7 @@ import {
   useWorkspaceStore,
   useCronStore,
   useSubagentStore,
+  usePersonalContextStore,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
@@ -121,6 +137,7 @@ import {
   setA2UIActionHandler,
 } from './features/a2ui/actionBridge';
 import { saveBlob } from './utils/desktopSave';
+import { restoreSessionEquipment } from './utils/enabledExtensions';
 import { generateUuidV4 } from './utils/uuid';
 import { ApplicationPluginOutlet } from './applicationPlugins/ApplicationPluginOutlet';
 import { enabledApplicationPlugins } from './applicationPlugins/manifest';
@@ -187,6 +204,7 @@ type LoadedHistoryPage = {
 function getWorkContextForSession(sessionId: string): {
   project_id?: string;
   project_dir?: string;
+  work_mode?: WorkMode;
 } {
   const sessionState = useSessionStore.getState();
   const workspaceState = useWorkspaceStore.getState();
@@ -196,9 +214,22 @@ function getWorkContextForSession(sessionId: string): {
       : sessionState.sessions.find((item) => item.session_id === sessionId);
   const selectedProject = workspaceState.selectedProject;
 
+  // work_mode 取值顺序与 hooks/useWebSocket.ts 的 getSessionWorkMode 一致：
+  // session → selectedProject → 全局 workMode。用 .trim() 过滤空白而非纯 falsy
+  // 短路：session.work_mode 存在但为空串时，旧逻辑会 fallback 到全局，把 code
+  // profile 的会话路由成 work（profile 由 resolvePlanWireMode 拼进 mode 字段，
+  // 错位会被后端按 work 解析）。trim 后空串/纯空白视为未设置，才继续往上游找。
+  // 三处来源都是 WorkMode（'work' | 'code'），trim 仅滤空白不改语义，收窄回 WorkMode。
+  const work_mode = (
+    session?.work_mode?.trim()
+    || selectedProject?.work_mode?.trim()
+    || workspaceState.workMode
+  ) as WorkMode | undefined;
+
   return {
     project_id: session?.project_id || selectedProject?.project_id || undefined,
     project_dir: session?.project_dir || selectedProject?.project_dir || undefined,
+    work_mode,
   };
 }
 
@@ -303,6 +334,10 @@ function AppContent({
   const [trajectoryUiRequested, setTrajectoryUiRequested] = useState(false);
 
   const [activeNav, setActiveNav] = useState<MainNavKey>('chat');
+  const masterEnabled = usePersonalContextStore(
+    (s) => s.config.collection_enabled || s.config.agent_use_enabled,
+  );
+  const loadPersonalContextConfig = usePersonalContextStore((s) => s.loadConfig);
   const [serverConfig, setServerConfig] = useState<Record<string, unknown> | null>(null);
   const kvCacheAffinityEnabled = normalizeConfigBoolean(
     serverConfig?.kv_cache_affinity_enabled,
@@ -324,9 +359,17 @@ function AppContent({
   const [externalCliInstallDialogOpen, setExternalCliInstallDialogOpen] = useState(false);
   const [externalCliInstallStatuses, setExternalCliInstallStatuses] = useState<ExternalCliInstallStatuses>({});
   const [hasVisitedAgents, setHasVisitedAgents] = useState(false);
+  // Deferred CLI agent choices held here (not inside Settings) so they survive
+  // leaving/returning to Settings and a full page refresh while an install runs.
+  const [externalCliPendingChoices, setExternalCliPendingChoices] =
+    useState<Partial<Record<ExternalCliAgentKind, ExternalCliPendingChoice>>>(loadExternalCliPendingChoices);
+  // Latest CLI detect results, also held at the App layer so returning to the
+  // Settings page shows the previous status instead of flashing "not checked".
+  const [externalCliDetectResults, setExternalCliDetectResults] =
+    useState<Partial<Record<ExternalCliAgentKind, ExternalCliDetectResult>>>({});
   const [hasVisitedSkills, setHasVisitedSkills] = useState(false);
-  const [requestedSettingsModuleId, setRequestedSettingsModuleId] =
-    useState<SettingsModuleTarget | null>(null);
+  const [hasVisitedPersonalContext, setHasVisitedPersonalContext] = useState(false);
+  const [requestedSettingsModuleId, setRequestedSettingsModuleId] = useState<SettingsModuleTarget | null>(null);
   const {
     isMobile,
     conversationSidebarCollapsed,
@@ -337,7 +380,6 @@ function AppContent({
   } = useResponsiveLayout();
 
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
-  const [modelSetupGuideManual, setModelSetupGuideManual] = useState(false);
   const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
   const [dialogBusy, setDialogBusy] = useState(false);
   const [dialogError, setDialogError] = useState<string | null>(null);
@@ -385,6 +427,18 @@ function AppContent({
       setActiveNav('chat');
     }
   }, [activeNav]);
+
+  useEffect(() => {
+    if (!FEATURE_PERSONAL_CONTEXT_UI && (activeNav === 'personalContext' || activeNav === 'personalContextSettings')) {
+      setActiveNav('chat');
+    }
+  }, [activeNav]);
+
+  useEffect(() => {
+    if (!masterEnabled && activeNav === 'personalContext') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, masterEnabled]);
 
   useEffect(() => {
     const handler = (e: Event) => {
@@ -720,7 +774,7 @@ function AppContent({
   const prependMessages = useChatStore((s) => s.prependMessages);
   const isProcessing = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
   const isPaused = useChatStore((s) => s.runtimes[sessionId]?.isPaused ?? false);
-  const hasPendingQuestion = useChatStore((s) => Boolean(s.runtimes[sessionId]?.pendingQuestion));
+  const hasPendingQuestion = useChatStore((s) => Boolean(s.runtimes[sessionId]?.pendingQuestions[0]));
   const setProcessing = useChatStore((s) => s.setProcessing);
   const setThinking = useChatStore((s) => s.setThinking);
   const setLoadingHistory = useChatStore((s) => s.setLoadingHistory);
@@ -741,7 +795,26 @@ function AppContent({
     import.meta.env.MODE,
     typeof serverConfig?.runtime_platform === 'string' ? serverConfig.runtime_platform : undefined,
   );
-  const hiddenNavItems = getHiddenNavItemsForPlatform(frontendPlatform);
+  const rsiFeatureEnabled = useRSIFeatureEnabled();
+  const hiddenNavItems = useMemo<MainNavKey[]>(() => {
+    const base = getHiddenNavItemsForPlatform(frontendPlatform);
+    const rsiFiltered: MainNavKey[] = rsiFeatureEnabled
+      ? base
+      : [...base, 'experiments'];
+    // feature 关闭时移除全部个人上下文入口
+    if (!FEATURE_PERSONAL_CONTEXT_UI) {
+      return [...rsiFiltered, 'personalContext', 'personalContextSettings'];
+    }
+    // 总开关关闭时隐藏导航入口（设置页入口保留，供打开总开关）
+    if (!masterEnabled) return [...rsiFiltered, 'personalContext'];
+    return rsiFiltered;
+  }, [frontendPlatform, masterEnabled, rsiFeatureEnabled]);
+
+  useEffect(() => {
+    if (!rsiFeatureEnabled && activeNav === 'experiments') {
+      setActiveNav('chat');
+    }
+  }, [activeNav, rsiFeatureEnabled]);
 
   useEffect(() => {
     if (!serverConfig) {
@@ -1071,11 +1144,6 @@ function AppContent({
             applySubagentHistoryReplay(sid, items);
           }
         };
-        const hasSubagentFinal = () => {
-          const currentRuntime = useSubagentStore.getState().getRuntime(sid);
-          return Object.values(currentRuntime?.turnsBySubagentId[subagentId] ?? {})
-            .some(turn => turn.result?.source === 'transcript');
-        };
 
         const firstPage = await fetchSubagentHistoryPage(1, 1);
         if (disposed || !firstPage) {
@@ -1092,20 +1160,6 @@ function AppContent({
           applyPage,
           waitForNextPaint: async () => {},
         });
-        if (prefetchOutcome === 'completed' && firstPage.totalPages === 1 && !hasSubagentFinal()) {
-          const fallbackPage = await fetchSubagentHistoryPage(2, 2);
-          if (fallbackPage) {
-            applyPage(fallbackPage);
-            await prefetchHistoryPages({
-              initialLoadedPages: 2,
-              initialTotalPages: fallbackPage.totalPages,
-              isCurrent: () => !disposed,
-              fetchPage: (pageIdx, totalPages) => fetchSubagentHistoryPage(pageIdx, totalPages),
-              applyPage,
-              waitForNextPaint: async () => {},
-            });
-          }
-        }
         if (disposed || prefetchOutcome !== 'completed') {
           cleanup();
           return;
@@ -1316,10 +1370,7 @@ function AppContent({
           settle({ pageIdx, totalPages, result });
         },
         onEmpty: (emptyTotalPages) => {
-          if (pageIdx > 1) {
-            settle(null);
-            return;
-          }
+          // 已正常结束的页面即使没有主对话展示项，也必须推进页码。
           const totalPages = emptyTotalPages ?? fallbackTotalPages;
           settle({ pageIdx, totalPages, result: null });
         },
@@ -1420,6 +1471,9 @@ function AppContent({
       });
       upsertSessionMetadata(session, { setCurrent: sessionIdRef.current === targetSessionId });
       useWorkspaceStore.getState().upsertSession(session);
+      if (session.session_equipment && typeof session.session_equipment === 'object') {
+        restoreSessionEquipment(targetSessionId, session.session_equipment);
+      }
       if (sessionIdRef.current === targetSessionId) {
         setMissingSessionId((current) => (current === targetSessionId ? null : current));
         // 同 handleRestoreSession：拿到后端 metadata 里的 model 后还原 selectedModelName，
@@ -1457,6 +1511,7 @@ function AppContent({
     try {
       const config = await request<Record<string, unknown>>('config.get');
       setA2UIFeatureEnabled(normalizeA2UIEnabled(config.a2ui_enabled));
+      setRSIFeatureEnabled(normalizeRSIEnabled(config.rsi_enabled));
       setTrajectoryUiEnabled(normalizeTrajectoryUiEnabled(config.trajectory_ui_enabled));
       setServerConfig(config);
       setConfigError(null);
@@ -1464,8 +1519,7 @@ function AppContent({
         modelSetupGuideEvaluatedRef.current = true;
         if (!oauthNavRestoredRef.current && (shouldPreviewModelSetupGuide() || isSetupGuideEnabled(config.setup_guide_enabled))) {
           setActiveNav('chat');
-          setModelSetupGuideManual(false);
-          setModelSetupGuideStep(0);
+          setModelSetupGuideStep(1);
         }
       }
     } catch (error) {
@@ -1581,13 +1635,6 @@ function AppContent({
     }
   }, [request, setAvailableModels]);
 
-  const handleSettingsConfigSaved = useCallback(
-    async (updatedKeys: readonly string[]) => {
-      if (updatedKeys.includes('enable_free_models')) await handleModelsRefresh();
-    },
-    [handleModelsRefresh],
-  );
-
   const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
     return request<{
       cli_agent: ExternalCliAgentKind;
@@ -1634,6 +1681,34 @@ function AppContent({
     },
     [request],
   );
+
+  useEffect(() => {
+    persistExternalCliPendingChoices(externalCliPendingChoices);
+  }, [externalCliPendingChoices]);
+
+  useEffect(() => {
+    if (!isConnected) return undefined;
+    let cancelled = false;
+    const restoreInstallStatuses = async () => {
+      const results = await Promise.allSettled(
+        EXTERNAL_CLI_AGENT_KINDS.map(async (agent) => {
+          const status = await getExternalCliDependencyInstallStatus(agent);
+          return [agent, status] as const;
+        }),
+      );
+      if (cancelled) return;
+      const restored: ExternalCliInstallStatuses = {};
+      for (const result of results) {
+        if (result.status === 'fulfilled') restored[result.value[0]] = result.value[1];
+      }
+      if (Object.keys(restored).length === 0) return;
+      setExternalCliInstallStatuses((current) => ({ ...current, ...restored }));
+    };
+    void restoreInstallStatuses();
+    return () => {
+      cancelled = true;
+    };
+  }, [getExternalCliDependencyInstallStatus, isConnected]);
 
   const trackExternalCliDependencyInstalls = useCallback(
     (statuses: ExternalCliInstallStatuses) => {
@@ -1793,6 +1868,14 @@ function AppContent({
       })
       .catch(() => {});
   }, [isConnected]);
+
+  // 连接成功后拉取个人上下文配置，使总开关（派生态）在刷新后与后端持久化状态一致
+  useEffect(() => {
+    if (!isConnected || !FEATURE_PERSONAL_CONTEXT_UI) return;
+    void loadPersonalContextConfig().catch(() => {
+      // 静默；未配置时后端返回投影，拉取失败不影响主流程
+    });
+  }, [isConnected, loadPersonalContextConfig]);
 
   // 当会话 ID 变化或页面加载时，自动加载历史会话
   useEffect(() => {
@@ -2247,6 +2330,10 @@ function AppContent({
     // 开关打开，跟 initialInputValue 走的是同一条通道。
     options.initialEnabledPlugins?.forEach((id) => useSessionStore.getState().addEnabledPlugin(NEW_CONVERSATION_ID, id));
     options.initialEnabledMcps?.forEach((name) => useSessionStore.getState().addEnabledMcp(NEW_CONVERSATION_ID, name));
+    if (options.metadata) {
+      useSessionStore.getState().ensureRuntime(NEW_CONVERSATION_ID);
+      useSessionStore.getState().setSessionMetadata(NEW_CONVERSATION_ID, options.metadata);
+    }
     if (options.preserveProject) {
       preserveSelectedProjectOnChatNewRef.current = true;
       newConversationProjectRef.current = selectedProject
@@ -2323,7 +2410,11 @@ function AppContent({
       session_id: targetSessionId,
       intent_id: generateUuidV4(),
       view_id: kvcViewIdRef.current,
-      mode: runtime?.mode ?? mode,
+      mode: resolvePlanWireMode(
+        runtime?.mode ?? mode,
+        usePlanStore.getState().isActive(targetSessionId),
+        getWorkContextForSession(targetSessionId).work_mode,
+      ),
     }).then((response) => {
       if (response?.outcome === 'failed'
           && kvcPreparedInputSessionRef.current === targetSessionId) {
@@ -2348,6 +2439,112 @@ function AppContent({
     enterNewConversation('agent', { initialInputValue: prompt });
     useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: agentId });
   }, [enterNewConversation]);
+
+  const ensureApplicationPluginSession = useCallback(async (initialTitle = 'Application conversation') => {
+    const currentSessionId = sessionIdRef.current;
+    if (!currentSessionId) return null;
+    if (currentSessionId !== NEW_CONVERSATION_ID) return currentSessionId;
+    if (creatingSessionRef.current) return null;
+
+    creatingSessionRef.current = true;
+    useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, true);
+    const sessionStore = useSessionStore.getState();
+    const pendingRuntime = sessionStore.getRuntime(NEW_CONVERSATION_ID);
+    const runtimeSettings = {
+      mode: pendingRuntime?.mode ?? mode,
+      selectedModelName: sessionStore.getEffectiveModelName(NEW_CONVERSATION_ID),
+      projectDir: pendingRuntime?.projectDirectory ?? null,
+      persistSession: false,
+    };
+    const baseWorkContext = getWorkContextForSession(NEW_CONVERSATION_ID);
+    const preservedProject = newConversationProjectRef.current;
+    const workContext = {
+      project_id: baseWorkContext.project_id || preservedProject?.project_id,
+      project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
+      work_mode: baseWorkContext.work_mode,
+    };
+
+    try {
+      const createParams: Record<string, unknown> = {
+        create_token: generateUuidV4(),
+        mode: resolvePlanWireMode(
+          runtimeSettings.mode,
+          usePlanStore.getState().isActive(NEW_CONVERSATION_ID),
+          workContext.work_mode,
+        ),
+        is_swarm: runtimeSettings.mode === 'team',
+        title: createConversationTitle(initialTitle).slice(0, 100),
+        work_mode: workContext.work_mode,
+        view_id: kvcViewIdRef.current,
+        persist_session: false,
+      };
+      const previousSession = newConversationPreviousSessionRef.current;
+      if (previousSession) {
+        createParams.previous_session_id = previousSession.sessionId;
+        createParams.previous_mode = previousSession.mode;
+      }
+      if (runtimeSettings.selectedModelName) createParams.model_name = runtimeSettings.selectedModelName;
+      if (workContext.project_id) createParams.project_id = workContext.project_id;
+      if (workContext.project_dir) createParams.project_dir = workContext.project_dir;
+
+      const created = await createConversationSession(request, createParams);
+      const newSid = created.session_id;
+      const createdSession = registerCreatedConversation(
+        newSid,
+        { ...runtimeSettings, persistSession: created.persist_session },
+        Date.now(),
+        initialTitle,
+        {
+          project_id: created.project_id || workContext.project_id,
+          project_dir: created.project_dir || workContext.project_dir,
+          work_mode: created.work_mode || workContext.work_mode,
+          persist_session: created.persist_session,
+        },
+      );
+
+      (pendingRuntime?.selectedSkills ?? []).forEach((skill) => sessionStore.addSelectedSkill(newSid, skill));
+      (pendingRuntime?.enabledPlugins ?? []).forEach((id) => sessionStore.addEnabledPlugin(newSid, id));
+      (pendingRuntime?.enabledMcps ?? []).forEach((name) => sessionStore.addEnabledMcp(newSid, name));
+      if (pendingRuntime?.metadata) sessionStore.setSessionMetadata(newSid, pendingRuntime.metadata);
+      sessionStore.setAgentSelectionIntent(
+        newSid,
+        pendingRuntime?.agentSelectionIntent ?? { kind: 'keep' as const },
+      );
+      if (pendingRuntime?.enableSwarmflow) {
+        sessionStore.setSwarmflowActive(newSid, true, pendingRuntime.swarmflowBudget);
+      }
+      if (usePlanStore.getState().isActive(NEW_CONVERSATION_ID)) {
+        usePlanStore.getState().setActive(newSid, true, {
+          explicitEntry: usePlanStore.getState().hasPendingExplicitEntry(NEW_CONVERSATION_ID),
+          entrySource: usePlanStore.getState().getPendingEntrySource(NEW_CONVERSATION_ID) ?? undefined,
+        });
+      }
+
+      pendingNewConversationRef.current = false;
+      sessionStore.removeRuntime(NEW_CONVERSATION_ID);
+      usePlanStore.getState().removeRuntime(NEW_CONVERSATION_ID);
+      useGoalStore.getState().setArmed(NEW_CONVERSATION_ID, false);
+      createdSession.is_processing = false;
+      useWorkspaceStore.getState().upsertSession(createdSession, { isNew: true });
+      sessionIdsCreatedInThisPageRef.current.add(newSid);
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      useChatStore.getState().setProcessing(newSid, false);
+      sessionIdRef.current = newSid;
+      setSessionId(newSid);
+      navigate({ kind: 'chat-session', sessionId: newSid }, { replace: true });
+      newConversationProjectRef.current = null;
+      newConversationPreviousSessionRef.current = null;
+      return newSid;
+    } catch (error) {
+      useChatStore.getState().setProcessing(NEW_CONVERSATION_ID, false);
+      useChatStore.getState().setThinking(NEW_CONVERSATION_ID, false);
+      console.error('Failed to create application plugin conversation:', error);
+      window.alert(t('multiSession.errors.create'));
+      return null;
+    } finally {
+      creatingSessionRef.current = false;
+    }
+  }, [mode, navigate, request, t]);
 
   const handleSendMessage = useCallback(async (content: string, mediaItems?: MediaItem[]) => {
     const currentSessionId = sessionIdRef.current;
@@ -2374,12 +2571,16 @@ function AppContent({
       const workContext = {
         project_id: baseWorkContext.project_id || preservedProject?.project_id,
         project_dir: baseWorkContext.project_dir || preservedProject?.project_dir,
-        work_mode: useWorkspaceStore.getState().workMode,
+        work_mode: baseWorkContext.work_mode,
       };
       try {
         const createParams: Record<string, unknown> = {
           create_token: generateUuidV4(),
-          mode: runtimeSettings.mode,
+          mode: resolvePlanWireMode(
+            runtimeSettings.mode,
+            usePlanStore.getState().isActive(NEW_CONVERSATION_ID),
+            workContext.work_mode,
+          ),
           is_swarm: runtimeSettings.mode === 'team',
           title: createConversationTitle(messageContent).slice(0, 100),
           work_mode: workContext.work_mode,
@@ -2585,8 +2786,10 @@ function AppContent({
 
   const handleUserAnswer = useCallback((requestId: string, answers: UserAnswer[], source?: string) => {
     const currentSessionId = sessionIdRef.current;
-    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) return;
-    void sendUserAnswer(currentSessionId, requestId, answers, source);
+    if (!currentSessionId || currentSessionId === NEW_CONVERSATION_ID) {
+      return Promise.resolve(false);
+    }
+    return sendUserAnswer(currentSessionId, requestId, answers, source);
   }, [sendUserAnswer]);
 
   const handleLoadMoreHistory = useCallback(async () => {
@@ -2792,7 +2995,7 @@ function AppContent({
   const handleDeleteConversation = useCallback(async () => {
     if (!deleteTarget) return;
     const runtime = useChatStore.getState().getRuntime(deleteTarget.session_id);
-    if (runtime?.isProcessing || runtime?.pendingQuestion) {
+    if (runtime?.isProcessing || runtime?.pendingQuestions[0]) {
       setDialogError(t('multiSession.deleteRunningDisabled'));
       return;
     }
@@ -2854,13 +3057,13 @@ function AppContent({
       }
       if (nav === 'agents') setHasVisitedAgents(true);
       if (nav === 'skills') setHasVisitedSkills(true);
+      if (nav === 'personalContext') setHasVisitedPersonalContext(true);
     },
-    [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden, t],
+    [activeNav, isMobile, modelSetupGuideStep, setSingleAgentPanelExpanded, setHasVisitedPersonalContext, setRequestedSettingsModuleId, setTeamAreaExpanded, setToolPanelHidden, t],
   );
 
   const skipModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
-    setModelSetupGuideManual(false);
 
     void request('config.set', { setup_guide_enabled: 'false' })
       .then(() => {
@@ -2874,23 +3077,8 @@ function AppContent({
       });
   }, [request]);
 
-  const quickSetupModelSetupGuide = useCallback(() => {
-    setModelSetupGuideStep(null);
-    setModelSetupGuideManual(false);
-    // 显式指定使用 huawei-cloud-maas-setup skill，避免 agent 自行上网搜索
-    void handleSendMessage(
-      '请使用 huawei-cloud-maas-setup 技能帮我配置华为云 MaaS 服务。'
-      + '严格按照其中的步骤引导我完成购买、获取 API Key 和配置写入。'
-    );
-  }, [handleSendMessage]);
-
-  const manualSetupModelSetupGuide = useCallback(() => {
-    setModelSetupGuideStep(1);
-  }, []);
-
   const acknowledgeModelSetupGuide = useCallback(() => {
     setModelSetupGuideStep(null);
-    setModelSetupGuideManual(false);
 
     void request('config.set', { setup_guide_enabled: 'false' })
       .then(() => {
@@ -3019,11 +3207,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
       {modelSetupGuideStep !== null ? (
         <ModelSetupGuide
           step={modelSetupGuideStep}
-          manual={modelSetupGuideManual}
           onAcknowledge={acknowledgeModelSetupGuide}
           onSkip={skipModelSetupGuide}
-          onQuickSetup={quickSetupModelSetupGuide}
-          onManualSetup={manualSetupModelSetupGuide}
         />
       ) : null}
 
@@ -3079,6 +3264,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                     chat={(
                       <ChatPanel
                         onSendMessage={handleSendMessage}
+                        onEnsureSession={ensureApplicationPluginSession}
                         onInputIntent={kvCacheAffinityEnabled ? handleKVCInputIntent : undefined}
                         onPersistMedia={handlePersistMedia}
                         onPersistDocuments={handlePersistDocuments}
@@ -3194,9 +3380,15 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
             </div>
           </>
         )}
+        {activeNav === 'experiments' && (
+          <div className="app-section">
+            <RsiPage />
+          </div>
+        )}
         {hasVisitedAgents && (
           <div className={`app-section min-h-0 ${activeNav === 'agents' ? '' : 'is-hidden'}`}>
             <AgentManagementPanel
+              isActive={activeNav === 'agents'}
               onUseAgent={handleUseAgent}
               onUsePrompt={handleUseAgentPrompt}
               onCreateViaChat={() => requestSessionNavigation('new', {
@@ -3267,21 +3459,24 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {activeNav === 'settings' && (
           <div className="app-section">
             <SettingsPage
-                definition={settingsPageDefinition}
-                isConnected={isConnected}
-                connectionState={connectionState}
-                request={settingsRequest}
-                onHasChangesChange={handleSettingsHasChangesChange}
-                onConfigSaved={handleSettingsConfigSaved}
-                onDetectExternalCli={detectExternalCli}
-                onSelectExternalCliPath={selectExternalCliPath}
-                onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
-                externalCliInstallStatuses={externalCliInstallStatuses}
-                externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
-                  (status) => status?.status === 'running',
-                )}
-                onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
-                initialModuleId={requestedSettingsModuleId ?? undefined}
+              definition={settingsPageDefinition}
+              isConnected={isConnected}
+              connectionState={connectionState}
+              request={settingsRequest}
+              onHasChangesChange={handleSettingsHasChangesChange}
+              onDetectExternalCli={detectExternalCli}
+              onSelectExternalCliPath={selectExternalCliPath}
+              onTrackExternalCliDependencyInstalls={trackExternalCliDependencyInstalls}
+              externalCliInstallStatuses={externalCliInstallStatuses}
+              externalCliInstallBusy={Object.values(externalCliInstallStatuses).some(
+                (status) => status?.status === 'running',
+              )}
+              onOpenExternalCliInstallDialog={() => setExternalCliInstallDialogOpen(true)}
+              externalCliPendingChoices={externalCliPendingChoices}
+              onExternalCliPendingChoicesChange={setExternalCliPendingChoices}
+              externalCliDetectResults={externalCliDetectResults}
+              onExternalCliDetectResultsChange={setExternalCliDetectResults}
+              initialModuleId={requestedSettingsModuleId ?? undefined}
             />
           </div>
         )}
@@ -3293,6 +3488,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         {FEATURE_APP_UPDATER_UI && activeNav === 'updatepanel' && (
           <div className="app-section">
             <UpdatePanel isConnected={isConnected} request={request} />
+          </div>
+        )}
+
+        {FEATURE_PERSONAL_CONTEXT_UI && hasVisitedPersonalContext && (
+          <div className={`app-section ${activeNav === 'personalContext' ? '' : 'is-hidden'}`}>
+            <PersonalContextPanel isConnected={isConnected} isActive={activeNav === 'personalContext'} />
           </div>
         )}
 
@@ -3309,35 +3510,42 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
           </div>
         )}
         {activeNav === 'connectorMarket' && (
-          <div className="app-section">
-            <ConnectorMarketPanel
-              applicationPlugins={applicationPlugins}
-              applicationPluginsLoading={applicationPluginState.loading}
-              applicationPluginsError={applicationPluginState.error}
-              onRefreshApplicationPlugins={applicationPluginState.refresh}
-              onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
-                detail: {
-                  skillName: 'plugin-creator',
-                  suffixText: t('connectorMarket.chatPrompts.createPlugin'),
-                  metadata: { scene: 'create_plugin' },
-                },
-              }))}
-              onUseExample={(initialInputValue, mcpName) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledMcps: [mcpName], forceMode: 'agent' })
-              }
-              onUsePluginExample={(initialInputValue, pluginId) =>
-                requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
-              }
-              onUseExtension={({ kind, id }) =>
-                requestSessionNavigation(
-                  'new',
-                  kind === 'plugin'
-                    ? { initialEnabledPlugins: [id], forceMode: 'agent' }
-                    : { initialEnabledMcps: [id], forceMode: 'agent' },
-                )
-              }
+          <div className="app-page-body">
+            <div className="page-content">
+              <ConnectorMarketPanel
+                applicationPlugins={applicationPlugins}
+                applicationPluginsLoading={applicationPluginState.loading}
+                applicationPluginsError={applicationPluginState.error}
+                onRefreshApplicationPlugins={applicationPluginState.refresh}
+                onCreateViaChat={() => window.dispatchEvent(new CustomEvent('jiuwen:new-conversation', {
+                  detail: {
+                    skillName: 'plugin-creator',
+                    suffixText: t('connectorMarket.chatPrompts.createPlugin'),
+                    metadata: { scene: 'create_plugin' },
+                  },
+                }))}
+                onUseExample={(initialInputValue, mcpName, displayName) =>
+                  requestSessionNavigation('new', {
+                    initialInputValue,
+                    initialEnabledMcps: [mcpName],
+                    forceMode: 'agent',
+                    metadata: { prefer_mcp: { id: mcpName, display_name: displayName ?? mcpName } },
+                  })
+                }
+                onUsePluginExample={(initialInputValue, pluginId) =>
+                  requestSessionNavigation('new', { initialInputValue, initialEnabledPlugins: [pluginId], forceMode: 'agent' })
+                }
+                onUseExtension={({ kind, id }) =>
+                  requestSessionNavigation(
+                    'new',
+                    kind === 'plugin'
+                      ? { initialEnabledPlugins: [id], forceMode: 'agent' }
+                      : { initialEnabledMcps: [id], forceMode: 'agent' },
+                  )
+                }
               />
             </div>
+          </div>
         )}
       </main>
 

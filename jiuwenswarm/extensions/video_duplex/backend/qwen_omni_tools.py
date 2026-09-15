@@ -7,9 +7,11 @@ import json
 from typing import Any
 
 
+QWEN_OMNI_DELEGATE_TOOL_NAME = "jiuwen_delegate"
 QWEN_OMNI_RESEARCH_TOOL_NAME = "jiuwen_research"
 _MAX_CALL_ID_CHARS = 200
-_MAX_QUERY_CHARS = 500
+_MAX_TASK_CHARS = 2_000
+_DELEGATE_ARGUMENT_NAMES = ("task", "query", "instruction", "request")
 
 
 @dataclass(frozen=True)
@@ -17,7 +19,12 @@ class QwenOmniToolCall:
     name: str
     call_id: str
     arguments: dict[str, Any]
-    query: str
+    task: str
+
+    @property
+    def query(self) -> str:
+        """Compatibility alias for existing video search job fields."""
+        return self.task
 
 
 def qwen_omni_tools() -> list[dict[str, Any]]:
@@ -26,25 +33,25 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
         {
             "type": "function",
             "function": {
-                "name": QWEN_OMNI_RESEARCH_TOOL_NAME,
+                "name": QWEN_OMNI_DELEGATE_TOOL_NAME,
                 "description": (
-                    "Use Jiuwen Core Agent to research external or time-sensitive facts, "
-                    "such as weather, news, prices, company information, people, places, "
-                    "or facts that are not established by the current video and conversation. "
-                    "Resolve visual references such as 'this brand' in the query when possible."
+                    "Delegate any request that cannot be completed directly from the current "
+                    "audio, video, and conversation to the full Jiuwen Core Agent. Jiuwen may "
+                    "use all of its available capabilities, including research, files, document "
+                    "processing, calculation, code execution, and computer or browser tools."
                 ),
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "query": {
+                        "task": {
                             "type": "string",
                             "description": (
-                                "A self-contained search request including the resolved subject, "
-                                "place, date, and other context needed for accurate research."
+                                "A complete, self-contained task preserving the user's requested "
+                                "action, target, path or name, output format, and constraints."
                             ),
                         },
                     },
-                    "required": ["query"],
+                    "required": ["task"],
                     "additionalProperties": False,
                 },
             },
@@ -53,12 +60,12 @@ def qwen_omni_tools() -> list[dict[str, Any]]:
 
 
 def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
-    """Validate the only Qwen tool currently exposed by the video gateway."""
+    """Validate the current delegation tool and legacy research calls."""
     if not isinstance(value, dict):
         raise ValueError("tool call must be an object")
 
     name = str(value.get("name") or "").strip()
-    if name != QWEN_OMNI_RESEARCH_TOOL_NAME:
+    if name not in {QWEN_OMNI_DELEGATE_TOOL_NAME, QWEN_OMNI_RESEARCH_TOOL_NAME}:
         raise ValueError(f"unsupported Qwen tool: {name or '<empty>'}")
 
     call_id = str(value.get("call_id") or "").strip()
@@ -77,18 +84,26 @@ def parse_qwen_omni_tool_call(value: Any) -> QwenOmniToolCall:
         raise ValueError("arguments must be a JSON object")
     if not isinstance(arguments, dict):
         raise ValueError("arguments must be a JSON object")
-    if set(arguments) != {"query"}:
-        raise ValueError("arguments must contain only query")
+    if len(arguments) != 1:
+        raise ValueError("arguments must contain exactly one task field")
+    if name == QWEN_OMNI_DELEGATE_TOOL_NAME:
+        argument_name = next(
+            (key for key in _DELEGATE_ARGUMENT_NAMES if key in arguments), None
+        )
+    else:
+        argument_name = "query" if "query" in arguments else None
+    if argument_name is None:
+        raise ValueError("arguments must contain a supported task field")
 
-    raw_query = arguments.get("query")
-    if not isinstance(raw_query, str):
-        raise ValueError("query must be a string")
-    query = raw_query.strip()
-    if not query or len(query) > _MAX_QUERY_CHARS:
-        raise ValueError(f"query must contain 1-{_MAX_QUERY_CHARS} characters")
+    raw_task = arguments.get(argument_name)
+    if not isinstance(raw_task, str):
+        raise ValueError(f"{argument_name} must be a string")
+    task = raw_task.strip()
+    if not task or len(task) > _MAX_TASK_CHARS:
+        raise ValueError(f"{argument_name} must contain 1-{_MAX_TASK_CHARS} characters")
     return QwenOmniToolCall(
         name=name,
         call_id=call_id,
         arguments=arguments,
-        query=query,
+        task=task,
     )

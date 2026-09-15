@@ -87,7 +87,10 @@ def build_web_channel_app(channel: WebChannel) -> FastAPI:
                     if plugin_registry is not None
                     else None
                 )
-                if plugin is None or not plugin.is_enabled():
+                if plugin is None or (
+                    not route_contribution.available_when_disabled
+                    and not plugin.is_enabled()
+                ):
                     await websocket.close(code=1008, reason="application plugin is disabled")
                     return
                 await route_contribution.endpoint(websocket)

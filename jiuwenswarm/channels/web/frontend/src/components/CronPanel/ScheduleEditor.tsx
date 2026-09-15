@@ -10,6 +10,7 @@ import {
   wakeOffsetSecondsToMinutes,
 } from './cronWakeOffset';
 import { scheduleToCronExpr, cronExprToSchedule, nowWallClock } from './scheduleConvert';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { CronSchedule, CronScheduleKind } from '../../types/cron';
 
 interface ScheduleEditorProps {
@@ -26,20 +27,30 @@ interface ScheduleEditorProps {
 type TopMode = 'period' | 'interval' | 'once' | 'cronExpr';
 
 const PERIOD_KINDS: Extract<CronScheduleKind, 'daily' | 'weekly' | 'monthly' | 'yearly'>[] = [
-  'daily', 'weekly', 'monthly', 'yearly',
+  'daily',
+  'weekly',
+  'monthly',
+  'yearly',
 ];
 
 // croniter 实测的真实星期编号：0=周日...6=周六（见 plan.md §2.3.1），按钮显示顺序用"一二三四五六日"
 const WEEKDAY_ITEMS: { value: number; key: string }[] = [
-  { value: 1, key: 'mon' }, { value: 2, key: 'tue' }, { value: 3, key: 'wed' },
-  { value: 4, key: 'thu' }, { value: 5, key: 'fri' }, { value: 6, key: 'sat' },
+  { value: 1, key: 'mon' },
+  { value: 2, key: 'tue' },
+  { value: 3, key: 'wed' },
+  { value: 4, key: 'thu' },
+  { value: 5, key: 'fri' },
+  { value: 6, key: 'sat' },
   { value: 0, key: 'sun' },
 ];
 
 // "每月第几周"选项：不提供"第五周"（croniter 的 #5 在没有第5次出现的月份会整月跳过，不可靠，
 // 见 plan.md §2.3.8 第1点），只给第一~四周 + 最后一周（后者是独立的 L{dow} 语法，行为可靠）
 const WEEK_OF_MONTH_OPTIONS: { value: string; key: string }[] = [
-  { value: '1', key: '1' }, { value: '2', key: '2' }, { value: '3', key: '3' }, { value: '4', key: '4' },
+  { value: '1', key: '1' },
+  { value: '2', key: '2' },
+  { value: '3', key: '3' },
+  { value: '4', key: '4' },
   { value: 'L', key: 'last' },
 ];
 
@@ -86,7 +97,7 @@ function WeekdayPicker({ selected, onToggle }: { selected: number[]; onToggle: (
             className={`h-9 min-w-0 flex-1 rounded-md border text-sm transition-colors ${
               active
                 ? 'border-accent bg-accent-subtle text-accent'
-                : 'border-border bg-card text-text hover:border-border-strong'
+                : 'border-input bg-card text-text'
             }`}
           >
             {t(`cron.schedule.weekday.${key}`)}
@@ -130,6 +141,14 @@ export default function ScheduleEditor({
   // 在 croniter 里都只支持整数，见 cronExprValidation.ts），能解析成数字才同步进 schedule。
   const [intervalNumberText, setIntervalNumberText] = useState(() => intervalNumberTextOf(initialSchedule));
 
+  // 帮助"?"图标的自适应提示：不再用原生 title（hover 时还带问号光标），统一走 useAdaptiveTooltip
+  const { tooltip: scheduleHelpTooltip, handlers: scheduleHelpTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const { tooltip: cronExprHelpTooltip, handlers: cronExprHelpTooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const { tooltip: wakeOffsetHelpTooltip, handlers: wakeOffsetHelpTooltipHandlers } = useAdaptiveTooltip({
+    placement: 'top',
+    maxWidth: 400,
+  });
+
   // 切 tab 时的"上一次编辑内容"缓存：按 topMode 分桶各存一份 schedule。原实现切走一个 tab 时
   // 直接用 defaultForTopMode 把 value（唯一数据源）整个覆盖成空白默认值，原 tab 的数据没有任何
   // 备份，切回来自然拿不到（见 2026-07-16 bugfix）。这里给"周期/按间隔/单次"三个 tab 各留一份
@@ -163,9 +182,8 @@ export default function ScheduleEditor({
     // 优先级：当前 value 能直接解析成目标 tab 的形状（比如用户在"Cron表达式"tab 手写后切回结构化
     // tab）> 该 tab 之前编辑过的缓存 > 默认值
     const parsed = cronExprToSchedule(value);
-    const next = parsed && topModeOf(parsed.kind) === mode
-      ? parsed
-      : savedByModeRef.current[mode] ?? defaultForTopMode(mode);
+    const next =
+      parsed && topModeOf(parsed.kind) === mode ? parsed : (savedByModeRef.current[mode] ?? defaultForTopMode(mode));
     setTopMode(mode);
     if (mode === 'interval') setIntervalNumberText(intervalNumberTextOf(next));
     updateSchedule(next, mode);
@@ -183,7 +201,7 @@ export default function ScheduleEditor({
   }
 
   function setPeriodKind(kind: Extract<CronScheduleKind, 'daily' | 'weekly' | 'monthly' | 'yearly'>) {
-    const time = 'time' in schedule ? schedule.time ?? '' : '';
+    const time = 'time' in schedule ? (schedule.time ?? '') : '';
     if (kind === 'daily') updateSchedule({ kind: 'daily', time });
     else if (kind === 'weekly') updateSchedule({ kind: 'weekly', time, weekdays: [] });
     // 从其它类型切到"每月"，默认停在"按日期"子模式（不管切之前是不是"按星期"）
@@ -206,10 +224,16 @@ export default function ScheduleEditor({
   }
 
   const dayOptions = [
-    ...Array.from({ length: 31 }, (_, i) => ({ value: String(i + 1), label: t('cron.schedule.dayOption', { day: i + 1 }) })),
+    ...Array.from({ length: 31 }, (_, i) => ({
+      value: String(i + 1),
+      label: t('cron.schedule.dayOption', { day: i + 1 }),
+    })),
     { value: 'L', label: t('cron.schedule.lastDayOfMonth') },
   ];
-  const monthOptions = Array.from({ length: 12 }, (_, i) => ({ value: String(i + 1), label: t('cron.schedule.monthOption', { month: i + 1 }) }));
+  const monthOptions = Array.from({ length: 12 }, (_, i) => ({
+    value: String(i + 1),
+    label: t('cron.schedule.monthOption', { month: i + 1 }),
+  }));
   // "每年"选中具体月份后，日期字段的候选天数必须跟着这个月封顶，否则像"2月31日"这种组合会被
   // 允许选中——croniter 里 day=31 和 month=2 永远不会同时命中，任务实际上永远不会触发，
   // 是个"看起来配置成功、实际静默失效"的坑，不只是下拉框太长那种纯 UI 问题。
@@ -219,19 +243,24 @@ export default function ScheduleEditor({
   const yearlyMaxDay = schedule.kind === 'yearly' && schedule.month ? YEARLY_MONTH_DAY_COUNTS[schedule.month - 1] : 31;
   const yearlyDayOptions = dayOptions.filter((o) => o.value !== 'L' && Number(o.value) <= yearlyMaxDay);
   const periodKindOptions = PERIOD_KINDS.map((k) => ({ value: k, label: t(`cron.schedule.${k}`) }));
-  const weekOfMonthOptions = WEEK_OF_MONTH_OPTIONS.map((o) => ({ value: o.value, label: t(`cron.schedule.weekOfMonth.${o.key}`) }));
+  const weekOfMonthOptions = WEEK_OF_MONTH_OPTIONS.map((o) => ({
+    value: o.value,
+    label: t(`cron.schedule.weekOfMonth.${o.key}`),
+  }));
 
   return (
     <div className="relative" data-testid="cron-schedule-editor">
-      <div className="mb-2 flex items-center gap-1.5 text-sm font-bold text-text-strong">
-        <span data-testid="cron-schedule-title">{t('cron.schedule.title')}</span> <span className="text-danger">*</span>
+      <div className="mb-2 flex items-center gap-1 font-bold form-label">
+        <span data-testid="cron-schedule-title">{t('cron.schedule.title')}</span>
         <span
-          className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] font-normal text-text-muted cursor-help"
-          title={t('cron.schedule.help') ?? undefined}
+          className="inline-flex h-4 w-4 items-center justify-center align-middle rounded-full border border-border text-[10px] font-normal text-text-muted"
+          data-tooltip={t('cron.schedule.help') ?? undefined}
           data-testid="cron-schedule-help"
+          {...scheduleHelpTooltipHandlers}
         >
           ?
         </span>
+        {scheduleHelpTooltip}
       </div>
 
       <div className="mb-3 inline-flex rounded-md bg-bg-muted p-0.5" data-testid="cron-schedule-mode-tabs">
@@ -264,7 +293,13 @@ export default function ScheduleEditor({
         <div className="flex flex-col gap-2">
           <div className="flex flex-nowrap items-center gap-2" data-testid="cron-simple-select-5">
             <SimpleSelect
-              value={schedule.kind === 'interval' || schedule.kind === 'once' ? 'daily' : schedule.kind === 'monthlyWeekday' ? 'monthly' : schedule.kind}
+              value={
+                schedule.kind === 'interval' || schedule.kind === 'once'
+                  ? 'daily'
+                  : schedule.kind === 'monthlyWeekday'
+                    ? 'monthly'
+                    : schedule.kind
+              }
               onChange={(v) => setPeriodKind(v as Extract<CronScheduleKind, 'daily' | 'weekly' | 'monthly' | 'yearly'>)}
               options={periodKindOptions}
               className="w-24 shrink-0"
@@ -273,7 +308,10 @@ export default function ScheduleEditor({
             {/* "每月"的二级切换：按日期（已有）/ 按星期（"每月第几周星期几"，见 plan.md §2.3.8），
                 跟周期细分选择器放同一行，节省纵向空间 */}
             {(schedule.kind === 'monthly' || schedule.kind === 'monthlyWeekday') && (
-              <div className="inline-flex w-fit shrink-0 rounded-md bg-bg-muted p-0.5" data-testid="cron-schedule-monthly-sub-tabs">
+              <div
+                className="inline-flex w-fit shrink-0 rounded-md bg-bg-muted p-0.5"
+                data-testid="cron-schedule-monthly-sub-tabs"
+              >
                 {(['date', 'week'] as const).map((subMode) => {
                   const active = subMode === 'date' ? schedule.kind === 'monthly' : schedule.kind === 'monthlyWeekday';
                   return (
@@ -397,7 +435,9 @@ export default function ScheduleEditor({
       {topMode === 'interval' && schedule.kind === 'interval' && (
         <div className="flex flex-col gap-1">
           <div className="flex flex-nowrap items-center gap-2">
-            <span className="shrink-0 text-sm text-text-muted" data-testid="cron-schedule-every-label">{t('cron.schedule.every')}</span>
+            <span className="shrink-0 text-sm text-text-muted" data-testid="cron-schedule-every-label">
+              {t('cron.schedule.every')}
+            </span>
             <input
               type="text"
               inputMode="numeric"
@@ -411,7 +451,19 @@ export default function ScheduleEditor({
                 // （比如"0.1"变成"01"=1，"1.5"变成"15"），完全没有反馈，见 2026-07-23 bugfix（bug002）。
                 // 放行：数字键、编辑/导航类控制键、以及 Ctrl/Cmd 组合的编辑快捷键（全选/复制/粘贴/剪切/撤销）。
                 if (e.ctrlKey || e.metaKey || e.altKey) return;
-                const allowedControlKeys = ['Backspace', 'Delete', 'ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Tab', 'Home', 'End', 'Enter', 'Escape'];
+                const allowedControlKeys = [
+                  'Backspace',
+                  'Delete',
+                  'ArrowLeft',
+                  'ArrowRight',
+                  'ArrowUp',
+                  'ArrowDown',
+                  'Tab',
+                  'Home',
+                  'End',
+                  'Enter',
+                  'Escape',
+                ];
                 if (allowedControlKeys.includes(e.key)) return;
                 if (!/^\d$/.test(e.key)) e.preventDefault();
               }}
@@ -438,16 +490,27 @@ export default function ScheduleEditor({
                 setIntervalNumberText(raw);
                 const isMinutes = schedule.intervalUnit === 'minutes';
                 if (raw === '') {
-                  updateSchedule(isMinutes ? { ...schedule, everyMinutes: undefined } : { ...schedule, everyHours: undefined });
+                  updateSchedule(
+                    isMinutes ? { ...schedule, everyMinutes: undefined } : { ...schedule, everyHours: undefined },
+                  );
                   return;
                 }
                 const n = Number(raw);
                 updateSchedule(isMinutes ? { ...schedule, everyMinutes: n } : { ...schedule, everyHours: n });
               }}
-              placeholder={t(schedule.intervalUnit === 'minutes' ? 'cron.schedule.everyMinutesPlaceholder' : 'cron.schedule.everyHoursPlaceholder') ?? undefined}
-              className="w-16 shrink-0 rounded-md border border-border bg-card px-2 py-1.5 text-sm text-text outline-none focus:border-accent"
+              placeholder={
+                t(
+                  schedule.intervalUnit === 'minutes'
+                    ? 'cron.schedule.everyMinutesPlaceholder'
+                    : 'cron.schedule.everyHoursPlaceholder',
+                ) ?? undefined
+              }
+              className="w-16 shrink-0 rounded-md border-input bg-card px-2 py-1.5 text-sm text-text outline-none"
             />
-            <div className="inline-flex w-fit shrink-0 rounded-md bg-bg-muted p-0.5" data-testid="cron-schedule-interval-unit-tabs">
+            <div
+              className="inline-flex w-fit shrink-0 rounded-md bg-bg-muted p-0.5"
+              data-testid="cron-schedule-interval-unit-tabs"
+            >
               {(['hours', 'minutes'] as const).map((unit) => {
                 const active = (schedule.intervalUnit ?? 'hours') === unit;
                 return (
@@ -474,7 +537,9 @@ export default function ScheduleEditor({
             const n = schedule.intervalUnit === 'minutes' ? schedule.everyMinutes : schedule.everyHours;
             return n === undefined || n < 1;
           })() && (
-            <p className="text-xs text-danger" data-testid="cron-schedule-interval-hint">{t('cron.schedule.integerOnlyHint')}</p>
+            <p className="text-xs text-danger" data-testid="cron-schedule-interval-hint">
+              {t('cron.schedule.integerOnlyHint')}
+            </p>
           )}
         </div>
       )}
@@ -507,22 +572,28 @@ export default function ScheduleEditor({
               placeholder={t('cron.schedule.cronExprPlaceholder') ?? undefined}
               data-testid="cron-schedule-cron-expr-input"
               className={`w-full rounded-md border bg-card px-3 py-1.5 pr-8 text-sm text-text outline-none mono ${
-                !validation.valid ? 'border-danger' : 'border-border focus:border-accent'
+                !validation.valid ? 'border-danger' : 'border-input'
               }`}
             />
             <span
-              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text cursor-help"
-              title={t('cron.placeholders.cron') ?? undefined}
+              className="absolute right-2 top-1/2 -translate-y-1/2 text-text-muted hover:text-text"
+              data-tooltip={t('cron.placeholders.cron') ?? undefined}
               data-testid="cron-schedule-cron-expr-help"
+              {...cronExprHelpTooltipHandlers}
             >
               <svg width="16" height="16" viewBox="0 0 40 40" xmlns="http://www.w3.org/2000/svg">
                 <circle cx="20" cy="20" r="18" fill="transparent" stroke="currentColor" strokeWidth="2" />
-                <text x="20" y="22" fontSize="24" fill="currentColor" textAnchor="middle" dominantBaseline="middle">?</text>
+                <text x="20" y="22" fontSize="24" fill="currentColor" textAnchor="middle" dominantBaseline="middle">
+                  ?
+                </text>
               </svg>
             </span>
+            {cronExprHelpTooltip}
           </div>
           {!validation.valid && (
-            <p className="mt-1 text-xs text-danger" data-testid="cron-schedule-cron-expr-error">{t(validation.error || 'cron.errors.cronFormat')}</p>
+            <p className="mt-1 text-xs text-danger" data-testid="cron-schedule-cron-expr-error">
+              {t(validation.error || 'cron.errors.cronFormat')}
+            </p>
           )}
         </div>
       )}
@@ -530,15 +601,17 @@ export default function ScheduleEditor({
       {/* 提前唤醒：与 cron_expr 同属执行计划；对话创建任务常带 300s（5 分钟），面板需可改/可清零 */}
       {onWakeOffsetSecondsChange && (
         <div className="mt-3">
-          <div className="mb-1.5 flex items-center gap-1.5 text-sm font-bold text-text-strong">
+          <div className="mb-2 flex items-center gap-1 font-bold form-label">
             <span data-testid="cron-schedule-wake-offset-label">{t('cron.schedule.wakeOffset')}</span>
             <span
-              className="inline-flex h-4 w-4 items-center justify-center rounded-full border border-border text-[10px] font-normal text-text-muted cursor-help"
-              title={t('cron.schedule.wakeOffsetHelp') ?? undefined}
+              className="inline-flex h-4 w-4 items-center justify-center align-middle rounded-full border border-border text-[10px] font-normal text-text-muted"
+              data-tooltip={t('cron.schedule.wakeOffsetHelp') ?? undefined}
               data-testid="cron-schedule-wake-offset-help"
+              {...wakeOffsetHelpTooltipHandlers}
             >
               ?
             </span>
+            {wakeOffsetHelpTooltip}
           </div>
           <div className="flex flex-nowrap items-center gap-2">
             <input
@@ -554,9 +627,11 @@ export default function ScheduleEditor({
               }}
               placeholder="0"
               data-testid="cron-schedule-wake-offset-input"
-              className="w-28 shrink-0 rounded-md border border-border bg-card px-3 py-1.5 text-sm text-text outline-none focus:border-accent disabled:cursor-not-allowed disabled:opacity-50"
+              className="w-28 shrink-0 rounded-md border-input bg-card px-3 py-1.5 text-sm text-text outline-none disabled:cursor-not-allowed disabled:opacity-50"
             />
-            <span className="shrink-0 text-sm text-text-muted" data-testid="cron-schedule-wake-offset-unit-label">{t('cron.schedule.wakeOffsetUnit')}</span>
+            <span className="shrink-0 text-sm text-text-muted" data-testid="cron-schedule-wake-offset-unit-label">
+              {t('cron.schedule.wakeOffsetUnit')}
+            </span>
           </div>
         </div>
       )}

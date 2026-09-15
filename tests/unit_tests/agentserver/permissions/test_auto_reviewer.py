@@ -395,6 +395,14 @@ def test_reviewer_path_targets_use_only_core_extracted_accesses(
             "operation": expected_operation,
             "scope": "workspace",
             "target": expected_target,
+            "location_status": "complete",
+            "location": {
+                "base": "workspace",
+                "relative_path": (
+                    "reports/quarterly.pdf" if tool_name == "read_file"
+                    else "outputs/result.xlsx"
+                ),
+            },
         }
     ]
     serialized = json.dumps(request, ensure_ascii=False)
@@ -431,6 +439,7 @@ def test_reviewer_path_targets_redact_sensitive_workspace_names(
             "operation": "read",
             "scope": "workspace",
             "target": "[redacted_target]",
+            "location_status": "redacted",
         }
     ]
     serialized = json.dumps(request, ensure_ascii=False)
@@ -461,6 +470,7 @@ def test_reviewer_path_targets_redact_system_path_and_keep_scope_neutral(
             "operation": "read",
             "scope": "nonworkspace_unclassified",
             "target": "[redacted_target]",
+            "location_status": "redacted",
         }
     ]
     serialized = json.dumps(request, ensure_ascii=False)
@@ -505,7 +515,8 @@ def test_engine_restriction_precedes_platform_scope(
     ).to_json_dict()
 
     assert request["review_evidence"]["path_targets"] == [
-        {"operation": "read", "scope": expected_scope, "target": "[redacted_target]"}
+        {"operation": "read", "scope": expected_scope, "target": "[redacted_target]",
+         "location_status": "redacted"}
     ]
     assert str(platform) not in json.dumps(request, ensure_ascii=False)
 
@@ -533,7 +544,8 @@ def test_reviewer_never_resolves_relative_access_against_process_cwd(
     ).to_json_dict()
 
     assert request["review_evidence"]["path_targets"] == [
-        {"operation": "read", "scope": "unknown", "target": "SKILL.md"}
+        {"operation": "read", "scope": "unknown", "target": "SKILL.md",
+         "location_status": "unavailable"}
     ]
 
 

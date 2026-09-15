@@ -3,29 +3,8 @@ from __future__ import annotations
 import pytest
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
-    AgentOwnerBinding,
     ToolInvocationKeyV1,
 )
-
-
-def test_owner_bindings_normalize_trusted_fields() -> None:
-    assert AgentOwnerBinding(" agent.plan ", " default ") == AgentOwnerBinding(
-        "agent.plan", "default"
-    )
-
-
-def test_owner_bindings_reject_missing_identity() -> None:
-    with pytest.raises(ValueError):
-        AgentOwnerBinding(runtime_mode="", agent_id="agent")
-
-
-@pytest.mark.parametrize(
-    "owner",
-    [lambda: AgentOwnerBinding("agent", "id", kind="team_agent")],
-)
-def test_owner_bindings_reject_discriminator_override(owner: object) -> None:
-    with pytest.raises(ValueError):
-        owner()
 
 
 def test_wire_key_round_trip_is_exact_and_normalized() -> None:

@@ -37,6 +37,9 @@ const FETCH_REASON_KEYS: Record<string, string> = {
   'no remote models endpoint': 'noEndpoint',
   'api_key required for fetch': 'apiKeyRequired',
   'remote fetch failed or empty': 'remoteFailed',
+  'remote returned HTTP 401': 'remoteAuthFailed',
+  'remote returned HTTP 403': 'remoteAuthFailed',
+  'remote returned HTTP 429': 'remoteRateLimited',
 };
 
 function getPresetStatusKey(
@@ -259,8 +262,11 @@ export function ModelDialog({
       }
     } catch (error) {
       if (currentRequestId === validationRequestId.current) {
+        const detail = error instanceof Error ? error.message.trim() : '';
         setValidationFailure({
-          error: error instanceof Error ? error.message : t('settingsPanel.models.validationFailed'),
+          error: detail
+            ? t('settingsPanel.models.validationFailedWithDetail', { detail })
+            : t('settingsPanel.models.validationFailed'),
           snapshot,
         });
       }
@@ -302,9 +308,14 @@ export function ModelDialog({
         updateModelOptions(nextOptions);
         fetchedModelLists.current.add(getModelFetchKey(currentPreset, currentValues.api_key));
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
-      } else if (result.source === 'preset' && result.reason && FETCH_REASON_KEYS[result.reason]) {
+      } else if (result.source === 'preset' && result.reason) {
         updateModelOptions(nextOptions);
-        setFetchStatus(t(`settingsPanel.models.fetchReasons.${FETCH_REASON_KEYS[result.reason]}`));
+        const reasonKey = FETCH_REASON_KEYS[result.reason];
+        setFetchStatus(
+          reasonKey
+            ? t(`settingsPanel.models.fetchReasons.${reasonKey}`)
+            : result.reason,
+        );
       } else {
         throw new Error(t('settingsPanel.models.fetchModelsUnrecognizedResult'));
       }

@@ -582,15 +582,30 @@ class HeartbeatJobStore:
                     run_state=new_rs,
                     updated_at=float(now),
                 )
+            if job.status == STATUS_RUNNING:
+                resume_next = job.next_run_at
+                resume_enabled = job.enabled
+            # A due tick can consume the once slot during a manual run. Keep
+            # that decision instead of restoring scheduled with no next run.
+            # A non-null due time is still pending, even if it is in the past.
+            if (
+                job.schedule.type == SCHEDULE_ONCE
+                and resume_status == STATUS_SCHEDULED
+                and resume_next is None
+            ):
+                resume_status = STATUS_EXPIRED
+                resume_enabled = False
+                new_rs = replace(
+                    new_rs,
+                    queued_run_id=None,
+                    queued_trigger=None,
+                    queued_reschedule=False,
+                )
             return replace(
                 job,
                 status=resume_status,
-                enabled=bool(job.enabled if job.status == STATUS_RUNNING else resume_enabled),
-                next_run_at=(
-                    job.next_run_at
-                    if job.status == STATUS_RUNNING
-                    else resume_next
-                ),
+                enabled=bool(resume_enabled),
+                next_run_at=resume_next,
                 last_run_at=float(now),
                 run_count=run_count,
                 run_state=new_rs,
@@ -963,7 +978,15 @@ class HeartbeatJobStore:
                     raise ValueError("enabled must be boolean")
                 updated = replace(updated, enabled=enabled_val)
                 if not enabled_val:
-                    updated = replace(updated, status=STATUS_DISABLED, next_run_at=None)
+                    # A stale UI may send its pause toggle after the scheduler
+                    # has already completed/expired the job.  Disabling an
+                    # already terminal job is a no-op for lifecycle status:
+                    # otherwise the late request rewrites "completed" into
+                    # "disabled" (displayed as "paused").
+                    if existing.status not in HEARTBEAT_TERMINAL_STATUSES:
+                        updated = replace(
+                            updated, status=STATUS_DISABLED, next_run_at=None
+                        )
                 elif existing.status in HEARTBEAT_TERMINAL_STATUSES:
                     next_at = patch.get("next_run_at")
                     if next_at is None:

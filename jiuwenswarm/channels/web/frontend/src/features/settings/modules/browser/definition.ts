@@ -12,16 +12,6 @@ export const browserModule: SettingsModuleDefinition = {
       items: [
         { id: 'browser-path', component: 'input', key: 'chrome_path' },
         {
-          id: 'browser-type',
-          component: 'select',
-          key: 'browser_type',
-          options: [
-            { value: 'auto', labelKey: 'browser.browserTypeAuto' },
-            { value: 'chrome', labelKey: 'browser.browserTypeChrome' },
-            { value: 'msedge', labelKey: 'browser.browserTypeEdge' },
-          ],
-        },
-        {
           id: 'browser-run-mode',
           component: 'select',
           key: 'headless',

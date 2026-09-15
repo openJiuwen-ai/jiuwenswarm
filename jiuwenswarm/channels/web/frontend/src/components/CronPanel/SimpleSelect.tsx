@@ -44,10 +44,10 @@ export default function SimpleSelect({ value, onChange, options, placeholder = '
         disabled={disabled}
         onClick={() => setOpen((v) => !v)}
         data-testid="cron-simple-select-trigger"
-        className="flex w-full items-center justify-between rounded-md border border-border bg-card px-3 py-1.5 text-sm outline-none hover:border-border-strong disabled:cursor-not-allowed disabled:opacity-50 disabled:hover:border-border"
+        className="flex w-full items-center justify-between rounded-md border-input bg-card px-3 py-1.5 text-sm outline-none disabled:cursor-not-allowed disabled:opacity-50"
       >
         <span className={selected && !isEmptySelection ? 'text-text' : 'text-text-muted'}>{selected ? selected.label : placeholder}</span>
-        <ChevronDown size={14} className={`text-text-muted transition-transform ${open ? 'rotate-180' : ''}`} />
+        <ChevronDown size={14} className={`text-text transition-transform ${open ? 'rotate-180' : ''}`} />
       </button>
       {open && !disabled && (
         <div

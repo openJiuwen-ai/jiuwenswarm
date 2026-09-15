@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import re
 from collections.abc import Mapping, Sequence
+from dataclasses import replace
+from types import MappingProxyType
 from typing import Any
 
 from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
@@ -396,6 +398,24 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
     return True
 
 
+def _internal_network_scope(facts: ToolDecisionFacts) -> Any:
+    """Exclude only SDK-owned opaque subagent message fields from URI checks."""
+    opaque_field = {
+        "subagent_spawn": "task_description",
+        "subagent_send_input": "query",
+    }.get(facts.tool_name)
+    if (
+        facts.capability.operation_family != "subagent_runtime_control"
+        or opaque_field is None
+    ):
+        return inspect_network_scope(facts)
+    checked_args = dict(facts.untrusted_args)
+    checked_args.pop(opaque_field, None)
+    return inspect_network_scope(
+        replace(facts, untrusted_args=MappingProxyType(checked_args))
+    )
+
+
 def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
     """Return the closed low-risk path-read route before base ASK."""
     if deterministic_guard_route(facts) is not None:
@@ -412,13 +432,22 @@ def terminal_low_risk_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
     return None
 
 
-def terminal_internal_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
+def terminal_internal_route(
+    facts: ToolDecisionFacts,
+    *,
+    subagent_runtime_control_verified: bool = False,
+) -> DecisionRoute | None:
     """Return the allow route for closed canonical Host actions."""
-    network = inspect_network_scope(facts)
+    network = _internal_network_scope(facts)
     if (
         facts.capability.facts_source != "host_static"
         or facts.capability.alias_conflict
         or not facts.arguments_valid_object
+    ):
+        return None
+    if (
+        facts.capability.operation_family == "subagent_runtime_control"
+        and not subagent_runtime_control_verified
     ):
         return None
     if (
@@ -438,6 +467,7 @@ def terminal_internal_route(facts: ToolDecisionFacts) -> DecisionRoute | None:
         "memory_search": frozenset(),
         "session_status": frozenset(),
         "skill_read": frozenset(),
+        "subagent_runtime_control": frozenset({"delegation"}),
         "task_state": frozenset(),
     }
     expected_effects = allowed_effects.get(facts.capability.operation_family)

@@ -67,7 +67,7 @@ def _write_skill(skills_root: Path, name: str, description: str) -> Path:
 
 
 @pytest.fixture
-async def swarm_with_fake_adapter(monkeypatch):
+def swarm_with_fake_adapter(monkeypatch):
     """Build a JiuWenSwarm with a fake adapter and a stubbed skill_manager."""
     swarm = JiuWenSwarm.__new__(JiuWenSwarm)
     swarm._adapter = _FakeAdapter()

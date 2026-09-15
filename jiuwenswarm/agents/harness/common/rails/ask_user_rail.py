@@ -28,6 +28,10 @@ from openjiuwen.core.foundation.llm.schema.tool_call import ToolCall
 from openjiuwen.core.foundation.tool import Tool
 from openjiuwen.core.foundation.tool.base import ToolCard
 from openjiuwen.core.single_agent.interrupt import InterruptRequest
+from openjiuwen.core.single_agent.interrupt.state import (
+    INTERRUPTION_KEY,
+    ToolInterruptionState,
+)
 from openjiuwen.core.single_agent.rail import AgentCallbackContext
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails.interrupt.ask_user_rail import (
@@ -38,9 +42,33 @@ from openjiuwen.harness.rails.interrupt.interrupt_base import (
     InterruptDecision,
 )
 
+from jiuwenswarm.agents.harness.common.rails.ask_user_contract import (
+    MAX_STRUCTURED_QUESTIONS,
+)
+
 logger = logging.getLogger(__name__)
 
-MAX_STRUCTURED_QUESTIONS = 4
+
+def _is_saved_pending_tool_call(
+    ctx: AgentCallbackContext,
+    tool_call: Optional[ToolCall],
+) -> bool:
+    """Use Core's persisted interruption state to identify sparse replay."""
+    session = getattr(ctx, "session", None)
+    get_state = getattr(session, "get_state", None)
+    if tool_call is None or not callable(get_state):
+        return False
+    state = get_state(INTERRUPTION_KEY)
+    if not isinstance(state, ToolInterruptionState):
+        return False
+    call_id = str(tool_call.id or "")
+    return bool(
+        call_id
+        and any(
+            call_id in entry.interrupt_requests
+            for entry in state.interrupted_tools.values()
+        )
+    )
 
 # ---------------------------------------------------------------------------
 # Extended input schema
@@ -59,10 +87,16 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
             "description": "A short label displayed as a chip/tag.",
         },
         "options": {
-            "type": "array",
             "description": "Available choices for this question (2-4 items).",
-            "maxItems": 4,
-            "anyOf": [{"maxItems": 0}, {"minItems": 2}],
+            # Moonshot/Kimi 的 flavored JSON Schema 校验器要求：parent schema 里
+            # 不得同时存在 type 与 anyOf，type 必须写进 anyOf 的每个分支
+            # （报错 "type should be defined in anyOf items instead of the parent
+            # schema"）。语义不变：数组元素由 items 约束（object + required label），
+            # 数量由 anyOf 约束（0 个，或 2-4 个）。
+            "anyOf": [
+                {"type": "array", "maxItems": 0},
+                {"type": "array", "minItems": 2, "maxItems": 4},
+            ],
             "items": {
                 "type": "object",
                 "properties": {
@@ -196,9 +230,7 @@ class StructuredAskUserTool(Tool):
 
     def __init__(self, language: str = "cn", agent_id: Optional[str] = None):
         input_params = (
-            EXTENDED_INPUT_PARAMS_EN
-            if language == "en"
-            else EXTENDED_INPUT_PARAMS_CN
+            EXTENDED_INPUT_PARAMS_EN if language == "en" else EXTENDED_INPUT_PARAMS_CN
         )
         description = (
             _EXTENDED_DESCRIPTION_EN if language == "en" else _EXTENDED_DESCRIPTION_CN
@@ -242,10 +274,19 @@ class StructuredAskUserRail(AskUserRail):
         self,
         tool_names: Optional[Iterable[str]] = None,
         language: Optional[str] = None,
+        *,
+        strict_continuation_contract: bool = False,
     ):
         super().__init__(tool_names=tool_names)
         self._structured_tools: list[StructuredAskUserTool] = []
         self._language = language
+        self.set_strict_continuation_contract(strict_continuation_contract)
+
+    def set_strict_continuation_contract(self, enabled: bool) -> None:
+        """Enable the stricter Smart Approval continuation input contract."""
+        if not isinstance(enabled, bool):
+            raise TypeError("strict continuation contract flag must be bool")
+        self._strict_continuation_contract = enabled
 
     def init(self, agent):
         """Register the extended ask_user tool with structured questions schema."""
@@ -305,6 +346,11 @@ class StructuredAskUserRail(AskUserRail):
         place of an answer. Quoting the shape to send is what breaks that cycle,
         so a rejection added later should quote one too.
         """
+        strict_initial_request = (
+            self._strict_continuation_contract
+            and user_input is None
+            and not _is_saved_pending_tool_call(ctx, tool_call)
+        )
         args = self._parse_tool_args(tool_call)
         raw_questions = args.get("questions")
         if "questions" in args and not isinstance(raw_questions, list):
@@ -376,13 +422,11 @@ class StructuredAskUserRail(AskUserRail):
                         "words instead, omit options entirely."
                     )
                 )
+            canonical_labels: set[str] = set()
             for option_index, option in enumerate(options):
                 label = option.get("label") if isinstance(option, Mapping) else None
                 if not isinstance(label, str) or not label.strip():
-                    path = (
-                        f"questions[{question_index}]."
-                        f"options[{option_index}].label"
-                    )
+                    path = f"questions[{question_index}].options[{option_index}].label"
                     return self.reject(
                         tool_result=(
                             f"[INVALID_ARGUMENT] {path} is required "
@@ -391,6 +435,27 @@ class StructuredAskUserRail(AskUserRail):
                             '{"label": "Apply update"}.'
                         )
                     )
+                if strict_initial_request:
+                    canonical_label = label.strip()
+                    description = option.get("description", "")
+                    preview = option.get("preview", "")
+                    if not isinstance(description, str) or not isinstance(preview, str):
+                        return self.reject(
+                            tool_result=(
+                                f"[INVALID_ARGUMENT] questions[{question_index}]."
+                                f"options[{option_index}] description and preview must "
+                                "be strings when provided."
+                            )
+                        )
+                    if canonical_label == "Other" or canonical_label in canonical_labels:
+                        return self.reject(
+                            tool_result=(
+                                f"[INVALID_ARGUMENT] questions[{question_index}].options "
+                                "must use unique labels and must not use the reserved "
+                                "label 'Other'."
+                            )
+                        )
+                    canonical_labels.add(canonical_label)
             if options and not 2 <= len(options) <= 4:
                 return self.reject(
                     tool_result=(
@@ -443,9 +508,17 @@ class StructuredAskUserRail(AskUserRail):
                 answer_parts = []
                 for q_text, selected in payload.answers.items():
                     if q_text == "__free_text__":
-                        answer_parts.append(selected if isinstance(selected, str) else ", ".join(selected))
+                        answer_parts.append(
+                            selected
+                            if isinstance(selected, str)
+                            else ", ".join(selected)
+                        )
                     else:
-                        value_text = selected if isinstance(selected, str) else ", ".join(selected)
+                        value_text = (
+                            selected
+                            if isinstance(selected, str)
+                            else ", ".join(selected)
+                        )
                         answer_parts.append(f"{q_text}: {value_text}")
                 answer_text = "\n".join(answer_parts) if answer_parts else ""
                 if not answer_text.strip():
@@ -492,9 +565,7 @@ class StructuredAskUserRail(AskUserRail):
         request = super()._build_ask_request(tool_call)
         return request
 
-    def extract_questions(
-        self, tool_call: Optional[ToolCall]
-    ) -> Optional[list[dict]]:
+    def extract_questions(self, tool_call: Optional[ToolCall]) -> Optional[list[dict]]:
         """Extract questions data from tool call arguments."""
         if tool_call is None:
             return None

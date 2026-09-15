@@ -14,7 +14,7 @@ from jiuwenswarm.common.todo_snapshot import (
 )
 
 
-def test_format_todos_for_frontend_keeps_completed_and_drops_cancelled():
+def test_format_todos_for_frontend_keeps_completed_and_cancelled():
     items = [
         SimpleNamespace(
             id="a",
@@ -49,6 +49,12 @@ def test_format_todos_for_frontend_keeps_completed_and_drops_cancelled():
             "activeForm": "finishing",
             "status": "completed",
         },
+        {
+            "id": "c",
+            "content": "cancelled task",
+            "activeForm": "canceling",
+            "status": "cancelled",
+        },
     ]
 
 
@@ -74,8 +80,27 @@ def test_format_todos_for_frontend_accepts_raw_json_dicts():
             "content": "西湖",
             "activeForm": "规划西湖",
             "status": "in_progress",
-        }
+        },
+        {
+            "id": "day2",
+            "content": "灵隐",
+            "activeForm": "规划灵隐",
+            "status": "cancelled",
+        },
     ]
+
+
+def test_format_todos_for_frontend_drops_deleted():
+    raw = [
+        {
+            "id": "gone",
+            "content": "deleted task",
+            "activeForm": "deleting",
+            "status": "deleted",
+        },
+    ]
+
+    assert format_todos_for_frontend(raw) == []
 
 
 def test_load_todo_snapshot_for_frontend_reads_workspace_file(tmp_path, monkeypatch):

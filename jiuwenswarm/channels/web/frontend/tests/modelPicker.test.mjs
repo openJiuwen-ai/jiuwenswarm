@@ -46,10 +46,9 @@ const resources = Object.fromEntries(
   ]),
 );
 const catalog = [
-  { model_name: 'free-model', alias: 'Free Alias', is_free: true },
   { model_name: 'configured-a', alias: 'Configured A', is_default: true },
   { model_name: 'configured-a', alias: 'Secondary connection', is_default: false },
-  { model_name: 'configured-b', alias: 'Configured B', is_free: false },
+  { model_name: 'configured-b', alias: 'Configured B' },
 ];
 const sessionId = 'shared-model-picker-test';
 const initialForm = {
@@ -129,7 +128,7 @@ function cronDrawer(overrides = {}) {
   });
 }
 
-test('chat and scheduled tasks show identical grouped options, excluding secondary connections', async () => {
+test('chat and scheduled tasks show configured models without secondary connections', async () => {
   await withFixture(async ({ mount, click, byId }) => {
     await mount(createElement(ChatModelSelector), cronDrawer());
     for (const prefix of ['chat-panel-model-selector', 'cron-model-picker']) {
@@ -137,11 +136,11 @@ test('chat and scheduled tasks show identical grouped options, excluding seconda
       const menu = byId(`${prefix}-menu`);
       assert.deepEqual(
         [...menu.querySelectorAll('.model-select__section-header')].map((node) => node.textContent),
-        ['Configured Models', 'Free Models'],
+        ['Configured Models'],
       );
       assert.deepEqual(
         [...menu.querySelectorAll('[role="menuitemradio"]')].map((node) => node.textContent),
-        ['Configured A', 'Configured B', 'Free Alias'],
+        ['Configured A', 'Configured B'],
       );
       assert.equal(menu.querySelector('[aria-checked="true"]').dataset.variant, 'configured-a');
       await click(document.body);
@@ -161,13 +160,13 @@ test('selecting a scheduled-task model submits its ID and leaves the active chat
       }),
     );
     await click(byId('cron-model-picker-trigger'));
-    await click(byId('cron-model-picker-menu').querySelector('[data-variant="free-model"]'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-model-picker-menu'), null);
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'Free Alias');
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
     assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured A');
     assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-a');
     await click(byId('cron-drawer-submit-btn'));
-    assert.deepEqual(submitted, { ...initialForm, modelName: 'free-model' });
+    assert.deepEqual(submitted, { ...initialForm, modelName: 'configured-b' });
   });
 });
 
@@ -183,9 +182,9 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
       }),
     );
     await click(byId('chat-panel-model-selector-trigger'));
-    await click(byId('chat-panel-model-selector-menu').querySelector('[data-variant="free-model"]'));
-    assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'free-model');
-    assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Free Alias');
+    await click(byId('chat-panel-model-selector-menu').querySelector('[data-variant="configured-b"]'));
+    assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-b');
+    assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured B');
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-drawer-submit-btn'));
     assert.deepEqual(submitted, initialForm);
@@ -194,12 +193,12 @@ test('selecting a chat model preserves the scheduled-task draft and canonical re
 
 test('a historical chat alias still resolves to the selected model after extraction', async () => {
   await withFixture(async ({ mount, click, byId }) => {
-    useSessionStore.getState().setSelectedModelName(sessionId, 'Free Alias');
+    useSessionStore.getState().setSelectedModelName(sessionId, 'Configured B');
     await mount(createElement(ChatModelSelector));
-    assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Free Alias');
+    assert.equal(byId('chat-panel-model-selector-trigger').textContent, 'Configured B');
     await click(byId('chat-panel-model-selector-trigger'));
-    assert.equal(document.querySelector('[aria-checked="true"]').dataset.variant, 'free-model');
-    assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'free-model');
+    assert.equal(document.querySelector('[aria-checked="true"]').dataset.variant, 'configured-b');
+    assert.equal(useSessionStore.getState().getEffectiveModelName(sessionId), 'configured-b');
   });
 });
 
@@ -238,9 +237,9 @@ test('opening a stored team task from the list preserves its mode and model', as
     assert.equal(byId('cron-mode-trigger').dataset.variant, 'team');
     assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured A');
     await click(byId('cron-model-picker-trigger'));
-    await click(byId('cron-model-picker-menu').querySelector('[data-variant="free-model"]'));
+    await click(byId('cron-model-picker-menu').querySelector('[data-variant="configured-b"]'));
     assert.equal(byId('cron-mode-trigger').dataset.variant, 'team');
-    assert.equal(byId('cron-model-picker-trigger').textContent, 'Free Alias');
+    assert.equal(byId('cron-model-picker-trigger').textContent, 'Configured B');
   });
 });
 
@@ -308,16 +307,13 @@ for (const language of ['zh', 'en']) {
       await click(byId('model-picker-trigger'));
       assert.equal(byId('model-picker-empty').textContent, resources[language].translation.chat.modelSelector.empty);
       assert.equal(document.querySelectorAll('.model-select__section-header').length, 0);
-      for (const model of [catalog[0], catalog[1]]) {
-        await act(async () => useSessionStore.getState().setAvailableModels([model]));
-        const headings = [...document.querySelectorAll('.model-select__section-header')];
-        assert.equal(headings.length, 1);
-        assert.equal(
-          headings[0].textContent,
-          resources[language].translation.chat.modelSelector[model.is_free ? 'free' : 'configured'],
-        );
-        assert.equal(byId('model-picker-empty'), null);
-      }
+      assert.deepEqual(useSessionStore.getState().availableModels, []);
+      assert.equal(useSessionStore.getState().defaultModelName, null);
+      await act(async () => useSessionStore.getState().setAvailableModels([catalog[0]]));
+      const headings = [...document.querySelectorAll('.model-select__section-header')];
+      assert.equal(headings.length, 1);
+      assert.equal(headings[0].textContent, resources[language].translation.chat.modelSelector.configured);
+      assert.equal(byId('model-picker-empty'), null);
     }, language);
   });
 }

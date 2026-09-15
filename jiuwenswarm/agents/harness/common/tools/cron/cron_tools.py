@@ -18,6 +18,7 @@ from jiuwenswarm.runtime.cron.models import (
     CronTargetChannel,
     cron_job_modes_for_tools,
     is_valid_target_channel_id,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_target_channel_id,
     validate_cron_model,
@@ -548,6 +549,13 @@ class CronTools:
         model_name_raw = normalized.get("model_name")
         if model_name_raw is not None and str(model_name_raw).strip():
             model_kw["model_name"] = validate_cron_model(model_name_raw)
+        # mcp：会话级 MCP 选择（backend 层已继承 chat-session 快照或显式传入），
+        # 只做类型规范化（strip/去空/去重），不校验存在性——MCP 断连后 job 应降级运行。
+        mcp_kw: dict[str, Any] = {}
+        if "mcp" in normalized:
+            mcp_val = normalize_cron_job_mcp(normalized.get("mcp"))
+            if mcp_val is not None:
+                mcp_kw["mcp"] = mcp_val
         # project_dir -> project_id follows the same rules as the gateway controller.
         # 用 key presence 区分「未传」和「显式空串」：显式传 "" 归默认项目，
         # 未传时从 route 上下文取 project_dir（设计文档 §5.1）。
@@ -603,6 +611,7 @@ class CronTools:
             **session_kw,
             **mode_kw,
             **model_kw,
+            **mcp_kw,
         )
         sync_payload = job.to_dict()
         sync_payload["project_dir"] = project_dir_val
@@ -631,6 +640,9 @@ class CronTools:
             normalized_patch["mode"] = normalize_cron_job_mode(normalized_patch.get("mode"))
         if "model_name" in normalized_patch:
             normalized_patch["model_name"] = validate_cron_model(normalized_patch.get("model_name"))
+        if "mcp" in normalized_patch:
+            # 显式传 null/[] 归 None（清除选择）；元素不规范的非列表值同样归 None。
+            normalized_patch["mcp"] = normalize_cron_job_mcp(normalized_patch.get("mcp"))
 
         # work_mode / project_id / project_dir 重解析(共享 helper):
         # 与 CronController.update_job 共用同一 ``resolve_cron_job_patch``,
@@ -835,6 +847,9 @@ class CronTools:
         model_name = kwargs.get("model_name")
         if model_name is not None and str(model_name).strip():
             params["model_name"] = model_name
+        mcp = kwargs.get("mcp")
+        if mcp is not None:
+            params["mcp"] = mcp
         if "project_dir" in kwargs and kwargs.get("project_dir") is not None:
             params["project_dir"] = str(kwargs.get("project_dir") or "").strip()
         if "project_id" in kwargs and kwargs.get("project_id") is not None:
@@ -900,6 +915,15 @@ class CronTools:
                             "type": "string",
                             "description": "Model name or alias to use. Omit for default.",
                         },
+                        "mcp": {
+                            "type": "array",
+                            "items": {"type": "string"},
+                            "description": (
+                                "Session-scoped MCP server names to enable when "
+                                "the job runs. Omit to inherit the creating "
+                                "session's MCP selection; pass [] for none."
+                            ),
+                        },
                         "project_dir": {
                             "type": "string",
                             "description": "Absolute path to the project directory. \
@@ -932,7 +956,7 @@ class CronTools:
                 description=(
                     "Update an existing cron job. Pass job_id and a patch dict with fields to update "
                     "(name, enabled, cron_expr, timezone, description, wake_offset_seconds, "
-                    "targets, mode, model_name, project_dir, project_id)."
+                    "targets, mode, model_name, mcp, project_dir, project_id)."
                 ),
                 input_params={
                     "type": "object",
@@ -943,7 +967,7 @@ class CronTools:
                             "description": (
                                 "Fields to update (name, enabled, cron_expr, timezone, "
                                 "description, wake_offset_seconds, targets, mode, model_name, "
-                                "project_dir, project_id). work_mode is not accepted as an "
+                                "mcp, project_dir, project_id). work_mode is not accepted as an "
                                 "independent patch field; to change work_mode, patch project_id "
                                 "or project_dir + work_mode (work_mode only disambiguates the "
                                 "target project when resolving project_dir)."
@@ -971,6 +995,14 @@ class CronTools:
                                 "model_name": {
                                     "type": "string",
                                     "description": "Model name or alias. Set to empty string to reset to default.",
+                                },
+                                "mcp": {
+                                    "type": "array",
+                                    "items": {"type": "string"},
+                                    "description": (
+                                        "Session-scoped MCP server names to enable when the "
+                                        "job runs. Set to [] to clear (use default set only)."
+                                    ),
                                 },
                                 "project_dir": {
                                     "type": "string",

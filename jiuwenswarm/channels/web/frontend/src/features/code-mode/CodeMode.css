@@ -658,6 +658,14 @@ button.code-environment__row:disabled {
   font-size: 11px;
 }
 
+.code-environment__notice {
+  padding: 6px 0;
+  color: var(--color-feedback-warning);
+  font-size: 12px;
+  line-height: 1.5;
+  word-break: break-all;
+}
+
 .code-review-backdrop {
   position: fixed;
   z-index: 280;

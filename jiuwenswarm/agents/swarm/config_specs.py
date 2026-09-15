@@ -48,6 +48,7 @@ from jiuwenswarm.common.config import (
     get_skill_evolution_enabled,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
+    KVCacheAffinityConfig,
     build_kv_cache_affinity_config,
     get_default_model_client_config,
 )
@@ -102,6 +103,7 @@ _COMMON_RAIL_NAMES: tuple[str, ...] = (
     registry.MULTIMODAL_IMAGE,
     registry.TEAM_WORKSPACE_REPORT_PATH,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.PLUGIN_RAILS,
     registry.SKILL_RETRIEVAL_PROMPT,
     registry.SYMPHONY_ORCHESTRATION_PROMPT,
@@ -126,6 +128,8 @@ _COMMON_TOOL_NAMES: tuple[str, ...] = (
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
+    registry.VIDEO_GEN,
+    registry.VISUAL_GEN,
     registry.XIAOYI_PHONE,
     registry.CRON_TOOLS,
     registry.SEND_FILE,
@@ -151,6 +155,7 @@ _CODE_RAIL_NAMES: tuple[str, ...] = (
     registry.CODE_AGENT_MODE,
     registry.STRUCTURED_ASK_USER,
     registry.CONTEXT_PROCESSOR,
+    registry.PERSONAL_CONTEXT,
     registry.CODE_TASK_PLANNING,
     registry.CODE_AGENT_RAIL,
     registry.USER_HOOKS,
@@ -180,6 +185,8 @@ _CODE_TOOL_NAMES: tuple[str, ...] = (
     registry.USER_TODOS,
     registry.VIDEO,
     registry.IMAGE_GEN,
+    registry.VIDEO_GEN,
+    registry.VISUAL_GEN,
     registry.XIAOYI_PHONE,
     registry.CODE_EXTRA_TOOLS,
     registry.CRON_TOOLS,

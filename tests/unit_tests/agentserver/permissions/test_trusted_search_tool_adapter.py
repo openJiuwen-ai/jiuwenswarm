@@ -87,7 +87,13 @@ def test_mcp_search_result_limit_has_no_permission_side_duplicate() -> None:
     assert "max(1, min(int(max_results)," not in production
 
 
-def test_mcp_toolkit_exports_the_unique_adapter_tool_objects() -> None:
+def test_mcp_toolkit_exports_the_unique_adapter_tool_objects(monkeypatch) -> None:
+    for provider in ("bocha", "perplexity", "serper", "jina"):
+        monkeypatch.setenv(f"{provider.upper()}_API_KEY", "")
+    monkeypatch.setenv("BOCHA_API_KEY", "test-key")
+    monkeypatch.setattr(mcp_paid_search.card, "input_params", mcp_paid_search.card.input_params.copy())
+    monkeypatch.setattr(mcp_paid_search.card, "description", mcp_paid_search.card.description)
+    trusted_search_tool_adapter.refresh_paid_search_metadata()
     assert mcp_free_search is trusted_search_tool_adapter.mcp_free_search
     assert mcp_paid_search is trusted_search_tool_adapter.mcp_paid_search
     assert mcp_free_search.card.name == "mcp_free_search"
@@ -109,8 +115,9 @@ def test_mcp_toolkit_exports_the_unique_adapter_tool_objects() -> None:
         "query": {"type": "string", "description": "query"},
         "provider": {
             "type": "string",
-            "description": "provider",
+            "description": "Available providers: auto|bocha. Prefer auto; it selects only configured providers.",
             "default": "auto",
+            "enum": ["auto", "bocha"],
         },
         "max_results": {
             "type": "integer",
@@ -248,4 +255,5 @@ def test_adapter_owns_the_only_decorated_mcp_search_functions() -> None:
         )
     }
 
-    assert decorated == {"mcp_free_search", "mcp_paid_search"}
+    assert decorated == {"mcp_free_search"}
+    assert isinstance(mcp_paid_search, trusted_search_tool_adapter._ConfiguredPaidSearchTool)

@@ -531,6 +531,15 @@ def _jina_search_sync(query: str, timeout_seconds: int) -> dict[str, Any]:
     return {"provider": "jina", "answer": (answer or "").strip(), "urls": urls}
 
 
+def configured_paid_search_providers() -> list[str]:
+    """Return providers with nonblank keys in the MCP fallback order."""
+    return [
+        provider
+        for provider in ("bocha", "perplexity", "serper", "jina")
+        if str(os.environ.get(f"{provider.upper()}_API_KEY", "") or "").strip()
+    ]
+
+
 async def run_paid_search_structured(
     query: str,
     provider: str = "auto",
@@ -553,32 +562,21 @@ async def run_paid_search_structured(
             query=query, max_results=max_results, timeout_seconds=timeout_seconds
         ),
     }
-    
-    available_providers = []
-    if os.environ.get("BOCHA_API_KEY"):
-        available_providers.append("bocha")
-    if os.environ.get("PERPLEXITY_API_KEY"):
-        available_providers.append("perplexity")
-    if os.environ.get("SERPER_API_KEY"):
-        available_providers.append("serper")
-    if os.environ.get("JINA_API_KEY"):
-        available_providers.append("jina")
-    
+    available_providers = configured_paid_search_providers()
+
     if not available_providers:
         raise RuntimeError("no paid search API keys configured.")
-    
-    if provider != "auto":
-        if provider not in available_providers:
-            raise RuntimeError(
-                f"{provider} API key not configured. "
-                f"Available providers: {', '.join(available_providers)}"
-            )
-        order = [provider]
-    else:
-        order = [p for p in ["bocha", "perplexity", "serper", "jina"] if p in available_providers]
+
+    if provider != "auto" and provider not in runners:
+        raise ValueError("provider must be auto or a configured search provider.")
+    # Queued calls can outlive a provider's configuration. Use a configured
+    # fallback without invoking a runner that is guaranteed to lack a key.
+    order = [provider] if provider in available_providers else available_providers
 
     errors: list[str] = []
     for name in order:
+        if name not in configured_paid_search_providers():
+            continue
         runner = runners.get(name)
         if runner is None:
             errors.append(f"{name}: provider runner unavailable")

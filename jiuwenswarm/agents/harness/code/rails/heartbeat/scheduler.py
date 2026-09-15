@@ -706,6 +706,14 @@ class HeartbeatSchedulerService:
         if job is None:
             raise KeyError("job not found")
         run_id = job.run_state.current_run_id
+        if run_id is None and job.status in HEARTBEAT_TERMINAL_STATUSES:
+            return {
+                "job_id": job.id,
+                "cancelled_run_id": None,
+                "cancel_status": "idle",
+                "paused": False,
+                "reason": "job_terminal",
+            }
         now = self._now_fn()
         cancelled_run_id: str | None = None
         cancel_status = "idle"

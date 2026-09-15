@@ -27,6 +27,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from jiuwenswarm.common.utils import get_workspace_dir  # re-export for test patches
+from jiuwenswarm.server.runtime.mcp.package_manifest import resolve_mcp_package
 
 logger = logging.getLogger(__name__)
 
@@ -34,6 +35,10 @@ logger = logging.getLogger(__name__)
 def _packages_dir() -> Path:
     """Marketplace 包目录：<workspace>/mcp/mcp_builtins/."""
     return get_workspace_dir() / "mcp" / "mcp_builtins"
+
+
+def _hub_packages_dir() -> Path:
+    return get_workspace_dir() / "mcp" / "mcp_hub"
 
 
 # Auth processes started in non-blocking mode (authWaitForExit). Keyed by MCP
@@ -199,12 +204,31 @@ def _parse_version(text: str) -> str | None:
     return match.group(1) if match else None
 
 
-def _version_ge(a: str, b: str) -> bool:
+def _version_eq(a: str, b: str) -> bool:
+    """Exact version equality, tolerant of a missing ``packaging``.
+
+    A CLI manifest pins an exact version: its subcommand output (auth/status)
+    is tied to that version, so a newer/older install is not interchangeable.
+    Compare for equality rather than ``>=``.
+    """
     try:
         from packaging.version import parse as _parse
-        return _parse(a) >= _parse(b)
+        return _parse(a) == _parse(b)
     except Exception:  # noqa: BLE001
         return a == b
+
+
+def _pin_init_command(init_cmd: str, min_version: str) -> str:
+    """Fill the ``{version}`` placeholder in *init_cmd* with *min_version*.
+
+    cli.json ``init`` commands pin the exact version via the placeholder
+    (e.g. ``npm install -g @wecom/cli@{version}`` → ``...@0.1.9``) so the
+    install produces the same version the manifest's subcommands were written
+    against. Manifests without the placeholder are returned unchanged.
+    """
+    if not init_cmd or not min_version:
+        return init_cmd
+    return init_cmd.replace("{version}", min_version)
 
 
 _URL_RE = re.compile(r"https?://\S+", re.IGNORECASE)
@@ -293,9 +317,10 @@ def load_cli_manifest(name: str) -> CliManifest | None:
     n = str(name or "").strip()
     if not n:
         return None
-    path = _packages_dir() / n / "cli.json"
-    if not path.is_file():
+    package = resolve_mcp_package(n, _packages_dir(), _hub_packages_dir())
+    if package is None or package.integration_type != "cli" or package.integration_file is None:
         return None
+    path = package.integration_file
     try:
         with path.open("r", encoding="utf-8") as fh:
             data = json.load(fh)
@@ -399,7 +424,10 @@ class CliDriver:
             )
         except Exception:  # noqa: BLE001
             return None
-        keys = required_tokens_from_schema(self.name)
+        try:
+            keys = required_tokens_from_schema(self.name)
+        except Exception:  # noqa: BLE001
+            return None
         if not keys:
             return None
         try:
@@ -421,27 +449,32 @@ class CliDriver:
         version: str | None = None
         version_ok = True
         kind = ""
-        # Version-check first: if the CLI is already installed at a sufficient
-        # version, skip the (potentially slow, network-bound) init/install step
-        # entirely. Only fall back to init when the version check fails or
+        # Pin the install command to the manifest's exact version: the CLI's
+        # subcommand output (auth/status) is tied to that version, so installing
+        # the latest would make statusMatch unreliable. `{version}` is filled
+        # from versionCheck.minVersion; manifests without it are unchanged.
+        init_cmd = _pin_init_command(m.init_cmd, m.min_version)
+        # Version-check first: if the CLI is already installed at the exact
+        # pinned version, skip the (potentially slow, network-bound) init step
+        # entirely. Only fall back to init when the version mismatches or
         # cannot be parsed.
         if m.version_cmd:
             res = self._runner(m.version_cmd)
             version = _parse_version(res.combined_output)
             if m.min_version and version:
-                version_ok = _version_ge(version, m.min_version)
+                version_ok = _version_eq(version, m.min_version)
                 if not version_ok:
-                    logger.warning("[cli_driver] %s version %s < min %s", self.name, version, m.min_version)
+                    logger.warning("[cli_driver] %s version %s != required %s", self.name, version, m.min_version)
             elif m.min_version and not version:
                 version_ok = False
                 err = f"could not parse version from: {res.combined_output}"
             if res.error_kind == ERR_BINARY_NOT_FOUND:
                 kind = ERR_BINARY_NOT_FOUND
         if version_ok and version:
-            # CLI already present and recent enough — skip init.
+            # CLI already present at the pinned version — skip init.
             logger.info("[cli_driver] %s skip init (version %s ok)", self.name, version)
-        elif m.init_cmd:
-            res = self._runner(m.init_cmd)
+        elif init_cmd:
+            res = self._runner(init_cmd)
             if not res.succeeded:
                 err = f"init failed (rc={res.returncode}): {res.combined_output}"
                 logger.warning("[cli_driver] %s init failed: %s", self.name, err)
@@ -452,7 +485,7 @@ class CliDriver:
                 res2 = self._runner(m.version_cmd)
                 version = _parse_version(res2.combined_output)
                 if m.min_version and version:
-                    version_ok = _version_ge(version, m.min_version)
+                    version_ok = _version_eq(version, m.min_version)
                 elif m.min_version:
                     version_ok = False
                     err = (err + "; " if err else "") + f"could not parse version after init: {res2.combined_output}"
@@ -462,7 +495,7 @@ class CliDriver:
             name=self.name, installed=True,
             version=version, min_version=m.min_version,
             version_ok=version_ok, error=err, error_kind=kind,
-            runtime=m.runtime_type, install_cmd=m.init_cmd,
+            runtime=m.runtime_type, install_cmd=init_cmd,
         )
 
     def auth_step(self, index: int = 0) -> AuthStepResult:
