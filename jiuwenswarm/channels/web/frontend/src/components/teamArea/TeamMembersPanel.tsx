@@ -582,7 +582,6 @@ function MemberTaskDetail({
   const teamMemberExecutionEvents = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
   );
-  // @ts-ignore — teamMemberContextCompression 暂未使用
   const teamMemberContextCompression = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMemberContextCompression ?? {},
   );

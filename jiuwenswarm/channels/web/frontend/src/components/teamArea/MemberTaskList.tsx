@@ -2,8 +2,7 @@ import React, { useRef } from 'react';
 import { useTranslation } from 'react-i18next';
 import { StatusIcon, type MemberTask, type TaskStatus } from './shared';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
-import taskExpandIcon from '../../assets/work-mode/task-expand.svg';
-import statusSuccessIcon from '../../assets/work-mode/status-success.svg';
+import TaskExpandIcon from '../../assets/work-mode/task-expand.svg?react';
 
 export type MemberTaskListItem = Pick<MemberTask, 'id' | 'title' | 'detail' | 'status' | 'raw' | 'updatedAt'> & {
   statusHistory?: Array<{ status: string; atMs?: number; source?: string }>;
@@ -48,12 +47,7 @@ export function MemberTaskListBar({
           {completedCount}/{tasks.length}
         </span>
         <span className="text-muted">
-          <img
-            src={taskExpandIcon}
-            alt=""
-            aria-hidden="true"
-            className={`h-4 w-4 shrink-0 ${expanded ? 'rotate-180' : ''}`}
-          />
+          <TaskExpandIcon aria-hidden="true" className={`h-4 w-4 shrink-0 ${expanded ? 'rotate-180' : ''}`} />
         </span>
       </div>
     </button>
@@ -92,8 +86,7 @@ export function MemberTaskListPanel({
 
   return (
     <div
-      className="absolute bottom-full left-0 right-0 z-10 max-h-[258px] overflow-y-auto rounded-md border border-border bg-card p-4"
-      style={{ boxShadow: '0 4px 10px 0 rgba(0, 0, 0, 0.12)' }}
+      className="absolute bottom-full left-0 right-0 z-10 max-h-[258px] overflow-y-auto rounded-md border border-border bg-card p-4 shadow-[var(--effect-shadow-md)]"
       data-testid="team-area-member-detail-task-list-panel"
     >
       <ul className="space-y-1" data-testid="team-area-member-detail-task-list">
@@ -105,7 +98,21 @@ export function MemberTaskListPanel({
             data-variant={task.id}
           >
             {task.status === 'completed' ? (
-              <img src={statusSuccessIcon} className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <svg
+                viewBox="0 0 16 16"
+                fill="none"
+                className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]"
+                aria-hidden="true"
+              >
+                <circle cx="8" cy="8" r="6" stroke="currentColor" strokeWidth="0.981849" />
+                <path
+                  d="M4.86328 7.72751L7.20336 10.1821L11.3517 5.81836"
+                  stroke="currentColor"
+                  strokeWidth="0.981849"
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                />
+              </svg>
             ) : (
               <StatusIcon status={task.status as TaskStatus} />
             )}

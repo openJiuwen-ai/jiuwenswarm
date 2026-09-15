@@ -53,6 +53,8 @@ export interface MemberTask {
   raw?: Record<string, unknown>;
 }
 
+export type ProcessDetailRow = [label: string, value: string];
+
 export interface ProcessItem {
   id: string;
   type: 'execution' | 'message' | 'task';
@@ -65,6 +67,7 @@ export interface ProcessItem {
   execution?: TeamMemberExecutionEvent;
   linkedResult?: TeamMemberExecutionEvent;
   raw?: TeamTaskEvent;
+  detailRows?: ProcessDetailRow[];
 }
 
 interface BaseTeamAreaProps {
@@ -351,7 +354,7 @@ export function StatusIcon({ status }: { status: TaskStatus }) {
   const inProgress = status === 'in_progress';
 
   if (completed) {
-    return <CheckIcon className="h-4 w-4 shrink-0" style={{ color: '#5ba854' }} />;
+    return <CheckIcon className="h-4 w-4 shrink-0 text-[var(--color-team-status-completed)]" />;
   }
 
   return (

@@ -484,7 +484,7 @@ function SubagentOverviewPanel({
 
 function toSubagentExecutionEvent(memberId: string, activity: SubagentActivity): TeamMemberExecutionEvent {
   // SubagentActivityKind 的 'thinking' | 'error' | 'truncated' 在 TeamMemberExecutionEventKind 中
-  // 无对应值；execution.kind 在渲染路径上不被读取（详情类型标签走 ProcessItem.kind，内容走
+  // 无对应值；execution.kind 在渲染路径上不被读取（详情类型标签走 detailRows，内容走
   // tool_name / content），非工具活动回落 'final' 仅用于满足类型，不影响展示。
   const kind: TeamMemberExecutionEvent['kind'] =
     activity.kind === 'tool_call' || activity.kind === 'tool_result' ? activity.kind : 'final';
@@ -541,6 +541,9 @@ function buildSubagentProcessItems(
       subtitle: getSubagentActivityPreview(previewGroup) || undefined,
       status: 'execution',
       ...(activity.kind === 'tool_call' || activity.kind === 'tool_result' ? { kind: activity.kind } : {}),
+      detailRows: linkedResult
+        ? [...buildActivityDetailRows(group, t), [t('subagent.activity.fields.result'), linkedResult.summary || '-']]
+        : buildActivityDetailRows(group, t),
       execution: toSubagentExecutionEvent(memberId, activity),
       ...(linkedResult ? { linkedResult: toSubagentExecutionEvent(memberId, linkedResult) } : {}),
     });
@@ -581,6 +584,7 @@ const SubagentOverviewCard = memo(function SubagentOverviewCard({
       }
       onClick={onClick}
       items={processItems}
+      emptyText={t('subagent.activityEmpty')}
     />
   );
 });

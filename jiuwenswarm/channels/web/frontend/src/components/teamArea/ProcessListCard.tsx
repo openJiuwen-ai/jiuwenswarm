@@ -1,9 +1,8 @@
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
 import { MessageSquare, Wrench } from 'lucide-react';
-import { Chevron, StatusIcon, getTaskStatusLabel, type ProcessItem, type TaskStatus } from './shared';
+import { Chevron, StatusIcon, getTaskStatusLabel, type ProcessDetailRow, type ProcessItem, type TaskStatus } from './shared';
 
-type ProcessDetailRow = [label: string, value: string];
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 function getProcessMessageType(item: ProcessItem, t: Translate): string {
@@ -25,6 +24,9 @@ function getExecutionKindLabel(kind: ProcessItem['kind'], t: Translate): string 
 }
 
 function buildProcessDetailRows(item: ProcessItem, t: Translate): ProcessDetailRow[] {
+  if (item.detailRows) {
+    return item.detailRows;
+  }
   if (item.type === 'execution') {
     const rows: ProcessDetailRow[] = [
       [t('team.process.fields.type'), getExecutionKindLabel(item.kind, t)],
@@ -69,11 +71,13 @@ export function ProcessListCard({
   expandedIds,
   onToggle,
   maxListHeight,
+  emptyText,
 }: {
   items: ProcessItem[];
   expandedIds: Set<string>;
   onToggle: (id: string) => void;
   maxListHeight?: string;
+  emptyText?: string;
 }) {
   const { t } = useTranslation();
 
@@ -85,7 +89,7 @@ export function ProcessListCard({
     >
       {items.length === 0 ? (
         <div className="px-3 py-12 text-center text-sm text-text-muted" data-testid="team-area-process-card-empty">
-          {t('team.noProcessData')}
+          {emptyText ?? t('team.noProcessData')}
         </div>
       ) : (
         <>

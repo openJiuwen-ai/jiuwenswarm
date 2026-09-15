@@ -45,7 +45,7 @@ interface UseAdaptiveTooltipOptions {
  * offsetX: 相对触发元素宽度的百分比偏移（负值向左），0 = 居中，-50 = 左移半个触发元素宽度。
  * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方。
  *
- * 自动隐藏时机：hover/focus 离开、点击任意位置、按下任意键、焦点移到其他元素、
+ * 自动隐藏时机：hover/focus 离开、点击任意位置、焦点移到其他元素、
  * 触发元素被卸载（如弹出菜单关闭）或页面滚动/缩放。
  *
  * 用法：
@@ -147,27 +147,29 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
       setPosition(null);
     };
     const onPointerDown = () => hideTooltip();
-    const onKeyDown = () => hideTooltip();
     const onFocusIn = (event: FocusEvent) => {
       if (event.target !== triggerRef.current) hideTooltip();
     };
     // 触发元素可能在 hover/focus 期间被整体卸载（如弹出菜单关闭），
     // 此时 mouseleave/blur 永远不会触发，state 会残留并在容器重新挂载时复活旧 tooltip。
+    // 仅监听触发元素父节点的 childList，避免 document.body subtree 在流式输出时反复回调。
+    const trigger = triggerRef.current;
+    const parentNode = trigger?.parentNode as Node | null;
     const observer = new MutationObserver(() => {
       if (triggerRef.current && !triggerRef.current.isConnected) hideTooltip();
     });
-    observer.observe(document.body, { childList: true, subtree: true });
+    if (parentNode) {
+      observer.observe(parentNode, { childList: true });
+    }
     window.addEventListener('resize', hideTooltip);
     window.addEventListener('scroll', hideTooltip, true);
     document.addEventListener('pointerdown', onPointerDown, true);
-    document.addEventListener('keydown', onKeyDown, true);
     document.addEventListener('focusin', onFocusIn);
     return () => {
       observer.disconnect();
       window.removeEventListener('resize', hideTooltip);
       window.removeEventListener('scroll', hideTooltip, true);
       document.removeEventListener('pointerdown', onPointerDown, true);
-      document.removeEventListener('keydown', onKeyDown, true);
       document.removeEventListener('focusin', onFocusIn);
     };
   }, [state]);

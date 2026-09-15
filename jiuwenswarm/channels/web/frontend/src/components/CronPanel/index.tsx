@@ -362,15 +362,39 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const [rowMenuDirection, setRowMenuDirection] = useState<'up' | 'down'>('down');
   const rowMenuRef = useRef<HTMLDivElement>(null);
   const rowMenuPortalRef = useRef<HTMLDivElement>(null);
+  // "触发的会话" / "预览"弹层：从"更多"菜单里的按钮打开，菜单关闭后弹层独立存在。
+  // 与"更多"菜单一样 portal 到 body（fixed 定位）：absolute 弹层会被 overflow-x-auto 的
+  // 表格容器裁剪（表格底部一行 + 横向滚动时必现）。锚点复用"更多"按钮的 rect，
+  // 菜单 → 弹层切换时位置不跳变。
+  const [sessionsPopoverJobId, setSessionsPopoverJobId] = useState<string | null>(null);
+  const [sessionsPopoverAnchor, setSessionsPopoverAnchor] = useState<DOMRect | null>(null);
+  const [sessionsPopoverDirection, setSessionsPopoverDirection] = useState<'up' | 'down'>('down');
+  const sessionsPopoverPortalRef = useRef<HTMLDivElement>(null);
+  const [previewPopoverJobId, setPreviewPopoverJobId] = useState<string | null>(null);
+  const [previewPopoverAnchor, setPreviewPopoverAnchor] = useState<DOMRect | null>(null);
+  const [previewPopoverDirection, setPreviewPopoverDirection] = useState<'up' | 'down'>('down');
+  const previewPopoverPortalRef = useRef<HTMLDivElement>(null);
   const closeRowMenu = useCallback(() => {
     setRowMenuJobId(null);
     setRowMenuAnchor(null);
   }, []);
-  // "更多"菜单 portal 到 body（fixed 定位）才能脱离 table 文档流，否则 absolute 弹层的
-  // 溢出会把 overflow-x-auto 的表格容器撑出滚动条/把行撑高。portal 后不在 rowMenuRef
-  // 子树里，不能再用 useClickOutside（会把"点选项"误判成"点外面"，选项 onClick 还没
-  // 触发菜单就卸载）。这里自己挂 pointerdown，同时判定触发器与 portal 菜单两个 ref，
-  // 与 ModeSelector（CronPanel/ModeSelector.tsx）同一套口径。
+  const closeSessionsPopover = useCallback(() => {
+    setSessionsPopoverJobId(null);
+    setSessionsPopoverAnchor(null);
+  }, []);
+  const closePreviewPopover = useCallback(() => {
+    setPreviewPopoverJobId(null);
+    setPreviewPopoverAnchor(null);
+  }, []);
+  const closeRowPopovers = useCallback(() => {
+    closeRowMenu();
+    closeSessionsPopover();
+    closePreviewPopover();
+  }, [closeRowMenu, closeSessionsPopover, closePreviewPopover]);
+  // "更多"菜单 portal 到 body 后不在 rowMenuRef 子树里，不能再用 useClickOutside
+  // （会把"点选项"误判成"点外面"，选项 onClick 还没触发菜单就卸载）。这里自己挂
+  // pointerdown，同时判定触发器与 portal 菜单两个 ref，与 ModeSelector
+  // （CronPanel/ModeSelector.tsx）同一套口径。两个弹层是纯 portal，判 portal ref 即可。
   useEffect(() => {
     if (rowMenuJobId === null) return;
     const handlePointerDown = (e: PointerEvent) => {
@@ -381,21 +405,27 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     document.addEventListener('pointerdown', handlePointerDown);
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [rowMenuJobId, closeRowMenu]);
-
-  // "触发的会话"弹层：跟"更多"菜单同一套开合逻辑，但单独维护 ref/开关，因为触发的会话
-  // 弹层是从"更多"菜单里的一个按钮打开的，不共用同一个 ref（点击弹层内部会话行不应该被
-  // useClickOutside 判定为"点了外面"）
-  const [sessionsPopoverJobId, setSessionsPopoverJobId] = useState<string | null>(null);
-  const sessionsPopoverRef = useRef<HTMLDivElement>(null);
-  useClickOutside(sessionsPopoverRef, sessionsPopoverJobId !== null, () => setSessionsPopoverJobId(null));
+  useEffect(() => {
+    if (sessionsPopoverJobId === null) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!sessionsPopoverPortalRef.current?.contains(e.target as Node)) closeSessionsPopover();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [sessionsPopoverJobId, closeSessionsPopover]);
+  useEffect(() => {
+    if (previewPopoverJobId === null) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!previewPopoverPortalRef.current?.contains(e.target as Node)) closePreviewPopover();
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [previewPopoverJobId, closePreviewPopover]);
   const [triggeredSessions, setTriggeredSessions] = useState<Record<string, Session[]>>({});
   const [triggeredSessionsLoading, setTriggeredSessionsLoading] = useState<Record<string, boolean>>({});
 
   // "预览"（接下来几次触发时间）弹层：功能在旧版 CronPanel 里有、阶段4重写时漏做了，
   // 后端 cron.job.preview 接口一直都在，这次顺手加回来，跟"触发的会话"同一套弹层模式
-  const [previewPopoverJobId, setPreviewPopoverJobId] = useState<string | null>(null);
-  const previewPopoverRef = useRef<HTMLDivElement>(null);
-  useClickOutside(previewPopoverRef, previewPopoverJobId !== null, () => setPreviewPopoverJobId(null));
   const [previewRuns, setPreviewRuns] = useState<Record<string, { wake_at: string; push_at: string }[]>>({});
   const [previewLoading, setPreviewLoading] = useState<Record<string, boolean>>({});
 
@@ -885,15 +915,18 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     setDrawer({ mode: 'template', initial: templateToForm(tpl, t(tpl.titleKey), t(tpl.descriptionKey)) });
   }
 
+  // 弹层上下朝向：默认在锚点下方打开；下方余量放不下时改从锚点上方展开
+  const resolvePopoverDirection = (rect: DOMRect, neededHeight: number): 'up' | 'down' =>
+    window.innerHeight - rect.bottom >= neededHeight ? 'down' : 'up';
+
   // "触发的会话"：查这个定时任务名下有哪些会话（含手动/自动触发的执行），点了直接跳转过去。
   // 注意：定时任务真正执行时生成的会话 id 是 `cron_<ts>_<job.id>` 这种格式，不是正常聊天的
   // `sess_...`，工作面板目前只认 `sess_` 前缀的会话可以跳转（App.tsx 多处判断），这部分不是
   // 我们这次要修的范围——能跳的正常跳，跳不了的属于已知限制，等负责这块的同事处理。
-  async function toggleSessionsPopover(job: CronTaskUI) {
-    if (sessionsPopoverJobId === job.id) {
-      setSessionsPopoverJobId(null);
-      return;
-    }
+  async function openSessionsPopover(job: CronTaskUI, anchorRect: DOMRect) {
+    setSessionsPopoverDirection(resolvePopoverDirection(anchorRect, 300));
+    setSessionsPopoverAnchor(anchorRect);
+    closePreviewPopover();
     setSessionsPopoverJobId(job.id);
     setTriggeredSessionsLoading((prev) => ({ ...prev, [job.id]: true }));
     try {
@@ -906,11 +939,10 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     }
   }
 
-  async function togglePreviewPopover(job: CronTaskUI) {
-    if (previewPopoverJobId === job.id) {
-      setPreviewPopoverJobId(null);
-      return;
-    }
+  async function openPreviewPopover(job: CronTaskUI, anchorRect: DOMRect) {
+    setPreviewPopoverDirection(resolvePopoverDirection(anchorRect, 170));
+    setPreviewPopoverAnchor(anchorRect);
+    closeSessionsPopover();
     setPreviewPopoverJobId(job.id);
     setPreviewLoading((prev) => ({ ...prev, [job.id]: true }));
     try {
@@ -1148,8 +1180,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                     >
                       <button
                         onClick={() => {
+                          // 菜单即将关闭，先取"更多"按钮的 rect 当弹层锚点（菜单定位用的同一 rect）
+                          if (rowMenuAnchor) void openSessionsPopover(job, rowMenuAnchor);
                           closeRowMenu();
-                          void toggleSessionsPopover(job);
                         }}
                         data-testid="cron-job-more-triggered-sessions-btn"
                         className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
@@ -1158,8 +1191,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                       </button>
                       <button
                         onClick={() => {
+                          if (rowMenuAnchor) void openPreviewPopover(job, rowMenuAnchor);
                           closeRowMenu();
-                          void togglePreviewPopover(job);
                         }}
                         data-testid="cron-job-more-preview-btn"
                         className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
@@ -1205,88 +1238,126 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   )}
               </div>
             </div>
-            {sessionsPopoverJobId === job.id && (
-              <div
-                ref={sessionsPopoverRef}
-                className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                data-testid="cron-sessions-popover"
-              >
+            {sessionsPopoverJobId === job.id && sessionsPopoverAnchor &&
+              createPortal(
                 <div
-                  className="px-3 py-1.5 text-xs font-bold text-text-muted"
-                  data-testid="cron-sessions-popover-title"
+                  ref={sessionsPopoverPortalRef}
+                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  style={
+                    sessionsPopoverDirection === 'up'
+                      ? {
+                          position: 'fixed',
+                          bottom: window.innerHeight - sessionsPopoverAnchor.top + 4,
+                          left: sessionsPopoverAnchor.right,
+                          transform: 'translateX(-100%)',
+                          zIndex: 9999,
+                        }
+                      : {
+                          position: 'fixed',
+                          top: sessionsPopoverAnchor.bottom + 4,
+                          left: sessionsPopoverAnchor.right,
+                          transform: 'translateX(-100%)',
+                          zIndex: 9999,
+                        }
+                  }
+                  data-testid="cron-sessions-popover"
                 >
-                  {t('cron.table.triggeredSessions')}
-                </div>
-                {triggeredSessionsLoading[job.id] && (
-                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-loading">
-                    {t('common.loading')}
+                  <div
+                    className="px-3 py-1.5 text-xs font-bold text-text-muted"
+                    data-testid="cron-sessions-popover-title"
+                  >
+                    {t('cron.table.triggeredSessions')}
                   </div>
-                )}
-                {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0 && (
-                  <div className="max-h-64 overflow-y-auto">
-                    {triggeredSessions[job.id].map((s) => (
-                      <button
-                        key={s.session_id}
-                        onClick={() => {
-                          setSessionsPopoverJobId(null);
-                          onSelectSession(s);
-                        }}
-                        className="block w-full truncate px-3 py-2 text-left text-sm text-text hover:bg-bg-hover"
-                        title={s.title}
-                        data-testid="cron-sessions-popover-item"
-                        data-variant={s.session_id}
-                      >
-                        {s.title || s.session_id}
-                      </button>
-                    ))}
-                  </div>
-                )}
-                {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) === 0 && (
-                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-empty">
-                    {t('cron.table.noTriggeredSessions')}
-                  </div>
-                )}
-              </div>
-            )}
-            {previewPopoverJobId === job.id && (
-              <div
-                ref={previewPopoverRef}
-                className="absolute right-4 top-[calc(100%+4px)] z-20 w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                data-testid="cron-preview-popover"
-              >
+                  {triggeredSessionsLoading[job.id] && (
+                    <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-loading">
+                      {t('common.loading')}
+                    </div>
+                  )}
+                  {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) > 0 && (
+                    <div className="max-h-64 overflow-y-auto">
+                      {triggeredSessions[job.id].map((s) => (
+                        <button
+                          key={s.session_id}
+                          onClick={() => {
+                            closeSessionsPopover();
+                            onSelectSession(s);
+                          }}
+                          className="block w-full truncate px-3 py-2 text-left text-sm text-text hover:bg-bg-hover"
+                          title={s.title}
+                          data-testid="cron-sessions-popover-item"
+                          data-variant={s.session_id}
+                        >
+                          {s.title || s.session_id}
+                        </button>
+                      ))}
+                    </div>
+                  )}
+                  {!triggeredSessionsLoading[job.id] && (triggeredSessions[job.id]?.length ?? 0) === 0 && (
+                    <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-sessions-popover-empty">
+                      {t('cron.table.noTriggeredSessions')}
+                    </div>
+                  )}
+                </div>,
+                document.body,
+              )}
+            {previewPopoverJobId === job.id && previewPopoverAnchor &&
+              createPortal(
                 <div
-                  className="truncate px-3 py-1.5 text-xs font-bold text-text-muted"
-                  title={job.name}
-                  data-testid="cron-preview-popover-title"
+                  ref={previewPopoverPortalRef}
+                  className="w-64 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                  style={
+                    previewPopoverDirection === 'up'
+                      ? {
+                          position: 'fixed',
+                          bottom: window.innerHeight - previewPopoverAnchor.top + 4,
+                          left: previewPopoverAnchor.right,
+                          transform: 'translateX(-100%)',
+                          zIndex: 9999,
+                        }
+                      : {
+                          position: 'fixed',
+                          top: previewPopoverAnchor.bottom + 4,
+                          left: previewPopoverAnchor.right,
+                          transform: 'translateX(-100%)',
+                          zIndex: 9999,
+                        }
+                  }
+                  data-testid="cron-preview-popover"
                 >
-                  {job.name}
-                </div>
-                {previewLoading[job.id] && (
-                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-loading">
-                    {t('cron.preview.loading')}
+                  <div
+                    className="truncate px-3 py-1.5 text-xs font-bold text-text-muted"
+                    title={job.name}
+                    data-testid="cron-preview-popover-title"
+                  >
+                    {job.name}
                   </div>
-                )}
-                {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) > 0 && (
-                  <div className="px-3 py-2 text-xs text-text">
-                    {previewRuns[job.id].map((item, index) => (
-                      <div
-                        key={`${job.id}-${index}`}
-                        className="py-0.5"
-                        data-testid="cron-preview-popover-run-item"
-                        data-variant={index + 1}
-                      >
-                        {t('cron.preview.label', { index: index + 1 })}：{formatPreviewTime(item.push_at)}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) === 0 && (
-                  <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-empty">
-                    {t('cron.preview.empty')}
-                  </div>
-                )}
-              </div>
-            )}
+                  {previewLoading[job.id] && (
+                    <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-loading">
+                      {t('cron.preview.loading')}
+                    </div>
+                  )}
+                  {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) > 0 && (
+                    <div className="px-3 py-2 text-xs text-text">
+                      {previewRuns[job.id].map((item, index) => (
+                        <div
+                          key={`${job.id}-${index}`}
+                          className="py-0.5"
+                          data-testid="cron-preview-popover-run-item"
+                          data-variant={index + 1}
+                        >
+                          {t('cron.preview.label', { index: index + 1 })}：{formatPreviewTime(item.push_at)}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                  {!previewLoading[job.id] && (previewRuns[job.id]?.length ?? 0) === 0 && (
+                    <div className="px-3 py-2 text-sm text-text-muted" data-testid="cron-preview-popover-empty">
+                      {t('cron.preview.empty')}
+                    </div>
+                  )}
+                </div>,
+                document.body,
+              )}
           </>
         );
       },
@@ -1304,7 +1375,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     // 翻转 → 高度又变 → 在临界宽度附近来回抖动（x 滚动条快速切换闪烁的根源）
     <div
       className="flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
-      onScroll={closeRowMenu}
+      onScroll={closeRowPopovers}
       data-testid="cron-panel"
       data-session-id={sessionId}
     >
@@ -1590,7 +1661,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             <div
               ref={tableWrapperRef}
               className="overflow-x-auto rounded-lg border border-[var(--color-border-default)]"
-              onScroll={closeRowMenu}
+              onScroll={closeRowPopovers}
               data-testid="cron-jobs-table"
             >
               <table ref={tableRef} className="w-full border-collapse text-sm" style={{ tableLayout: 'fixed' }}>

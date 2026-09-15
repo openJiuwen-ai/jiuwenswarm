@@ -10,6 +10,7 @@ type MemberOverviewCardProps = {
   statusIcon?: ReactNode;
   onClick?: () => void;
   items: ProcessItem[];
+  emptyText?: string;
 };
 
 export function MemberOverviewCard({
@@ -19,6 +20,7 @@ export function MemberOverviewCard({
   statusIcon,
   onClick,
   items,
+  emptyText,
 }: MemberOverviewCardProps) {
   const [expandedIds, setExpandedIds] = useState<Set<string>>(new Set());
 
@@ -70,7 +72,7 @@ export function MemberOverviewCard({
       <div className="flex min-w-0 min-h-0 flex-1 flex-col -mr-4 [container-type:inline-size]">
         <div className="min-w-0 min-h-0 flex-1 overflow-y-auto">
           <div className="flex min-h-full w-[calc(100cqw_-_1rem)] flex-col">
-            <ProcessListCard items={items} expandedIds={expandedIds} onToggle={toggleItem} />
+            <ProcessListCard items={items} expandedIds={expandedIds} onToggle={toggleItem} emptyText={emptyText} />
           </div>
         </div>
       </div>
