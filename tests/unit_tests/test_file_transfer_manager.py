@@ -19,6 +19,11 @@ from jiuwenclaw.agentserver.file_transfer_manager import (
     get_file_transfer_manager,
     clear_file_transfer_manager,
 )
+from jiuwenclaw.e2a.constants import (
+    FILE_DOWNLOAD_START,
+    FILE_DOWNLOAD_CHUNK,
+    FILE_DOWNLOAD_COMPLETE,
+)
 from jiuwenclaw.utils import FileTransferStartParams
 
 
@@ -241,6 +246,95 @@ def test_handle_transfer_complete_missing_chunks(manager):
         assert result["success"] is False
         assert "missing" in result["error"].lower()
     asyncio.run(_test())
+
+
+def test_send_file_streams_chunks_and_computes_sha256(manager, tmp_path):
+    data = bytes(range(256)) * 3
+    src = tmp_path / "src.bin"
+    src.write_bytes(data)
+    expected_sha256 = hashlib.sha256(data).hexdigest()
+
+    events = []
+
+    async def send_callback(event_type, params):
+        events.append((event_type, params.copy()))
+
+    async def _test():
+        return await manager.send_file(
+            src,
+            send_callback,
+            session_id="sess-send",
+            channel_id="ch-send",
+            request_id="req-send",
+        )
+
+    result = asyncio.run(_test())
+
+    assert result["success"] is True
+    assert result["file_size"] == len(data)
+
+    start = next(p for t, p in events if t == FILE_DOWNLOAD_START)
+    assert start["file_size"] == len(data)
+    assert start["total_chunks"] == (len(data) + manager.config.chunk_size - 1) // manager.config.chunk_size
+
+    chunks = [p for t, p in events if t == FILE_DOWNLOAD_CHUNK]
+    assert len(chunks) == start["total_chunks"]
+    reassembled = b"".join(base64.b64decode(p["base64_data"]) for p in chunks)
+    assert reassembled == data
+
+    complete = next(p for t, p in events if t == FILE_DOWNLOAD_COMPLETE)
+    assert complete["sha256"] == expected_sha256
+
+
+def test_send_file_size_exceeded(manager, tmp_path):
+    src = tmp_path / "big.bin"
+    src.write_bytes(b"x" * (manager.config.max_file_size + 1))
+
+    async def send_callback(event_type, params):
+        pass
+
+    async def _test():
+        return await manager.send_file(src, send_callback)
+
+    result = asyncio.run(_test())
+    assert result["success"] is False
+    assert "size exceeded" in result["error"]
+
+
+def test_send_file_not_found(manager):
+    async def send_callback(event_type, params):
+        pass
+
+    async def _test():
+        return await manager.send_file("/no/such/file.bin", send_callback)
+
+    result = asyncio.run(_test())
+    assert result["success"] is False
+    assert "not found" in result["error"]
+
+
+def test_send_file_empty_declares_zero_chunks(manager, tmp_path):
+    src = tmp_path / "empty.bin"
+    src.write_bytes(b"")
+
+    events = []
+
+    async def send_callback(event_type, params):
+        events.append((event_type, params.copy()))
+
+    async def _test():
+        return await manager.send_file(src, send_callback)
+
+    result = asyncio.run(_test())
+    assert result["success"] is True
+
+    start = next(p for t, p in events if t == FILE_DOWNLOAD_START)
+    assert start["total_chunks"] == 0
+    chunks = [p for t, p in events if t == FILE_DOWNLOAD_CHUNK]
+    assert len(chunks) == 0
+    complete = next(p for t, p in events if t == FILE_DOWNLOAD_COMPLETE)
+    assert complete["total_chunks"] == 0
+    assert complete["sha256"] == hashlib.sha256(b"").hexdigest()
 
 
 def test_get_file_transfer_manager():

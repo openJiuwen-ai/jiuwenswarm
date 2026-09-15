@@ -389,22 +389,20 @@ class FileTransferManager:
                 "error": f"file not found: {file_path}",
             }
 
-        # 读取文件
+        chunk_size = self._config.chunk_size
+        if chunk_size <= 0:
+            chunk_size = 64 * 1024
+
+        # 检查文件大小（流式：仅 stat，不整读）
+        file_size = 0
         try:
-            file_data = file_path.read_bytes()
+            file_size = file_path.stat().st_size
         except Exception as e:
             return {
                 "success": False,
-                "error": f"read file failed: {e}",
+                "error": f"stat file failed: {e}",
             }
 
-        file_size = len(file_data)
-        filename = file_path.name
-        sha256 = hashlib.sha256(file_data).hexdigest()
-        chunk_size = self._config.chunk_size
-        total_chunks = (file_size + chunk_size - 1) // chunk_size if chunk_size > 0 else 1
-
-        # 检查文件大小
         if self._config.max_file_size > 0 and file_size > self._config.max_file_size:
             return {
                 "success": False,
@@ -412,7 +410,13 @@ class FileTransferManager:
                 "error_type": FILE_TRANSFER_ERROR_SIZE_EXCEEDED,
             }
 
+        filename = file_path.name
+        total_chunks = (file_size + chunk_size - 1) // chunk_size
+
         transfer_id = f"dl_{int(time.time() * 1000)}_{hashlib.md5(filename.encode()).hexdigest()[:8]}"
+
+        # 分块流式读取：同步 I/O 移到线程池，避免整文件读入内存 + 阻塞事件循环
+        sha256_hasher = hashlib.sha256()
 
         # 发送 FILE_DOWNLOAD_START
         await send_callback(
@@ -421,7 +425,7 @@ class FileTransferManager:
                 "transfer_id": transfer_id,
                 "filename": filename,
                 "file_size": file_size,
-                "sha256": sha256,
+                "sha256": "",
                 "total_chunks": total_chunks,
                 "chunk_size": chunk_size,
                 "mime_type": guess_mime_type(filename),
@@ -431,22 +435,39 @@ class FileTransferManager:
             },
         )
 
-        # 发送分片
-        for i in range(total_chunks):
-            start = i * chunk_size
-            end = min(start + chunk_size, file_size)
-            chunk_data = file_data[start:end]
-            base64_data = base64.b64encode(chunk_data).decode("utf-8")
+        # 发送分片（流式读取，边读边算 hash 边推送）
+        chunk_index = 0
+        try:
+            with open(file_path, "rb") as fh:
+                while True:
+                    chunk_data = await asyncio.to_thread(fh.read, chunk_size)
+                    if not chunk_data:
+                        break
+                    sha256_hasher.update(chunk_data)
+                    base64_data = base64.b64encode(chunk_data).decode("utf-8")
 
-            await send_callback(
-                FILE_DOWNLOAD_CHUNK,
-                {
-                    "transfer_id": transfer_id,
-                    "chunk_index": i,
-                    "base64_data": base64_data,
-                    "chunk_size": len(chunk_data),
-                },
+                    await send_callback(
+                        FILE_DOWNLOAD_CHUNK,
+                        {
+                            "transfer_id": transfer_id,
+                            "chunk_index": chunk_index,
+                            "base64_data": base64_data,
+                            "chunk_size": len(chunk_data),
+                        },
+                    )
+                    chunk_index += 1
+        except Exception as e:
+            logger.exception(
+                "[FileTransferManager] 文件分片读取/发送失败: transfer_id=%s error=%s",
+                transfer_id,
+                e,
             )
+            return {
+                "success": False,
+                "error": f"read file failed: {e}",
+            }
+
+        sha256 = sha256_hasher.hexdigest()
 
         # 发送 FILE_DOWNLOAD_COMPLETE
         await send_callback(
