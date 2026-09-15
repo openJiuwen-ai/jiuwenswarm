@@ -1,6 +1,7 @@
 # One-shot Process CLI machine execution
 
-`jiuwenswarm-process --run-json FILE` executes one single-root-Agent request
+`jiuwenswarm-process --run-json FILE` (noninteractive) and
+`jiuwenswarm-process --run-jsonl` (duplex) execute one single-root-Agent request
 through `InProcessRuntimeClient` and the shared Runtime Public API. It does not
 start Gateway, AgentServer, a WebSocket listener, a REPL worker, or a resident
 stdio service. Runtime tools may launch their usual short-lived subprocesses.
@@ -110,10 +111,77 @@ as incomplete, never as success. SIGINT, SIGTERM and Windows CTRL_BREAK (when
 delivered to the CLI) use the same cooperative cancellation path; Windows
 TerminateProcess is a force kill, not a graceful signal.
 
-## Interaction boundary in this stage
+## Noninteractive interaction boundary
 
-This is not JSON-RPC and stdin is not yet duplex. Asking questions, plan approval
-and harness activation observations produce `INTERACTION_REQUIRED`, followed by
-cancellation and cleanup. The CLI does not auto-approve or bypass Runtime
-permissions. SDK-driven interaction answers are a later stage, within the same
-one-invocation/one-process lifetime, not a resident app-server.
+`--run-json FILE|-` remains noninteractive. Asking questions, plan approval and
+harness activation observations produce `INTERACTION_REQUIRED`, followed by
+cancellation and cleanup. Its stdin input still requires EOF. No answer is
+inferred, auto-approved or supplied by reading the terminal.
+
+## Duplex interaction within one command
+
+An SDK can instead launch `jiuwenswarm-process --run-jsonl` with piped stdin,
+stdout and stderr. This is a one-command JSONL protocol, **not JSON-RPC** or a
+resident app-server. There is exactly one `run` per process. A second run,
+unrelated Session command or configuration override is not accepted.
+
+1. Write the same `run` object shown above, followed by a newline; flush it.
+   Execution starts without waiting for stdin EOF.
+2. Read stdout and stderr concurrently. An event whose `payload.event_type` is
+   `run.started` identifies the prepared Session. An event whose
+   `payload.event_type` is `interaction.requested` contains an opaque
+   `payload.interaction_id` and the original Runtime card in
+   `payload.interaction`. The underlying Runtime question is also emitted as an
+   observation: answer the correlated notice, not both records.
+3. Send an `answer` for that card, or send `cancel` to end the command. Repeat
+   for subsequent interactions in this same run.
+4. Keep stdin open while the run is active. Wait for the single terminal
+   `result` and process exit. Neither another command nor closing stdin is
+   required for a normally completed command to exit.
+
+For a question with the option `ALPHA`, an answer line is:
+
+```json
+{"schema_version":"0.1","type":"answer","request_id":"sdk-run-001","session_id":"<session_id from output>","interaction_id":"<opaque token from interaction.requested>","answers":[{"question":"<question from the card>","selected_options":["ALPHA"],"custom_input":""}]}
+```
+
+Use the card's actual question and option values. The outer `request_id` always
+identifies the initial run; it is not the internal Runtime question ID. Both
+`session_id` and the still-pending opaque `interaction_id` must match. A token
+is consumed once. Stale, duplicate, foreign or premature answers fail the
+command and cancel its owned work instead of being delivered to another turn.
+The CLI copies source, approval metadata and execution bindings from the
+observed Runtime card and original request; the caller cannot override them.
+
+To cancel, send:
+
+```json
+{"schema_version":"0.1","type":"cancel","request_id":"sdk-run-001"}
+```
+
+`session_id` is optional for cancellation, allowing cancellation during startup.
+If supplied, it must match. Cancellation targets only this invocation's owned
+Session, including its active answer continuation, and returns `CANCELLED` with
+exit code `130`. EOF on duplex stdin before completion means caller disconnect:
+it follows the same cleanup path with `INPUT_CLOSED` and exit code `130`. It
+does not imply permission approval. The request deadline includes time waiting
+for the caller's answer. Malformed control input fails with exit code `2`.
+
+Each input line is a UTF-8 JSON object, terminated by LF or CRLF, at most 1 MiB
+excluding the line ending. Blank, incomplete, duplicate-key and unknown-field
+records are rejected. Flush each line. Piped stdin and redirected files are
+supported; this entrypoint does not implement an interactive console editor.
+Do not combine `--run-jsonl` with other CLI flags. Workspace, model and Agent
+settings belong in the initial run document.
+
+Typed Runtime question, permission, plan-confirmation and evolution approval
+cards use the same answer path; their actual decisions remain Runtime-owned.
+Hard denials are not promoted to approvals. Legacy Harness activation remains
+unsupported (`INTERACTION_UNSUPPORTED`), with cancellation and cleanup, rather
+than being translated into a different approval type.
+
+An answer acknowledgement or answer-stream EOF is **not** run completion.
+Runtime may continue output on the original stream or on the answering stream;
+the CLI drains both, retaining the same external run/Session identity and output
+sequence. It stops its input reader and closes all streams before Session and
+Runtime cleanup, and still emits the terminal result only after cleanup.

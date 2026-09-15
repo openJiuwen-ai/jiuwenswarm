@@ -262,6 +262,14 @@ class InProcessRuntimeClient:
         _require_process_cli_channel(getattr(answer, "channel_id", None))
         return await self._runtime.answer_interaction_input(answer)
 
+    def stream_interaction_answer(
+        self,
+        answer: InteractionAnswerInput,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Forward a typed answer while preserving incremental observations."""
+        _require_process_cli_channel(getattr(answer, "channel_id", None))
+        return self._runtime.stream_interaction_answer(answer)
+
     async def cancel(self, request: AgentRequest) -> None:
         _require_process_cli_channel(getattr(request, "channel_id", None))
         await self._runtime.cancel_request(request)

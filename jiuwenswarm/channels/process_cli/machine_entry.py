@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import io
 import logging
 import os
 import sys
@@ -104,21 +105,52 @@ def _failure(
     )
 
 
-def execute_source(source: str, *, conflicting_arguments: bool = False) -> int:
+async def _execute_duplex(writer: OneShotWriter) -> OneShotRunResult:
+    from jiuwenswarm.channels.process_cli.duplex_input import (
+        DuplexInputError,
+        DuplexLineReader,
+    )
+
+    try:
+        async with DuplexLineReader() as reader:
+            line = await reader.read_line()
+            if line is None:
+                raise MachineInputError(
+                    "A run record is required before control input."
+                )
+            run_input = read_run_input("-", stdin=io.BytesIO(line))
+            writer.request_id = run_input.request_id or writer.request_id
+            run_input = prepare_workspace(run_input)
+            from jiuwenswarm.channels.process_cli.duplex_control import DuplexController
+            from jiuwenswarm.channels.process_cli.machine import run_with_signals
+
+            control = DuplexController(reader, writer)
+            return await run_with_signals(run_input, writer, control=control)
+    except DuplexInputError as error:
+        raise MachineInputError(str(error)) from error
+
+
+def execute_source(
+    source: str, *, conflicting_arguments: bool = False, json_lines: bool = False
+) -> int:
     """Read exactly one request and exit; never enter REPL or spawn a worker."""
     with protocol_stdout() as output:
         writer = OneShotWriter(output, request_id=str(uuid.uuid4()))
         try:
             if conflicting_arguments:
+                option = "--run-jsonl" if json_lines else "--run-json"
                 raise MachineInputError(
-                    "--run-json cannot be combined with legacy execution arguments."
+                    f"{option} cannot be combined with legacy execution arguments."
                 )
-            run_input = read_run_input(source)
-            writer.request_id = run_input.request_id or writer.request_id
-            run_input = prepare_workspace(run_input)
-            from jiuwenswarm.channels.process_cli.machine import run_with_signals
+            if json_lines:
+                result = asyncio.run(_execute_duplex(writer))
+            else:
+                run_input = read_run_input(source)
+                writer.request_id = run_input.request_id or writer.request_id
+                run_input = prepare_workspace(run_input)
+                from jiuwenswarm.channels.process_cli.machine import run_with_signals
 
-            result = asyncio.run(run_with_signals(run_input, writer))
+                result = asyncio.run(run_with_signals(run_input, writer))
         except MachineInputError as error:
             writer.request_id = error.request_id or writer.request_id
             result = _failure(writer, code=error.code, message=str(error), exit_code=2)

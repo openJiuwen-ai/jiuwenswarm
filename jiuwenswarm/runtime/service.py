@@ -1501,6 +1501,84 @@ class AgentRuntime:
             stream_kwargs["_agent_execution"] = owner
         return [event async for event in self.stream(request, **stream_kwargs)]
 
+    async def stream_interaction_answer(
+        self,
+        answer: InteractionAnswerInput,
+        *,
+        trigger_hook: bool = True,
+        on_control_event: Callable[[RuntimeEvent], Awaitable[None]] | None = None,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Stream a typed answer without buffering a resumed Agent execution.
+
+        A live output owner keeps the continuing answer on its original stream;
+        this operation may then emit only an acknowledgement. Its EOF is not a
+        declaration that the Session or the caller's overall run has finished.
+        The compatibility list APIs and other Channel execution paths are
+        intentionally unchanged.
+        """
+        from jiuwenswarm.runtime.interaction import InteractionAnswerInput
+
+        if not isinstance(answer, InteractionAnswerInput):
+            raise TypeError("answer must be an InteractionAnswerInput")
+        await self.start()
+        request = answer.to_agent_request()
+        await self._require_owned_single_agent_session(request)
+        if not answer.resumes_interrupted_turn:
+            events = await self.answer_interaction(
+                request,
+                trigger_hook=trigger_hook,
+                on_control_event=on_control_event,
+            )
+            for event in events:
+                yield event
+            return
+        if self.session_work_kind(request) is SessionWorkKind.CONTROL_INPUT:
+            await self._ensure_session_registered(request)
+            stream = self._session_coordinator.deliver_control_stream(
+                request.session_id or "default",
+                self._control_request_id(request),
+                lambda: self._stream_control_started(request),
+                suspension_key=self._waiting_control_id,
+            )
+        else:
+            stream = self.stream(
+                request,
+                trigger_hook=trigger_hook,
+                on_control_event=on_control_event,
+                _agent_execution=self._agent_execution_owner(request),
+            )
+        async with aclosing(self._stream_with_runtime_context(stream)) as events:
+            async for event in events:
+                yield event
+
+    async def _stream_with_runtime_context(
+        self, stream: AsyncIterator[RuntimeEvent]
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Bind only execution slices, never the caller's yield boundary."""
+        from jiuwenswarm.runtime.context import (
+            reset_runtime_context,
+            set_runtime_context,
+        )
+
+        try:
+            while True:
+                token = set_runtime_context(self, self._agent_manager)
+                try:
+                    event = await anext(stream)
+                except StopAsyncIteration:
+                    return
+                finally:
+                    reset_runtime_context(token)
+                yield event
+        finally:
+            token = set_runtime_context(self, self._agent_manager)
+            try:
+                close_stream = getattr(stream, "aclose", None)
+                if callable(close_stream):
+                    await close_stream()
+            finally:
+                reset_runtime_context(token)
+
     async def stream(
         self,
         request: AgentRequest,
@@ -1833,6 +1911,42 @@ class AgentRuntime:
             if callable(close_stream):
                 await close_stream()
         return events
+
+    async def _stream_control_started(
+        self,
+        request: AgentRequest,
+    ) -> AsyncIterator[RuntimeEvent]:
+        """Deliver to the active Agent while forwarding each observation."""
+        from jiuwenswarm.runtime.events import RuntimeEvent
+
+        channel_id = request.channel_id or "default"
+        await self._clear_pending_interaction(
+            request.session_id or "default",
+            self._control_request_id(request),
+        )
+        lookup = getattr(self._agent_manager, "get_agent_for_session_nowait", None)
+        agent = lookup(channel_id, request.session_id or "") if callable(lookup) else None
+        if agent is None:
+            raise RuntimeError(f"session has no active agent: {request.session_id or 'default'}")
+        deliver = getattr(agent, "deliver_control_input", None)
+        if not callable(deliver):
+            raise RuntimeError("active agent does not accept control input")
+        response_stream = deliver(request)
+        try:
+            async for chunk in response_stream:
+                event = RuntimeEvent.from_agent_message(
+                    chunk,
+                    request_id=request.request_id,
+                    channel_id=channel_id,
+                    session_id=request.session_id,
+                    default_agent_ref=request.agent_ref,
+                )
+                await self._mark_pending_interaction(event)
+                yield event
+        finally:
+            close_stream = getattr(response_stream, "aclose", None)
+            if callable(close_stream):
+                await close_stream()
 
     async def cleanup_session(
         self,

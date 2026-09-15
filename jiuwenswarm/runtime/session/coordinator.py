@@ -33,6 +33,7 @@ class _SessionRecord:
     generation: int
     state: RuntimeSessionState = RuntimeSessionState.READY
     control_ready: asyncio.Event = field(default_factory=asyncio.Event)
+    stream_control_claims: set[str] = field(default_factory=set)
 
     def __post_init__(self) -> None:
         self.control_ready.set()
@@ -273,6 +274,99 @@ class RuntimeSessionCoordinator:
             return value
         finally:
             self._refresh_session_state(record)
+
+    async def deliver_control_stream(
+        self,
+        session_id: str,
+        request_id: str,
+        operation: Callable[[], AsyncIterator[T] | Awaitable[AsyncIterator[T]]],
+        *,
+        suspension_key: Callable[[T], str | None] | None = None,
+    ) -> AsyncIterator[T]:
+        """Stream a matching control operation without joining the work lane.
+
+        Unlike the compatibility unary control API, observations are visible
+        before the operation ends, including a second question awaiting input.
+        The output consumer owns this generator and must close it on exit.
+        """
+        record = self._require_open_session(session_id)
+        parent = self._stream_control_parent(record, request_id)
+        parent_was_waiting = parent.state is SessionExecutionState.WAITING_FOR_CONTROL
+        record.stream_control_claims.add(request_id)
+        if parent_was_waiting:
+            self._registry.resume_waiting(parent)
+        handle = self._new_execution(
+            record,
+            request_id,
+            SessionWorkKind.CONTROL_INPUT,
+            parent_execution_id=parent.execution_id,
+        )
+        handle.task = asyncio.current_task()
+        self._registry.mark_running(handle)
+        try:
+            candidate = operation()
+            stream = await candidate if inspect.isawaitable(candidate) else candidate
+            try:
+                async for item in stream:
+                    control_id = suspension_key(item) if suspension_key else None
+                    if control_id:
+                        self._registry.mark_awaiting_control(handle, control_id)
+                        self._refresh_control_gate(record)
+                    yield item
+            finally:
+                close = getattr(stream, "aclose", None)
+                if callable(close):
+                    await close()
+        except (asyncio.CancelledError, GeneratorExit) as exc:
+            self._registry.mark_terminal(handle, SessionExecutionState.CANCELLED, error=exc)
+            if parent_was_waiting:
+                self._registry.mark_waiting(parent)
+            raise
+        except BaseException as exc:
+            self._registry.mark_terminal(handle, SessionExecutionState.FAILED, error=exc)
+            if parent_was_waiting:
+                self._registry.mark_waiting(parent)
+            raise
+        else:
+            if parent_was_waiting:
+                self._registry.mark_terminal(parent, SessionExecutionState.SUCCEEDED)
+            elif parent.waiting_control_id == request_id:
+                # The original producer may already have published another
+                # question. Do not erase that newer control locator.
+                parent.waiting_control_id = None
+            if handle.waiting_control_id:
+                self._registry.mark_waiting(handle)
+            else:
+                self._registry.mark_terminal(handle, SessionExecutionState.SUCCEEDED)
+        finally:
+            record.stream_control_claims.discard(request_id)
+            if handle.task is asyncio.current_task():
+                handle.task = None
+            self._refresh_session_state(record)
+
+    def _stream_control_parent(
+        self, record: _SessionRecord, request_id: str
+    ) -> SessionExecutionHandle:
+        """Claim only an existing matching interaction, never a fresh turn."""
+        if request_id in record.stream_control_claims:
+            raise RuntimeError("interaction answer is already in progress")
+        parents: list[SessionExecutionHandle] = []
+        active = self._registry.select(
+            session_id=record.session_id,
+            generation=record.generation,
+            active_only=True,
+        )
+        for handle in active:
+            if handle.waiting_control_id != request_id:
+                continue
+            if handle.state in {
+                SessionExecutionState.RUNNING,
+                SessionExecutionState.WAITING_FOR_CONTROL,
+            }:
+                parents.append(handle)
+        if not parents:
+            raise RuntimeError(f"session has no active execution: {record.session_id}")
+        return max(parents, key=lambda handle: handle.started_at or handle.created_at)
 
     async def run_stream(
         self,

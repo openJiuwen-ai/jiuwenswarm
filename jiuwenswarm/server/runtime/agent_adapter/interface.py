@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from contextlib import aclosing
 from copy import deepcopy
 from dataclasses import replace
 import inspect
@@ -3070,8 +3071,9 @@ class JiuWenSwarm:
             model_name=params.get("model_name"),
             history_before_request_id=request.request_id,
         )
-        async for chunk in adapter.process_message_stream_impl(request, inputs):
-            yield chunk
+        async with aclosing(adapter.process_message_stream_impl(request, inputs)) as stream:
+            async for chunk in stream:
+                yield chunk
 
     async def process_message_stream(
             self, request: AgentRequest
