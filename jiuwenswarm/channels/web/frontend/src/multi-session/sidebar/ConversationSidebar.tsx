@@ -1,12 +1,14 @@
 import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createPortal } from 'react-dom';
-import { Check, ChevronDown, CircleAlert, Code2, LoaderCircle, Workflow } from 'lucide-react';
+import { createPortal, flushSync } from 'react-dom';
+import { Archive, Check, ChevronDown, CircleAlert, Code2, LoaderCircle, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
+import { getArchiveErrorCode, archivedTaskClient, findBatchSessionResult } from '../../features/workspace/archivedTaskClient';
+import { requestSettingsModule } from '../../features/settings/settingsNavigation';
 import { DeleteDialog } from '../dialogs/Dialogs';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger } from '../../components/ui';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger, toast } from '../../components/ui';
 import {
   PROJECT_SESSION_PAGE_SIZE,
   useWorkspaceStore,
@@ -92,7 +94,6 @@ interface ConversationSidebarProps {
   activeSessionId: string | null;
   onNew: (options?: NewConversationOptions) => void;
   onSelect: (session: Session) => void;
-  onDelete: (session: Session) => void;
   /** 跳转到"定时任务"主面板；该入口原来在最左侧图标栏，现移到工作小窗口的"新建任务"下方 */
   onOpenCron: () => void;
   /** 当前是否正停留在定时任务面板，用于给下面这个入口按钮加选中态 */
@@ -113,9 +114,9 @@ interface ConversationListItemProps {
   unread: boolean;
   now: number;
   onSelect: () => void;
-  onDelete: () => void;
   onPin: () => void;
   onRename: () => void;
+  onArchive: () => void;
   menuItems: SidebarMenuItem[];
 }
 
@@ -160,6 +161,7 @@ function getSessionTitle(session: Session, fallback: string): string {
 const menuIconByAction: Record<SidebarMenuAction, React.ComponentType<React.SVGProps<SVGSVGElement>>> = {
   pin: PinIcon,
   rename: EditIcon,
+  archive: Archive,
   delete: DeleteIcon,
   'archive-sessions': FolderIcon,
   'delete-archived-sessions': DeleteIcon,
@@ -174,11 +176,9 @@ function getMenuIcon(item: SidebarMenuItem): React.ComponentType<React.SVGProps<
 function SidebarDropdownItems({
   items,
   onAction,
-  deleteDisabled = false,
 }: {
   items: SidebarMenuItem[];
   onAction: (action: SidebarMenuAction) => void;
-  deleteDisabled?: boolean;
 }) {
   return (
     <>
@@ -189,7 +189,6 @@ function SidebarDropdownItems({
             key={item.action}
             icon={<MenuIcon aria-hidden />}
             danger={item.danger}
-            disabled={deleteDisabled && item.action === 'delete'}
             onSelect={() => onAction(item.action)}
             data-testid="multi-session-conversation-menu-item"
             data-variant={item.action}
@@ -220,9 +219,9 @@ function ConversationListItem({
   unread,
   now,
   onSelect,
-  onDelete,
   onPin,
   onRename,
+  onArchive,
   menuItems,
 }: ConversationListItemProps) {
   const { t, i18n } = useTranslation();
@@ -257,10 +256,6 @@ function ConversationListItem({
   };
   const errorMessage = runtime?.error || runtime?.executionError || null;
   const indicator = getSessionIndicator(runtime, unread, session.is_processing === true, Boolean(errorMessage));
-  const deleteDisabled =
-    runtime?.isProcessing === true ||
-    session.is_processing === true ||
-    Boolean(runtime?.pendingQuestions[0]);
 
   let status: React.ReactNode;
   if (indicator === 'waiting') {
@@ -329,7 +324,6 @@ function ConversationListItem({
         <DropdownMenuContent side="bottom" align="end" data-testid="multi-session-conversation-menu">
           <SidebarDropdownItems
             items={menuItems}
-            deleteDisabled={deleteDisabled}
             onAction={(action) => {
               switch (action) {
                 case 'pin':
@@ -338,8 +332,8 @@ function ConversationListItem({
                 case 'rename':
                   onRename();
                   break;
-                case 'delete':
-                  onDelete();
+                case 'archive':
+                  onArchive();
                   break;
               }
             }}
@@ -377,6 +371,7 @@ function ProjectEntityRow({
   onNew,
   onPin,
   onRename,
+  onArchive,
   onRemove,
   onBatch,
   newLabel,
@@ -392,6 +387,7 @@ function ProjectEntityRow({
   onNew: () => void;
   onPin: () => void;
   onRename: () => void;
+  onArchive: () => void;
   onRemove: () => void;
   onBatch: (action: 'archive' | 'delete_archived') => void;
   newLabel?: string;
@@ -510,6 +506,9 @@ function ProjectEntityRow({
                   break;
                 case 'rename':
                   onRename();
+                  break;
+                case 'archive':
+                  onArchive();
                   break;
                 case 'delete':
                   onRemove();
@@ -851,7 +850,6 @@ export function ConversationSidebar({
   activeSessionId,
   onNew,
   onSelect,
-  onDelete,
   onOpenCron,
   isCronActive,
   collapsed = false,
@@ -870,6 +868,7 @@ export function ConversationSidebar({
   const [renameTarget, setRenameTarget] = useState<RenameTarget | null>(null);
   const [renameError, setRenameError] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
+  // 既有「删除项目」流程状态：与归档并存，互不影响
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ProjectInfo | null>(null);
   const [projectAction, setProjectAction] = useState<'delete' | 'archive' | 'delete_archived'>('delete');
   const [deleteProjectBusy, setDeleteProjectBusy] = useState(false);
@@ -879,6 +878,7 @@ export function ConversationSidebar({
   const addMenuRef = useRef<HTMLDivElement>(null);
   const workModeMenuRef = useRef<HTMLDivElement>(null);
   const previousProcessing = useRef<Record<string, boolean>>({});
+  const archiveInFlightRef = useRef(new Set<string>());
 
   useEffect(() => {
     if (!pathDialogError || pathDialogOpen) return;
@@ -900,6 +900,10 @@ export function ConversationSidebar({
     renameProject,
     pinProject,
     removeProject,
+    archiveProject,
+    archiveSession,
+    removeSessionLocally,
+    removeProjectLocally,
     loadProjectSessions,
     showMoreSessions,
     collapseSessions,
@@ -1160,6 +1164,102 @@ export function ConversationSidebar({
     }
   }
 
+  // 归档错误码只用于分支判断，用户看到的是可翻译文案
+  function archiveErrorKey(error: unknown): string {
+    const code = getArchiveErrorCode(error);
+    if (code === 'FORBIDDEN') return 'multiSession.project.errors.archiveForbidden';
+    if (code === 'NOT_FOUND') return 'multiSession.project.errors.archiveNotFound';
+    return 'multiSession.project.errors.archiveFailed';
+  }
+
+  function openArchiveSuccessToast(options: {
+    content: string;
+    onUndo: () => Promise<void>;
+  }) {
+    // 新的归档提示替换旧提示，避免多个「撤销」并发把列表刷乱
+    toast.closeAll();
+    toast.open({
+      content: options.content,
+      icon: <Archive aria-hidden size={16} strokeWidth={1.8} />,
+      duration: 5,
+      actions: [
+        {
+          label: t('multiSession.project.archiveView'),
+          onClick: () => requestSettingsModule('archivedTasks'),
+        },
+        {
+          label: t('multiSession.project.archiveUndo'),
+          onClick: () => {
+            void (async () => {
+              try {
+                await options.onUndo();
+              } catch (error) {
+                toast.open({ content: t(archiveErrorKey(error)), variant: 'error' });
+              }
+            })();
+          },
+        },
+      ],
+    });
+  }
+
+  async function handleArchiveProject(project: ProjectInfo) {
+    if (isDefaultProject(project)) return;
+    const opKey = `project:${project.project_id}`;
+    if (archiveInFlightRef.current.has(opKey)) return;
+    archiveInFlightRef.current.add(opKey);
+    try {
+      await archiveProject(project.project_id);
+      // 本地移除与 toast 同帧提交；对账交给 WS 去抖刷新 + 撤销时的显式刷新，避免叠加 refresh 竞态
+      flushSync(() => {
+        removeProjectLocally(project.project_id);
+        openArchiveSuccessToast({
+          content: t('multiSession.project.projectArchived'),
+          onUndo: async () => {
+            await archivedTaskClient.unarchiveProject(project.project_id);
+            await useWorkspaceStore.getState().refreshWorkspaceData();
+            await loadCronJobs();
+          },
+        });
+      });
+    } catch (error) {
+      toast.open({ content: t(archiveErrorKey(error)), variant: 'error' });
+      await useWorkspaceStore.getState().refreshWorkspaceData();
+    } finally {
+      archiveInFlightRef.current.delete(opKey);
+    }
+  }
+
+  async function handleArchiveSession(session: Session) {
+    const opKey = `session:${session.session_id}`;
+    if (archiveInFlightRef.current.has(opKey)) return;
+    archiveInFlightRef.current.add(opKey);
+    try {
+      await archiveSession(session.session_id);
+      flushSync(() => {
+        removeSessionLocally(session.session_id);
+        openArchiveSuccessToast({
+          content: t('multiSession.project.conversationArchived'),
+          onUndo: async () => {
+            const response = await archivedTaskClient.unarchiveSession(session.session_id);
+            const entry = findBatchSessionResult(response, session.session_id);
+            if (!entry?.ok) {
+              const error = new Error(entry?.error || 'Failed to unarchive session');
+              Object.assign(error, { code: entry?.code });
+              throw error;
+            }
+            await useWorkspaceStore.getState().refreshWorkspaceData();
+          },
+        });
+      });
+    } catch (error) {
+      toast.open({ content: t(archiveErrorKey(error)), variant: 'error' });
+      await useWorkspaceStore.getState().refreshWorkspaceData();
+    } finally {
+      archiveInFlightRef.current.delete(opKey);
+    }
+  }
+
   async function handleRemoveProject() {
     if (!deleteProjectTarget || (projectAction === 'delete' && isDefaultProject(deleteProjectTarget))) return;
     setDeleteProjectBusy(true);
@@ -1203,8 +1303,8 @@ export function ConversationSidebar({
         unread={unreadSessions.has(session.session_id)}
         now={relativeTimeNow}
         onSelect={() => onSelect(session)}
-        onDelete={() => onDelete(session)}
         onPin={() => void handlePinSession(session)}
+        onArchive={() => void handleArchiveSession(session)}
         menuItems={projectMenu
           ? getProjectSessionMenuItems(Boolean(session.pinned), t)
           : getConversationMenuItems(Boolean(session.pinned), t)}
@@ -1255,8 +1355,8 @@ export function ConversationSidebar({
                     clearCronJobUnread(job.id);
                     onSelect(ts);
                   }}
-                  onDelete={() => onDelete(ts)}
                   onPin={() => void handlePinSession(ts)}
+                  onArchive={() => void handleArchiveSession(ts)}
                   menuItems={getConversationMenuItems(Boolean(ts.pinned), t)}
                   onRename={() => setRenameTarget({
                     kind: 'session',
@@ -1344,6 +1444,10 @@ export function ConversationSidebar({
             if (isDefaultProject(project)) return;
             setRenameError(null);
             setRenameTarget({ kind: 'project', id: project.project_id, value: project.name });
+          }}
+          onArchive={() => {
+            if (isDefaultProject(project)) return;
+            void handleArchiveProject(project);
           }}
           onRemove={() => {
             if (isDefaultProject(project)) return;

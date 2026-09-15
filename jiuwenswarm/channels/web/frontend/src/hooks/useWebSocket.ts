@@ -943,6 +943,15 @@ function stringifyCompact(value: unknown): string {
   }
 }
 
+/** 归档相关事件的负载；事件仅用于同步刷新，按资源 ID 幂等处理，不替代请求结果。 */
+type ArchiveResourceEventPayload = {
+  session_id?: string;
+  project_id?: string;
+  work_mode?: string;
+};
+
+const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
+
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
   const {
@@ -2577,6 +2586,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       });
     };
 
+    // 归档事件去抖句柄：同一时间窗内成串到达的事件只触发一次工作区刷新
+    let archiveRefreshTimer: number | null = null;
+    const scheduleArchiveWorkspaceRefresh = (includeCron: boolean) => {
+      if (archiveRefreshTimer !== null) window.clearTimeout(archiveRefreshTimer);
+      archiveRefreshTimer = window.setTimeout(() => {
+        archiveRefreshTimer = null;
+        void useWorkspaceStore.getState().refreshWorkspaceData();
+        if (includeCron) void useCronStore.getState().loadJobs();
+      }, ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS);
+    };
+
     const unsubs = [
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
@@ -3861,6 +3881,27 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useSessionStore.getState().setMode(sessionId, normalizeAgentMode(payload.mode));
         }
       }),
+      // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
+      // 项目维度的事件还会同步 cron 列表。归档管理页自行订阅同名事件刷新归档列表。
+      // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
+      webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('session.deleted', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('project.archived', () => {
+        scheduleArchiveWorkspaceRefresh(true);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('project.unarchived', () => {
+        scheduleArchiveWorkspaceRefresh(true);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('project.deleted', () => {
+        scheduleArchiveWorkspaceRefresh(true);
+      }),
       // 用户点"执行"后，后端在 exit_plan_mode 内部已恢复普通模式。这里同步关掉
       // 本地 Plan 开关，否则下一条消息仍会带 .plan 而重新进入 Plan。
       webClient.on('plan.mode_exited', ({ payload }) => {
@@ -4839,6 +4880,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
     return () => {
       streamDeltaBatcherRef.current?.flushAll();
+      if (archiveRefreshTimer !== null) window.clearTimeout(archiveRefreshTimer);
       unsubs.forEach((fn) => fn());
     };
   }, [

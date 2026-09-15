@@ -5,6 +5,7 @@ export type SidebarMenuAction =
   | 'delete-archived-sessions'
   | 'pin'
   | 'rename'
+  | 'archive'
   | 'delete';
 
 export type SidebarMenuItem = {
@@ -87,15 +88,13 @@ function buildSidebarMenuItems(
   isPinned: boolean,
   pinLabels: readonly [string, string],
   translate: Translate,
+  options: { archiveLabel: string },
 ): SidebarMenuItem[] {
-  const items: SidebarMenuItem[] = [
+  return [
     { action: 'pin', label: translate(isPinned ? pinLabels[1] : pinLabels[0]), pinned: isPinned },
-  ];
-  items.push(
     { action: 'rename', label: translate('multiSession.project.rename') },
-    { action: 'delete', label: translate('multiSession.delete'), danger: true },
-  );
-  return items;
+    { action: 'archive', label: options.archiveLabel },
+  ];
 }
 
 export function getProjectMenuItems(isPinned: boolean, translate: Translate, isDefault = false): SidebarMenuItem[] {
@@ -103,15 +102,27 @@ export function getProjectMenuItems(isPinned: boolean, translate: Translate, isD
     { action: 'archive-sessions', label: translate('multiSession.project.archiveSessions') },
     { action: 'delete-archived-sessions', label: translate('multiSession.project.deleteArchivedSessions'), danger: true },
   ];
-  return isDefault ? batchItems : [...buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.project, translate), ...batchItems];
+  if (isDefault) return batchItems;
+  // 删除项目是项目行独立能力，不与会话菜单共用开关。
+  return [
+    ...buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.project, translate, {
+      archiveLabel: translate('multiSession.project.archiveProject'),
+    }),
+    { action: 'delete', label: translate('multiSession.delete'), danger: true },
+    ...batchItems,
+  ];
 }
 
 export function getProjectSessionMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.projectSession, translate);
+  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.projectSession, translate, {
+    archiveLabel: translate('multiSession.project.archiveConversation'),
+  });
 }
 
 export function getConversationMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate);
+  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate, {
+    archiveLabel: translate('multiSession.project.archiveConversation'),
+  });
 }
 
 export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {
