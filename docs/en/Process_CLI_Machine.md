@@ -12,6 +12,9 @@ Closing Runtime releases execution resources, not persisted Session history.
 
 ## Input
 
+Read-only queries use `--query-json FILE|-`; see [one-shot query commands](#one-shot-query-commands).
+Python and TypeScript hosts are documented in [SDK integration](../../sdks/README.md).
+
 ```sh
 jiuwenswarm-process --run-json request.json
 # Alternatively, write one UTF-8 document to stdin, then close stdin (EOF):
@@ -234,3 +237,47 @@ Runtime may continue output on the original stream or on the answering stream;
 the CLI drains both, retaining the same external run/Session identity and output
 sequence. It stops its input reader and closes all streams before Session and
 Runtime cleanup, and still emits the terminal result only after cleanup.
+
+## One-shot query commands
+
+`jiuwenswarm-process --query-json FILE` or `--query-json -` reads one bounded
+UTF-8 document (stdin requires EOF), starts one Runtime, calls its public query
+API, closes Runtime and exits. It never creates/resumes an Agent or changes the
+active Session/model/mode/permission/MCP configuration. Do not mix query and run
+flags or legacy flags. This is not a batch, JSON-RPC service, or resident worker.
+
+```json
+{
+  "schema_version": "0.1",
+  "type": "query",
+  "request_id": "catalog-001",
+  "operation": "session.list",
+  "params": {"limit": 20, "offset": 0},
+  "timeout_seconds": 30
+}
+```
+
+| Operation | Params | Runtime result in `data` |
+| --- | --- | --- |
+| `session.get` | Required `session_id` | `session` summary or `null` for missing/foreign/non-single-Agent Sessions |
+| `session.list` | Optional `limit` (1–200), `offset` (nonnegative) | `sessions`, `total`, `limit`, `offset` |
+| `model.list` | None | Configured, credential-free model catalog |
+| `model.resolve` | Required `requested` | One public model descriptor; not a live model connectivity test |
+| `mode.list` | None | Four supported single-Agent modes and capabilities |
+| `mode.resolve` | Required `requested` | Descriptor; Runtime retains supported legacy aliases |
+| `permission.get` | Optional `session_id` | Host snapshot or owned Session overlay; no approval or policy mutation |
+| `mcp.validate` | Required `references` array | Local readiness/missing reference facts, without connecting or changing MCP configuration |
+
+`workspace` is optional and follows the existing path-resolution contract.
+Unknown operations/params and malformed types fail with exit 2 before Runtime
+startup. Domain validation errors retain Runtime error codes with safe messages.
+Session ownership is fixed to `process_cli`; a caller cannot pass `channel_id`.
+MCP validation returning missing/not-ready is a successfully executed query, not
+evidence that references are usable. Inspect `data`; no config secrets are exposed.
+
+Queries emit exactly one `type=query_result`, schema `0.1`, `sequence=0`, and
+`session_id=null`. Fields are `request_id`, `operation`, `status`, `exit_code`,
+`data`, and `error`. A successful result needs no invented Session ID. Read `data`
+only on `status=completed`. The existing chat `event`/`result` schema is unchanged.
+Early invalid-input failures may have `operation=null`. Exit and cleanup failure
+semantics match machine runs; a cleanup failure cannot report successful queries.
