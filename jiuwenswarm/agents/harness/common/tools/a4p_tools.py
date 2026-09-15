@@ -366,7 +366,9 @@ def get_tools(session_id: str | None = None) -> list[Any]:
             "one complete future scope is bound to an existing disabled cron job; cron authorization cannot be staged "
             "or depend on interactive approval during execution. Runtime-dependent arguments do not require another "
             "authorization if their actual values match an approved scope. This tool authorizes actions but does not "
-            "execute them."
+            "execute them. A4P must be enabled to request authorization. Passkey viewing and "
+            "registration in Web settings intentionally remain available while A4P is disabled; "
+            "they still require an interactive Web route and a supported browser origin."
         ),
         input_params={
             "type": "object",

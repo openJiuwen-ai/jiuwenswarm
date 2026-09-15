@@ -59,7 +59,14 @@ function serializeCredential(credential: PublicKeyCredential): Record<string, un
 }
 
 export function isWebAuthnSupported(): boolean {
-  return typeof window !== 'undefined' && typeof window.PublicKeyCredential !== 'undefined';
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.PublicKeyCredential !== 'undefined' &&
+    typeof window.PublicKeyCredential.parseCreationOptionsFromJSON === 'function' &&
+    typeof window.PublicKeyCredential.parseRequestOptionsFromJSON === 'function' &&
+    typeof window.navigator.credentials?.create === 'function' &&
+    typeof window.navigator.credentials?.get === 'function'
+  );
 }
 
 export async function createPasskey(options: PublicKeyCredentialCreationOptionsJSON): Promise<Record<string, unknown>> {

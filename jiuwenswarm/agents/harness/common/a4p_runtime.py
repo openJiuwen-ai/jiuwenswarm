@@ -32,6 +32,7 @@ from jiuwenswarm.agents.harness.common.a4p_display import (
     preferred_display_language,
 )
 from jiuwenswarm.agents.harness.common.a4p_execution_context import AuthorizerRoute
+from jiuwenswarm.agents.harness.common.a4p_token_expiry import token_expired
 from jiuwenswarm.agents.harness.common.a4p_webauthn import (
     A4PWebAuthnAdapter,
     WEBAUTHN_CREDENTIAL_STORE_FILENAME,
@@ -299,7 +300,7 @@ class A4PRuntime:
         return payload
 
     def store_intent_token(self, session_id: str, token: dict[str, Any]) -> None:
-        if not session_id or not isinstance(token, dict):
+        if not session_id or not isinstance(token, dict) or token_expired(token):
             return
         tokens = self._session_tokens.setdefault(session_id, [])
         token_id = str(token.get("tokenId") or "")
@@ -307,7 +308,20 @@ class A4PRuntime:
             item for item in tokens if str(item.get("tokenId") or "") != token_id
         ] + [dict(token)]
 
+    def _prune_session_tokens(self, session_id: str) -> None:
+        tokens = [
+            token
+            for token in self._session_tokens.get(session_id, [])
+            if isinstance(token, dict) and not token_expired(token)
+        ]
+        if tokens:
+            self._session_tokens[session_id] = tokens
+        else:
+            self._session_tokens.pop(session_id, None)
+
     def export_session_tokens(self) -> dict[str, list[dict[str, Any]]]:
+        for session_id in list(self._session_tokens):
+            self._prune_session_tokens(session_id)
         return deepcopy(self._session_tokens)
 
     def import_session_tokens(
@@ -315,6 +329,8 @@ class A4PRuntime:
         tokens: dict[str, list[dict[str, Any]]],
     ) -> None:
         self._session_tokens = deepcopy(tokens)
+        for session_id in list(self._session_tokens):
+            self._prune_session_tokens(session_id)
 
     def webauthn_registration_options(
         self,
@@ -402,6 +418,7 @@ class A4PRuntime:
         action: str,
         params: dict[str, Any] | None,
     ) -> dict[str, Any] | None:
+        self._prune_session_tokens(session_id)
         for token in list(self._session_tokens.get(session_id, [])):
             if await self._verify_intent_token(
                 token=token,

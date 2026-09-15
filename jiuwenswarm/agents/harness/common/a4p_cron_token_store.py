@@ -4,7 +4,6 @@
 
 from __future__ import annotations
 
-import calendar
 import json
 import sqlite3
 import time
@@ -13,22 +12,11 @@ from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
+from jiuwenswarm.agents.harness.common.a4p_token_expiry import token_expired
+
 
 CRON_INTENT_TOKENS_DB_FILENAME = "cron_intent_tokens.sqlite3"
 CRON_INTENT_TOKENS_VERSION = 1
-
-
-def _token_expired(token: dict[str, Any]) -> bool:
-    expire_at = str(token.get("expireAt") or "").strip()
-    if not expire_at:
-        return True
-    try:
-        expire_epoch = calendar.timegm(
-            time.strptime(expire_at, "%Y-%m-%dT%H:%M:%SZ")
-        )
-    except ValueError:
-        return True
-    return time.time() > expire_epoch
 
 
 class SQLiteCronIntentTokenStore:
@@ -66,7 +54,7 @@ class SQLiteCronIntentTokenStore:
 
     def put(self, cron_job_id: str, token: dict[str, Any]) -> None:
         job_id = str(cron_job_id or "").strip()
-        if not job_id or not isinstance(token, dict):
+        if not job_id or not isinstance(token, dict) or token_expired(token):
             return
         encoded = json.dumps(token, ensure_ascii=False, separators=(",", ":"))
         with closing(self._connect()) as connection:
@@ -107,7 +95,7 @@ class SQLiteCronIntentTokenStore:
         except (TypeError, ValueError):
             self._remove_if_unchanged(job_id, encoded)
             return None
-        if not isinstance(token, dict) or _token_expired(token):
+        if not isinstance(token, dict) or token_expired(token):
             self._remove_if_unchanged(job_id, encoded)
             return None
         return token
@@ -156,7 +144,7 @@ class SQLiteCronIntentTokenStore:
             except (TypeError, ValueError):
                 stale_rows.append((str(job_id), encoded))
                 continue
-            if not isinstance(token, dict) or _token_expired(token):
+            if not isinstance(token, dict) or token_expired(token):
                 stale_rows.append((str(job_id), encoded))
                 continue
             summaries[str(job_id)] = {
