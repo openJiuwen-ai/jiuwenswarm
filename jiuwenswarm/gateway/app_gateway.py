@@ -112,6 +112,17 @@ logger = logging.getLogger("jiuwenswarm.gateway")
 _PROMPT_IDLE_FINALIZE_SECONDS = 3.0
 _AGENT_PREWARM_EXCLUDED_CHANNELS = frozenset({"acp", "a2a"})
 
+
+def _agent_prewarm_enabled() -> bool:
+    """Return whether background session prewarming is switched on.
+
+    Prewarming is opt-in via JIUWENSWARM_AGENT_PREWARM; when off the Gateway
+    must not emit agent.prewarm.sync requests or related log noise.
+    """
+    from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+    return prewarm_enabled_by_env()
+
 # IM 平台官方 API 域名（仅作为 config.yaml 缺字段时的加载兜底，不在 Config 类里硬编码）
 _FEISHU_DEFAULT_API_BASE = "https://open.feishu.cn"
 _DINGTALK_DEFAULT_API_BASE = "https://api.dingtalk.com"    # 新版 v1.0 接口域名
@@ -396,7 +407,8 @@ async def _connect_with_retry(
     backoff = 0.05 if local_agent else 0.2
     max_backoff = min(interval, 0.25) if local_agent else interval
     if local_agent:
-        max_retries = max(max_retries, 120)
+        # Allow roughly 60s for the local AgentServer to start at a 0.25s cadence.
+        max_retries = max(max_retries, 240)
     for attempt in range(1, max_retries + 1):
         # 先 TCP 探测: 端口未通则不浪费一次 WS 握手, 直接进入退避等待.
         if not _tcp_ready(timeout=0.05 if local_agent else 0.5):
@@ -1852,6 +1864,8 @@ async def _run(
     prewarm_sync_debounce_task: asyncio.Task[None] | None = None
 
     async def _sync_agent_prewarm_channels() -> None:
+        if not _agent_prewarm_enabled():
+            return
         try:
             prewarm_channels = {
                 channel
@@ -1884,6 +1898,8 @@ async def _run(
     ) -> None:
         """Coalesce startup/config/channel churn into one settled sync."""
         nonlocal prewarm_sync_debounce_task
+        if not _agent_prewarm_enabled():
+            return
         previous = prewarm_sync_debounce_task
         if previous is not None and not previous.done():
             previous.cancel()
@@ -2981,9 +2997,13 @@ async def _run(
 
     channel_manager.set_config_callback(_apply_channel_config)
 
-    prewarm_sync_task = asyncio.create_task(
-        _periodic_agent_prewarm_sync(),
-        name="agent-prewarm-periodic-sync",
+    prewarm_sync_task = (
+        asyncio.create_task(
+            _periodic_agent_prewarm_sync(),
+            name="agent-prewarm-periodic-sync",
+        )
+        if _agent_prewarm_enabled()
+        else None
     )
 
     # ---------- Opencode Zen 免费模型预热 ----------
@@ -3221,11 +3241,12 @@ async def _run(
                 await prewarm_sync_debounce_task
             except asyncio.CancelledError:
                 pass
-        prewarm_sync_task.cancel()
-        try:
-            await prewarm_sync_task
-        except asyncio.CancelledError:
-            pass
+        if prewarm_sync_task is not None:
+            prewarm_sync_task.cancel()
+            try:
+                await prewarm_sync_task
+            except asyncio.CancelledError:
+                pass
         if zen_free_models_task is not None:
             zen_free_models_task.cancel()
             try:

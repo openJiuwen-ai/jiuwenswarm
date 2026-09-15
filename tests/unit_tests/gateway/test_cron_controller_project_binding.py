@@ -32,6 +32,8 @@ class _RecordingStore:
             timezone="Asia/Shanghai",
             targets="web",
             work_mode="work",
+            project_id="default",
+            user_id=None,
         )
 
     async def update_job(self, job_id: str, patch: dict):
@@ -40,6 +42,9 @@ class _RecordingStore:
 
 
 class _FakeScheduler:
+    async def project_execution_allowed(self, project_id, user_id=None) -> bool:
+        return True
+
     async def reload(self) -> None:
         return None
 
@@ -157,3 +162,88 @@ async def test_update_job_tolerates_user_side_project_id(monkeypatch) -> None:
     assert patch["project_id"] == "proj_user_side"
     assert patch["work_mode"] == "code"
     assert "_agentos_project_binding_verified" not in patch
+
+
+# ---------------------------------------------------------------------------
+# 会话级 MCP 选择（mcp）随 job 落库 / patch 规范化
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.asyncio
+async def test_create_job_normalizes_and_passes_mcp_to_store(monkeypatch) -> None:
+    """create 时 mcp 做 strip/去空/去重后透传 store；不校验存在性。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        lambda project_id, project_dir, work_mode: CronProjectBinding(
+            project_id="",
+            work_mode="work",
+            error=None,
+            code="",
+            hidden=False,
+        ),
+    )
+    cc = _make_controller()
+    await cc.create_job(
+        {
+            "name": "daily",
+            "cron_expr": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "description": "hello",
+            "targets": "web",
+            "mcp": [" feishu-doc ", "github", "github", "", 123],
+        }
+    )
+
+    create_call = cc._store.create_calls[0]
+    assert create_call["mcp"] == ["feishu-doc", "github"]
+
+
+@pytest.mark.asyncio
+async def test_create_job_without_mcp_passes_none(monkeypatch) -> None:
+    """未传 mcp → store 收到 None（保持既有行为，旧 job 兜底一致）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.project_store.resolve_cron_project_binding",
+        lambda project_id, project_dir, work_mode: CronProjectBinding(
+            project_id="",
+            work_mode="work",
+            error=None,
+            code="",
+            hidden=False,
+        ),
+    )
+    cc = _make_controller()
+    await cc.create_job(
+        {
+            "name": "daily",
+            "cron_expr": "0 9 * * *",
+            "timezone": "Asia/Shanghai",
+            "description": "hello",
+            "targets": "web",
+        }
+    )
+
+    create_call = cc._store.create_calls[0]
+    assert create_call["mcp"] is None
+
+
+@pytest.mark.asyncio
+async def test_update_job_normalizes_mcp_patch(monkeypatch) -> None:
+    """patch mcp：非空列表规范化；空列表/null 归 None（清除选择）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.project_store.get_project_by_id",
+        lambda project_id, cache_bust=True: None,
+    )
+    cc = _make_controller()
+    await cc.update_job(
+        "job-1",
+        {"mcp": [" a ", "b", "b", ""], "_agentos_project_binding_verified": True},
+    )
+    _, patch = cc._store.update_calls[0]
+    assert patch["mcp"] == ["a", "b"]
+
+    await cc.update_job(
+        "job-1",
+        {"mcp": [], "_agentos_project_binding_verified": True},
+    )
+    _, patch = cc._store.update_calls[1]
+    assert patch["mcp"] is None

@@ -27,6 +27,7 @@ import { StreamingContent } from './StreamingContent';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { ToolCallDisplay } from './ToolCallDisplay';
 import { MediaRenderer, stripUploadDocumentBlocks } from './MediaRenderer';
+import { stripSwarmflowAdvisory } from '../../utils/swarmflowAdvisory';
 import { A2UIMessageContent } from '../../features/a2ui/A2UIMessageContent';
 import { QaSummaryCard } from '../InteractionSlot/QaSummaryCard';
 import { isQaSummaryContent } from '../InteractionSlot/qaSummary';
@@ -51,6 +52,7 @@ import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
+import { isSkillPackageFile } from '../../utils/skillPackageFile';
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -136,7 +138,9 @@ function TeamLeaderPlainTextMessage({
   member = 'team_leader',
   content,
   messageId,
+  timestamp,
   isStreaming = false,
+  hideMeta = false,
   showAvatar = true,
   fileItems,
   disableA2UIInteraction = false,
@@ -144,7 +148,9 @@ function TeamLeaderPlainTextMessage({
   member?: string;
   content: string;
   messageId: string;
+  timestamp: string;
   isStreaming?: boolean;
+  hideMeta?: boolean;
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
   disableA2UIInteraction?: boolean;
@@ -169,6 +175,14 @@ function TeamLeaderPlainTextMessage({
           disableInteraction={disableA2UIInteraction}
         />
       </div>
+      {!isStreaming && !hideMeta && (
+        <div
+          data-testid="chat-panel-message-meta"
+          className="flex items-center gap-1 text-sm mt-2 text-text-meta justify-start"
+        >
+          <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
+        </div>
+      )}
     </TeamMemberMessageFrame>
   );
 }
@@ -395,7 +409,7 @@ export const MessageItem = memo(function MessageItem({
 
   const handleCopy = useCallback(async () => {
     if (!content) return;
-    const raw = role === 'user' ? stripUploadDocumentBlocks(content) : content;
+    const raw = role === 'user' ? stripUploadDocumentBlocks(stripSwarmflowAdvisory(content)) : content;
     if (!raw) return;
     const copyContent = a2uiContentToText(raw) || raw;
     try {
@@ -574,6 +588,9 @@ export const MessageItem = memo(function MessageItem({
 	                 member={event.fromMember}
 	                 content={event.content}
 	                 messageId={id}
+	                 timestamp={timestamp}
+	                 isStreaming={isStreaming}
+	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
 	               />
 	             );
@@ -635,7 +652,9 @@ export const MessageItem = memo(function MessageItem({
 	           member="team_leader"
 	           content={messageContent || (isStreaming ? '正在接收中...' : '')}
 	           messageId={id}
+	           timestamp={timestamp}
 	           isStreaming={isStreaming}
+	           hideMeta={hideMeta}
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	           disableA2UIInteraction={disableA2UIInteraction}
@@ -652,9 +671,10 @@ export const MessageItem = memo(function MessageItem({
     );
   }
 
-  // 用户/助手消息
+  // 用户/助手消息。用户气泡剔除机器注入的 advisory 后再去掉上传文档提示块，
+  // 历史渲染只展示用户真正输入的原文。
   const isUser = role === 'user';
-  const displayContent = isUser ? stripUploadDocumentBlocks(content) : content;
+  const displayContent = isUser ? stripSwarmflowAdvisory(stripUploadDocumentBlocks(content)) : content;
   const showTTS = Boolean(
     !isUser && !isStreaming && content && (ttsSupported || audioBase64)
   );
@@ -708,6 +728,7 @@ export const MessageItem = memo(function MessageItem({
             className={clsx(
               'chat-bubble relative group',
               isUser ? 'user' : 'assistant',
+              !isUser && message.presentation === 'tool_result' && 'chat-bubble--tool-result',
               !isUser && !isStreaming && 'markdown',
               isStreaming && 'streaming'
             )}
@@ -715,6 +736,9 @@ export const MessageItem = memo(function MessageItem({
             data-variant={isUser ? 'user' : 'assistant'}
             data-state={isStreaming ? 'streaming' : 'final'}
           >
+            {!isUser && message.presentation === 'tool_result' && (
+              <div className="chat-bubble__result-label">{t('chat.toolResultLabel', '工具结果')} · Jiuwen Core Agent</div>
+            )}
             {isStreaming ? (
               isUser ? (
                 <StreamingContent content={displayContent} />
@@ -780,14 +804,14 @@ export const MessageItem = memo(function MessageItem({
           <div
             data-testid="chat-panel-message-meta"
             className={clsx(
-              'flex items-center gap-1 text-sm mt-2 text-text-muted',
+              'flex items-center gap-1 text-sm mt-2 text-text-meta',
               isUser ? 'justify-end' : 'justify-start'
             )}
           >
             <span data-testid="chat-panel-message-timestamp">{formatTimestamp(timestamp)}</span>
 
             {isUser && isGoalObjectiveMessage && (
-              <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-muted" data-testid="chat-panel-message-goal-badge">
+              <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta" data-testid="chat-panel-message-goal-badge">
                 <Target className="w-3 h-3" strokeWidth={2} />
                 {t('goal.badge')}
               </span>
@@ -816,24 +840,28 @@ export const MessageItem = memo(function MessageItem({
             )}
 
             {showTTS && (
-              <button
-                data-testid="chat-panel-message-tts-btn"
-                data-variant={isPlaying ? 'playing' : 'idle'}
-                onClick={handleSpeak}
-                className={clsx(
-                  'p-1.5 rounded-md ',
-                  isPlaying
-                    ? 'text-accent bg-accent/10'
-                    : 'hover:text-accent hover:bg-secondary'
-                )}
-                title={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
-              >
-                {isPlaying ? (
-                  <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
-                ) : (
-                  <Volume2 className="w-4 h-4" strokeWidth={1.5} />
-                )}
-              </button>
+              <div className="relative" data-testid="chat-panel-message-tts">
+                <button
+                  data-testid="chat-panel-message-tts-btn"
+                  data-variant={isPlaying ? 'playing' : 'idle'}
+                  data-tooltip={isPlaying ? t('chatUi.stopReading') : t('chatUi.readMessage')}
+                  {...tooltipHandlers}
+                  onClick={handleSpeak}
+                  className={clsx(
+                    'p-1.5 rounded-md ',
+                    isPlaying
+                      ? 'text-accent bg-accent/10'
+                      : 'hover:text-accent hover:bg-secondary'
+                  )}
+                >
+                  {isPlaying ? (
+                    <Square className="w-4 h-4 fill-current" strokeWidth={1.5} />
+                  ) : (
+                    <Volume2 className="w-4 h-4" strokeWidth={1.5} />
+                  )}
+                </button>
+                {tooltip}
+              </div>
             )}
           </div>
         )}
@@ -849,18 +877,6 @@ function formatFileSize(bytes: number | undefined): string {
   const i = Math.floor(Math.log(bytes) / Math.log(1024));
   const size = bytes / Math.pow(1024, i);
   return `${size.toFixed(i === 0 ? 0 : 1)} ${units[i]}`;
-}
-
-/** 识别可保存的 Skill 包：`.skill` / `.skill.zip` */
-function isSkillPackageFile(file: FileDownloadItem): boolean {
-  const candidates = [file.name, file.path].filter(Boolean) as string[];
-  for (const candidate of candidates) {
-    const base = candidate.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
-    if (base.endsWith('.skill.zip') || base.endsWith('.skill')) {
-      return true;
-    }
-  }
-  return false;
 }
 
 function skillPackageDisplayName(file: FileDownloadItem): string {
@@ -1032,6 +1048,11 @@ function FileDownloadList({
         const downloadToken = resolveFileDownloadToken(file);
         const isSaving = savingIndex === index;
         const isSaved = savedIndex.has(index);
+        const isImage = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('image/')) && Boolean(file.download_url);
+        const isVideo = !isSkill && Boolean(file.mime_type && file.mime_type.startsWith('video/')) && Boolean(file.download_url);
+        const showImagePreview = isImage && !expired;
+        const showVideoPreview = isVideo && !expired;
+        const showPreview = showImagePreview || showVideoPreview;
         return (
           <div
             key={`${file.name}-${index}`}
@@ -1039,6 +1060,7 @@ function FileDownloadList({
             data-variant={file.name}
             className={clsx(
               'chat-panel-file-download-item group',
+              showPreview && 'chat-panel-file-download-item--with-preview',
               expired
                 ? 'chat-panel-file-download-item--expired'
                 : !onPreview && 'chat-panel-file-download-item--no-preview',
@@ -1047,6 +1069,7 @@ function FileDownloadList({
               if (!expired) onPreview?.(index);
             }}
           >
+            <div className="chat-panel-file-download-item__row">
             <button
               type="button"
               data-testid="chat-panel-file-download-preview"
@@ -1138,6 +1161,27 @@ function FileDownloadList({
                   </svg>
                 )}
               </button>
+            )}
+            </div>
+            {showImagePreview && (
+              <img
+                src={file.download_url}
+                alt={displayName}
+                className="chat-panel-file-download-image-preview"
+                data-testid="chat-panel-file-download-image-preview"
+                loading="lazy"
+              />
+            )}
+            {showVideoPreview && (
+              <video
+                controls
+                preload="metadata"
+                className="chat-panel-file-download-video-preview"
+                data-testid="chat-panel-file-download-video-preview"
+                onClick={(event) => event.stopPropagation()}
+              >
+                <source src={file.download_url} type={file.mime_type} />
+              </video>
             )}
           </div>
         );

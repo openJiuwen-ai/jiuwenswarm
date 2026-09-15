@@ -68,6 +68,7 @@ from jiuwenswarm.common.config import (
     update_symphony_in_config,
     update_permissions_enabled_in_config,
     update_setup_guide_enabled_in_config,
+    update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -78,6 +79,7 @@ from jiuwenswarm.common.config import (
     update_updater_in_config,
     update_proactive_recommendation_in_config,
     update_trajectory_ui_in_config,
+    update_task_full_duplex_in_config,
     update_skill_evolution_enabled_in_config,
 )
 from jiuwenswarm.common.kv_cache_affinity_config import (
@@ -119,6 +121,10 @@ from jiuwenswarm.common.work_mode import (
     is_default_project_id,
 )
 from jiuwenswarm.common.version import __version__
+from jiuwenswarm.gateway.channel_manager.web.task_asr import (
+    TaskAsrError,
+    transcribe_task_audio,
+)
 
 for _jiuwen_log in LogManager.get_all_loggers().values():
     _jiuwen_log.set_level(logging.INFO)
@@ -127,6 +133,9 @@ logger = logging.getLogger(__name__)
 
 
 _WEB_CONFIG_RELOAD_CHANNEL_ID = "web"
+_SEARCH_RELOAD_ENV_KEYS = {
+    "BOCHA_API_KEY", "PERPLEXITY_API_KEY", "SERPER_API_KEY", "JINA_API_KEY",
+}
 _MODEL_RELOAD_ENV_KEYS = {
     "MODEL_PROVIDER",
     "MODEL_NAME",
@@ -152,6 +161,23 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VISION_ENABLED",
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
+    "VIDEO_GEN_ENABLED",
+    "VIDEO_GEN_API_BASE",
+    "VIDEO_GEN_API_KEY",
+    "VIDEO_GEN_MODEL_NAME",
+    "VIDEO_GEN_PROVIDER",
+    "VIDEO_GEN_PROTOCOL",
+    "VISUAL_GEN_ENABLED",
+    "VISUAL_GEN_API_BASE",
+    "VISUAL_GEN_API_KEY",
+    "VISUAL_GEN_MODEL_NAME",
+    "VISUAL_GEN_PROVIDER",
+    "VISUAL_GEN_PROTOCOL",
+}
+_ASR_ENV_KEYS = {
+    "ASR_API_BASE",
+    "ASR_API_KEY",
+    "ASR_MODEL_NAME",
 }
 
 
@@ -176,6 +202,10 @@ class _ConfigChangeSet:
             scopes.add("model")
         if _MULTIMODAL_RELOAD_ENV_KEYS & set(self.env_updates):
             scopes.add("multimodal")
+        if _ASR_ENV_KEYS & set(self.env_updates):
+            scopes.add("web_ui")
+        if _SEARCH_RELOAD_ENV_KEYS & set(self.env_updates):
+            scopes.add("search")
         for key in self.yaml_updated:
             key_text = str(key)
             if key_text == "skill_retrieval_index_recommendation_shown":
@@ -192,6 +222,8 @@ class _ConfigChangeSet:
                 scopes.add("agent_runtime")
             elif key_text == "trajectory_ui_enabled":
                 scopes.update({"agent_runtime", "web_ui"})
+            elif key_text == "task_full_duplex_enabled":
+                scopes.add("web_ui")
             elif key_text.startswith("a2ui_") or key_text == "setup_guide_enabled":
                 scopes.add("web_ui")
             else:
@@ -220,6 +252,7 @@ _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
 _CODEX_DEPENDENCY_INSTALL_STATUS: dict[str, Any] = {
     "status": "idle",
     "phase": "idle",
+    "progress_kind": "",
     "error": "",
     "last_log": "",
     "log_tail": [],
@@ -584,7 +617,9 @@ def _merge_models_for_replace_all(
                 or not _values_match(item["model_provider"], resolved_mcc.get("client_provider"))
             ):
                 new_mcc["client_provider"] = item["model_provider"]
-            if not _values_match(item["temperature"], resolved_mco.get("temperature")):
+            if item["temperature"] is None:
+                new_mco.pop("temperature", None)
+            elif not _values_match(item["temperature"], resolved_mco.get("temperature")):
                 new_mco["temperature"] = item["temperature"]
             reasoning_level = str(item.get("reasoning_level") or "").strip()
             # 不能用 _values_match：legacy YAML 1.1 会把裸 on/off 读成布尔，
@@ -642,7 +677,7 @@ def _merge_models_for_replace_all(
                     **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
                 },
                 "model_config_obj": {
-                    "temperature": item["temperature"],
+                    **({"temperature": item["temperature"]} if item["temperature"] is not None else {}),
                     **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
                        if item.get("reasoning_level") else {}),
                 },
@@ -704,6 +739,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.marketplace.toggle",
     "skills.uninstall",
     "skills.online_search.search",
+    "skills.online_search.install",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -750,6 +786,7 @@ _FORWARD_REQ_METHODS = frozenset({
     "personal_context.fetch.stop_service",
     "personal_context.fetch.run_all",
     "personal_context.fetch.run_one",
+    "personal_context.fetch.stop_run",
     "personal_context.fetch.get_run_status",
     "personal_context.fetch.get_authorization_status",
     "personal_context.fetch.authorize_provider",
@@ -874,6 +911,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.marketplace.toggle",
     "skills.uninstall",
     "skills.online_search.search",
+    "skills.online_search.install",
     "skills.skillnet.search",
     "skills.skillnet.install",
     "skills.skillnet.install_status",
@@ -920,6 +958,7 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "personal_context.fetch.stop_service",
     "personal_context.fetch.run_all",
     "personal_context.fetch.run_one",
+    "personal_context.fetch.stop_run",
     "personal_context.fetch.get_run_status",
     "personal_context.fetch.get_authorization_status",
     "personal_context.fetch.authorize_provider",
@@ -1002,6 +1041,23 @@ _CONFIG_SET_ENV_MAP = {
     "video_vendor_key": "VIDEO_VENDOR_KEY",
     "video_plan": "VIDEO_PLAN",
     "video_enabled": "VIDEO_ENABLED",
+    # video processing (generation) - dedicated slot, separate from the
+    # video-understanding fields above.
+    "video_gen_api_base": "VIDEO_GEN_API_BASE",
+    "video_gen_api_key": "VIDEO_GEN_API_KEY",
+    "video_gen_model": "VIDEO_GEN_MODEL_NAME",
+    "video_gen_provider": "VIDEO_GEN_PROVIDER",
+    "video_gen_protocol": "VIDEO_GEN_PROTOCOL",
+    "video_gen_enabled": "VIDEO_GEN_ENABLED",
+    # visual processing (image generation) - dedicated slot, independent of
+    # both visual_question_answering's VISION_* slot and image_tools.py's
+    # DashScope-only generate_image (IMAGE_GEN_* slot).
+    "visual_gen_api_base": "VISUAL_GEN_API_BASE",
+    "visual_gen_api_key": "VISUAL_GEN_API_KEY",
+    "visual_gen_model": "VISUAL_GEN_MODEL_NAME",
+    "visual_gen_provider": "VISUAL_GEN_PROVIDER",
+    "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
+    "visual_gen_enabled": "VISUAL_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
     "audio_api_key": "AUDIO_API_KEY",
@@ -1038,6 +1094,10 @@ _CONFIG_SET_ENV_MAP = {
     "free_search_ddg_enabled": "FREE_SEARCH_DDG_ENABLED",
     "free_search_bing_enabled": "FREE_SEARCH_BING_ENABLED",
     "free_search_proxy_url": "FREE_SEARCH_PROXY_URL",
+    # General ASR used by regular task chat. JoyAI keeps its VOICE_ASR_* settings.
+    "asr_api_base": "ASR_API_BASE",
+    "asr_api_key": "ASR_API_KEY",
+    "asr_model": "ASR_MODEL_NAME",
     # agents
     "skills": "SKILLS",
     "max_iterations": "MAX_ITERATIONS",
@@ -1065,7 +1125,9 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "rsi_enabled",
     "trajectory_ui_enabled",
+    "task_full_duplex_enabled",
     "proactive_recommendation_enabled",
     "proactive_recommendation_max_recommend_per_day",
     "proactive_recommendation_max_rounds_per_tick",
@@ -1328,21 +1390,23 @@ def _external_cli_reference_version(cli_agent: str) -> str:
     return ""
 
 
-def _resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str]:
+def _resolve_external_cli_path(cli_agent: str, cli_path: str = "") -> tuple[str, str, str]:
     requested = cli_path.strip()
     if requested:
         resolved = shutil.which(requested)
         if resolved:
-            return resolved, ""
+            return resolved, "", ""
         candidate = Path(requested).expanduser()
         if candidate.is_file():
-            return str(candidate), ""
-        return "", f"{requested} not found"
+            return str(candidate), "", ""
+        if candidate.is_dir():
+            return "", f"{requested} is a directory", "directory"
+        return "", f"{requested} not found", "not_found"
 
     resolved = shutil.which(cli_agent)
     if resolved:
-        return resolved, ""
-    return "", f"{cli_agent} not found in PATH"
+        return resolved, "", ""
+    return "", f"{cli_agent} not found in PATH", "not_found"
 
 
 def _is_windows_platform() -> bool:
@@ -1388,15 +1452,16 @@ def _detect_external_cli_agent(cli_agent: str, cli_path: str = "") -> dict[str, 
             "message": f"unsupported cli_agent: {cli_agent}",
         }
 
-    resolved_path, path_error = _resolve_external_cli_path(normalized_agent, cli_path)
+    resolved_path, path_error, path_reason = _resolve_external_cli_path(normalized_agent, cli_path)
     reference_version = _external_cli_reference_version(normalized_agent)
     if not resolved_path:
         return {
             "cli_agent": normalized_agent,
-            "status": "missing",
+            "status": "unsupported" if path_reason == "directory" else "missing",
             "path": "",
             "version": "",
             "reference_version": reference_version,
+            "reason": path_reason,
             "message": path_error,
         }
 
@@ -1768,11 +1833,12 @@ def _ensure_claude_dependency_available_or_start_install() -> dict[str, Any] | N
         return _ensure_managed_external_cli_runtime_or_start_install("claude")
     with _CLAUDE_DEPENDENCY_INSTALL_LOCK:
         if _CLAUDE_DEPENDENCY_INSTALL_STATUS.get("status") == "running":
-            return _snapshot_claude_dependency_install_status()
+            return _snapshot_external_cli_dependency_install_status_unlocked("claude")
         _CLAUDE_DEPENDENCY_INSTALL_STATUS.update(
             {
                 "status": "running",
                 "phase": "installing",
+                "progress_kind": "installer_activity",
                 "error": "",
                 "last_log": "",
                 "log_tail": [],
@@ -1836,6 +1902,7 @@ def _ensure_managed_external_cli_runtime_or_start_install(cli_agent: str) -> dic
         status.update({
             "status": "running",
             "phase": "preparing",
+            "progress_kind": "download_metrics",
             "error": "",
             "last_log": "",
             "log_tail": [],
@@ -1931,6 +1998,7 @@ def _ensure_codex_dependency_available_or_start_install() -> dict[str, Any] | No
             _CODEX_DEPENDENCY_INSTALL_STATUS.update({
                 "status": "running",
                 "phase": "preparing",
+                "progress_kind": "installer_activity",
                 "error": "",
                 "last_log": "",
                 "log_tail": [],
@@ -2800,6 +2868,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
+        from jiuwenswarm.server.runtime.agent_warm_pool import prewarm_enabled_by_env
+
+        if not prewarm_enabled_by_env():
+            return
 
         async def _sync() -> None:
             try:
@@ -2917,6 +2989,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["setup_guide_enabled"] = (
                 "true" if setup_guide_cfg.get("enabled", True) else "false"
             )
+            rsi_cfg = raw.get("rsi") or {}
+            payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
             for key, val in payload.items():
                 from jiuwenswarm.extensions.registry import ExtensionRegistry
                 if (("api_key" in key.lower() or "token" in key.lower())
@@ -2942,6 +3016,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["trajectory_ui_enabled"] = (
                 "true" if trajectory_cfg.get("enabled", False) else "false"
             )
+            experimental_cfg = raw.get("experimental") or {}
+            payload["task_full_duplex_enabled"] = (
+                "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
+            )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
@@ -2959,11 +3037,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["proactive_recommendation_max_rounds_per_tick"] = str(
                 proactive_cfg.get("max_rounds_per_tick", 20))
             models_cfg = resolved.get("models") or {}
-            payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", True) else "false"
+            payload["enable_free_models"] = "true" if models_cfg.get("enable_free_models", False) else "false"
         except Exception:  # noqa: BLE001
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("rsi_enabled", "true")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -2972,6 +3051,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
+            payload.setdefault("task_full_duplex_enabled", "false")
             for key, (_, value_type, default) in {
                 **_SYMPHONY_CONFIG_SPECS,
                 **_SKILL_RETRIEVAL_CONFIG_SPECS,
@@ -2986,7 +3066,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("proactive_recommendation_enabled", "false")
             payload.setdefault("proactive_recommendation_max_recommend_per_day", "10")
             payload.setdefault("proactive_recommendation_max_rounds_per_tick", "20")
-            payload.setdefault("enable_free_models", "true")
+            payload.setdefault("enable_free_models", "false")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _external_cli_detect(ws, req_id, params, session_id):
@@ -3194,6 +3274,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_permissions_enabled_in_config(parsed)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "rsi_enabled":
+                    update_rsi_enabled_in_config(parsed)
                 elif param_key == "enable_free_models":
                     update_enable_free_models_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
@@ -3239,6 +3321,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_a2ui_in_config(update)
                 elif param_key == "trajectory_ui_enabled":
                     update_trajectory_ui_in_config(parsed)
+                elif param_key == "task_full_duplex_enabled":
+                    update_task_full_duplex_in_config(parsed)
                 elif param_key == "proactive_recommendation_enabled":
                     update_proactive_recommendation_in_config({"enabled": parsed})
                 elif param_key == "proactive_recommendation_max_recommend_per_day":
@@ -3363,10 +3447,16 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 raise _ConfigBadRequest(f"models[{idx}].api_key is required")
             if model_provider and model_provider not in available_model_providers:
                 raise _ConfigBadRequest(f"models[{idx}].model_provider must be one of: {available_model_providers}")
-            try:
-                temperature = float(item.get("temperature", 0.95))
-            except (ValueError, TypeError):
-                temperature = 0.95
+            raw_temperature = item.get("temperature")
+            if raw_temperature is None or raw_temperature == "":
+                temperature = None
+            else:
+                try:
+                    temperature = float(raw_temperature)
+                except (ValueError, TypeError) as exc:
+                    raise _ConfigBadRequest(
+                        f"models[{idx}].temperature must be a number or empty"
+                    ) from exc
             try:
                 timeout = int(item.get("timeout", 1800))
             except (ValueError, TypeError):
@@ -3709,7 +3799,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
-                    "temperature": mco.get("temperature", 0.95),
+                    "temperature": mco.get("temperature"),
                     "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
                     "is_default": is_default,
                     # agentos 备份模型标记：由 get_default_models 经 _source=="agentos"
@@ -3744,7 +3834,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "api_base": mcc.get("api_base", ""),
                         "api_key": mcc.get("api_key", ""),
                         "model_provider": mcc.get("client_provider", ""),
-                        "temperature": mco.get("temperature", 0.95),
+                        "temperature": mco.get("temperature"),
                         "reasoning_level": _reasoning_level_display(mco.get("reasoning_level")),
                         "is_default": entry.get("is_default"),
                         "is_agentos": False,
@@ -3928,6 +4018,28 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         else:
             channels = []
         await channel.send_response(ws, req_id, ok=True, payload={"channels": channels})
+
+    async def _task_asr_transcribe(ws, req_id, params, session_id):
+        del session_id
+        if not isinstance(params, dict):
+            await channel.send_response(
+                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST"
+            )
+            return
+        try:
+            text = await transcribe_task_audio(params)
+        except TaskAsrError as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code=exc.code
+            )
+            return
+        except Exception as exc:  # noqa: BLE001
+            logger.exception("[task.asr.transcribe] unexpected failure")
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
+            )
+            return
+        await channel.send_response(ws, req_id, ok=True, payload={"text": text})
 
     # ── vendors.* handlers ──────────────
 
@@ -4554,42 +4666,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="session.pin",
         )
 
-    async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发 + 单用户共享目录适配器 fallback）。
-
-        手写 E2A 与本地 ``_delete_from_shared_dir`` 收敛到
-        ``proxy_unary_request``——单用户 WebSocket 客户端在 AgentServer 不可达时
-        由薄代理跑 SessionAdapter 的文件级删除（共享目录等价）；AgentOS 与
-        client 未构造（ac=None）时返回可重试 SERVICE_UNAVAILABLE（决策 D8）。
-        """
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
-            )
-            return
-        session_id_to_delete = params.get("session_id")
-        if not isinstance(session_id_to_delete, str) or not session_id_to_delete.strip():
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
-            )
-            return
-
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
-            label="session.delete",
-        )
-
     async def _project_list(ws, req_id, params, session_id, user_id=None):
+        channel.ensure_lifecycle_watch(user_id)
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
@@ -4671,6 +4749,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_CREATE,
             label="project.create",
+            # PROJECT_ARCHIVED 失败明细携带 project_id，前端据此调用
+            # project.unarchive 恢复归档项目，不能在 Gateway 丢弃。
+            preserve_error_payload=True,
             on_done=lambda ok, _payload: (
                 _schedule_agent_prewarm_sync("project.create") if ok else None
             ),
@@ -4716,54 +4797,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_PIN,
             label="project.pin",
-        )
-
-    async def _project_remove(ws, req_id, params, session_id, user_id=None):
-        """Forward project soft-deletion; clean Gateway Git watchers on success."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        project_id = str((params or {}).get("project_id") or "").strip()
-
-        def _after_remove(ok: bool, _payload: object) -> None:
-            if not ok:
-                return
-            registry = getattr(channel, "git_watcher_registry", None)
-            if registry is not None and project_id:
-                registry.cleanup_project(project_id)
-            _schedule_agent_prewarm_sync("project.remove")
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_REMOVE,
-            label="project.remove",
-            on_done=_after_remove,
-        )
-
-    async def _project_restore(ws, req_id, params, session_id, user_id=None):
-        """Forward project restoration to the target AgentServer."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_RESTORE,
-            label="project.restore",
-            on_done=lambda ok, _payload: (
-                _schedule_agent_prewarm_sync("project.restore") if ok else None
-            ),
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -4952,7 +4985,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     )
 
     async def _path_get(ws, req_id, params, session_id, user_id=None):
-        """读 browser.chrome_path / browser_type 并返回给前端（会解析环境变量）。"""
+        """读 browser.chrome_path 并返回给前端（会解析环境变量）。"""
         from jiuwenswarm.gateway.routing.e2a_proxy import is_legacy_shared_directory_client, proxy_unary_request
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -4971,7 +5004,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws,
                 req_id,
                 ok=True,
-                payload={"chrome_path": "", "browser_type": "auto", "headless": True},
+                payload={"chrome_path": "", "headless": True},
             )
             return
 
@@ -4981,31 +5014,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         config = _resolve_env_vars(config_base)
         browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
         chrome_path = ""
-        browser_type = "auto"
         headless = True
         if isinstance(browser_cfg, dict):
             value = browser_cfg.get("chrome_path", "")
             if isinstance(value, str):
                 chrome_path = value
-            raw_type = browser_cfg.get("browser_type", "auto")
-            if isinstance(raw_type, str) and raw_type.strip():
-                normalized = raw_type.strip().lower()
-                if normalized in {"chrome", "google-chrome", "google_chrome"}:
-                    browser_type = "chrome"
-                elif normalized in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-                    browser_type = "msedge"
-                else:
-                    browser_type = "auto"
             raw_headless = browser_cfg.get("headless", True)
             headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
         )
 
     async def _path_set(ws, req_id, params, session_id, user_id=None):
-        """更新 browser.chrome_path / browser_type / headless 并写回 config。"""
+        """更新 browser.chrome_path / headless 并写回 config。"""
         if not isinstance(params, dict):
             await channel.send_response(ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST")
             return
@@ -5015,27 +5038,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="chrome_path must be string", code="BAD_REQUEST")
             return
         chrome_path = chrome_path.strip()
-
-        raw_browser_type = params.get("browser_type", "auto")
-        if not isinstance(raw_browser_type, str):
-            await channel.send_response(ws, req_id, ok=False, error="browser_type must be string", code="BAD_REQUEST")
-            return
-        normalized_type = raw_browser_type.strip().lower()
-        if normalized_type in {"chrome", "google-chrome", "google_chrome"}:
-            browser_type = "chrome"
-        elif normalized_type in {"msedge", "edge", "microsoft-edge", "microsoft_edge"}:
-            browser_type = "msedge"
-        elif normalized_type in {"", "auto"}:
-            browser_type = "auto"
-        else:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="browser_type must be one of: auto, chrome, msedge",
-                code="BAD_REQUEST",
-            )
-            return
 
         raw_headless = params.get("headless", True)
         headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
@@ -5092,7 +5094,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
             await proxy_unary_request(
                 channel=channel, agent_client=resolved_client, ws=ws, req_id=req_id,
-                params={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+                params={"chrome_path": chrome_path, "headless": headless},
                 session_id=session_id, user_id=user_id,
                 req_method=ReqMethod.PATH_SET, label="path.set",
                 on_done=_on_path_set_done,
@@ -5113,7 +5115,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         )
 
         try:
-            update_browser_in_config({"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless})
+            update_browser_in_config({"chrome_path": chrome_path, "headless": headless})
             resolved_agent_client = _resolve(agent_client)
             await _clear_agent_config_cache(resolved_agent_client)
         except Exception as e:  # noqa: BLE001
@@ -5135,7 +5137,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         await channel.send_response(
             ws, req_id, ok=True,
-            payload={"chrome_path": chrome_path, "browser_type": browser_type, "headless": headless},
+            payload={"chrome_path": chrome_path, "headless": headless},
         )
 
     async def _path_select_directory(ws, req_id, params, session_id, user_id=None):
@@ -6645,6 +6647,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("vendors.list", _vendors_list)
     channel.register_method("vendors.fetch_models", _vendors_fetch_models)
     channel.register_method("channel.get", _channel_get)
+    channel.register_method("task.asr.transcribe", _task_asr_transcribe)
     channel.register_method("openai_account.auth.status", _openai_account_auth_status)
     channel.register_method("openai_account.auth.start_login", _openai_account_auth_start_login)
     channel.register_method("openai_account.auth.pending_login", _openai_account_auth_pending_login)
@@ -6654,7 +6657,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("session.list", _session_list)
     channel.register_method("session.create", _session_create)
-    channel.register_method("session.delete", _session_delete)
     channel.register_method("session.get_metadata", _session_get_metadata)
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
@@ -6667,8 +6669,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.create", _project_create)
     channel.register_method("project.rename", _project_rename)
     channel.register_method("project.pin", _project_pin)
-    channel.register_method("project.remove", _project_remove)
-    channel.register_method("project.restore", _project_restore)
+    from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
+    register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller))
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 
     # Git RPC handlers (设计文档 §4.1.11-§4.1.15)
@@ -7269,12 +7271,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
 
+        request_params = dict(params if isinstance(params, dict) else {})
+        if str(req_method.value).startswith("rsi."):
+            request_params["session_id"] = session_id
+            if req_method is ReqMethod.RSI_ARTIFACT_DOWNLOAD and user_id:
+                request_params["_download_user_id"] = user_id
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
-            params=params if isinstance(params, dict) else {},
+            params=request_params,
             session_id=session_id,
             user_id=user_id,
             req_method=req_method,
@@ -7294,6 +7302,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_harness("harness.activate", _HarnessReq.HARNESS_PACKAGES_ACTIVATE)
     _register_harness("harness.deactivate", _HarnessReq.HARNESS_PACKAGES_DEACTIVATE)
     _register_harness("harness.delete", _HarnessReq.HARNESS_PACKAGES_DELETE)
+
+    # RSI 优化平台 18 个 web method（web 契约 v0.3 §4）：经 E2A 转发到 AgentServer。
+    # 与 harness.* 同构（仅注册 + proxy_unary_request，不承载业务）。
+    rsi_methods = [
+        ("rsi.dataset.validate", _HarnessReq.RSI_DATASET_VALIDATE),
+        ("rsi.task.create", _HarnessReq.RSI_TASK_CREATE),
+        ("rsi.task.list", _HarnessReq.RSI_TASK_LIST),
+        ("rsi.task.get", _HarnessReq.RSI_TASK_GET),
+        ("rsi.task.delete", _HarnessReq.RSI_TASK_DELETE),
+        ("rsi.training.start", _HarnessReq.RSI_TRAINING_START),
+        ("rsi.training.pause", _HarnessReq.RSI_TRAINING_PAUSE),
+        ("rsi.training.resume", _HarnessReq.RSI_TRAINING_RESUME),
+        ("rsi.training.terminate", _HarnessReq.RSI_TRAINING_TERMINATE),
+        ("rsi.report.get", _HarnessReq.RSI_REPORT_GET),
+        ("rsi.usage.get", _HarnessReq.RSI_USAGE_GET),
+        ("rsi.artifact.download", _HarnessReq.RSI_ARTIFACT_DOWNLOAD),
+        ("rsi.artifact.files.list", _HarnessReq.RSI_ARTIFACT_FILES_LIST),
+        ("rsi.artifact.files.get", _HarnessReq.RSI_ARTIFACT_FILES_GET),
+        ("rsi.tree.get", _HarnessReq.RSI_TREE_GET),
+        ("rsi.harness.install", _HarnessReq.RSI_HARNESS_INSTALL),
+        ("rsi.harness.versions.list", _HarnessReq.RSI_HARNESS_VERSIONS_LIST),
+        ("rsi.harness.rollback", _HarnessReq.RSI_HARNESS_ROLLBACK),
+    ]
+    for _method_name, _req_method in rsi_methods:
+        _register_harness(_method_name, _req_method)
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""

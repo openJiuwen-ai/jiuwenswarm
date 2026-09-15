@@ -49,7 +49,7 @@ import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
 import UnpinIcon from '../../assets/work-mode/unpin.svg?react';
-import SidebarCollapseIcon from '../../assets/sidebar/collapse.svg?react';
+import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 
 const UNREAD_KEY = 'jiuwenswarm_session_unread';
 const RELATIVE_TIME_REFRESH_MS = 60_000;
@@ -71,6 +71,12 @@ export type NewConversationOptions = {
    * 集群模式，跳转会话时必须回到单 agent 模式（bug003）。见 App.tsx enterNewConversation。
    */
   forceMode?: AgentMode;
+  /**
+   * 进入新对话时的一次性会话 metadata，随首条消息经 chat.send 发送后清除。MCP 推荐问题
+   * 等场景用「prefer_mcp」把「优先使用哪个 MCP」这类后台意图透传给后端，见 App.tsx
+   * enterNewConversation / onUseExample。
+   */
+  metadata?: Record<string, unknown>;
 };
 
 function isDefaultProject(project: ProjectInfo): boolean {
@@ -222,7 +228,7 @@ function ConversationListItem({
   const deleteDisabled =
     runtime?.isProcessing === true ||
     session.is_processing === true ||
-    Boolean(runtime?.pendingQuestion);
+    Boolean(runtime?.pendingQuestions[0]);
 
   let status: React.ReactNode;
   if (indicator === 'waiting') {
@@ -410,12 +416,23 @@ function ProjectEntityRow({
         type="button"
         ref={mainRef}
         className="conversation-entity-row__main"
-        onClick={onToggle}
+        onClick={(event) => {
+          onToggle();
+          // 鼠标点击（detail>0）展开/收起后立即收起路径提示，避免浮层残留；键盘触发的点击保留 focus 提示
+          if (event.detail > 0) {
+            hoverRef.current = false;
+            setTooltipPos(null);
+          }
+        }}
         title={path ? undefined : title}
         aria-describedby={path ? tooltipId : undefined}
         onMouseEnter={() => showTooltip('hover')}
         onMouseLeave={() => hideTooltip('hover')}
-        onFocus={() => showTooltip('focus')}
+        onFocus={() => {
+          // 仅键盘导航（:focus-visible）显示 focus 提示；鼠标点击也会触发 focus，
+          // 若不区分会导致点击后 focusRef 残留为 true，鼠标移出时 tooltip 无法消失
+          if (mainRef.current?.matches(':focus-visible')) showTooltip('focus');
+        }}
         onBlur={() => hideTooltip('focus')}
         data-testid="multi-session-project-row-main"
       >
@@ -1320,7 +1337,7 @@ export function ConversationSidebar({
           aria-label={t('common.collapse') || 'Collapse'}
           data-testid="multi-session-sidebar-collapse"
         >
-          <SidebarCollapseIcon aria-hidden />
+          <PanelCollapseIcon aria-hidden />
         </button>
         </div>
         <div className="conversation-sidebar__operations" data-testid="multi-session-operations">

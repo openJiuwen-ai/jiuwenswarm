@@ -5,8 +5,24 @@ from __future__ import annotations
 import json
 from collections.abc import Mapping
 from dataclasses import dataclass
+from pathlib import Path, PureWindowsPath
 from types import SimpleNamespace
 from typing import Any
+
+from openjiuwen.core.runner import Runner
+from openjiuwen.core.sys_operation.cwd import _cwd_state, get_cwd, get_workspace
+from openjiuwen.harness.tools.filesystem import (
+    EditFileTool, GlobTool, GrepTool, ListDirTool, ReadFileTool, WriteFileTool,
+    _resolve_tool_file_path,
+)
+from openjiuwen.harness.security.permission_engine.fileguard.path_extract import (
+    extract_accesses_native,
+)
+
+from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
+    NATIVE_PATH_ACCESS, NativePathAccess, native_arguments_json,
+)
+from jiuwenswarm.agents.harness.common.tools.pdf_tools import _resolve_pdf_path, read_pdf
 
 try:
     import json_repair
@@ -34,6 +50,123 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 )
 
 _SEND_FILE_TOOL_NAME = "send_file_to_user"
+
+# These are executor identities, not aliases or a second permission registry.
+_NATIVE_PATH_EXECUTORS = {
+    "read_file": ReadFileTool, "write_file": WriteFileTool, "edit_file": EditFileTool,
+    "glob": GlobTool, "grep": GrepTool, "list_files": ListDirTool,
+    "read_pdf": type(read_pdf),
+}
+_SMART_GLOB_MAX_LENGTH = 2048
+_SMART_GLOB_MAX_GROUPS = 6
+_SMART_GLOB_MAX_COMMAS = 6
+
+
+def _validate_smart_glob_pattern(pattern: Any) -> None:
+    """Bound the SDK expansion before calling it, then check every branch."""
+    if not isinstance(pattern, str) or not pattern or len(pattern) > _SMART_GLOB_MAX_LENGTH:
+        raise ValueError("native_glob_expansion_limit")
+    if (
+        pattern.count("{") > _SMART_GLOB_MAX_GROUPS
+        or pattern.count("}") > _SMART_GLOB_MAX_GROUPS
+        or pattern.count(",") > _SMART_GLOB_MAX_COMMAS
+    ):
+        raise ValueError("native_glob_expansion_limit")
+    # Each expansion consumes a brace pair. With <=6 pairs and <=6 commas,
+    # recursion depth is <=6 and the product of branch factors is <=2**6.
+    # Validate the returned branches, not just the pre-expansion spelling.
+    # SDK has no public expander; reuse the executor's grammar, not a copy.
+    for branch in GlobTool._expand_brace_pattern(pattern):  # pylint: disable=protected-access
+        windows = PureWindowsPath(branch)
+        invalid_root = not branch or Path(branch).is_absolute() or windows.drive
+        if (
+            invalid_root or windows.root
+            or ".." in branch.replace("\\", "/").split("/")
+        ):
+            raise ValueError("native_glob_scope_invalid:put_parent_directory_in_path")
+
+
+def _normalize_native_path_invocation_for_execution(
+    invocation: ToolInvocation, kwargs: dict[str, Any], *, workspace_root: Any,
+) -> tuple[ToolInvocation, str]:
+    """Freeze only an installed native executor's actual path argument."""
+    expected = _NATIVE_PATH_EXECUTORS.get(invocation.tool_name)
+    if expected is None:
+        return invocation, ""
+    manager = getattr(getattr(invocation.ctx, "agent", None), "ability_manager", None)
+    if manager is None:
+        # Context-free policy probes cannot execute a tool. A live callback,
+        # however, must prove its provider before using native path semantics.
+        return invocation, "native_path_binding_unavailable" if invocation.ctx is not None else ""
+    try:
+        card = manager.get(invocation.tool_name)
+        resource = Runner.resource_mgr.get_tool(card.id, session=None) if card else None
+    except (AttributeError, KeyError, TypeError, ValueError):
+        return invocation, "native_path_binding_unavailable"
+    # Executor identity, not polymorphism: subclasses may change path semantics.
+    # pylint: disable-next=huawei-unidiomatic-typecheck
+    if type(resource) is not expected or resource.card is not card:
+        # Same-name MCP/other providers retain their existing permission owner.
+        return invocation, ""
+    if invocation.tool_name == "read_pdf" and resource is not read_pdf:
+        return invocation, ""
+    args = normalize_invocation_tool_args(invocation.tool_name, invocation.tool_args)
+    try:
+        cwd_state = _cwd_state.get()
+        if cwd_state is None or not (cwd_state.cwd or cwd_state.original_cwd):
+            raise ValueError("native_path_runtime_cwd_missing")
+        workspace = get_workspace()
+        if not workspace or Path(workspace).resolve() != Path(workspace_root).resolve():
+            raise ValueError("native_path_runtime_workspace_mismatch")
+        cwd = get_cwd()
+        if not cwd or not Path(cwd).is_absolute():
+            raise ValueError("native_path_runtime_cwd_missing")
+        if expected is GlobTool:
+            _validate_smart_glob_pattern(args.get("pattern"))
+        if resource is read_pdf:
+            field = "pdf_path"
+            raw = args.get(field)
+        elif expected in (GlobTool, GrepTool):
+            field = "path"
+            raw = args.get(field) or cwd
+        elif expected is ListDirTool:
+            field = "path"
+            raw = args.get(field, ".")
+        else:
+            field = "file_path"
+            raw = args.get(field)
+        if not isinstance(raw, str) or not raw or "\x00" in raw:
+            raise ValueError("native_path_argument_invalid")
+        # ListDir uses the FS facade directly: unlike file/search tools it does
+        # not expand '~'. Freeze its cwd-relative literal with those semantics.
+        if resource is read_pdf:
+            resolved = _resolve_pdf_path(raw)
+        else:
+            resolved = (
+                Path(cwd) / raw if expected is ListDirTool
+                else Path(_resolve_tool_file_path(resource.operation, raw))
+            ).resolve()
+        action = "write" if expected in (WriteFileTool, EditFileTool) else "read"
+        guard_name = "write_file" if action == "write" else "read_file"
+        core = extract_accesses_native(guard_name, {"file_path": str(resolved)}, Path(workspace))
+        if len(core) != 1 or core[0][0] != resolved:
+            raise ValueError("native_path_guard_execution_mismatch")
+        execution_args = {**args, field: str(resolved)}
+        access = NativePathAccess(
+            invocation.tool_name, native_arguments_json(execution_args), str(resolved), action,
+        )
+        _write_invocation_tool_args(invocation, kwargs, execution_args)
+        live = _extract_invocation((invocation.ctx,), {})
+        if (
+            live.tool_name != invocation.tool_name
+            or normalize_invocation_tool_args(live.tool_name, live.tool_args) != execution_args
+        ):
+            raise ValueError("native_path_writeback_failed")
+    except (AttributeError, OSError, RuntimeError, TypeError, ValueError) as exc:
+        reason = str(exc)
+        return invocation, reason if reason.startswith("native_") else "native_path_contract_invalid"
+    NATIVE_PATH_ACCESS.set(access)
+    return _replace_invocation_tool_args(invocation, execution_args), ""
 
 
 def normalize_invocation_tool_args(tool_name: str, value: Any) -> dict[str, Any]:

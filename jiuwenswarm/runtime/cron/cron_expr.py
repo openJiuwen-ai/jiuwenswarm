@@ -5,6 +5,9 @@ from datetime import datetime
 from zoneinfo import ZoneInfo
 
 
+_MAX_YEARS_BETWEEN_MATCHES = 130
+
+
 def cron_field_count(expr: str) -> int:
     return len(str(expr or "").split())
 
@@ -71,3 +74,21 @@ def validate_cron_expression(expr: str, *, timezone: str) -> None:
         raise ValueError(f"invalid cron expression: '{raw}'")
     _ = ZoneInfo(timezone)
     croniter(normalized, datetime.now(tz=ZoneInfo(timezone)), second_at_beginning=True)
+
+
+def next_cron_datetime(cron_expr: str, base_dt: datetime) -> datetime:
+    """Return the next occurrence for a supported 5- or 7-field expression."""
+    from croniter import croniter  # type: ignore
+
+    normalized = normalize_cron_expr(cron_expr)
+    value = croniter(
+        normalized,
+        base_dt,
+        second_at_beginning=True,
+        max_years_between_matches=_MAX_YEARS_BETWEEN_MATCHES,
+    ).get_next(datetime)
+    if not isinstance(value, datetime):
+        raise RuntimeError("croniter returned invalid datetime")
+    if value.tzinfo is None:
+        return value.replace(tzinfo=base_dt.tzinfo)
+    return value

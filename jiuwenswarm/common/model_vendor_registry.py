@@ -219,7 +219,9 @@ _PRESETS: list[VendorPreset] = [
         # coding key 走 coding 路径;/api/paas/v4/models 是通用端点。/api/coding/paas/v4/models 实测 401(端点存在)。
         models_endpoint="https://open.bigmodel.cn/api/coding/paas/v4/models",
         models_needs_key=True,
-        anthropic_base="https://open.bigmodel.cn/api/anthropic",
+        # 智谱当前会将普通 API key 的 Anthropic 请求错误路由到
+        # Coding Plan，并在无有效套餐时返回 1309；暂不向前端开放。
+        anthropic_base=None,
     ),
     VendorPreset(
         vendor_key="volcengine", display_name="火山引擎", plan=PlanKind.CODING_PLAN,
@@ -379,7 +381,7 @@ _PRESETS: list[VendorPreset] = [
         icon_key="zhipu",
         models_endpoint="https://open.bigmodel.cn/api/paas/v4/models",
         models_needs_key=True,
-        anthropic_base="https://open.bigmodel.cn/api/anthropic",
+        anthropic_base=None,
     ),
     VendorPreset(
         vendor_key="minimax", display_name="MiniMax", plan=PlanKind.CUSTOM_API,

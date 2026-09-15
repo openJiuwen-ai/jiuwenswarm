@@ -142,6 +142,44 @@ async def test_create_default_source_web_rpc(ctrl: HeartbeatController) -> None:
     assert job["metadata"]["source"] == "web_rpc"
 
 
+async def test_create_distinguishes_default_and_unlimited_max_runs(
+    ctrl: HeartbeatController,
+) -> None:
+    base = {
+        "name": "n",
+        "channel_id": "web",
+        "session_id": "s",
+        "prompt": "p",
+        "schedule": {"type": "interval", "interval_seconds": 120},
+    }
+    finite = await ctrl.create_job(base)
+    unlimited = await ctrl.create_job({**base, "name": "unlimited", "max_runs": None})
+
+    assert finite["max_runs"] == 12
+    assert unlimited["max_runs"] is None
+
+
+async def test_create_update_and_preview_seven_field_cron(
+    ctrl: HeartbeatController,
+) -> None:
+    created = await ctrl.create_job({
+        "name": "seven-field", "channel_id": "web", "session_id": "s", "prompt": "p",
+        "schedule": {"type": "cron", "cron_expr": "0 0 9 * * ? *", "timezone": "Asia/Shanghai"},
+    })
+    assert created["schedule"]["cron_expr"] == "0 0 9 * * ? *"
+    assert created["next_run_at"] is not None
+
+    updated = await ctrl.update_job(
+        created["id"],
+        {"schedule": {"type": "cron", "cron_expr": "30 0 10 * * ? *", "timezone": "Asia/Shanghai"}},
+    )
+    assert updated["schedule"]["cron_expr"] == "30 0 10 * * ? *"
+    assert updated["next_run_at"] is not None
+
+    preview = await ctrl.preview_job(created["id"], count=2)
+    assert len(preview["next"]) == 2
+
+
 # ---------------------------------------------------------------------------
 # 资源限制
 # ---------------------------------------------------------------------------
@@ -217,6 +255,22 @@ async def test_toggle_rejects_completed_job_until_max_runs_is_increased(ctrl: He
     assert reactivated["status"] == "scheduled"
     assert reactivated["enabled"] is True
     assert reactivated["next_run_at"] is not None
+
+
+async def test_late_pause_toggle_does_not_rewrite_completed_job(
+    ctrl: HeartbeatController,
+) -> None:
+    job = await ctrl.create_job({
+        "name": "x", "channel_id": "web", "session_id": "s1", "prompt": "p",
+        "source": "agent_tool", "max_runs": 1,
+        "schedule": {"type": "interval", "interval_seconds": 120},
+    })
+    await _complete_job(ctrl, job["id"], "r1")
+
+    unchanged = await ctrl.toggle_job(job["id"], False)
+
+    assert unchanged["status"] == "completed"
+    assert unchanged["enabled"] is False
 
 
 # ---------------------------------------------------------------------------
@@ -382,6 +436,36 @@ async def test_once_create_and_schedule_update_recompute_next_run(
     assert abs(updated["next_run_at"] - future) > 200
 
 
+async def test_create_rejects_expired_once_schedule(
+    ctrl: HeartbeatController,
+) -> None:
+    import time
+
+    with pytest.raises(ValueError, match="run_at must be in the future"):
+        await ctrl.create_job({
+            "name": "expired",
+            "channel_id": "web",
+            "session_id": "s1",
+            "prompt": "p",
+            "schedule": {"type": "once", "run_at": time.time() - 60},
+        })
+
+
+@pytest.mark.parametrize("run_at", [float("nan"), float("inf"), 1_788_091_200_000])
+async def test_create_rejects_non_second_once_timestamp(
+    ctrl: HeartbeatController,
+    run_at: float,
+) -> None:
+    with pytest.raises(ValueError, match="Unix timestamp in seconds"):
+        await ctrl.create_job({
+            "name": "invalid timestamp",
+            "channel_id": "web",
+            "session_id": "s1",
+            "prompt": "p",
+            "schedule": {"type": "once", "run_at": run_at},
+        })
+
+
 async def test_toggle_reactivates_disabled_and_expired_jobs(
     ctrl: HeartbeatController,
 ) -> None:
@@ -397,14 +481,19 @@ async def test_toggle_reactivates_disabled_and_expired_jobs(
     assert reenabled["status"] == "scheduled"
     assert reenabled["next_run_at"] is not None
 
-    expired = await ctrl.create_job({
-        "name": "expired", "channel_id": "web", "session_id": "s1", "prompt": "p",
-        "schedule": {"type": "once", "run_at": time.time() - 60},
-    })
-    assert expired["status"] == "expired"
+    expired = await ctrl._store.create_job(
+        name="expired",
+        channel_id="web",
+        session_id="s1",
+        prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "once", "run_at": time.time() - 60}
+        ),
+    )
+    assert expired.status == "expired"
     future = time.time() + 600
     reactivated = await ctrl.update_job(
-        expired["id"],
+        expired.id,
         {"enabled": True, "schedule": {"type": "once", "run_at": future}},
     )
     assert reactivated["status"] == "scheduled"

@@ -6,6 +6,11 @@ import pytest
 
 from openjiuwen.core.common.exception.codes import StatusCode
 from openjiuwen.core.common.exception.errors import BaseError, build_error
+from openjiuwen.core.foundation.llm import (
+    Model,
+    ModelClientConfig,
+    ModelRequestConfig,
+)
 
 from jiuwenswarm.symphony.adapter import llm_config_signature
 from jiuwenswarm.symphony.llm import (
@@ -15,6 +20,8 @@ from jiuwenswarm.symphony.llm import (
     extract_message_content,
     get_llm_token_usage_summary,
     probe_model_connection,
+    register_request_model,
+    resolve_request_llm_config,
     reset_llm_token_usage,
     thinking_disabled_request_overrides,
     _record_usage_from_response,
@@ -52,6 +59,22 @@ def _llm_config():
         model="model-a",
         model_client_config=_model_entry()["model_client_config"],
     )
+
+
+def test_model_request_kwargs_force_kimi_sampling_through_aggregator() -> None:
+    config = LLMConfig(
+        model="kimi-k3",
+        model_client_config={
+            "api_key": "key",
+            "api_base": "https://dashscope.aliyuncs.com/compatible-mode/v1",
+            "client_provider": "OpenAI",
+        },
+        temperature=0.0,
+        top_p=1.0,
+    )
+
+    assert config.model_request_kwargs()["temperature"] == 1.0
+    assert config.model_request_kwargs()["top_p"] == 0.95
 
 
 def test_thinking_disabled_request_overrides_returns_isolated_compatibility_fields():
@@ -120,17 +143,121 @@ def test_llm_config_from_default_models(monkeypatch):
     assert config.model_client_config["client_provider"] == "openai"
     assert "timeout_seconds" not in LLMConfig.__dataclass_fields__
     assert "max_tokens" not in LLMConfig.__dataclass_fields__
-    assert config.temperature == 0.0
-    assert config.top_p == 1.0
+    assert config.temperature is None
+    assert config.top_p is None
     assert "batch_size" not in LLMConfig.__dataclass_fields__
     assert not hasattr(config, "timeout_seconds")
     assert not hasattr(config, "max_tokens")
     assert config.model_client_kwargs()["custom_headers"] == {"X-Test": "1"}
     assert config.model_client_kwargs()["timeout"] == 12
     assert config.model_client_kwargs()["verify_ssl"] is False
-    assert config.model_request_kwargs()["temperature"] == 0.0
-    assert config.model_request_kwargs()["top_p"] == 1.0
+    assert config.model_request_kwargs()["temperature"] == 0.2
+    assert config.model_request_kwargs()["top_p"] == 0.8
     assert config.model_request_kwargs()["max_tokens"] == 99
+
+
+def test_llm_config_from_runtime_model_uses_selected_request_model():
+    model = SimpleNamespace(
+        model_client_config=SimpleNamespace(
+            model_dump=lambda **_kwargs: {
+                "api_base": "https://selected.example/v1",
+                "api_key": "selected-key",
+                "client_provider": "OpenAI",
+                "model_name": "selected-model",
+            }
+        ),
+        model_config=SimpleNamespace(
+            model_dump=lambda **_kwargs: {
+                "model": "selected-model",
+                "temperature": 0.2,
+            }
+        ),
+    )
+
+    config = LLMConfig.from_model(model)
+
+    assert config.model == "selected-model"
+    assert config.base_url == "https://selected.example/v1"
+    assert config.model_client_config["api_key"] == "selected-key"
+
+
+def test_llm_config_from_real_core_model_reads_model_request_field_name():
+    def real_model():
+        return Model(
+            model_client_config=ModelClientConfig(
+                api_base="https://selected.example/v1",
+                api_key="selected-key",
+                client_provider="OpenAI",
+            ),
+            model_config=ModelRequestConfig(
+                model="selected-model",
+                temperature=0.2,
+            ),
+        )
+
+    first = LLMConfig.from_model(real_model())
+    second = LLMConfig.from_model(real_model())
+
+    assert first.model == "selected-model"
+    assert first.base_url == "https://selected.example/v1"
+    assert "client_id" not in first.model_client_config
+    assert first.identity_digest() == second.identity_digest()
+    assert first.create_model().model_config.model_name == "selected-model"
+
+
+def test_request_model_registry_reuses_stable_effective_config_identity():
+    def real_model():
+        return Model(
+            model_client_config=ModelClientConfig(
+                api_base="https://selected.example/v1",
+                api_key="selected-key",
+                client_provider="OpenAI",
+            ),
+            model_config=ModelRequestConfig(
+                model="selected-model",
+                temperature=0.2,
+            ),
+        )
+
+    first_reference = register_request_model(real_model())
+    second_reference = register_request_model(real_model())
+
+    assert first_reference == second_reference
+    assert resolve_request_llm_config(first_reference).model == "selected-model"
+
+
+@pytest.mark.parametrize(
+    ("client_provider", "auth_mode", "api_mode"),
+    [
+        ("OpenAI", "none", None),
+        ("OpenAI", "custom_headers", None),
+        ("OpenAI", "openai_account_oauth", None),
+        ("OpenAIAccount", None, "responses"),
+    ],
+)
+def test_llm_config_from_runtime_model_accepts_native_no_key_auth_modes(
+    client_provider,
+    auth_mode,
+    api_mode,
+):
+    client_config = {
+        "api_base": "https://selected.example/v1",
+        "client_provider": client_provider,
+        "model_name": "selected-model",
+    }
+    if auth_mode is not None:
+        client_config["auth_mode"] = auth_mode
+    if api_mode is not None:
+        client_config["api_mode"] = api_mode
+    model = SimpleNamespace(
+        model_client_config=client_config,
+        model_config={"model": "selected-model"},
+    )
+
+    config = LLMConfig.from_model(model)
+
+    assert config.model == "selected-model"
+    assert config.model_client_config.get("api_key") in (None, "")
 
 
 def test_llm_config_removes_internal_reasoning_level():

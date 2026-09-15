@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import importlib
 import json
+import shutil
 import stat
 import zipfile
 from pathlib import Path
@@ -795,6 +796,7 @@ def _src_manifest(kind: str, package_id: str) -> dict:
             "package_type": "agent_template",
             "name": package_id,
             "description": "Imported expert package.",
+            "persona": {"dir": "./persona"},
         }
     return {"package_type": "plugin", "id": package_id}
 
@@ -805,6 +807,11 @@ def _write_src_dir(root: Path, kind: str, package_id: str) -> Path:
     (src / "manifest.json").write_text(
         json.dumps(_src_manifest(kind, package_id)), encoding="utf-8"
     )
+    (src / "README.md").write_text("Imported package.", encoding="utf-8")
+    if kind == AGENT_TEMPLATES:
+        persona_dir = src / "persona"
+        persona_dir.mkdir()
+        (persona_dir / f"{package_id}.md").write_text("# Persona\n", encoding="utf-8")
     return src
 
 
@@ -888,6 +895,56 @@ class TestImportLocal:
             _import_package(kind, {"path": str(src)})
         dest = extension_workspace / "plugins" / kind / "local"
         assert not dest.exists() or not any(dest.iterdir())
+
+    @pytest.mark.parametrize("kind", _KINDS)
+    def test_import_rejects_missing_readme(
+        self, extension_workspace: Path, tmp_path: Path, kind: str
+    ) -> None:
+        src = _write_src_dir(tmp_path, kind, "no-readme")
+        (src / "README.md").unlink()
+        with pytest.raises(ValueError, match="missing README.md"):
+            _import_package(kind, {"path": str(src)})
+        dest = extension_workspace / "plugins" / kind / "local"
+        assert not dest.exists() or not any(dest.iterdir())
+        assert marketplace_entries(kind) == []
+
+    def test_import_rejects_missing_persona(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "no-persona")
+        shutil.rmtree(src / "persona")
+        with pytest.raises(ValueError, match="persona dir not found"):
+            catalog.import_agent_template({"path": str(src)})
+        dest = extension_workspace / "plugins" / AGENT_TEMPLATES / "local"
+        assert not dest.exists() or not any(dest.iterdir())
+        assert marketplace_entries(AGENT_TEMPLATES) == []
+
+    @pytest.mark.parametrize("persona_dir", [".", "./", "persona/.."])
+    def test_import_rejects_persona_dir_collapsed_to_package_root(
+        self, extension_workspace: Path, tmp_path: Path, persona_dir: str
+    ) -> None:
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "collapsed-persona")
+        shutil.rmtree(src / "persona")
+        manifest = json.loads((src / "manifest.json").read_text(encoding="utf-8"))
+        manifest["persona"] = {"dir": persona_dir}
+        (src / "manifest.json").write_text(json.dumps(manifest), encoding="utf-8")
+        with pytest.raises(ValueError, match="persona dir escapes package root"):
+            catalog.import_agent_template({"path": str(src)})
+        dest = extension_workspace / "plugins" / AGENT_TEMPLATES / "local"
+        assert not dest.exists() or not any(dest.iterdir())
+        assert marketplace_entries(AGENT_TEMPLATES) == []
+
+    def test_import_rejects_persona_without_markdown(
+        self, extension_workspace: Path, tmp_path: Path
+    ) -> None:
+        src = _write_src_dir(tmp_path, AGENT_TEMPLATES, "empty-persona")
+        for md_file in (src / "persona").glob("*.md"):
+            md_file.unlink()
+        with pytest.raises(ValueError, match="no markdown files"):
+            catalog.import_agent_template({"path": str(src)})
+        dest = extension_workspace / "plugins" / AGENT_TEMPLATES / "local"
+        assert not dest.exists() or not any(dest.iterdir())
+        assert marketplace_entries(AGENT_TEMPLATES) == []
 
     def test_import_rejects_wrong_package_type(
         self, extension_workspace: Path, tmp_path: Path
@@ -1116,12 +1173,14 @@ class TestListShowAndFileRead:
         assert "pending_connectors" not in listed_card
         assert "enabled" not in shown
 
-    def test_file_read_user_disk_only(
+    def test_file_read_uninstalled_shelf_and_local(
         self, monkeypatch: pytest.MonkeyPatch, tmp_path: Path, extension_workspace: Path
     ) -> None:
         point_resources_shelf(monkeypatch, tmp_path, experts=["preset"])
-        with pytest.raises(ValueError, match="not found"):
-            catalog.list_agent_template_files("preset")
+        shelf_tree = catalog.list_agent_template_files("preset")
+        assert any(node["path"] == "manifest.json" for node in shelf_tree)
+        shelf_read = catalog.read_agent_template_file("preset", "manifest.json")
+        assert shelf_read["path"] == "manifest.json"
 
         pkg = seed_package(extension_workspace, AGENT_TEMPLATES, "alpha")
         (pkg / "README.md").write_text("body", encoding="utf-8")

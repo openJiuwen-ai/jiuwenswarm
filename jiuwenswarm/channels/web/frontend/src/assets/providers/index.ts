@@ -39,15 +39,13 @@ export function getVendorLogoUrl(vendorKey: string): string | undefined {
 export type ModelLogoIdentity = {
   model_provider?: string;
   vendor_key?: string;
-  is_free?: boolean;
 };
 
 /**
- * 与模型设置页一致的图标分类规则：免费模型和未绑定厂商预设的模型都是自定义模型；
+ * 与模型设置页一致的图标分类规则：未绑定厂商预设的模型都是自定义模型；
  * OpenAI 账号使用 OpenAI 图标；只有明确携带 vendor_key 的厂商模型才使用厂商图标。
  */
 export function getModelLogoUrl(model: ModelLogoIdentity): string {
-  if (model.is_free === true) return customModelIcon;
   if (model.model_provider === 'OpenAIAccount') return openAIModelIcon;
 
   const vendorKey = model.vendor_key?.trim();

@@ -1,4 +1,4 @@
-import type { HeartbeatJobStatus, HeartbeatRunStatus } from '../../types/heartbeat';
+import type { HeartbeatJobStatus, HeartbeatRunStatus, HeartbeatScheduleDTO } from '../../types/heartbeat';
 
 export type HeartbeatStatusVariant = 'running' | 'scheduled' | 'paused' | 'completed' | 'expired';
 
@@ -37,7 +37,7 @@ export function canHeartbeatRunNow(enabled: boolean, status: HeartbeatJobStatus)
 /**
  * pause/resume 切换按钮在"恢复"方向是否可点：
  * - completed 只有在 max_runs 已调大到高于 run_count 时可恢复；
- * - expired 仍需先编辑未来的调度时间；
+ * - expired once 任务编辑到未来时间后可恢复；
  * - scheduled / running / disabled 一律允许。
  * actingJobId 命中等局部 UI 状态由调用方再 && 一层。
  */
@@ -45,8 +45,13 @@ export function canHeartbeatToggleEnable(
   status: HeartbeatJobStatus,
   maxRuns: number | null,
   runCount: number,
+  schedule: HeartbeatScheduleDTO,
+  nowSeconds: number = Date.now() / 1000,
 ): boolean {
-  if (status === 'expired') return false;
+  if (status === 'expired') {
+    const hasRemainingRuns = maxRuns === null || runCount < maxRuns;
+    return hasRemainingRuns && schedule.type === 'once' && schedule.run_at > nowSeconds;
+  }
   if (status !== 'completed') return true;
   return maxRuns !== null && runCount < maxRuns;
 }

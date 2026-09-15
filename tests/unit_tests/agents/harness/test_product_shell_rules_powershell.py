@@ -114,7 +114,7 @@ def test_product_powershell_unlisted_cmdlets_follow_tool_allow() -> None:
 
 _PS_DELETE_ASK_CASES = (
     ("Remove-Item test", "shell_ask_remove_item"),
-    ("Remove-Item -Recurse -Force tmp", "shell_ask_remove_item"),
+    ("Remove-Item -Recurse -Force tmp", "shell_ps_recursive_or_forced_delete"),
     ("ri test.txt", "shell_ask_ri"),
     ("rmdir olddir", "shell_ask_rmdir"),
     ("erase temp.log", "shell_ask_erase"),

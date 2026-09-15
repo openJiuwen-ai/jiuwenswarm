@@ -15,7 +15,7 @@ export type SidebarMenuItem = {
 type Translate = (key: string, options?: Record<string, unknown>) => string;
 
 type RuntimeLike = {
-  pendingQuestion?: unknown;
+  pendingQuestions?: readonly unknown[];
   isProcessing?: boolean;
   executionError?: string | null;
 };
@@ -57,7 +57,7 @@ export function getSessionIndicator(
   sessionError = false,
 ): SessionIndicator {
   if (sessionError) return 'error';
-  if (runtime?.pendingQuestion) return 'waiting';
+  if (runtime?.pendingQuestions?.[0]) return 'waiting';
   if (runtime?.isProcessing || sessionProcessing) return 'processing';
   if (unread) return 'unread';
   return 'time';

@@ -1,0 +1,34 @@
+id: VER-20260907-001-runtime-session-reference-chain
+applies_to:
+  source_revision: ab658b6eb4b09511925d338940381abfa8e0f9e9+working-tree
+  modules: [runtime-session, agentserver-runtime, agent-harness]
+  flows: [runtime-session-reference-chain, agentserver-session-lifecycle]
+  paths:
+    - jiuwenswarm/runtime/session
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/channels/process_cli/client.py
+    - tests/unit_tests/runtime/test_runtime_session_coordinator.py
+    - tests/unit_tests/runtime/test_runtime_managed_reference.py
+    - tests/system_tests/test_process_cli_session_runtime_live.py
+evidence:
+  level: real_model_integration
+  scenario: process-cli-managed-session-runtime-work-and-code-two-turn-resume
+  environment: Windows, project .venv Python, configured OpenAI-compatible model
+  command: >-
+    RUN_LIVE_SESSION_RUNTIME_TESTS=1 .venv/Scripts/python.exe -m pytest -q
+    -o addopts= tests/system_tests/test_process_cli_session_runtime_live.py
+  repetitions: 1
+  successes: 2
+  warnings: 3
+result: passed
+status: superseded
+recorded_at: 2026-09-07T12:39:22Z
+supersedes: []
+evidence_paths: []
+notes: >-
+  Both agent.work.normal+work and agent.code.normal+code completed two Process CLI
+  turns with a stable Session ID, non-empty terminal output, durable history growth,
+  and only terminal Registry executions after cleanup. The focused deterministic
+  suite also passed 19/19 tests inside a 200-test Runtime, SessionManager, and
+  Process CLI selection. One unrelated existing Windows Chinese argparse encoding
+  assertion was explicitly excluded and remains a known environment failure.

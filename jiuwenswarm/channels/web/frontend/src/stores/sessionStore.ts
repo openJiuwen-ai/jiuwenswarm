@@ -188,12 +188,7 @@ export function resolveEffectiveModel(
 ): ModelEntry | null {
   if (chatAvailableModels.length === 0) return null;
   const displayed = selectedModelName || defaultModelName;
-  // selectedModelName 可能存的是展示名（用户从下拉框选择时存的是 alias），
-  // 也可能存的是真实 API id（后端 session.metadata.model 回传恢复时是
-  // model_name，例如 Zen 免费模型的 "deepseek-v4-flash-free"）。两者都要能
-  // 命中同一个 entry，否则后端回传 model_name 后无法匹配有 alias 的免费
-  // 模型，会回退到 chatAvailableModels[0]（首个配置模型），表现为"对话
-  // 完成后下拉框自动切回配置的模型"。
+  // 兼容历史保存的 alias 和后端会话元数据中的 model_name，使展示与请求命中同一条目。
   return (
     chatAvailableModels.find(
       (m) => m.alias === displayed || m.model_name === displayed,
@@ -297,6 +292,10 @@ export interface TeamTaskEvent {
   content?: string;
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — backend may set these on team.task.created/
   // updated events when the title/content exceeded the wire limit. Purely
   // passthrough: the store does not render a badge; the inline marker
@@ -329,6 +328,10 @@ export interface TeamTask {
   files?: string[];
   /** Swarmflow run that produced this task (absent on plain team tasks). */
   workflow_run_id?: string;
+  /** Run paused: the board's time-eased progress must hold, not creep or reset. */
+  progress_frozen?: boolean;
+  /** Wall-clock at which progress_frozen flipped true (the easing clock stops here). */
+  progress_frozen_at?: number;
   // Truncation observability flags — set by the backend on team.task.created/
   // updated events when title/content exceeded the wire limit. Carried through
   // the normalize/upsert pipeline; a status-only event MUST NOT reset these
@@ -442,8 +445,6 @@ export interface SessionRuntime {
   enabledMcps: string[];
   /** 是否已从后端快照恢复，或已由用户在本地明确修改。 */
   extensionsHydrated: boolean;
-  /** SwarmFlow 是否激活（曾收到过 swarmflow 事件即置真，粘性） */
-  swarmflowActive: boolean;
   /** 本会话是否启用 swarmflow（会话级，随 chat.send 下发） */
   enableSwarmflow: boolean;
   /** 本会话 swarmflow token 上限（留空=不限） */
@@ -477,7 +478,6 @@ function createEmptyRuntime(sessionId?: string): SessionRuntime {
     enabledPlugins: [],
     enabledMcps: [],
     extensionsHydrated: false,
-    swarmflowActive: false,
     enableSwarmflow: false,
     swarmflowBudget: null,
     workflowRuns: [],
@@ -587,8 +587,7 @@ interface SessionState {
   /** 增量合并一条 workflow 更新到 workflowRuns */
   applyWorkflowUpdate: (sessionId: string, workflow: WorkflowRun) => void;
   /** 设置/关闭用户配置 enableSwarmflow 与预算 swarmflowBudget（配置态，非视图态） */
-  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;  /** 置位 swarmflowActive 粘性视图标志（置真后不再回 false）；后端 swarmflow.activated 事件专用 */
-  setSwarmflowViewActive: (sessionId: string) => void;
+  setSwarmflowActive: (sessionId: string, active: boolean, budget?: number | null) => void;
   /** 懒加载 phase 完整 agents（command.workflows get_phase） */
   loadPhaseAgents: (
     sessionId: string,
@@ -646,8 +645,7 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     // 后端 team_helpers 会把它透传给未显式配置 per-agent model 的团队成员。
     //
     // 注意：这里返回的是 model_name 而非 alias。后端 _model_cache 以 model_name 为
-    // key 查找（包括 Zen 免费模型如 "laguna-s-2.1-free"）；alias 只是展示名（如
-    // "Laguna S 2.1"），后端无法据此解析，会回退到默认模型。
+    // key 查找；alias 只是展示名，后端无法据此解析。
     const resolved = resolveEffectiveModel(
       state.chatAvailableModels,
       runtime.selectedModelName,
@@ -957,9 +955,18 @@ export const useSessionStore = create<SessionState>((set, get) => ({
       if (existingIndex >= 0) {
         const existing = runtime.teamTasks[existingIndex];
         const updatedTasks = [...runtime.teamTasks];
+        // The board's visual progress is eased from `timestamp` (task start).
+        // A later status event must not restart that clock — pause → resume
+        // would otherwise drop the bar back to 10%.
+        const frozen = task.progress_frozen ?? existing.progress_frozen;
         updatedTasks[existingIndex] = {
           ...existing,
           ...task,
+          timestamp: existing.timestamp ?? task.timestamp,
+          progress_frozen: frozen,
+          progress_frozen_at: frozen
+            ? (existing.progress_frozen ? existing.progress_frozen_at : task.timestamp)
+            : undefined,
           // An event without an explicit status (e.g. a content-only update)
           // must not reset the task; keep the existing status.
           status: task.status ?? existing.status,
@@ -1591,7 +1598,6 @@ export const useSessionStore = create<SessionState>((set, get) => ({
           ...state.runtimes,
           [sessionId]: {
             ...runtime,
-            swarmflowActive: true,
             workflowRuns: applyWorkflowUpdateImpl(runtime.workflowRuns, workflow),
           },
         },
@@ -1665,24 +1671,10 @@ export const useSessionStore = create<SessionState>((set, get) => ({
     });
   },
 
-  setSwarmflowViewActive: (sessionId) => {
-    set((state) => {
-      const rt = state.runtimes[sessionId];
-      if (!rt) return state;
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...rt, swarmflowActive: true },
-        },
-      };
-    });
-  },
-
   setAvailableModels: (models, activeModel) => {
     set((state) => {
       const defaultModels = models.filter((m) => m.is_default !== false);
-      // 过滤为空时回退到全量列表，保证聊天下拉框始终有可选项（例如用户自配模型
-      // 均未设为 is_default、且关闭了 Opencode Zen 免费模型时，不至于无模型可选）。
+      // 没有组内默认配置时，使用其余已配置模型。
       const chatModels = defaultModels.length > 0 ? defaultModels : models;
       // 优先使用后端返回的 activeModel（默认模型），其次取第一个；状态统一保存真实
       // model_name，alias 只用于界面展示。各会话 runtime 的 selectedModelName 不在这里

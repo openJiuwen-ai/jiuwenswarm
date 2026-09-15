@@ -200,8 +200,7 @@ models:
         timeout: 1800
         verify_ssl: false
         custom_headers: {}
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
       is_default: true
   video:
       model_client_config:
@@ -211,8 +210,7 @@ models:
         client_provider: ${VIDEO_PROVIDER}
         timeout: 1800
         verify_ssl: false
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -221,8 +219,7 @@ models:
         client_provider: ${AUDIO_PROVIDER}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -231,8 +228,7 @@ models:
         client_provider: ${VISION_PROVIDER}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -243,8 +239,7 @@ models:
         endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:

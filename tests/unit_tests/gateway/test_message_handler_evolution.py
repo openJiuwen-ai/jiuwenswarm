@@ -346,11 +346,18 @@ async def _wait_for_pending_clear(
     handler: _TestMessageHandler,
     *,
     require_stream_request: bool = False,
+    require_queued_supplement: bool = False,
 ) -> None:
     for _ in range(20):
+        has_queued_supplement = any(
+            isinstance(getattr(request, "params", None), dict)
+            and "supplement_input" in request.params
+            for request in _FakeAgentClient.sent_stream_requests
+        )
         if (
             handler.pending_evolution_approval("sess-1") is None
             and (not require_stream_request or _FakeAgentClient.sent_stream_requests)
+            and (not require_queued_supplement or has_queued_supplement)
         ):
             return
         await asyncio.sleep(0.05)
@@ -763,7 +770,11 @@ async def test_interrupt_evolution_approval_chat_send_cleans_pending_and_release
             )
         )
 
-        await _wait_for_pending_clear(handler, require_stream_request=True)
+        await _wait_for_pending_clear(
+            handler,
+            require_stream_request=True,
+            require_queued_supplement=True,
+        )
 
         _assert_evolution_state_cleared(handler)
         assert _FakeAgentClient.sent_requests == []
@@ -900,7 +911,11 @@ async def test_interrupt_evolution_approval_user_answer_is_dispatched_as_chat_se
             )
         )
 
-        await _wait_for_pending_clear(handler, require_stream_request=True)
+        await _wait_for_pending_clear(
+            handler,
+            require_stream_request=True,
+            require_queued_supplement=True,
+        )
 
         assert handler.pending_evolution_approval("sess-1") is None
         assert _FakeAgentClient.sent_requests == []
@@ -935,7 +950,11 @@ async def test_stream_interrupt_evolution_approval_chat_send_cleans_pending() ->
             )
         )
 
-        await _wait_for_pending_clear(handler, require_stream_request=True)
+        await _wait_for_pending_clear(
+            handler,
+            require_stream_request=True,
+            require_queued_supplement=True,
+        )
 
         _assert_evolution_state_cleared(handler)
         assert _FakeAgentClient.sent_stream_requests[0].params["request_id"] == "call_123"

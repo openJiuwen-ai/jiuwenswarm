@@ -121,6 +121,8 @@ async def check_avatar_permission(
     session_id: str | None,
     *,
     permission_config: dict,
+    use_installed_permissions: bool = False,
+    installed_engine: Any = None,
 ) -> str:
     """单工具 owner_scopes 权限检查。返回 "allow" 或 "deny"（ASK 自动降级为 DENY）。
 
@@ -150,14 +152,21 @@ async def check_avatar_permission(
         logger.info("[check_avatar_permission] perm_ctx is None or no principal_user_id")
         return "deny"
 
-    global_perms = load_global_permissions()
-    perm_cfg = compose_host_effective_permissions(
-        global_permissions=global_perms,
-        user_permissions=load_user_permissions(),
-        session_permissions=load_session_permissions(session_id),
-        session_id=session_id,
-    )
-    engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
+    if use_installed_permissions:
+        # Keep owner scopes and path evaluation on the same installed epoch.
+        global_perms = permission_config
+        engine = installed_engine
+        if not callable(getattr(engine, "evaluate_global_policy_directly", None)):
+            return "deny"
+    else:
+        global_perms = load_global_permissions()
+        perm_cfg = compose_host_effective_permissions(
+            global_permissions=global_perms,
+            user_permissions=load_user_permissions(),
+            session_permissions=load_session_permissions(session_id),
+            session_id=session_id,
+        )
+        engine = OJPermissionEngine(config=perm_cfg, workspace_root=get_workspace_dir())
     owner_scopes = global_perms.get("owner_scopes")
     logger.info(
         "[check_avatar_permission] tool=%s channel=%s user=%s owner_scopes_type=%s owner_scopes_keys=%s",
@@ -186,6 +195,8 @@ async def check_avatar_permission(
         global_level_value = global_level.value if global_level is not None else None
     except Exception as exc:
         logger.warning("[check_avatar_permission] evaluate_global_policy_directly failed: %s", exc)
+        if use_installed_permissions:
+            return "deny"
         global_level_value = None
 
     if level is None:

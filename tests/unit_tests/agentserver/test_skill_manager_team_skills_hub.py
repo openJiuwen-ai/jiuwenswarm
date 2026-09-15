@@ -352,9 +352,12 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     manager.set_mock_get_data(_fake_get_data)
     manager.set_mock_download(_fake_download)
 
-    payload = await manager.handle_skills_team_skills_hub_install({"asset_id": "demo-skill"})
+    payload = await manager.handle_skills_team_skills_hub_install(
+        {"asset_id": "demo-skill", "display_name": "演示技能"}
+    )
     assert payload["success"] is True
     assert payload["skill"]["name"] == "demo-skill"
+    assert payload["skill"]["display_name"] == "演示技能"
     dest = tmp_path / "skills" / "demo-skill"
     assert (dest / "SKILL.md").is_file()
     assert (dest / ".archive" / "versions" / "index.json").is_file()
@@ -366,6 +369,9 @@ async def test_handle_skills_team_skills_hub_install_success(tmp_path):
     assert (dest / ".archive" / "versions" / "content" / storage_id / "SKILL.md").is_file()
     plugins = manager._state.get("installed_plugins", [])
     assert plugins and "version" not in plugins[0]
+    assert plugins[0].get("display_name") == "演示技能"
+    local_skills = manager._state.get("local_skills", [])
+    assert local_skills and local_skills[0].get("display_name") == "演示技能"
 
 
 @pytest.mark.asyncio

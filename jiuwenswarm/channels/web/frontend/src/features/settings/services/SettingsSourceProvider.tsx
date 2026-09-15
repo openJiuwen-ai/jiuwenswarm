@@ -89,18 +89,12 @@ function ConfigSourceProvider({ children }: { children: ReactNode }) {
 
 type BrowserSettingsState = {
   chrome_path: string;
-  browser_type: 'auto' | 'chrome' | 'msedge';
   headless: boolean;
 };
-
-function normalizeBrowserType(value: unknown): BrowserSettingsState['browser_type'] {
-  return value === 'chrome' || value === 'msedge' ? value : 'auto';
-}
 
 function normalizeBrowserState(value: Record<string, unknown> | undefined): BrowserSettingsState {
   return {
     chrome_path: typeof value?.chrome_path === 'string' ? value.chrome_path : '',
-    browser_type: normalizeBrowserType(value?.browser_type),
     headless: value?.headless === undefined ? true : value.headless === true,
   };
 }

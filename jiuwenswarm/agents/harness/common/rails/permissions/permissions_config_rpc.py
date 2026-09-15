@@ -99,11 +99,9 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
             if not isinstance(tools, dict):
                 return _err(request, "tools must be object")
             from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
-                load_user_permissions,
-                save_user_permissions,
+                update_user_permissions,
             )
 
-            overlay = load_user_permissions()
             deny, ask, allow = [], [], []
             for name, raw in tools.items():
                 if not isinstance(name, str) or not name.strip():
@@ -116,10 +114,15 @@ def dispatch_permissions_config_request(request: AgentRequest) -> AgentResponse:
                     ask.append(name.strip())
                 elif lv == "allow":
                     allow.append(name.strip())
-            overlay["deny_tools"] = deny
-            overlay["ask_tools"] = ask
-            overlay["allow_tools"] = allow
-            save_user_permissions(overlay)
+
+            def _mutate(overlay):
+                overlay["deny_tools"] = deny
+                overlay["ask_tools"] = ask
+                overlay["allow_tools"] = allow
+                return overlay
+
+            if not update_user_permissions(_mutate):
+                return _err(request, "failed to save user permissions")
             return _ok(request, {"ok": True})
 
         if m == ReqMethod.PERMISSIONS_TOOLS_UPDATE:
@@ -198,4 +201,3 @@ __all__ = [
     "dispatch_permissions_config_request",
     "get_permissions_config_req_methods",
 ]
-

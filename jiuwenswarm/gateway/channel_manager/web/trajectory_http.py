@@ -7,7 +7,7 @@ from __future__ import annotations
 import base64
 import logging
 import re
-from collections.abc import Awaitable, Callable, Mapping
+from collections.abc import Awaitable, Callable, Mapping, Sequence
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -44,6 +44,14 @@ _SPAN_ID_PATTERN = re.compile(r"^[0-9a-f]{16}$")
 _CURSOR_PATTERN = re.compile(r"^[A-Za-z0-9_-]+$")
 _NO_STORE_HEADERS = {"Cache-Control": "no-store"}
 _MAX_SQLITE_INTEGER = (1 << 63) - 1
+# Frames are far smaller than records, so a catch-up page carries more of
+# them: a reader returning after a disconnect closes the gap in few
+# round trips instead of many.
+_MAX_FRAME_PAGE = 2000
+# A chain hash is a sha256 in hex.
+_SEQUENCE_HASH_PATTERN = re.compile(r"^[0-9a-f]{64}$")
+_MAX_SEQUENCE_REQUEST = 200
+
 _MAX_INTEGER_QUERY_CHARS = len(str(_MAX_SQLITE_INTEGER))
 _MAX_CURSOR_LENGTH = 512
 
@@ -106,41 +114,28 @@ class TrajectoryHttpService:
             self._reader_database_path = database_path
         return reader
 
-    async def list_traces(
+    async def list_subjects(
         self,
         session_id: str,
         *,
-        limit: int,
-        cursor: str | None,
+        after_revision: int,
     ) -> Response:
-        """Build the paginated trace-list response for one single-Agent session."""
+        """List the execution subjects that own a chain in one session."""
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
-        if not 1 <= limit <= 100:
-            return _error_response(
-                "limit must be between 1 and 100",
-                "BAD_REQUEST",
-                400,
-            )
-        if cursor is not None and not _is_valid_cursor_text(cursor):
-            return _error_response("invalid trajectory cursor", "BAD_REQUEST", 400)
+        if after_revision < 0:
+            return _error_response("after_revision must be >= 0", "BAD_REQUEST", 400)
+        if after_revision > _MAX_SQLITE_INTEGER:
+            return _error_response("after_revision is too large", "BAD_REQUEST", 400)
         try:
-            (
-                items,
-                next_cursor,
-                revision_cursor,
-                store_epoch,
-            ) = await self._reader_for(settings).list_traces_with_revision_cursor(
+            items, store_epoch, watermark = await self._reader_for(settings).list_subjects(
                 session_id,
-                limit=limit,
-                cursor=cursor,
+                after_revision=after_revision,
             )
-        except TrajectoryCursorError:
-            return _error_response("invalid trajectory cursor", "BAD_REQUEST", 400)
         except Exception:
-            logger.exception("Trajectory trace-list query failed: session_id=%s", session_id)
+            logger.exception("Trajectory subject listing failed: session_id=%s", session_id)
             return _error_response(
                 "trajectory query failed",
                 "TRAJECTORY_QUERY_FAILED",
@@ -150,22 +145,38 @@ class TrajectoryHttpService:
             {
                 "schema_version": 1,
                 "session_id": session_id,
-                "items": [_http_trace_summary(item) for item in items],
-                "next_cursor": next_cursor,
-                "revision_cursor": revision_cursor,
+                "items": items,
+                "watermark": watermark,
                 "store_epoch": store_epoch,
             }
         )
 
-    async def export_archive(self, session_id: str) -> Response:
-        """Export a stable archive of every current record in one session."""
+    async def export_archive(
+        self,
+        session_id: str,
+        *,
+        addressed: bool = False,
+    ) -> Response:
+        """Export a stable archive of every current record in one session.
+
+        Args:
+            session_id: Session to export.
+            addressed: Export references plus the dictionaries that resolve
+                them, rather than putting every restated attribute back. The
+                file stays self-contained and is far smaller, but only a
+                reader that understands the addressing can open it -- so the
+                default remains plain OTLP, which any tool can.
+        """
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
         try:
-            records, store_epoch, revision = (
-                await self._reader_for(settings).get_session_archive_records(session_id)
+            records, store_epoch, revision, resolved = (
+                await self._reader_for(settings).get_session_archive_records(
+                    session_id,
+                    rehydrate=not addressed,
+                )
             )
         except Exception:
             logger.exception(
@@ -189,10 +200,16 @@ class TrajectoryHttpService:
                 "store_epoch": store_epoch,
                 "revision": str(revision),
                 "records": records,
+                **({} if not addressed else {
+                    "content_addressed": True,
+                    "sequences": resolved.get("sequences", {}),
+                    "blobs": resolved.get("blobs", {}),
+                }),
             }
         )
+        suffix = ".addressed" if addressed else ""
         response.headers["Content-Disposition"] = (
-            f'attachment; filename="trajectory-{session_id}.archive.json"'
+            f'attachment; filename="trajectory-{session_id}{suffix}.archive.json"'
         )
         return response
 
@@ -224,88 +241,22 @@ class TrajectoryHttpService:
             "items": items,
         })
 
-    async def list_revisions(
+    async def get_subject(
         self,
         session_id: str,
-        *,
-        after_revision: str,
-        limit: int,
-    ) -> Response:
-        """Build one stable page of trace summaries changed since a cursor."""
-        settings = self.settings
-        error = self._validate_access(session_id, settings)
-        if error is not None:
-            return error
-        if not 1 <= limit <= 100:
-            return _error_response(
-                "limit must be between 1 and 100",
-                "BAD_REQUEST",
-                400,
-            )
-        if not _is_valid_cursor_text(after_revision):
-            return _error_response(
-                "invalid trajectory revision cursor",
-                "BAD_REQUEST",
-                400,
-            )
-        try:
-            (
-                items,
-                next_cursor,
-                watermark,
-                has_more,
-                reset,
-                store_epoch,
-            ) = await self._reader_for(settings).list_trace_revisions(
-                session_id,
-                after_revision=after_revision,
-                limit=limit,
-            )
-        except TrajectoryCursorError:
-            return _error_response(
-                "invalid trajectory revision cursor",
-                "BAD_REQUEST",
-                400,
-            )
-        except Exception:
-            logger.exception(
-                "Trajectory revision query failed: session_id=%s",
-                session_id,
-            )
-            return _error_response(
-                "trajectory query failed",
-                "TRAJECTORY_QUERY_FAILED",
-                500,
-            )
-        return _json_response(
-            {
-                "schema_version": 1,
-                "session_id": session_id,
-                "items": [_http_trace_summary(item) for item in items],
-                "next_cursor": next_cursor,
-                "watermark": watermark,
-                "has_more": has_more,
-                "reset": reset,
-                "store_epoch": store_epoch,
-            }
-        )
-
-    async def get_trace(
-        self,
-        session_id: str,
-        trace_id: str,
+        subject_id: str,
         *,
         since_revision: int,
         limit: int,
     ) -> Response:
-        """Build a complete or incremental trace-detail response."""
+        """Build one page of an execution subject's chain, in commit order."""
         settings = self.settings
         error = self._validate_access(session_id, settings)
         if error is not None:
             return error
-        normalized_trace_id = str(trace_id or "").strip().lower()
-        if _TRACE_ID_PATTERN.fullmatch(normalized_trace_id) is None:
-            return _error_response("invalid trace_id", "BAD_REQUEST", 400)
+        normalized_subject_id = str(subject_id or "").strip()
+        if not normalized_subject_id or len(normalized_subject_id) > 256:
+            return _error_response("invalid subject_id", "BAD_REQUEST", 400)
         if since_revision < 0:
             return _error_response("since_revision must be >= 0", "BAD_REQUEST", 400)
         if since_revision > _MAX_SQLITE_INTEGER:
@@ -317,18 +268,18 @@ class TrajectoryHttpService:
                 400,
             )
         try:
-            result = await self._reader_for(settings).get_trace_records(
+            result = await self._reader_for(settings).get_subject_records(
                 session_id,
-                normalized_trace_id,
+                normalized_subject_id,
                 since_revision=since_revision,
                 limit=limit,
                 max_bytes=settings.detail_max_bytes,
             )
         except Exception:
             logger.exception(
-                "Trajectory trace-detail query failed: session_id=%s trace_id=%s",
+                "Trajectory subject-detail query failed: session_id=%s subject_id=%s",
                 session_id,
-                normalized_trace_id,
+                normalized_subject_id,
             )
             return _error_response(
                 "trajectory query failed",
@@ -336,15 +287,147 @@ class TrajectoryHttpService:
                 500,
             )
         if result is None:
-            return _error_response("trace not found", "NOT_FOUND", 404)
+            return _error_response("subject not found", "NOT_FOUND", 404)
+        # One page states its records as references and resolves them once,
+        # so content several records share crosses the wire a single time and
+        # content the reader already holds does not cross it at all.
+        head_hashes: set[str] = set()
+        for record in result.get("records", ()):
+            for reference in (record.get("sequences") or {}).values():
+                if reference.get("hash"):
+                    head_hashes.add(str(reference["hash"]))
+        heads = sorted(head_hashes)
+        resolved: dict[str, Any] = {"sequences": {}, "blobs": {}}
+        if heads:
+            try:
+                found = await self._reader_for(settings).resolve_sequences(
+                    session_id,
+                    heads,
+                    since_revision=since_revision,
+                )
+            except Exception:
+                logger.exception(
+                    "Trajectory sequence resolution failed: session_id=%s",
+                    session_id,
+                )
+                return _error_response(
+                    "trajectory query failed",
+                    "TRAJECTORY_QUERY_FAILED",
+                    500,
+                )
+            if found is not None:
+                resolved = found
         return _json_response(
             {
                 "schema_version": 1,
                 "session_id": session_id,
-                "trace_id": normalized_trace_id,
+                "subject_id": normalized_subject_id,
+                **result,
+                **resolved,
+            }
+        )
+
+    async def get_stream_frames(
+        self,
+        session_id: str,
+        *,
+        since_frame_seq: int,
+        limit: int,
+    ) -> Response:
+        """Build one page of a session's stream frames, in commit order.
+
+        A reader that fell behind -- a reconnect, a slow tab -- resumes from
+        the last frame it holds and walks forward, rather than waiting for
+        the answer to finish before it can show anything.
+        """
+        settings = self.settings
+        error = self._validate_access(session_id, settings)
+        if error is not None:
+            return error
+        if since_frame_seq < 0:
+            return _error_response("since_frame_seq must be >= 0", "BAD_REQUEST", 400)
+        if since_frame_seq > _MAX_SQLITE_INTEGER:
+            return _error_response("since_frame_seq is too large", "BAD_REQUEST", 400)
+        if not 1 <= limit <= _MAX_FRAME_PAGE:
+            return _error_response(
+                f"limit must be between 1 and {_MAX_FRAME_PAGE}",
+                "BAD_REQUEST",
+                400,
+            )
+        try:
+            result = await self._reader_for(settings).get_stream_frames(
+                session_id,
+                since_frame_seq=since_frame_seq,
+                limit=limit,
+            )
+        except Exception:
+            logger.exception(
+                "Trajectory stream-frame query failed: session_id=%s",
+                session_id,
+            )
+            return _error_response(
+                "trajectory query failed",
+                "TRAJECTORY_QUERY_FAILED",
+                500,
+            )
+        if result is None:
+            return _error_response("session not found", "NOT_FOUND", 404)
+        return _json_response(
+            {
+                "schema_version": 1,
+                "session_id": session_id,
                 **result,
             }
         )
+
+    async def get_sequences(
+        self,
+        session_id: str,
+        seq_hashes: Sequence[str],
+        *,
+        since_revision: int = 0,
+    ) -> Response:
+        """Resolve chains by hash, for a reader whose cache lost them.
+
+        The page read already carries what a reader following along needs.
+        This is the path back for one that does not have it: a reload, a
+        second device, an entry expired from the browser's cache.
+        """
+        settings = self.settings
+        error = self._validate_access(session_id, settings)
+        if error is not None:
+            return error
+        requested = [str(value or "").strip() for value in seq_hashes]
+        requested = [value for value in requested if value]
+        if not requested:
+            return _error_response("at least one sequence hash is required", "BAD_REQUEST", 400)
+        if len(requested) > _MAX_SEQUENCE_REQUEST:
+            return _error_response(
+                f"at most {_MAX_SEQUENCE_REQUEST} sequences per request",
+                "BAD_REQUEST",
+                400,
+            )
+        if any(_SEQUENCE_HASH_PATTERN.fullmatch(value) is None for value in requested):
+            return _error_response("invalid sequence hash", "BAD_REQUEST", 400)
+        try:
+            resolved = await self._reader_for(settings).resolve_sequences(
+                session_id,
+                requested,
+                since_revision=max(0, int(since_revision)),
+            )
+        except Exception:
+            logger.exception(
+                "Trajectory sequence query failed: session_id=%s",
+                session_id,
+            )
+            return _error_response("trajectory query failed", "TRAJECTORY_QUERY_FAILED", 500)
+        if resolved is None:
+            return _error_response("session not found", "NOT_FOUND", 404)
+        return _json_response({
+            "schema_version": 1,
+            "session_id": session_id,
+            **resolved,
+        })
 
     async def get_raw_record(
         self,
@@ -511,59 +594,90 @@ def attach_trajectory_routes(
         response.headers["Cache-Control"] = "no-store"
         return response
 
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces")
-    async def list_trajectory_traces(
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects")
+    async def list_trajectory_subjects(
         session_id: str,
         request: Request,
-        limit: str = Query(default="30"),
-        cursor: str | None = Query(default=None),
+        after_revision: str = Query(default="0"),
     ) -> Response:
-        """List trajectory traces for one session."""
+        """List the execution subjects that own a chain in one session."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
+        parsed_after = _parse_integer_query(after_revision)
+        if parsed_after is None:
+            return _error_response("after_revision must be an integer", "BAD_REQUEST", 400)
+        return await service.list_subjects(session_id, after_revision=parsed_after)
+
+
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/stream-frames")
+    async def get_trajectory_stream_frames(
+        session_id: str,
+        request: Request,
+        since_frame_seq: str = Query(default="0"),
+        limit: str = Query(default="500"),
+    ) -> Response:
+        """Read one page of a session's stream frames, in commit order."""
+        request.state.trajectory_route_handled = True
+        origin_error = _validate_http_origin(request)
+        if origin_error is not None:
+            return origin_error
+        parsed_since = _parse_integer_query(since_frame_seq)
         parsed_limit = _parse_integer_query(limit)
+        if parsed_since is None:
+            return _error_response(
+                "since_frame_seq must be an integer",
+                "BAD_REQUEST",
+                400,
+            )
         if parsed_limit is None:
             return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.list_traces(
+        return await service.get_stream_frames(
             session_id,
+            since_frame_seq=parsed_since,
             limit=parsed_limit,
-            cursor=cursor,
         )
 
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/revisions")
-    async def list_trajectory_revisions(
+    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/sequences")
+    async def get_trajectory_sequences(
         session_id: str,
         request: Request,
-        after_revision: str = Query(default=""),
-        limit: str = Query(default="100"),
+        hashes: str = Query(default=""),
+        since_revision: str = Query(default="0"),
     ) -> Response:
-        """List trace summaries changed after an opaque polling cursor."""
+        """Resolve content-addressed chains a reader no longer holds."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        parsed_limit = _parse_integer_query(limit)
-        if parsed_limit is None:
-            return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.list_revisions(
+        parsed_since = _parse_integer_query(since_revision)
+        if parsed_since is None:
+            return _error_response("since_revision must be an integer", "BAD_REQUEST", 400)
+        requested = [value for value in hashes.split(",") if value]
+        return await service.get_sequences(
             session_id,
-            after_revision=after_revision,
-            limit=parsed_limit,
+            requested,
+            since_revision=parsed_since,
         )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/archive")
     async def export_trajectory_archive(
         session_id: str,
         request: Request,
+        archive_format: str = Query(default="otlp", alias="format"),
     ) -> Response:
         """Export all current trajectory records for one session."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
             return origin_error
-        return await service.export_archive(session_id)
+        if archive_format not in ("otlp", "addressed"):
+            return _error_response("format must be otlp or addressed", "BAD_REQUEST", 400)
+        return await service.export_archive(
+            session_id,
+            addressed=archive_format == "addressed",
+        )
 
     @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/usage")
     async def get_trajectory_session_usage(
@@ -577,15 +691,17 @@ def attach_trajectory_routes(
             return origin_error
         return await service.get_session_usage(session_id)
 
-    @app.get(f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/traces/{{trace_id}}")
-    async def get_trajectory_trace(
+    @app.get(
+        f"{TRAJECTORY_API_PREFIX}/sessions/{{session_id}}/subjects/{{subject_id}}/records"
+    )
+    async def get_trajectory_subject_records(
         session_id: str,
-        trace_id: str,
+        subject_id: str,
         request: Request,
         since_revision: str = Query(default="0"),
         limit: str = Query(default="1000"),
     ) -> Response:
-        """Read complete or incremental trajectory records."""
+        """Read one page of an execution subject's chain, in commit order."""
         request.state.trajectory_route_handled = True
         origin_error = _validate_http_origin(request)
         if origin_error is not None:
@@ -600,9 +716,9 @@ def attach_trajectory_routes(
             )
         if parsed_limit is None:
             return _error_response("limit must be an integer", "BAD_REQUEST", 400)
-        return await service.get_trace(
+        return await service.get_subject(
             session_id,
-            trace_id,
+            subject_id,
             since_revision=parsed_since_revision,
             limit=parsed_limit,
         )
@@ -636,14 +752,6 @@ def _load_session_metadata(session_id: str) -> Mapping[str, Any]:
     )
 
 
-def _http_trace_summary(item: Mapping[str, Any]) -> dict[str, Any]:
-    return {
-        **item,
-        "start_time_unix_nano": str(item["start_time_unix_nano"]),
-        "end_time_unix_nano": str(item["end_time_unix_nano"]),
-    }
-
-
 def _parse_integer_query(value: str) -> int | None:
     normalized = str(value or "").strip()
     if not normalized or len(normalized) > _MAX_INTEGER_QUERY_CHARS:
@@ -655,28 +763,6 @@ def _parse_integer_query(value: str) -> int | None:
     except (ValueError, OverflowError):
         return None
     return parsed if parsed <= _MAX_SQLITE_INTEGER else None
-
-
-def _is_valid_cursor_text(value: str) -> bool:
-    """Accept only canonical unpadded base64url before touching the reader."""
-    normalized = str(value or "")
-    if normalized != normalized.strip() or not 0 < len(normalized) <= _MAX_CURSOR_LENGTH:
-        return False
-    if not normalized.isascii() or len(normalized) % 4 == 1:
-        return False
-    if _CURSOR_PATTERN.fullmatch(normalized) is None:
-        return False
-    padding = "=" * (-len(normalized) % 4)
-    try:
-        decoded = base64.b64decode(
-            f"{normalized}{padding}".encode("ascii"),
-            altchars=b"-_",
-            validate=True,
-        )
-    except ValueError:
-        return False
-    canonical = base64.urlsafe_b64encode(decoded).decode("ascii").rstrip("=")
-    return canonical == normalized
 
 
 def _is_malformed_raw_host(raw_host: str) -> bool:

@@ -157,6 +157,47 @@ class TestHandleCommandWorkflows:
         assert payload["session_id"] == "sess-1"
 
     @pytest.mark.anyio
+    async def test_no_handler_serves_cold_start_normalized_runs(self) -> None:
+        """Reopening a session after a process restart hits this checkpoint
+        path before any chat.send rebuilds the runtime. A run the old process
+        left ``running`` must be served as ``paused`` + ``recovered`` (no
+        events will ever arrive for it, and the buttons must grey) — the same
+        view ensure_monitor_handlers builds, not the raw snapshot.
+        """
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        zombie = WorkflowRunState(status="running")
+        zombie.id = "wf_z"
+        done = WorkflowRunState(status="completed")
+        done.id = "wf_d"
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(session_id="sess-1", channel_id="web")
+        send_lock = asyncio.Lock()
+        persisted: list[dict] = []
+
+        with patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=_FakeTeamManager(workflow_handler=None),
+        ), patch(
+            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.restore_workflow_runs",
+            return_value={"wf_z": zombie, "wf_d": done},
+        ), patch(
+            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.persist_workflow_runs",
+            side_effect=lambda runs, sid, **kw: persisted.append(dict(runs)),
+        ):
+            await server._handle_command_workflows(ws, request, send_lock)
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        by_id = {w["id"]: w for w in payload["workflows"]}
+        assert by_id["wf_z"]["status"] == "paused"
+        assert by_id["wf_z"]["recovered"] is True
+        assert by_id["wf_d"]["status"] == "completed"
+        assert "recovered" not in by_id["wf_d"] or by_id["wf_d"]["recovered"] is False
+        assert persisted  # the normalized view is written back, same as the runtime path
+
+    @pytest.mark.anyio
     async def test_list_returns_summaries_with_detail_pending(self) -> None:
         from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 

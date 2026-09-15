@@ -1497,6 +1497,78 @@ def test_diff_status_falls_back_to_last_turn_when_git_not_found():
     assert "file_b.py" in result["last_turn"]["files"]
 
 
+def test_diff_status_flags_repo_parent_of_project(tmp_path):
+    """仓库根是项目目录父目录时，repo 与 current 透传提示字段。"""
+    ph, pa, pl, ps = _patch_diff_service()
+    repo_root = tmp_path / "repo"
+    project_dir = repo_root / "app"
+    project_dir.mkdir(parents=True)
+    project = SimpleNamespace(
+        project_id="proj-1",
+        project_dir=str(project_dir),
+        work_mode="code",
+        name="test-project",
+    )
+    with ph, pa, pl, ps, patch(
+        "jiuwenswarm.server.runtime.session.project_git.get_project_git_service",
+        return_value=_fake_git_service(repo_root=str(repo_root)),
+    ), patch.object(
+        DiffService,
+        "get_git_diff",
+        return_value={
+            "stats": {"filesChanged": 60, "linesAdded": 10, "linesRemoved": 5},
+            "files": {},
+            "files_truncated": True,
+            "files_limit": 50,
+        },
+    ):
+        result = DiffStatusService.get_project_diff_status(
+            project=project,
+            session_id="sess-1",
+            include_files=True,
+            include_hunks=True,
+        ).to_dict(include_hunks=True)
+    assert result["repo"]["repo_is_parent_of_project"] is True
+    assert result["repo"]["repo_root"] == str(repo_root)
+    assert result["current"]["files_truncated"] is True
+    assert result["current"]["files_limit"] == 50
+    assert result["current"]["stats"]["files_changed"] == 60
+
+
+def test_diff_status_no_parent_flag_when_repo_is_project_dir(tmp_path):
+    """仓库根等于项目目录时，repo_is_parent_of_project 为 False。"""
+    ph, pa, pl, ps = _patch_diff_service()
+    project_dir = tmp_path / "repo"
+    project_dir.mkdir(parents=True)
+    project = SimpleNamespace(
+        project_id="proj-1",
+        project_dir=str(project_dir),
+        work_mode="code",
+        name="test-project",
+    )
+    with ph, pa, pl, ps, patch(
+        "jiuwenswarm.server.runtime.session.project_git.get_project_git_service",
+        return_value=_fake_git_service(repo_root=str(project_dir)),
+    ), patch.object(
+        DiffService,
+        "get_git_diff",
+        return_value={
+            "stats": {"filesChanged": 1, "linesAdded": 1, "linesRemoved": 0},
+            "files": {},
+            "files_truncated": False,
+            "files_limit": 50,
+        },
+    ):
+        result = DiffStatusService.get_project_diff_status(
+            project=project,
+            session_id="sess-1",
+            include_files=True,
+            include_hunks=True,
+        ).to_dict(include_hunks=True)
+    assert result["repo"]["repo_is_parent_of_project"] is False
+    assert result["current"]["files_truncated"] is False
+
+
 def test_diff_status_uses_turn_summaries_for_last_turn_snapshot_fallback():
     snapshot_turn = {
         "turnIndex": 3,

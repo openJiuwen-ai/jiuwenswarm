@@ -166,6 +166,55 @@ class _CronToolsCronBackend(CronToolBackend):
             )
         return payload
 
+    @staticmethod
+    def _inherit_session_mcp(
+        payload: dict[str, Any],
+        context: CronToolContext | None,
+    ) -> dict[str, Any]:
+        """创建 cron 时复用创建它的 chat-session 的会话级 MCP 选择。
+
+        用户在 web 会话里选择的 MCP 会随每轮 chat.send 持久化到会话
+        metadata 的 ``session_equipment.mcp`` 快照；这里在调用方未显式传
+        ``mcp`` 时用该快照填充（key-presence 语义：显式传 ``[]`` 表示
+        "不用 MCP"，不被继承覆盖），保证 cron 执行会话通过 chat.send 的
+        ``mcp`` 字段走与 chat-session 相同的 reconcile_session_mcp 通道。
+        会话无 MCP 选择 / 读取失败时保持原 payload，不阻断创建。
+        """
+        if context is None or "mcp" in payload:
+            return payload
+        session_id = getattr(context, "session_id", None)
+        if not (isinstance(session_id, str) and session_id.strip()):
+            return payload
+        try:
+            from jiuwenswarm.server.runtime.session.session_metadata import (
+                get_session_equipment,
+            )
+
+            equipment = get_session_equipment(session_id, cache_bust=True)
+            inherited = equipment.get("mcp") if isinstance(equipment, dict) else None
+            if not (
+                isinstance(inherited, list)
+                and inherited
+                and all(isinstance(item, str) for item in inherited)
+            ):
+                return payload
+            out = dict(payload)
+            out["mcp"] = list(inherited)
+            logger.info(
+                "[CronRuntimeBridge] cron job reuses chat-session mcp: "
+                "session=%s mcp=%s",
+                session_id,
+                inherited,
+            )
+            return out
+        except Exception as exc:  # noqa: BLE001 - 继承失败不阻断创建
+            logger.debug(
+                "[CronRuntimeBridge] reuse session mcp failed session=%s: %s",
+                session_id,
+                exc,
+            )
+        return payload
+
     async def list_jobs(self, *, include_disabled: bool = True) -> list[dict[str, Any]]:
         jobs = await self._with_route(None, self._cron_tools.list_jobs())
         rows = [self._to_backend_job(job) for job in jobs]
@@ -203,6 +252,9 @@ class _CronToolsCronBackend(CronToolBackend):
         # 模型，如免费模型 mimo-v2.5-free），保证 cron 执行与创建它的会话使用同一
         # 模型配置，而不是回退到 config 默认模型。
         payload = self._inherit_session_model(payload, context=context)
+        # cron 的会话级 MCP 选择复用创建它的 chat-session 的 MCP 快照
+        #（未显式传 mcp 时填充；执行时经 chat.send 的 mcp 字段走 reconcile）。
+        payload = self._inherit_session_mcp(payload, context=context)
         logger.info(
             "[CronRuntimeBridge] create_job mapped payload.targets=%s payload.id=%s payload.name=%s",
             payload.get("targets"),
@@ -456,6 +508,18 @@ def _extract_legacy_params(
         if model_name_raw is not None and str(model_name_raw).strip():
             out["model_name"] = str(model_name_raw).strip()
 
+        # mcp：透传会话级 MCP 选择（顶层或随 payload 传入）；未显式传时由
+        # 调用方继承会话 MCP 快照。保留显式空列表，避免继承覆盖或无法清除选择；
+        # 非空列表只接受非空字符串元素，其余交给继承/规范化。
+        mcp_raw = data.get("mcp")
+        if mcp_raw is None:
+            mcp_raw = payload_block.get("mcp")
+        if (
+            isinstance(mcp_raw, (list, tuple))
+            and all(isinstance(item, str) and item.strip() for item in mcp_raw)
+        ):
+            out["mcp"] = [str(item).strip() for item in mcp_raw]
+
         context_session_id = getattr(context, "session_id", None)
         context_metadata = getattr(context, "metadata", None) or {}
         if not isinstance(context_metadata, dict):
@@ -645,6 +709,33 @@ def _patch_cron_tool_cards(tools: list[Any]) -> list[Any]:
     return tools
 
 
+class _NoCreateCronBackend:
+    """Backend view that forbids creating new cron jobs.
+
+    用于 cron 执行会话的工具集：统一 ``cron`` 工具的 ``add`` 动作与
+    ``cron_create_job`` 都汇聚到 ``create_job``，在这里统一拒绝，防止
+    cron 运行中再派生出新 cron；其余管理操作照常委托内层 backend。
+    """
+
+    def __init__(self, inner: CronToolBackend) -> None:
+        self._inner = inner
+
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        _ = (params, context)
+        raise ValueError(
+            "Creating new cron jobs from a cron session is not allowed; "
+            "manage existing jobs (list/get/update/delete) instead"
+        )
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+
 class CronRuntimeBridge:
     """Resolve the host cron backend for DeepAgents while keeping gateway diffs minimal."""
 
@@ -685,8 +776,21 @@ class CronRuntimeBridge:
         except Exception as exc:
             logger.warning("[CronRuntimeBridge] Failed to start scheduler: %s", exc)
 
-    def build_tools(self, *, context: Any, agent_id: Optional[str], language: str = "cn") -> list[Any]:
-        """Build cron tools."""
+    def build_tools(
+        self,
+        *,
+        context: Any,
+        agent_id: Optional[str],
+        language: str = "cn",
+        allow_create: bool = True,
+    ) -> list[Any]:
+        """Build cron tools.
+
+        Args:
+            allow_create: False 时下掉创建类工具（``cron_create_job``），并让
+                统一 ``cron`` 工具的 ``add`` 动作直接报错。用于 cron 执行会话，
+                禁止 cron 再派生新 cron；list/get/update/delete 等管理能力保留。
+        """
         backend = self.get_backend()
         if backend is None:
             logger.warning("[CronRuntimeBridge] cron backend is not ready, skip builtin cron tools")
@@ -700,10 +804,11 @@ class CronRuntimeBridge:
         if isinstance(backend, _CronToolsCronBackend):
             backend.bind_context(context)
 
-        logger.info("[CronRuntimeBridge] Building cron tools for context: %s", 
+        logger.info("[CronRuntimeBridge] Building cron tools for context: %s",
                     getattr(context, 'tool_scope', 'unknown'))
+        effective_backend = backend if allow_create else _NoCreateCronBackend(backend)
         tools = create_cron_tools(
-            backend,
+            effective_backend,
             context=context,
             target_channels=[channel.value for channel in CronTargetChannel],
             default_target_channel=None,
@@ -711,10 +816,18 @@ class CronRuntimeBridge:
             language=language,
         )
         tools = list(tools or [])
+        if not allow_create:
+            # 创建类工具下掉：cron 会话内不暴露 cron_create_job。
+            tools = [
+                tool
+                for tool in tools
+                if getattr(getattr(tool, "card", None), "name", "") != "cron_create_job"
+            ]
         # 修正 openjiuwen 工具描述中的 dow 编号语义（1=SUN→0=SUN，与 croniter 一致），
         # 见模块顶部 _CRON_DOW_SEMANTIC_FIXES 说明。
         tools = _patch_cron_tool_cards(tools)
-        logger.info("[CronRuntimeBridge] Built %d cron tools: %s", 
-                    len(tools), 
+        logger.info("[CronRuntimeBridge] Built %d cron tools (create_enabled=%s): %s",
+                    len(tools),
+                    allow_create,
                     [tool.card.name if hasattr(tool, 'card') else str(tool) for tool in tools])
         return tools

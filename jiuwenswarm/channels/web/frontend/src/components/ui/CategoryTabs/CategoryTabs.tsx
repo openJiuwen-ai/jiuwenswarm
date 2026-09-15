@@ -15,9 +15,12 @@ export interface CategoryTabsProps<T extends string = string> {
   items: CategoryTabsOption<T>[];
   value: T;
   onChange: (value: T) => void;
+  wrapperTestId?: string;
+  itemTestId?: string;
+  className?: string;
 }
 
-export function CategoryTabs<T extends string = string>({ items, value, onChange }: CategoryTabsProps<T>) {
+export function CategoryTabs<T extends string = string>({ items, value, onChange, wrapperTestId, itemTestId, className }: CategoryTabsProps<T>) {
   const { ref: scrollRef, canScrollLeft, canScrollRight, update: updateScrollState } = useHorizontalScrollEdges<HTMLDivElement>();
 
   useLayoutEffect(() => {
@@ -32,8 +35,8 @@ export function CategoryTabs<T extends string = string>({ items, value, onChange
 
   return (
     <div
-      className={`categoryTabs${canScrollLeft ? ' is-scroll-left' : ''}${canScrollRight ? ' is-scroll-right' : ''}`}
-      data-testid="categoryTabs"
+      className={`categoryTabs${canScrollLeft ? ' is-scroll-left' : ''}${canScrollRight ? ' is-scroll-right' : ''}${className ? ` ${className}` : ''}`}
+      data-testid={wrapperTestId ?? 'categoryTabs'}
     >
       <button
         type="button"
@@ -51,6 +54,8 @@ export function CategoryTabs<T extends string = string>({ items, value, onChange
             <button
               type="button"
               onClick={() => onChange(item.value)}
+              data-testid={itemTestId}
+              data-variant={item.value}
               className={`whitespace-nowrap ${
                 value === item.value
                   ? 'text-text font-bold'

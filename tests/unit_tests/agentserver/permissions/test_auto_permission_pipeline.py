@@ -453,7 +453,9 @@ def _runtime_ctx(
 ) -> AgentCallbackContext:
     tool_call = SimpleNamespace(id="call-1", name=tool_name, arguments=tool_args)
     return AgentCallbackContext(
-        agent=SimpleNamespace(),
+        # Routing doubles have no installed native executors. Their contracts
+        # are covered separately with a real AbilityManager and filesystem.
+        agent=SimpleNamespace(ability_manager=SimpleNamespace(get=lambda _name: None)),
         inputs=ToolCallInputs(
             tool_call=tool_call,
             tool_name=tool_name,

@@ -160,7 +160,7 @@ def _serve_file(
     monkeypatch.setattr(
         web_file_download,
         "validate_file_download_token",
-        lambda _token: None,
+        lambda _token, **_kwargs: None,
     )
     _FakeAgentDownloadServer.file_path = file_path
     monkeypatch.setattr(
@@ -465,7 +465,7 @@ def test_download_handler_proxies_agent_server_403(
         monkeypatch.setattr(
             web_file_download,
             "validate_file_download_token",
-            lambda _token: None,
+            lambda _token, **_kwargs: None,
         )
         monkeypatch.setattr(
             app_web,
@@ -488,7 +488,7 @@ def test_verified_single_user_download_fallback_keeps_range_support(
 ) -> None:
     file_path = tmp_path / "legacy-range.txt"
     file_path.write_bytes(b"legacy-content")
-    monkeypatch.setattr(web_file_download, "validate_file_download_token", lambda _token: {"path": str(file_path)})
+    monkeypatch.setattr(web_file_download, "validate_file_download_token", lambda _token, **_kwargs: {"path": str(file_path)})
     monkeypatch.setattr(web_file_download, "is_path_within_user_dirs", lambda _path: True)
     def _unexpected_proxy(*_args, **_kwargs):
         raise AssertionError("legacy local download must not proxy to the WS port")
@@ -536,7 +536,7 @@ def test_verified_single_user_upload_persists_without_http_bridge(
     monkeypatch.setattr(
         web_file_download,
         "validate_file_download_token",
-        lambda _token: {"path": "agent/sessions/s1/uploads/report.txt"},
+        lambda _token, **_kwargs: {"path": "agent/sessions/s1/uploads/report.txt"},
     )
     monkeypatch.setattr(
         "jiuwenswarm.common.utils.get_user_workspace_dir", lambda: tmp_path
@@ -594,3 +594,52 @@ def test_verified_asset_retry_range_and_concurrent_get_use_same_sealed_object(
     assert partial.status == 206
     assert partial.wfile.getvalue() == b"2345"
     assert concurrent_bodies == (b"0123456789",) * 4
+
+
+@pytest.mark.parametrize("command", ["GET", "HEAD"])
+def test_legacy_expired_artifact_can_still_be_downloaded(tmp_path, monkeypatch, command):
+    file_path = tmp_path / "历史产物.txt"
+    file_path.write_bytes(b"historical artifact")
+    manager = WebFileDownloadManager(secret="s" * 32)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_token(str(file_path), "history-session", expires_in=-60)
+    assert manager.validate_token(token) is None
+    handler = _DownloadHandlerStub(command=command)
+
+    _SpaStaticHandler._handle_file_download(handler, {"token": token})
+
+    assert handler.status == 200
+    assert handler.response_headers["Content-Length"] == str(file_path.stat().st_size)
+    assert handler.wfile.getvalue() == (b"historical artifact" if command == "GET" else b"")
+
+
+def test_expired_skill_image_remains_rejected(monkeypatch):
+    manager = WebFileDownloadManager(secret="s" * 32)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    token = manager.generate_skill_content_image_token(
+        name="example", version=None, relative_path="image.png",
+        session_id="s1", expires_in=-60,
+    )
+    handler = _DownloadHandlerStub()
+    responses = []
+    handler._write_json = lambda status, body: responses.append((status, body))
+
+    _SpaStaticHandler._handle_file_download(handler, {"token": token, "session_id": "s1"})
+
+    assert responses == [(403, {"error": "invalid_or_expired_token"})]
+
+
+def test_expired_upload_remains_invalid_after_artifact_download(monkeypatch, tmp_path):
+    manager = WebFileDownloadManager(secret="s" * 32)
+    monkeypatch.setattr(WebFileDownloadManager, "_instance", manager)
+    file_path = tmp_path / "artifact.txt"
+    file_path.write_bytes(b"ok")
+    artifact = manager.generate_token(str(file_path), expires_in=-60)
+    upload = manager.generate_token("agent/workspace/upload.txt", expires_in=-60)
+
+    _SpaStaticHandler._handle_file_download(_DownloadHandlerStub(), {"token": artifact})
+
+    assert web_file_download.validate_file_download_token(upload) is None
+    encoded, signature = artifact.split(".")
+    altered = encoded + "." + ("0" if signature[0] != "0" else "1") + signature[1:]
+    assert web_file_download.validate_file_download_token(altered, check_expiry=False) is None

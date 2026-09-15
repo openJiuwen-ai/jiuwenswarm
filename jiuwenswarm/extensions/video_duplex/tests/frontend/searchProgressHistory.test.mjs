@@ -58,3 +58,14 @@ test('searchProgressOptionLabel presents query and status without internal id', 
   assert.equal(searchProgressOptionLabel(job, 3), '3. 香港今天的天气 (已完成)');
   assert.doesNotMatch(searchProgressOptionLabel(job, 3), /private-id/);
 });
+
+test('queued execution is labelled explicitly and late snapshots do not undo completion', () => {
+  let jobs = mergeSearchProgressJob([], payload('one', 'request', 'queued'));
+  assert.match(searchProgressOptionLabel(jobs[0], 1), /排队中/);
+  jobs = mergeSearchProgressJob(jobs, payload('one', 'request', 'running', 2));
+  jobs = mergeSearchProgressJob(jobs, payload('one', 'request', 'queued', 1));
+  assert.equal(jobs[0].status, 'running');
+  jobs = mergeSearchProgressJob(jobs, payload('one', 'request', 'completed', 3));
+  jobs = mergeSearchProgressJob(jobs, payload('one', 'request', 'running', 2));
+  assert.equal(jobs[0].status, 'completed');
+});

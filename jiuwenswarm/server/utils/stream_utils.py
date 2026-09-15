@@ -289,6 +289,8 @@ def _parse_typed_chunk(chunk: Any, _has_streamed_content: bool) -> dict[str, Any
     if chunk_type == "controller_output" and payload is not None:
         interactions = _find_interaction_payloads(payload)
         if interactions:
+            if len(interactions) == 1 and isinstance(interactions[0], list | tuple):
+                return _parse_interaction_payload(interactions[0])
             return _parse_interaction_payload(interactions)
         inner_t = getattr(payload, "type", None)
         if inner_t is None and isinstance(payload, dict):
@@ -540,8 +542,14 @@ def _parse_interaction_payload(payload: Any) -> dict[str, Any] | None:
     from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
         convert_interactions_to_ask_user_question,
     )
+    from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+        optional_root_permission_queue,
+    )
 
-    return convert_interactions_to_ask_user_question([payload])
+    return convert_interactions_to_ask_user_question(
+        [payload],
+        root_permission_queue=optional_root_permission_queue(),
+    )
 
 
 def _find_interaction_payloads(

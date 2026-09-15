@@ -26,7 +26,7 @@ class _Bridge(AutoPermissionRuntimeBridgeMixin):
 def _invocation() -> ToolInvocation:
     tool_call = SimpleNamespace(id="tool-call-1", name="bash", arguments={})
     ctx = AgentCallbackContext(
-        agent=SimpleNamespace(),
+        agent=SimpleNamespace(ability_manager=SimpleNamespace(get=lambda _name: None)),
         inputs=ToolCallInputs(
             tool_call=tool_call,
             tool_name="bash",

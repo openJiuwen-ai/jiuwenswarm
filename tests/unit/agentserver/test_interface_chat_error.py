@@ -9,7 +9,6 @@ yielded ``AgentResponseChunk`` and the persisted history record.
 from __future__ import annotations
 
 import asyncio
-import json
 from pathlib import Path
 from typing import Any, AsyncIterator, List
 
@@ -29,6 +28,9 @@ class _RaisingStream:
 
     async def __anext__(self) -> AgentResponseChunk:
         raise self._exc
+
+    async def aclose(self) -> None:
+        return None
 
 
 class _RaisingAdapter:

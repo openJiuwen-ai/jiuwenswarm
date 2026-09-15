@@ -333,6 +333,43 @@ def _consume_records(
                 results.append(result)
                 pending = {}
 
+        # Fallback: when no symphony_compose_graph plan was observed but
+        # skill_tool was invoked (agent went straight to execution), synthesize
+        # a plan from the observed skills so we can still distill packs.
+        # Also handle the case when symphony_compose_graph was called but
+        # returned no_plan (empty selected_skill_ids).
+        #
+        # 关键约束:只在当前 request 有 skill_tool 调用时触发 fallback。
+        # 否则 pending 被清空后(not markers and not pending)恒为 True,
+        # 会导致同一批 records 被二次消费,或错误地为没有技能调用的请求合成 plan。
+        has_skill_calls = any(
+            r.get("event_type") == "chat.tool_call"
+            and str(r.get("tool_name") or "") == "skill_tool"
+            for r in request_records
+        )
+        should_fallback = has_skill_calls and (
+            (not markers and not pending) or (
+                pending and not pending.get("selected_skill_ids")
+            )
+        )
+        if should_fallback:
+            synthetic = _synthesize_plan_from_skill_calls(
+                request_records,
+                activated_skill_ids,
+            )
+            if synthetic is not None:
+                result = _consume_execution_turn(
+                    synthetic,
+                    request_records,
+                    session_id=session_id,
+                    request_id=request_id,
+                    graph_dir=graph_dir,
+                    same_turn=True,
+                    activated_skill_ids=activated_skill_ids,
+                )
+                if result is not None:
+                    results.append(result)
+
     if pending:
         session_state["pending_plan"] = pending
     else:
@@ -453,6 +490,55 @@ def _plan_markers(
             continue
         if raw_output.get("dynamic_graph_enabled") is False:
             continue
+
+        # 尝试从 planned_graph.graph 获取 plan 信息（新格式）
+        planned_graph = raw_output.get("planned_graph")
+        if isinstance(planned_graph, dict):
+            graph = planned_graph.get("graph")
+            if isinstance(graph, dict):
+                metadata = graph.get("metadata") or {}
+                status = str(metadata.get("status") or "").lower()
+                # 接受 ready 和 no_plan 两种状态
+                if status not in ("ready", "no_plan"):
+                    continue
+
+                # 从 nodes 提取 skill IDs
+                selected_skill_ids = []
+                nodes = graph.get("nodes") or {}
+                for node_id, node_data in nodes.items():
+                    current = skill_id(node_id).strip()
+                    if current and current not in selected_skill_ids:
+                        selected_skill_ids.append(current)
+
+                # 从 edges 提取边信息
+                edges = normalize_edges(graph.get("edges") or [])
+
+                # 生成 plan_id（如果没有的话）
+                plan_id = str(raw_output.get("plan_id") or graph.get("id") or "").strip()
+                if not plan_id:
+                    # 使用 graph 的 id 作为 plan_id
+                    plan_id = str(graph.get("id") or f"plan_{record.get('request_id', '')}").strip()
+
+                if not plan_id:
+                    continue
+
+                output.append(
+                    (
+                        index,
+                        {
+                            "plan_id": plan_id,
+                            "query": str(raw_output.get("query") or _user_text(records)).strip(),
+                            "planning_request_id": str(record.get("request_id") or ""),
+                            "selected_skill_ids": selected_skill_ids,
+                            "selected_edges": edges,
+                            "planned_at": record.get("timestamp"),
+                            "skipped_turns": 0,
+                        },
+                    )
+                )
+                continue
+
+        # 兼容旧格式：从 plan 字段获取
         plan = raw_output.get("plan")
         if not isinstance(plan, dict) or str(plan.get("status") or "").lower() != "ready":
             continue
@@ -495,6 +581,13 @@ def _execution_correlation(
     if not records:
         return ""
     planned_skill_ids = list(pending.get("selected_skill_ids") or [])
+
+    # 当 planner 返回空（no_plan）但实际执行了多个 skill 时，使用宽松关联
+    if not planned_skill_ids and observed_skill_ids:
+        if outcome == "success" and _has_substantive_final(records):
+            return "direct_skill_execution"
+        return "direct_skill_execution" if observed_skill_ids else ""
+
     if _all_planned_skills_observed(planned_skill_ids, observed_skill_ids):
         return "planned_skill_observed"
     observed_tools = _observed_tool_names(records)
@@ -549,10 +642,12 @@ def _classify_outcome(
 ) -> tuple[str, str, str] | None:
     if _request_cancelled(records):
         return None
+    # 1. 先检查 chat.error（最高优先级）
     for record in records:
         if record.get("event_type") == "chat.error":
             error = str(record.get("error") or record.get("content") or "execution failed")
             return "failure", str(record.get("error_type") or "agent_error"), error[:1000]
+    # 2. 检查失败的 tool_result
     for record in records:
         if record.get("event_type") != "chat.tool_result":
             continue
@@ -560,8 +655,10 @@ def _classify_outcome(
             tool_name = str(record.get("tool_name") or "tool")
             detail = str(record.get("error") or record.get("result") or "tool execution failed")
             return "failure", f"{tool_name}_failed", detail[:1000]
+    # 3. 检查 chat.ask_user_question
     if any(record.get("event_type") == "chat.ask_user_question" for record in records):
         return "needs_input", "missing_input", "execution paused for user input"
+    # 4. 检查 chat.final（有最终回复就算成功）
     final_text = "\n".join(
         str(record.get("content") or "").strip()
         for record in records
@@ -659,6 +756,9 @@ def _observed_skill_ids(
             continue
         if str(record.get("tool_name") or "").strip() != "skill_tool":
             continue
+        # 只记录成功的 skill_tool 调用
+        if _tool_result_failed(record):
+            continue
         call_id = str(record.get("tool_call_id") or "").strip()
         invoked_name = _take_pending_skill_call(pending_calls, call_id)
         canonical_name = _skill_name_from_result(record)
@@ -668,10 +768,17 @@ def _observed_skill_ids(
         if matched and matched not in observed:
             observed.append(matched)
     if include_attempted:
-        for candidate in attempted:
-            matched = _match_selected_skill(candidate, selected)
-            if matched and matched not in observed:
-                observed.append(matched)
+        # 如果 selected 为空，返回所有 attempted skills（不匹配）
+        if not selected:
+            for candidate in attempted:
+                normalized = skill_id(candidate).strip()
+                if normalized and normalized not in observed:
+                    observed.append(normalized)
+        else:
+            for candidate in attempted:
+                matched = _match_selected_skill(candidate, selected)
+                if matched and matched not in observed:
+                    observed.append(matched)
     return observed
 
 
@@ -927,6 +1034,49 @@ def _match_planned_skills(
     return output
 
 
+def _synthesize_plan_from_skill_calls(
+    records: list[dict[str, Any]],
+    activated_skill_ids: list[str],
+) -> dict[str, Any] | None:
+    """Synthesize a plan from skill_tool calls when no symphony_compose_graph was invoked.
+
+    Returns a pending-plan dict if at least 2 skills were invoked, else None.
+    """
+    from uuid import uuid4
+
+    observed_skills = _observed_skill_ids(records, [], include_attempted=True)
+    # Also include activated skills from prior turns
+    for sid in activated_skill_ids:
+        normalized = skill_id(sid).strip()
+        if normalized and normalized not in observed_skills:
+            observed_skills.append(normalized)
+
+    if len(observed_skills) < 2:
+        return None
+
+    # Build synthetic edges: sequential chain A->B->C
+    edges = []
+    for i in range(len(observed_skills) - 1):
+        edges.append({
+            "source_id": observed_skills[i],
+            "target_id": observed_skills[i + 1],
+            "relation_type": "can_feed",
+        })
+
+    # Extract query from user text
+    query = _user_text(records)
+
+    return {
+        "plan_id": f"synthetic_{uuid4().hex[:12]}",
+        "query": query,
+        "planning_request_id": "",
+        "selected_skill_ids": list(observed_skills),
+        "selected_edges": edges,
+        "planned_at": None,
+        "skipped_turns": 0,
+    }
+
+
 def _observed_edges(
     planned_edges: list[dict[str, Any]],
     observed_skill_ids: list[str],
@@ -940,6 +1090,17 @@ def _observed_edges(
         target_id = skill_id(edge.get("target_id")).strip()
         if source_id in observed and target_id in observed:
             output.append(edge)
+    # 如果 planned_edges 为空但观察到多个 skill，按执行顺序合成边
+    if not output and len(observed_skill_ids) >= 2:
+        for i in range(len(observed_skill_ids) - 1):
+            source_id = skill_id(observed_skill_ids[i]).strip()
+            target_id = skill_id(observed_skill_ids[i + 1]).strip()
+            if source_id and target_id and source_id != target_id:
+                output.append({
+                    "source_id": source_id,
+                    "target_id": target_id,
+                    "relation_type": "can_feed",
+                })
     return output
 
 

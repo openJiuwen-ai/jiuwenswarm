@@ -21,10 +21,7 @@ function translucentColor(token) {
 
 /** @type {import('tailwindcss').Config} */
 export default {
-  content: [
-    "./index.html",
-    "./src/**/*.{js,ts,jsx,tsx}",
-  ],
+  content: ['./index.html', './src/**/*.{js,ts,jsx,tsx}'],
   theme: {
     extend: {
       colors: {
@@ -50,6 +47,7 @@ export default {
           DEFAULT: color('--color-text-primary'),
           strong: color('--color-text-strong'),
           muted: color('--color-text-secondary'),
+          meta: color('--color-text-meta'),
           inverse: color('--color-text-inverse'),
           link: color('--color-text-link'),
           divider: color('--color-text-divider'),
@@ -103,9 +101,10 @@ export default {
           'action-link': color('--color-cron-action-link'),
           'auto-managed-surface': color('--color-cron-auto-managed-surface'),
           'auto-managed-text': color('--color-cron-auto-managed-text'),
+          'table-header-surface': color('--color-cron-table-header-surface'),
         },
         connector: {
-          'tag-surface': color('--color-connector-tag-surface'),
+          'tag-surface': color('--color-tag-surface'),
           'tool-icon-surface': color('--color-connector-tool-icon-surface'),
           'tool-icon-border': color('--color-connector-tool-icon-border'),
           'add-hover-surface': color('--color-connector-add-hover-surface'),
@@ -199,7 +198,5 @@ export default {
       },
     },
   },
-  plugins: [
-    typography,
-  ],
-}
+  plugins: [typography],
+};

@@ -26,8 +26,13 @@ def _record(
     input_tokens: int,
     *,
     span_name: str = "llm.call",
+    operation_name: str = "chat",
 ) -> TraceRecordData:
     attributes = {
+        # The usage projector only accepts spans that declare a GenAI chat
+        # operation and carry an inference identity; non-chat records (e.g.
+        # reasoning) must stay out of request usage.
+        "gen_ai.operation.name": operation_name,
         "openjiuwen.inference.id": inference_id,
         "openjiuwen.execution.subject.id": subject_id,
         "gen_ai.usage.input_tokens": input_tokens,
@@ -93,6 +98,7 @@ async def test_session_usage_partitions_subjects_and_uses_physical_identity(
                 31,
                 999,
                 span_name="llm.reasoning",
+                operation_name="invoke_agent",
             ),
         ])
     finally:

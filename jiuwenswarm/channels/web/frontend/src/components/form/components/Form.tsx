@@ -63,6 +63,10 @@ function FormItemRenderer<TValues extends FormValues>({
         invalid={Boolean(field.error)}
         data-testid={testIdPrefix ? `${testIdPrefix}-field-input` : undefined}
         data-variant={testIdPrefix ? String(item.name) : undefined}
+        min={item.min}
+        max={item.max}
+        step={item.step}
+        changeOnBlur={item.type === 'number' ? item.changeOnBlur : undefined}
         onBlur={onBlur}
         onChange={(value) => onChange(value as TValues[keyof TValues])}
       />

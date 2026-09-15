@@ -33,6 +33,8 @@ from openjiuwen.agent_teams.rails.team_context import (
 )
 from openjiuwen.harness.rails import ModelAnomalyDetectionRail
 
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
+
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
     RuntimePromptRail,
@@ -56,10 +58,12 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
+
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
 
+PERSONAL_CONTEXT = "swarm.personal_context"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 # Renamed from ``swarm.team_shared_skill_link_refresh``: the rail behind the
@@ -108,6 +112,27 @@ def _build_heartbeat_rail(
         ),
     )
     return HeartbeatRail(service=service, context=tool_context)
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=PERSONAL_CONTEXT,
+    description="Personal context shared with work/code, gated by the fixed-home Agent-use switch on each model call.",
+)
+def _build_personal_context_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> PersonalContextRail | None:
+    """Mount even when disabled so live members observe subsequent switch changes."""
+    del params, context
+    try:
+        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
+    except Exception as exc:
+        logger.warning(
+            "[swarm.personal_context] optional Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:

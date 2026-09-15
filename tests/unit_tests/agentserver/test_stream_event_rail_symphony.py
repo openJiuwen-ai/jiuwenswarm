@@ -3,9 +3,18 @@ from types import SimpleNamespace
 import pytest
 
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolMessage, UserMessage
+from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
+from openjiuwen.core.single_agent.interrupt.response import InterruptRequest
 from openjiuwen.core.single_agent.rail.base import ToolCallInputs
 from openjiuwen.symphony.discovery import SkillDCICommandResult
 
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueue,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
+    TOOL_INVOCATION_CONTEXT_ATTRIBUTE,
+    mark_permission_interrupt_request,
+)
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import (
     JiuSwarmStreamEventRail,
 )
@@ -316,6 +325,55 @@ async def test_stream_event_rail_does_not_enable_symphony_status_events_for_othe
 
     assert not any(chunk.type == "chat.symphony_status" for chunk in session.chunks)
     assert ctx.force_finish_requests == []
+
+
+@pytest.mark.asyncio
+async def test_terminal_projection_does_not_require_live_permission_card():
+    queue = RootPermissionQueue(id_factory=lambda: "invocation-1")
+    card = queue.begin(
+        root_session_id="root-session",
+        request_id="root-request",
+        execution_session_id="root-session",
+        tool_call_id="call-1",
+        tool_name="todo_list",
+    )
+    rail = JiuSwarmStreamEventRail(root_permission_queue=queue)
+    session = _StreamSession()
+    ctx = _ctx(session, "todo_list")
+    setattr(ctx, TOOL_INVOCATION_CONTEXT_ATTRIBUTE, card.key)
+
+    await rail.before_tool_call(ctx)
+    assert queue.finish(card.key) is True
+    await rail.after_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    results = [chunk for chunk in session.chunks if chunk.type == "tool_result"]
+    assert len(results) == 1
+    assert rail._inflight_tool_calls == {}
+
+
+@pytest.mark.asyncio
+async def test_permission_interrupt_stays_inflight_until_stop_collection():
+    rail = JiuSwarmStreamEventRail()
+    session = _StreamSession()
+    ctx = _ctx(session, "todo_list")
+    request = InterruptRequest(message="approve")
+    mark_permission_interrupt_request(ctx, request)
+    ctx.exception = ToolInterruptException(
+        request=request,
+        tool_call=ctx.inputs.tool_call,
+    )
+
+    await rail.before_tool_call(ctx)
+    await rail.after_tool_call(ctx)
+
+    assert not any(chunk.type == "tool_result" for chunk in session.chunks)
+    assert set(rail._inflight_tool_calls) == {"call-1"}
+
+    rail.collect_cancelled_tool_updates()
+
+    assert rail._inflight_tool_calls == {}
+    assert rail.get_cancelled_tool_results()[0]["tool_call_id"] == "call-1"
 
 
 @pytest.mark.asyncio

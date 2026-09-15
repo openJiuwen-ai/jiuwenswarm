@@ -3,7 +3,7 @@ import { buildConfigSavePayload } from './settingsContract';
 import { useSettingsServices } from './SettingsServicesProvider';
 
 export function useSettingsConfig() {
-  const { isConnected, request, saveQueue, onConfigSaved } = useSettingsServices();
+  const { isConnected, request, saveQueue } = useSettingsServices();
   const [config, setConfig] = useState<Record<string, unknown>>({});
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -38,10 +38,9 @@ export function useSettingsConfig() {
         request('config.save_all', payload, { timeoutMs: 600_000 }),
       );
       setConfig((current) => ({ ...current, ...payload.config }));
-      await onConfigSaved?.(Object.keys(updates));
       return result;
     },
-    [onConfigSaved, request, saveQueue],
+    [request, saveQueue],
   );
   return { config, setConfig, loading, error, reload, save };
 }

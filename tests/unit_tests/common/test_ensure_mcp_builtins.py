@@ -319,6 +319,6 @@ def test_bad_seed_zip_preserves_existing_dir(seed_dir: Path, tmp_path: Path) -> 
     assert (dest / "huaweiyun-mcp" / "manifest.json").stat().st_mtime_ns == old_manifest_mtime
     # 损坏解压不留半残临时目录.
     assert not (dest.parent / f".{dest.name}.tmp.{os.getpid()}").exists()
-    # 也不留其它 .tmp 残留.
+    # 也不留其它 .tmp 拋留.
     tmp_leaks = [p for p in dest.parent.iterdir() if ".tmp." in p.name]
     assert not tmp_leaks, f"temp dir leaked: {tmp_leaks}"

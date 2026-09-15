@@ -1,7 +1,7 @@
 import { ChevronDown } from 'lucide-react';
 import { useCallback, useEffect, useMemo, useReducer, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { CatalogPage, PAGE_SIZE } from './CatalogPage';
+import { CatalogPage } from './CatalogPage';
 import { AgentEditor } from './AgentEditor';
 import { DefinitionDetailPage } from './DefinitionDetailPage';
 import { AgentUploadDialog } from './AgentUploadDialog';
@@ -9,8 +9,8 @@ import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMar
 import { useConnectorStore } from '../../stores/connectorStore';
 import {
   AgentInstallPendingError,
-  AgentManagementError,
   createAgentManagementClient,
+  extractRpcErrorMessage,
   type AgentCatalogItem,
   type AgentDraft,
   type AgentManagementClient,
@@ -26,7 +26,7 @@ import {
 } from '../../features/agentManagement';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { PageHeader, PageToolbarSearch } from '../ui';
+import { PageHeader, PageToolbarSearch, Tabs } from '../ui';
 
 type PanelView = 'catalog' | 'mine' | 'detail' | 'create';
 
@@ -51,7 +51,19 @@ const EMPTY_DRAFT: AgentDraft = {
 };
 
 function getErrorMessage(error: unknown, fallback: string): string {
-  return error instanceof Error && error.message ? error.message : fallback;
+  if (error instanceof Error && error.message.trim()) {
+    return error.message.trim();
+  }
+  if (error && typeof error === 'object' && 'payload' in error) {
+    const payload = (error as { payload?: unknown }).payload;
+    if (payload && typeof payload === 'object') {
+      const apiError = (payload as { error?: unknown }).error;
+      if (typeof apiError === 'string' && apiError.trim()) {
+        return apiError.trim();
+      }
+    }
+  }
+  return fallback;
 }
 
 function getFriendlyErrorMessage(
@@ -74,9 +86,7 @@ function getFriendlyErrorMessage(
   if (/^agent_template package not found:/i.test(normalizedMessage)) {
     return translate('agentManagement.states.agentUnavailable');
   }
-  if (
-    /^agent_template package (?:missing\/corrupt manifest\.json|wrong package_type|conflict):/i.test(normalizedMessage)
-  ) {
+  if (/^agent_template package (?:wrong package_type|conflict):/i.test(normalizedMessage)) {
     return translate('agentManagement.states.agentDefinitionUnavailable');
   }
   if (/^(?:skill not found:|invalid skill name:|missing or invalid skills$)/i.test(normalizedMessage)) {
@@ -107,10 +117,7 @@ function getFriendlyErrorMessage(
   }
   const connector = /^connector not connected:\s*(.+)$/i.exec(normalizedMessage)?.[1];
   if (connector) return translate('agentManagement.states.connectorUnavailableNamed', { connector });
-  if (error instanceof AgentManagementError) {
-    return fallback;
-  }
-  return message;
+  return fallback;
 }
 
 function deriveAgentId(name: string): string {
@@ -141,8 +148,6 @@ export function AgentManagementPanel({
   const [query, setQuery] = useState('');
   const [mineQuery, setMineQuery] = useState('');
   const [category, setCategory] = useState('');
-  const [catalogPage, setCatalogPage] = useState(1);
-  const [minePage, setMinePage] = useState(1);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [detailOrigin, setDetailOrigin] = useState<'catalog' | 'mine'>('catalog');
   const [actionError, setActionError] = useState<string | null>(null);
@@ -179,10 +184,8 @@ export function AgentManagementPanel({
         scope: 'catalog',
         category,
         query,
-        page: catalogPage,
-        pageSize: PAGE_SIZE,
       }),
-    [state.catalog, category, query, catalogPage],
+    [state.catalog, category, query],
   );
   const mineView = useMemo(
     () =>
@@ -190,10 +193,8 @@ export function AgentManagementPanel({
         scope: 'mine',
         category: '',
         query: mineQuery,
-        page: minePage,
-        pageSize: PAGE_SIZE,
       }),
-    [state.catalog, mineQuery, minePage],
+    [state.catalog, mineQuery],
   );
 
   const loadCatalog = useCallback(async () => {
@@ -310,8 +311,7 @@ export function AgentManagementPanel({
 
   const handleTabChange = (tab: 'content' | 'files') => {
     setDetailTab(tab);
-    const canPreviewFiles = state.detail?.source === 'local' || state.detail?.installed === true;
-    if (tab === 'files' && canPreviewFiles && selectedId && state.filesStatus === 'idle') {
+    if (tab === 'files' && selectedId && state.filesStatus === 'idle') {
       void loadFiles(selectedId).then((files) => {
         const firstPreviewableFile = files ? findFirstPreviewableFile(files) : null;
         if (firstPreviewableFile) void handleSelectFile(firstPreviewableFile);
@@ -508,7 +508,6 @@ export function AgentManagementPanel({
       await client.createAgent({ ...draft, id: draft.id || deriveAgentId(draft.name) });
       await loadCatalog();
       setMineQuery('');
-      setMinePage(1);
       setView('mine');
     } catch (error) {
       setCreateError(formatActionError(error, t('agentManagement.form.saveError')));
@@ -539,7 +538,6 @@ export function AgentManagementPanel({
       setUploadDialogOpen(false);
       setUploadError(null);
       setMineQuery('');
-      setMinePage(1);
       setView('mine');
       const notice = t('agentManagement.states.uploadSuccess', { id: result.id });
       setActionNotice(notice);
@@ -548,7 +546,7 @@ export function AgentManagementPanel({
         actionNoticeTimerRef.current = null;
       }, 3000);
     } catch (error) {
-      setUploadError(formatActionError(error, t('agentManagement.states.uploadError')));
+      setUploadError(extractRpcErrorMessage(error, t('agentManagement.states.uploadError')));
     }
   };
 
@@ -668,129 +666,112 @@ export function AgentManagementPanel({
         data-testid="agent-management-panel"
         data-variant={isMine ? 'mine' : 'catalog'}
       >
-        <PageHeader title={t('agentManagement.title')} subtitle={t('agentManagement.subtitle')} />
-        <div className="page-toolbar" data-testid="page-toolbar">
-          <nav
-            className="chat-picker-panel__tabs"
-            role="tablist"
-            aria-label={t('agentManagement.tabsLabel')}
-            data-testid="agent-management-primary-tabs"
-          >
-            <button
-              type="button"
-              role="tab"
-              aria-selected={!isMine}
-              data-testid="agent-management-primary-tab"
-              data-variant="catalog"
-              className={!isMine ? 'is-active' : ''}
-              onClick={() => {
+        {/* 固定区（header/toolbar/提示）：page-shell 限宽 1400px 居中，与下方滚动列共用内容线 */}
+        <div className="page-shell flex-none">
+          <PageHeader title={t('agentManagement.title')} subtitle={t('agentManagement.subtitle')} />
+          <div className="page-toolbar" data-testid="page-toolbar">
+            <Tabs
+              role="tablist"
+              ariaLabel={t('agentManagement.tabsLabel')}
+              wrapperTestId="agent-management-primary-tabs"
+              itemTestId="agent-management-primary-tab"
+              className="h-[34px] text-base"
+              value={isMine ? 'mine' : 'catalog'}
+              onChange={(view) => {
                 setCreateMenuOpen(false);
                 setActionError(null);
                 setActionNotice(null);
-                setView('catalog');
+                setView(view);
               }}
-            >
-              {t('agentManagement.tabs.catalog')}
-            </button>
-            <button
-              type="button"
-              role="tab"
-              aria-selected={isMine}
-              data-testid="agent-management-primary-tab"
-              data-variant="mine"
-              className={isMine ? 'is-active' : ''}
-              onClick={() => {
-                setCreateMenuOpen(false);
-                setActionError(null);
-                setActionNotice(null);
-                setView('mine');
-              }}
-            >
-              {t('agentManagement.tabs.mine')}
-            </button>
-          </nav>
-          <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
-            <PageToolbarSearch
-              wrapperTestId="agent-management-search"
-              inputTestId="agent-management-search-input"
-              type="search"
-              name="agent-management-search"
-              aria-label={t('agentManagement.searchLabel')}
-              autoComplete="off"
-              disabled={connectorFlowId !== null}
-              value={isMine ? mineQuery : query}
-              onChange={(event) =>
-                isMine
-                  ? (setMineQuery(event.target.value), setMinePage(1))
-                  : (setQuery(event.target.value), setCatalogPage(1))
-              }
-              placeholder={t(isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+              items={[
+                { value: 'catalog', label: t('agentManagement.tabs.catalog') },
+                { value: 'mine', label: t('agentManagement.tabs.mine') },
+              ]}
             />
-            {isMine ? (
-              <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
-                <button
-                  type="button"
-                  className="agent-management-button agent-management-button--primary agent-management-create"
-                  aria-haspopup="menu"
-                  aria-expanded={createMenuOpen}
-                  data-testid="agent-management-create-button"
-                  onClick={() => setCreateMenuOpen((open) => !open)}
-                >
-                  {t('agentManagement.actions.create')}
-                  <ChevronDown size={15} aria-hidden="true" />
-                </button>
-                {createMenuOpen ? (
-                  <div
-                    className="agent-management-create-menu__popover"
-                    role="menu"
-                    data-testid="agent-management-create-menu-popover"
+            <div className="agent-management-primary-actions" data-testid="agent-management-primary-actions">
+              <PageToolbarSearch
+                wrapperTestId="agent-management-search"
+                inputTestId="agent-management-search-input"
+                name="agent-management-search"
+                aria-label={t('agentManagement.searchLabel')}
+                autoComplete="off"
+                disabled={connectorFlowId !== null}
+                value={isMine ? mineQuery : query}
+                onChange={(e) => {
+                  const nextValue = e.target.value;
+                  isMine ? setMineQuery(nextValue) : setQuery(nextValue);
+                }}
+                onClear={() => {
+                  if (isMine) {
+                    setMineQuery('');
+                  } else {
+                    setQuery('');
+                  }
+                }}
+                placeholder={t(isMine ? 'agentManagement.searchMine' : 'agentManagement.searchCatalog')}
+              />
+              {isMine ? (
+                <div className="agent-management-create-menu" data-testid="agent-management-create-menu">
+                  <button
+                    type="button"
+                    className="agent-management-button agent-management-button--primary agent-management-create"
+                    aria-haspopup="menu"
+                    aria-expanded={createMenuOpen}
+                    data-testid="agent-management-create-button"
+                    onClick={() => setCreateMenuOpen((open) => !open)}
                   >
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid="agent-management-create-menu-item"
-                      data-variant="create-first"
-                      onClick={openCreate}
-                    >
-                      {t('agentManagement.actions.createFirst')}
-                    </button>
-                    <button
-                      type="button"
-                      role="menuitem"
-                      data-testid="agent-management-create-menu-item"
-                      data-variant="create-by-chat"
-                      onClick={() => {
-                        setCreateMenuOpen(false);
-                        onCreateViaChat?.();
-                      }}
-                    >
-                      {t('agentManagement.actions.createByChat')}
-                    </button>
-                    <button type="button" role="menuitem" onClick={openUpload}>
-                      {t('agentManagement.actions.createByUpload')}
-                    </button>
-                  </div>
-                ) : null}
-              </div>
-            ) : null}
+                    {t('agentManagement.actions.create')}
+                    <ChevronDown size={15} aria-hidden="true" />
+                  </button>
+                  {createMenuOpen ? (
+                    <div className="dropdown-menu" role="menu" data-testid="agent-management-create-menu-popover">
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="dropdown-menu-item"
+                        data-testid="agent-management-create-menu-item"
+                        data-variant="create-first"
+                        onClick={openCreate}
+                      >
+                        {t('agentManagement.actions.createFirst')}
+                      </button>
+                      <button
+                        type="button"
+                        role="menuitem"
+                        className="dropdown-menu-item"
+                        data-testid="agent-management-create-menu-item"
+                        data-variant="create-by-chat"
+                        onClick={() => {
+                          setCreateMenuOpen(false);
+                          onCreateViaChat?.();
+                        }}
+                      >
+                        {t('agentManagement.actions.createByChat')}
+                      </button>
+                      <button type="button" role="menuitem" className="dropdown-menu-item" onClick={openUpload}>
+                        {t('agentManagement.actions.createByUpload')}
+                      </button>
+                    </div>
+                  ) : null}
+                </div>
+              ) : null}
+            </div>
           </div>
+          {actionError ? (
+            <div className="agent-management-inline-error" role="alert" data-testid="agent-management-inline-error">
+              {actionError}
+            </div>
+          ) : null}
+          {actionNotice ? (
+            <div className="agent-management-inline-notice" role="status" data-testid="agent-management-inline-notice">
+              {actionNotice}
+            </div>
+          ) : null}
         </div>
-        {actionError ? (
-          <div className="agent-management-inline-error" role="alert" data-testid="agent-management-inline-error">
-            {actionError}
-          </div>
-        ) : null}
-        {actionNotice ? (
-          <div className="agent-management-inline-notice" role="status" data-testid="agent-management-inline-notice">
-            {actionNotice}
-          </div>
-        ) : null}
         <CatalogPage
           scope={isMine ? 'mine' : 'catalog'}
           items={isMine ? mineView.items : catalogView.items}
           totalItems={isMine ? mineView.totalItems : catalogView.totalItems}
-          page={isMine ? mineView.page : catalogView.page}
-          totalPages={isMine ? mineView.totalPages : catalogView.totalPages}
           query={isMine ? mineQuery : query}
           category={category}
           status={state.catalogStatus}
@@ -798,9 +779,7 @@ export function AgentManagementPanel({
           busyId={busyId}
           onCategoryChange={(value) => {
             setCategory(value);
-            setCatalogPage(1);
           }}
-          onPageChange={(value) => (isMine ? setMinePage(value) : setCatalogPage(value))}
           onRetry={loadCatalog}
           onOpen={openDetail}
           onUse={handleUse}

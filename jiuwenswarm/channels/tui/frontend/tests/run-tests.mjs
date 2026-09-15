@@ -22,7 +22,6 @@ import {
   resolveModeTarget,
 } from "../dist/core/commands/builtins/mode.js";
 import { resolvePlanTarget, resolveNormalTarget } from "../dist/core/commands/builtins/plan.js";
-import { handleIncomingFrame } from "../dist/core/event-handlers.js";
 import { buildAppScreenLines } from "../dist/ui/screen-layout.js";
 import { buildWelcomeLines } from "../dist/ui/welcome.js";
 import {
@@ -52,6 +51,10 @@ import { buildHarmonyOSProjectInitPrompt } from "../dist/core/commands/builtins/
 import { formatModeForDisplay, normalizeToClientMode } from "../dist/core/modes.js";
 import { createInitCommand } from "../dist/core/commands/builtins/init.js";
 import { createSimplifyCommand } from "../dist/core/commands/builtins/simplify.js";
+import {
+  bindPermissionCardAnswer,
+  handleIncomingFrame,
+} from "../dist/core/event-handlers.js";
 
 const planQuestion = "**Plan Approval**\n\nThe agent has completed a plan.";
 const planApprovalKind = "plan_approval";
@@ -234,6 +237,69 @@ assert.equal(
   "[ use \x1b[7m \x1b[0mpytest ]",
 );
 assert.deepEqual(getPlanApprovalListLayout(), { minPrimaryColumnWidth: 10, maxPrimaryColumnWidth: 10 });
+
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [
+      { selected_options: ["本次允许"], card_id: "caller" },
+    ],
+    [
+      { header: "one", question: "one", options: [], cardId: "inv-1" },
+    ],
+  ),
+  [
+    { selected_options: ["本次允许"], card_id: "inv-1" },
+  ],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    [{ header: "missing", question: "missing", options: [] }],
+  ),
+  [],
+);
+const capturedPermissionQuestions = [];
+const permissionDelegate = new Proxy(
+  {},
+  {
+    get: (_target, property) => {
+      if (property === "getSessionId") return () => "root-session";
+      if (property === "getMode") return () => "agent.fast";
+      if (property === "setPendingQuestion") {
+        return (question) => capturedPermissionQuestions.push(question);
+      }
+      return () => undefined;
+    },
+  },
+);
+for (const cardId of ["card-1", "card-2", "card-3"]) {
+  handleIncomingFrame(permissionDelegate, {
+    event: "chat.ask_user_question",
+    payload: {
+      request_id: `request-${cardId}`,
+      source: "permission_interrupt",
+      questions: [
+        {
+          header: "Permission",
+          question: "Continue?",
+          options: [],
+          card_id: cardId,
+        },
+      ],
+    },
+  });
+}
+assert.deepEqual(
+  capturedPermissionQuestions.map((pending) => pending.questions[0]?.cardId),
+  ["card-1", "card-2", "card-3"],
+);
+assert.deepEqual(
+  bindPermissionCardAnswer(
+    [{ selected_options: ["本次允许"] }],
+    capturedPermissionQuestions[1].questions,
+  ),
+  [{ selected_options: ["本次允许"], card_id: "card-2" }],
+);
 
 const narrowQuestionTitle =
   "[Redis 方案] Redis 接入有三种方案，范围和依赖递增。请根据当前项目选择。";
@@ -1965,7 +2031,8 @@ await devInitCommand.action({
             name: "harmonyos_developer_knowledge",
             enabled: true,
             transport: "sse",
-            url: "https://example.com/other",
+            // Reserved test-only host: this URL must never reach a live service.
+            url: "https://example.invalid/other",
           },
         ],
       };

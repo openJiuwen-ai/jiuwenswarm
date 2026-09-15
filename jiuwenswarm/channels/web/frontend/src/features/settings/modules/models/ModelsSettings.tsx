@@ -17,6 +17,7 @@ import { getVendorLabel } from './ModelProviderSelect';
 import { displayModelProtocol, parseVendorCatalog } from './modelAdapters';
 import { useSessionStore } from '../../../../stores/sessionStore';
 import {
+  addEditableModel,
   getEditableModels,
   getModelDisplayGroups,
   promotePrimaryModel,
@@ -112,7 +113,7 @@ export function ModelsSettings() {
       const payload = await request('models.list');
       if (currentRequestId !== modelsRequestId.current) return;
       const parsed = parseModelsPayload(payload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
     } catch (error) {
       if (currentRequestId === modelsRequestId.current) {
@@ -216,7 +217,7 @@ export function ModelsSettings() {
       }
       const refreshedPayload = await request('models.list');
       const parsed = parseModelsPayload(refreshedPayload);
-      setModels(parsed.models.filter((model) => model.is_free !== true));
+      setModels(parsed.models);
       setAvailableModels(parsed.models, parsed.activeModel);
       showValidationToast({
         success: true,
@@ -530,7 +531,7 @@ export function ModelsSettings() {
           onSave={async (next) => {
             const nextModels = dialog.model
               ? models.map((current) => (current === dialog.model ? next : current))
-              : [...models, next];
+              : addEditableModel(models, next);
             await saveModels(nextModels, dialog.model ? 'model.edit' : 'model.add', { errorScope: 'caller' });
           }}
         />

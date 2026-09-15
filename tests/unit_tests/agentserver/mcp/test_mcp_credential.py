@@ -194,6 +194,72 @@ def test_store_save_preserves_old_on_overwrite_failure(tmp_path: Path) -> None:
         f"temp file leaked on failure: {cred_files}"
 
 
+# --- CredentialStore: at-rest encryption (AES-256-GCM + HKDF) ---
+
+def test_store_encrypts_at_rest_no_plaintext_on_disk(tmp_path: Path) -> None:
+    """Saved files hold an {v,salt,nonce,ct} envelope, never the raw token."""
+    import json
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    store.save_token("jira", "ATLASSIAN_API_TOKEN", "secret-plaintext-value")
+    raw = (tmp_path / "mcp" / "credentials" / "jira.json").read_text(encoding="utf-8")
+    blob = json.loads(raw)
+    assert set(blob.keys()) == {"v", "salt", "nonce", "ct"}, f"envelope keys wrong: {blob.keys()}"
+    assert blob["v"] == "1"
+    assert "secret-plaintext-value" not in raw, "plaintext token leaked into the file"
+
+
+def test_store_roundtrip_after_encrypt(tmp_path: Path) -> None:
+    """get_token/get_all return the original plaintext after save→load."""
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    store.save_token("tyc", "TIANYANCHA_API_KEY", "key-abc")
+    store.save_token("tyc", "OTHER", "val-2")
+    assert store.get_token("tyc", "TIANYANCHA_API_KEY") == "key-abc"
+    assert store.get_all("tyc") == {"TIANYANCHA_API_KEY": "key-abc", "OTHER": "val-2"}
+
+
+def test_store_migrates_legacy_plaintext_on_save(tmp_path: Path) -> None:
+    """A legacy {key: value} plaintext file is readable and gets re-encrypted
+    on the next save_token (lazy migration, one file at a time)."""
+    import json
+    cred_dir = tmp_path / "mcp" / "credentials"
+    cred_dir.mkdir(parents=True)
+    (cred_dir / "legacy.json").write_text('{"OLD_TOKEN": "legacy-secret"}', encoding="utf-8")
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    # Legacy file is readable as plaintext.
+    assert store.get_token("legacy", "OLD_TOKEN") == "legacy-secret"
+    # Trigger migration by saving a new key into the same store.
+    store.save_token("legacy", "NEW_TOKEN", "new-secret")
+    raw = (cred_dir / "legacy.json").read_text(encoding="utf-8")
+    assert set(json.loads(raw).keys()) == {"v", "salt", "nonce", "ct"}, "file not re-encrypted"
+    assert "legacy-secret" not in raw and "new-secret" not in raw
+    # Both tokens survive.
+    assert store.get_all("legacy") == {"OLD_TOKEN": "legacy-secret", "NEW_TOKEN": "new-secret"}
+
+
+def test_store_corrupt_ciphertext_returns_empty_not_raise(tmp_path: Path) -> None:
+    """A tampered ciphertext → {} (re-enter-token contract), never an exception."""
+    import json
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    store.save_token("a", "k", "v1")
+    p = tmp_path / "mcp" / "credentials" / "a.json"
+    blob = json.loads(p.read_text())
+    blob["ct"] = blob["ct"][:-4] + "AAAA"  # corrupt the tag
+    p.write_text(json.dumps(blob), encoding="utf-8")
+    assert store.get_all("a") == {}
+
+
+def test_store_nonce_salt_vary_per_save(tmp_path: Path) -> None:
+    """Each save draws a fresh salt+nonce → non-deterministic ciphertext."""
+    import json
+    store = cred.CredentialStore(workspace_dir=tmp_path)
+    store.save_token("a", "k", "v1")
+    b1 = json.loads((tmp_path / "mcp" / "credentials" / "a.json").read_text())
+    store.save_token("a", "k", "v2")
+    b2 = json.loads((tmp_path / "mcp" / "credentials" / "a.json").read_text())
+    assert (b1["salt"], b1["nonce"]) != (b2["salt"], b2["nonce"])
+    assert b1["ct"] != b2["ct"]
+
+
 # --- detect placeholders in raw mcp.json (the probe used by detect_credential_kind) ---
 
 def test_extract_placeholders_finds_all_env_keys(tmp_path: Path) -> None:

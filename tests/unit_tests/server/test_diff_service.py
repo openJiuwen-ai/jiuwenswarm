@@ -5,7 +5,7 @@ from pathlib import Path
 
 import pytest
 
-from jiuwenswarm.server.utils.diff_service import MAX_DIFF_SIZE_BYTES, DiffService
+from jiuwenswarm.server.utils.diff_service import MAX_DIFF_SIZE_BYTES, MAX_FILES, DiffService
 
 
 def _git(repo: Path, *args: str) -> None:
@@ -73,6 +73,75 @@ def test_git_diff_stats_include_tracked_files_beyond_detail_cap(tmp_path):
     assert diff["stats"]["filesChanged"] == 60
     assert diff["stats"]["linesAdded"] == 60
     assert diff["stats"]["linesRemoved"] == 60
+    assert diff["files_truncated"] is True
+    assert diff["files_limit"] == MAX_FILES
+
+
+def test_git_diff_prioritizes_project_subdir_files(tmp_path):
+    """项目目录是仓库子目录时，预览文件列表项目内文件优先，统计仍覆盖全仓库。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(repo, "add", "seed.txt")
+    _git(repo, "commit", "-m", "init")
+
+    # 项目目录名刻意靠后（zzz_ 前缀）：git ls-files 按字母序本会把项目外文件排在前面。
+    project = repo / "zzz_app"
+    project.mkdir()
+    (project / "inner.txt").write_text("inner\n", encoding="utf-8")
+    (repo / "aaa_outer.txt").write_text("outer\n", encoding="utf-8")
+
+    diff = DiffService().get_git_diff(str(project))
+
+    assert diff is not None
+    ordered = list(diff["files"])
+    assert ordered[0] == str(project / "inner.txt")
+    assert ordered[1] == str(repo / "aaa_outer.txt")
+    assert diff["stats"]["filesChanged"] == 2
+    assert diff["files_truncated"] is False
+
+
+def test_git_diff_project_files_survive_preview_cap(tmp_path):
+    """预览名额被项目外文件占满时，项目目录内文件仍优先入选。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    for i in range(60):
+        (repo / f"outer-{i:02d}.txt").write_text("before\n", encoding="utf-8")
+    _git(repo, "add", ".")
+    _git(repo, "commit", "-m", "init")
+    for i in range(60):
+        (repo / f"outer-{i:02d}.txt").write_text("after\n", encoding="utf-8")
+
+    project = repo / "proj"
+    project.mkdir()
+    (project / "new.txt").write_text("project file\n", encoding="utf-8")
+
+    diff = DiffService().get_git_diff(str(project))
+
+    assert diff is not None
+    assert len(diff["files"]) == 50
+    assert list(diff["files"])[0] == str(project / "new.txt")
+    assert diff["stats"]["filesChanged"] == 61
+    assert diff["files_truncated"] is True
+
+
+def test_git_diff_untracked_count_beyond_preview_cap(tmp_path):
+    """untracked 超过预览上限时 stats 为实际总数，files 截断并带提示字段。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    (repo / "seed.txt").write_text("seed\n", encoding="utf-8")
+    _git(repo, "add", "seed.txt")
+    _git(repo, "commit", "-m", "init")
+    for i in range(55):
+        (repo / f"file-{i:02d}.txt").write_text(f"line {i}\n", encoding="utf-8")
+
+    diff = DiffService().get_git_diff(str(repo))
+
+    assert diff is not None
+    assert diff["stats"]["filesChanged"] == 55
+    assert len(diff["files"]) == 50
+    assert diff["files_truncated"] is True
+    assert diff["files_limit"] == MAX_FILES
 
 
 @pytest.mark.skipif(os.name == "nt", reason="Windows paths cannot contain tab characters")
@@ -190,6 +259,8 @@ def test_git_diff_summary_does_not_run_full_patch(monkeypatch):
     assert diff == {
         "stats": {"filesChanged": 1, "linesAdded": 2, "linesRemoved": 1},
         "files": {},
+        "files_truncated": False,
+        "files_limit": MAX_FILES,
     }
     assert ("diff", "HEAD") not in calls
     assert ("diff", "HEAD", "--numstat") not in calls

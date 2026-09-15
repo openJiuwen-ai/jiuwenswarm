@@ -205,11 +205,38 @@ def normalize_cron_job_timeout_seconds(raw: Any) -> int | None:
     return value
 
 
+def normalize_cron_job_mcp(raw: Any) -> list[str] | None:
+    """Normalize a cron job's MCP selection (list of MCP server names).
+
+    只做类型规范化（strip/去空/去重），不校验 MCP 是否存在/连接：
+    MCP 连接状态是动态的，断连后旧 job 应降级运行而非起不来；
+    AgentServer 侧 reconcile 对缺失名称是 no-op + warning。
+    ``None`` / 非列表 / 空列表统一归一为 ``None``（与"未选择"同语义）。
+    """
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)):
+        return None
+    out: list[str] = []
+    seen: set[str] = set()
+    for item in raw:
+        if not isinstance(item, str):
+            continue
+        name = item.strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        out.append(name)
+    return out or None
+
+
 def validate_cron_model(raw: Any) -> str | None:
     """Validate model name/alias against configured models. Returns canonical model_name or raises.
 
     If the input is an alias, resolves to the underlying ``model_client_config.model_name``
-    so the stored value is always a key AgentServer ``_model_cache`` can look up.
+    (including environment placeholders) so the stored value is always a key
+    AgentServer ``_model_cache`` can look up. An explicitly configured name that
+    resolves to empty is rejected instead of being persisted.
 
     Opencode Zen free models are in-memory only, so a configured-model miss
     also checks the live free-model cache.  A cache failure never blocks the
@@ -220,13 +247,26 @@ def validate_cron_model(raw: Any) -> str | None:
     value = str(raw).strip()
     if not value:
         return None
-    from jiuwenswarm.common.config import get_model_config, get_model_names
+    from jiuwenswarm.common.config import (
+        get_model_config,
+        get_model_names,
+        resolve_env_vars,
+    )
 
     entry = get_model_config(value)
     if entry is not None:
         mcc = entry.get("model_client_config") or {}
-        canonical = (mcc.get("model_name") or "").strip()
-        return canonical if canonical else value
+        configured_name = mcc.get("model_name")
+        if not configured_name:
+            return value
+        canonical = str(resolve_env_vars(configured_name) or "").strip()
+        if not canonical:
+            raise ValueError(
+                f"Configured model {value!r} has a model_client_config.model_name "
+                f"that resolves to an empty value ({configured_name!r}). Set the "
+                "referenced environment variable or configure a concrete model_name."
+            )
+        return canonical
 
     try:
         from jiuwenswarm.server.runtime.opencode_zen import (
@@ -323,6 +363,9 @@ class CronJob:
     last_session_id: str | None = None
     # 执行时使用的模型；None 表示使用 AgentServer 默认模型
     model_name: str | None = None
+    # 执行时会话级启用的 MCP 名称列表（来自创建时 chat-session 的快照，
+    # 或显式传入）；None 表示不注入（沿用既有全局默认集行为）。
+    mcp: list[str] | None = None
     # 飞书多应用场景：创建该定时任务的 app_id，用于推送时定位到正确的 app 配置
     app_id: str = ""
     # 创建者标识（web 端 user_id）。执行时透传给 faas 的 X-Session-Context，
@@ -368,6 +411,8 @@ class CronJob:
             d["last_session_id"] = self.last_session_id
         if self.model_name:
             d["model_name"] = self.model_name
+        if self.mcp:
+            d["mcp"] = list(self.mcp)
         if self.app_id:
             d["app_id"] = self.app_id
         if self.user_id:
@@ -479,9 +524,11 @@ class CronJob:
         model_raw = data.get("model_name", None)
         job_model_name = (
             str(model_raw).strip()
-            if isinstance(model_raw, str) and str(model_raw).strip()
+            if isinstance(model_raw, str) and model_raw.strip()
             else None
         )
+        # mcp：老数据兜底（无 mcp 字段 → None，行为与改造前一致）
+        job_mcp = normalize_cron_job_mcp(data.get("mcp", None))
         app_id_raw = data.get("app_id", "")
         job_app_id = str(app_id_raw).strip() if isinstance(app_id_raw, str) else ""
 
@@ -518,6 +565,7 @@ class CronJob:
             project_id=project_id,
             last_session_id=last_session_id,
             model_name=job_model_name,
+            mcp=job_mcp,
             app_id=job_app_id,
             user_id=job_user_id,
             work_mode=job_work_mode,

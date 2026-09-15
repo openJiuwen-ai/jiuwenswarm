@@ -163,9 +163,6 @@ def test_default_managed_browser_stays_unverified_and_uses_upstream_settings(
     monkeypatch.setattr(
         adapter, "_resolve_managed_browser_binary_from_config", lambda _: ""
     )
-    monkeypatch.setattr(
-        adapter, "_resolve_managed_browser_type_from_config", lambda _: "auto"
-    )
     monkeypatch.setattr(interface_deep, "build_browser_agent_config", build_browser)
     monkeypatch.setattr(module, "build_browser_agent_config", build_browser)
     if adapter_type is JiuWenSwarmDeepAdapter:

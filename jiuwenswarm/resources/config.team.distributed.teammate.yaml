@@ -125,8 +125,7 @@ models:
         timeout: 1800
         verify_ssl: false
         custom_headers: {}
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
       is_default: true
   video:
       model_client_config:
@@ -136,8 +135,7 @@ models:
         client_provider: ${VIDEO_PROVIDER}
         timeout: 1800
         verify_ssl: false
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -146,8 +144,7 @@ models:
         client_provider: ${AUDIO_PROVIDER}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -156,8 +153,7 @@ models:
         client_provider: ${VISION_PROVIDER}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -168,8 +164,7 @@ models:
         endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: false
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
 
 telemetry:
   enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）

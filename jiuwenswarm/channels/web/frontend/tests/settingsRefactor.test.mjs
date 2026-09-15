@@ -1092,11 +1092,17 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     [...contractByCategory('models')].filter((key) => !key.startsWith('embed_')),
   );
   assert.deepEqual(findSettingDefinitionKeys(parseTsx('src/features/settings/modules/experimental/definition.ts')), [
+    'asr_api_base',
+    'asr_api_key',
+    'asr_model',
     'kv_cache_affinity_enabled',
     'proactive_recommendation_enabled',
   ]);
   assert.deepEqual([...contractByCategory('experimental')].sort(), [
     'a2ui_enabled',
+    'asr_api_base',
+    'asr_api_key',
+    'asr_model',
     'external_cli_agent_claude_cli_path',
     'external_cli_agent_claude_enabled',
     'external_cli_agent_claude_use_builtin',
@@ -1107,6 +1113,8 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'rsi_enabled',
+    'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);
 
@@ -1118,7 +1126,6 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'telegram',
     'discord',
     'slack',
-    'whatsapp',
   ]);
   const channelAdaptersFile = parseTsx('src/features/settings/modules/channels/channelAdapters.ts');
   const channelPayloadKeys = {
@@ -1188,16 +1195,10 @@ test('every visible Settings control maps to an exact persistence field or RPC',
   }
 });
 
-test('saving the free-model switch refreshes the shared model catalog after persistence', () => {
-  const settingsConfig = source('src/features/settings/services/useSettingsConfig.ts');
-  const settingsPage = source('src/features/settings/SettingsPage.tsx');
-  const settingsServices = source('src/features/settings/services/SettingsServicesProvider.tsx');
-  const app = source('src/App.tsx');
-  assert.match(settingsServices, /onConfigSaved\?: \(updatedKeys: readonly string\[\]\) => Promise<void> \| void/);
-  assert.match(settingsConfig, /setConfig\([\s\S]{0,120}await onConfigSaved\?\.\(Object\.keys\(updates\)\)/);
-  assert.match(settingsPage, /onConfigSaved=\{onConfigSaved\}/);
-  assert.match(app, /updatedKeys\.includes\('enable_free_models'\)\) await handleModelsRefresh\(\)/);
-  assert.match(app, /onConfigSaved=\{handleSettingsConfigSaved\}/);
+test('model settings no longer expose or persist the free-model switch', () => {
+  assert.doesNotMatch(source('src/features/settings/services/settingsContract.ts'), /enable_free_models/);
+  assert.doesNotMatch(source('src/features/settings/modules/models/definition.ts'), /free-models|enable_free_models/);
+  assert.doesNotMatch(source('src/App.tsx'), /enable_free_models|handleSettingsConfigSaved/);
 });
 
 test('Settings form dialogs share the same dirty-close contract without disabling save', () => {
@@ -1559,10 +1560,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   );
   assert.doesNotMatch(generalDefinition, /groupedRows|separatedRows/);
   assert.match(modelsDefinition, /id: 'model-manager',[\s\S]{0,80}separatedRows: true/);
-  assert.ok(
-    modelsDefinition.indexOf("id: 'model-manager'") < modelsDefinition.indexOf("id: 'free-models'"),
-    'free models should render after the chat model manager',
-  );
+  assert.doesNotMatch(modelsDefinition, /id: 'free-models'/);
   assert.match(channelsDefinition, /id: 'channels',[\s\S]{0,80}separatedRows: true/);
   assert.match(modelsSettings, /<SettingsSection[\s\S]{0,120}separatedRows/);
   assert.match(channelList, /<SettingsSection separatedRows>/);
@@ -1641,7 +1639,6 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
   assert.doesNotMatch(modelsSettings, /getConfiguredProviderLogoUrl/);
   assert.match(providerAssets, /VENDOR_ICON_KEYS/);
   assert.match(providerAssets, /\['openrouter', 'openrouter'\]/);
-  assert.match(providerAssets, /model\.is_free === true/);
   assert.match(providerAssets, /model\.model_provider === 'OpenAIAccount'/);
   assert.match(providerAssets, /model\.vendor_key\?\.trim\(\)/);
   assert.match(modelProviderIcon, /return getModelLogoUrl\(model\)/);
@@ -1831,7 +1828,7 @@ test('Settings high-fidelity visual contract remains wired to exact assets and s
     /<a[\s\S]*href=\{getSettingsChannelGuideUrl\(channel\.channel_id, guideLanguage\)\}[\s\S]*target="_blank"[\s\S]*rel="noopener noreferrer"/,
   );
   const catalog = source('src/features/settings/modules/channels/channelCatalog.ts');
-  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack', 'whatsapp'])
+  for (const channelId of ['xiaoyi', 'feishu', 'dingtalk', 'telegram', 'discord', 'slack'])
     assert.match(catalog, new RegExp(`'${channelId}'`));
 });
 

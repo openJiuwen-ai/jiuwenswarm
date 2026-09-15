@@ -82,6 +82,16 @@ if getattr(sys, "frozen", False):
                 if _old_path
                 else str(_node_runtime)
             )
+        # uvx-based stdio MCP servers: prefer the bundled
+        # uv runtime so `uvx` resolves without a user-installed uv.
+        _uv_runtime = Path(sys.executable).resolve().parent / "runtime" / "uv-runtime"
+        if (_uv_runtime / "uvx.exe").is_file():
+            _old_path = os.environ.get("PATH", "")
+            os.environ["PATH"] = (
+                f"{_uv_runtime}{os.pathsep}{_old_path}"
+                if _old_path
+                else str(_uv_runtime)
+            )
 
     # Windows: 防止 subprocess 弹出控制台窗口（console=False 编译时 git 等命令会弹出黑框）
     # Monkey-patch asyncio.create_subprocess_exec 和 subprocess.Popen，

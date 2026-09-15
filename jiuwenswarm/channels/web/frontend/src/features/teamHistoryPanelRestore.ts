@@ -348,7 +348,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
   const messages: Message[] = [];
   const shutdownMembers = new Set<string>();
   let taskProgressBaseline = createTaskProgressBaseline();
-  let hasSeenMember = false;
 
   const addMember = (memberId: string, timestamp: number) => {
     if (!shouldKeepMember(memberId)) {
@@ -357,7 +356,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
     if (shutdownMembers.has(memberId)) {
       return;
     }
-    hasSeenMember = true;
     const existing = members.get(memberId);
     members.set(memberId, {
       id: `hist-member-${memberId}`,
@@ -459,6 +457,14 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       skills: skills || existing?.skills,
       files: files || existing?.files,
       workflow_run_id: pickString(rawTask, ['workflow_run_id']) || existing?.workflow_run_id,
+      // A paused run's visual progress must not creep after a reload; the
+      // freeze point is this record's own timestamp (the pause event).
+      ...(typeof rawTask.progress_frozen === 'boolean'
+        ? {
+            progress_frozen: rawTask.progress_frozen,
+            progress_frozen_at: rawTask.progress_frozen ? nextTimestamp : undefined,
+          }
+        : { progress_frozen: existing?.progress_frozen, progress_frozen_at: existing?.progress_frozen_at }),
       // Truncation flags: read raw with explicit guards so a status-only
       // record (no flags) falls back to `existing?` — never resets to false.
       // Mirrors the title/content `|| existing?` pattern above.
@@ -725,9 +731,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
         continue;
       }
       shutdownMembers.delete(memberId);
-      if (shouldKeepMember(memberId)) {
-        hasSeenMember = true;
-      }
       // 回放是逐条覆盖同一个 member 记录的，而只有部分事件带 name / mode
       // （registered 带，spawned / status_changed 不带）。后到的事件不能把先前
       // 学到的展示名冲掉，否则恢复出来的面板会退回显示 member_id。
@@ -780,18 +783,6 @@ function collectTeamState(records: Record<string, unknown>[], sessionId: string)
       updated_at: (event.updated_at as number | string | null | undefined) ?? eventTimestamp,
     });
     upsertTask(event, eventTimestamp, status);
-  }
-
-  if (hasSeenMember && members.size === 0) {
-    return {
-      members: [],
-      tasks: [],
-      taskEvents: [],
-      executionEvents: [],
-      messages: [],
-      humanShareCommands: [],
-      taskProgressBaseline: createTaskProgressBaseline(),
-    };
   }
 
   return {

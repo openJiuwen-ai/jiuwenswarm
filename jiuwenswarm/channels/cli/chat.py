@@ -15,6 +15,7 @@ import sys
 import time
 import uuid as uuid_module
 from pathlib import Path
+from typing import Any
 
 # Importing ``readline`` transparently upgrades the builtin ``input()`` with
 # line editing: left/right cursor movement, history, and correct multi-byte
@@ -279,6 +280,33 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "ask_user_interrupt",
     "evolution_interrupt",
 })
+
+
+def _permission_answer_for_card(
+    questions: object,
+    *,
+    selected: str,
+    custom_input: str,
+) -> list[dict[str, object]]:
+    """Bind a CLI permission answer to exactly one opaque host card."""
+    if not isinstance(questions, list) or len(questions) != 1:
+        return []
+    question = questions[0]
+    if not isinstance(question, dict):
+        return []
+    raw_card_id = question.get("card_id")
+    if not isinstance(raw_card_id, str):
+        return []
+    card_id = raw_card_id.strip()
+    if not card_id or len(card_id) > 128:
+        return []
+    return [
+        {
+            "selected_options": [selected],
+            "custom_input": custom_input,
+            "card_id": card_id,
+        }
+    ]
 
 
 def resolve_mode(raw: str) -> str:
@@ -743,13 +771,21 @@ async def _run_interactive_loop(
                 if supports_user_interaction and sys.stdin.isatty():
                     request_id = payload.get("request_id", "")
                     source = payload.get("source", "")
-                    options = payload.get("options", [])
+                    questions = payload.get("questions", [])
+                    primary = (
+                        questions[0]
+                        if isinstance(questions, list)
+                        and questions
+                        and isinstance(questions[0], dict)
+                        else payload
+                    )
+                    options = primary.get("options", [])
                     all_options: list[dict[str, Any]] = [opt for opt in options if isinstance(opt, dict)]
 
                     if options:
                         write_stderr(
                             f"\n[{event_type}] "
-                            f"{payload.get('question') or payload.get('message', 'Input needed')}\n"
+                            f"{primary.get('question') or primary.get('message', 'Input needed')}\n"
                         )
                         for idx, opt in enumerate(all_options, 1):
                             label = opt.get("label") or opt.get("value") or "?"
@@ -761,7 +797,7 @@ async def _run_interactive_loop(
                     else:
                         write_stderr(
                             f"\n[{event_type}] "
-                            f"{payload.get('question') or payload.get('message', 'Input needed')}\n"
+                            f"{primary.get('question') or primary.get('message', 'Input needed')}\n"
                         )
 
                     answer = (await asyncio.to_thread(input, "> ")).strip()
@@ -781,7 +817,15 @@ async def _run_interactive_loop(
                                 if label and label.lower() == answer.lower():
                                     selected = str(opt.get("value") or label)
                                     break
-                    answers = [{"selected_options": [selected], "custom_input": answer}]
+                    answers = (
+                        _permission_answer_for_card(
+                            questions,
+                            selected=selected,
+                            custom_input=answer,
+                        )
+                        if source == "permission_interrupt"
+                        else [{"selected_options": [selected], "custom_input": answer}]
+                    )
 
                     try:
                         if source in _INTERRUPT_RESUME_SOURCES and request_id:

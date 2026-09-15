@@ -154,11 +154,47 @@ async def test_code_reload_resolves_and_applies_spec_without_replacing_agent(
     assert adapter._loaded_plugins == {"plugin-a": (plugin_record, "1")}
     spec.resolve_parts.assert_called_once_with(context)
     instance.ensure_initialized.assert_awaited_once()
-    sync_multimodal.assert_called_once_with()
+    sync_multimodal.assert_not_called()
     sync_paid_search.assert_called_once_with()
     sync_symphony.assert_called_once_with(config_base)
     sync_skill_retrieval.assert_called_once_with(config_base)
     sync_skill_prompt.assert_awaited_once_with(config_base)
+
+
+@pytest.mark.asyncio
+async def test_code_multimodal_reload_preserves_snapshot_without_registering_tools(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    adapter = JiuwenSwarmCodeAdapter()
+    adapter._instance = _FakeDeepAgent([])
+    adapter._vision_model_config = object()
+    adapter._audio_model_config = object()
+    adapter._video_model_config = True
+    adapter._image_gen_model_config = True
+    config_base = {"react": {"agent_name": "code"}}
+    env_overrides = {}
+    refresh = AsyncMock(return_value=config_base)
+    fan_out = AsyncMock()
+    sync_group = MagicMock()
+    monkeypatch.setattr(adapter, "_apply_multimodal_reload_snapshot", refresh)
+    monkeypatch.setattr(adapter, "_fan_out_reload_to_session_adapters", fan_out)
+    monkeypatch.setattr(adapter, "_sync_tool_group", sync_group)
+
+    await adapter.reload_agent_config(
+        config_base, env_overrides, reload_scopes={"multimodal"}
+    )
+
+    refresh.assert_awaited_once_with(config_base, env_overrides)
+    fan_out.assert_awaited_once_with(
+        config_base,
+        env_overrides,
+        None,
+        {"multimodal"},
+        permission_notification=False,
+    )
+    sync_group.assert_not_called()
+    assert not adapter._vision_tools
+    assert not adapter._audio_tools
 
 
 @pytest.mark.asyncio

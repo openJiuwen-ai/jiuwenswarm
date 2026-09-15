@@ -16,7 +16,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -163,6 +165,20 @@ def test_compute_next_run_cron_uses_cron_helper(setup) -> None:
     nxt = sched.compute_next_run(job, base)
     assert nxt is not None
     assert nxt > base  # 下一次触发在 now 之后
+
+
+def test_compute_next_run_seven_field_cron_preserves_seconds(setup) -> None:
+    _store, _, sched = setup
+    timezone = ZoneInfo("Asia/Shanghai")
+    base = datetime(2026, 9, 5, 10, 15, 20, tzinfo=timezone)
+    job = HeartbeatJob(
+        id="x", name="n", enabled=True, channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "cron", "cron_expr": "30 15 10 * * ? *", "timezone": "Asia/Shanghai"}
+        ),
+    )
+    nxt = sched.compute_next_run(job, base.timestamp())
+    assert nxt == datetime(2026, 9, 5, 10, 15, 30, tzinfo=timezone).timestamp()
 
 
 def test_compute_next_run_unsupported_type_raises(setup) -> None:
@@ -327,6 +343,31 @@ async def test_max_runs_reached_marks_completed(setup) -> None:
     assert j.run_count == 2
     assert j.status == STATUS_COMPLETED
     assert j.enabled is False
+
+
+async def test_unlimited_job_keeps_running_beyond_default_limit(setup) -> None:
+    store, _, sched = setup
+    job = await store.create_job(
+        name="unlimited", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict({"type": "interval", "interval_seconds": 120}),
+        source="agent_tool", max_runs=None,
+    )
+    for _ in range(13):
+        await store.update_job(job.id, {"next_run_at": 1.0})
+        await sched._tick_once()
+        running = await store.get_job(job.id)
+        assert running is not None
+        await sched.on_run_finished(
+            job.id, running.run_state.current_run_id, outcome="succeeded"
+        )
+
+    current = await store.get_job(job.id)
+    assert current is not None
+    assert current.run_count == 13
+    assert current.max_runs is None
+    assert current.status == STATUS_SCHEDULED
+    assert current.enabled is True
+    assert current.next_run_at is not None
 
 
 async def test_tick_normalizes_exhausted_legacy_scheduled_job_without_dispatch(setup) -> None:
@@ -914,6 +955,54 @@ def test_preview_cron(setup) -> None:
     assert len(out) == 2
 
 
+def test_preview_seven_field_cron_preserves_second_precision(setup) -> None:
+    _store, _, sched = setup
+    job = HeartbeatJob(
+        id="x", name="n", enabled=True, channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "cron", "cron_expr": "30 15 10 * * ? *", "timezone": "Asia/Shanghai"}
+        ),
+    )
+    out = sched.preview_next_runs(job, count=2)
+    assert len(out) == 2
+    assert all(datetime.fromtimestamp(item["run_at"], ZoneInfo("Asia/Shanghai")).second == 30 for item in out)
+
+
+async def test_fixed_year_seven_field_cron_runs_once_then_expires(setup) -> None:
+    store, _, sched = setup
+    timezone = ZoneInfo("Asia/Shanghai")
+    base = datetime(2026, 9, 5, 10, 15, 20, tzinfo=timezone)
+    due = datetime(2099, 9, 5, 10, 15, 30, tzinfo=timezone)
+    schedule = HeartbeatSchedule.from_dict(
+        {"type": "cron", "cron_expr": "30 15 10 5 9 ? 2099", "timezone": "Asia/Shanghai"}
+    )
+    job = await store.create_job(
+        name="fixed-year", channel_id="web", session_id="s1", prompt="p",
+        schedule=schedule, source="agent_tool", now=base.timestamp(),
+    )
+    assert job.next_run_at == due.timestamp()
+
+    sched._now_fn = lambda: base.timestamp()
+    preview = sched.preview_next_runs(job, count=5)
+    assert len(preview) == 1
+    assert preview[0]["run_at"] == due.timestamp()
+
+    sched._now_fn = lambda: due.timestamp() + 1
+    decision = await sched._start_run(
+        job, "run-fixed-year", due.timestamp(), trigger="scheduler", reschedule=True
+    )
+    assert decision == "run"
+    claimed = await store.get_job(job.id)
+    assert claimed is not None
+    assert claimed.next_run_at is None
+
+    assert await sched.on_run_finished(job.id, "run-fixed-year", outcome="succeeded") is True
+    finished = await store.get_job(job.id)
+    assert finished is not None
+    assert finished.status == "expired"
+    assert finished.enabled is False
+
+
 def test_preview_formats_job_timezone(setup) -> None:
     _store, _mh, sched = setup
     assert sched._format_preview(0.0, timezone="UTC")["iso"].endswith("+00:00")
@@ -1157,6 +1246,38 @@ async def test_cancel_run_pause_schedule(setup) -> None:
     j = await store.get_job(job.id)
     assert j.status == STATUS_DISABLED
     assert j.run_state.last_cancel_status == "cancelled"
+
+
+async def test_cancel_completed_job_does_not_change_terminal_state(setup) -> None:
+    store, _, sched = setup
+    job = await store.create_job(
+        name="completed", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="agent_tool", max_runs=1,
+    )
+    await store.update_job(job.id, {"next_run_at": 1.0})
+    await sched._tick_once()
+    running = await store.get_job(job.id)
+    await sched.on_run_finished(
+        job.id, running.run_state.current_run_id, outcome="succeeded"
+    )
+
+    result = await sched.cancel_run(job.id, pause_schedule=True)
+    persisted = await HeartbeatJobStore(path=store.path).get_job(job.id)
+
+    assert result == {
+        "job_id": job.id,
+        "cancelled_run_id": None,
+        "cancel_status": "idle",
+        "paused": False,
+        "reason": "job_terminal",
+    }
+    assert persisted is not None
+    assert persisted.status == STATUS_COMPLETED
+    assert persisted.enabled is False
+    assert persisted.run_count == 1
 
 
 async def test_cancel_run_reports_exact_stream_not_found(setup) -> None:

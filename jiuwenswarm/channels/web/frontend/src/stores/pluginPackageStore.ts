@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { extractRpcErrorMessage } from '../features/agentManagement/upload';
 import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
 import type { PluginConnectionState, PluginPackageDetail, PluginPackageSummary } from '../types/pluginPackage';
 
@@ -120,7 +121,9 @@ interface PluginPackageState {
     skills: string[];
     mcps: string[];
   }) => Promise<boolean>;
-  importLocal: (params: { path: string }) => Promise<boolean>;
+  importLocal: (
+    params: { path: string },
+  ) => Promise<{ ok: true } | { ok: false; error: string }>;
   install: (id: string) => Promise<void>;
   uninstall: (id: string) => Promise<void>;
   deletePackage: (id: string) => Promise<boolean>;
@@ -266,10 +269,12 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     try {
       await pluginPackagesApi.importLocal(params);
       await usePluginPackageStore.getState().loadList('mine');
-      return true;
+      return { ok: true };
     } catch (error) {
-      set({ error: error instanceof Error ? error.message : String(error) });
-      return false;
+      return {
+        ok: false,
+        error: extractRpcErrorMessage(error, 'plugin package import failed'),
+      };
     }
   },
 

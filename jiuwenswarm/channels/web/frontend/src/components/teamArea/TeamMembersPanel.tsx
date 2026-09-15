@@ -1,5 +1,6 @@
-import { memo, useEffect, useMemo, useRef, useState, type ReactNode } from 'react';
+import { memo, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, useSessionStore, useTodoStore } from '../../stores';
 import type { Message, TeamMemberContextCompressionState } from '../../types';
 import type { TeamMemberExecutionEvent, TeamTask as SessionTeamTask } from '../../stores/sessionStore';
@@ -311,7 +312,7 @@ function DetailTabSwitch({
 
   return (
     <div
-      className="grid grid-cols-2 rounded-md bg-[var(--color-connector-tag-surface)] p-1 text-sm"
+      className="grid grid-cols-2 rounded-md bg-[var(--color-tag-surface)] p-1 text-sm"
       data-testid="team-area-detail-tab-switch"
     >
       <button
@@ -351,6 +352,19 @@ function GroupChatDetail({
   const groupMemberIds = getGroupMemberIds(members);
   const memberNames = [t('team.leader'), ...groupMemberIds.map(getMemberDisplayName)].join(t('team.memberSeparator'));
   const avatarMemberIds = [GROUP_LEADER_MEMBER_ID, ...groupMemberIds];
+  const memberNamesRef = useRef<HTMLDivElement>(null);
+  const [memberNamesTruncated, setMemberNamesTruncated] = useState(false);
+  const { tooltip: memberNamesTooltip, handlers: memberNamesTooltipHandlers } = useAdaptiveTooltip();
+
+  useLayoutEffect(() => {
+    const element = memberNamesRef.current;
+    if (!element) return;
+    const checkOverflow = () => setMemberNamesTruncated(element.scrollWidth > element.clientWidth);
+    checkOverflow();
+    const observer = new ResizeObserver(checkOverflow);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [memberNames]);
 
   useEffect(() => {
     const el = scrollContainerRef.current;
@@ -380,7 +394,14 @@ function GroupChatDetail({
             <div className="text-base font-semibold text-text" data-testid="team-area-group-chat-title">
               {t('team.groupChat')}
             </div>
-            <div className="mt-1 truncate text-xs text-text-muted" data-testid="team-area-group-chat-member-names">
+            <div
+              ref={memberNamesRef}
+              className="mt-1 truncate text-xs text-text-muted"
+              data-testid="team-area-group-chat-member-names"
+              data-tooltip={memberNamesTruncated ? memberNames : undefined}
+              tabIndex={memberNamesTruncated ? 0 : undefined}
+              {...memberNamesTooltipHandlers}
+            >
               {memberNames}
             </div>
           </div>
@@ -390,6 +411,7 @@ function GroupChatDetail({
         </div>
       </div>
 
+      {memberNamesTooltip}
       <div
         ref={scrollContainerRef}
         className="team-group-chat-message-list min-h-0 flex-1 overflow-y-auto px-7 py-6"
@@ -727,7 +749,10 @@ function MemberTaskDetail({
         </div>
       </div>
 
-      <div className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7" data-testid="team-area-member-detail-body">
+      <div
+        className="member-detail-body min-h-0 flex-1 overflow-y-auto px-12 pt-[26px] pb-7"
+        data-testid="team-area-member-detail-body"
+      >
         <ProcessListCard items={processItems} expandedIds={expandedProcessIds} onToggle={toggleProcess} />
         <FinalSummaryList events={finalEvents} />
       </div>
@@ -857,10 +882,7 @@ function FinalSummaryList({ events }: { events: TeamMemberExecutionEvent[] }) {
   }
 
   return (
-    <div
-      className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4"
-      data-testid="team-area-final-summary"
-    >
+    <div className="mt-5 border-t border-[var(--color-team-detail-divider)] pt-4" data-testid="team-area-final-summary">
       <div className="mt-4 space-y-6">
         {events.map((event) => (
           <section
@@ -921,17 +943,20 @@ function ProcessListCard({
                   className="flex h-[22px] w-full items-center gap-3 px-3 pr-1 text-left hover:bg-secondary"
                 >
                   <ProcessIcon item={item} />
-                  <div className="min-w-0 flex-1">
-                    <div className="flex min-w-0 items-center gap-2 text-sm text-text-muted">
-                      <span className="shrink-0 text-muted-strong" data-testid="team-area-process-item-title">
+                  <div className="min-w-0 flex-1 text-sm text-text-muted">
+                    <div className="truncate" data-testid="team-area-process-item-title-row">
+                      <span className="text-muted-strong" data-testid="team-area-process-item-title">
                         {item.title}
                       </span>
                       {item.subtitle && (
                         <>
-                          <span className="flex" data-testid="team-area-process-item-separator">
+                          <span
+                            className="mx-1 inline-flex align-middle"
+                            data-testid="team-area-process-item-separator"
+                          >
                             <span className="w-[1px] h-[10px] bg-border" />
                           </span>
-                          <span className="truncate text-muted" data-testid="team-area-process-item-subtitle">
+                          <span className="text-muted" data-testid="team-area-process-item-subtitle">
                             {item.subtitle}
                           </span>
                         </>

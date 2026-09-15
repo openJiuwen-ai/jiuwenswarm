@@ -5,10 +5,28 @@
 from __future__ import annotations
 
 import logging
+from contextlib import ExitStack, contextmanager
 from pathlib import Path
 from typing import Any
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def permission_storage_lock(session_id: str | None = None, *, lock_timeout: float = 10.0):
+    """Lock cooperative writers in Global, User, Session order; never reenter."""
+    import portalocker
+
+    from jiuwenswarm.common.config import _config_lock_path, config_write_lock
+
+    with config_write_lock(lock_timeout=lock_timeout), ExitStack() as stack:
+        paths = [user_permissions_path()]
+        if session_id and str(session_id).strip():
+            paths.append(session_permissions_path(session_id))
+        for path in paths:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            stack.enter_context(portalocker.Lock(str(_config_lock_path(path)), timeout=lock_timeout))
+        yield
 
 _TOOL_LEVELS = frozenset({"allow", "ask", "deny"})
 _LIST_KEYS = ("allow_tools", "ask_tools", "deny_tools")
@@ -43,7 +61,7 @@ def session_permissions_path(session_id: str) -> Path:
     return get_agent_sessions_dir() / sid / "session_permissions.yaml"
 
 
-def _load_yaml_dict(path: Path) -> dict[str, Any]:
+def _load_yaml_dict(path: Path, *, strict: bool = False) -> dict[str, Any]:
     if not path.is_file():
         return {}
     try:
@@ -51,8 +69,12 @@ def _load_yaml_dict(path: Path) -> dict[str, Any]:
 
         data = _load_yaml_round_trip(path)
     except Exception:
+        if strict:
+            raise
         logger.warning("[permissions.layers] load failed path=%s", path, exc_info=True)
         return {}
+    if strict and data is not None and not isinstance(data, dict):
+        raise ValueError(f"permission file must contain a mapping: {path}")
     return data if isinstance(data, dict) else {}
 
 
@@ -159,6 +181,38 @@ def load_session_permissions(session_id: str | None) -> dict[str, Any]:
         )
     except ValueError:
         return {}
+
+
+def read_permission_layers_locked(session_id: str | None = None) -> tuple[dict[str, Any], ...]:
+    """Read strict, fresh layers while the caller owns permission_storage_lock."""
+    from copy import deepcopy
+
+    from jiuwenswarm.common import config
+
+    global_data = _load_yaml_dict(config.CONFIG_YAML_PATH, strict=True)
+    global_perms = global_data.get("permissions")
+    if not isinstance(global_perms, dict):
+        raise ValueError("Global permissions must contain a mapping")
+    user = _as_permissions_section(_load_yaml_dict(user_permissions_path(), strict=True))
+    session = (
+        _as_permissions_section(_load_yaml_dict(session_permissions_path(session_id), strict=True))
+        if session_id else {}
+    )
+    return deepcopy(global_perms), deepcopy(user), deepcopy(session)
+
+
+def capture_permission_layers(session_id: str | None = None) -> tuple[dict[str, Any], ...]:
+    """Return independent Global/User/Session/effective dictionaries from one locked read."""
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+
+    with permission_storage_lock(session_id):
+        global_perms, user, session = read_permission_layers_locked(session_id)
+        effective = compose_host_effective_permissions(
+            global_permissions=global_perms, user_permissions=user, session_permissions=session,
+        )
+        return global_perms, user, session, effective
 
 
 def overlay_from_effective(
@@ -268,37 +322,60 @@ def persist_user_overlay_from_effective(
     effective: dict[str, Any],
     session_id: str | None = None,
 ) -> bool:
-    overlay = overlay_from_effective(
-        effective,
-        session=False,
-        session_permissions=load_session_permissions(session_id) if session_id else {},
-    )
-    current = _merge_overlay_into_current(load_user_permissions(), overlay, session=False)
-    return _dump_yaml_dict(user_permissions_path(), current)
+    with permission_storage_lock(session_id):
+        overlay = overlay_from_effective(
+            effective,
+            session=False,
+            session_permissions=load_session_permissions(session_id) if session_id else {},
+        )
+        current = _merge_overlay_into_current(load_user_permissions(), overlay, session=False)
+        return _dump_yaml_dict(user_permissions_path(), current)
 
 
 def persist_session_overlay_from_effective(session_id: str, effective: dict[str, Any]) -> bool:
     if not session_id or not str(session_id).strip():
         return False
-    overlay = overlay_from_effective(effective, session=True)
-    current = _merge_overlay_into_current(
-        load_session_permissions(session_id), overlay, session=True
-    )
-    return _dump_yaml_dict(session_permissions_path(str(session_id).strip()), current)
+    with permission_storage_lock(session_id):
+        overlay = overlay_from_effective(effective, session=True)
+        current = _merge_overlay_into_current(
+            load_session_permissions(session_id), overlay, session=True
+        )
+        return _dump_yaml_dict(session_permissions_path(str(session_id).strip()), current)
 
 
 def save_user_permissions(data: dict[str, Any]) -> bool:
-    return _dump_yaml_dict(user_permissions_path(), dict(data) if isinstance(data, dict) else {})
+    return update_user_permissions(lambda _: dict(data) if isinstance(data, dict) else {})
+
+
+def save_user_permissions_locked(data: dict[str, Any]) -> bool:
+    """Save a validated User overlay; caller must hold permission_storage_lock."""
+    return _dump_yaml_dict(user_permissions_path(), data)
+
+
+def update_user_permissions(mutator) -> bool:
+    """Apply a User overlay mutation to the latest document under the shared locks."""
+    try:
+        with permission_storage_lock():
+            current = load_user_permissions()
+            updated = mutator(current)
+            return _dump_yaml_dict(user_permissions_path(), updated)
+    except Exception:
+        logger.warning("[permissions.layers] user update failed", exc_info=True)
+        return False
 
 
 __all__ = [
+    "capture_permission_layers",
     "load_global_permissions",
     "load_session_permissions",
     "load_user_permissions",
     "overlay_from_effective",
+    "permission_storage_lock",
     "persist_session_overlay_from_effective",
     "persist_user_overlay_from_effective",
     "save_user_permissions",
+    "save_user_permissions_locked",
+    "update_user_permissions",
     "session_permissions_path",
     "user_permissions_path",
 ]

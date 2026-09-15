@@ -42,12 +42,13 @@ import {
   detectPhaseLoops,
   sortPhasesByExecution,
   computeLoopStatus,
+  computeSessionStatus,
   findActiveIterationIndex,
 } from './workflowTypes';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
 import { webRequest } from '../../services/webClient';
-import type { AskUserQuestionPayload } from '../../types/websocket';
+import type { AskUserQuestionPayload, WebError } from '../../types/websocket';
 import {
   AgentDetailModal,
   buildDetailSections,
@@ -55,6 +56,7 @@ import {
   accentChipClass,
   type AgentModalState,
 } from './AgentDetailModal';
+import { Toast } from '../ConnectorMarket/Toast';
 
 // ── 状态图标映射 ──────────────────────────────────────────
 
@@ -80,6 +82,17 @@ function StatusIcon({ status, className }: { status: WorkflowStatus; className?:
       return <Circle className={`${cls} text-gray-400`} />;
   }
 }
+
+// 控制 RPC 失败时服务端带回的权威 status → toast 文案 key 映射。
+// 服务端在 controller miss 时会把 run 的真实状态（终态/暂停态）附在失败
+// payload 里，前端据此提示并纠正陈旧卡片。
+const CONTROL_STATUS_KEY: Record<string, string> = {
+  completed: 'swarmflow.controlAlreadyCompleted',
+  stopped: 'swarmflow.controlAlreadyStopped',
+  failed: 'swarmflow.controlAlreadyFailed',
+  paused: 'swarmflow.controlAlreadyPaused',
+  running: 'swarmflow.controlUnavailable',
+};
 
 // ── 状态文本 ──────────────────────────────────────────────
 
@@ -448,9 +461,16 @@ function AgentNode({
           agent_name: agent.name,
         },
       };
-      useChatStore.getState().setPendingQuestion(sessionId, payload);
+      useChatStore.getState().enqueuePendingQuestion(sessionId, payload);
     })();
   }, [agent, runId, sessionId, ensureAgentDetail]);
+
+  // 刷新页面等场景会清空 pendingQuestions（后端 chat.ask_user_question 只在状态
+  // 首次跳转时推一次，无快照回放）——节点挂载时若已处于 waiting_for_human，按
+  // 当前状态补一次弹窗，语义等同用户手动点击该行。
+  useEffect(() => {
+    handleAgentClick();
+  }, [agent.status]);
 
   return (
     <div>
@@ -732,11 +752,15 @@ function PhaseNode({
           {sessions.map((session) => {
             const representative = session.members[0];
             if (!representative) return null;
+            // 代表节点状态按 members 聚合：Turn0 完成不代表整张卡完成。
+            const status = computeSessionStatus(session.members);
+            const node =
+              status === representative.status ? representative : { ...representative, status };
             return (
               <div key={representative.id} className="relative pl-4">
                 <div className="absolute left-0 top-1/2 -translate-y-1/2 w-3 border-t border-border/30" />
                 <AgentNode
-                  agent={representative}
+                  agent={node}
                   phaseAgents={phase.agents ?? []}
                   depth={0}
                   runId={runId}
@@ -776,6 +800,69 @@ function RunNode({
   const { t } = useTranslation();
   const [expanded, setExpanded] = useState(true);
   const [runDetail, setRunDetail] = useState<AgentModalState | null>(null);
+  // Control request in-flight flag: clicking pause/resume/stop immediately
+  // spins and disables all three buttons until run.status flips to the target
+  // state (progress event arrives). Backend abort can take seconds; a blocked
+  // control channel longer (09-08 measured 80s before res returned, but the
+  // event arrived with it). Disabling prevents repeat clicks (19:18:16: pause
+  // then resume 4ms later, then 6 more resume clicks all ok=False). No timeout
+  // fallback: buttons honor run.status only — if the event never arrives the
+  // spinner stays. State follows events.
+  const [pendingControl, setPendingControl] = useState<
+    'pause' | 'resume' | 'stop' | null
+  >(null);
+  useEffect(() => {
+    if (!pendingControl) return;
+    if (pendingControl === 'pause' && run.status !== 'running') {
+      setPendingControl(null);
+    } else if (pendingControl === 'resume' && run.status === 'running') {
+      setPendingControl(null);
+    } else if (
+      pendingControl === 'stop' &&
+      (run.status === 'stopped' ||
+        run.status === 'completed' ||
+        run.status === 'failed')
+    ) {
+      setPendingControl(null);
+    }
+  }, [pendingControl, run.status]);
+  const [controlError, setControlError] = useState<string | null>(null);
+  // 控制 RPC 失败统一处理：服务端在 controller miss 时把权威 status 附在
+  // 失败 payload 里带回，据此纠正停在 running/paused 的陈旧卡片并用 Toast
+  // 明确提示——此前只 console.error，用户连点没反应还不知道原因
+  // （17:06-17:07 对已完成 run 反复点暂停、前端只报 not found 的先例）。
+  const applyControlFailure = useCallback(
+    (err: unknown): boolean => {
+      console.error('[swarmflow] control failed:', err);
+      const webErr = err as WebError | undefined;
+      const payload = webErr?.payload as
+        | { status?: unknown }
+        | undefined;
+      const status = typeof payload?.status === 'string' ? payload.status : null;
+      if (status && status !== run.status) {
+        // 最小 delta：mergeWorkflowRun 只覆盖 incoming 携带的字段，
+        // name/summary 等缺席字段保留 store 现值，不会用旧渲染快照回退。
+        useSessionStore.getState().applyWorkflowUpdate(sessionId, {
+          id: run.id,
+          status: status as WorkflowStatus,
+        } as WorkflowRun);
+      }
+      // 传输层错误（超时/断连，code 非空）没有权威 payload：如实显示其自带
+      // 文案（如"请求超时"），不误报"未找到工作流运行"（16:0x 断连窗口点
+      // resume 弹 controlNotFound 的先例）。返回是否服务端权威失败，供 pause
+      // 在途态决定复位——传输层错误时转圈保持到事件到达，状态以事件为准。
+      const transport = webErr?.code !== undefined;
+      setControlError(
+        status
+          ? t(CONTROL_STATUS_KEY[status] || 'swarmflow.controlNotFound')
+          : transport && webErr?.message
+            ? webErr.message
+            : t('swarmflow.controlNotFound'),
+      );
+      return !transport;
+    },
+    [run.id, run.status, sessionId, t],
+  );
   const completedCount =
     run.completed_agent_count ??
     (run.phases ?? []).reduce(
@@ -810,6 +897,17 @@ function RunNode({
       : run.budget?.total != null && run.budget?.exhausted
         ? 'session'
         : null);
+  // 机械按钮只在 team 活着（方块亮）时可用：灰飞机 = 无 leader harness 可宿主 run；
+  // recovered = 冷启动后 controller 无票据。两种情况恢复都只能由 Leader 经 ask_user 裁决。
+  const teamRunning = useChatStore((s) => s.runtimes[sessionId]?.isProcessing ?? false);
+  const controlsDisabled = !teamRunning || run.recovered === true;
+  // Two reasons to disable: team asleep / cold start (grey, not-allowed) or a
+  // control request in flight (spinner, wait cursor). The in-flight look wins
+  // while a request is pending.
+  const controlBtnClass =
+    `flex items-center justify-center w-7 h-7 rounded text-text-muted hover:bg-secondary transition-colors disabled:hover:bg-transparent disabled:hover:text-text-muted ${
+      pendingControl !== null ? 'disabled:opacity-70 disabled:cursor-wait' : 'disabled:opacity-40 disabled:cursor-not-allowed'
+    }`;
 
   return (
     <div className="border border-border rounded-lg overflow-hidden bg-card/50" data-testid="team-area-swarmflow-run" data-variant={run.id}>
@@ -888,19 +986,38 @@ function RunNode({
           >
             <button
               type="button"
-              title={t('swarmflow.pauseResumeHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-amber-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.pauseResumeHint')}
+              className={`${controlBtnClass} hover:text-amber-500`}
+              disabled={controlsDisabled || pendingControl !== null}
               data-testid="team-area-swarmflow-run-pause-btn"
               data-variant={run.status === 'running' ? 'pause' : 'resume'}
               onClick={() => {
-                const method =
-                  run.status === 'running' ? 'swarmflow.pause' : 'swarmflow.resume';
-                void webRequest(method, { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
-                );
+                if (run.status !== 'running') {
+                  setPendingControl('resume');
+                  void webRequest('swarmflow.resume', {
+                    session_id: sessionId,
+                    run_id: run.id,
+                  }).catch((err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  });
+                  return;
+                }
+                setPendingControl('pause');
+                void webRequest('swarmflow.pause', {
+                  session_id: sessionId,
+                  run_id: run.id,
+                }).catch((err) => {
+                  if (applyControlFailure(err)) {
+                    setPendingControl(null);
+                  }
+                });
               }}
             >
-              {run.status === 'running' ? (
+              {pendingControl === 'pause' || pendingControl === 'resume' ? (
+                <Loader2 className="w-4 h-4 animate-spin text-amber-500" />
+              ) : run.status === 'running' ? (
                 <Pause className="w-4 h-4" />
               ) : (
                 <Play className="w-4 h-4" />
@@ -908,21 +1025,34 @@ function RunNode({
             </button>
             <button
               type="button"
-              title={t('swarmflow.stopHint')}
-              className="flex items-center justify-center w-7 h-7 rounded text-text-muted hover:text-red-500 hover:bg-secondary transition-colors"
+              title={t(controlsDisabled ? 'swarmflow.controlsDisabledHint' : 'swarmflow.stopHint')}
+              className={`${controlBtnClass} hover:text-red-500`}
+              disabled={controlsDisabled || pendingControl !== null}
               data-testid="team-area-swarmflow-run-stop-btn"
               onClick={() => {
+                setPendingControl('stop');
                 void webRequest('swarmflow.stop', { session_id: sessionId, run_id: run.id }).catch(
-                  (err) => console.error('[swarmflow] control failed:', err),
+                  (err) => {
+                    if (applyControlFailure(err)) {
+                      setPendingControl(null);
+                    }
+                  },
                 );
               }}
             >
-              <Square className="w-3.5 h-3.5" />
+              {pendingControl === 'stop' ? (
+                <Loader2 className="w-3.5 h-3.5 animate-spin text-red-500" />
+              ) : (
+                <Square className="w-3.5 h-3.5" />
+              )}
             </button>
           </div>
         )}
       </div>
 
+      {controlError && (
+        <Toast message={controlError} onClose={() => setControlError(null)} variant="error" />
+      )}
       {run.error && (
         <button
           type="button"

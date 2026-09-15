@@ -19,7 +19,6 @@ export function SettingsPage({
   connectionState,
   request,
   onHasChangesChange,
-  onConfigSaved,
   onDetectExternalCli,
   onSelectExternalCliPath,
   onTrackExternalCliDependencyInstalls,
@@ -37,7 +36,6 @@ export function SettingsPage({
   connectionState: WebConnectionState;
   request: SettingsRequest;
   onHasChangesChange?: (hasChanges: boolean) => void;
-  onConfigSaved?: (updatedKeys: readonly string[]) => Promise<void> | void;
   onDetectExternalCli?: (agent: ExternalCliAgentKind, path?: string) => Promise<ExternalCliDetectResult>;
   onSelectExternalCliPath?: (agent: ExternalCliAgentKind, initialPath?: string) => Promise<string | null>;
   onTrackExternalCliDependencyInstalls?: (statuses: ExternalCliInstallStatuses) => void;
@@ -64,7 +62,6 @@ export function SettingsPage({
       connectionState={connectionState}
       request={request}
       onHasChangesChange={onHasChangesChange}
-      onConfigSaved={onConfigSaved}
       onDetectExternalCli={onDetectExternalCli}
       onSelectExternalCliPath={onSelectExternalCliPath}
       onTrackExternalCliDependencyInstalls={onTrackExternalCliDependencyInstalls}

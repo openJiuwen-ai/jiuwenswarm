@@ -30,6 +30,7 @@ _BUILTIN_PROVIDERS = {"openjiuwen", "mem0", "openviking"}
 def build_external_memory_rail(
     config: Optional[Dict[str, Any]] = None,
     workspace_dir: str = ".",
+    session_id: str = "__default__",
 ) -> Optional[Any]:
     """Build an ExternalMemoryRail from config, or None if disabled/failed."""
     try:
@@ -72,6 +73,7 @@ def build_external_memory_rail(
             provider,
             user_id=ext_cfg.get("user_id", "__default__"),
             scope_id=ext_cfg.get("scope_id", "__default__"),
+            session_id=session_id,
         )
         logger.info(
             "[ExternalMemoryBuilder] ExternalMemoryRail built (provider=%s)",
@@ -341,6 +343,21 @@ def _build_jiuwen_sdk_config_dict(
         "enable_thinking": "false",          # pinned off
         "embedder_ssl_verify": "false",      # pinned off
     }
+    log_file = str(sdk_cfg.get("log_file") or "").strip()
+    if not log_file:
+        try:
+            from jiuwenswarm.common.utils import get_logs_dir
+            get_logs_dir().mkdir(parents=True, exist_ok=True)
+            log_file = str(get_logs_dir() / "jiuwen_memory.log")
+        except Exception as exc:
+            logger.warning(
+                "[ExternalMemoryBuilder] resolve agent-memory log dir failed: %s", exc,
+            )
+    if log_file:
+        globals_["log_file"] = log_file
+        log_level = str(sdk_cfg.get("log_level") or "").strip().upper()
+        if log_level:
+            globals_["log_level"] = log_level
     # LLM credentials → globals (openai_llm/dashscope_llm read from globals)
     if llm_creds.get("api_key") and llm_creds.get("model") and llm_creds.get("base_url"):
         globals_["llm_api_key"] = llm_creds["api_key"]

@@ -111,6 +111,11 @@
       <td width="50%">系统参数、大模型 API、运行环境相关配置。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>IDE 插件</strong></td>
+      <td width="28%"><a href="zh/ide/jetbrains/JetBrains插件.md">JetBrains</a> / <a href="zh/ide/vscode/VSCode插件.md">VS Code</a>（<a href="zh/ide/jetbrains/JetBrains插件指南.md">指南</a> · <a href="zh/ide/vscode/VSCode插件指南.md">指南</a>）</td>
+      <td width="50%">在 JetBrains IDE 与 VS Code 中嵌入 JiuwenSwarm 智能体，提供原生聊天面板。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>浏览器服务</strong></td>
       <td width="28%"><a href="zh/浏览器.md">浏览器</a></td>
       <td width="50%">网页访问、信息获取与浏览器工具调用能力。</td>

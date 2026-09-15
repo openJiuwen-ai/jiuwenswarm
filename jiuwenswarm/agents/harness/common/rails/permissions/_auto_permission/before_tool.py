@@ -29,6 +29,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.invoca
     _args_were_valid_json_object,
     _extract_invocation,
     _normalize_command_invocation_for_execution,
+    _normalize_native_path_invocation_for_execution,
     normalize_invocation_tool_args,
     _repair_invocation_args_for_execution,
     _resolve_channel_kind,
@@ -43,6 +44,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     PROHIBITED_FILE_DELIVERY_REASON,
     PermissionHandlingResult,
     ToolInvocation,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
+    PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_audit import (
     _contains_retired_task_scope_confirmation,
@@ -170,6 +175,7 @@ class AutoPermissionBeforeToolMixin:
     async def before_tool_call(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate the current root tool call once."""
 
+        native_token = NATIVE_PATH_ACCESS.set(None)
         try:
             return await self._before_tool_call_impl(*args, **kwargs)
         except asyncio.CancelledError:
@@ -179,6 +185,8 @@ class AutoPermissionBeforeToolMixin:
             if key is not None and queue is not None:
                 queue.finish_active(key)
             raise
+        finally:
+            NATIVE_PATH_ACCESS.reset(native_token)
 
     async def _before_tool_call_impl(self, *args: Any, **kwargs: Any) -> Any:
         """Evaluate auto-permission guards before delegating to the base rail."""
@@ -187,6 +195,8 @@ class AutoPermissionBeforeToolMixin:
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
         context_extra = getattr(invocation.ctx, "extra", None)
+        if invocation.ctx is not None and invocation.tool_name == "mcp_fetch_webpage":
+            setattr(invocation.ctx, PUBLIC_HTTPS_FETCH_CONTEXT_ATTR, True)
         if (
             isinstance(context_extra, Mapping)
             and context_extra.get("_skip_tool") is True
@@ -211,6 +221,10 @@ class AutoPermissionBeforeToolMixin:
         invocation, command_contract_error = (
             _normalize_command_invocation_for_execution(invocation, kwargs)
         )
+        invocation, native_contract_error = _normalize_native_path_invocation_for_execution(
+            invocation, kwargs, workspace_root=self.workspace_root,
+        )
+        command_contract_error = command_contract_error or native_contract_error
         normalized_args = normalize_invocation_tool_args(
             invocation.tool_name,
             invocation.tool_args,

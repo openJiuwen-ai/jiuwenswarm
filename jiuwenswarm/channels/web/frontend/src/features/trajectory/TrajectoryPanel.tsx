@@ -26,14 +26,27 @@ import type { TrajectoryDiagnostic, TrajectoryUsage } from './trajectory/model';
 import {
   getTrajectoryRawRecord,
   getTrajectoryArchive,
+  getTrajectorySequences,
   getTrajectorySessionUsage,
-  getTrajectoryTrace,
-  listTrajectoryTraceRevisions,
-  listTrajectoryTraces,
+  getTrajectoryStreamFrames,
+  getTrajectorySubjectRecords,
+  listTrajectorySubjects,
+  MAX_SEQUENCE_REQUEST,
   TrajectoryApiError,
   type TrajectoryDetailRecord,
-  type TrajectoryTraceSummary,
+  type TrajectorySubjectSummary,
 } from './trajectoryClient';
+import {
+  applyStreamFrames,
+  withStreamFrames,
+} from './trajectoryFrames';
+import {
+  absorbSequencePage,
+  createSequenceCache,
+  rebuildRecord,
+  unresolvedAttributesByRecordId,
+  unresolvedHeadsOf,
+} from './trajectorySequences';
 import {
   exitTrajectoryReplay,
   parseTrajectoryArchive,
@@ -42,8 +55,7 @@ import {
   type TrajectoryArchive,
 } from './trajectoryArchive';
 import {
-  collectHeadRefreshWindow,
-  collectRevisionRefreshWindow,
+  collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
   createTrajectoryWindowState,
@@ -53,9 +65,9 @@ import {
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
   spansOf,
-  stageTrajectoryTracePages,
+  stageTrajectoryChainPages,
   trajectoryContentMode,
-  type StagedTrajectoryTrace,
+  type StagedTrajectoryChain,
   type TrajectoryTerminalEventName,
 } from './trajectoryWindow';
 import {
@@ -73,11 +85,17 @@ import { TeamTrajectoryWorkspace } from './TeamTrajectoryWorkspace';
 import css from './TrajectoryPanel.module.css';
 import './client/theme.css';
 
-const INITIAL_TRACE_LIMIT = 30;
 const DETAIL_LIMIT = 1000;
 const DETAIL_CONCURRENCY = 6;
 const LIVE_HINT_PULL_INTERVAL_MS = 80;
+// A reader returning after a long disconnect walks forward a page at a time.
+// The cap bounds one refresh; whatever is left is picked up by the next.
+const MAX_FRAME_CATCH_UP_PAGES = 20;
 const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
+
+/** Upstream project the trajectory renderer is adapted from (MIT; see NOTICE.md). */
+const DSH_PROJECT_URL = 'https://github.com/deepseek-ai/deepseek-harness';
+const DSH_LICENSE_URL = `${DSH_PROJECT_URL}/blob/main/LICENSE`;
 
 interface TraceUpdatedPayload {
   session_id?: unknown;
@@ -191,6 +209,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const rawContentId = useId();
   const archiveInputRef = useRef<HTMLInputElement>(null);
   const rawSelectionBySubjectRef = useRef(new Map<string, string>());
+  // Content is addressed by the hash of itself, so a cached element can never
+  // go stale and is reusable for the life of the session.
+  const sequenceCacheRef = useRef(createSequenceCache());
   const subjectViewCacheRef = useRef(
     createTrajectorySubjectViewCache<ReturnType<typeof projectOtelTrajectory>>(),
   );
@@ -204,10 +225,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [selectedSubjectId, setSelectedSubjectId] = useState<string | null>(
     teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID,
   );
-  const [hasEarlier, setHasEarlier] = useState(false);
   const [loading, setLoading] = useState(false);
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
-  const [loadingEarlier, setLoadingEarlier] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [replayArchive, setReplayArchive] = useState<TrajectoryArchive | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
@@ -276,6 +295,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       'toolbar.search': '搜索轨迹',
       'toolbar.searchPlaceholder': '搜索',
     },
+    attributionBasis: '本产品轨迹 UI 基于开源项目',
+    attributionLicense: '的轨迹组件开发构建，原项目遵循',
+    attributionLicenseSuffix: '。',
+    attributionCopyright: '原项目 Copyright © 2026 DeepSeek · 修改部分 © 2026 Huawei Technologies Co., Ltd.',
   } : {
     loading: 'Loading trajectory…',
     loadingProgress: (loaded: number, total: number) => `Loading trajectory ${loaded} / ${total}`,
@@ -314,6 +337,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     rawExpand: 'Expand raw OTel panel',
     rawResize: 'Resize raw OTel panel height',
     toolbar: undefined,
+    attributionBasis: 'The trajectory UI in this product is developed and built on the trajectory components of the open-source project',
+    attributionLicense: ', which is licensed under the',
+    attributionLicenseSuffix: '.',
+    attributionCopyright: 'Original project Copyright © 2026 DeepSeek · Modifications © 2026 Huawei Technologies Co., Ltd.',
   }, [chinese, teamMode]);
 
   const publish = useCallback((generation: number) => {
@@ -323,9 +350,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       return;
     }
     deferredPublishRef.current = false;
-    const nextRecords = [...windowStateRef.current.buckets.values()].flatMap(bucket => (
-      [...bucket.records.values()]
-    ));
+    // A span still writing its answer states nothing about it yet, so the
+    // frames it has produced stand in until its own record supersedes them.
+    const nextRecords = withStreamFrames(
+      [...windowStateRef.current.buckets.values()].flatMap(bucket => (
+        [...bucket.records.values()]
+      )),
+      windowStateRef.current.frames,
+    ) as OtlpExportTraceServiceRequest[];
     const nextRawRecords = [...windowStateRef.current.buckets.values()].flatMap(bucket => (
       [...bucket.rawRecords.values()]
     ));
@@ -360,6 +392,38 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     publish(generation);
   }, [publish, sessionId]);
 
+  const catchUpStreamFrames = useCallback(async (
+    signal: AbortSignal,
+    generation: number,
+  ) => {
+    // Walk forward from the cursor this reader holds until it is level with
+    // the store. A reader that was disconnected closes the whole gap here
+    // rather than waiting for the answer to finish.
+    let pagesLeft = MAX_FRAME_CATCH_UP_PAGES;
+    let changed = false;
+    while (pagesLeft > 0) {
+      pagesLeft -= 1;
+      const expectedEpoch = windowStateRef.current.storeEpoch;
+      const page = await getTrajectoryStreamFrames(sessionId, {
+        signal,
+        sinceFrameSeq: windowStateRef.current.frames.frameSeq,
+      });
+      if (signal.aborted
+        || !operationCoordinatorRef.current.isCurrent(generation)
+        || windowStateRef.current.storeEpoch !== expectedEpoch) return;
+      if (page.frames.length === 0 && !page.reset) break;
+      windowStateRef.current.frames = applyStreamFrames(
+        windowStateRef.current.frames,
+        page,
+      );
+      changed = true;
+      if (!page.has_more) break;
+    }
+    if (!changed) return;
+    subjectViewCacheRef.current.clear();
+    publish(generation);
+  }, [publish, sessionId]);
+
   const clearPublishedWindow = useCallback(() => {
     resetTrajectoryWindowState(windowStateRef.current);
     deferredPublishRef.current = false;
@@ -370,7 +434,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
     setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
-    setHasEarlier(false);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -385,23 +448,43 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     publish(operationCoordinatorRef.current.currentGeneration());
   }, [active, publish]);
 
-  const loadTrace = useCallback(async (
-    traceId: string,
+  const recoverSequences = useCallback(async (
+    heads: readonly string[],
+    signal: AbortSignal,
+  ) => {
+    for (let offset = 0; offset < heads.length; offset += MAX_SEQUENCE_REQUEST) {
+      const batch = heads.slice(offset, offset + MAX_SEQUENCE_REQUEST);
+      try {
+        const page = await getTrajectorySequences(sessionId, batch, { signal });
+        absorbSequencePage(sequenceCacheRef.current, page);
+      } catch (recoveryError) {
+        // Recovering content must not cost the reader the page that needed
+        // it. What could not be rebuilt stays marked on its record, and the
+        // next page that states the same chain asks again.
+        if (signal.aborted) return;
+        void recoveryError;
+        return;
+      }
+    }
+  }, [sessionId]);
+
+  const loadChain = useCallback(async (
+    subjectId: string,
     targetRevision: number,
     signal: AbortSignal,
     generation: number,
   ) => {
     if (!operationCoordinatorRef.current.isCurrent(generation)) return;
-    const current = windowStateRef.current.buckets.get(traceId);
+    const current = windowStateRef.current.buckets.get(subjectId);
     if (current !== undefined && current.revision >= targetRevision) return;
-    const publishPage = (staged: StagedTrajectoryTrace) => {
+    const publishPage = (staged: StagedTrajectoryChain) => {
       if (signal.aborted || !operationCoordinatorRef.current.isCurrent(generation)) return;
-      const latest = windowStateRef.current.buckets.get(traceId);
+      const latest = windowStateRef.current.buckets.get(subjectId);
       // A consumed revision uniquely identifies the trace state visible to
       // this coalesced detail feed. Equal or older concurrent pages cannot add
       // facts and would only trigger another full presentation publish.
       if (latest !== undefined && latest.revision >= staged.bucket.revision) return;
-      windowStateRef.current.buckets.set(traceId, staged.bucket);
+      windowStateRef.current.buckets.set(subjectId, staged.bucket);
       if (staged.invalidRecordSeen) setInvalidRecordSeen(true);
       const loadProgress = initialLoadProgressRef.current;
       if (loadProgress !== null && loadProgress.generation === generation) {
@@ -420,31 +503,52 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       }
       publish(generation);
     };
-    const staged = await stageTrajectoryTracePages(
+    const staged = await stageTrajectoryChainPages(
       current,
       signal,
-      (sinceRevision, pageSignal) => getTrajectoryTrace(sessionId, traceId, {
-        signal: pageSignal,
-        sinceRevision,
-        limit: DETAIL_LIMIT,
-      }),
+      async (sinceRevision, pageSignal) => {
+        const page = await getTrajectorySubjectRecords(sessionId, subjectId, {
+          signal: pageSignal,
+          sinceRevision,
+          limit: DETAIL_LIMIT,
+        });
+        // Records state their restated attributes by reference. Take in what
+        // this page delivered, then rebuild them from what is now held: the
+        // server sends content only when it was not assumed to be cached.
+        absorbSequencePage(sequenceCacheRef.current, page);
+        let rebuilt = page.records.map(
+          record => rebuildRecord(record, sequenceCacheRef.current),
+        );
+        // That assumption can be wrong -- a reload, a second device, an entry
+        // the browser dropped. Ask for what is still missing by hash, which
+        // makes the answer conclusive: content absent after this is content
+        // the store no longer has, not content still on its way.
+        const unresolved = unresolvedHeadsOf(rebuilt);
+        if (unresolved.length > 0) {
+          await recoverSequences(unresolved, pageSignal);
+          rebuilt = page.records.map(
+            record => rebuildRecord(record, sequenceCacheRef.current),
+          );
+        }
+        return { ...page, records: rebuilt };
+      },
       publishPage,
     );
     if (staged === null
       || signal.aborted
       || !operationCoordinatorRef.current.isCurrent(generation)) return;
     setError(null);
-  }, [publish, sessionId]);
+  }, [publish, recoverSequences, sessionId]);
 
   const loadSummaries = useCallback(async (
-    summaries: readonly TrajectoryTraceSummary[],
+    summaries: readonly TrajectorySubjectSummary[],
     signal: AbortSignal,
     generation: number,
   ) => {
     for (let offset = 0; offset < summaries.length; offset += DETAIL_CONCURRENCY) {
       const batch = summaries.slice(offset, offset + DETAIL_CONCURRENCY);
-      await Promise.all(batch.map(summary => loadTrace(
-        summary.trace_id,
+      await Promise.all(batch.map(summary => loadChain(
+        summary.subject_id,
         summary.revision,
         signal,
         generation,
@@ -452,35 +556,29 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (signal.aborted
         || !operationCoordinatorRef.current.isCurrent(generation)) return;
     }
-  }, [loadTrace]);
+  }, [loadChain]);
 
   const rebuildFromHead = useCallback((signal: AbortSignal): Promise<boolean> => {
     if (rebuildPromiseRef.current !== null) return rebuildPromiseRef.current;
     const coordinator = operationCoordinatorRef.current;
-    const generation = coordinator.invalidate(() => setLoadingEarlier(false));
+    const generation = coordinator.invalidate(() => {});
     clearPublishedWindow();
     setLoading(true);
     const operation = (async () => {
       try {
-        const page = await listTrajectoryTraces(sessionId, {
-          signal,
-          cursor: null,
-          limit: INITIAL_TRACE_LIMIT,
-        });
+        const page = await listTrajectorySubjects(sessionId, { signal });
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
-        const total = page.items.reduce((count, summary) => count + summary.span_count, 0);
+        const total = page.items.reduce((count, summary) => count + summary.record_count, 0);
         initialLoadProgressRef.current = { generation, loaded: 0, total };
         setInitialLoadProgress({ loaded: 0, total });
         await loadSummaries(page.items, signal, generation);
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         const windowState = windowStateRef.current;
         windowState.storeEpoch = page.store_epoch;
-        windowState.pageCursor = page.next_cursor;
-        windowState.revisionCursor = page.revision_cursor;
+        windowState.watermark = page.watermark;
         windowState.listWindowInitialized = true;
         await refreshSessionUsage(signal, generation);
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
-        setHasEarlier(page.next_cursor !== null);
         setError(null);
         return true;
       } catch (rebuildError) {
@@ -522,60 +620,50 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         }
         const loadedRevisions = new Map<string, number>(
           [...windowStateRef.current.buckets]
-            .map(([traceId, bucket]): [string, number] => [traceId, bucket.revision]),
+            .map(([subjectId, bucket]): [string, number] => [subjectId, bucket.revision]),
         );
-        const headWindow = await collectHeadRefreshWindow(
-          loadedRevisions,
+        // One listing covers both the head and the incremental feed: the
+        // watermark is the floor, and a rotated epoch means restart.
+        const subjectWindow = await collectSubjectRefreshWindow(
+          windowStateRef.current.watermark,
           expectedStoreEpoch,
           signal,
-          (cursor, pageSignal) => listTrajectoryTraces(sessionId, {
-            signal: pageSignal,
-            cursor,
-            limit: INITIAL_TRACE_LIMIT,
-          }),
-        );
-        if (headWindow === null
-          || signal.aborted
-          || !coordinator.isCurrent(generation)) return;
-        if (headWindow.reset) {
-          await rebuildFromHead(signal);
-          return;
-        }
-        const feedStart = windowStateRef.current.revisionCursor ?? headWindow.revisionCursor;
-        const revisionWindow = await collectRevisionRefreshWindow(
-          feedStart,
-          expectedStoreEpoch,
-          signal,
-          (afterRevision, pageSignal) => listTrajectoryTraceRevisions(sessionId, {
+          (afterRevision, pageSignal) => listTrajectorySubjects(sessionId, {
             signal: pageSignal,
             afterRevision,
-            limit: 100,
           }),
         );
-        if (revisionWindow === null
+        if (subjectWindow === null
           || signal.aborted
           || !coordinator.isCurrent(generation)) return;
-        if (revisionWindow.reset) {
+        if (subjectWindow.reset) {
           await rebuildFromHead(signal);
           return;
         }
         const summaries = selectSummariesNeedingLoad(
           loadedRevisions,
-          headWindow.summaries,
-          revisionWindow.summaries,
+          subjectWindow.summaries,
         );
-        await loadSummaries(summaries, signal, generation);
-        if (signal.aborted
-          || !coordinator.isCurrent(generation)
-          || windowStateRef.current.storeEpoch !== expectedStoreEpoch) return;
-        await refreshSessionUsage(signal, generation);
+        // Detail, usage and frames answer three questions of their own and
+        // resume from three cursors of their own, so they travel together
+        // instead of one round trip after another. Frames are what a reader
+        // watches in real time; they no longer wait behind the other two.
+        await Promise.all([
+          (async () => {
+            await loadSummaries(summaries, signal, generation);
+            if (signal.aborted
+              || !coordinator.isCurrent(generation)
+              || windowStateRef.current.storeEpoch !== expectedStoreEpoch) return;
+            // The listing watermark advances only once the detail behind it
+            // is held: a subject skipped here is one the next listing would
+            // not name again.
+            windowStateRef.current.listWindowInitialized = true;
+            windowStateRef.current.watermark = subjectWindow.watermark;
+          })(),
+          refreshSessionUsage(signal, generation),
+          catchUpStreamFrames(signal, generation),
+        ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
-        if (!windowStateRef.current.listWindowInitialized || loadedRevisions.size === 0) {
-          windowStateRef.current.pageCursor = headWindow.firstPageNextCursor;
-          windowStateRef.current.listWindowInitialized = true;
-          setHasEarlier(headWindow.firstPageNextCursor !== null);
-        }
-        windowStateRef.current.revisionCursor = revisionWindow.nextCursor;
         setError(null);
       } catch (refreshError) {
         if (!signal.aborted) setError(errorMessage(refreshError, chinese));
@@ -618,18 +706,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (signal === undefined || signal.aborted) return;
     const coordinator = operationCoordinatorRef.current;
     const generation = coordinator.currentGeneration();
-    await hintCoordinatorRef.current.drain(async (hints) => {
-      await Promise.all([...hints].map(([traceId, revision]) => loadTrace(
-        traceId,
-        revision,
-        signal,
-        generation,
-      )));
+    await hintCoordinatorRef.current.drain(async () => {
+      // A hint names a trace, which no longer maps onto one chain: a trace can
+      // carry records for several subjects. It is enough as a signal that
+      // something advanced - the listing decides which chains to reload.
+      await refreshLatest();
       await refreshSessionUsage(signal, generation);
     }, () => new Promise<void>((resolve) => {
       window.setTimeout(resolve, LIVE_HINT_PULL_INTERVAL_MS);
     }));
-  }, [loadTrace, refreshSessionUsage]);
+  }, [refreshLatest, refreshSessionUsage]);
 
   useEffect(() => {
     requestControllerRef.current?.abort();
@@ -641,7 +727,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       terminalSettleTimerRef.current = null;
     }
     rebuildPromiseRef.current = null;
-    operationCoordinatorRef.current.invalidate(() => setLoadingEarlier(false));
+    operationCoordinatorRef.current.invalidate(() => {});
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setRawLoading(false);
@@ -751,54 +837,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     };
   }, [catchUpAfterTerminalEvent, flushTraceHints, rebuildFromHead, refreshLatest, replayArchive, sessionId]);
 
-  const loadEarlier = useCallback((): Promise<boolean> => {
-    const signal = requestControllerRef.current?.signal;
-    if (replayArchive !== null || signal === undefined || signal.aborted) {
-      return Promise.resolve(false);
-    }
-    const coordinator = operationCoordinatorRef.current;
-    return coordinator.runLoadEarlier(async (generation) => {
-      try {
-        const runningRefresh = refreshPromiseRef.current;
-        if (runningRefresh !== null) await runningRefresh;
-        if (signal.aborted || !coordinator.isCurrent(generation)) return false;
-        const cursor = windowStateRef.current.pageCursor;
-        const expectedStoreEpoch = windowStateRef.current.storeEpoch;
-        if (cursor === null || expectedStoreEpoch === null) return false;
-        const page = await listTrajectoryTraces(sessionId, {
-          signal,
-          cursor,
-          limit: INITIAL_TRACE_LIMIT,
-        });
-        if (signal.aborted || !coordinator.isCurrent(generation)) return false;
-        if (page.store_epoch !== expectedStoreEpoch) {
-          await rebuildFromHead(signal);
-          return false;
-        }
-        const loadedRevisions = new Map<string, number>(
-          [...windowStateRef.current.buckets]
-            .map(([traceId, bucket]): [string, number] => [traceId, bucket.revision]),
-        );
-        const summaries = selectSummariesNeedingLoad(loadedRevisions, page.items);
-        await loadSummaries(summaries, signal, generation);
-        if (signal.aborted
-          || !coordinator.isCurrent(generation)
-          || windowStateRef.current.storeEpoch !== expectedStoreEpoch
-          || windowStateRef.current.pageCursor !== cursor) return false;
-        windowStateRef.current.pageCursor = page.next_cursor;
-        windowStateRef.current.listWindowInitialized = true;
-        setHasEarlier(page.next_cursor !== null);
-        setError(null);
-        return page.items.length > 0;
-      } catch (loadError) {
-        if (!signal.aborted && coordinator.isCurrent(generation)) {
-          setError(errorMessage(loadError, chinese));
-        }
-        return false;
-      }
-    }, setLoadingEarlier);
-  }, [chinese, loadSummaries, rebuildFromHead, replayArchive, sessionId]);
-
   const replayView = useMemo(
     () => replayArchive === null ? null : trajectoryArchiveView(replayArchive),
     [replayArchive],
@@ -822,6 +860,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         replayArchive === null
           ? publishedWindow.sessionCumulativeUsageByRequestIdentity
           : new Map(),
+      unresolvedAttributesByRecordId: unresolvedAttributesByRecordId(group.rawRecords),
       ...(replayArchive === null ? { v2Reducer: trajectoryV2ReducerRef.current } : {}),
     }),
   ), [
@@ -1217,9 +1256,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                 active={active}
                 snapshot={groupSnapshot ?? { turns: [] }}
                 loading={expanded && replayArchive === null ? loading : false}
-                loadingEarlier={expanded && replayArchive === null ? loadingEarlier : false}
-                hasEarlier={expanded && replayArchive === null ? hasEarlier : false}
-                loadEarlier={loadEarlier}
                 error={expanded ? expandedError : null}
                 messages={copy.toolbar}
                 colorMode="light"
@@ -1307,9 +1343,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
                   active={active && selected}
                   snapshot={subjectSnapshot}
                   loading={selected && replayArchive === null ? loading : false}
-                  loadingEarlier={selected && replayArchive === null ? loadingEarlier : false}
-                  hasEarlier={selected && replayArchive === null ? hasEarlier : false}
-                  loadEarlier={loadEarlier}
                   error={selected && replayArchive === null ? error : null}
                   messages={copy.toolbar}
                   colorMode="light"
@@ -1448,6 +1481,31 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         </div>
       ) : null}
       <div ref={bodyRef} className={css.body}>{content}</div>
+      <footer className={css.footer}>
+        <p className={css.footerText}>
+          {copy.attributionBasis}{' '}
+          <a
+            className={css.footerLink}
+            href={DSH_PROJECT_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            DeepSeek Harness
+          </a>
+          {copy.attributionLicense}{' '}
+          <a
+            className={css.footerLink}
+            href={DSH_LICENSE_URL}
+            target="_blank"
+            rel="noopener noreferrer"
+          >
+            MIT License
+          </a>
+          {copy.attributionLicenseSuffix}
+          <br />
+          {copy.attributionCopyright}
+        </p>
+      </footer>
     </section>
   );
 });

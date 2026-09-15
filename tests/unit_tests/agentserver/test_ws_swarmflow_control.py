@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import asyncio
 from types import SimpleNamespace  # noqa: F401  (kept for parity with sibling tests)
+from unittest.mock import AsyncMock
 from typing import Any
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -40,6 +41,25 @@ class _FakeController:
     async def stop(self, run_id: str) -> bool:
         self.calls.append(("stop", run_id))
         return self.acted
+
+
+class _FakeWorkflowHandler:
+    """Fake WorkflowMonitorHandler exposing only what the stop path touches."""
+
+    def __init__(self, runs: dict[str, Any]) -> None:
+        self._runs = runs
+        self.persist_calls = 0
+
+    def get_run_states(self) -> dict[str, Any]:
+        return dict(self._runs)
+
+    async def stop_run(self, run_id: str) -> bool:
+        run = self._runs.get(run_id)
+        if run is None or run.status != "paused":
+            return False
+        run.finalize_if_running("stopped")
+        self.persist_calls += 1
+        return True
 
 
 def _make_request(
@@ -95,6 +115,8 @@ class TestHandleSwarmflowControl:
         controller: _FakeController | None = None,
         params: dict[str, Any] | None = None,
         session_id: str = "sess-1",
+        team_manager: Any = None,
+        team_state: str = "running",
     ) -> tuple[dict[str, Any], _FakeController]:
         from unittest.mock import patch
 
@@ -104,9 +126,29 @@ class TestHandleSwarmflowControl:
         ws = _FakeWS()
         request = _make_request(session_id=session_id, req_method=req_method, params=params)
         fake_controller = controller or _FakeController()
+        # Default: the team runtime is RUNNING and has no workflow handler
+        # registered, so every action goes straight to the controller (the
+        # historical path).
+        team_manager = team_manager or SimpleNamespace(
+            has_stream_task=lambda sid: True,
+            get_workflow_handler=lambda sid: None,
+        )
+        # The control RPC gates on the Runner pool state (RuntimeState), not
+        # the foreground stream; feed it a matching in-memory pool entry.
+        active_team = SimpleNamespace(
+            team_name="team-1",
+            current_session_id=session_id,
+            state=team_state,
+        )
         with patch(
             "jiuwenswarm.server.runtime.agent_adapter.team_helpers.get_background_task_controller",
             return_value=fake_controller,
+        ), patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=team_manager,
+        ), patch(
+            "openjiuwen.core.runner.Runner.list_active_teams",
+            new=AsyncMock(return_value=[active_team]),
         ):
             await _run_handler(server, ws, request)
         return _decode_response(ws), fake_controller
@@ -160,6 +202,64 @@ class TestHandleSwarmflowControl:
         assert controller.calls == []
         assert resp["ok"] is False
         assert resp["payload"].get("error") == "run_id is required"
+
+    async def test_stop_marks_paused_run_terminal_in_snapshot(self) -> None:
+        """Stopping a paused run (no engine event) must mark the snapshot stopped."""
+        from unittest.mock import patch
+
+        from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        run = WorkflowRunState(status="paused")
+        run.id = "wf_1"
+        handler = _FakeWorkflowHandler({"wf_1": run})
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.SWARMFLOW_STOP, params={"run_id": "wf_1"}
+        )
+        team_manager = SimpleNamespace(
+            has_stream_task=lambda session_id: True,
+            get_workflow_handler=lambda session_id: handler,
+        )
+        active_team = SimpleNamespace(
+            team_name="team-1",
+            current_session_id="sess-1",
+            state="running",
+        )
+        with patch(
+            "jiuwenswarm.server.runtime.agent_adapter.team_helpers.get_background_task_controller",
+            return_value=_FakeController(acted=True),
+        ), patch(
+            "jiuwenswarm.agents.harness.team.get_team_manager",
+            return_value=team_manager,
+        ), patch(
+            "openjiuwen.core.runner.Runner.list_active_teams",
+            new=AsyncMock(return_value=[active_team]),
+        ):
+            await _run_handler(server, ws, request)
+
+        assert run.status == "stopped"
+        assert handler.persist_calls == 1
+
+    async def test_control_while_team_asleep_is_rejected(self) -> None:
+        """Team asleep: no leader harness can host the run, so every control
+        is refused without touching the controller (the tree-view buttons are
+        greyed then; resume goes through the leader's ask_user).
+        """
+        asleep = SimpleNamespace(
+            has_stream_task=lambda sid: False, get_workflow_handler=lambda sid: None,
+        )
+        for method in (ReqMethod.SWARMFLOW_PAUSE, ReqMethod.SWARMFLOW_RESUME, ReqMethod.SWARMFLOW_STOP):
+            resp, ctl = await self._invoke(
+                method,
+                params={"run_id": "wf_1"},
+                team_manager=asleep,
+                team_state="paused",
+            )
+            assert resp["ok"] is False
+            assert resp["payload"].get("error") == "工作流控制不可用，发送一条消息唤醒团队后即可使用。"
+            assert ctl.calls == []
 
     async def test_controller_false_returns_not_found(self) -> None:
         resp, controller = await self._invoke(

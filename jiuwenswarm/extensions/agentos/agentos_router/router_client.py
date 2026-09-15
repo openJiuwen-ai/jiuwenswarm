@@ -29,6 +29,7 @@ from jiuwenswarm.extensions.agentos.agentos_router.agentos_authenticator import 
 from jiuwenswarm.extensions.agentos.auth.common import (
     extract_headers,
     extract_token,
+    extract_token_from_path_and_headers,
     get_remote_addr,
 )
 from jiuwenswarm.extensions.agentos.auth.credential_authenticator import AuthContext, AuthResult
@@ -79,9 +80,10 @@ _WORKSPACE_NAME_RE = re.compile(r"[^A-Za-z0-9._-]+")
 # the host workspace bind path (``/home/agentos/users/<user_id>``).
 USER_DIRECTORY_ENV_KEY = "JIUWENSWARM_USER_DIRECTORY"
 
-# Gateway-side file transfer limits (design: stricter than YuanRong 512MB).
+# Container file root. Upload size is not capped on Gateway; YuanRong
+# Frontend / working-directory quota (default 512MB) rejects oversized files
+# with HTTP 413, mapped to ``file_too_large``.
 _AGENT_FILE_PATH_ROOT = "/home/agentos"
-_MAX_AGENT_FILE_UPLOAD_BYTES = 50 * 1024 * 1024
 
 _TEAM_MODES = frozenset({"team", "code.team", "team.plan"})
 # Web/TUI 握手成功后预热内置沙箱；SSH/IM 等不走 agentserver WS，不预热。
@@ -276,16 +278,6 @@ def normalize_agent_file_download_path(path: str) -> str:
             code="BAD_REQUEST",
         )
     return text
-
-
-def enforce_agent_file_upload_size(content: bytes) -> None:
-    """Reject uploads larger than the Gateway-side 50MB limit."""
-    size = len(content)
-    if size > _MAX_AGENT_FILE_UPLOAD_BYTES:
-        raise AgentOSFileTransferError(
-            f"file size exceeds {_MAX_AGENT_FILE_UPLOAD_BYTES} bytes limit",
-            code="file_too_large",
-        )
 
 
 def build_auth_headers_from_mapping(headers: Mapping[str, str] | None) -> dict[str, str]:
@@ -484,14 +476,28 @@ class AgentOSRouterClient(AgentServerClient):
             fields["error"] = error
         log_agentos(logger, level, event, **fields)
 
-    async def on_connect(self, ws: Any) -> AuthResult | None:
-        channel = self._ws_channel_name(ws)
-        remote = get_remote_addr(ws)
-        if self._auth_client is None:
+    @property
+    def auth_enabled(self) -> bool:
+        return self._auth_client is not None
+
+    @staticmethod
+    def _header_user_id(headers: Mapping[str, str]) -> str:
+        lowered = {str(k).lower(): str(v or "") for k, v in headers.items()}
+        return str(lowered.get("x-user-id", "") or "").strip()
+
+    async def _verify_request_token(
+        self,
+        *,
+        token: str | None,
+        headers: Mapping[str, str],
+        remote: str,
+        channel: str,
+    ) -> AuthResult:
+        auth_client = self._auth_client
+        if not self.auth_enabled or auth_client is None:
             # auth 未启用时回落使用握手头里的 X-User-Id，
             # 否则 user_id 为空会跳过连接计数/延迟清理，导致 agent 泄漏不回收。
-            headers = {k.lower(): v for k, v in extract_headers(ws).items()}
-            fallback_user_id = str(headers.get("x-user-id", "") or "").strip()
+            fallback_user_id = self._header_user_id(headers)
             fields: dict[str, Any] = {
                 "user_id": fallback_user_id,
                 "channel": channel,
@@ -504,15 +510,13 @@ class AgentOSRouterClient(AgentServerClient):
                 success=True,
                 user_id=fallback_user_id,
             )
-        token = extract_token(ws)
-        headers = extract_headers(ws)
         context = AuthContext(
-            channel_type="",
-            credentials={"token": token} if token else {},
-            headers=headers,
+            channel_type=channel,
+            credentials={"token": token or ""},
+            headers=dict(headers),
             remote_addr=remote,
         )
-        result = await self._auth_client.authenticate(context)
+        result = await auth_client.authenticate(context)
         if result.success:
             log_agentos(
                 logger,
@@ -535,6 +539,42 @@ class AgentOSRouterClient(AgentServerClient):
                 remote=remote,
                 error=error_code or result.error or "unauthorized",
             )
+        return result
+
+    async def authenticate_http(
+        self,
+        *,
+        path: str,
+        headers: Mapping[str, str],
+        remote: str = "",
+        channel: str = "file-api",
+        allow_query_token: bool = True,
+    ) -> AuthResult:
+        """IAM-verify an HTTP request token. Skips when ``auth_enabled`` is false.
+
+        ``/file-api/download?token=`` carries a file-location token, not an IAM
+        credential; callers must pass ``allow_query_token=False`` on that path.
+        """
+        token_path = path if allow_query_token else urllib.parse.urlparse(path).path
+        token = extract_token_from_path_and_headers(token_path, headers)
+        return await self._verify_request_token(
+            token=token,
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+
+    async def on_connect(self, ws: Any) -> AuthResult | None:
+        channel = self._ws_channel_name(ws)
+        remote = get_remote_addr(ws)
+        headers = extract_headers(ws)
+        result = await self._verify_request_token(
+            token=extract_token(ws),
+            headers=headers,
+            remote=remote,
+            channel=channel,
+        )
+        if not result.success:
             close = getattr(ws, "close", None)
             if callable(close):
                 ret = close(code=1008, reason="unauthorized")
@@ -852,8 +892,11 @@ class AgentOSRouterClient(AgentServerClient):
         instance_id: str | None = None,
         auth_headers: Mapping[str, str] | None = None,
     ) -> dict[str, Any]:
-        """Upload bytes into the user's agent container workspace."""
-        enforce_agent_file_upload_size(content)
+        """Upload bytes into the user's agent container workspace.
+
+        Gateway does not enforce a file-size cap. Oversized payloads are
+        rejected by YuanRong (HTTP 413 / ``file_too_large``).
+        """
         normalized_path = normalize_agent_file_upload_path(
             path, dir_prefix=dir_prefix, user_id=user_id
         )

@@ -40,9 +40,12 @@ class ApplicationPluginServices:
 
 @dataclass(frozen=True)
 class WebSocketRouteContribution:
+    """A plugin WebSocket route, optionally retained for host-level entry points."""
+
     path: str
     endpoint: WebSocketEndpoint
     check_origin: bool = True
+    available_when_disabled: bool = False
 
 
 @dataclass(frozen=True)

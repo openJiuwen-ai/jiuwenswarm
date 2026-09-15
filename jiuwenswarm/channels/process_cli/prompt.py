@@ -16,7 +16,10 @@ from prompt_toolkit.history import InMemoryHistory
 from prompt_toolkit.shortcuts import CompleteStyle
 from prompt_toolkit.styles import Style
 
-from jiuwenswarm.channels.process_cli.commands import matching_slash_commands
+from jiuwenswarm.channels.process_cli.commands import (
+    matching_slash_arguments,
+    matching_slash_commands,
+)
 
 PROMPT_TEXT = "jiuwenswarm> "
 _COMMAND_COLUMN_WIDTH = 22
@@ -27,6 +30,16 @@ class SlashCommandCompleter(Completer):
 
     def get_completions(self, document: Document, complete_event):
         prefix = document.current_line_before_cursor
+        argument_fragment = prefix.rpartition(" ")[2]
+        for argument in matching_slash_arguments(prefix):
+            yield Completion(
+                argument.value,
+                start_position=-len(argument_fragment),
+                display=argument.value.ljust(_COMMAND_COLUMN_WIDTH),
+                display_meta=argument.description,
+            )
+        if " " in prefix:
+            return
         for command in matching_slash_commands(prefix):
             yield Completion(
                 command.name,

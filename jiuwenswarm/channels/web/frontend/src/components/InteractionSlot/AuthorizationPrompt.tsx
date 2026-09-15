@@ -16,13 +16,12 @@ import { useTranslation } from 'react-i18next';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import { ShieldCheck, ChevronDown } from 'lucide-react';
-import { useChatStore } from '../../stores';
 import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } from '../../types';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
-  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => void;
+  onSubmit: (requestId: string, answers: UserAnswer[], source?: string) => Promise<boolean>;
 }
 
 /** 动作按钮的显示顺序：跳过(reject) → 永久记住 → 会话内记住 → 授权单次(allow-once)。 */
@@ -83,7 +82,6 @@ function HoverTip({ text, children }: { text: string; children: React.ReactNode 
 
 export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptProps) {
   const { t } = useTranslation();
-  const setPendingQuestion = useChatStore((s) => s.setPendingQuestion);
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -128,14 +126,13 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   );
 
   const handlePick = useCallback(
-    (picked: ResolvedAction) => {
+    async (picked: ResolvedAction) => {
       if (submitting) return;
       setSubmitting(true);
-      onSubmit(pending.request_id, buildAnswers(picked), pending.source);
-      const sid = useChatStore.getState().activeSessionId;
-      if (sid) setPendingQuestion(sid, null);
+      await onSubmit(pending.request_id, buildAnswers(picked), pending.source);
+      setSubmitting(false);
     },
-    [submitting, onSubmit, pending, buildAnswers, setPendingQuestion],
+    [submitting, onSubmit, pending, buildAnswers],
   );
 
   if (!primary) return null;
@@ -144,7 +141,17 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const title = (primary.header || '').trim() || fallbackTitle;
 
   return (
-    <div className="auth-prompt" role="alertdialog" aria-label={title} data-testid="interaction-slot-auth-prompt">
+    <div
+      className="auth-prompt"
+      role="alertdialog"
+      aria-label={title}
+      data-testid="interaction-slot-auth-prompt"
+      data-request-id={pending.request_id}
+      data-card-ids={questions
+        .map(question => question.card_id)
+        .filter(Boolean)
+        .join(',')}
+    >
       <div
         className="auth-prompt__bar"
         role="button"

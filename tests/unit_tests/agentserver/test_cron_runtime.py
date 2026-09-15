@@ -3,14 +3,17 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 from zoneinfo import ZoneInfo
 
 import pytest
 
 from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
     _CronToolsCronBackend,
+    CronRuntimeBridge,
     _extract_legacy_params,
 )
+from openjiuwen.harness.tools.cron import CronToolContext
 from jiuwenswarm.agents.harness.common.tools.cron import cron_tools as cron_tools_module
 from jiuwenswarm.agents.harness.common.tools.cron.cron_tools import CronToolRoute, CronTools
 from jiuwenswarm.gateway.cron.scheduler import CronSchedulerService
@@ -256,6 +259,76 @@ async def test_cron_tools_create_job_does_not_persist_locally(tmp_path, monkeypa
     assert push.payloads[0]["body"]["action"] == "create"
     # 本地 cron_jobs.json 未被写入（单源）
     assert not (tmp_path / "cron_jobs.json").exists()
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_create_job_normalizes_and_forwards_mcp(tmp_path, monkeypatch) -> None:
+    """会话级 MCP 选择随 job 转发 Gateway 落库（strip/去空/去重后）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        job = await tools.create_job(
+            {
+                "id": "job-with-mcp",
+                "name": "daily",
+                "cron_expr": "0 9 * * *",
+                "timezone": "Asia/Shanghai",
+                "description": "hello",
+                "targets": "web",
+                "mcp": [" feishu-doc ", "github", "github", ""],
+            }
+        )
+    finally:
+        tools.reset_cron_route(token)
+
+    assert job["mcp"] == ["feishu-doc", "github"]
+    forwarded = push.payloads[0]["body"]["data"]
+    assert forwarded["mcp"] == ["feishu-doc", "github"]
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_create_job_without_mcp_omits_field(tmp_path, monkeypatch) -> None:
+    """未传 mcp 的 job 不带该字段（旧 job 行为与改造前一致）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        job = await tools.create_job(
+            {
+                "id": "job-no-mcp",
+                "name": "daily",
+                "cron_expr": "0 9 * * *",
+                "timezone": "Asia/Shanghai",
+                "description": "hello",
+                "targets": "web",
+            }
+        )
+    finally:
+        tools.reset_cron_route(token)
+
+    assert "mcp" not in job
+    assert "mcp" not in push.payloads[0]["body"]["data"]
+
+
+@pytest.mark.asyncio
+async def test_cron_tools_update_job_clears_mcp_with_empty_list(tmp_path, monkeypatch) -> None:
+    """update patch mcp=[] → 归 None（清除选择，执行时回到全局默认集）。"""
+    _setup_project_store(tmp_path, monkeypatch)
+    tools, push = _make_cron_tools(tmp_path, monkeypatch)
+    existing = _make_job("job-clear-mcp", name="existing", mcp=["feishu-doc"])
+    monkeypatch.setattr(tools, "_view_job", AsyncMock(return_value=existing))
+
+    token = tools.push_cron_route(CronToolRoute(project_dir=""))
+    try:
+        await tools.update_job("job-clear-mcp", {"mcp": []})
+    finally:
+        tools.reset_cron_route(token)
+
+    patch = push.payloads[0]["body"]["data"]["patch"]
+    assert patch["mcp"] is None
 
 
 @pytest.mark.asyncio
@@ -1153,3 +1226,61 @@ class TestComputeNextRunMissedTriggerWindow:
 
         assert push_dt.minute == 35
         assert wake_dt == push_dt
+
+
+class _FakeDispatchBackend:
+    """Minimal backend double for unified cron tool dispatch tests."""
+
+    async def list_jobs(self, *, include_disabled: bool = True):
+        return [{"id": "job-1"}]
+
+    async def create_job(self, params: dict, *, context=None) -> dict:
+        return {"id": "spawned", **params}
+
+
+class TestBuildToolsAllowCreate:
+    """cron 执行会话的受限工具集：创建能力必须下掉，管理能力保留。"""
+
+    def _build(self, allow_create: bool) -> list:
+        bridge = CronRuntimeBridge()
+        bridge.set_backend(_FakeDispatchBackend())
+        return bridge.build_tools(
+            context=CronToolContext(channel_id="web", session_id="sess-1"),
+            agent_id="agent-1",
+            allow_create=allow_create,
+        )
+
+    def test_allow_create_false_drops_cron_create_job(self) -> None:
+        tools = self._build(allow_create=False)
+        names = {tool.card.name for tool in tools}
+        assert "cron_create_job" not in names
+        assert {
+            "cron",
+            "cron_list_jobs",
+            "cron_get_job",
+            "cron_update_job",
+            "cron_delete_job",
+            "cron_toggle_job",
+            "cron_preview_job",
+        } <= names
+
+    def test_allow_create_true_keeps_cron_create_job(self) -> None:
+        tools = self._build(allow_create=True)
+        assert "cron_create_job" in {tool.card.name for tool in tools}
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_add_blocked_when_create_disabled(self) -> None:
+        tools = self._build(allow_create=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        with pytest.raises(ValueError, match="not allowed"):
+            await unified._func(action="add", job={"name": "spawned"})
+
+    @pytest.mark.asyncio
+    async def test_unified_cron_tool_list_still_works_when_create_disabled(self) -> None:
+        tools = self._build(allow_create=False)
+        unified = next(tool for tool in tools if tool.card.name == "cron")
+
+        result = await unified._func(action="list")
+
+        assert result == {"jobs": [{"id": "job-1"}]}

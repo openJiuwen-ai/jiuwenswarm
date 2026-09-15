@@ -17,6 +17,7 @@ $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Pa
 Set-Location $ProjectRoot
 
 $BundleNode = if ($env:BUNDLE_NODE) { $env:BUNDLE_NODE } else { "1" }
+$BundleUv = if ($env:BUNDLE_UV) { $env:BUNDLE_UV } else { "1" }
 $NodeVersion = if ($env:NODE_VERSION) { $env:NODE_VERSION } else { "v22.11.0" }
 $NodeSource = $null
 
@@ -167,6 +168,56 @@ function Copy-NodeRuntime {
     Write-Host "[runtime] Bundled Node $nodeVersion into $target" -ForegroundColor Green
 }
 
+function Resolve-UvRuntimeDir {
+    param([string]$ProjectRoot)
+
+    # uv 是项目 pip 依赖（pyproject dependencies）.
+    $venvUv = Join-Path $ProjectRoot ".venv\Scripts\uv.exe"
+    if (Test-Path -LiteralPath $venvUv) {
+        return (Resolve-Path -LiteralPath $venvUv).Path
+    }
+    throw 'uv not found in .venv\Scripts; run uv sync first'
+}
+
+function Copy-UvRuntime {
+    param(
+        [string]$UvExePath,
+        [string]$DistDir
+    )
+
+    if (-not $UvExePath) {
+        return
+    }
+
+    $distResolved = (Resolve-Path -LiteralPath $DistDir -ErrorAction Stop).Path
+    $runtimeDir = Join-Path $distResolved "runtime"
+    $target = Join-Path $runtimeDir "uv-runtime"
+    if (Test-Path -LiteralPath $target) {
+        $targetResolved = (Resolve-Path -LiteralPath $target).Path
+        if (-not $targetResolved.StartsWith($distResolved, [System.StringComparison]::OrdinalIgnoreCase)) {
+            throw "Refusing to remove uv runtime outside dist: $targetResolved"
+        }
+        Remove-Item -LiteralPath $targetResolved -Recurse -Force
+    }
+    New-Item -ItemType Directory -Path $target -Force | Out-Null
+
+    # uvx.exe 是 shim，运行时 exec 同目录的 uv.exe，两者必须一起 bundle。
+    $sourceDir = Split-Path -Parent $UvExePath
+    foreach ($file in @("uv.exe", "uvx.exe")) {
+        $source = Join-Path $sourceDir $file
+        if (Test-Path -LiteralPath $source) {
+            Copy-Item -LiteralPath $source -Destination $target -Force
+        }
+    }
+
+    if (-not (Test-Path -LiteralPath (Join-Path $target "uvx.exe"))) {
+        throw "Bundled uv runtime is missing uvx.exe: $target"
+    }
+
+    $uvVersion = & (Join-Path $target "uv.exe") --version
+    Write-Host "[runtime] Bundled $uvVersion into $target" -ForegroundColor Green
+}
+
 if (Test-Truthy $BundleNode) {
     $NodeSource = Resolve-NodeRuntimeDir `
         -ProjectRoot $ProjectRoot `
@@ -249,6 +300,14 @@ if (Test-Truthy $BundleNode) {
     }
 } else {
     Write-Host "`n[3.5/4] Skipping bundled Node.js runtime (BUNDLE_NODE=$BundleNode)" -ForegroundColor Yellow
+}
+
+if (Test-Truthy $BundleUv) {
+    Write-Host "`n[3.6/4] Bundling uv runtime..." -ForegroundColor Yellow
+    $UvExePath = Resolve-UvRuntimeDir -ProjectRoot $ProjectRoot
+    Copy-UvRuntime -UvExePath $UvExePath -DistDir $FrozenDir
+} else {
+    Write-Host "`n[3.6/4] Skipping bundled uv runtime (BUNDLE_UV=$BundleUv)" -ForegroundColor Yellow
 }
 
 # 4. Build installer (Inno Setup)

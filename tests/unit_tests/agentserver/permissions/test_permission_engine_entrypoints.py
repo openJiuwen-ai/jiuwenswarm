@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 
 _REPO = Path(__file__).resolve().parents[4]
@@ -23,7 +24,14 @@ def test_interrupt_helpers_uses_permission_engine_factory() -> None:
     source = _INTERRUPT_HELPERS.read_text(encoding="utf-8")
     assert "build_permission_interrupt_rail" in source
     assert "from openjiuwen.harness.security.host" not in source
-    assert "PermissionInterruptRail(" not in source
+    # A Host subclass is allowed for Smart callbacks; do not mistake its
+    # longer class name for direct construction of the SDK base class.
+    assert not any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "PermissionInterruptRail"
+        for node in ast.walk(ast.parse(source))
+    )
 
 
 def test_permission_engine_public_factory_import() -> None:

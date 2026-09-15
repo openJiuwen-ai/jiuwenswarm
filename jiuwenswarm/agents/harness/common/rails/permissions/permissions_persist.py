@@ -29,20 +29,6 @@ from openjiuwen.harness.security import (
 logger = logging.getLogger(__name__)
 
 
-def _load_config_yaml_round_trip() -> tuple[Any, Any]:
-    """Load config.yaml and return (data, yaml_path)."""
-    from jiuwenswarm.common.config import _CONFIG_YAML_PATH, _load_yaml_round_trip
-
-    data = _load_yaml_round_trip(_CONFIG_YAML_PATH)
-    return data, _CONFIG_YAML_PATH
-
-
-def _dump_config_yaml_round_trip(yaml_path: Any, data: Any) -> None:
-    from jiuwenswarm.common.config import _dump_yaml_round_trip
-
-    _dump_yaml_round_trip(yaml_path, data)
-
-
 def _ensure_permissions_dict(data: Any) -> dict[str, Any]:
     if not isinstance(data, dict):
         return {}
@@ -139,21 +125,141 @@ def persist_permission_allow_rule(tool_name: str, tool_args: dict | str) -> bool
     """用户选择「总是允许」时，将 allow 规则写入 config.yaml 的 permissions 段。"""
     tool_args = _normalize_tool_args(tool_args)
 
-    data, yaml_path = _load_config_yaml_round_trip()
-    permissions = data.get("permissions")
-    if not isinstance(permissions, dict):
-        logger.warning(
-            "[PermissionPersist] persist_permission_allow_rule.abort reason=no_permissions_section tool=%s",
-            tool_name,
-        )
+    from jiuwenswarm.common.config import update_config
+
+    success = False
+
+    def _mutate(data):
+        nonlocal success
+        permissions = data.get("permissions")
+        if not isinstance(permissions, dict):
+            logger.warning(
+                "[PermissionPersist] persist_permission_allow_rule.abort reason=no_permissions_section tool=%s",
+                tool_name,
+            )
+            return None
+        merged, success = merge_permission_allow_rule_into_permissions(permissions, tool_name, tool_args)
+        if not success:
+            return None
+        data["permissions"] = merged
+        return data
+
+    update_config(_mutate)
+    return success
+
+
+def persist_exact_permission_allow_rule(
+    tool_name: str,
+    tool_args: dict | str,
+    ask_accesses: tuple[tuple[str, str], ...] = (),
+    *,
+    session_id: str | None = None,
+    workspace_root: str | Path | None = None,
+) -> bool:
+    """Validate current layers and persist only this approval's User increment."""
+    from copy import deepcopy
+
+    from openjiuwen.harness.security.file_guard import build_file_guard_checker
+    from openjiuwen.harness.security.models import PermissionLevel
+    from openjiuwen.harness.security.tiered_policy import evaluate_tiered_policy
+
+    from jiuwenswarm.common.utils import get_workspace_dir
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
+        compose_host_effective_permissions,
+    )
+    from jiuwenswarm.agents.harness.common.rails.permissions import permissions_layers as layers
+
+    name = str(tool_name or "").strip()
+    args = _normalize_tool_args(tool_args)
+    accesses = _normalize_exact_accesses(ask_accesses)
+    if not name or accesses is None:
         return False
 
-    merged, ok = merge_permission_allow_rule_into_permissions(permissions, tool_name, tool_args)
-    if not ok:
+    try:
+        root = workspace_root if workspace_root is not None else get_workspace_dir()
+        with layers.permission_storage_lock(session_id):
+            global_perms, user, session = layers.read_permission_layers_locked(session_id)
+
+            def compose(user_layer):
+                return compose_host_effective_permissions(
+                    global_permissions=global_perms,
+                    user_permissions=user_layer,
+                    session_permissions=session,
+                )
+
+            effective = compose(user)
+            level, _ = evaluate_tiered_policy(effective, name, args)
+            checker = build_file_guard_checker(effective, workspace_root=root, trusted_dirs=())
+            file_result = checker.evaluate(name, args) if checker is not None else None
+            if level == PermissionLevel.DENY or (
+                file_result is not None and file_result.permission == PermissionLevel.DENY
+            ):
+                return False
+            current_asks = set(checker.collect_ask_accesses(name, args) if checker else ())
+            if not current_asks.issubset(set(accesses)):
+                return False
+
+            updated = deepcopy(user)
+            if level == PermissionLevel.ASK:
+                merged, applied = merge_permission_allow_rule_into_permissions(effective, name, args)
+                if not applied:
+                    return False
+                if (merged.get("tools") or {}).get(name) != (effective.get("tools") or {}).get(name):
+                    allow = list(updated.get("allow_tools") or [])
+                    if name not in allow:
+                        allow.append(name)
+                    updated["allow_tools"] = allow
+                previous = effective.get("approval_overrides") or []
+                additions = [item for item in merged.get("approval_overrides") or [] if item not in previous]
+                if additions:
+                    updated["approval_overrides"] = list(updated.get("approval_overrides") or []) + additions
+
+            if current_asks:
+                updated, applied = merge_file_guard_access_allows(updated, sorted(current_asks))
+                if not applied:
+                    return False
+
+            # A remembered grant must work without Session and must not be masked.
+            proposed = compose_host_effective_permissions(
+                global_permissions=global_perms,
+                user_permissions=updated,
+                session_permissions={},
+            )
+            proposed_level, _ = evaluate_tiered_policy(proposed, name, args)
+            proposed_checker = build_file_guard_checker(proposed, workspace_root=root, trusted_dirs=())
+            proposed_file = proposed_checker.evaluate(name, args) if proposed_checker else None
+            if proposed_level != PermissionLevel.ALLOW or (
+                proposed_file is not None and proposed_file.permission != PermissionLevel.ALLOW
+            ):
+                return False
+            if updated == user:
+                return True
+            return layers.save_user_permissions_locked(updated)
+    except Exception:
+        logger.exception("[PermissionPersist] exact permission persist failed")
         return False
-    data["permissions"] = merged
-    _dump_config_yaml_round_trip(yaml_path, data)
-    return True
+
+
+def _normalize_exact_accesses(
+    accesses: tuple[tuple[str, str], ...],
+) -> tuple[tuple[str, str], ...] | None:
+    if not isinstance(accesses, tuple):
+        return None
+    normalized: list[tuple[str, str]] = []
+    seen: set[tuple[str, str]] = set()
+    for access in accesses:
+        if not isinstance(access, tuple) or len(access) != 2:
+            return None
+        path, action = access
+        path_norm = str(path or "").replace("\\", "/").rstrip("/")
+        action_norm = str(action or "").strip().lower()
+        if not path_norm or action_norm not in {"read", "write", "exec"}:
+            return None
+        item = (path_norm, action_norm)
+        if item not in seen:
+            seen.add(item)
+            normalized.append(item)
+    return tuple(normalized)
 
 
 def persist_external_directory_allow(
@@ -170,18 +276,23 @@ def persist_external_directory_allow(
     if not paths:
         return
 
-    data, yaml_path = _load_config_yaml_round_trip()
-    permissions = _ensure_permissions_dict(data)
+    from jiuwenswarm.common.config import update_config
+
     access_list: list[tuple[str, str]] = []
     for i, path_str in enumerate(paths):
         act = "read"
         if actions is not None and i < len(actions) and actions[i]:
             act = str(actions[i])
         access_list.append((path_str, act))
-    merged, wrote = merge_file_guard_access_allows(permissions, access_list)
-    if wrote:
+
+    def _mutate(data):
+        merged, wrote = merge_file_guard_access_allows(_ensure_permissions_dict(data), access_list)
+        if not wrote:
+            return None
         data["permissions"] = merged
-        _dump_config_yaml_round_trip(yaml_path, data)
+        return data
+
+    update_config(_mutate)
 
 
 def persist_cli_trusted_directory(raw_path: str) -> dict[str, Any]:
@@ -201,12 +312,15 @@ def persist_cli_trusted_directory(raw_path: str) -> dict[str, Any]:
     if not dir_norm:
         return {"ok": False, "error": "path resolves to empty"}
 
-    data, yaml_path = _load_config_yaml_round_trip()
-    permissions = _ensure_permissions_dict(data)
-    _merge_file_guard_path_into_permissions(
-        permissions, dir_norm, read="allow", write="allow", exec_="ask",
-    )
-    _dump_config_yaml_round_trip(yaml_path, data)
+    from jiuwenswarm.common.config import update_config
+
+    def _mutate(data):
+        _merge_file_guard_path_into_permissions(
+            _ensure_permissions_dict(data), dir_norm, read="allow", write="allow", exec_="ask",
+        )
+        return data
+
+    update_config(_mutate)
     logger.info(
         "[PermissionPersist] cli_add_dir.file_guard path=%s read=allow write=allow exec=ask",
         dir_norm,
@@ -237,35 +351,43 @@ def persist_cli_trusted_directory_with_overrides(raw_path: str) -> dict[str, Any
     if not dir_norm:
         return {"ok": False, "error": "path resolves to empty"}
 
-    data, yaml_path = _load_config_yaml_round_trip()
-    permissions = _ensure_permissions_dict(data)
-    _merge_file_guard_path_into_permissions(
-        permissions, dir_norm, read="allow", write="allow", exec_="ask",
-    )
+    from jiuwenswarm.common.config import update_config
 
-    shell_pattern = "re:" + rf".*{re.escape(dir_norm)}.*"
-    schema_key = str(permissions.get("schema") or permissions.get("version") or "").strip().lower()
-    tiered = schema_key in {"tiered_policy", "v_cc", "v4.2", ""}
+    tiered = False
+    shell_pattern = ""
 
-    suffix = hashlib.sha256(dir_norm.encode("utf-8")).hexdigest()[:16]
-    shell_override_id = f"cli_trusted_shell_{suffix}"
-
-    if tiered:
-        overrides = _ensure_approval_overrides_list(permissions)
-        # 写回 list（_ensure 可能过滤）
-        permissions["approval_overrides"] = overrides
-        shell_tools = sorted({"bash", "mcp_exec_command", "create_terminal"})
-        _append_override_if_missing(
-            overrides,
-            oid=shell_override_id,
-            tools=shell_tools,
-            match_type="command",
-            pattern=shell_pattern,
-            action="allow",
-            source="cli_add_dir",
+    def _mutate(data):
+        nonlocal tiered, shell_pattern
+        permissions = _ensure_permissions_dict(data)
+        _merge_file_guard_path_into_permissions(
+            permissions, dir_norm, read="allow", write="allow", exec_="ask",
         )
 
-    _dump_config_yaml_round_trip(yaml_path, data)
+        shell_pattern = "re:" + rf".*{re.escape(dir_norm)}.*"
+        schema_key = str(permissions.get("schema") or permissions.get("version") or "").strip().lower()
+        tiered = schema_key in {"tiered_policy", "v_cc", "v4.2", ""}
+
+        suffix = hashlib.sha256(dir_norm.encode("utf-8")).hexdigest()[:16]
+        shell_override_id = f"cli_trusted_shell_{suffix}"
+
+        if tiered:
+            overrides = _ensure_approval_overrides_list(permissions)
+            # 写回 list（_ensure 可能过滤）
+            permissions["approval_overrides"] = overrides
+            shell_tools = sorted({"bash", "mcp_exec_command", "create_terminal"})
+            _append_override_if_missing(
+                overrides,
+                oid=shell_override_id,
+                tools=shell_tools,
+                match_type="command",
+                pattern=shell_pattern,
+                action="allow",
+                source="cli_add_dir",
+            )
+
+        return data
+
+    update_config(_mutate)
     return {
         "ok": True,
         "normalized": dir_norm,
@@ -280,5 +402,6 @@ __all__ = [
     "persist_cli_trusted_directory",
     "persist_cli_trusted_directory_with_overrides",
     "persist_external_directory_allow",
+    "persist_exact_permission_allow_rule",
     "persist_permission_allow_rule",
 ]

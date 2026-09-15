@@ -294,12 +294,15 @@ class TestCreateOrRestoreProject:
         proj.hidden = True
         save_project(proj)
 
-        restored_proj, restored = create_or_restore_project("新名", "E:\\p")
-        assert restored is True
-        assert restored_proj.project_id == proj.project_id
-        assert restored_proj.name == "新名"
-        assert restored_proj.hidden is False
-        assert get_project_by_id(proj.project_id, cache_bust=True).name == "新名"
+        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+        with pytest.raises(LifecycleError) as exc:
+            create_or_restore_project("新名", "E:\\p")
+        assert exc.value.code == "PROJECT_ARCHIVED"
+        # 错误明细携带 project_id，供前端接 project.unarchive 恢复
+        assert exc.value.details["project_id"] == proj.project_id
+        persisted = get_project_by_id(proj.project_id, cache_bust=True)
+        assert persisted.hidden is True
+        assert persisted.name == "旧名"
 
     @staticmethod
     def test_path_conflict_on_visible(project_store_dir):
@@ -343,9 +346,10 @@ class TestCreateOrRestoreProject:
         proj = create_project("P", "E:\\p")
         proj.hidden = True
         save_project(proj)
-        restored_proj, restored = create_or_restore_project("P", "E:\\p")
-        assert restored is True
-        assert restored_proj.name == "P"
+        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
+        with pytest.raises(LifecycleError) as exc:
+            create_or_restore_project("P", "E:\\p")
+        assert exc.value.code == "PROJECT_ARCHIVED"
 
     @staticmethod
     def test_name_conflict_on_restore_with_other_visible(project_store_dir):

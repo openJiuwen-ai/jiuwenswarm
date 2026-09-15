@@ -26,7 +26,15 @@ endif
 # Target that is not a file -> always considered out of date.
 .PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
-		init start-debug start-debug-rebuild restart-debug stop
+		init start-debug start-debug-rebuild restart-debug stop \
+		genai-semconv check-genai-semconv
+
+# The generator updates this repository's TypeScript constants and the sibling
+# agent-core checkout's Python constants in one pass. Override either variable
+# when the repositories are checked out in a different layout or when bumping
+# the pinned upstream revision.
+AGENT_CORE_DIR ?= ../agent-core
+GENAI_SEMCONV_REVISION ?=
 
 # ----------------------------------------------------------------------
 # Setup
@@ -60,6 +68,21 @@ update-openjiuwen: ## Pin openjiuwen to the latest commit on the develop branch
 	$(UV) sync
 	@printf "$(C_OK)openjiuwen now pinned to:$(C_RESET)\n"
 	@awk '/^name = "openjiuwen"/{f=1} f && /^source = /{sub(/.*#/,""); sub(/".*/,""); print "  commit " $$0; f=0}' uv.lock
+
+# ----------------------------------------------------------------------
+# OpenTelemetry GenAI semantic conventions
+# ----------------------------------------------------------------------
+
+genai-semconv: ## Regenerate Python and TypeScript GenAI semantic constants
+	$(PY) scripts/genai_semconv/generate.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
+		--revision "$(GENAI_SEMCONV_REVISION)"
+
+check-genai-semconv: ## Check generated GenAI constants without modifying files
+	$(PY) scripts/genai_semconv/generate.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
+		--revision "$(GENAI_SEMCONV_REVISION)" \
+		--check
 
 # ----------------------------------------------------------------------
 # Run — workspace init & launching services

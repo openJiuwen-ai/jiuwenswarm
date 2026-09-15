@@ -38,6 +38,114 @@ class FakeWebSocket:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "channel_id",
+    [
+        "web",
+        "tui",
+        "feishu",
+        "feishu_enterprise:tenant-a",
+        "xiaoyi",
+        "wecom",
+        "dingtalk",
+        "telegram",
+        "discord",
+        "slack",
+        "whatsapp",
+        "wechat",
+    ],
+)
+@pytest.mark.parametrize(
+    ("mode", "work_mode"),
+    [("agent.work.normal", "work"), ("agent.code.normal", "code")],
+)
+async def test_single_agent_stream_skips_transport_task_registry_for_every_channel(
+    channel_id: str,
+    mode: str,
+    work_mode: str,
+) -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"content": "done"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id=f"{channel_id}-request",
+        channel_id=channel_id,
+        session_id=f"{channel_id.replace(':', '-')}-session",
+        req_method=ReqMethod.CHAT_SEND,
+        params={"mode": mode, "work_mode": work_mode},
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
+async def test_single_agent_goal_stream_skips_transport_task_registry() -> None:
+    manager = object()
+    runtime = AgentRuntime(
+        agent_manager=manager,
+        initializer=AsyncMock(),
+        plan_controller=AsyncMock(),
+    )
+
+    async def stream(request, **_kwargs):
+        yield RuntimeEvent(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            session_id=request.session_id,
+            payload={"event_type": "goal.snapshot"},
+            is_complete=True,
+        )
+
+    runtime.stream = stream  # type: ignore[method-assign]
+    server = agent_ws_server.AgentWebSocketServer.__new__(
+        agent_ws_server.AgentWebSocketServer
+    )
+    server._agent_manager = manager
+    server._runtime = runtime
+    server._session_stream_tasks = {}
+    request = AgentRequest(
+        request_id="goal-request",
+        channel_id="web",
+        session_id="goal-session",
+        req_method=ReqMethod.COMMAND_GOAL,
+        params={
+            "action": "set",
+            "objective": "finish the task",
+            "mode": "agent",
+            "work_mode": "work",
+        },
+        is_stream=True,
+    )
+
+    await server._handle_stream_impl(FakeWebSocket(), request, asyncio.Lock())
+
+    assert server._session_stream_tasks == {}
+
+
+@pytest.mark.asyncio
 async def test_send_wire_payload_sends_small_wire_unchanged(monkeypatch):
     monkeypatch.setattr(ws_send, "AGENT_WS_SEND_BUDGET_BYTES", 1024)
     ws = FakeWebSocket()
@@ -171,6 +279,22 @@ async def test_stream_stops_after_oversized_chunk_is_replaced(monkeypatch):
         async def get_agent(self, **kwargs):
             self.events.append("get")
             return self.agent
+
+        async def get_agent_for_request(
+            self,
+            request,
+            *,
+            mode=None,
+            sub_mode=None,
+            admit_request=None,
+        ):
+            project_dir = admit_request() if callable(admit_request) else None
+            return await self.get_agent(
+                channel_id=request.channel_id,
+                mode=mode,
+                project_dir=project_dir,
+                sub_mode=sub_mode,
+            )
 
         async def begin_foreground_chat(self):
             self.events.append("begin")

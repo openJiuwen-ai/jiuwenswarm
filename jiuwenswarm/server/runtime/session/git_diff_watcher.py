@@ -902,7 +902,7 @@ class GitDiffWatcherRegistry:
             await self._compute_and_push_remote(project_id, watches)
             return
         # cache_bust=False:轮询周期 2 秒,强制读盘代价高;同进程内 hide/remove
-        # 项目会经 store 写路径刷新缓存,且 project.remove 会调 cleanup_project
+        # 项目会经 store 写路径刷新缓存,且 project.archive 会调 cleanup_project
         from jiuwenswarm.server.runtime.session import project_store
         proj = project_store.get_project_by_id(project_id)
         if proj is None or proj.hidden:
@@ -1266,6 +1266,7 @@ class GitDiffWatcherRegistry:
                 "branch": repo.get("branch"),
                 "head": repo.get("head"),
                 "transient": repo.get("transient", False),
+                "repo_is_parent_of_project": repo.get("repo_is_parent_of_project", False),
             },
             "current": self._summary_entry(current) if current else None,
             "last_turn": self._turn_summary_entry(last_turn) if last_turn else None,

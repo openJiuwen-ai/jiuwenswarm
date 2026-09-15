@@ -1,0 +1,52 @@
+id: VER-20260908-002-agentserver-single-agent-runtime
+applies_to:
+  source_revision: fa2ab25a4+working-tree
+  modules: [runtime-session, agentserver-runtime, gateway]
+  flows: [runtime-session-reference-chain, agentserver-session-lifecycle]
+  symbols:
+    - AgentRuntime.uses_session_runtime
+    - AgentRuntime.register_session
+    - RuntimeSessionCoordinator.deliver_control
+    - JiuWenSwarm.deliver_control_input
+    - AgentWebSocketServer._handle_stream_impl
+    - AgentWebSocketServer._handle_message
+  paths:
+    - jiuwenswarm/runtime/service.py
+    - jiuwenswarm/server/agent_ws_server.py
+    - tests/unit_tests/runtime
+    - tests/unit_tests/agentserver/test_ws_send.py
+    - tests/unit_tests/agentserver/test_agentserver_acp.py
+    - tests/system_tests/test_process_cli_session_runtime_live.py
+evidence:
+  level: live_provider
+  scenario: all-user-channel-single-agent-runtime-and-two-turn-model-resume
+  environment: Windows, project .venv Python, configured OpenAI-compatible model
+  command: >-
+    RUN_LIVE_SESSION_RUNTIME_TESTS=1 uv run pytest -q -o addopts=
+    tests/system_tests/test_process_cli_session_runtime_live.py
+  repetitions: 1
+  successes: 2
+  warnings: 3
+result: passed
+status: active
+recorded_at: 2026-09-08T09:11:47Z
+supersedes: [VER-20260908-001-process-cli-managed-only]
+notes: >-
+  Both Work and Code completed two configured-model turns with stable Session IDs,
+  terminal output, durable history growth, and terminal Registry executions. The
+  Runtime and affected AgentServer/Gateway control-path suite passed 513/513
+  after rebasing onto upstream fa2ab25a4,
+  including an exact blocked-stream interaction-answer regression. A broad
+  channel/Gateway/TUI run passed 1277 tests with one skip; its
+  remaining failures are pre-existing Windows/frontend portability groups outside
+  Session execution ownership. A current-selector browser run also completed a
+  real Web Work-Normal turn and rendered the non-empty terminal response. The Web
+  frontend builds and the TUI builds and passes its test suite. Full-repository
+  pytest cannot be accepted as green on this Windows host: subprocess output uses
+  mixed UTF-8/local encodings and corrupts pytest capture, while the no-capture run
+  executes 8377 items but exposes 39 baseline/platform failures and 4 errors.
+  External IM transports were covered by the deterministic channel matrix; live
+  message round trips were not sent because no test recipients were in scope and
+  the configured transports are disabled.
+evidence_paths:
+  - C:/Users/Administrator/AppData/Local/Temp/jiuwenswarm-e2e-single-agent-0635053dbd744fa5b6374eae7a13f1f7/report.md

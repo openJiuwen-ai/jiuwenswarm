@@ -23,7 +23,7 @@ class TrajectoryGatewayHintBridge:
 
     The trajectory SQLite writer and browser WebSocket channel live in
     different processes. The process-local update broker therefore cannot
-    wake the Gateway. This bridge carries only revision watermarks over the
+    wake the Gateway. This bridge carries only watermarks over the
     existing AgentServer push connection; SQLite remains the source of truth.
     """
 
@@ -72,7 +72,7 @@ class TrajectoryGatewayHintBridge:
                     continue
                 key = (session_id, trace_id)
                 current = self._pending.get(key)
-                if current is None or update.revision >= current.revision:
+                if current is None or _watermarks(update) >= _watermarks(current):
                     self._pending[key] = update
             if not self._pending:
                 return
@@ -124,14 +124,24 @@ class TrajectoryGatewayHintBridge:
         key = (update.session_id, update.trace_id)
         with self._lock:
             current = self._pending.get(key)
-            if current is None or update.revision >= current.revision:
+            if current is None or _watermarks(update) >= _watermarks(current):
                 self._pending[key] = update
+
+
+def _watermarks(update: CommittedTraceUpdate) -> tuple[int, int]:
+    """Order two hints for the same trace by both of their watermarks.
+
+    Records and frames advance independently, so a hint carrying new frames
+    for an unchanged record must not lose to the hint it arrives beside.
+    """
+    return (update.revision, update.frame_seq)
 
 
 def _push_message(update: CommittedTraceUpdate) -> dict[str, Any]:
     return {
         "request_id": (
-            f"trajectory:{update.session_id}:{update.trace_id}:{update.revision}"
+            f"trajectory:{update.session_id}:{update.trace_id}"
+            f":{update.revision}:{update.frame_seq}"
         ),
         "channel_id": "web",
         "session_id": update.session_id,
@@ -140,6 +150,7 @@ def _push_message(update: CommittedTraceUpdate) -> dict[str, Any]:
             "session_id": update.session_id,
             "trace_id": update.trace_id,
             "revision": update.revision,
+            "frame_seq": update.frame_seq,
             "store_epoch": update.store_epoch,
             "lifecycle": update.lifecycle,
         },

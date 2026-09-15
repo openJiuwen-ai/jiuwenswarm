@@ -27,6 +27,7 @@ import asyncio
 import logging
 from typing import Final
 
+from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.gateway_adapter.base import (
@@ -122,6 +123,13 @@ class SessionAdapter(GatewayAdapter):
 
     async def handle(self, request: AgentRequest) -> AgentResponse:
         method = request.req_method
+        if method not in {ReqMethod.SESSION_LIST, ReqMethod.SESSION_DELETE}:
+            from jiuwenswarm.server.runtime.session.lifecycle import guard, LifecycleError
+            params = request.params if isinstance(request.params, dict) else {}
+            try:
+                guard(str(params.get("session_id") or request.session_id or ""))
+            except LifecycleError as exc:
+                return build_error_response(request, str(exc), code=exc.code)
         if method == ReqMethod.SESSION_GET_METADATA:
             return await self._handle_get_metadata(request)
         if method == ReqMethod.SESSION_PIN:
@@ -402,10 +410,10 @@ class SessionAdapter(GatewayAdapter):
     async def _handle_delete(self, request: AgentRequest) -> AgentResponse:
         """session.delete 文件级删除（单用户共享目录 legacy fallback 语义）。
 
-        Web/TUI 手写 ``_delete_from_shared_dir`` 收敛到本适配器，使单用户模式
-        AgentServer 不可达时由薄代理跑同一中立门面。与迁移前手写行为一致：
-        team session 拒绝（需 AgentServer runtime）、目录不存在返回
-        NOT_FOUND、删除前 evict KV cache、``shutil.rmtree`` 目录。
+        仅在 AgentServer 不可达时由 e2a_proxy 薄代理调用（见 ``methods`` 注释）；
+        在线删除走 AgentServer 的完整生命周期（运行时停止、trajectory、KVC、
+        plan/binding 善后）。相比迁移前手写路径，这里补上归档区解析：
+        归档会话离线时同样可删，两区同 ID 返回 SESSION_ID_CONFLICT。
         """
         import shutil
 
@@ -414,6 +422,10 @@ class SessionAdapter(GatewayAdapter):
         # 与模块级同名导入产生 redefined-outer-name 告警。
         from jiuwenswarm.common.utils import (
             get_agent_sessions_dir as _get_agent_sessions_dir,
+        )
+        from jiuwenswarm.server.runtime.session.lifecycle import (
+            LifecycleError as _LifecycleError,
+            session_paths as _session_paths,
         )
         from jiuwenswarm.server.runtime.session.session_history import (
             resolve_session_dir as _resolve_session_dir,
@@ -430,7 +442,10 @@ class SessionAdapter(GatewayAdapter):
             )
         try:
             metadata = _get_session_metadata(target)
-            if str(metadata.get("mode") or "").strip().lower() == "team":
+            # metadata 落盘的是 canonical（agent_ws_server 写 mode=canonical_mode），
+            # Web 改发三段命名后 canonical 为 team.work.normal 等，裸 == "team" 会
+            # 漏判使 team 会话删除守卫被绕过，用 is_team_mode 覆盖全部 team 变体。
+            if is_team_mode(metadata.get("mode")):
                 return build_error_response(
                     request,
                     "team session delete requires agent server",
@@ -445,6 +460,11 @@ class SessionAdapter(GatewayAdapter):
                     invalid_reason or "invalid session_id",
                     code="BAD_REQUEST",
                 )
+            # 两区解析：归档区优先于活跃区（在线删除生命周期同序），
+            # 两区同 ID 视为冲突，禁止任选其一删除。
+            _, archived_dir = _session_paths(target)
+            if archived_dir.exists():
+                session_dir = archived_dir
             if not session_dir.exists():
                 return build_error_response(
                     request, "session not found", code="NOT_FOUND"
@@ -453,25 +473,14 @@ class SessionAdapter(GatewayAdapter):
                 return build_error_response(
                     request, "session is not a directory", code="BAD_REQUEST"
                 )
-            from openjiuwen.core.session.agent import create_agent_session
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-                get_kv_cache_runtime,
+            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
+                release_session_kvc,
             )
 
-            try:
-                session = create_agent_session(
-                    session_id=target,
-                    kv_cache_runtime=get_kv_cache_runtime(),
-                )
-                await session.release_kvc()
-            except Exception as exc:  # noqa: BLE001 - preserve deletion behavior
-                logger.warning(
-                    "[SessionAdapter] session.delete KV cache evict failed: "
-                    "session_id=%s error=%s",
-                    target,
-                    exc,
-                )
+            await release_session_kvc(session_id=target)
             await asyncio.to_thread(shutil.rmtree, session_dir)
+        except _LifecycleError as exc:
+            return build_error_response(request, str(exc), code=exc.code)
         except Exception as exc:  # noqa: BLE001
             logger.warning("[SessionAdapter] session.delete failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")

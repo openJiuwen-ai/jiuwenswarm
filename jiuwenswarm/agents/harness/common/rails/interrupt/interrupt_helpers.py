@@ -5,6 +5,7 @@
 Provides utilities for converting interrupt payloads to frontend format
 and building permission rails.
 """
+
 from __future__ import annotations
 
 import copy
@@ -12,6 +13,9 @@ import json
 import re
 from pathlib import Path
 from typing import Any, Mapping
+
+from collections.abc import Callable
+from copy import deepcopy
 
 from jiuwenswarm.agents.harness.code.prompt.plan_approval import (
     build_plan_approval_actions,
@@ -28,25 +32,64 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.permission_options import
     REJECT,
     SESSION_ALLOW,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import (
+    ToolInvocationKeyV1,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionCard,
+    RootPermissionQueue,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
+    install_permission_file_semantics,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
+    redact_secret_values,
+    sanitize_permission_ui_payload,
+)
 from jiuwenswarm.common.utils import logger
 
 SKILL_EVOLUTION_APPROVAL_SCHEMA = "openjiuwen.skill_evolution_approval.v1"
 EVOLUTION_INTERRUPT_SOURCE = "evolution_interrupt"
 LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE = "skill_evolution_approval"
-INTERRUPT_RESUME_SOURCES = frozenset({
-    "permission_interrupt",
-    "confirm_interrupt",
-    "ask_user_interrupt",
-    EVOLUTION_INTERRUPT_SOURCE,
-})
-EVOLUTION_INTERRUPT_METADATA_SOURCES = frozenset({
-    EVOLUTION_INTERRUPT_SOURCE,
-    LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE,
-})
+INTERRUPT_RESUME_SOURCES = frozenset(
+    {
+        "permission_interrupt",
+        "confirm_interrupt",
+        "ask_user_interrupt",
+        EVOLUTION_INTERRUPT_SOURCE,
+    }
+)
+EVOLUTION_INTERRUPT_METADATA_SOURCES = frozenset(
+    {
+        EVOLUTION_INTERRUPT_SOURCE,
+        LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE,
+    }
+)
 SKILL_EVOLUTION_APPROVAL_TOOL_KINDS = {
     "evolve_skill_experiences": "evolve",
     "simplify_skill_experiences": "simplify",
 }
+
+_AUTO_REVIEWER_UI_METADATA_KEYS = (
+    "action_summary",
+    "contract_gate_missing_evidence",
+    "decision_source",
+    "evidence_summary",
+    "fallback_reason",
+    "final_reviewer_status",
+    "manual_reason_code",
+    "manual_reason_summary",
+    "remaining_forbidden_actions",
+    "reviewer_status",
+    "risk_level",
+    "user_authorization",
+    "user_review_hint",
+)
+_AUTO_REVIEWER_UI_LIST_METADATA_KEYS = frozenset(
+    {"contract_gate_missing_evidence", "remaining_forbidden_actions"}
+)
+_AUTO_REVIEWER_UI_MAX_LIST_ITEMS = 8
+_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH = 512
 
 
 def resolve_permission_workspace_dir(session_id: str | None = None) -> Path:
@@ -127,6 +170,16 @@ def build_permission_rail(
     llm: Any = None,
     model_name: str | None = None,
     session_id: str | None = None,
+
+    *,
+    enable_auto_permission: bool = False,
+    installed_permissions: dict[str, Any] | None = None,
+    workspace_root: Any = None,
+    platform_trusted_root: Any = None,
+    sys_operation: Any = None,
+    permissions_changed_notifier: Callable[[], None] | None = None,
+    browser_runtime_security_profile: Any = None,
+    trusted_search_urls: Any = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -135,6 +188,7 @@ def build_permission_rail(
         llm: LLM instance for risk assessment
         model_name: Model name for risk assessment
         session_id: Host identity for User/Session compose and persist
+        installed_permissions: Complete installed snapshot for explicit auto mode
 
     Returns:
         PermissionInterruptRail instance or None if disabled
@@ -150,6 +204,9 @@ def build_permission_rail(
     from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import (
         compose_host_effective_permissions,
     )
+    from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+        JiuwenSwarmPermissionInterruptRail,
+    )
     from jiuwenswarm.agents.harness.common.rails.permissions.permissions_layers import (
         load_session_permissions,
         load_user_permissions,
@@ -160,6 +217,10 @@ def build_permission_rail(
         SKILLS_REBUILD_SILENT,
         TOOL_PERMISSION_CHANNEL_ID,
     )
+    from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+        is_auto_permission_enabled,
+        normalize_permissions_for_runtime,
+    )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
@@ -167,6 +228,15 @@ def build_permission_rail(
     inline_permissions = config.get("permissions", {})
     if not isinstance(inline_permissions, dict):
         inline_permissions = {}
+    if installed_permissions is not None:
+        if not isinstance(installed_permissions, dict):
+            raise TypeError("installed_permissions_must_be_dict")
+        if not enable_auto_permission:
+            raise ValueError("installed_permissions_requires_auto_permission")
+        if not is_auto_permission_enabled(installed_permissions):
+            raise ValueError("installed_permissions_requires_enabled_auto_mode")
+    if enable_auto_permission and not is_auto_permission_enabled(inline_permissions):
+        raise ValueError("auto_permission_activation_requires_enabled_auto_mode")
     logger.info(
         "[InterruptHelpers] build_permission_rail called: enabled=%s session_id=%s",
         inline_permissions.get("enabled", False),
@@ -178,12 +248,18 @@ def build_permission_rail(
         return None
 
     bound_session_id = str(session_id).strip() if session_id else None
-    permission_config = compose_host_effective_permissions(
-        global_permissions=inline_permissions,
-        user_permissions=load_user_permissions(),
-        session_permissions=load_session_permissions(bound_session_id),
-        session_id=bound_session_id,
+    permission_config = (
+        normalize_permissions_for_runtime(deepcopy(installed_permissions))
+        if installed_permissions is not None
+        else compose_host_effective_permissions(
+            global_permissions=inline_permissions,
+            user_permissions=load_user_permissions(),
+            session_permissions=load_session_permissions(bound_session_id),
+            session_id=bound_session_id,
+        )
     )
+    if enable_auto_permission:
+        install_permission_file_semantics()
 
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；
@@ -219,7 +295,9 @@ def build_permission_rail(
     )
     logger.info(
         "[InterruptHelpers] Building PermissionInterruptRail with tool_names=%s llm=%s model_name=%s",
-        tool_names, llm is not None, model_name,
+        tool_names,
+        llm is not None,
+        model_name,
     )
     try:
         def _effective_session_id(session_id: str | None = None) -> str | None:
@@ -289,12 +367,18 @@ def build_permission_rail(
             if not session_id:
                 return None
 
-            from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_acp_output_manager
+            from jiuwenswarm.agents.harness.common.tools.acp_output_tools import (
+                get_acp_output_manager,
+            )
 
             tool_call = req.tool_call
             tool_name = getattr(tool_call, "name", "") if tool_call is not None else ""
-            tool_args_raw = getattr(tool_call, "arguments", None) if tool_call is not None else None
-            tool_call_id = str(getattr(tool_call, "id", "") or f"permission_{tool_name or 'tool'}").strip()
+            tool_args_raw = (
+                getattr(tool_call, "arguments", None) if tool_call is not None else None
+            )
+            tool_call_id = str(
+                getattr(tool_call, "id", "") or f"permission_{tool_name or 'tool'}"
+            ).strip()
             descriptor = build_acp_tool_descriptor(
                 tool_name,
                 tool_args_raw,
@@ -312,9 +396,21 @@ def build_permission_rail(
                     "title": title,
                 },
                 "options": [
-                    {"optionId": "allow-once", "name": "Allow once", "kind": "allow_once"},
-                    {"optionId": "allow-always", "name": "Always allow", "kind": "allow_always"},
-                    {"optionId": "reject-once", "name": "Reject", "kind": "reject_once"},
+                    {
+                        "optionId": "allow-once",
+                        "name": "Allow once",
+                        "kind": "allow_once",
+                    },
+                    {
+                        "optionId": "allow-always",
+                        "name": "Always allow",
+                        "kind": "allow_always",
+                    },
+                    {
+                        "optionId": "reject-once",
+                        "name": "Reject",
+                        "kind": "reject_once",
+                    },
                 ],
             }
 
@@ -325,29 +421,45 @@ def build_permission_rail(
                     session_id=session_id,
                 )
             except Exception as exc:
-                logger.warning("[InterruptHelpers] ACP permission request failed: %s", exc)
+                logger.warning(
+                    "[InterruptHelpers] ACP permission request failed: %s", exc
+                )
                 return None
 
             if not isinstance(response, dict):
                 return None
             if isinstance(response.get("error"), dict):
-                message = str(response["error"].get("message") or "Permission request failed")
+                message = str(
+                    response["error"].get("message") or "Permission request failed"
+                )
                 return PermissionConfirmResponse(
                     approved=False,
                     auto_confirm=False,
                     feedback=f"[PERMISSION_DENIED] {message}",
                 )
 
-            result_payload = response.get("result") if isinstance(response.get("result"), dict) else {}
-            outcome = result_payload.get("outcome") if isinstance(result_payload.get("outcome"), dict) else {}
+            result_payload = (
+                response.get("result")
+                if isinstance(response.get("result"), dict)
+                else {}
+            )
+            outcome = (
+                result_payload.get("outcome")
+                if isinstance(result_payload.get("outcome"), dict)
+                else {}
+            )
             outcome_kind = str(outcome.get("outcome") or "").strip().lower()
             option_id = str(outcome.get("optionId") or "").strip().lower()
 
             if outcome_kind == "selected":
                 if option_id == "allow-once":
-                    return PermissionConfirmResponse(approved=True, auto_confirm=False, feedback="")
+                    return PermissionConfirmResponse(
+                        approved=True, auto_confirm=False, feedback=""
+                    )
                 if option_id == "allow-always":
-                    return PermissionConfirmResponse(approved=True, auto_confirm=True, feedback="")
+                    return PermissionConfirmResponse(
+                        approved=True, auto_confirm=True, feedback=""
+                    )
                 return PermissionConfirmResponse(
                     approved=False,
                     auto_confirm=False,
@@ -380,14 +492,11 @@ def build_permission_rail(
 
             perm_ctx = TOOL_PERMISSION_CONTEXT.get()
 
-            # issue #1976: ask_user has its own dedicated interrupt rail. The
-            # permission rail intercepts *every* tool, so on resume it grabs the
-            # ask_user answer (keyed by tool_call_id) as its own user_input,
-            # fails to parse it as a ConfirmPayload, and re-raises a permission
-            # interrupt that swallows the answer — the option card then re-pops
-            # forever. Bypass the permission rail for ask_user so the ask_user
-            # rail's answer reaches the model. The digital-avatar scene below
-            # intentionally blocks interactive tools, so exclude it here.
+            # ask_user is an interactive control action owned by its dedicated
+            # rail, not a Permission decision. Non-Permission continuation
+            # routing is handled separately at the Host callback boundary; this
+            # branch only preserves the initial-call ownership contract. The
+            # digital-avatar scene below intentionally blocks interactive tools.
             if inp.normalized_tool_name == "ask_user" and (
                 perm_ctx is None
                 or getattr(perm_ctx, "scene", None) != "group_digital_avatar"
@@ -405,19 +514,30 @@ def build_permission_rail(
                     inp.tool_args,
                     channel_id=str(getattr(perm_ctx, "channel_id", "") or ""),
                     session_id=None,
+                    **({
+                        "permission_config": _get_installed_permissions(),
+                        "use_installed_permissions": True,
+                        "installed_engine": getattr(inp, "engine", None),
+                    } if enable_auto_permission else {}),
                 )
                 if level == "allow":
                     return ("approve",)
-                return ("reject", "[PERMISSION_DENIED] 该工具未被授权在数字分身场景下使用")
+                return (
+                    "reject",
+                    "[PERMISSION_DENIED] 该工具未被授权在数字分身场景下使用",
+                )
 
-            principal_user_id = str(getattr(perm_ctx, "principal_user_id", "") or "").strip()
+            principal_user_id = str(
+                getattr(perm_ctx, "principal_user_id", "") or ""
+            ).strip()
             channel_id = str(getattr(perm_ctx, "channel_id", "") or "").strip()
             if not principal_user_id or not channel_id:
                 return None
 
-            perm_cfg = get_config()
-            perm_all = perm_cfg.get("permissions") if isinstance(perm_cfg, dict) else {}
-            owner_scopes = perm_all.get("owner_scopes") if isinstance(perm_all, dict) else None
+            perm_all = _permission_scene_config()
+            owner_scopes = (
+                perm_all.get("owner_scopes") if isinstance(perm_all, dict) else None
+            )
             if not isinstance(owner_scopes, dict) or not owner_scopes:
                 return None
 
@@ -429,57 +549,174 @@ def build_permission_rail(
                 return None
             if owner_level == "allow":
                 return ("approve",)
-            return ("reject", f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})")
+            return (
+                "reject",
+                f"[PERMISSION_DENIED] 该工具未被授权 (owner_scopes: {owner_level})",
+            )
 
-        def _get_permissions_snapshot(session_id: str | None = None):
-            # skills.rebuild 静默路径：返回 full_access，避免 ASK 中断。
+        installed_permission_rail: Any | None = None
+
+        def _get_installed_permissions(session_id: str | None = None) -> dict[str, Any]:
+            """Expose only the policy committed by the session adapter.
+
+            Disk persistence and runtime installation are deliberately separate:
+            config writes schedule a lazy reload, while a tool callback must keep
+            using the policy epoch installed for its current logical turn.
+            """
+
+            # skills.rebuild is an internal, control-silent follow-up with no UI
+            # approval surface. Preserve develop's full-access override while
+            # keeping ordinary calls pinned to the adapter-installed policy epoch.
             if SKILLS_REBUILD_SILENT.get():
                 return {
                     "enabled": True,
                     "defaults": {"*": "allow"},
                     "file_guard": {"enabled": False},
                 }
-            sid = _effective_session_id(session_id)
-            return compose_host_effective_permissions(
+            if not enable_auto_permission:
+                sid = _effective_session_id(session_id)
+                return compose_host_effective_permissions(
                     global_permissions=inline_permissions,
                     user_permissions=load_user_permissions(),
                     session_permissions=load_session_permissions(sid),
                     session_id=sid,
+                )
+            rail = installed_permission_rail
+            getter = getattr(rail, "installed_permission_config", None)
+            if callable(getter):
+                installed = getter()
+                return installed if isinstance(installed, dict) else {}
+            return deepcopy(permission_config)
+
+        def _permission_scene_config() -> dict[str, Any]:
+            if enable_auto_permission:
+                return _get_installed_permissions()
+            current_config = get_config()
+            return current_config.get("permissions", {}) if isinstance(current_config, dict) else {}
+
+        def _persist_exact_allow_rule(
+            normalized_name: str,
+            tool_args: dict[str, Any],
+            ask_accesses: tuple[tuple[str, str], ...],
+        ) -> bool:
+            from jiuwenswarm.agents.harness.common.rails.permissions.permissions_persist import (
+                persist_exact_permission_allow_rule,
             )
 
+            persisted = persist_exact_permission_allow_rule(
+                normalized_name,
+                tool_args,
+                ask_accesses,
+                session_id=bound_session_id,
+                workspace_root=effective_workspace_root,
+            )
+            if persisted and permissions_changed_notifier is not None:
+                try:
+                    permissions_changed_notifier()
+                except Exception:
+                    logger.exception(
+                        "[InterruptHelpers] permissions reload notification failed"
+                    )
+            return persisted
+
+        effective_workspace_root = (
+            workspace_root if enable_auto_permission and workspace_root is not None
+            else resolve_permission_workspace_dir(bound_session_id)
+        )
         host = ToolPermissionHost(
-            get_permissions_snapshot=_get_permissions_snapshot,
+            get_permissions_snapshot=_get_installed_permissions,
             persist_allow_rule=_persist_allow_rule,
             persist_session_allow_rule=_persist_session_allow_rule,
-            resolve_workspace_dir=lambda: resolve_permission_workspace_dir(
-                bound_session_id
-            ),
+            resolve_workspace_dir=lambda: effective_workspace_root,
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,
         )
 
-        permission_rail = build_permission_interrupt_rail(
-            permissions=permission_config,
-            llm=llm,
-            model_name=model_name,
-            host=host,
-        )
-        if permission_rail is None:
-            logger.info(
-                "[InterruptHelpers] build_permission_interrupt_rail returned None tool_names=%s",
-                tool_names,
+        if enable_auto_permission:
+            permission_rail = JiuwenSwarmPermissionInterruptRail(
+                config=permission_config,
+                tool_names=tool_names,
+                llm=llm,
+                model_name=model_name,
+                host=host,
+                exact_persist_callback=_persist_exact_allow_rule,
             )
         else:
-            logger.info(
-                "[InterruptHelpers] PermissionInterruptRail created successfully with tool_names=%s",
-                tool_names,
+            permission_rail = build_permission_interrupt_rail(
+                permissions=permission_config,
+                llm=llm,
+                model_name=model_name,
+                host=host,
             )
-    except Exception as exc:
-        logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
-        permission_rail = None
-    return permission_rail
+        if enable_auto_permission:
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+                normalize_auto_permission_options,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import (
+                AutoPermissionInterruptRail,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.auto_reviewer import (
+                AutoReviewer,
+                IsolatedModelReviewerClient,
+                build_isolated_reviewer_model,
+            )
+            from jiuwenswarm.agents.harness.common.rails.permissions.persistent_audit import (
+                PersistentAuditWriter,
+                resolve_persistent_audit_root,
+            )
 
+            auto_options = normalize_auto_permission_options(
+                permission_config.get("auto")
+            )
+            auto_reviewer = None
+            if llm is not None:
+                reviewer_model = build_isolated_reviewer_model(llm)
+                if reviewer_model is not None:
+                    auto_reviewer = AutoReviewer(
+                        client=IsolatedModelReviewerClient(
+                            model=reviewer_model,
+                            display_language_getter=lambda: get_config().get(
+                                "preferred_language", "zh"
+                            ),
+                        ),
+                        timeout_ms=auto_options["reviewer_timeout_ms"],
+                        min_confidence=auto_options["reviewer_min_confidence"],
+                    )
+            persistent_audit_writer = None
+            if auto_options["persistent_audit_enabled"]:
+                persistent_audit_writer = PersistentAuditWriter(
+                    data_root=resolve_persistent_audit_root(permission_config)
+                )
+            permission_rail = AutoPermissionInterruptRail(
+                base_rail=permission_rail,
+                permission_config=permission_config,
+                workspace_root=effective_workspace_root,
+                platform_trusted_root=platform_trusted_root,
+                sys_operation=sys_operation,
+                auto_reviewer=auto_reviewer,
+                persistent_audit_writer=persistent_audit_writer,
+                exact_permission_persist_callback=_persist_exact_allow_rule,
+                browser_runtime_security_profile=browser_runtime_security_profile,
+                trusted_search_urls=trusted_search_urls,
+            )
+            permission_rail.set_trusted_dirs(None)
+
+        installed_permission_rail = permission_rail
+        logger.info(
+            "[InterruptHelpers] %s created successfully with tool_names=%s",
+            type(permission_rail).__name__,
+            tool_names,
+        )
+    except Exception as exc:
+        if not enable_auto_permission:
+            logger.warning("[InterruptHelpers] PermissionInterruptRail create failed: %s", exc)
+            return None
+        logger.exception(
+            "[InterruptHelpers] PermissionInterruptRail create failed: %s", exc
+        )
+        raise
+    return permission_rail
 
 
 def _read_value_field(value_obj: Any, field_name: str, default: Any = "") -> Any:
@@ -516,13 +753,19 @@ def _is_ask_user_interrupt_value(value_obj: Any) -> bool:
     # structural fallbacks below only for those identity-less payloads.
     if hasattr(value_obj, "payload_schema") and hasattr(value_obj, "questions"):
         return True
-    if isinstance(value_obj, dict) and "payload_schema" in value_obj and "questions" in value_obj:
+    if (
+        isinstance(value_obj, dict)
+        and "payload_schema" in value_obj
+        and "questions" in value_obj
+    ):
         return True
-    tool_args = _normalize_tool_args(_read_value_field(value_obj, "tool_args", None))
-    if isinstance(tool_args, dict) and str(tool_args.get("query") or "").strip():
-        if not tool_args.get("questions"):
-            return True
     return False
+
+
+def _is_explicit_ask_user_shell(value_obj: Any) -> bool:
+    return (
+        str(_read_value_field(value_obj, "tool_name", "") or "").strip() == "ask_user"
+    )
 
 
 def _build_plain_ask_user_question(value_obj: Any) -> dict | None:
@@ -564,7 +807,7 @@ _PERMISSION_INTERRUPT_MARKERS = (
     "安全风险评估",
 )
 # exit_plan_mode uses PlanApprovalInterruptRail (extends ConfirmInterruptRail)
-_CONFIRM_INTERRUPT_TOOLS = frozenset({"switch_mode", "exit_plan_mode"})  
+_CONFIRM_INTERRUPT_TOOLS = frozenset({"switch_mode", "exit_plan_mode"})
 
 
 def _read_interrupt_fields(value_obj: Any) -> tuple[str, str, dict | None]:
@@ -583,9 +826,12 @@ def _read_interrupt_fields(value_obj: Any) -> tuple[str, str, dict | None]:
 
     if isinstance(value_obj, dict):
         tool_name = tool_name or str(value_obj.get("tool_name", "") or "").strip()
-        message = message or str(
-            value_obj.get("message", "") or value_obj.get("question", "") or ""
-        ).strip()
+        message = (
+            message
+            or str(
+                value_obj.get("message", "") or value_obj.get("question", "") or ""
+            ).strip()
+        )
         if tool_args is None:
             tool_args = _normalize_tool_args(value_obj.get("tool_args"))
 
@@ -624,10 +870,14 @@ def _resolve_interrupt_source(tool_name: str, message: str) -> str:
     return "confirm_interrupt"
 
 
-def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | None:
+def convert_interactions_to_ask_user_question(
+    state_outputs: list,
+    *,
+    root_permission_queue: RootPermissionQueue | None = None,
+) -> dict | None:
     """Convert __interaction__ list to frontend chat.ask_user_question format.
 
-    AskUserRail 中断: value 有 questions 字段，或 ask_user 的 plain query
+    AskUserRail 中断: value 有 questions 字段，或明确 ask_user 的 plain query
         → source="ask_user_interrupt"
     PermissionRail 中断: value 无 questions 字段 → source="permission_interrupt"
     ConfirmInterruptRail 中断: 控制类工具确认 → source="confirm_interrupt"
@@ -642,55 +892,108 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
     interactions = list(_iter_interactions(state_outputs))
     if not interactions:
         return None
-
-    # A controller output can contain both a permission interrupt shell and the
-    # real ask_user interrupt. Prefer the structured ask_user payload; otherwise
-    # the frontend may receive an empty permission prompt and have no request_id
-    # to resume the waiting tool call.
-    for interaction in interactions:
-        request_id, value_obj = _extract_interaction_parts(interaction)
-        if not request_id:
-            continue
-
-        questions_raw = _extract_questions_from_value(value_obj)
-        if questions_raw is None:
-            continue
-
-        questions = _build_multi_questions(
-            questions_raw, _extract_ask_user_query(value_obj)
+    locator_rows = [
+        (
+            interaction,
+            *_tool_invocation_locator_from_interaction(
+                interaction,
+                _extract_interaction_parts(interaction)[1],
+                root_permission_queue=root_permission_queue,
+            ),
         )
-        return {
-            "event_type": "chat.ask_user_question",
-            "request_id": request_id,
-            "questions": questions,
-            "source": "ask_user_interrupt",
-        }
+        for interaction in interactions
+    ]
+    if any(state == "invalid" for _item, state, _record in locator_rows):
+        return None
+    live_interactions = [
+        item for item, state, _record in locator_rows if state == "live"
+    ]
+    if live_interactions:
+        absent_interactions = [
+            item for item, state, _record in locator_rows if state == "absent"
+        ]
+        if any(
+            not _is_explicit_ask_user_shell(_extract_interaction_parts(item)[1])
+            for item in absent_interactions
+        ):
+            return None
+        interactions = live_interactions
+        if len(live_interactions) != 1:
+            return None
 
-    for interaction in interactions:
-        request_id, value_obj = _extract_interaction_parts(interaction)
-        if not request_id:
-            continue
+    # Without a live permission locator, retain the existing ask_user projection.
+    # A live host-owned locator takes priority and cannot be reclassified by a
+    # query-shaped payload or a parallel ask_user shell.
+    if not live_interactions:
+        for interaction in interactions:
+            request_id, value_obj = _extract_interaction_parts(interaction)
+            if not request_id:
+                continue
 
-        plain_question = _build_plain_ask_user_question(value_obj)
-        if plain_question:
+            questions_raw = _extract_questions_from_value(value_obj)
+            if questions_raw is None:
+                continue
+
+            questions = _build_multi_questions(questions_raw, _extract_ask_user_query(value_obj))
             return {
                 "event_type": "chat.ask_user_question",
                 "request_id": request_id,
-                "questions": [plain_question],
+                "questions": questions,
                 "source": "ask_user_interrupt",
             }
+
+        for interaction in interactions:
+            request_id, value_obj = _extract_interaction_parts(interaction)
+            if not request_id:
+                continue
+
+            plain_question = _build_plain_ask_user_question(value_obj)
+            if plain_question:
+                return {
+                    "event_type": "chat.ask_user_question",
+                    "request_id": request_id,
+                    "questions": [plain_question],
+                    "source": "ask_user_interrupt",
+                }
+
+    # Only the Host-bound Smart queue owns the single-card contract. Ordinary
+    # SDK permission batches keep develop's first-question projection.
+    if root_permission_queue is not None and len(interactions) > 1 and any(
+        _is_permission_interaction(item) for item in interactions
+    ):
+        return None
 
     for interaction in interactions:
         request_id, value_obj = _extract_interaction_parts(interaction)
         if not request_id:
             continue
 
-        question_data = extract_question_from_interaction(interaction)
+        question_data = extract_question_from_interaction(
+            interaction,
+            root_permission_queue=root_permission_queue,
+        )
         if not question_data:
             continue
 
         tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
-        source = _resolve_interrupt_source(tool_name, message)
+        has_permission_locator = "card_id" in question_data
+        source = (
+            "permission_interrupt"
+            if has_permission_locator
+            else _resolve_interrupt_source(tool_name, message)
+        )
+        structured_approval = (
+            None
+            if has_permission_locator
+            else _classify_structured_approval(value_obj, question_data)
+        )
+        unbound_permission = source == "permission_interrupt" and not has_permission_locator
+        if (
+            root_permission_queue is not None
+            and unbound_permission
+            and structured_approval is None
+        ):
+            return None
 
         payload = {
             "event_type": "chat.ask_user_question",
@@ -710,19 +1013,49 @@ def convert_interactions_to_ask_user_question(state_outputs: list) -> dict | Non
             payload["plan_approval_kind"] = "plan_approval"
             # Web 用的动作说明。TUI 忽略该字段，继续使用 questions[].options 的
             # approve / reject，因此两端行为互不影响。
-            payload["plan_actions"] = build_plan_approval_actions(resolved_plan_language)
+            payload["plan_actions"] = build_plan_approval_actions(
+                resolved_plan_language
+            )
         plan_path = str(question_data.get("plan_path") or "").strip()
         plan_slug = str(question_data.get("plan_slug") or "").strip()
         if plan_path:
             payload["plan_path"] = plan_path
         if plan_slug:
             payload["plan_slug"] = plan_slug
-        structured_approval = _classify_structured_approval(value_obj, question_data)
         if structured_approval:
             payload.update(structured_approval)
         return payload
 
     return None
+
+
+def build_verified_permission_ask_user_question(
+    interaction: Any,
+    card: RootPermissionCard,
+) -> dict[str, Any] | None:
+    """Render one queue-verified permission card."""
+
+    request_id, value_obj = _extract_interaction_parts(interaction)
+    if request_id != card.key.tool_call_id:
+        return None
+    question = _format_question_from_interaction(
+        interaction,
+        value_obj,
+        source="permission_interrupt",
+        invocation_record=card,
+    )
+    return {
+        "event_type": "chat.ask_user_question",
+        "request_id": request_id,
+        "questions": [question],
+        "source": "permission_interrupt",
+    }
+
+
+def _is_permission_interaction(interaction: Any) -> bool:
+    _request_id, value_obj = _extract_interaction_parts(interaction)
+    tool_name, message, _tool_args = _read_interrupt_fields(value_obj)
+    return _resolve_interrupt_source(tool_name, message) == "permission_interrupt"
 
 
 def _iter_interactions(state_outputs: list) -> Any:
@@ -758,7 +1091,7 @@ def _extract_questions_from_value(value_obj: Any) -> list | None:
     arguments, which are preserved in ToolCallInterruptRequest.tool_args.
     """
     # 1. Direct questions attribute on value_obj
-    if hasattr(value_obj, 'questions'):
+    if hasattr(value_obj, "questions"):
         qs = value_obj.questions
         if qs and len(qs) > 0:
             return qs
@@ -770,7 +1103,7 @@ def _extract_questions_from_value(value_obj: Any) -> list | None:
     # 2. questions embedded in tool_args (StructuredAskUserRail path)
     # ToolCallInterruptRequest.tool_args preserves the original tool call
     # arguments, including the `questions` parameter.
-    tool_args = getattr(value_obj, 'tool_args', None)
+    tool_args = getattr(value_obj, "tool_args", None)
     if tool_args is not None:
         if isinstance(tool_args, str):
             try:
@@ -859,7 +1192,11 @@ def _build_multi_questions(questions_data: list, fallback_query: str = "") -> li
         if not isinstance(raw_options, list):
             raw_options = []
         if raw_options:
-            options = [_normalize_question_option(opt) for opt in raw_options if isinstance(opt, dict)]
+            options = [
+                _normalize_question_option(opt)
+                for opt in raw_options
+                if isinstance(opt, dict)
+            ]
             options.append({"label": "Other", "description": "Custom input"})
         else:
             options = []
@@ -880,7 +1217,11 @@ def _build_multi_questions(questions_data: list, fallback_query: str = "") -> li
 
 
 def _extract_ui_options(value_obj: Any) -> list[dict[str, Any]]:
-    options = getattr(value_obj, "ui_options", None) if hasattr(value_obj, "ui_options") else None
+    options = (
+        getattr(value_obj, "ui_options", None)
+        if hasattr(value_obj, "ui_options")
+        else None
+    )
     if options is None and isinstance(value_obj, dict):
         options = value_obj.get("ui_options")
     return [item for item in options or [] if isinstance(item, dict)]
@@ -899,6 +1240,74 @@ def _extract_interrupt_metadata(value_obj: Any) -> dict[str, Any]:
     if metadata is None and isinstance(value_obj, dict):
         metadata = value_obj.get("metadata")
     return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _extract_interaction_metadata(interaction: Any) -> dict[str, Any]:
+    metadata = (
+        interaction.get("metadata")
+        if isinstance(interaction, dict)
+        else getattr(interaction, "metadata", None)
+    )
+    return dict(metadata) if isinstance(metadata, dict) else {}
+
+
+def _reviewer_ui_metadata_from_interaction(
+    interaction: Any,
+    value_obj: Any,
+) -> dict[str, Any]:
+    metadata = _extract_interaction_metadata(interaction)
+    metadata.update(_extract_interrupt_metadata(value_obj))
+    for key in _AUTO_REVIEWER_UI_METADATA_KEYS:
+        value = _read_value_field(value_obj, key, None)
+        if value not in (None, ""):
+            metadata[key] = value
+    projected: dict[str, Any] = {}
+    for key in _AUTO_REVIEWER_UI_METADATA_KEYS:
+        value = metadata.get(key)
+        if value in (None, ""):
+            continue
+        if key in _AUTO_REVIEWER_UI_LIST_METADATA_KEYS:
+            if not isinstance(value, list | tuple):
+                continue
+            items = [
+                redact_secret_values(item, max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH)
+                for item in value[:_AUTO_REVIEWER_UI_MAX_LIST_ITEMS]
+                if isinstance(item, str) and item.strip()
+            ]
+            if len(value) > _AUTO_REVIEWER_UI_MAX_LIST_ITEMS:
+                items.append("[TRUNCATED]")
+            if items:
+                projected[key] = items
+            continue
+        if isinstance(value, str) and value.strip():
+            projected[key] = redact_secret_values(
+                value,
+                max_length=_AUTO_REVIEWER_UI_MAX_TEXT_LENGTH,
+            )
+    return projected
+
+
+def _tool_invocation_locator_from_interaction(
+    interaction: Any,
+    value_obj: Any,
+    *,
+    root_permission_queue: RootPermissionQueue | None,
+) -> tuple[str, RootPermissionCard | None]:
+    metadata = _extract_interaction_metadata(interaction)
+    metadata.update(_extract_interrupt_metadata(value_obj))
+    if "tool_invocation_key" not in metadata:
+        return "absent", None
+    if root_permission_queue is None:
+        return "invalid", None
+    candidate = metadata.get("tool_invocation_key")
+    try:
+        key = ToolInvocationKeyV1.from_wire(candidate)
+    except (TypeError, ValueError):
+        return "invalid", None
+    card = root_permission_queue.get(key)
+    if card is None or card.state != "pending":
+        return "invalid", None
+    return "live", card
 
 
 def _normalize_question_option(option: dict[str, Any]) -> dict[str, Any]:
@@ -954,7 +1363,10 @@ def _question_options_from_ui_options(
             options.append(normalized)
     if options:
         return options
-    return _plan_approval_interrupt_options(source, tool_name, message) or _default_interrupt_options()
+    return (
+        _plan_approval_interrupt_options(source, tool_name, message)
+        or _default_interrupt_options()
+    )
 
 
 def _classify_structured_approval(
@@ -971,7 +1383,10 @@ def _classify_structured_approval(
         source in EVOLUTION_INTERRUPT_METADATA_SOURCES
         or interrupt_kind == LEGACY_SKILL_EVOLUTION_APPROVAL_SOURCE
     )
-    if not is_evolution_interrupt and tool_name not in SKILL_EVOLUTION_APPROVAL_TOOL_KINDS:
+    if (
+        not is_evolution_interrupt
+        and tool_name not in SKILL_EVOLUTION_APPROVAL_TOOL_KINDS
+    ):
         return None
     approval_kind = str(metadata.get("approval_kind") or "").strip()
     if approval_kind not in {"evolve", "simplify"}:
@@ -987,7 +1402,11 @@ def _classify_structured_approval(
     return payload
 
 
-def extract_question_from_interaction(payload: Any) -> dict | None:
+def extract_question_from_interaction(
+    payload: Any,
+    *,
+    root_permission_queue: RootPermissionQueue | None = None,
+) -> dict | None:
     """Extract question info from a single interaction payload.
 
     Args:
@@ -998,7 +1417,6 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
     """
     if payload is None:
         return None
-
     if hasattr(payload, "value"):
         value_obj = payload.value
     elif isinstance(payload, dict):
@@ -1007,10 +1425,41 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         return None
 
     tool_name, message, tool_args = _read_interrupt_fields(value_obj)
-    source = _resolve_interrupt_source(tool_name, message)
+    locator_state, invocation_record = _tool_invocation_locator_from_interaction(
+        payload,
+        value_obj,
+        root_permission_queue=root_permission_queue,
+    )
+    if locator_state == "invalid":
+        return None
+    source = (
+        "permission_interrupt"
+        if locator_state == "live"
+        else _resolve_interrupt_source(tool_name, message)
+    )
+    return _format_question_from_interaction(
+        payload,
+        value_obj,
+        source=source,
+        invocation_record=invocation_record,
+    )
 
+
+def _format_question_from_interaction(
+    payload: Any,
+    value_obj: Any,
+    *,
+    source: str,
+    invocation_record: RootPermissionCard | None,
+) -> dict[str, Any]:
+    """Render one question after queue identity validation."""
+
+    tool_name, message, tool_args = _read_interrupt_fields(value_obj)
+    reviewer_metadata = _reviewer_ui_metadata_from_interaction(payload, value_obj)
     generic_confirm_message = message.strip() in {"", "Please approve or reject?"}
-    needs_message = not message or (source == "confirm_interrupt" and generic_confirm_message)
+    needs_message = not message or (
+        source == "confirm_interrupt" and generic_confirm_message
+    )
     if tool_name and needs_message:
         if source == "confirm_interrupt":
             from jiuwenswarm.agents.harness.code.rails.code_confirm_interrupt_rail import (
@@ -1034,9 +1483,19 @@ def extract_question_from_interaction(payload: Any) -> dict | None:
         header = ask_title or (f"权限审批: {tool_name}" if tool_name else "权限审批")
         question = message
 
-    return {
+    question_data = {
         "question": question,
         "header": header,
-        "options": _question_options_from_ui_options(value_obj, source, tool_name, message),
+        "options": _question_options_from_ui_options(
+            value_obj, source, tool_name, message
+        ),
         "multi_select": False,
     }
+    if source == "permission_interrupt":
+        if invocation_record is not None:
+            question_data["card_id"] = invocation_record.key.invocation_id
+        if reviewer_metadata:
+            question_data["reviewer_metadata"] = reviewer_metadata
+        if isinstance(tool_args, dict):
+            question_data["tool_payload"] = sanitize_permission_ui_payload(tool_args)
+    return question_data

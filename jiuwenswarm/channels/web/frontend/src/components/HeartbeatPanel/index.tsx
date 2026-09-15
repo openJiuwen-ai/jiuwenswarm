@@ -576,7 +576,12 @@ export default function HeartbeatPanel({ sessionId, onClose }: HeartbeatPanelPro
                       </button>
                       {(() => {
                         const isTerminal = job.status === 'completed' || job.status === 'expired';
-                        const canEnable = canHeartbeatToggleEnable(job.status, job.maxRuns, job.runCount);
+                        const canEnable = canHeartbeatToggleEnable(
+                          job.status,
+                          job.maxRuns,
+                          job.runCount,
+                          job.schedule,
+                        );
                         const toggleBtn = (
                           <button
                             type="button"

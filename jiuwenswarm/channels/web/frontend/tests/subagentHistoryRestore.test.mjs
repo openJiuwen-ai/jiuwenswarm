@@ -13,6 +13,26 @@ import {
 const sessionId = 'web_session';
 const subagentId = 'web_session_sub_general-purpose_1';
 
+test('existing full-duplex spoken replies stay expanded after history restore without changing normal chat', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'ack', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final', content: '好的，没问题，我现在就帮你生成这道题的代码。', timestamp: 1 },
+    { id: 'receipt', channel_id: 'video_duplex', role: 'assistant', event_type: 'chat.final', content: '代码已生成。', timestamp: 2 },
+    { id: 'normal', channel_id: 'web', role: 'assistant', event_type: 'chat.final', content: '普通对话。', timestamp: 3 },
+  ], sessionId);
+  assert.deepEqual(messages.map((message) => message.keepExpanded), [true, true, undefined]);
+});
+
+test('history distinguishes a Core Agent result from Qwen acknowledgement and receipt', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    { id: 'ack', role: 'assistant', event_type: 'chat.final', content: '我来处理。', timestamp: 1 },
+    { id: 'result', role: 'assistant', event_type: 'chat.final', content: '```cpp\nint main() {}\n```', presentation: 'tool_result', timestamp: 2 },
+    { id: 'receipt', role: 'assistant', event_type: 'chat.final', content: '代码已生成。', timestamp: 3 },
+  ], sessionId);
+  assert.equal(messages.length, 3);
+  assert.deepEqual(messages.map((message) => message.presentation), [undefined, 'tool_result', undefined]);
+  assert.equal(messages[1].content, '```cpp\nint main() {}\n```');
+});
+
 test('history restores the selected Agent identity from top-level and event payload fields', () => {
   const messages = parseHistoryJsonFileToPreviewMessages([
     {

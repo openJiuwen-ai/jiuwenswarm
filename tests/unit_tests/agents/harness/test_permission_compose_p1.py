@@ -160,4 +160,3 @@ def test_user_can_disable_shell_guard_flags() -> None:
     sg = effective["shell_guard"]
     assert sg["unknown_structure"] is False
     assert sg["interpreter_sink"] is False
-

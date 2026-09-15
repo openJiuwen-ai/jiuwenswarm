@@ -68,6 +68,9 @@ class WorkflowProgress(BaseModel):
     run_id: Optional[str] = None
     workflow_name: Optional[str] = None
     description: Optional[str] = None
+    # Absolute path of the script driving this run, carried on workflow_started;
+    # advisory context for a cold-start resume (None on legacy events).
+    script_path: Optional[str] = None
     phase: Optional[str] = None
     label: Optional[str] = None
     prompt: Optional[str] = None
@@ -210,6 +213,13 @@ class WorkflowRunState(BaseModel):
     started_at: Optional[str] = None
     completed_at: Optional[str] = None
     script: Optional[str] = None
+    # Absolute path of the script driving this run, set from the workflow_started
+    # event for advisory cold-start context; distinct from ``script`` above.
+    script_path: Optional[str] = None
+    # Disk-restored after a cold start with no live controller handle; the
+    # frontend greys this run's control buttons until a launch-plane relaunch
+    # (leader advisory) brings it back.
+    recovered: bool = False
     result: Optional[str] = None
     error: Optional[str] = None
     logs: list[str] = []
@@ -358,6 +368,21 @@ class WorkflowRunState(BaseModel):
         self._finalize_workflow(status=terminal_status)
         return True
 
+    def pause_if_running(self) -> bool:
+        """Mark a non-terminal run as paused (non-terminal, resumable). Returns True if changed.
+
+        Mirrors ``_on_workflow_paused`` but returns a bool instead of a delta —
+        used by teardown to park a run without stamping completed_at/duration.
+        """
+        if self.is_terminal or self.status == "paused":
+            return False
+        self.status = "paused"
+        for phase in self.phases:
+            if phase.status == "running":
+                phase.status = "paused"
+            self._pause_running_agents(phase)
+        return True
+
     def _stamp_workflow_terminal(self, status: str) -> None:
         """Set workflow to a terminal status with completion timestamp and duration."""
         self.status = status
@@ -370,7 +395,9 @@ class WorkflowRunState(BaseModel):
 
         A node left ``waiting_for_human`` at teardown (the run was torn down
         while a human_session turn was pending) is also closed — otherwise the
-        frontend would spin forever on a reply that will never arrive.
+        frontend would spin forever on a reply that will never arrive. A
+        ``paused`` node is closed too: stopping a paused run is the same
+        interruption as stopping a running one, just later.
 
         Counters are derived, so after stamping we refresh the phase card —
         otherwise the teardown / phase-seal path (which does not go through
@@ -379,7 +406,7 @@ class WorkflowRunState(BaseModel):
         recomputes from the same agent list.
         """
         for agent in phase.agents:
-            if agent.status in ("running", "waiting_for_human"):
+            if agent.status in ("running", "waiting_for_human", "paused"):
                 self._stamp_agent_terminal(agent, terminal_status)
         self._refresh_phase_counts(phase)
 
@@ -398,15 +425,15 @@ class WorkflowRunState(BaseModel):
         self._refresh_phase_counts(phase)
 
     def _finalize_running_phases(self, terminal_status: str) -> None:
-        """Mark all running phases and their running agents as terminal.
+        """Mark all running / paused phases and their agents as terminal.
 
-        Only ``running`` phases are affected. A ``planned`` phase that never
+        Only ``running`` and ``paused`` phases are affected. A ``planned`` phase that never
         started (no agent ever entered it) is left untouched on purpose — by
         design an unexecuted/skipped phase stays ``planned`` in the terminal
         snapshot rather than being forced to a terminal status.
         """
         for phase in self.phases:
-            if phase.status == "running":
+            if phase.status in ("running", "paused"):
                 phase.status = terminal_status
             self._finalize_running_agents(phase, terminal_status)
 
@@ -853,7 +880,10 @@ class WorkflowRunState(BaseModel):
         self.id = progress.run_id
         self.name = progress.workflow_name or "workflow"
         self.summary = progress.description or ""
+        self.script_path = progress.script_path
         self.status = "running"
+        was_recovered = self.recovered
+        self.recovered = False
         if self.started_at is None:
             self.started_at = self._now_iso()
 
@@ -903,6 +933,10 @@ class WorkflowRunState(BaseModel):
             self.workflow_budget = progress.workflow_budget
 
         delta = self._build_top_level_delta()
+        # The frontend's incremental merge keeps any field the delta omits, so
+        # the recovered clear must ride THIS started delta to re-enable buttons.
+        if was_recovered:
+            delta["recovered"] = False
         # Carry the relaunch kind on THIS started delta only, so the frontend can
         # distinguish "replace the whole phase tree" (relaunch) from "continue
         # merging" (resume / fresh). Not persisted on the run state.
@@ -1386,4 +1420,8 @@ class WorkflowRunState(BaseModel):
         result["workflow_budget"] = self.workflow_budget
         if self.budget_exhausted_scope is not None:
             result["budget_exhausted_scope"] = self.budget_exhausted_scope
+        # A disk-restored run with no live controller ticket: the frontend
+        # greys its control buttons until a relaunch clears it.
+        if self.recovered:
+            result["recovered"] = True
         return result

@@ -978,7 +978,15 @@ class HeartbeatJobStore:
                     raise ValueError("enabled must be boolean")
                 updated = replace(updated, enabled=enabled_val)
                 if not enabled_val:
-                    updated = replace(updated, status=STATUS_DISABLED, next_run_at=None)
+                    # A stale UI may send its pause toggle after the scheduler
+                    # has already completed/expired the job.  Disabling an
+                    # already terminal job is a no-op for lifecycle status:
+                    # otherwise the late request rewrites "completed" into
+                    # "disabled" (displayed as "paused").
+                    if existing.status not in HEARTBEAT_TERMINAL_STATUSES:
+                        updated = replace(
+                            updated, status=STATUS_DISABLED, next_run_at=None
+                        )
                 elif existing.status in HEARTBEAT_TERMINAL_STATUSES:
                     next_at = patch.get("next_run_at")
                     if next_at is None:

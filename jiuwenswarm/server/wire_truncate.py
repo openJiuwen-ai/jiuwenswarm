@@ -110,6 +110,9 @@ _WORKFLOW_LIST_SUMMARY_KEEP_KEYS = (
     "budget",
     "workflow_budget",
     "budget_exhausted_scope",
+    # Cold-start marker: the list row is what the tree renders first after a
+    # session reopen, and the buttons key their greying on it.
+    "recovered",
 )
 
 

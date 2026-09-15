@@ -493,3 +493,55 @@ def test_reordering_two_entries_keeps_each_entries_placeholders():
     assert out[1]["model_client_config"]["api_key"] == "${KEY_A}"
     assert out[1]["model_client_config"]["api_base"] == "${BASE_A}"
     assert out[1]["is_default"] is False
+
+
+def test_new_model_without_temperature_omits_sampling_parameter():
+    item = {
+        "model_name": "kimi-k3",
+        "api_base": "https://api.example.com/v1",
+        "api_key": "key",
+        "model_provider": "OpenAI",
+        "temperature": None,
+        "is_default": True,
+        "timeout": 1800,
+        "verify_ssl": True,
+        "alias": "kimi",
+        "reasoning_level": "",
+        "origin_index": None,
+        "vendor_key": None,
+        "plan": None,
+        "endpoint_profile": None,
+    }
+
+    merged = _merge_models_for_replace_all([item], [], [], _StubCrypto())
+
+    assert "temperature" not in merged[0]["model_config_obj"]
+
+
+def test_clearing_existing_temperature_removes_persisted_key():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(
+        raw,
+        api_key_plain="sk-real-secret",
+        api_base="https://api.example.com",
+    )
+    item = {
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": None,
+        "is_default": True,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "alias": "gpt",
+        "reasoning_level": "",
+        "origin_index": 0,
+        "vendor_key": None,
+        "plan": None,
+        "endpoint_profile": None,
+    }
+
+    merged = _merge_models_for_replace_all([item], [raw], [resolved], _StubCrypto())
+
+    assert "temperature" not in merged[0]["model_config_obj"]

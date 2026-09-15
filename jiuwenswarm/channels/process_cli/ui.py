@@ -11,7 +11,7 @@ import sys
 import unicodedata
 from collections.abc import Iterable
 from pathlib import Path
-from typing import TextIO
+from typing import Any, TextIO
 
 from jiuwenswarm.channels.process_cli.commands import SLASH_COMMANDS
 
@@ -198,6 +198,39 @@ class ProcessCliUI:
         else:
             self._write("\n尚未创建 Runtime 会话。\n\n")
 
+    def skills(self, items: list[Any]) -> None:
+        """Render the Runtime ``skills.list`` payload without changing it."""
+        skills = [item for item in items if isinstance(item, dict)]
+        installed = [item for item in skills if item.get("installed") is True]
+        available = [item for item in skills if item.get("installed") is not True]
+
+        self._write("\n")
+        self._write_wrapped(
+            f"已安装技能（{len(installed)}）" if installed else "暂无已安装技能",
+            style=_ANSI_BOLD_CYAN,
+        )
+        for item in installed:
+            self._write_skill(item)
+        if available:
+            self._write("\n")
+            self._write_wrapped(
+                f"可安装技能（{len(available)}）",
+                style=_ANSI_BOLD_CYAN,
+            )
+            for item in available:
+                self._write_skill(item)
+        self._write("\n")
+
+    def _write_skill(self, item: dict[str, Any]) -> None:
+        name = str(item.get("name") or "?")
+        if item.get("is_builtin_source") is True or item.get("is_builtin") is True:
+            source = "内置"
+        else:
+            source = str(item.get("source") or "项目")
+        description = str(item.get("description") or "").strip()
+        suffix = f" · {description}" if description else ""
+        self._write_wrapped(f"- {name} [{source}]{suffix}", indent="  ")
+
     @staticmethod
     def short_session(session_id: str | None) -> str:
         value = str(session_id or "")
@@ -280,6 +313,11 @@ class HumanRunUI:
         self.stdout.flush()
         self._assistant_visible = True
 
+    def skills(self, items: list[Any]) -> None:
+        """Render a skills list after clearing transient progress output."""
+        self.clear_status()
+        ProcessCliUI(self.stdout).skills(items)
+
     def clear_status(self) -> None:
         if not self._status_visible:
             return
@@ -298,6 +336,26 @@ class HumanRunUI:
         self.stdout.write(
             self._styled(f"\n{marker} 执行完成 · 会话 {session}\n", _ANSI_GREEN)
         )
+        self.stdout.flush()
+
+    def session_event(self, event_type: str, payload: dict[str, Any]) -> None:
+        """Render one successful Runtime Session lifecycle result."""
+        self.clear_status()
+        session_id = str(payload.get("session_id") or "")
+        if event_type == "session.created":
+            message = f"已创建并切换到会话 {session_id}"
+        elif event_type == "session.switched":
+            message = f"已恢复会话 {session_id}"
+        elif event_type == "session.forked":
+            title = str(payload.get("title") or "").strip()
+            suffix = f" · {title}" if title else ""
+            message = f"已创建并切换到会话分支 {session_id}{suffix}"
+        elif event_type == "session.deleted":
+            message = f"已删除会话 {session_id}"
+        else:
+            return
+        marker = "✓" if self.unicode else "+"
+        self.stdout.write(self._styled(f"\n{marker} {message}\n", _ANSI_GREEN))
         self.stdout.flush()
 
     def failed(self, message: str) -> None:

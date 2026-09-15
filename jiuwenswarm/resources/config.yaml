@@ -26,6 +26,10 @@ a2ui:
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
 
+# RSI 递归自我改进实验入口；默认开启
+rsi:
+  enabled: true
+
 symphony:
   enabled: false
   paths:
@@ -49,6 +53,13 @@ symphony:
 
   evolution:
     enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    flow:
+      enabled: false            # true = 任务结束后蒸馏 skill pack
+      min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
+      min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
+      min_successes_candidate: 2  # 至少成功几次产出 candidate pack
+      min_successes_verified: 3   # 至少成功几次产出 verified pack
+      min_pack_success_rate_verified: 0.8
 
   orchestration:
     # fast is the default one-shot path; beam enables bidirectional search.
@@ -255,8 +266,6 @@ proactive_recommendation:
 endpoint_profile_overrides:
 
 models:
-  # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
-  enable_free_models: true
   defaults:
     - model_client_config:
         api_base: ${API_BASE}
@@ -278,8 +287,7 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -292,7 +300,8 @@ models:
         # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
         # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
         # 不填 = core 按模型名查表 / 兜底 200000。
-        context_window: 131072
+        # 如需覆盖 core 的自动识别结果，可在 model_config_obj 下配置：
+        # context_window: 131072
       is_default: true
   video:
       model_client_config:
@@ -304,8 +313,7 @@ models:
         endpoint_profile: ${VIDEO_ENDPOINT_PROFILE:-openai_compatible}
         timeout: 1800
         verify_ssl: true
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   audio:
       model_client_config:
         api_base: ${AUDIO_API_BASE}
@@ -316,8 +324,7 @@ models:
         endpoint_profile: ${AUDIO_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   vision:
       model_client_config:
         api_base: ${VISION_API_BASE}
@@ -328,8 +335,7 @@ models:
         endpoint_profile: ${VISION_ENDPOINT_PROFILE:-openai_compatible}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   image_gen:
       model_client_config:
         api_base: ${IMAGE_GEN_API_BASE}
@@ -341,8 +347,7 @@ models:
         endpoint_profile: ${IMAGE_GEN_ENDPOINT_PROFILE:-dashscope}
         verify_ssl: true
         timeout: 1800
-      model_config_obj:
-        temperature: 0.95
+      model_config_obj: {}
   # ---- AgentOS 备份模型（可选，不预置；需手动添加）----
   # 此处不预置任何 agentos 条目：jiuwenswarm-init 生成的 config.yaml 不含 agentos 字段。
   # 如需启用备份模型，请手动在 config.yaml 添加 models.agentos 列表段（见文档）。
@@ -531,8 +536,10 @@ trajectory_ui:
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
-  poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
+
+experimental:
+  task_full_duplex_enabled: false    # 在任务对话空输入框中显示全双工入口
 
 # ============================================================
 # Agent / Code 调试链路追踪（Debug Trace）配置

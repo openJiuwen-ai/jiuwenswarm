@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import logging
+import math
 import time
 from dataclasses import replace
 from typing import Any
@@ -35,7 +36,9 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.models import (
     HEARTBEAT_STATUSES,
     HeartbeatJob,
     HeartbeatSchedule,
+    MAX_UNIX_TIMESTAMP_SECONDS,
     MIN_INTERVAL_SECONDS,
+    SCHEDULE_ONCE,
     SOURCE_WEB_RPC,
     STATUS_RUNNING,
     STATUS_SCHEDULED,
@@ -335,6 +338,18 @@ class HeartbeatController:
         await self._check_resource_limits_async(
             session_id=session_id, schedule=schedule, exclude_job_id=None
         )
+
+        if schedule.type == SCHEDULE_ONCE and schedule.run_at is not None:
+            if (
+                not math.isfinite(schedule.run_at)
+                or schedule.run_at > MAX_UNIX_TIMESTAMP_SECONDS
+            ):
+                raise ValueError(
+                    "schedule.run_at must be a finite Unix timestamp in seconds; "
+                    "milliseconds are not accepted"
+                )
+            if schedule.run_at <= time.time():
+                raise ValueError("schedule.run_at must be in the future")
 
         job = await self._store.create_job(
             name=name,

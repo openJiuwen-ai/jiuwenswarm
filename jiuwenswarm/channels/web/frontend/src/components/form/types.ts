@@ -43,6 +43,10 @@ export type FormItem<TValues extends FormValues> =
       type?: 'text' | 'password' | 'number';
       placeholder?: string;
       passwordVisibilityLabels?: { show: string; hide: string };
+      min?: number | string;
+      max?: number | string;
+      step?: number | string;
+      changeOnBlur?: boolean;
     })
   | (FormItemBase<TValues, keyof TValues> & { component: 'textarea'; placeholder?: string; rows?: number })
   | (FormItemBase<TValues, keyof TValues> & { component: 'select'; options: readonly SelectOption[] })

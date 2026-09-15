@@ -93,6 +93,28 @@ async def test_list_jobs_round_trip(store: HeartbeatJobStore) -> None:
     assert ids == {j1.id, j2.id}
 
 
+async def test_seven_field_cron_survives_create_update_and_reload(
+    store: HeartbeatJobStore,
+) -> None:
+    job = await store.create_job(
+        name="seven-field", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "cron", "cron_expr": "0 0 9 * * ? *", "timezone": "Asia/Shanghai"}
+        ),
+        source="agent_tool",
+    )
+    updated = await store.update_job(
+        job.id,
+        {"schedule": {"type": "cron", "cron_expr": "30 0 10 * * ? *", "timezone": "Asia/Shanghai"}},
+    )
+    assert updated.schedule.cron_expr == "30 0 10 * * ? *"
+
+    reloaded = await HeartbeatJobStore(path=store.path).get_job(job.id)
+    assert reloaded is not None
+    assert reloaded.schedule.cron_expr == "30 0 10 * * ? *"
+    assert reloaded.next_run_at == updated.next_run_at
+
+
 async def test_list_jobs_by_session(store: HeartbeatJobStore) -> None:
     await store.create_job(
         name="a", channel_id="web", session_id="s1", prompt="p",
@@ -296,6 +318,33 @@ async def test_update_enabled_false_sets_disabled(store: HeartbeatJobStore) -> N
     await store.update_job(job.id, {"next_run_at": 1.0})
     updated = await store.update_job(job.id, {"enabled": False})
     assert updated.status == STATUS_DISABLED
+    assert updated.enabled is False
+    assert updated.next_run_at is None
+
+
+async def test_late_pause_toggle_preserves_completed_status(
+    store: HeartbeatJobStore,
+) -> None:
+    job = await store.create_job(
+        name="n", channel_id="web", session_id="s1", prompt="p",
+        schedule=_interval_schedule(), source="agent_tool", max_runs=1,
+    )
+    await store.claim_run(
+        job.id, "run1", 999.0, trigger="run_now", reschedule=False
+    )
+    await store.finish_run(
+        job.id,
+        "run1",
+        1000.0,
+        outcome="succeeded",
+        error=None,
+        next_run_at=None,
+        terminal=True,
+    )
+
+    updated = await store.update_job(job.id, {"enabled": False})
+
+    assert updated.status == STATUS_COMPLETED
     assert updated.enabled is False
     assert updated.next_run_at is None
 

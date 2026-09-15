@@ -19,6 +19,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
     mark_permission_interrupt_request,
     root_nonpermission_resume_from_context,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
+    NativePathGuardProjection, current_native_path_access,
+)
 
 ExactPermissionPersistCallback = Callable[
     [str, dict[str, Any], tuple[tuple[str, str], ...]], bool
@@ -47,9 +50,49 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     ) -> None:
         super().__init__(*args, **kwargs)
         self._exact_persist_callback = exact_persist_callback
+        self._project_native_path_guard()
+
+    def _project_native_path_guard(self) -> None:
+        if getattr(self, "_exact_persist_callback", None) is None:
+            return
+        # SDK exposes no guard injection API; preserve its checker on each rebuild.
+        checker = self._engine._file_guard  # pylint: disable=protected-access
+        if checker is not None and not isinstance(checker, NativePathGuardProjection):
+            self._engine._file_guard = NativePathGuardProjection(checker)  # pylint: disable=protected-access
+
+    def update_config(self, *args: Any, **kwargs: Any) -> None:
+        super().update_config(*args, **kwargs)
+        self._project_native_path_guard()
+
+    def set_trusted_dirs(self, *args: Any, **kwargs: Any) -> None:
+        super().set_trusted_dirs(*args, **kwargs)
+        self._project_native_path_guard()
+
+    def _collect_file_guard_persist_accesses(
+        self, normalized_name: str, tool_args: dict, permissions_cfg: Any,
+    ) -> list[tuple[str, str]]:
+        access = current_native_path_access(normalized_name, tool_args)
+        if self._exact_persist_callback is not None and access is not None:
+            return super()._collect_file_guard_persist_accesses(
+                access.guard_tool, access.guard_args, permissions_cfg,
+            )
+        return super()._collect_file_guard_persist_accesses(normalized_name, tool_args, permissions_cfg)
 
     def installed_permission_config(self) -> dict[str, Any]:
         return deepcopy(self._static_config)
+
+    def _invoke_permissions_hook(
+        self, hook: Any, *args: Any, session_id: str | None = None,
+    ) -> Any:
+        if self._exact_persist_callback is None or hook is not self._host.get_permissions_snapshot:
+            return super()._invoke_permissions_hook(hook, *args, session_id=session_id)
+        # Preserve the SDK's installed-config fallback, but return it through
+        # the rail update path so a rebuild cannot discard native extraction.
+        try:
+            snapshot = super()._invoke_permissions_hook(hook, *args, session_id=session_id)
+        except Exception:
+            snapshot = None
+        return snapshot if isinstance(snapshot, dict) else self.installed_permission_config()
 
     async def resolve_interrupt(
         self,
@@ -62,6 +105,12 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
             return await super().resolve_interrupt(
                 ctx, tool_call, user_input, auto_confirm_config
             )
+        if (
+            self._host.get_permissions_snapshot is None
+            and tool_call is not None
+            and current_native_path_access(tool_call.name, self.parse_tool_args(tool_call)) is not None
+        ):
+            return self.reject(tool_result="[PERMISSION_DENIED] native_path_snapshot_unavailable")
         payload = self.parse_confirm_payload(user_input)
         permanent = bool(
             payload is not None
@@ -82,10 +131,12 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         finally:
             _EXACT_PERSIST_ATTEMPT.reset(token)
 
-    def _persist_allow_always(self, normalized_name: str, tool_args: dict) -> bool:
+    def _persist_allow_always(
+        self, normalized_name: str, tool_args: dict, *, session_id: str | None = None,
+    ) -> bool:
         callback = self._exact_persist_callback
         if callback is None:
-            return super()._persist_allow_always(normalized_name, tool_args)
+            return super()._persist_allow_always(normalized_name, tool_args, session_id=session_id)
         attempt = _EXACT_PERSIST_ATTEMPT.get()
         if attempt is None:
             return False

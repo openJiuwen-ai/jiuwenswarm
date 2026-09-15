@@ -1,0 +1,186 @@
+/* 实体头部：PageCard 卡片与 skill/agent 详情页共用。
+   结构：[头像 48px/10px][名称行 + 可选元信息行][尾部操作区]
+   - variant=card：标题区固定 52px 两端对齐（标题贴顶/标签贴底）、标题 18px/28px text-primary、字母 20px/700
+   - variant=detail：整体垂直居中、标题 20px/30px text-strong、字母 14px/600、元信息行 mt-4px 可换行 */
+.entity-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+}
+
+.entity-header__identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 12px;
+}
+
+.entity-header__avatar {
+  display: flex;
+  width: 48px;
+  height: 48px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: 10px;
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.entity-header__avatar-letter {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 20px;
+  font-weight: 700;
+  border-radius: 10px;
+}
+
+.entity-header__avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  border-radius: 10px;
+  object-fit: cover;
+}
+
+.entity-header__text {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  justify-content: center;
+}
+
+.entity-header__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.entity-header__title {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--color-text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+}
+
+/* 详情变体标题：20px/30px（卡片保持 18px/28px） */
+.entity-header--detail .entity-header__title {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.entity-header__title-end {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+.entity-header__meta {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 4px;
+}
+
+/* 标签行：卡片/详情统一结构——单行 nowrap，溢出由内部 JS 测量控制 */
+.entity-header__tags {
+  --entity-header-tag-overflow-width: 20px;
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.entity-header__tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  padding: 0 8px;
+  border-radius: 4px;
+  background: var(--color-tag-neutral-surface);
+  color: var(--color-text-primary);
+  font-size: 12px;
+  line-height: 20px;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.entity-header__tag-overflow {
+  display: inline-flex;
+  width: var(--entity-header-tag-overflow-width);
+  height: 20px;
+  flex-shrink: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.entity-header__tags-measure {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: flex;
+  gap: 6px;
+  width: max-content;
+  visibility: hidden;
+  pointer-events: none;
+}
+
+.entity-header__actions {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+}
+
+/* card 变体：还原 PageCard 头部既有规格 */
+.entity-header--card {
+  align-items: flex-start;
+}
+
+.entity-header--card .entity-header__avatar {
+  color: var(--color-text-inverse);
+  font-size: 20px;
+  font-weight: 700;
+}
+
+.entity-header--card .entity-header__text {
+  height: 52px;
+  justify-content: space-between;
+}
+
+.entity-header--card .entity-header__title {
+  color: var(--color-text-primary);
+}
+
+.entity-header--card .entity-header__meta {
+  margin-top: 0;
+}
+
+/* 无元信息行时标题与头像垂直居中 */
+.entity-header--card.entity-header--center {
+  align-items: center;
+}
+
+/* card 变体无标签行时：__text 里只剩标题行一个子元素，space-between 会退化成顶对齐，
+   标题吊在 52px 区域顶部与居中的头像错位——改回垂直居中 */
+.entity-header--card.entity-header--center .entity-header__text {
+  justify-content: center;
+}

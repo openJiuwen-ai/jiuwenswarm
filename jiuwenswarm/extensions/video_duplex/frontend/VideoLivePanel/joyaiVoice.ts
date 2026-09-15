@@ -1,8 +1,8 @@
+import type { SileroVad, SpeechDetection } from '../../../../channels/web/frontend/src/utils/speechDetection/sileroVad';
+
 const TARGET_RATE = 16_000;
-const LISTENING_SPEECH_MS = 220;
-const END_OF_TURN_SILENCE_MS = 600;
-const CANDIDATE_SILENCE_MS = 240;
-const PRE_ROLL_MS = 300;
+// Preserve the speech onset while the shared VAD confirms speech in its worker.
+const PRE_ROLL_MS = 1_000;
 const MAX_TURN_MS = 20_000;
 const PCM_STREAM_START_BUFFER_MS = 240;
 
@@ -11,6 +11,7 @@ export interface JoyAIVoiceCallbacks {
   onTurnAudio: (audioDataUrl: string, turnId: string) => void;
   onState: (state: 'connecting' | 'listening' | 'speaking' | 'closed') => void;
   onError: (message: string) => void;
+  onDiagnostic?: (event: string, details: Record<string, unknown>) => void;
 }
 
 function readableError(value: unknown): string {
@@ -117,9 +118,7 @@ export class JoyAIVoiceSession {
   private pcmStreamResolve: (() => void) | null = null;
   private pcmStreamReject: ((error: Error) => void) | null = null;
   private stopped = false;
-  private noiseFloor = 220;
-  private candidateSpeechMs = 0;
-  private silenceMs = 0;
+  private vad: SileroVad | null = null;
   private speechActive = false;
   private preRoll: Int16Array[] = [];
   private preRollSamples = 0;
@@ -130,6 +129,25 @@ export class JoyAIVoiceSession {
 
   async start(): Promise<void> {
     this.callbacks.onState('connecting');
+    const { SileroVad } = await import('../../../../channels/web/frontend/src/utils/speechDetection/sileroVad');
+    if (this.stopped) return;
+    this.vad = new SileroVad(
+      (detection) => this.handleSpeechDetection(detection),
+      (message) => {
+        if (this.speechActive) this.finishTurn();
+        this.callbacks.onError(`本地人声检测暂不可用：${message}。`);
+      },
+      (event, details) => {
+        if (event === 'qwen_vad_resync') {
+          // Release an interrupted turn before the detector discards stale audio.
+          if (this.speechActive) this.finishTurn();
+          else this.resetTurn();
+        }
+        this.callbacks.onDiagnostic?.(event.replace(/^qwen_/, 'joyai_'), details);
+      },
+    );
+    await this.vad.start();
+    if (this.stopped) return;
     this.microphone = await navigator.mediaDevices.getUserMedia({
       audio: {
         channelCount: 1,
@@ -146,6 +164,7 @@ export class JoyAIVoiceSession {
     await this.captureContext.audioWorklet.addModule(
       new URL('./duplex-capture.js', import.meta.url),
     );
+    if (this.stopped) return;
     const source = this.captureContext.createMediaStreamSource(this.microphone);
     this.captureNode = new AudioWorkletNode(this.captureContext, 'jiuwen-duplex-capture');
     this.captureNode.port.onmessage = ({ data }) => {
@@ -162,12 +181,15 @@ export class JoyAIVoiceSession {
     source.connect(this.captureNode);
     this.captureNode.connect(silent).connect(this.captureContext.destination);
     await this.captureContext.resume();
+    if (this.stopped) return;
     this.callbacks.onState('listening');
   }
 
   stop(): void {
     if (this.stopped) return;
     this.stopped = true;
+    this.vad?.stop();
+    this.vad = null;
     this.interruptPlayback();
     this.microphone?.getTracks().forEach((track) => track.stop());
     this.microphone = null;
@@ -360,40 +382,25 @@ export class JoyAIVoiceSession {
 
   private processAudio(pcm: Int16Array): void {
     if (this.stopped || pcm.length === 0) return;
-    const frameMs = pcm.length * 1_000 / TARGET_RATE;
-    const level = this.rms(pcm);
-    const playbackActive = this.playback !== null || this.pcmStreamStarted;
-    const threshold = playbackActive
-      ? Math.max(1_500, this.noiseFloor * 5)
-      : Math.max(650, this.noiseFloor * 3);
-    const voice = level > threshold;
+    if (this.speechActive) {
+      this.pushUtterance(pcm);
+      if (this.utteranceSamples >= TARGET_RATE * MAX_TURN_MS / 1_000) this.finishTurn();
+    } else {
+      this.pushPreRoll(pcm);
+    }
+    this.vad?.push(pcm);
+  }
 
-    if (!this.speechActive) this.pushPreRoll(pcm);
-    if (voice) {
-      this.candidateSpeechMs += frameMs;
-      this.silenceMs = 0;
-      if (!this.speechActive && this.candidateSpeechMs >= LISTENING_SPEECH_MS) {
+  private handleSpeechDetection(detection: SpeechDetection): void {
+    if (this.stopped) return;
+    if (detection.state === 'started' || detection.state === 'active') {
+      if (!this.speechActive) {
         this.speechActive = true;
         this.utterance = this.preRoll.map((chunk) => chunk.slice());
         this.utteranceSamples = this.preRollSamples;
         this.callbacks.onSpeechStart();
-      } else if (this.speechActive) {
-        this.pushUtterance(pcm);
       }
-    } else {
-      this.silenceMs += frameMs;
-      if (this.speechActive) {
-        this.pushUtterance(pcm);
-      } else if (this.silenceMs >= CANDIDATE_SILENCE_MS) {
-        this.candidateSpeechMs = 0;
-      }
-      this.observeNoise(level);
-    }
-
-    if (this.speechActive && (
-      this.silenceMs >= END_OF_TURN_SILENCE_MS
-      || this.utteranceSamples >= TARGET_RATE * MAX_TURN_MS / 1_000
-    )) {
+    } else if (detection.state === 'ended' && this.speechActive) {
       this.finishTurn();
     }
   }
@@ -427,8 +434,6 @@ export class JoyAIVoiceSession {
   }
 
   private resetTurn(): void {
-    this.candidateSpeechMs = 0;
-    this.silenceMs = 0;
     this.speechActive = false;
     this.preRoll = [];
     this.preRollSamples = 0;
@@ -436,16 +441,4 @@ export class JoyAIVoiceSession {
     this.utteranceSamples = 0;
   }
 
-  private rms(pcm: Int16Array): number {
-    let energy = 0;
-    for (let index = 0; index < pcm.length; index += 1) {
-      energy += pcm[index] * pcm[index];
-    }
-    return Math.sqrt(energy / pcm.length);
-  }
-
-  private observeNoise(level: number): void {
-    if (this.speechActive || this.playback || this.pcmStreamStarted) return;
-    this.noiseFloor = this.noiseFloor * 0.97 + Math.min(level, 1_200) * 0.03;
-  }
 }

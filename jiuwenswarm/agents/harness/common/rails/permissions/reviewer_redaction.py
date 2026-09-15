@@ -6,8 +6,10 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from collections.abc import Mapping, Sequence
 from math import isfinite
+from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlparse, urlunparse
 
@@ -22,6 +24,15 @@ PERMISSION_UI_PAYLOAD_MAX_TOTAL_BYTES = 16 * 1024
 PERMISSION_UI_REDACTED = "[REDACTED]"
 PERMISSION_UI_TRUNCATED = "[TRUNCATED]"
 PERMISSION_UI_UNAVAILABLE = "[UNAVAILABLE]"
+
+_REVIEW_LOCATION_LIMIT = 240
+_SENSITIVE_LOCATION_PARTS = frozenset({
+    ".aws", ".gnupg", ".kube", ".ssh", "authorized_keys", "credentials",
+    "id_dsa", "id_ed25519", "id_ecdsa", "id_rsa", "passwd", "shadow",
+})
+_SENSITIVE_LOCATION_TOKENS = (
+    "credential", "password", "private_key", "secret", "token",
+)
 
 _PATH_LIKE_PATTERN = re.compile(
     r"(?:"
@@ -163,6 +174,121 @@ def redact_text(
     text = raw_text.replace("\r", " ").replace("\n", " ")
     text = _FILE_URI_PATTERN.sub("file://[redacted-path]", text)
     text = _PATH_LIKE_PATTERN.sub("[path]", text)
+    return redact_secret_values(text, max_length=max_length)
+
+
+def reviewer_path_location(
+    raw_path: str, *, workspace_root: str, platform_trusted_root: str,
+) -> tuple[dict[str, str] | None, str]:
+    """Project Smart evidence only; never change the underlying access identity."""
+    try:
+        if _sensitive_location(raw_path):
+            return None, "redacted"
+        path = Path(raw_path).expanduser()
+        if not path.is_absolute() or raw_path.startswith(("//", "\\\\")):
+            return None, "unavailable"
+        target = path.resolve(strict=False)
+        for base, raw_root in (
+            ("workspace", workspace_root),
+            ("platform_trusted_root", platform_trusted_root),
+        ):
+            if not raw_root:
+                continue
+            root = Path(raw_root).expanduser()
+            if not root.is_absolute():
+                continue
+            try:
+                relative = target.relative_to(root.resolve(strict=False)).as_posix()
+            except ValueError:
+                continue
+            # Check the full input too: resolving '..' must not reveal a secret
+            # that was carried in a discarded component of the evidence.
+            if _sensitive_location(relative):
+                return None, "redacted"
+            if len(relative) > _REVIEW_LOCATION_LIMIT:
+                return None, "omitted"
+            return {"base": base, "relative_path": relative}, "complete"
+    except (OSError, RuntimeError, TypeError, ValueError):
+        pass
+    return None, "unavailable"
+
+
+def _sensitive_location(value: str) -> bool:
+    if any(unicodedata.category(char).startswith("C") for char in value):
+        return True
+    for part in value.replace("\\", "/").split("/"):
+        name = part.casefold()
+        sensitive_name = name in _SENSITIVE_LOCATION_PARTS or name == ".env" or name.startswith(".env.")
+        if (
+            sensitive_name
+            or name.endswith((".key", ".pem", ".p12", ".pfx"))
+            or any(token in name for token in _SENSITIVE_LOCATION_TOKENS)
+        ):
+            return True
+    return redact_secret_values(value, max_length=len(value) + 1) != value
+
+
+def redact_reviewer_intent(
+    value: Any, *, workspace_root: str, platform_trusted_root: str,
+    max_length: int = 1024,
+) -> str:
+    """Retain literal in-root locations in Smart intent, not path authority."""
+    text = _stringify(value)
+    # Match only known absolute roots, including quoted paths containing spaces.
+    # The existing broad redactor still owns all unknown/URI/private paths.
+    roots: list[str] = []
+    for raw_root in (workspace_root, platform_trusted_root):
+        try:
+            root = Path(raw_root).expanduser()
+            if raw_root and root.is_absolute():
+                roots.append(str(root.resolve(strict=False)).rstrip("/"))
+        except (OSError, RuntimeError, TypeError, ValueError):
+            continue
+    placeholders: dict[str, str] = {}
+    for root in sorted(set(roots), key=len, reverse=True):
+        if not root:
+            continue
+        escaped = re.escape(root)
+        pattern = re.compile(
+            r"(?<![\w:/\\])(?:"
+            r"(?P<quote>[\"'])" + escaped + r"(?=/|(?P=quote))"
+            r"[^\"'\r\n]*(?P=quote)|"
+            + escaped + r"(?=/|$|[\s\"'`,，。；、)\]}])"
+            r"(?:/[^\s\"'`;|&<>`,，。；、)\]}]*)?)"
+        )
+
+        def replace_path(match: re.Match[str]) -> str:
+            literal = match.group(0)
+            if match.group("quote"):
+                literal = literal[1:-1]
+            location, _status = reviewer_path_location(
+                literal, workspace_root=workspace_root,
+                platform_trusted_root=platform_trusted_root,
+            )
+            if location is None:
+                return "[path]"
+            # Keep the broad path redactor from erasing this already vetted view.
+            placeholder = f"\x00{len(placeholders)}\x00"
+            placeholders[placeholder] = (
+                f"[{location['base']}]/{location['relative_path']}"
+            )
+            return placeholder
+
+        text = pattern.sub(replace_path, text)
+    # Literal controls cannot spoof placeholders created inside this function.
+    # Rejecting them is preferable to guessing which path a malformed turn meant.
+    if "\x00" in _stringify(value):
+        return redact_reviewable_payload_text(value, max_length=max_length).replace("\x00", "")
+    text = redact_reviewable_payload_text(text, max_length=len(text) + 1)
+    # Unknown absolute literals remain opaque even outside the shared redactor's
+    # list of common home/system directories. Vetted locations are placeholders.
+    text = re.sub(
+        r"(?<![\w:/\\])(?:[\"']/[^\"'\r\n]*[\"']|"
+        r"/(?!/)[^\s\"'`;|&<>`,，。；、)\]}]+)",
+        "[path]", text,
+    )
+    for placeholder, location in placeholders.items():
+        text = text.replace(placeholder, location)
     return redact_secret_values(text, max_length=max_length)
 
 

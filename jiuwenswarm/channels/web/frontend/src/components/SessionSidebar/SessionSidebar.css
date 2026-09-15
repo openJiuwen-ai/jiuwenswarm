@@ -97,6 +97,13 @@
   white-space: nowrap;
 }
 
+/* 仅"个人上下文"等需要多行换行显示的标签使用（如「我的\n上下文」/「My\nContext」） */
+.icon-rail-nav-item__label--multiline {
+  white-space: pre-line;
+  word-break: break-word;
+  overflow-wrap: anywhere;
+}
+
 .icon-rail-nav-item {
   color: var(--color-text-primary);
 }

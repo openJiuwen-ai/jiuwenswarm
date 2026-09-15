@@ -118,7 +118,7 @@ async def test_plan_session_delete_releases_kvc_without_blocking_cleanup(
         req_method=ReqMethod.SESSION_DELETE,
         params={"session_id": "plan-root"},
     )
-    await server._handle_session_delete(ws, request, asyncio.Lock())
+    await server._handle_lifecycle_request(ws, request, asyncio.Lock())
 
     assert events == ["release-kvc", "runner-release:plan-root"]
     assert not (sessions_root / "plan-root").exists()
@@ -126,9 +126,11 @@ async def test_plan_session_delete_releases_kvc_without_blocking_cleanup(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("release_fails", [False, True])
 async def test_team_session_delete_orders_drain_kvc_and_runner_delete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    release_fails: bool,
 ) -> None:
     sessions_root = tmp_path / "sessions"
     (sessions_root / "team-root").mkdir(parents=True)
@@ -153,7 +155,7 @@ async def test_team_session_delete_orders_drain_kvc_and_runner_delete(
     monkeypatch.setattr("jiuwenswarm.agents.harness.team.get_team_manager", lambda _cid: manager)
     monkeypatch.setattr(
         "openjiuwen.core.session.agent_team.create_agent_team_session",
-        lambda **_kwargs: _KVCSession(events),
+        lambda **_kwargs: _KVCSession(events, fail=release_fails),
     )
     monkeypatch.setattr(
         "jiuwenswarm.agents.harness.team.team_manager.Runner.delete_agent_team",
@@ -166,7 +168,7 @@ async def test_team_session_delete_orders_drain_kvc_and_runner_delete(
         req_method=ReqMethod.SESSION_DELETE,
         params={"session_id": "team-root"},
     )
-    await server._handle_session_delete(ws, request, asyncio.Lock())
+    await server._handle_lifecycle_request(ws, request, asyncio.Lock())
 
     assert events == ["drain:False", "release-kvc", "runner-delete"]
     assert not (sessions_root / "team-root").exists()
@@ -174,9 +176,11 @@ async def test_team_session_delete_orders_drain_kvc_and_runner_delete(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("release_fails", [False, True])
 async def test_team_delete_releases_each_root_before_shared_runner_delete(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
+    release_fails: bool,
 ) -> None:
     sessions_root = tmp_path / "sessions"
     for session_id in ("team-root-1", "team-root-2"):
@@ -205,7 +209,7 @@ async def test_team_delete_releases_each_root_before_shared_runner_delete(
     )
     monkeypatch.setattr(
         "openjiuwen.core.session.agent_team.create_agent_team_session",
-        lambda **kwargs: _KVCSession(events),
+        lambda **kwargs: _KVCSession(events, fail=release_fails),
     )
     monkeypatch.setattr("openjiuwen.core.runner.Runner.delete_agent_team", _delete)
 
