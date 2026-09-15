@@ -2815,7 +2815,7 @@
         "uploadKindLabel": "Category",
         "uploadGroupTab": "Expert Team",
         "uploadAgentTab": "Expert",
-        "uploadHint": "Supports .zip, .tar and .tar.gz files; once extracted, the folder must include manifest.json, an agents directory and README.md, and the .json file must declare package_type.",
+        "uploadHint": "Supports uploading .zip and .tar Expert Team packages. The extracted package root must contain manifest.json, declare package_type: \"agent_group\", and configure the Expert Team name, Leader, and expert members. The package must include the member definitions, personas, and other files referenced by the configuration; README.md documentation is recommended.",
         "uploadInvalidType": "Only .zip, .tar and .tar.gz Expert Team packages are supported",
         "errors": {
           "nameRequired": "Enter an Expert Team name",
