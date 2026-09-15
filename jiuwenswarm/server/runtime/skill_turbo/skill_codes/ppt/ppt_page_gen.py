@@ -2257,8 +2257,12 @@ def _has_malformed_open_tag(html: str) -> bool:
       直接跳到 ``</name`` 闭合前缀；缺闭合（如截断的 ``<script>var a=1``）
       判畸形（剩余文档全部被吞）。自闭合 ``<script/>`` 不开 raw text
       （htmlparser2 stateInSelfClosingTag 将 isSpecial 置回 false）；
-    - 引号区间内出现 ``<``+ASCII 字母/斜杠时，仅当区间内还含 ``>``（吞入
-      了完整标签）或引号到文件尾仍未闭合时才判畸形；
+    - 引号区间内出现 ``<``+ASCII 字母/斜杠时，仅当引号角色混淆（从 ``<``
+      到下一个引号的区间以 ``=`` 结尾——该"闭合引号"实为下一属性的开引号，
+      本属性值的真正闭合被吞，后续标签会从解析树消失）或引号到文件尾仍未
+      闭合时才判畸形；引号内含 ``>`` 的标签形态文本（如
+      ``title="支持 <b> 标记"``、``data-formula="若a<b则c>d"``）是
+      htmlparser2 的合法字面属性值，不得误杀；
     - 标签引号外出现 ``<``+ASCII 字母/斜杠（如 ``<div class="a" <span>``）
       判畸形：``<span`` 被吞成属性名，真实标签从解析树消失；
     - 注释/声明/处理指令内容对解析器不透明，跳到 ``-->`` / ``>``；未闭合
@@ -2309,8 +2313,11 @@ def _has_malformed_open_tag(html: str) -> bool:
                     in_quote = None
                 elif ch == "<" and (_is_ascii_alpha(next_ch) or next_ch == "/"):
                     closing = html.find(in_quote, pos + 1)
-                    if closing == -1 or ">" in html[pos:closing]:
-                        # 引号吞入了完整标签，或引号到文件尾未闭合
+                    if closing == -1 or html[pos:closing].rstrip().endswith("="):
+                        # 引号到文件尾未闭合，或引号角色混淆：区间以
+                        # "=" 结尾说明找到的"闭合引号"实为下一属性的
+                        # 开引号，本属性值的真正闭合被吞。区间仅含 ">"
+                        # 不足以判畸形——引号内的标签形态文本是合法字面值
                         return True
             else:
                 if ch == '"' or ch == "'":
