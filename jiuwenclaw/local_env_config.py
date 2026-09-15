@@ -349,7 +349,7 @@ def stage_env_overrides(
         if env_value is None:
             bag.pop(key, None)
         else:
-            text = str(env_value)
+            text = _stringify_env_value(env_value)
             if key in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                 continue
             bag[key] = text
@@ -390,9 +390,24 @@ _EMPTY_OMIT_ENV_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _stringify_env_value(value: Any) -> str:
+    """Serialize tip/env values so JSON objects stay valid JSON.
+
+    ``str(dict)`` / ``str(list)`` emit Python repr with single quotes
+    (``{'k': 'v'}``), which ``json.loads`` cannot parse. Hot-reload callers
+    such as ``agent.reload_config`` pass ``default_headers`` as a dict.
+    """
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
 def _plaintext_tip_value(name: str, value: Any) -> str:
     """Store tip values as plaintext (decrypt ciphertext from .env / legacy)."""
-    text = str(value)
+    text = _stringify_env_value(value)
     if not text:
         return text
     return str(decrypt(name, text))
@@ -443,7 +458,7 @@ def apply_env_overrides_to_active(
             active.pop(name, None)
             _pop_bare_if_default_default(sid, aid, name)
         else:
-            value = str(env_value)
+            value = _stringify_env_value(env_value)
             if name in _EMPTY_OMIT_ENV_KEYS and not value.strip():
                 continue
             active[name] = _plaintext_tip_value(name, value)
@@ -469,7 +484,7 @@ def replace_active_env(
                 continue
             if env_value is None:
                 continue
-            text = str(env_value)
+            text = _stringify_env_value(env_value)
             if name in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                 continue
             new_map[name] = _plaintext_tip_value(name, text)
@@ -533,7 +548,7 @@ def build_effective_env_overlay(
                 if value is None:
                     merged.pop(k, None)
                 else:
-                    text = str(value)
+                    text = _stringify_env_value(value)
                     if k in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                         # Omit empty credentials from sealed overlay so they do not
                         # block fallthrough; do not actively clear a good tip value.
@@ -694,7 +709,7 @@ def export_agent_environ(
     for k, v in tip.items():
         if v is None:
             continue
-        out[str(k)] = str(v)
+        out[str(k)] = _stringify_env_value(v)
     for k in SPAWN_ENV_KEYS:
         if k in os.environ:
             out[k] = os.environ[k]
@@ -768,7 +783,7 @@ def update_process_baseline(updates: Mapping[str, Any] | None) -> None:
         if env_value is None:
             _process_baseline.pop(name, None)
             continue
-        text = str(env_value)
+        text = _stringify_env_value(env_value)
         if name in _EMPTY_OMIT_ENV_KEYS and not text.strip():
             continue
         _process_baseline[name] = _plaintext_tip_value(name, text)
@@ -958,7 +973,7 @@ def read_env(name: str, default: str = "") -> str:
     value = get_local_config(name, default or None)
     if value is None:
         return default
-    text = str(value)
+    text = _stringify_env_value(value)
     return text if text else default
 
 
@@ -977,7 +992,7 @@ def read_env_if_set(name: str) -> str | None:
             return ""
         if isinstance(value, str):
             return decrypt(name, value)
-        return str(value)
+        return _stringify_env_value(value)
 
     tip = effective_tip()
     if name in tip:
@@ -986,7 +1001,7 @@ def read_env_if_set(name: str) -> str | None:
             return ""
         if isinstance(value, str):
             return decrypt(name, value)
-        return str(value)
+        return _stringify_env_value(value)
     return None
 
 
@@ -999,9 +1014,17 @@ def read_default_headers_raw() -> str:
     return ""
 
 
-def parse_default_headers(raw: str) -> dict[str, str] | None:
-    """Parse and validate default_headers JSON; return None when empty."""
-    text = (raw or "").strip()
+def parse_default_headers(raw: str | dict[str, Any] | None) -> dict[str, str] | None:
+    """Parse and validate default_headers JSON; return None when empty.
+
+    Accepts a JSON object string or an already-decoded dict. Overlay / reload
+    paths may bind ``default_headers`` as a mapping before it is stringified.
+    """
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if v is not None}
+    if raw is None:
+        return None
+    text = raw.strip() if isinstance(raw, str) else _stringify_env_value(raw).strip()
     if not text:
         return None
     try:
