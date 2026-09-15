@@ -188,7 +188,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             )
         ]
 
-    def _cron_tool_names(self) -> frozenset[str]:
+    @staticmethod
+    def _cron_tool_names() -> frozenset[str]:
         """Use the Flash profile's merged cron card for lifecycle checks."""
         return frozenset({"cron_flash"})
 
@@ -203,12 +204,15 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         eager_tools = list(configured) if isinstance(configured, list) else list(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS
         )
-        eager_tools = [
-            name
-            for name in eager_tools
-            if name not in {"web_search", "fetch_webpage", "cron"}
-            and not str(name).startswith("cron_")
-        ]
+        replaced_tool_names = {"web_search", "fetch_webpage", "cron"}
+        retained_tools = []
+        for name in eager_tools:
+            if name in replaced_tool_names:
+                continue
+            if str(name).startswith("cron_"):
+                continue
+            retained_tools.append(name)
+        eager_tools = retained_tools
         for name in ("web_flash", "cron_flash"):
             if name not in eager_tools:
                 eager_tools.append(name)

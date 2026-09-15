@@ -106,11 +106,17 @@ _ACTION_DESCS: dict[str, dict[str, str]] = {
     "list": {"cn": "列任务（可选 include_disabled 含停用）", "en": "list jobs (optional include_disabled)"},
     "add": {"cn": "创建定时任务（需 name+schedule+description）", "en": "create a job (requires name+schedule+description)"},
     "get": {"cn": "按 job_id 查询单个任务", "en": "lookup one job by job_id"},
-    "update": {"cn": "修改定时任务（必填 job_id，其余字段只传要改的，不可改 id）", "en": "modify a job (job_id required; send only fields to change; id immutable)"},
+    "update": {
+        "cn": "修改定时任务（必填 job_id，其余字段只传要改的，不可改 id）",
+        "en": "modify a job (job_id required; send only fields to change; id immutable)",
+    },
     "remove": {"cn": "按 job_id 删除任务", "en": "delete a job by job_id"},
     "toggle": {"cn": "启停任务（必填 job_id + enabled）", "en": "enable/disable a job (requires job_id + enabled)"},
     "preview": {"cn": "预览下N次触发（必填 job_id，可选 count）", "en": "preview next N runs (requires job_id, optional count)"},
-    "run": {"cn": "按 job_id 立即触发一次（转发网关，不等结果）", "en": "trigger a job once now by job_id (forwarded to gateway, no result)"},
+    "run": {
+        "cn": "按 job_id 立即触发一次（转发网关，不等结果）",
+        "en": "trigger a job once now by job_id (forwarded to gateway, no result)",
+    },
     "wake": {"cn": "向当前会话发消息唤醒（必填 text）", "en": "wake the current session with a message (requires text)"},
 }
 
@@ -381,7 +387,13 @@ def _merged_cron_input_params(language: str = "cn") -> dict[str, Any]:
             "remove": _id_action(remove_desc),
             "toggle": _action_object(
                 style=style,
-                props={"job_id": job_id_prop, "enabled": {"type": "boolean", "description": _field("toggle_enabled", language)}},
+                props={
+                    "job_id": job_id_prop,
+                    "enabled": {
+                        "type": "boolean",
+                        "description": _field("toggle_enabled", language),
+                    },
+                },
                 required=["job_id", "enabled"], desc=toggle_desc,
             ),
             "preview": _action_object(
@@ -571,7 +583,8 @@ async def _cron_dispatch(
             f"no cron action object provided; fill one of {_ACTIONS} as an object key"
         )
     scoped = inputs.get(action)
-    assert isinstance(scoped, dict)  # _detect_action 已校验
+    if not isinstance(scoped, dict):
+        raise ValueError(f"cron action {action!r} must be an object")
 
     if action == "status":
         _reject_unknown_fields(scoped, set(), scope="status")

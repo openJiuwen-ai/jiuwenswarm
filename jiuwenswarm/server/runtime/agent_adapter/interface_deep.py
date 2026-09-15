@@ -9090,7 +9090,8 @@ class JiuWenSwarmDeepAdapter:
             tenant_agent_id=getattr(self, "_env_agent_id", None),
         )
 
-    def _cron_tool_names(self) -> frozenset[str]:
+    @staticmethod
+    def _cron_tool_names() -> frozenset[str]:
         """Return cron card names owned by this adapter profile."""
         return _CRON_TOOL_NAMES
 
