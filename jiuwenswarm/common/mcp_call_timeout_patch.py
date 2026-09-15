@@ -336,14 +336,22 @@ def _wrap_invoke_with_am_timeout(cls: type, method_name: str = "invoke") -> None
 
 
 def _install_tool_init_subclass_am_timeout_hook(tool_cls: type) -> None:
-    """Tool 子类若在自身 ``__dict__`` 定义了 ``invoke``，自动套 AM wait_for 包装。"""
+    """Tool 子类若在自身 ``__dict__`` 定义了 ``invoke``，自动套 AM wait_for 包装。
+
+    必须赋 ``classmethod``：类体里写的 ``__init_subclass__`` 会被 type 自动包成
+    classmethod，但事后 ``Tool.__init_subclass__ = 普通函数`` 不会。未包成
+    classmethod 时，创建子类会因缺少 ``cls`` 直接 TypeError（!6630 回退根因之一）。
+    """
     if getattr(tool_cls, "_jws_am_timeout_init_subclass_hooked", False):
         return
     prev = tool_cls.__dict__.get("__init_subclass__")
 
+    @classmethod
     def __init_subclass__(cls, **kwargs):  # noqa: N807 — 匹配 Python 钩子名
         if prev is not None:
-            prev(cls, **kwargs)
+            # ``__dict__`` 里可能是 classmethod 描述符，也可能是裸函数
+            prev_fn = prev.__func__ if isinstance(prev, classmethod) else prev
+            prev_fn(cls, **kwargs)
         else:
             super(tool_cls, cls).__init_subclass__(**kwargs)
         if "invoke" in cls.__dict__:

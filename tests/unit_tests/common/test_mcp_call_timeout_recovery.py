@@ -734,6 +734,36 @@ async def test_am_wrap_does_not_replace_subclass_invoke_with_parent_orig() -> No
             timeout_patch._wrapped_methods.discard((cls, "am_timeout:invoke"))
 
 
+def test_init_subclass_hook_must_be_classmethod() -> None:
+    """回归 !6630：钩子若是普通函数，创建 Tool 子类会 TypeError 缺 cls。"""
+
+    class _BaseTool:
+        pass
+
+    # 允许对本假基类重复安装（勿污染真实 Tool 的 hooked 标记语义）
+    if hasattr(_BaseTool, "_jws_am_timeout_init_subclass_hooked"):
+        delattr(_BaseTool, "_jws_am_timeout_init_subclass_hooked")
+
+    timeout_patch._install_tool_init_subclass_am_timeout_hook(_BaseTool)
+
+    assert isinstance(_BaseTool.__dict__["__init_subclass__"], classmethod)
+
+    # 创建子类不得再抛 TypeError: __init_subclass__() missing 1 required positional argument: 'cls'
+    class _ChildTool(_BaseTool):
+        async def invoke(self, *args, **kwargs):
+            del args, kwargs
+            return "child"
+
+    assert "invoke" in _ChildTool.__dict__
+    assert "_jws_orig_invoke" in _ChildTool.__dict__
+    # 清理包装，避免泄漏到其它用例的 idempotency 集合语义
+    orig = _ChildTool.__dict__.get("_jws_orig_invoke")
+    if orig is not None:
+        setattr(_ChildTool, "invoke", orig)
+        delattr(_ChildTool, "_jws_orig_invoke")
+    timeout_patch._wrapped_methods.discard((_ChildTool, "am_timeout:invoke"))
+
+
 @pytest.mark.asyncio
 async def test_disconnect_wrap_clears_session_when_aclose_fails(
     monkeypatch: pytest.MonkeyPatch,
