@@ -2167,9 +2167,11 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         # Apply the MCP per-call timeout patch once per process: wraps
         # StreamableHttpClient/SseClient.call_tool & list_tools in
-        # asyncio.wait_for and honors config ``timeout_s`` (--timeout_s), so a
-        # killed remote MCP server fails fast instead of hanging on the MCP
-        # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
+        # anyio.fail_after (not asyncio.wait_for; that breaks MCP SDK
+        # cancel-scope invariants) and honors config ``timeout_s``
+        # (--timeout_s), so a killed remote MCP server fails fast instead of
+        # hanging on the MCP SDK's 300s SSE read timeout. Idempotent
+        # (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
@@ -4415,6 +4417,16 @@ class JiuWenSwarmDeepAdapter:
             seen_names=seen_names,
         )
         invocation_id = "-"
+
+        def _build_registration() -> OfficeClawMcpRegistration:
+            return OfficeClawMcpRegistration(
+                request_id=request.request_id,
+                tool_ids=tuple(tool_ids),
+                tool_names=tuple(tool_names),
+                tool_instances=tuple(registered_tools),
+                invocation_id="" if invocation_id == "-" else invocation_id,
+            )
+
         try:
             for server_name, tool_defs, connect_params in snapshots:
                 for tool_def in tool_defs:
@@ -4527,14 +4539,7 @@ class JiuWenSwarmDeepAdapter:
                     install_buffers,
                     yield_to_existing=True,
                 )
-            pinned_invocation = "" if invocation_id == "-" else invocation_id
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id=pinned_invocation,
-            )
+            registration = _build_registration()
             self._active_office_claw_mcp = registration
             set_agent_office_claw_tool_ids(self._instance, tool_ids)
             publish_live_office_claw_allowlist(registration.tool_ids)
@@ -4548,7 +4553,7 @@ class JiuWenSwarmDeepAdapter:
                 delivery_thread_id=self._office_claw_thread_id_from_tools(
                     registered_tools
                 ),
-                invocation_id=pinned_invocation,
+                invocation_id=registration.invocation_id,
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] registry MCP registered: "
@@ -4560,34 +4565,13 @@ class JiuWenSwarmDeepAdapter:
             )
             return registration
         except asyncio.CancelledError:
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
-            await self.cleanup_request_scoped_office_claw_mcp(registration)
+            await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
         except (McpRegistryChatError, UnknownMcpServerError, DisabledMcpServerError):
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
-            await self.cleanup_request_scoped_office_claw_mcp(registration)
+            await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
         except Exception as exc:
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
-            await self.cleanup_request_scoped_office_claw_mcp(registration)
+            await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             logger.warning(
                 "[JiuWenSwarmDeepAdapter] registry MCP registration failed; "
                 "continuing without it: request_id=%s error=%s names=%s",
@@ -4671,6 +4655,16 @@ class JiuWenSwarmDeepAdapter:
         tool_names: list[str] = []
         registered_tools: list[RequestScopedOfficeClawMcpTool] = []
         invocation_id = "-"
+
+        def _build_registration() -> OfficeClawMcpRegistration:
+            return OfficeClawMcpRegistration(
+                request_id=request.request_id,
+                tool_ids=tuple(tool_ids),
+                tool_names=tuple(tool_names),
+                tool_instances=tuple(registered_tools),
+                invocation_id="" if invocation_id == "-" else invocation_id,
+            )
+
         try:
             request_scope = hashlib.sha256(
                 f"{request.session_id}:{request.request_id}".encode("utf-8")
@@ -4706,13 +4700,7 @@ class JiuWenSwarmDeepAdapter:
                     skip_office_claw=raw_config is not None,
                 )
 
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
+            registration = _build_registration()
             self._active_office_claw_mcp = registration
             # Store tool_ids on the agent's shared ability_manager so the
             # supervisor / round task (created before bind_active_office_claw_mcp_tools)
@@ -4729,7 +4717,7 @@ class JiuWenSwarmDeepAdapter:
                 delivery_thread_id=self._office_claw_thread_id_from_tools(
                     registered_tools
                 ),
-                invocation_id="" if invocation_id == "-" else invocation_id,
+                invocation_id=registration.invocation_id,
             )
             logger.info(
                 "[JiuWenSwarmDeepAdapter] request-scoped OfficeClaw MCP registered: "
@@ -4745,24 +4733,10 @@ class JiuWenSwarmDeepAdapter:
             logger.info("[latency] stage=2 name=mcp request_id=%s", request.request_id)
             return registration
         except asyncio.CancelledError:
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
-            await self.cleanup_request_scoped_office_claw_mcp(registration)
+            await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             raise
         except Exception as exc:
-            registration = OfficeClawMcpRegistration(
-                request_id=request.request_id,
-                tool_ids=tuple(tool_ids),
-                tool_names=tuple(tool_names),
-                tool_instances=tuple(registered_tools),
-                invocation_id="" if invocation_id == "-" else invocation_id,
-            )
-            await self.cleanup_request_scoped_office_claw_mcp(registration)
+            await self.cleanup_request_scoped_office_claw_mcp(_build_registration())
             _raw_command = str(raw_config.get("command") or "").strip() if isinstance(raw_config, dict) else ""
             _connector_names = (
                 list(request_mcp_servers.keys())

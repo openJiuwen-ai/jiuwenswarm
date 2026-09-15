@@ -10,7 +10,9 @@ from typing import Any
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_response_for_wire
 from jiuwenswarm.common.mcp_server_registry import get_mcp_server_registry
 from jiuwenswarm.common.schema.agent import AgentResponse
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.server.context import RequestContext
+from jiuwenswarm.server.handlers.mcp import _MCP_ENTERPRISE_FORBIDDEN
 
 logger = logging.getLogger(__name__)
 
@@ -31,7 +33,27 @@ async def _send(ctx: RequestContext, *, ok: bool, payload: dict[str, Any]) -> No
     await ctx.sink.send_wire(wire)
 
 
+async def _reject_if_enterprise(ctx: RequestContext, action: str) -> bool:
+    """CRUD 是管理面（方案 §10.4），企业版与本地 /mcp 一样禁止，避免绕过模板下发。"""
+
+    if not is_enterprise():
+        return False
+    logger.info("[mcp.server.%s] reject in enterprise", action)
+    await _send(
+        ctx,
+        ok=False,
+        payload={
+            "error": _MCP_ENTERPRISE_FORBIDDEN,
+            "code": "MCP_FORBIDDEN",
+            "action": action,
+        },
+    )
+    return True
+
+
 async def handle_mcp_server_add(ctx: RequestContext) -> None:
+    if await _reject_if_enterprise(ctx, "add"):
+        return
     params = _params(ctx)
     servers = params.get("servers")
     if not isinstance(servers, list):
@@ -46,6 +68,8 @@ async def handle_mcp_server_add(ctx: RequestContext) -> None:
 
 
 async def handle_mcp_server_remove(ctx: RequestContext) -> None:
+    if await _reject_if_enterprise(ctx, "remove"):
+        return
     params = _params(ctx)
     names = params.get("names")
     if not isinstance(names, list):
@@ -62,6 +86,8 @@ async def handle_mcp_server_remove(ctx: RequestContext) -> None:
 
 
 async def handle_mcp_server_update(ctx: RequestContext) -> None:
+    if await _reject_if_enterprise(ctx, "update"):
+        return
     params = _params(ctx)
     servers = params.get("servers")
     if not isinstance(servers, list):
@@ -76,6 +102,8 @@ async def handle_mcp_server_update(ctx: RequestContext) -> None:
 
 
 async def handle_mcp_server_list(ctx: RequestContext) -> None:
+    if await _reject_if_enterprise(ctx, "list"):
+        return
     try:
         items = await get_mcp_server_registry().list_servers()
         await _send(ctx, ok=True, payload={"servers": items})
@@ -85,6 +113,8 @@ async def handle_mcp_server_list(ctx: RequestContext) -> None:
 
 
 async def handle_mcp_server_get(ctx: RequestContext) -> None:
+    if await _reject_if_enterprise(ctx, "get"):
+        return
     params = _params(ctx)
     name = str(params.get("name") or "").strip()
     if not name:

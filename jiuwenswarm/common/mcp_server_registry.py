@@ -18,8 +18,10 @@ import random
 import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Mapping
+from urllib.parse import parse_qsl, quote, urlencode, urlsplit, urlunsplit
 
 from jiuwenswarm.common.mcp_config import (
+    _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S,
     _PooledMcpWorker,
     _normalize_mcp_client_type,
     _run_mcp_worker,
@@ -40,7 +42,16 @@ _PER_REQUEST_ENV_MARKERS = (
     "OFFICE_CLAW_CALLBACK_TOKEN",
 )
 _REDACT_KEYS = frozenset(
-    {"authorization", "token", "secret", "password", "api_key", "apikey", "auth"}
+    {
+        "authorization",
+        "token",
+        "secret",
+        "password",
+        "api_key",
+        "apikey",
+        "auth",
+        "signature",
+    }
 )
 
 
@@ -58,9 +69,13 @@ class UnknownMcpServerError(McpRegistryChatError):
 
 
 class DisabledMcpServerError(McpRegistryChatError):
-    def __init__(self, name: str) -> None:
-        self.name = str(name).strip()
-        super().__init__(f"mcp server disabled: {self.name}")
+    def __init__(self, names: str | list[str]) -> None:
+        if isinstance(names, str):
+            names = [names]
+        cleaned = [str(n).strip() for n in names if str(n).strip()]
+        self.names = cleaned
+        self.name = cleaned[0] if cleaned else ""
+        super().__init__("mcp server disabled: " + ", ".join(cleaned))
 
 
 @dataclass(frozen=True)
@@ -162,8 +177,49 @@ def _admit_server_config(name: str, config: Mapping[str, Any]) -> None:
         _validate_request_scoped_remote_mcp(name, dict(config))
 
 
+def _secret_name(name: str) -> bool:
+    key_l = str(name).lower()
+    if key_l in {"key", "access_key"} or key_l.endswith("_key"):
+        return True
+    return any(token in key_l for token in _REDACT_KEYS)
+
+
+def _redact_url(url: str) -> str:
+    """URL query 里 token/api_key/signature 等参数值打码（§10.2 延伸）。"""
+
+    try:
+        parts = urlsplit(url)
+    except ValueError:
+        return url
+    if not parts.query:
+        return url
+    redacted: list[tuple[str, str]] = []
+    changed = False
+    for key, value in parse_qsl(parts.query, keep_blank_values=True):
+        if _secret_name(key):
+            redacted.append((key, "***"))
+            changed = True
+        else:
+            redacted.append((key, value))
+    if not changed:
+        return url
+    return urlunsplit(
+        (
+            parts.scheme,
+            parts.netloc,
+            parts.path,
+            urlencode(redacted, quote_via=_quote_keep_star),
+            parts.fragment,
+        )
+    )
+
+
+def _quote_keep_star(value: str, safe: str = "", encoding=None, errors=None) -> str:
+    return quote(value, safe=f"{safe}*", encoding=encoding, errors=errors)
+
+
 def redact_mcp_config(config: Mapping[str, Any]) -> dict[str, Any]:
-    """list 接口脱敏：auth_* / 敏感 env 只回 key 不回 value。"""
+    """list 接口脱敏：auth_* / 敏感 env / URL query 只回 key 不回 value。"""
 
     out: dict[str, Any] = {}
     for key, value in dict(config or {}).items():
@@ -174,18 +230,40 @@ def redact_mcp_config(config: Mapping[str, Any]) -> dict[str, Any]:
         if key_l == "env" and isinstance(value, dict):
             redacted_env: dict[str, Any] = {}
             for env_k, env_v in value.items():
-                env_kl = str(env_k).lower()
-                if any(token in env_kl for token in _REDACT_KEYS):
+                if _secret_name(str(env_k)):
                     redacted_env[str(env_k)] = "***"
                 else:
                     redacted_env[str(env_k)] = env_v
             out[key] = redacted_env
             continue
-        if any(token in key_l for token in _REDACT_KEYS):
+        if key_l == "url" and isinstance(value, str):
+            out[key] = _redact_url(value)
+            continue
+        if _secret_name(key):
             out[key] = "***"
             continue
         out[key] = value
     return out
+
+
+def _discover_timeout_s(config: Mapping[str, Any]) -> float:
+    """周期/准入 remote 扫描 30s（§6.3 / R2）；stdio add/update 对齐旧路径 300s 下限。"""
+
+    if is_remote_mcp_config(config):
+        return _MCP_SCAN_TIMEOUT_S
+    timeout = float(_MCP_CONNECTOR_DISCOVERY_TIMEOUT_S)
+    timeout_raw = config.get("timeout_s")
+    if timeout_raw is None:
+        nested = config.get("params")
+        if isinstance(nested, Mapping):
+            timeout_raw = nested.get("timeout_s")
+    if (
+        isinstance(timeout_raw, (int, float))
+        and not isinstance(timeout_raw, bool)
+        and float(timeout_raw) > timeout
+    ):
+        return float(timeout_raw)
+    return timeout
 
 
 def _worker_pool_key(server_name: str, params: Mapping[str, Any]) -> str:
@@ -219,12 +297,19 @@ class GlobalMcpWorkerPool:
         env = copied.get("env")
         if isinstance(env, Mapping):
             copied["env"] = dict(env)
+        stale = None
         async with self._lock:
             worker = self._workers.get(key)
             if force_rebuild and worker is not None:
-                self._workers.pop(key, None)
-                await shutdown_pooled_mcp_worker(worker)
+                stale = self._workers.pop(key, None)
                 worker = None
+            elif worker is not None and worker.alive:
+                worker.last_used = time.monotonic()
+                return worker
+        if stale is not None:
+            await shutdown_pooled_mcp_worker(stale)
+        async with self._lock:
+            worker = self._workers.get(key)
             if worker is not None and worker.alive:
                 worker.last_used = time.monotonic()
                 return worker
@@ -375,13 +460,14 @@ class McpServerRegistry:
             except ValueError as exc:
                 results.append({"name": name, "ok": False, "error": str(exc)})
                 continue
+            expected_fp = ""
             async with self._lock:
                 current = self._registry.get(name)
                 if current is None:
                     results.append({"name": name, "ok": False, "error": "not found"})
                     continue
-                same = config_fingerprint(current.config) == config_fingerprint(config)
-                if same:
+                expected_fp = config_fingerprint(current.config)
+                if expected_fp == config_fingerprint(config):
                     current.updated_at = time.monotonic()
                     cached = self._cache.get(name)
                     tool_names = [str(t.get("name") or "") for t in (cached.tools if cached else [])]
@@ -404,6 +490,15 @@ class McpServerRegistry:
                 current = self._registry.get(name)
                 if current is None:
                     results.append({"name": name, "ok": False, "error": "not found"})
+                    continue
+                if config_fingerprint(current.config) != expected_fp:
+                    results.append(
+                        {
+                            "name": name,
+                            "ok": False,
+                            "error": "conflict: config changed concurrently",
+                        }
+                    )
                     continue
                 old = self._cache.get(name)
                 self._registry[name] = replace(
@@ -497,14 +592,24 @@ class McpServerRegistry:
         worker = await self.worker_pool.acquire(name, params, force_rebuild=force_rebuild)
         async with self._lock:
             try:
-                self._invoke_connect_params_locked(name)
+                latest = self._invoke_connect_params_locked(name)
             except McpRegistryChatError as exc:
                 stale_error: McpRegistryChatError | None = exc
+                latest = None
             else:
                 stale_error = None
         if stale_error is not None:
             await self.worker_pool.close_server(name)
             raise stale_error
+        if latest is not None and config_fingerprint(params) != config_fingerprint(latest):
+            await self.worker_pool.close_server(name)
+            worker = await self.worker_pool.acquire(name, latest, force_rebuild=True)
+            async with self._lock:
+                try:
+                    self._invoke_connect_params_locked(name)
+                except McpRegistryChatError as exc:
+                    await self.worker_pool.close_server(name)
+                    raise exc
         return worker
 
     async def snapshot_for_chat(
@@ -534,7 +639,7 @@ class McpServerRegistry:
         if unknown:
             raise UnknownMcpServerError(unknown)
         if disabled:
-            raise DisabledMcpServerError(disabled[0])
+            raise DisabledMcpServerError(disabled)
         return snapshots
 
     def start_scanner(self) -> None:
@@ -641,13 +746,14 @@ class McpServerRegistry:
     async def _discover(
         self, name: str, config: Mapping[str, Any]
     ) -> tuple[list[dict[str, Any]], dict[str, Any], str]:
+        timeout_s = _discover_timeout_s(config)
         try:
             tools, params = await asyncio.wait_for(
                 list_request_mcp_server_tools(name, dict(config)),
-                timeout=_MCP_SCAN_TIMEOUT_S,
+                timeout=timeout_s,
             )
         except asyncio.TimeoutError:
-            return [], {}, f"connect timeout after {int(_MCP_SCAN_TIMEOUT_S)}s"
+            return [], {}, f"connect timeout after {int(timeout_s)}s"
         except Exception as exc:
             return [], {}, str(exc)
         if not params:

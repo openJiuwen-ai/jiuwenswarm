@@ -20,6 +20,7 @@ from jiuwenswarm.common.mcp_config import (
 )
 from jiuwenswarm.common.mcp_server_registry import (
     DisabledMcpServerError,
+    GlobalMcpWorkerPool,
     McpRegistryChatError,
     McpRegistrySettings,
     McpServerRegistry,
@@ -319,6 +320,32 @@ def test_redact_auth_headers() -> None:
     masked = redact_mcp_config(_remote_cfg())
     assert masked["auth_headers"] == {"Authorization": "***"}
     assert masked["url"] == "https://example.com/mcp"
+
+
+def test_redact_url_query_secrets() -> None:
+    from urllib.parse import parse_qs, urlsplit
+
+    masked = redact_mcp_config(
+        {
+            "type": "streamable-http",
+            "url": "https://example.com/mcp?token=secret&api_key=abc&q=keep&signature=sig&key=k",
+            "auth_query_params": {"token": "yyy"},
+        }
+    )
+    assert "secret" not in masked["url"]
+    assert "abc" not in masked["url"]
+    query = {
+        key: values[0]
+        for key, values in parse_qs(
+            urlsplit(masked["url"]).query, keep_blank_values=True
+        ).items()
+    }
+    assert query["token"] == "***"
+    assert query["api_key"] == "***"
+    assert query["signature"] == "***"
+    assert query["key"] == "***"
+    assert query["q"] == "keep"
+    assert masked["auth_query_params"] == {"token": "***"}
 
 
 def test_extract_mcp_server_list() -> None:
@@ -1112,9 +1139,217 @@ async def test_scan_does_not_bump_version_when_only_tool_order_changes(
 
 
 def test_registry_scan_timeout_stays_30s() -> None:
-    from jiuwenswarm.common.mcp_server_registry import _MCP_SCAN_TIMEOUT_S
+    from jiuwenswarm.common.mcp_server_registry import (
+        _MCP_SCAN_TIMEOUT_S,
+        _discover_timeout_s,
+    )
     from jiuwenswarm.common import mcp_config
 
     assert _MCP_SCAN_TIMEOUT_S == 30.0
     assert mcp_config._MCP_CALL_TOOL_TIMEOUT_S == 300.0
     assert mcp_config._MCP_CONNECTOR_DISCOVERY_TIMEOUT_S == 300.0
+    assert _discover_timeout_s({"type": "streamable-http", "url": "https://example.com/mcp"}) == 30.0
+    assert _discover_timeout_s({"command": "node", "args": ["mcp.js"]}) == 300.0
+    assert _discover_timeout_s({"command": "npx", "args": ["-y", "x"], "timeout_s": 600}) == 600.0
+
+
+@pytest.mark.asyncio
+async def test_discover_passes_stdio_and_remote_timeouts(
+    registry: McpServerRegistry, monkeypatch
+) -> None:
+    seen: list[float] = []
+    orig_wait_for = asyncio.wait_for
+
+    async def capture_wait_for(coro, timeout=None):
+        seen.append(float(timeout))
+        return await orig_wait_for(coro, timeout=timeout)
+
+    async def fake_list(name, config):
+        return (
+            [{"name": f"{name}_tool", "description": "", "input_params": {}}],
+            {"_mcp_client_type": "stdio" if "command" in config else "streamable-http"},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        fake_list,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.asyncio.wait_for",
+        capture_wait_for,
+    )
+    _, _, err = await registry._discover("local", {"command": "node", "args": ["mcp.js"]})
+    assert err == ""
+    _, _, err = await registry._discover(
+        "remote", {"type": "streamable-http", "url": "https://example.com/mcp"}
+    )
+    assert err == ""
+    assert seen == [300.0, 30.0]
+
+
+@pytest.mark.asyncio
+async def test_update_aborts_when_config_changes_during_discover(
+    registry: McpServerRegistry, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    await registry.add_servers([_user_cfg()])
+
+    async def concurrent_discover(name, config):
+        registry._registry[name].config = {
+            **registry._registry[name].config,
+            "url": "https://example.com/other",
+        }
+        return (
+            [{"name": "new_tool", "description": "", "input_params": {}}],
+            {"_mcp_client_type": "streamable-http", "url": str(config.get("url"))},
+        )
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        concurrent_discover,
+    )
+    updated = await registry.update_servers(
+        [
+            {
+                "name": "chrome-devtools",
+                "type": "streamable-http",
+                "url": "https://example.com/third",
+            }
+        ]
+    )
+    assert updated[0]["ok"] is False
+    assert "conflict" in updated[0]["error"]
+    got = await registry.get_server("chrome-devtools")
+    assert got is not None
+    assert got["config"]["url"] == "https://example.com/other"
+    assert got["tools"][0]["name"] == "chrome-devtools_tool"
+
+
+@pytest.mark.asyncio
+async def test_force_rebuild_shuts_down_outside_pool_lock(monkeypatch) -> None:
+    pool = GlobalMcpWorkerPool()
+    started: list[int] = []
+    lock_held_during_shutdown: list[bool] = []
+
+    async def fake_run(params, worker):
+        started.append(1)
+        await worker.queue.get()
+
+    async def fake_shutdown(worker):
+        lock_held_during_shutdown.append(pool._lock.locked())
+
+    import jiuwenswarm.common.mcp_server_registry as registry_mod
+
+    real_shutdown = registry_mod.shutdown_pooled_mcp_worker
+
+    async def fake_shutdown(worker):
+        lock_held_during_shutdown.append(pool._lock.locked())
+        await real_shutdown(worker)
+
+    monkeypatch.setattr(registry_mod, "_run_mcp_worker", fake_run)
+    monkeypatch.setattr(registry_mod, "shutdown_pooled_mcp_worker", fake_shutdown)
+    await pool.acquire("s", {"url": "https://example.com/mcp"})
+    await _wait_until(lambda: started)
+    await pool.acquire("s", {"url": "https://example.com/mcp"}, force_rebuild=True)
+    assert lock_held_during_shutdown == [False]
+    await pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_acquire_rebuilds_when_connect_params_change_during_start(
+    monkeypatch,
+) -> None:
+    registry = reset_mcp_server_registry_for_tests()
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    await registry.add_servers([_user_cfg()])
+    seen: list[str] = []
+    orig_acquire = registry.worker_pool.acquire
+
+    async def wrapping_acquire(server_name, params, *, force_rebuild=False):
+        seen.append(str(params.get("url") or ""))
+        if len(seen) == 1:
+            registry._cache[server_name].connect_params = {
+                **dict(params),
+                "url": "https://example.com/other",
+            }
+        return await orig_acquire(server_name, params, force_rebuild=force_rebuild)
+
+    async def fake_run(params, worker):
+        await worker.queue.get()
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry._run_mcp_worker",
+        fake_run,
+    )
+    registry.worker_pool.acquire = wrapping_acquire  # type: ignore[method-assign]
+    await registry.acquire_worker("chrome-devtools")
+    assert seen[0] == "https://example.com/mcp"
+    assert "https://example.com/other" in seen
+    await registry.worker_pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_snapshot_disabled_reports_all_names(
+    registry: McpServerRegistry, monkeypatch
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    await registry.add_servers([_user_cfg("alpha"), _user_cfg("beta")])
+    registry._registry["alpha"].enabled = False
+    registry._registry["beta"].enabled = False
+    with pytest.raises(DisabledMcpServerError) as exc_info:
+        await registry.snapshot_for_chat(["alpha", "beta"])
+    assert exc_info.value.names == ["alpha", "beta"]
+    assert "alpha" in str(exc_info.value)
+    assert "beta" in str(exc_info.value)
+
+
+@pytest.mark.asyncio
+async def test_crud_handlers_forbidden_in_enterprise(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.mcp_servers.is_enterprise", lambda: True
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers.mcp_servers.encode_agent_response_for_wire",
+        lambda resp, response_id: {"ok": resp.ok, "payload": resp.payload},
+    )
+    from jiuwenswarm.server.handlers.mcp import _MCP_ENTERPRISE_FORBIDDEN
+
+    sent: list = []
+    await mcp_server_handlers.handle_mcp_server_add(
+        _handler_ctx({"servers": [_user_cfg()]}, sent)
+    )
+    assert sent[0]["ok"] is False
+    assert sent[0]["payload"]["code"] == "MCP_FORBIDDEN"
+    assert sent[0]["payload"]["action"] == "add"
+    assert sent[0]["payload"]["error"] == _MCP_ENTERPRISE_FORBIDDEN
+
+    sent.clear()
+    await mcp_server_handlers.handle_mcp_server_list(_handler_ctx({}, sent))
+    assert sent[0]["payload"]["code"] == "MCP_FORBIDDEN"
+    assert sent[0]["payload"]["action"] == "list"
+
+
+def test_enterprise_gateway_blocks_mcp_server_methods(monkeypatch) -> None:
+    from jiuwenswarm.gateway.channel_manager.web import invoke as web_invoke
+
+    monkeypatch.setattr(web_invoke, "is_enterprise", lambda: True)
+    for method in (
+        "mcp.server.add",
+        "mcp.server.remove",
+        "mcp.server.update",
+        "mcp.server.list",
+        "mcp.server.get",
+    ):
+        assert web_invoke.is_enterprise_write_forbidden(method)
+    monkeypatch.setattr(web_invoke, "is_enterprise", lambda: False)
+    assert not web_invoke.is_enterprise_write_forbidden("mcp.server.add")
+

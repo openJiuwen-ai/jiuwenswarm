@@ -1414,7 +1414,8 @@ hooks:
 
 mcp:
   servers: []
-  # 进程内 MCP 注册表（mcp.server.* / chat.send mcp_server_list）。也可由环境变量覆盖：
+  # 进程内 MCP 注册表（mcp.server.* / chat.send mcp_server_list）。内存态，不持久化（方案 D1）：
+  # 进程重启后清空，调用方收到 unknown mcp server 后重新 add。也可由环境变量覆盖：
   # MCP_REGISTRY_SCAN_INTERVAL_S / MCP_REGISTRY_SCAN_CONCURRENCY /
   # MCP_REGISTRY_WORKER_IDLE_TTL_S / MCP_REGISTRY_SCAN_FAIL_THRESHOLD
   # registry:
