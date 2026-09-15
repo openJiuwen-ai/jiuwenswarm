@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -47,6 +49,55 @@ def test_subagent_approval_answer_detection() -> None:
         "call_1",
         {"source": "permission_interrupt", "answers": ["本次允许"]},
     )
+
+
+def test_deep_agent_has_pending_interrupt_fail_open_without_session() -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = None
+    assert adapter._deep_agent_has_pending_interrupt() is True
+
+
+def test_deep_agent_has_pending_interrupt_reads_interruption_map() -> None:
+    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = SimpleNamespace(
+        _loop_session=SimpleNamespace(get_state=lambda _key: None)
+    )
+    assert adapter._deep_agent_has_pending_interrupt() is False
+
+    adapter._instance._loop_session.get_state = lambda _key: SimpleNamespace(
+        interrupted_tools={
+            "call_1": SimpleNamespace(tool_call=SimpleNamespace(name="bash"))
+        }
+    )
+    assert adapter._deep_agent_has_pending_interrupt() is True
+
+    adapter._instance._loop_session.get_state = lambda _key: SimpleNamespace(
+        interrupted_tools={}
+    )
+    assert adapter._deep_agent_has_pending_interrupt() is False
+
+
+def test_stale_idle_interrupt_resume_only_when_idle_and_no_pending() -> None:
+    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
+        is_interrupt_resume=True,
+        has_pending_interrupt=False,
+        attached_stream=object(),
+    ) is True
+    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
+        is_interrupt_resume=True,
+        has_pending_interrupt=True,
+        attached_stream=object(),
+    ) is False
+    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
+        is_interrupt_resume=True,
+        has_pending_interrupt=False,
+        attached_stream=None,
+    ) is False
+    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
+        is_interrupt_resume=False,
+        has_pending_interrupt=False,
+        attached_stream=object(),
+    ) is False
 
 
 @pytest.mark.asyncio

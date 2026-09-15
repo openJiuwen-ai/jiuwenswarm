@@ -43,6 +43,9 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     set_pre_invoke_todo_ids,
     set_current_invoke_todo_ids,
     get_pre_invoke_todo_ids,
+    set_todo_started_ids,
+    get_todo_started_ids,
+    clear_todo_started_ids,
 )
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
@@ -50,7 +53,7 @@ _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
 )
 # 不能用 ContextVar：skill_acceleration_exec 在 asyncio.gather 拷贝的
 # context 里 set，父任务读到的仍是默认 False，todo 的 task.start 照发，
-# 后续 [当前步骤] 就被前端任务栈吞进右侧。
+# 后续标准流横幅就被前端任务栈吞进右侧。
 _PPT_TURBO_KEEP_BUBBLE_LOCK = threading.Lock()
 _PPT_TURBO_KEEP_BUBBLE_TEXT = False
 _PPT_TURBO_KEEP_BUBBLE_SESSION = ""
@@ -103,7 +106,7 @@ def _ppt_turbo_keep_bubble_is_continuation(
     Permission / ask-user / confirm resume arrives as a new ``chat.send`` with
     ``skip_invoke=False`` and ``query`` rebuilt as ``InteractiveInput``. Treating
     that as a fresh user request would clear the keep-bubble flag, emit
-    ``task.start``, and the frontend would swallow later ``[当前步骤]``.
+    ``task.start``, and the frontend would swallow later standard-flow banners.
     """
     if skip_invoke or ctx.session is None:
         return True
@@ -145,17 +148,19 @@ def _ppt_turbo_keep_bubble_is_continuation(
     return is_resume_user_query(text)
 
 
-def _take_keep_bubble_step(task_content: str) -> str:
-    """Return the step line to emit, or empty if it is a duplicate."""
+def _keep_bubble_banner(task_content: str, *, done: bool) -> str:
+    """Append-only 开始/完成横幅；不要用 ``[当前步骤: …]``（Markdown 会吞掉）。"""
     global _PPT_TURBO_LAST_BUBBLE_STEP
     content = str(task_content or "").strip()
     if not content:
         return ""
+    verb = "完成执行" if done else "开始执行"
+    banner = f"{verb} {content}"
     with _PPT_TURBO_KEEP_BUBBLE_LOCK:
-        if content == _PPT_TURBO_LAST_BUBBLE_STEP:
+        if banner == _PPT_TURBO_LAST_BUBBLE_STEP:
             return ""
-        _PPT_TURBO_LAST_BUBBLE_STEP = content
-    return f"\n[当前步骤: {content}]\n"
+        _PPT_TURBO_LAST_BUBBLE_STEP = banner
+    return f"\n{banner}\n"
 
 
 _SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
@@ -1547,21 +1552,52 @@ class TaskExecutionRail(DeepAgentRail):
             list(self._active_tasks.keys()),
             skip_invoke,
         )
-        self._todo_map = {}
-        self._todo_map_before_tool = {}
-        self._active_tasks = {}
-        self._todo_started = set()
-        self._todo_complete_deferred = set()
-        self._todo_start_deferred = set()
-        self._tool_start_times = {}
-        _ACTIVE_TASK_ID.set(None)
         # 新用户请求清掉上一轮加速失败的「正文续写」标记。权限卡「本次允许」
         # 会再开一条 skip_invoke=False 的 chat.send，query 是 InteractiveInput，
-        # 不能当新任务清标记，否则随后 todo task.start 会把 [当前步骤] 吞进右侧。
+        # 不能当新任务清标记，否则随后 todo task.start 会把标准流横幅吞进右侧。
         # 子代理 before_invoke 没有 session，也不能清。
         keep_bubble_continuation = _ppt_turbo_keep_bubble_is_continuation(
             ctx, skip_invoke
         )
+        preserved_started: set[str] = set()
+        preserved_active: dict[str, TaskExecutionContext] = {}
+        if keep_bubble_continuation:
+            preserved_started = set(self._todo_started)
+            preserved_active = dict(self._active_tasks)
+            if ctx.session is not None:
+                try:
+                    preserved_started |= get_todo_started_ids(ctx.session)
+                except Exception:
+                    logger.debug(
+                        "[TaskExecutionRail] before_invoke: "
+                        "get_todo_started_ids failed",
+                        exc_info=True,
+                    )
+        self._todo_map = {}
+        self._todo_map_before_tool = {}
+        self._todo_complete_deferred = set()
+        self._todo_start_deferred = set()
+        self._tool_start_times = {}
+        if keep_bubble_continuation:
+            # Permission resume must not re-open the same in_progress todo.
+            # Clearing _todo_started here made lazy_start emit another task.start.
+            self._todo_started = preserved_started
+            self._active_tasks = preserved_active
+            if ctx.session is not None:
+                self._persist_todo_started(ctx.session)
+        else:
+            self._active_tasks = {}
+            self._todo_started = set()
+            if ctx.session is not None:
+                try:
+                    clear_todo_started_ids(ctx.session)
+                except Exception:
+                    logger.debug(
+                        "[TaskExecutionRail] before_invoke: "
+                        "clear_todo_started_ids failed",
+                        exc_info=True,
+                    )
+            _ACTIVE_TASK_ID.set(None)
         if not keep_bubble_continuation:
             if ppt_turbo_keep_bubble_text():
                 logger.info(
@@ -2114,6 +2150,28 @@ class TaskExecutionRail(DeepAgentRail):
                 sorted(self._todo_complete_deferred),
             )
 
+    def _persist_todo_started(self, session: Session | None) -> None:
+        if session is None:
+            return
+        try:
+            set_todo_started_ids(session, self._todo_started)
+        except Exception:
+            logger.debug(
+                "[TaskExecutionRail] persist todo_started failed",
+                exc_info=True,
+            )
+
+    def _remember_started_todo(
+        self,
+        session: Session | None,
+        task_id: str,
+    ) -> None:
+        raw_id = str(task_id or "").strip()
+        if not raw_id:
+            return
+        self._todo_started.add(raw_id)
+        self._persist_todo_started(session)
+
     # ------------------------------------------------------------------
     # State transition detection + event emission
     # ------------------------------------------------------------------
@@ -2183,6 +2241,18 @@ class TaskExecutionRail(DeepAgentRail):
                         task_id,
                         session_id,
                     )
+                    # Banner before the closing task.update so RelayClaw's
+                    # reconcileTaskProgress stack is still empty and the line
+                    # lands in the main bubble instead of the collapsible task panel.
+                    if ppt_turbo_keep_bubble_text(
+                        str(session_id or "").strip() or None
+                    ):
+                        await self._emit_keep_bubble_step(
+                            ctx.session,
+                            str(current.get("content", "")),
+                            done=False,
+                            request_id=parent_request_id,
+                        )
                 elif blocked:
                     self._todo_start_deferred.add(task_id)
                     logger.info(
@@ -2323,6 +2393,7 @@ class TaskExecutionRail(DeepAgentRail):
         source: Literal["todo"],
     ) -> None:
         full_task_id = f"{source}:{task_id}"
+        self._remember_started_todo(session, task_id)
 
         if full_task_id in self._active_tasks:
             _ACTIVE_TASK_ID.set(full_task_id)
@@ -2346,14 +2417,15 @@ class TaskExecutionRail(DeepAgentRail):
         except Exception:
             keep_sid = ""
         if ppt_turbo_keep_bubble_text(keep_sid or None):
-            logger.info(
-                "[TaskExecutionRail] skip task.start (keep bubble text "
-                "after ppt turbo fail): %s - %s",
-                full_task_id,
+            # Same order as SkillTurbo stage banners: body text first, then
+            # task.start. Otherwise RelayClaw buckets the line into taskRuns
+            # and hides it when the execution panel collapses at turn end.
+            await self._emit_keep_bubble_step(
+                session,
                 context.task_content,
+                done=False,
+                request_id=context.parent_request_id,
             )
-            await self._emit_keep_bubble_step(session, context.task_content)
-            return
 
         logger.info(
             "[TaskExecutionRail] task.start: %s - %s",
@@ -2387,29 +2459,64 @@ class TaskExecutionRail(DeepAgentRail):
         self,
         session: Session,
         task_content: str,
+        *,
+        done: bool,
+        request_id: str = "",
     ) -> None:
-        """Append the current standard-flow step to the left bubble."""
-        text = _take_keep_bubble_step(task_content)
+        """Live banner via content_chunk; persist chat.final so turn-end rebuild keeps it.
+
+        Do not write type=answer: ReAct treats that as the round result and stops.
+        """
+        text = _keep_bubble_banner(task_content, done=done)
         if not text:
             return
         try:
             await session.write_stream(
                 OutputSchema(
-                    type="llm_output",
+                    type="content_chunk",
                     index=0,
-                    payload={
-                        "content": text,
-                        "_bubble_progress": True,
-                    },
+                    payload={"content": text},
                 )
             )
             logger.info(
                 "[TaskExecutionRail] keep-bubble step: %s",
-                str(task_content or "").strip(),
+                text.strip(),
             )
         except Exception:
             logger.debug(
                 "[TaskExecutionRail] keep-bubble step emit failed",
+                exc_info=True,
+            )
+        try:
+            from jiuwenswarm.perf.context import get_request_context
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+            )
+
+            sid = str(session.get_session_id() or "").strip()
+            if not sid:
+                return
+            channel_id = "officeclaw"
+            try:
+                req_ctx = get_request_context(session_id=sid)
+                cid = str((req_ctx or {}).get("channel_id") or "").strip()
+                if cid:
+                    channel_id = cid
+            except Exception:
+                pass
+            append_history_record(
+                session_id=sid,
+                request_id=str(request_id or "").strip(),
+                channel_id=channel_id,
+                role="assistant",
+                event_type="chat.final",
+                content=text,
+                timestamp=time.time(),
+                extra={"keep_bubble_progress": True},
+            )
+        except Exception:
+            logger.debug(
+                "[TaskExecutionRail] keep-bubble history persist failed",
                 exc_info=True,
             )
 
@@ -2443,20 +2550,6 @@ class TaskExecutionRail(DeepAgentRail):
         if get_current_task_id() == full_task_id:
             _ACTIVE_TASK_ID.set(None)
 
-        keep_sid = ""
-        try:
-            keep_sid = str(session.get_session_id() or "").strip()
-        except Exception:
-            keep_sid = ""
-        if ppt_turbo_keep_bubble_text(keep_sid or None):
-            logger.info(
-                "[TaskExecutionRail] skip task.complete (keep bubble text "
-                "after ppt turbo fail): %s - %s",
-                full_task_id,
-                status,
-            )
-            return
-
         logger.info(
             "[TaskExecutionRail] task.complete: %s - %s (%dms)",
             full_task_id,
@@ -2485,6 +2578,21 @@ class TaskExecutionRail(DeepAgentRail):
             logger.debug(
                 "[TaskExecutionRail] task.complete emit failed",
                 exc_info=True,
+            )
+
+        keep_sid = ""
+        try:
+            keep_sid = str(session.get_session_id() or "").strip()
+        except Exception:
+            keep_sid = ""
+        if ppt_turbo_keep_bubble_text(keep_sid or None):
+            # After task.complete the task stack is popped, so this line stays
+            # in the main bubble (SkillTurbo: banner after complete).
+            await self._emit_keep_bubble_step(
+                session,
+                task_content,
+                done=True,
+                request_id=parent_request_id,
             )
 
     async def _emit_task_update_event(

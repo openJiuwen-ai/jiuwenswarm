@@ -60,8 +60,12 @@ async def test_skill_turbo_prompt_injected_when_tool_enabled():
     content = builder.sections[_SECTION_NAME].content["cn"]
     assert "skill_acceleration_exec" in content
     assert "必须" in content and "skill_tool" in content
-    assert "回复正文" in content
-    assert "[当前步骤:" in content
+    assert "已加载 pptx-craft" in content
+    assert "开始执行" in content
+    assert "完成执行" in content
+    assert "禁止自行输出 `[当前步骤:" in content
+    assert "task_tool" in content
+    assert "page-*.pptx.html" in content
     assert rail._agent is deep
 
 

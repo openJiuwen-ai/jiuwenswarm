@@ -511,9 +511,12 @@ def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
         "PPT 生成失败：未产出可交付的 pptx 文件。"
         "请立即调用 skill_tool 加载 pptx-craft 标准技能流继续完成用户任务。"
         "加速阶段过程已展示给用户，不要重复声称加速已成功或已交付，也不要重复加速通道的阶段横幅。"
-        "标准技能流的进度必须写在用户可见的回复正文中（与全新 skill_tool 运行相同："
-        "先写已加载技能与 [当前步骤: ...]，再调用工具），禁止只发工具调用、把进度只留在折叠工具列表里。"
-        "不要告知用户已经生成成功。"
+        "标准技能流的「开始执行 / 完成执行」横幅由运行时写入正文。"
+        "请先写已加载技能，再调用工具；禁止只发工具调用、把进度只留在折叠工具列表里。"
+        "不要自己输出 [当前步骤: ...]，不要告知用户已经生成成功。"
+        "盘点已有产物时只看目录、文件名和大小；禁止把 pages/page-*.pptx.html"
+        "或风格/研究全文读进父代理。"
+        "缺失页面必须用 task_tool 按页并行生成 HTML，父代理不要自己 read 模板再 write 整页。"
     )
 
 
@@ -949,7 +952,7 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
         release_checkpoint = True
         ppt_fail = _ppt_delivery_failed_error(skill_turbo_inst.artifact_holder)
         if ppt_fail:
-            # 降级后外层 todo 的 task.start 会把后续 [当前步骤] 吞进右侧任务栈。
+            # 降级后外层 todo 的 task.start 会把后续标准流横幅吞进右侧任务栈。
             # 右侧仍靠 task.update 刷新；左边正文继续接在加速 14 步后面写。
             # 必须写模块级标记，不能靠 ContextVar：本工具在 gather 拷贝
             # 上下文里执行，set 进 ContextVar 出不了父任务。
