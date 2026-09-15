@@ -20,6 +20,7 @@ from openjiuwen.harness.rails.interrupt.confirm_rail import (
 )
 
 from jiuwenclaw.agentserver.permissions.core import PermissionEngine, get_permission_engine
+from jiuwenclaw.agentserver.llm_usage import emit_llm_usage_to_session
 from jiuwenclaw.agentserver.permissions.file_guard import persist_file_operations_allow
 from jiuwenclaw.agentserver.permissions.files.registry import lookup_file_tool_specs
 from jiuwenclaw.agentserver.permissions.models import FileOperation
@@ -899,6 +900,7 @@ class PermissionInterruptRail(ConfirmInterruptRail):
                 tool_name=normalized_name,
                 tool_args=tool_args,
                 channel_id=self._resolve_channel_id(),
+                usage_callback=lambda usage: emit_llm_usage_to_session(ctx.session, usage),
             )
 
             if result.permission == PermissionLevel.ALLOW:

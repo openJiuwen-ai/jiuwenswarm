@@ -76,6 +76,23 @@ class DeepAdapterHarness(interface_deep_module.JiuWenClawDeepAdapter):
         return _build_context_engineering_rail(config, "agent.plan")
 
 
+def test_interface_deep_marks_answer_final_as_non_terminal_payload():
+    adapter = DeepAdapterHarness()
+
+    parsed = adapter._parse_stream_chunk(
+        types.SimpleNamespace(
+            type="answer",
+            payload={"output": "done"},
+        )
+    )
+
+    assert parsed == {
+        "event_type": "chat.final",
+        "content": "done",
+        "is_complete": False,
+    }
+
+
 def fake_encode_agent_response_for_wire(resp, response_id):
     return {
         "response_id": response_id,

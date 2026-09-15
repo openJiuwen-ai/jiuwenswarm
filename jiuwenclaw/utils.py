@@ -478,8 +478,15 @@ def _resolve_logging_levels(
     agent_server = _coerce("agent_server")
     full = _coerce("full")
 
-    if log_level_override is not None:
-        v = _parse_log_level(log_level_override)
+    # ``LOG_LEVEL`` intentionally controls console output only.  The prefixed
+    # setting is an explicit process-level override for every handler, which
+    # lets an embedding host enable diagnostic file traces without mutating
+    # the user's config.yaml.
+    effective_override = (
+        log_level_override if log_level_override is not None else os.getenv("JIUWENCLAW_LOG_LEVEL")
+    )
+    if effective_override is not None:
+        v = _parse_log_level(effective_override)
         console = gateway = channel = agent_server = full = v
         logger_level = v
     else:
@@ -2854,7 +2861,8 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     所有分类日志同时写入 ``full.log``。输出目录：``~/.jiuwenclaw/agent/.logs/``。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
-    （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
+    （``log_level`` 参数为 ``None`` 时）。``JIUWENCLAW_LOG_LEVEL`` 或传入 ``log_level``
+    会同时覆盖控制台与各文件级别，且显式参数优先（如单测）。
 
     扩展功能：
     - format 配置（text/json/dual）：通过 config.yaml 或 JIUWENCLAW_LOG_FORMAT 环境变量控制

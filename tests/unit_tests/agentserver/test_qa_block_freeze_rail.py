@@ -421,6 +421,58 @@ class TestQABlockFreezeRailInteractiveResume(unittest.IsolatedAsyncioTestCase):
             [message.content for message in messages],
         )
 
+    async def test_sync_freeze_legacy_freezer_wraps_stream_model_for_usage(self) -> None:
+        """Legacy AgentCore lacks the callback kwarg but must still report L1 usage."""
+        captured: dict[str, Any] = {}
+
+        async def legacy_freeze(
+            _session: Any,
+            _context: Any,
+            _history: Any,
+            _store: Any,
+            *,
+            status: str,
+            persist_mode: str,
+            preloaded_qa_ids: list[str] | None,
+            summarizer_model: Any,
+            post_commit: Any,
+        ) -> Any:
+            captured.update(
+                status=status,
+                persist_mode=persist_mode,
+                preloaded_qa_ids=preloaded_qa_ids,
+                summarizer_model=summarizer_model,
+                post_commit=post_commit,
+            )
+            return _make_commit().entry
+
+        async def stream(*_args: Any, **_kwargs: Any):
+            yield SimpleNamespace(
+                content="summary",
+                usage_metadata={"input_tokens": 12, "output_tokens": 3, "total_tokens": 15},
+            )
+
+        self.rail._freezer = SimpleNamespace(freeze=legacy_freeze)
+        ctx, context_engine, session = _make_interactive_freeze_ctx()
+        session.write_stream = AsyncMock()
+        model = SimpleNamespace(stream=stream)
+
+        with patch.object(_module, "resolve_context_engine", return_value=context_engine), patch.object(
+            _module, "resolve_summarizer_model", return_value=model
+        ), patch.object(_module, "clear_assembly_committed_qa_id"), patch.object(
+            _module, "QABlockStore", return_value=MagicMock()
+        ), patch.object(_module, "post_agent_execute_for_session", new_callable=AsyncMock):
+            await self.rail.after_invoke(ctx)
+
+        wrapped_model = captured["summarizer_model"]
+        self.assertIsInstance(wrapped_model, _module.AuxiliaryUsageReportingModel)
+        streamed = [chunk async for chunk in wrapped_model.stream(messages=[])]
+
+        self.assertEqual(len(streamed), 1)
+        usage_event = session.write_stream.await_args.args[0]
+        self.assertEqual(usage_event.type, "llm_usage")
+        self.assertEqual(usage_event.payload["usage_metadata"]["total_tokens"], 15)
+
 
 class TestQABlockFreezeRailFirstAskPlainQuery(unittest.IsolatedAsyncioTestCase):
     """First permission ASK on a normal user query must not freeze (same-QA keep)."""
@@ -465,6 +517,28 @@ class TestQABlockFreezeRailFirstAskPlainQuery(unittest.IsolatedAsyncioTestCase):
             await self.rail.after_invoke(ctx)
 
         self.freeze_mock.assert_awaited_once()
+
+    async def test_after_invoke_keeps_usage_stream_open_until_freeze_persist_finishes(self) -> None:
+        ctx, context_engine, session = _make_freeze_ctx(query="请生成一个 skill")
+        session.write_stream = AsyncMock()
+        ctx.inputs.result = {"result_type": "answer", "output": "done"}
+        with patch.object(_module, "resolve_context_engine", return_value=context_engine), patch.object(
+            _module, "resolve_summarizer_model", return_value=None
+        ), patch.object(_module, "clear_assembly_committed_qa_id"), patch.object(
+            _module, "QABlockStore", return_value=MagicMock()
+        ), patch.object(_module, "post_agent_execute_for_session", new_callable=AsyncMock):
+            await self.rail.after_invoke(ctx)
+
+        freeze_kwargs = self.freeze_mock.await_args.kwargs
+        self.assertEqual(freeze_kwargs["persist_mode"], "sync")
+        usage_callback = freeze_kwargs["llm_usage_callback"]
+        await usage_callback(
+            SimpleNamespace(input_tokens=123, output_tokens=45, total_tokens=168)
+        )
+
+        usage_event = session.write_stream.await_args.args[0]
+        self.assertEqual(usage_event.type, "llm_usage")
+        self.assertEqual(usage_event.payload["usage_metadata"]["total_tokens"], 168)
 
     async def test_settled_result_with_stale_key_freezes_and_clears_key(self) -> None:
         """Explicit answer + leftover INTERRUPTION_KEY → freeze and clear (not mis-skip)."""
