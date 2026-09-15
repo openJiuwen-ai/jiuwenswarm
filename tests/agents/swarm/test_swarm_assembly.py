@@ -1104,20 +1104,21 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
                 {
                     "name": "local_tool",
                     "enabled": True,
-                    "transport": "sse",
-                    "url": "http://127.0.0.1:18013/sse",
+                    "transport": "stdio",
+                    "command": "python",
+                    "args": ["server.py"],
+                    "cwd": str(tmp_path),
                 },
                 {
                     "name": "disabled_tool",
                     "enabled": False,
-                    "transport": "sse",
-                    "url": "http://127.0.0.1:18014/sse",
+                    "transport": "stdio",
+                    "command": "python",
                 },
                 {
                     "name": "invalid_tool",
                     "enabled": True,
                     "transport": "stdio",
-                    "command": "python",
                 },
             ],
         },
@@ -1136,8 +1137,12 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
     assert [cfg.server_name for cfg in leader_mcps] == ["local_tool"]
     assert [cfg.server_name for cfg in teammate_mcps] == ["local_tool"]
     assert leader_mcps[0].server_id == teammate_mcps[0].server_id
-    assert leader_mcps[0].client_type == "sse"
-    assert leader_mcps[0].server_path == "http://127.0.0.1:18013/sse"
+    assert leader_mcps[0].client_type == "stdio"
+    assert leader_mcps[0].params == {
+        "command": "python",
+        "args": ["server.py"],
+        "cwd": str(tmp_path),
+    }
 
 
 def test_enrich_skips_absent_roles_gracefully() -> None:

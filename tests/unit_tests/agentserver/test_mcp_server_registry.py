@@ -118,22 +118,22 @@ async def test_add_duplicate_and_invalid(registry: McpServerRegistry, monkeypatc
     assert again[0]["error"] == "already exists"
     assert again[1]["ok"] is False
     assert (
-        "仅支持" in again[1]["error"]
-        or "stdio" in again[1]["error"].lower()
-        or "已禁用" in again[1]["error"]
-        or "安全拦截" in again[1]["error"]
+        "安全拦截" in again[1]["error"]
         or "dangerous" in again[1]["error"].lower()
         or "-e" in again[1]["error"]
     )
 
 
 @pytest.mark.asyncio
-async def test_add_rejects_stdio_user_connector(registry: McpServerRegistry, monkeypatch) -> None:
+async def test_add_accepts_stdio_user_connector(registry: McpServerRegistry, monkeypatch) -> None:
     called: list[str] = []
 
     async def discover(name, config):
         called.append(name)
-        return [], {}
+        return (
+            [{"name": "local_tool", "description": "d", "input_params": {}}],
+            {"_mcp_client_type": "stdio", "command": "node", "args": ["mcp.js"]},
+        )
 
     monkeypatch.setattr(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
@@ -142,10 +142,10 @@ async def test_add_rejects_stdio_user_connector(registry: McpServerRegistry, mon
     results = await registry.add_servers(
         [{"name": "local", "command": "node", "args": ["mcp.js"]}]
     )
-    assert results[0]["ok"] is False
-    assert "仅支持" in results[0]["error"] or "stdio" in results[0]["error"].lower() or "已禁用" in results[0]["error"]
-    assert called == []
-    assert await registry.list_servers() == []
+    assert results[0]["ok"] is True
+    assert called == ["local"]
+    listed = await registry.list_servers()
+    assert listed[0]["name"] == "local"
 
 
 @pytest.mark.asyncio
