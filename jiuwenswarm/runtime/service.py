@@ -2094,14 +2094,16 @@ class AgentRuntime:
                     session_id=request.session_id,
                     default_agent_ref=request.agent_ref,
                 )
-                if (
-                    forward_permission_ack and on_control_event is not None
-                    and event.event_type == "runtime.accepted"
-                    and event.request_id == request.request_id
-                    and event.session_id == request.session_id
-                    and event.payload.get("request_id") == request.request_id
-                    and event.payload.get("session_id", event.session_id) == request.session_id
-                ):
+                matching_ack = False
+                if forward_permission_ack and on_control_event is not None:
+                    matching_ack = (
+                        event.event_type == "runtime.accepted"
+                        and event.request_id == request.request_id
+                        and event.session_id == request.session_id
+                        and event.payload.get("request_id") == request.request_id
+                        and event.payload.get("session_id", event.session_id) == request.session_id
+                    )
+                if matching_ack:
                     await on_control_event(event)
                 else:
                     events.append(event)

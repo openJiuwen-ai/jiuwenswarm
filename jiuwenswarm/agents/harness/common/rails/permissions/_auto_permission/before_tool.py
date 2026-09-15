@@ -46,7 +46,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
-from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import trusted_readonly_binding
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
+    trusted_readonly_binding,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
 )

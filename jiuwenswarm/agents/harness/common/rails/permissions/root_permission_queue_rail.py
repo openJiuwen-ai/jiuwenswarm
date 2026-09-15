@@ -352,18 +352,30 @@ class RootPermissionQueueRail(AgentRail):
             dispatch = getattr(resource, "_call_tool", None)
             owner = getattr(dispatch, "__self__", None)
             parsed = ToolCallInput.model_validate_json(call.arguments)
-            if (
-                card is not marker.card or card.state not in {"pending", "resuming"}
-                or card.key.root_session_id != binding.root_session_id
-                or call != marker.tool_call or ctx.inputs.tool_args != call.arguments
-                or ctx.inputs.tool_name != call.name
-                or parsed.name != card.tool_name
-                or type(resource) is not ToolCallTool or resource.card is not registered
-                or type(owner) is not ProgressiveToolRail
-                or getattr(dispatch, "__func__", None) is not ProgressiveToolRail._call_discovered_tool
-                or owner._tool_search_registry is not manager
-                or owner._owned_tool_cards.get(call.name) is not registered
-            ):
+            card_matches = (
+                card is marker.card and card.state in {"pending", "resuming"}
+                and card.key.root_session_id == binding.root_session_id
+            )
+            if not card_matches:
+                raise RootPermissionQueueError("permission_wrapper_resume_mismatch")
+            call_matches = (
+                call == marker.tool_call and ctx.inputs.tool_args == call.arguments
+                and ctx.inputs.tool_name == call.name and parsed.name == card.tool_name
+            )
+            # Subclasses are not the verified wrapper/dispatcher implementations.
+            exact_tool = type(resource) is ToolCallTool  # pylint: disable=huawei-unidiomatic-typecheck
+            exact_owner = type(owner) is ProgressiveToolRail  # pylint: disable=huawei-unidiomatic-typecheck
+            if not call_matches or not exact_tool or not exact_owner:
+                raise RootPermissionQueueError("permission_wrapper_resume_mismatch")
+            # These SDK internals identify the real dispatcher and its registration owner.
+            expected_dispatch = ProgressiveToolRail._call_discovered_tool  # pylint: disable=protected-access
+            binding_matches = (
+                resource.card is registered
+                and getattr(dispatch, "__func__", None) is expected_dispatch
+                and owner._tool_search_registry is manager  # pylint: disable=protected-access
+                and owner._owned_tool_cards.get(call.name) is registered  # pylint: disable=protected-access
+            )
+            if not binding_matches:
                 raise RootPermissionQueueError("permission_wrapper_resume_mismatch")
             setattr(ctx, ROOT_PERMISSION_WRAPPER_ATTRIBUTE, marker)
             return

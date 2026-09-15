@@ -380,15 +380,18 @@ def _closed_internal_args_valid(facts: ToolDecisionFacts, network: Any) -> bool:
             return args.keys() <= {"scope"} and args.get("scope") in (None, "current")
         if name == "convert_timestamp_to_utc8_time":
             value = args.get("timestamp")
-            return args.keys() == {"timestamp"} and (
-                type(value) is int or (type(value) is float and math.isfinite(value))
-            )
+            # Accept only JSON numbers, not bool or subclasses with custom numeric behavior.
+            integer = type(value) is int  # pylint: disable=huawei-unidiomatic-typecheck
+            floating = type(value) is float  # pylint: disable=huawei-unidiomatic-typecheck
+            return args.keys() == {"timestamp"} and (integer or (floating and math.isfinite(value)))
         field = "job_id" if name.startswith(("cron_", "heartbeat_")) else "terminal_id"
         preview = name.endswith("preview_job")
+        # bool is an int subclass but is not a valid preview count.
+        integer_count = type(args.get("count")) is int  # pylint: disable=huawei-unidiomatic-typecheck
         return bool(
             args.keys() <= ({field, "count"} if preview else {field})
             and isinstance(args.get(field), str) and args[field].strip()
-            and ("count" not in args or type(args["count"]) is int)
+            and ("count" not in args or integer_count)
         )
     if family == "session_status":
         return not args
