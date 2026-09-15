@@ -9,6 +9,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import shutil
 import threading
 from collections.abc import Callable
@@ -22,6 +23,8 @@ from jiuwenswarm.agents.harness.common.rsi.models import (
     TaskStatus,
     utcnow_iso,
 )
+
+logger = logging.getLogger(__name__)
 
 #: 合法状态迁移表（内部 v3 §6）。key=当前状态；value=允许迁移到的状态。
 _STATUS_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
@@ -95,7 +98,11 @@ class RsiTaskStore:
         return tasks
 
     def delete(self, task_id: str, *, forbid_running: bool = True, forbid_active_artifact: bool = True) -> None:
-        """删除任务（一致性规则 §8.2：运行中/排队/暂停/在用产物不可删）。"""
+        """删除任务：先移除列表索引，再尽力清理物理目录。
+
+        一致性规则 §8.2 仍禁止删除运行中/排队/暂停/在用产物；索引删除失败
+        会继续向上抛出，索引成功后的物理清理失败则只记录日志。
+        """
         task = self.get(task_id)
         state = TaskStatus(task.status)
         if forbid_running and state in _NON_DELETABLE_STATES:
@@ -109,10 +116,21 @@ class RsiTaskStore:
                     raise RsiTaskStateConflict(f"任务 {task_id} 产物仍在生效，不可删除")
         task_dir = self.task_dir(self.tasks_root, task_id)
         with _LOCK:
+            task_file = task_dir / "task.json"
             try:
-                shutil.rmtree(task_dir)
+                task_file.unlink()
             except FileNotFoundError:
-                pass  # 目录已不存在视为删除成功（幂等）
+                pass  # 索引已不存在视为删除成功（幂等）
+            try:
+                shutil.rmtree(task_dir, ignore_errors=True)
+            except Exception:
+                # 索引已删除后，任务不会再出现在列表中；目录清理仅尽力而为。
+                logger.warning(
+                    "[RSI] failed to clean task directory for task %s: %s",
+                    task_id,
+                    task_dir,
+                    exc_info=True,
+                )
 
     # -- 状态机 --
 
