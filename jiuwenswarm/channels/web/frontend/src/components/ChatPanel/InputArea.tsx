@@ -20,7 +20,7 @@
 import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import type { TFunction } from 'i18next';
-import { AtSign, ChevronRight, CircleX, Loader2, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
+import { AtSign, ChevronRight, CircleX, Loader2, Lock, Mic, Plus, Settings, Square, Workflow, X } from 'lucide-react';
 
 // import { stopAllTts } from '../../utils';
 import {
@@ -63,7 +63,7 @@ import { ExtensionPickerPanel } from './ExtensionPickerPanel';
 import { SkillPickerPanel } from './SkillPickerPanel';
 import { PickerPanel } from './PickerPanel';
 import { Switch } from '../Switch';
-import { Input, Tabs } from '../ui';
+import { Input } from '../ui';
 import { Select } from '../ui/Select/Select';
 import { ExtensionIcon } from '../ConnectorMarket/icons';
 import {
@@ -120,6 +120,7 @@ function PersonalContextIcon(props: SVGProps<SVGSVGElement>) {
 const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
 const AGENT_PICKER_ROW_HEIGHT = 40;
+const GROUP_PICKER_ROW_HEIGHT = 40;
 
 function resolveMenuDirection(anchorBottom: number, menuHeight: number) {
   const spaceBelow = window.innerHeight - anchorBottom - MENU_GAP;
@@ -132,7 +133,14 @@ import { TeamMemberAvatar } from '../TeamMemberAvatar';
 import { CodeBranchSelector } from '../../features/code-mode/CodeBranchSelector';
 import { generateUuidV4 } from '../../utils/uuid';
 import { buildInstalledSkillNames, filterEnabledMySkills } from '../../utils/mySkills';
-import { createAgentManagementClient, getAgentAvatarUrl, type AgentCatalogItem } from '../../features/agentManagement';
+import {
+  createAgentManagementClient,
+  createAgentGroupManagementClient,
+  getAgentAvatarUrl,
+  type AgentCatalogItem,
+  type AgentGroupCatalogItem,
+  type AgentGroupIdentity,
+} from '../../features/agentManagement';
 import { ContextUsageIndicator } from './ContextUsageIndicator';
 import { isImeCompositionKey } from './imeComposition';
 import { useTaskAsr } from '../../features/taskAsr/useTaskAsr';
@@ -277,6 +285,8 @@ interface InputAreaProps {
   onNavigateToSkills?: () => void;
   /** 跳转到智能体管理页 */
   onNavigateToAgents?: () => void;
+  /** Keeps the selected Expert Team identity available to the conversation surface. */
+  onAgentGroupIdentityChange?: (identity: AgentGroupIdentity | null) => void;
   permissionsEnabled: boolean;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** 目标待设置态（"+"菜单选了「目标」）下发送时调用，取代普通 onSubmit/排队逻辑 */
@@ -635,6 +645,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     autoFocusKey = null,
     onNavigateToSkills,
     onNavigateToAgents,
+    onAgentGroupIdentityChange,
     permissionsEnabled,
     onSavePermission,
     onSetGoal,
@@ -661,6 +672,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
   const [agentPickerOpen, setAgentPickerOpen] = useState(false);
   const [agentPickerQuery, setAgentPickerQuery] = useState('');
+  const [pickerTab, setPickerTab] = useState<'agent' | 'group'>('agent');
   const { tooltip: agentTooltipNode, handlers: agentTooltipHandlers } = useAdaptiveTooltip({ offsetX: -50 });
   const { tooltip: attachTooltipNode, handlers: attachTooltipHandlers } = useAdaptiveTooltip();
   const [hoveredOptionDesc, setHoveredOptionDesc] = useState<string | null>(null);
@@ -668,6 +680,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>([]);
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
+  const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
+  const [groupOptionsStatus, setGroupOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
+  const [failedGroupAvatarIds, setFailedGroupAvatarIds] = useState<ReadonlySet<string>>(() => new Set());
+  const groupManagementClient = useMemo(() => createAgentGroupManagementClient(), []);
 
   useEffect(() => {
     if (!projectDirError || workDialogOpen) return;
@@ -734,6 +750,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return intent?.kind === 'select' ? intent.id : null;
   });
   const setAgentSelectionIntent = useSessionStore((s) => s.setAgentSelectionIntent);
+  const setAgentGroupSelectionIntent = useSessionStore((s) => s.setAgentGroupSelectionIntent);
+  const clearAgentGroupSelectionIntent = useSessionStore((s) => s.clearAgentGroupSelectionIntent);
+  const clearSelectedSkills = useSessionStore((s) => s.clearSelectedSkills);
   const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId) ?? null;
   const installedAgentOptions = useMemo(
     () =>
@@ -747,9 +766,37 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       `${item.displayName} ${item.description} ${item.category}`.toLocaleLowerCase().includes(query),
     );
   }, [agentPickerQuery, installedAgentOptions]);
+  const selectedGroupId = useSessionStore((s) => {
+    const runtime = s.runtimes[activeSessionId ?? ''];
+    if (runtime?.mode !== 'team') return null;
+    if (runtime.agentGroupBinding?.trim()) return runtime.agentGroupBinding.trim();
+    if (activeSessionId !== NEW_CONVERSATION_ID && !runtime.agentGroupBindingPending?.trim()) return null;
+    const intent = runtime.agentGroupSelectionIntent;
+    return intent?.kind === 'select' ? intent.id : null;
+  });
+  const agentGroupBinding = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBinding ?? null);
+  const agentGroupBindingPending = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.agentGroupBindingPending ?? null);
+  const agentGroupLocked = Boolean(agentGroupBinding || agentGroupBindingPending);
+  const selectedGroup = groupOptions.find((item) => item.id === selectedGroupId) ?? null;
+  const installedGroupOptions = useMemo(
+    () => groupOptions.filter((item) => item.installed && item.capabilities.canUse),
+    [groupOptions],
+  );
+  const filteredGroupOptions = useMemo(() => {
+    const query = agentPickerQuery.trim().toLocaleLowerCase();
+    if (!query) return installedGroupOptions;
+    return installedGroupOptions.filter((item) =>
+      `${item.displayName} ${item.description} ${item.category} ${item.tags.map((tag) => tag.label).join(' ')}`.toLocaleLowerCase().includes(query),
+    );
+  }, [agentPickerQuery, installedGroupOptions]);
 
   useEffect(() => {
-    if (!activeSessionId || (!agentPickerOpen && !selectedAgentId)) return;
+    if (!onAgentGroupIdentityChange) return;
+    onAgentGroupIdentityChange(selectedGroupId && selectedGroup ? selectedGroup : null);
+  }, [onAgentGroupIdentityChange, selectedGroup, selectedGroupId]);
+
+  useEffect(() => {
+    if (!activeSessionId || (pickerTab !== 'agent' && !selectedAgentId) || (!agentPickerOpen && !selectedAgentId)) return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
     void agentManagementClient
@@ -769,12 +816,31 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return () => {
       cancelled = true;
     };
-  }, [activeSessionId, agentManagementClient, agentPickerOpen, selectedAgentId]);
+  }, [activeSessionId, agentManagementClient, agentPickerOpen, pickerTab, selectedAgentId]);
+
+  useEffect(() => {
+    if (!activeSessionId || (!agentPickerOpen && !selectedGroupId) || (pickerTab !== 'group' && !selectedGroupId)) return;
+    let cancelled = false;
+    setGroupOptionsStatus('loading');
+    void groupManagementClient.listGroups({ filter: 'local' })
+      .then((items) => {
+        if (cancelled) return;
+        setGroupOptions(items);
+        setGroupOptionsStatus('success');
+      })
+      .catch(() => {
+        if (!cancelled) setGroupOptionsStatus('error');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeSessionId, agentPickerOpen, groupManagementClient, pickerTab, selectedGroupId]);
 
   useEffect(() => {
     if (attachMenuOpen) return;
     setAgentPickerOpen(false);
     setAgentPickerQuery('');
+    setPickerTab('agent');
   }, [attachMenuOpen]);
   const isPaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isPaused ?? false);
   const queuePaused = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.queuePaused ?? false);
@@ -808,11 +874,21 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const isAgentMode = mode === 'agent';
   const isTeamMode = mode === 'team';
   const isAutoHarnessMode = mode === 'auto_harness';
+  const existingTeamGroupSelectionDisabled = Boolean(
+    isTeamMode
+    && activeSessionId !== NEW_CONVERSATION_ID
+    && !agentGroupBinding
+    && !agentGroupBindingPending,
+  );
+  const agentGroupPickerLocked = agentGroupLocked || existingTeamGroupSelectionDisabled;
+  const agentSelectionDisabled = isTeamMode;
+  const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked;
 
   useEffect(() => {
     if (!isTeamMode) return;
     setAgentPickerOpen(false);
     setAgentPickerQuery('');
+    setPickerTab('group');
   }, [isTeamMode]);
 
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
@@ -3123,9 +3199,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                             <span className="chat-mode-select__label">{t('chat.addFile')}</span>
                           </span>
                         </button>
-                        {!isTeamMode && (
-                          <>
-                            <div className="chat-attach-menu-item-anchor">
+                        <div className="chat-attach-menu-item-anchor">
                               <button
                                 type="button"
                                 className={clsx(
@@ -3137,6 +3211,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 aria-expanded={agentPickerOpen}
                                 data-testid="chat-panel-input-attach-menu-agent"
                                 onClick={() => {
+                                  if (!agentPickerOpen) setPickerTab(isTeamMode ? 'group' : 'agent');
                                   setAgentPickerOpen((open) => !open);
                                   setExtensionPanelOpen(false);
                                   setSkillPanelOpen(false);
@@ -3164,18 +3239,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   ariaLabel={t('chat.agent')}
                                   testId="chat-panel-agent-picker-panel"
                                   onMouseEnter={() => setAgentPickerOpen(true)}
-                                  rowHeight={AGENT_PICKER_ROW_HEIGHT}
-                                  itemCount={filteredAgentOptions.length}
+                                  rowHeight={pickerTab === 'group' ? GROUP_PICKER_ROW_HEIGHT : AGENT_PICKER_ROW_HEIGHT}
+                                  itemCount={pickerTab === 'group' ? filteredGroupOptions.length : filteredAgentOptions.length}
                                   tabs={
-                                    <Tabs
-                                      role="tablist"
-                                      ariaLabel={t('agentManagement.detail.tabsLabel')}
-                                      wrapperTestId="chat-panel-agent-picker-tabs"
-                                      bordered
-                                      className="mb-4 text-sm"
-                                      value="agent"
-                                      items={[{ value: 'agent', label: t('chat.agent') }]}
-                                    />
+                                    <div className="chat-picker-panel__tabs" role="tablist" aria-label={t('agentManagement.tabsLabel')}>
+                                      <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
+                                      <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
+                                    </div>
                                   }
                                   search={
                                     <label className="chat-picker-panel__search">
@@ -3185,7 +3255,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                           type="search"
                                           value={agentPickerQuery}
                                           onChange={(event) => setAgentPickerQuery(event.target.value)}
-                                          placeholder={t('chat.agentSearchPlaceholder')}
+                                          placeholder={t(pickerTab === 'group' ? 'chat.agentGroupSearchPlaceholder' : 'chat.agentSearchPlaceholder')}
                                           data-testid="chat-panel-agent-picker-search-input"
                                         />
                                       </div>
@@ -3199,7 +3269,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                     },
                                   }}
                                 >
-                                  {agentOptionsStatus === 'loading' ? (
+                                  {pickerTab === 'agent' && agentOptionsStatus === 'loading' ? (
                                     <div
                                       className="chat-agent-picker__state"
                                       data-testid="chat-panel-agent-picker-state"
@@ -3207,7 +3277,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                     >
                                       {t('common.loading')}
                                     </div>
-                                  ) : agentOptionsStatus === 'error' ? (
+                                  ) : pickerTab === 'agent' && agentOptionsStatus === 'error' ? (
                                     <div
                                       className="chat-agent-picker__state"
                                       data-testid="chat-panel-agent-picker-state"
@@ -3215,7 +3285,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                     >
                                       {t('agentManagement.states.loadError')}
                                     </div>
-                                  ) : filteredAgentOptions.length === 0 ? (
+                                  ) : pickerTab === 'agent' && filteredAgentOptions.length === 0 ? (
                                     <div
                                       className="chat-agent-picker__state"
                                       data-testid="chat-panel-agent-picker-state"
@@ -3225,7 +3295,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                         ? t('chat.agentNoInstalled')
                                         : t('chat.agentNoMatches')}
                                     </div>
-                                  ) : (
+                                  ) : pickerTab === 'agent' ? (
                                     filteredAgentOptions.map((item) => {
                                       const avatarUrl = getAgentAvatarUrl(item);
                                       const isSelected = selectedAgentId === item.id;
@@ -3233,15 +3303,16 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                         <button
                                           key={item.id}
                                           type="button"
-                                          className={clsx('chat-agent-picker__item', isSelected && 'is-selected')}
+                                          className={clsx('chat-agent-picker__item', isSelected && 'is-selected', agentSelectionDisabled && 'is-locked')}
                                           role="menuitemradio"
                                           aria-checked={isSelected}
+                                          aria-disabled={agentSelectionDisabled}
                                           data-testid="chat-panel-agent-picker-item"
                                           data-variant={item.id}
-                                          data-tooltip={item.description || undefined}
+                                          data-tooltip={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : item.description || undefined}
                                           {...agentTooltipHandlers}
                                           onClick={() => {
-                                            if (!activeSessionId) return;
+                                            if (!activeSessionId || agentSelectionDisabled) return;
                                             useSessionStore.getState().setMode(activeSessionId, 'agent');
                                             setAgentSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
                                             setAttachMenuOpen(false);
@@ -3274,13 +3345,38 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                         </button>
                                       );
                                     })
-                                  )}
+                                  ) : groupOptionsStatus === 'loading' ? (
+                                    <div className="chat-agent-picker__state" data-testid="chat-panel-agent-group-picker-state" data-variant="loading">{t('common.loading')}</div>
+                                  ) : groupOptionsStatus === 'error' ? (
+                                    <div className="chat-agent-picker__state" data-testid="chat-panel-agent-group-picker-state" data-variant="error">{t('agentManagement.group.states.loadError')}</div>
+                                  ) : filteredGroupOptions.length === 0 ? (
+                                    <div className="chat-agent-picker__state" data-testid="chat-panel-agent-group-picker-state" data-variant={installedGroupOptions.length === 0 ? 'no-installed' : 'no-matches'}>
+                                      {installedGroupOptions.length === 0 ? t('chat.agentGroupNoInstalled') : t('chat.agentGroupNoMatches')}
+                                    </div>
+                                  ) : filteredGroupOptions.map((item) => {
+                                    const isSelected = selectedGroupId === item.id;
+                                    const groupAvatarUrl = item.avatarUrl && !failedGroupAvatarIds.has(item.id) ? item.avatarUrl : null;
+                                    return (
+                                      <button key={item.id} type="button" className={clsx('chat-agent-picker__item', isSelected && 'is-selected', agentGroupSelectionDisabled && 'is-locked')} role="menuitemradio" aria-checked={isSelected} aria-disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-group-picker-item" data-variant={item.id} data-tooltip={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : item.description || t('chat.agentGroupBinding')} {...agentTooltipHandlers} onClick={() => {
+                                        if (agentGroupSelectionDisabled || !activeSessionId) return;
+                                        useSessionStore.getState().setMode(activeSessionId, 'team');
+                                        setAgentGroupSelectionIntent(activeSessionId, { kind: 'select', id: item.id });
+                                        setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
+                                        clearSelectedSkills(activeSessionId);
+                                        setAttachMenuOpen(false);
+                                      }}>
+                                        <span className="chat-agent-picker__avatar" aria-hidden="true">
+                                          {groupAvatarUrl ? <img src={groupAvatarUrl} alt="" onError={() => setFailedGroupAvatarIds(current => current.has(item.id) ? current : new Set([...current, item.id]))} /> : item.displayName.trim().slice(0, 1).toUpperCase() || '?'}
+                                        </span>
+                                        <span className="chat-agent-picker__item-name">{item.displayName}</span>
+                                        {isSelected ? <svg className="chat-mode-select__check" viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth={2} aria-hidden="true"><path strokeLinecap="round" strokeLinejoin="round" d="M5 10.5l3 3L15 6.5" /></svg> : null}
+                                      </button>
+                                    );
+                                  })}
                                 </PickerPanel>
                               )}
                               {agentTooltipNode}
                             </div>
-                          </>
-                        )}
                         {/* 插件/MCP 装备目前后端在集群模式下不生效（JiuWenSwarmDeepAdapter
                     ._ensure_chat_extensions 对 team 模式直接短路，见
                     interface_deep.py），继续展示这个入口只会让用户以为选了插件/MCP 会生效，
@@ -3318,6 +3414,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                               panelRef={skillPanelRef}
                               direction={attachMenuDirection}
                               isTeamMode={isTeamMode}
+                              selectionLocked={Boolean(selectedGroupId)}
                               onClose={() => setSkillPanelOpen(false)}
                               onNavigateToSkills={onNavigateToSkills}
                               onInsertSkill={insertSkillChip}
@@ -3724,6 +3821,27 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     >
                       <X size={16} strokeWidth={2.5} aria-hidden="true" />
                     </button>
+                  </div>
+                )}
+                {selectedGroupId && isTeamMode && (
+                  <div className={clsx('chat-agent-tag chat-agent-group-tag', (agentGroupLocked || existingTeamGroupSelectionDisabled) && 'chat-agent-tag--locked')} data-testid="chat-panel-agent-group-tag" title={agentGroupLocked ? t('chat.agentGroupBinding') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : undefined}>
+                    <span className="chat-agent-tag__avatar" aria-hidden="true">
+                      {selectedGroup?.avatarUrl && !failedGroupAvatarIds.has(selectedGroup.id) ? <img src={selectedGroup.avatarUrl} alt="" onError={() => setFailedGroupAvatarIds(current => current.has(selectedGroup.id) ? current : new Set([...current, selectedGroup.id]))} /> : (selectedGroup?.displayName || selectedGroupId).trim().slice(0, 1).toUpperCase() || '?'}
+                    </span>
+                    <span className="chat-agent-tag__label" data-testid="chat-panel-agent-group-tag-label">{selectedGroup?.displayName || selectedGroupId}</span>
+                    {(agentGroupLocked || existingTeamGroupSelectionDisabled) ? <Lock className="chat-agent-tag__lock" size={12} strokeWidth={2} aria-hidden="true" /> : null}
+                    {!(agentGroupLocked || existingTeamGroupSelectionDisabled) && (
+                      <button
+                        type="button"
+                        className="chat-agent-tag__close"
+                        title={t('chat.agentGroupRemove')}
+                        aria-label={t('chat.agentGroupRemove')}
+                        data-testid="chat-panel-agent-group-tag-close"
+                        onClick={() => { if (activeSessionId) clearAgentGroupSelectionIntent(activeSessionId); }}
+                      >
+                        <X size={16} strokeWidth={2.5} aria-hidden="true" />
+                      </button>
+                    )}
                   </div>
                 )}
                 {goalTagVisible && (

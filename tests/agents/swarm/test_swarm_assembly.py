@@ -1391,6 +1391,15 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(monkeypatch) -> N
         "resolve_agent_group_dir",
         lambda _name: resources / "sample-expert-group",
     )
+    monkeypatch.setattr(
+        package_manager,
+        "resolve_agent_group_member_display_name",
+        lambda _package_dir, member_id, fallback="": {
+            "member1": "方案分析专家（中文）",
+            "member2": "风险与质量复核专家（中文）",
+        }.get(member_id, fallback),
+        raising=False,
+    )
     spec = _make_team_spec()
     spec.leader.prompt = "existing leader agreement"
 
@@ -1415,6 +1424,8 @@ def test_enrich_applies_agent_group_as_hybrid_member_snapshots(monkeypatch) -> N
     assert "Leader 负责理解用户目标" in spec.leader.prompt
 
     predefined = {member.member_name: member for member in spec.predefined_members}
+    assert predefined["member1"].display_name == "方案分析专家（中文）"
+    assert predefined["member2"].display_name == "风险与质量复核专家（中文）"
     assert "# 方案分析专家" in predefined["member1"].prompt
     assert "# 风险与质量复核专家" in predefined["member2"].prompt
     for member in predefined.values():

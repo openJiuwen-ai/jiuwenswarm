@@ -634,6 +634,26 @@ class TestPackageCatalogReqMethodRouting:
         assert response.ok is True
         assert response.payload == expected
 
+    async def test_agent_group_failures_expose_stable_codes(self, monkeypatch) -> None:
+        iface = _iface()
+
+        def fail(_params):
+            raise iface.package_manager.AgentGroupPackageError(
+                "duplicate agent group", "AGENT_GROUP_DUPLICATE"
+            )
+
+        monkeypatch.setattr(iface.package_manager, "create_agent_group", fail)
+        response = await iface.JiuWenSwarm._handle_package_catalog_request(
+            None,
+            _req({"id": "group-a"}, method=ReqMethod.AGENT_GROUPS_CREATE),
+        )
+
+        assert response.ok is False
+        assert response.payload == {
+            "error": "duplicate agent group",
+            "code": "AGENT_GROUP_DUPLICATE",
+        }
+
     @pytest.mark.parametrize(
         "method,function_name",
         [

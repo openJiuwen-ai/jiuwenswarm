@@ -824,6 +824,7 @@ def update_session_metadata(
     team_name: str | None = None,
     team_template_id: str | None = None,
     agent_group_name: str | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
     accent_color: str | None = None,
     project_dir: str | None = None,
     project_id: str | None = None,
@@ -916,6 +917,8 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
         if session_equipment is not None:
             metadata["session_equipment"] = copy.deepcopy(session_equipment)
+        if isinstance(team_leader_identity, dict):
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -936,6 +939,12 @@ def update_session_metadata(
             metadata["team_template_id"] = team_template_id
         if agent_group_name is not None:
             metadata["agent_group_name"] = agent_group_name
+        # AgentGroup leader identity is a first-binding snapshot. Never replace
+        # an existing value, including an invalid legacy value; old sessions
+        # must keep the ordinary Team fallback instead of being re-derived from
+        # a changed package definition.
+        if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型

@@ -13,6 +13,7 @@ import asyncio
 import inspect
 import logging
 import uuid
+from contextlib import aclosing
 from dataclasses import replace
 from typing import TYPE_CHECKING, Any, TypeVar
 
@@ -1205,14 +1206,17 @@ class AgentRuntime:
         execution = self.validate_agent_definition(definition, mode=mode)
         bound_request = self._bind_agent_execution_request(request, execution)
         await self._claim_agent_execution_owner(request, execution)
-        async for event in self.stream(
-            bound_request,
-            trigger_hook=trigger_hook,
-            on_control_event=on_control_event,
-            on_agent_ready=on_agent_ready,
-            _agent_execution=execution,
-        ):
-            yield event
+        async with aclosing(
+            self.stream(
+                bound_request,
+                trigger_hook=trigger_hook,
+                on_control_event=on_control_event,
+                on_agent_ready=on_agent_ready,
+                _agent_execution=execution,
+            )
+        ) as events:
+            async for event in events:
+                yield event
 
     async def invoke(
         self,

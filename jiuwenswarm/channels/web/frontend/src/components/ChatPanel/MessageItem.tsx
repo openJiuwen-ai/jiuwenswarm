@@ -51,8 +51,13 @@ import { FileIcon } from '../FileIcon';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
+import {
+  resolveTeamLeaderDisplayName,
+  type TeamLeaderIdentity,
+} from '../../features/teamLeaderIdentity';
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -100,30 +105,54 @@ export function TeamMemberMessageFrame({
   showAvatar = true,
   children,
   contentClassName,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   member?: string;
   showAvatar?: boolean;
   children: ReactNode;
   contentClassName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
+  const { i18n } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
-  // 头像旁的成员名：名册 display name 优先，leader 固定 Jiuwen，查不到退回 member_id。
+  // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
+  // 使用名册 display name，查不到退回 member_id。
   // 订阅名册而非 getState 直读，成员迟到时名字能跟着刷新（同 TeamMemberAvatar 的考量）。
   const memberName = useMemo(() => {
     const id = member?.trim() ?? '';
     if (!id) return '';
-    if (isTeamLeaderMember(id)) return 'Jiuwen';
+    if (isTeamLeaderMember(id)) {
+      return teamGroupIdentity?.displayName?.trim()
+        || resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)
+        || 'Jiuwen';
+    }
     const known = teamMembers?.find((item) => item.member_id === id);
     return known?.name?.trim() || id;
-  }, [member, teamMembers]);
+  }, [i18n.language, member, teamGroupIdentity, teamLeaderIdentity, teamMembers]);
+
+  const actorIdentity = isTeamLeaderMember(member)
+    ? teamGroupIdentity
+      ? {
+          agentTemplateId: teamGroupIdentity.id,
+          displayName: teamGroupIdentity.displayName,
+          ...(teamGroupIdentity.avatarUrl ? { avatar: teamGroupIdentity.avatarUrl } : {}),
+        }
+      : teamLeaderIdentity ?? undefined
+    : undefined;
 
   return (
     <div className="team-member-message animate-fade-in" data-testid="chat-panel-team-member-message">
       {/* 与单 agent 的 assistant-row 一致：无头像时整列不渲染，正文直接对齐最左边。 */}
       {showAvatar ? (
         <div className="team-member-message__header" data-testid="chat-panel-team-member-message-header">
-          <TeamMemberAvatar member={member} />
+          {actorIdentity ? (
+            <AgentAvatar identityOverride={actorIdentity} alt="" />
+          ) : (
+            <TeamMemberAvatar member={member} />
+          )}
           {memberName ? <span className="chat-avatar-name">{memberName}</span> : null}
         </div>
       ) : null}
@@ -144,6 +173,8 @@ function TeamLeaderPlainTextMessage({
   showAvatar = true,
   fileItems,
   disableA2UIInteraction = false,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   member?: string;
   content: string;
@@ -154,11 +185,15 @@ function TeamLeaderPlainTextMessage({
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
   disableA2UIInteraction?: boolean;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   return (
     <TeamMemberMessageFrame
       member={member}
       showAvatar={showAvatar}
+      teamLeaderIdentity={teamLeaderIdentity}
+      teamGroupIdentity={teamGroupIdentity}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -297,6 +332,10 @@ interface MessageItemProps {
   disableA2UIInteraction?: boolean;
   hideMeta?: boolean;
   enableAssistantAvatar?: boolean;
+  /** Explicit session-frozen identity override for Team leader rendering. */
+  teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
+  /** Selected Expert Team identity for the top-level conversation surface. */
+  teamGroupIdentityOverride?: AgentGroupIdentity | null;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -306,6 +345,8 @@ export const MessageItem = memo(function MessageItem({
   disableA2UIInteraction = false,
   hideMeta = false,
   enableAssistantAvatar = false,
+  teamLeaderIdentityOverride,
+  teamGroupIdentityOverride,
 }: MessageItemProps) {
   const { t } = useTranslation();
   const {
@@ -333,6 +374,11 @@ export const MessageItem = memo(function MessageItem({
   const [copied, setCopied] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const sessionTeamLeaderIdentity = useSessionStore(
+    (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
+  );
+  const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
 
   // TTS
   const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
@@ -592,15 +638,18 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
+	                 teamLeaderIdentity={teamLeaderIdentity}
+	                 teamGroupIdentity={teamGroupIdentityOverride}
 	               />
 	             );
 	           }
 	           
 	           // p2p 和 broadcast 消息展示
 	           return (
-	             <TeamMemberMessageFrame
+	               <TeamMemberMessageFrame
 	               member={event.fromMember}
 	               showAvatar={showAvatar}
+	               teamLeaderIdentity={teamLeaderIdentity}
 	             >
 	               <div className="team-member-message__card" data-testid="chat-panel-team-event-card">
 	                 <div className="team-member-message__content" data-testid="chat-panel-team-event-card-content">
@@ -658,6 +707,8 @@ export const MessageItem = memo(function MessageItem({
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	           disableA2UIInteraction={disableA2UIInteraction}
+	           teamLeaderIdentity={teamLeaderIdentity}
+	           teamGroupIdentity={teamGroupIdentityOverride}
 	         />
 	       );
 	     }
