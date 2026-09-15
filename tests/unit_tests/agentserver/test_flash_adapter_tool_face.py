@@ -166,14 +166,118 @@ def test_skill_mode_pinned_all() -> None:
     )
 
 
-def test_tool_card_drop_names_flash_only() -> None:
-    """flash 剔除 wiki/acp 工具卡；normal 适配器默认不剔除。"""
-    flash = _bare_adapter(JiuwenSwarmFlashAdapter)
-    deep = _bare_adapter(JiuWenSwarmDeepAdapter)
-    assert flash._tool_card_drop_names() == frozenset(
-        {"wiki_ingest", "wiki_query", "wiki_lint", "acp_chat"}
+def test_tool_face_override_without_deep_hooks() -> None:
+    """工具面裁剪全部由 flash 的 _get_tool_cards 覆盖承载，DeepAdapter 不新增钩子。"""
+    assert not hasattr(JiuWenSwarmDeepAdapter, "_tool_card_drop_names")
+    assert not hasattr(JiuWenSwarmDeepAdapter, "_build_skill_toolkit")
+    assert JiuwenSwarmFlashAdapter._FLASH_TOOL_CARD_DROP_NAMES == frozenset({
+        "wiki_ingest",
+        "wiki_query",
+        "wiki_lint",
+        "acp_chat",
+        "search_skill",
+        "install_skill",
+        "uninstall_skill",
+    })
+
+
+def _visibility_env(**perm):
+    """set 权限上下文，返回裸 adapter/桩 am/桩 rail/状态列表/reset 闭包。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
+        PermissionContext,
+        TOOL_PERMISSION_CONTEXT,
     )
-    assert deep._tool_card_drop_names() == frozenset()
+
+    adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
+    am = SimpleNamespace(removed=[])
+    am.remove = lambda name: am.removed.append(name)
+    rail_state: list = []
+    rail = SimpleNamespace(
+        set_read_only=lambda value: rail_state.append(value),
+        restore_memory_tool=lambda agent: rail_state.append("restore"),
+    )
+    adapter._instance = SimpleNamespace(ability_manager=am)
+    adapter._memory_rail = rail
+
+    defaults = dict(
+        channel_id="ch",
+        enable_memory=True,
+        group_digital_avatar=False,
+        avatar_mode=False,
+    )
+    defaults.update(perm)
+    token = TOOL_PERMISSION_CONTEXT.set(PermissionContext(**defaults))
+
+    def _reset():
+        TOOL_PERMISSION_CONTEXT.reset(token)
+
+    return adapter, am, rail, rail_state, _reset
+
+
+def test_unified_memory_visibility_no_context_is_noop() -> None:
+    """无权限上下文（普通请求）时不做任何调整，与父方法守卫一致。"""
+    from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
+        TOOL_PERMISSION_CONTEXT,
+    )
+
+    adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
+    adapter._instance = SimpleNamespace(ability_manager=SimpleNamespace(remove=lambda n: None))
+    adapter._memory_rail = SimpleNamespace(
+        set_read_only=lambda v: (_ for _ in ()).throw(AssertionError("should not touch rail")),
+        restore_memory_tool=lambda a: (_ for _ in ()).throw(AssertionError("should not touch rail")),
+    )
+
+    token = TOOL_PERMISSION_CONTEXT.set(None)
+    try:
+        adapter._sync_unified_memory_tool_visibility()
+    finally:
+        TOOL_PERMISSION_CONTEXT.reset(token)
+
+
+def test_unified_memory_visibility_group_avatar_read_only() -> None:
+    """群聊数字分身：stock 五件套被清扫，统一卡只读不摘除。"""
+    adapter, am, rail, rail_state, reset = _visibility_env(
+        group_digital_avatar=True, avatar_mode=True
+    )
+    try:
+        adapter._sync_unified_memory_tool_visibility()
+    finally:
+        reset()
+
+    assert "memory" not in am.removed
+    assert rail_state == [True]
+
+
+def test_unified_memory_visibility_disabled_removes_card() -> None:
+    """记忆全禁（分身+禁用）：统一卡被摘除并置只读。"""
+    adapter, am, rail, rail_state, reset = _visibility_env(
+        enable_memory=False, group_digital_avatar=True, avatar_mode=True
+    )
+    try:
+        adapter._sync_unified_memory_tool_visibility()
+    finally:
+        reset()
+
+    assert "memory" in am.removed
+    assert rail_state == [True]
+
+
+def test_unified_memory_visibility_restore_branch() -> None:
+    """非分身上下文：清扫五件套后恢复统一卡并解除只读。"""
+    adapter, am, rail, rail_state, reset = _visibility_env(avatar_mode=True)
+    try:
+        adapter._sync_unified_memory_tool_visibility()
+    finally:
+        reset()
+
+    assert am.removed == [
+        "write_memory",
+        "edit_memory",
+        "read_memory",
+        "memory_search",
+        "memory_get",
+    ]
+    assert rail_state == ["restore", False]
 
 
 def test_slim_search_skill_card_id_distinct_from_stock() -> None:

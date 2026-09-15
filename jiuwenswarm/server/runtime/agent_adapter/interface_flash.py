@@ -49,8 +49,9 @@ flash 行为由类常量定义：
 - :meth:`_resolve_skill_mode` — 钉死 ALL（ListSkillTool 仅 AUTO_LIST 注册，flash
   技能发现走 search_skill 自动安装闭环，技能卡只保留 skill_tool）
 - :meth:`_iter_runtime_audio_tools` — 音频全有或全无（无配置不降级 audio_metadata）
-- :meth:`_build_skill_toolkit` → SlimSkillToolkit（search_skill 折叠自动安装）
-- :meth:`_tool_card_drop_names` — 剔除 wiki 三件套与 acp_chat
+- :meth:`_get_tool_cards` — 裁剪 wiki/acp 与 stock 技能三卡，换装 SlimSkillToolkit
+  （search_skill 折叠自动安装）
+- :meth:`_update_runtime_config` — super() 后修正统一 memory 卡的群聊只读/恢复
 
 reload 一致性：``_get_current_agent_rails`` 的四个复活点（skill_rail /
 skill_credential / skill_active_state / disabled_tools）全部在 keep 白名单内，
@@ -129,6 +130,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_ingest,
     wiki_lint,
     wiki_query,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
+    TOOL_PERMISSION_CONTEXT,
 )
 
 logger = logging.getLogger(__name__)
@@ -249,13 +253,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_disabled_tools_rail",
     })
 
-    # 工具卡裁剪名单（_get_tool_cards 末尾按名剔除）：wiki 三件套与 acp_chat 属
-    # normal 会话的能力面，flash 不注册。
+    # 工具卡裁剪名单（_get_tool_cards 覆盖里按名剔除）：wiki 三件套与 acp_chat 属
+    # normal 会话的能力面，flash 不注册；stock 技能三卡被剔后由 SlimSkillToolkit
+    # 的折叠版 search_skill（独立 id）替换。
     _FLASH_TOOL_CARD_DROP_NAMES: frozenset[str] = frozenset({
         "wiki_ingest",
         "wiki_query",
         "wiki_lint",
         "acp_chat",
+        "search_skill",
+        "install_skill",
+        "uninstall_skill",
     })
 
     def __init__(
@@ -804,17 +812,105 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             )
         )
 
-    def _build_skill_toolkit(self) -> SlimSkillToolkit:
-        """flash 技能发现：search_skill 折叠自动安装（install/uninstall 不单独成卡）。"""
-        return SlimSkillToolkit(
-            manager=self._skill_manager,
-            service_id=self._service_id,
-            agent_id=self._agent_id,
-            on_installed_skills_changed=self.refresh_enabled_skills_from_db,
-        )
+    async def _get_tool_cards(self, agent_id: str) -> list[Any]:
+        """flash 工具面：super() 全量采集后按名裁剪，再换装 slim 技能面。
 
-    def _tool_card_drop_names(self) -> frozenset[str]:
-        return self._FLASH_TOOL_CARD_DROP_NAMES
+        super() 会把 stock 技能三卡（search_skill / install_skill / uninstall_skill）
+        "先注册后剔除"：注册进共享注册表对其他 adapter 无害（agent 模式本就注册
+        它们），剔除只影响本会话的可见卡面。slim 版 search_skill 卡用独立 id
+        （search_skill_slim）注册，不会被先到先得的 stock 实例顶掉。
+        """
+        tool_cards = await super()._get_tool_cards(agent_id)
+
+        drop_names = self._FLASH_TOOL_CARD_DROP_NAMES
+        kept = [
+            card
+            for card in tool_cards
+            if str(getattr(card, "name", "") or "") not in drop_names
+        ]
+
+        try:
+            slim_toolkit = SlimSkillToolkit(
+                manager=self._skill_manager,
+                service_id=self._service_id,
+                agent_id=self._agent_id,
+                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+            )
+            slim_names: list[str] = []
+            for tool in slim_toolkit.get_tools():
+                registered = self._register_shared_tool(tool)
+                kept.append(registered.card)
+                slim_names.append(registered.card.name)
+            logger.info(
+                "[JiuwenSwarmFlashAdapter] SlimSkillToolkit registered: tools=%s",
+                slim_names,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] slim skill tools registration failed: %s",
+                exc,
+            )
+
+        return kept
+
+    async def _update_runtime_config(self, runtime_config: "_RuntimeConfig") -> None:
+        """每回合 super() 后修正统一 memory 卡的可见性。
+
+        super() 的群聊块只认 stock 五件套（对 flash 全是 no-op），且其恢复分支
+        会把 stock write_memory/edit_memory 加回 flash 会话（统一卡才是 flash 的
+        记忆面）——这里先防御性清扫五件套，再按同一套权限上下文对统一卡做
+        三场景修正（全禁→摘卡；群聊分身→只读；其他→恢复+解除只读）。
+        """
+        await super()._update_runtime_config(runtime_config)
+        self._sync_unified_memory_tool_visibility()
+
+    def _sync_unified_memory_tool_visibility(self) -> None:
+        """按 TOOL_PERMISSION_CONTEXT 调整统一 memory 工具的可见性/只读。
+
+        与父方法的守卫一致：无权限上下文（普通请求不 set 该 contextvar）时
+        不做任何调整。
+        """
+        perm_ctx = TOOL_PERMISSION_CONTEXT.get()
+        if perm_ctx is None:
+            return
+
+        instance = self._instance
+        if instance is None:
+            return
+
+        # 防御性清扫：super() 恢复分支可能把 stock 记忆五件套加回 flash 会话。
+        for tool_name in (
+            "write_memory",
+            "edit_memory",
+            "read_memory",
+            "memory_search",
+            "memory_get",
+        ):
+            try:
+                instance.ability_manager.remove(tool_name)
+            except Exception:
+                pass
+
+        is_group_avatar = perm_ctx.group_digital_avatar and perm_ctx.avatar_mode
+        should_disable_memory = (
+            not perm_ctx.enable_memory and is_group_avatar
+        )
+        memory_rail = getattr(self, "_memory_rail", None)
+
+        if should_disable_memory:
+            try:
+                instance.ability_manager.remove("memory")
+            except Exception:
+                pass
+            if memory_rail is not None:
+                memory_rail.set_read_only(True)
+        elif is_group_avatar:
+            if memory_rail is not None:
+                memory_rail.set_read_only(True)
+        else:
+            if memory_rail is not None:
+                memory_rail.restore_memory_tool(instance)
+                memory_rail.set_read_only(False)
 
     # ── flash react 覆盖 / rail 裁剪 helpers ──────────────────────
 
