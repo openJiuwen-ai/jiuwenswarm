@@ -80,10 +80,12 @@ import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
 import {
+  DESKTOP_CLIPBOARD_IMAGES_EVENT,
   getClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
   shouldAlertImagePasteDisabled,
+  type DesktopClipboardImagesEventDetail,
 } from './clipboardImagePaste';
 import AgentPickerIcon from '../../assets/agent-management/智能体选择.svg?react';
 import AttachmentIcon from '../../assets/agent-management/attachment.svg?react';
@@ -2363,19 +2365,41 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return () => document.removeEventListener('paste', onDocumentPaste);
   }, [handleDesktopFilePaste, isDesktopBridgeReady]);
 
-  const handleFileDragOver = useCallback((event: DragEvent<HTMLDivElement>) => {
-    if (!Array.from(event.dataTransfer.types).includes('Files')) return;
-    event.preventDefault();
-    // Never set dropEffect='none'/'move' inside the desktop shell — WebView2
-    // rejects those for Explorer file drags and shows the forbidden cursor.
-    const desktop = isDesktopBridgeReady || isDesktopShell() || isDesktopLocalFilePicker();
-    if (desktop) {
-      event.dataTransfer.dropEffect = 'copy';
-      return;
-    }
-    // Browser / whl: reject OS file drops (no absolute path bridge).
-    event.dataTransfer.dropEffect = 'none';
-  }, [isDesktopBridgeReady]);
+  useEffect(() => {
+    // Context-menu Paste has no ClipboardEvent; desktop menu dispatches image blobs here.
+    const onDesktopClipboardImages = (event: Event) => {
+      const files = (event as CustomEvent<DesktopClipboardImagesEventDetail>).detail?.files;
+      if (!files?.length) return;
+      if (shouldAlertImagePasteDisabled(imageInputDisabled, true)) {
+        pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));
+        return;
+      }
+      if (imageInputDisabled) return;
+      appendAttachmentFiles(files);
+    };
+
+    window.addEventListener(DESKTOP_CLIPBOARD_IMAGES_EVENT, onDesktopClipboardImages as EventListener);
+    return () => {
+      window.removeEventListener(DESKTOP_CLIPBOARD_IMAGES_EVENT, onDesktopClipboardImages as EventListener);
+    };
+  }, [appendAttachmentFiles, imageInputDisabled, pushAttachmentAlert, t]);
+
+  const handleFileDragOver = useCallback(
+    (event: DragEvent<HTMLDivElement>) => {
+      if (!Array.from(event.dataTransfer.types).includes('Files')) return;
+      event.preventDefault();
+      // Never set dropEffect='none'/'move' inside the desktop shell — WebView2
+      // rejects those for Explorer file drags and shows the forbidden cursor.
+      const desktop = isDesktopBridgeReady || isDesktopShell() || isDesktopLocalFilePicker();
+      if (desktop) {
+        event.dataTransfer.dropEffect = 'copy';
+        return;
+      }
+      // Browser / whl: reject OS file drops (no absolute path bridge).
+      event.dataTransfer.dropEffect = 'none';
+    },
+    [isDesktopBridgeReady],
+  );
 
   const handleFileDrop = useCallback((event: DragEvent<HTMLDivElement>) => {
     if (!Array.from(event.dataTransfer.types).includes('Files')) return;

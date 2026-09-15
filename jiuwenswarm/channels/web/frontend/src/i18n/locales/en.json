@@ -22,7 +22,13 @@
     "expandMore": "Show {{count}} more",
     "optional": "(optional)",
     "processing": "Processing…",
-    "retry": "Retry"
+    "retry": "Retry",
+    "editMenu": {
+      "cut": "Cut",
+      "copy": "Copy",
+      "paste": "Paste",
+      "selectAll": "Select All"
+    }
   },
   "a2ui": {
     "generating": "Generating A2UI interface...",

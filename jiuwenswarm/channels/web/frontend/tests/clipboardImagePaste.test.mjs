@@ -93,3 +93,30 @@ test('nameless PNG/JPEG screenshots get clipboard-image filenames', () => {
   assert.equal(fromClipboard.length, 1);
   assert.equal(fromClipboard[0].name, 'clipboard-image.png');
 });
+
+test('readClipboardImageFilesFromClipboardApi maps clipboard PNG blobs', async () => {
+  const blob = new Blob([new Uint8Array([1, 2, 3])], { type: 'image/png' });
+  const clipboard = {
+    read: async () => [
+      {
+        types: ['image/png'],
+        getType: async () => blob,
+      },
+    ],
+  };
+  const { readClipboardImageFilesFromClipboardApi } = await import(
+    '../node_modules/.cache/clipboard-image-paste/clipboardImagePaste.js'
+  );
+  const files = await readClipboardImageFilesFromClipboardApi(clipboard);
+  assert.equal(files.length, 1);
+  assert.equal(files[0].name, 'clipboard-image.png');
+  assert.equal(files[0].type, 'image/png');
+});
+
+test('readClipboardImageFilesFromClipboardApi returns empty when clipboard.read unavailable', async () => {
+  const { readClipboardImageFilesFromClipboardApi } = await import(
+    '../node_modules/.cache/clipboard-image-paste/clipboardImagePaste.js'
+  );
+  assert.deepEqual(await readClipboardImageFilesFromClipboardApi(null), []);
+  assert.deepEqual(await readClipboardImageFilesFromClipboardApi({}), []);
+});
