@@ -124,20 +124,35 @@ class JiuwenSummaryTeamLauncher:
                 team_id=team_id, leader_id=_leader_id_from_agent(agent, team_id)
             )
         except Exception:
-            await self.stop(team_id=team_id, session_id=session_id)
+            await self._stop_with_runtime(
+                runtime, team_id=team_id, session_id=session_id
+            )
             raise
 
     async def stop(self, *, team_id: str, session_id: str) -> None:
         """Stop the Summary Team during launch rollback or organization teardown."""
+        await self._stop_with_runtime(
+            self._get_runtime(), team_id=team_id, session_id=session_id
+        )
+
+    async def _stop_with_runtime(
+        self, runtime: Any, *, team_id: str, session_id: str
+    ) -> None:
+        """Best-effort stop using a runtime already resolved by the caller."""
         name = str(team_id or "").strip()
         if not name:
             return
-        stop_team = getattr(self._get_runtime(), "stop_team", None)
+        stop_team = getattr(runtime, "stop_team", None)
         if callable(stop_team):
             try:
                 await stop_team(team_name=name, session_id=session_id)
             except Exception as exc:  # pragma: no cover - teardown is best effort
-                logger.warning("failed to stop Summary Team %s: %s", team_id, exc)
+                logger.warning(
+                    "failed to stop Summary Team team=%s session=%s",
+                    name,
+                    session_id,
+                    exc_info=exc,
+                )
 
 
 __all__ = ["JiuwenSummaryTeamLauncher"]

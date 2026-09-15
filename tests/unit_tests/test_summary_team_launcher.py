@@ -84,6 +84,71 @@ async def test_summary_team_launcher_pauses_after_build(monkeypatch):
     ]
 
 
+@pytest.mark.asyncio
+async def test_summary_team_launch_rollback_reuses_resolved_runtime(monkeypatch):
+    """Rollback must stop with launch's runtime without resolving it again."""
+    database = object()
+    donor_backend = SimpleNamespace(db=database)
+
+    class FakePool:
+        """Provide the root Team backend used as the shared-database donor."""
+
+        async def get(self, team_id: str):
+            """Return the donor entry only for the claimed root Team."""
+            if team_id == "root-team":
+                return SimpleNamespace(
+                    agent=SimpleNamespace(team_backend=donor_backend)
+                )
+            return None
+
+    class FakeRuntime:
+        """Fail activation and record the rollback stop call."""
+
+        def __init__(self) -> None:
+            self.pool = FakePool()
+            self.stop_calls: list[dict[str, str]] = []
+
+        async def activate(self, spec, session_id: str):
+            """Simulate a launch failure after the runtime has been resolved."""
+            raise RuntimeError("activation failed")
+
+        async def stop_team(self, **kwargs) -> None:
+            """Record best-effort cleanup of the partially launched Team."""
+            self.stop_calls.append(kwargs)
+
+    runtime = FakeRuntime()
+    launcher = JiuwenSummaryTeamLauncher()
+    runtime_lookups = 0
+
+    def get_runtime():
+        """Return the launch runtime and make duplicate resolution observable."""
+        nonlocal runtime_lookups
+        runtime_lookups += 1
+        return runtime
+
+    monkeypatch.setattr(launcher, "_get_runtime", get_runtime)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.summary_org.spec.build_summary_team_spec",
+        lambda **kwargs: SimpleNamespace(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.summary_org.launcher._align_spec_storage",
+        lambda spec, db: None,
+    )
+
+    with pytest.raises(RuntimeError, match="activation failed"):
+        await launcher.launch(
+            organization_id="org-1",
+            session_id="session-1",
+            share_db_from_team_id="root-team",
+        )
+
+    assert runtime_lookups == 1
+    assert runtime.stop_calls == [
+        {"team_name": "org-summary-org-1", "session_id": "session-1"}
+    ]
+
+
 def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     """The fixed internal teammates need a live in-process message transport."""
     configured = SimpleNamespace(
@@ -110,3 +175,11 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert spec.spawn_mode == "inprocess"
     assert spec.transport is not None
     assert spec.transport.type == "inprocess"
+    assert {member.member_name for member in spec.predefined_members} == {
+        "source-integrator",
+        "delivery-drafter",
+    }
+    assert "source-integrator" in spec.agents
+    assert "delivery-drafter" in spec.agents
+    assert "source attribution" in spec.agents["source-integrator"].system_prompt
+    assert "user-facing draft" in spec.agents["delivery-drafter"].system_prompt

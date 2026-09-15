@@ -80,8 +80,11 @@ def build_summary_team_spec(
     return TeamAgentSpec(
         agents={
             "leader": _summary_agent_spec(leader_source, system_prompt=leader_prompt),
-            "teammate": _summary_agent_spec(
+            "source-integrator": _summary_agent_spec(
                 teammate_source, system_prompt=integrator_prompt
+            ),
+            "delivery-drafter": _summary_agent_spec(
+                teammate_source, system_prompt=drafter_prompt
             ),
         },
         team_name=team_id,
