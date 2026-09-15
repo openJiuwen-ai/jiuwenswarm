@@ -679,8 +679,8 @@ class SwarmSymphonyService:
             self._notified_candidates.clear()
         return self._runtime
 
+    @staticmethod
     def _create_runtime(
-        self,
         config: Any,
         llm_config: LLMConfig,
         *,

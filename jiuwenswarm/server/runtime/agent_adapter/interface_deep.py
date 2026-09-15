@@ -8352,8 +8352,6 @@ class JiuWenSwarmDeepAdapter:
     def _build_symphony_graph_evolution_rail(self) -> Any | None:
         """Build the single-Agent execution-graph producer."""
 
-        from jiuwenswarm.symphony.config import load_symphony_config
-
         config = load_symphony_config(self._config_base_cache)
         if (
             not config.enabled

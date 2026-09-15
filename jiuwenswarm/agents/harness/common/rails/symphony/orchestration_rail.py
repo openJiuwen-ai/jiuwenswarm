@@ -320,7 +320,6 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             state.awaiting_input = False
 
     def _reject_skill_until_composed(self, ctx: AgentCallbackContext) -> None:
-        assert isinstance(ctx.inputs, ToolCallInputs)
         payload = {
             "success": False,
             "reason": "symphony_plan_not_ready",
@@ -331,7 +330,6 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self._skip_tool(ctx, payload)
 
     def _reject_compose_until_input(self, ctx: AgentCallbackContext) -> None:
-        assert isinstance(ctx.inputs, ToolCallInputs)
         payload = {
             "success": False,
             "reason": "symphony_input_required",
@@ -342,7 +340,8 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
     @staticmethod
     def _skip_tool(ctx: AgentCallbackContext, payload: dict[str, Any]) -> None:
-        assert isinstance(ctx.inputs, ToolCallInputs)
+        if not isinstance(ctx.inputs, ToolCallInputs):
+            return
         ctx.inputs.tool_result = payload
         tool_call = ctx.inputs.tool_call
         tool_call_id = str(getattr(tool_call, "id", "") or "")
@@ -484,23 +483,19 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return None
         component_ids = self._interactive_component_ids(query)
         with self._paused_states_lock:
-            matches = [
-                (key, state)
-                for key, state in self._paused_states.items()
-                if key.session_id == scope.session_id
-                and key.capture_mode == scope.capture_mode
-                and key.owner_id == scope.owner_id
-                and key.component_id in component_ids
-            ]
-            if (
-                len(component_ids) != 1
-                or len(matches) != 1
-                or not matches[0][1].valid
-                or matches[0][1].generation != self._scope_generations.get(scope)
-            ):
+            matches: list[tuple[_PausedInvokeKey, _SymphonyInvokeState]] = []
+            for key, state in self._paused_states.items():
+                key_scope = _InvokeScope(key.session_id, key.capture_mode, key.owner_id)
+                if key_scope == scope and key.component_id in component_ids:
+                    matches.append((key, state))
+            if len(component_ids) != 1 or len(matches) != 1:
                 self._invalidate_scope_locked(scope)
                 return None
             _, state = matches[0]
+            expected_generation = self._scope_generations.get(scope)
+            if not state.valid or state.generation != expected_generation:
+                self._invalidate_scope_locked(scope)
+                return None
             self._remove_state_locked(state)
             # The resumed state becomes active while still under the same
             # lock that removed its paused key. A competing new invocation
@@ -525,15 +520,11 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if quarantined is not None:
             quarantined.add(outer_context_id)
             return True
-        outstanding = {
-            context_id
-            for context_id, state in self._outer_states.items()
-            if (
-                state.session_id == scope.session_id
-                and state.capture_mode == scope.capture_mode
-                and state.owner_id == scope.owner_id
-            )
-        }
+        outstanding: set[int] = set()
+        for context_id, state in self._outer_states.items():
+            state_scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
+            if state_scope == scope:
+                outstanding.add(context_id)
         if not outstanding:
             return False
         outstanding.add(outer_context_id)
@@ -658,12 +649,11 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return None
         with self._paused_states_lock:
             state = self._active_route_states.get(route_token)
-            if (
-                state is None
-                or not state.valid
-                or self._active_states.get(scope) is not state
-                or state.route_token != route_token
-            ):
+            if state is None or not state.valid:
+                return None
+            if self._active_states.get(scope) is not state:
+                return None
+            if state.route_token != route_token:
                 return None
             return state
 

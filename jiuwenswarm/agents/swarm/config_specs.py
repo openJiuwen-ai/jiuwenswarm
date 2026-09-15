@@ -519,12 +519,12 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
 
     rails: list[RailSpec] = []
     symphony = load_symphony_config(config)
-    if (
-        role == "leader"
-        and symphony.enabled
+    core_evolution_enabled = (
+        symphony.enabled
         and symphony.evolution.backend == "core"
         and (symphony.evolution.enabled or symphony.flow.enabled)
-    ):
+    )
+    if role == "leader" and core_evolution_enabled:
         rails.append(RailSpec(type=registry.SYMPHONY_GRAPH_EVOLUTION, params={}))
     if not get_skill_evolution_enabled(config):
         return rails

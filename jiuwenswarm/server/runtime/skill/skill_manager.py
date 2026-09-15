@@ -4959,15 +4959,11 @@ class SkillManager:
             destination = _safe_child_path(self._skills_dir, skill_name, "skill")
         except (SkillRpcError, ValueError):
             return None
-        record = next(
-            (
-                item
-                for item in self._state.get("local_skills", [])
-                if isinstance(item, dict)
-                and item.get("name") == skill_name
-            ),
-            None,
-        )
+        record = None
+        for item in self._state.get("local_skills", []):
+            if isinstance(item, dict) and item.get("name") == skill_name:
+                record = item
+                break
         if record is None or not destination.is_dir():
             return None
         if compute_content_checksum(source) != compute_content_checksum(destination):

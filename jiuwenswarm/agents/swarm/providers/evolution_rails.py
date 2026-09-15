@@ -70,12 +70,14 @@ def build_symphony_graph_evolution_rail(
     from jiuwenswarm.symphony.config import load_symphony_config
 
     config = load_symphony_config(ctx.config)
-    if (
-        ctx.role != "leader"
-        or not config.enabled
-        or config.evolution.backend != "core"
-        or not (config.evolution.enabled or config.flow.enabled)
-    ):
+    if ctx.role != "leader":
+        return None
+    core_evolution_enabled = (
+        config.enabled
+        and config.evolution.backend == "core"
+        and (config.evolution.enabled or config.flow.enabled)
+    )
+    if not core_evolution_enabled:
         return None
     try:
         from openjiuwen.extensions.observability.demand import (
