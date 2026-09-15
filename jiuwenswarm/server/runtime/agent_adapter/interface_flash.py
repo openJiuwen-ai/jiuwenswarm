@@ -879,6 +879,8 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             return
 
         # 防御性清扫：super() 恢复分支可能把 stock 记忆五件套加回 flash 会话。
+        # remove 对不存在的能力是安全 no-op（内部 in 检查 + pop，返回 None），
+        # 无需异常包裹。
         for tool_name in (
             "write_memory",
             "edit_memory",
@@ -886,10 +888,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             "memory_search",
             "memory_get",
         ):
-            try:
-                instance.ability_manager.remove(tool_name)
-            except Exception:
-                pass
+            instance.ability_manager.remove(tool_name)
 
         is_group_avatar = perm_ctx.group_digital_avatar and perm_ctx.avatar_mode
         should_disable_memory = (
@@ -898,10 +897,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         memory_rail = getattr(self, "_memory_rail", None)
 
         if should_disable_memory:
-            try:
-                instance.ability_manager.remove("memory")
-            except Exception:
-                pass
+            instance.ability_manager.remove("memory")
             if memory_rail is not None:
                 memory_rail.set_read_only(True)
         elif is_group_avatar:

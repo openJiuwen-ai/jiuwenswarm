@@ -399,10 +399,9 @@ def test_flash_read_text_dependency_on_parent_signature() -> None:
     assert params["apply_size_cap"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
 
 
-def test_flash_read_multi_all_failed_sets_error() -> None:
+@pytest.mark.asyncio
+async def test_flash_read_multi_all_failed_sets_error() -> None:
     """多文件读取全部失败时 success=False 且 error 非空（ToolOutput 约定）。"""
-    import asyncio
-
     from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import (
         FlashReadFileTool,
     )
@@ -421,7 +420,7 @@ def test_flash_read_multi_all_failed_sets_error() -> None:
 
     tool._read_one_file = _fail
 
-    out = asyncio.run(tool._invoke_multi(["a.txt", "b.txt"], "m"))
+    out = await tool._invoke_multi(["a.txt", "b.txt"], "m")
     assert out.success is False
     assert out.error and "failed" in out.error
     assert out.data["succeeded"] == 0
