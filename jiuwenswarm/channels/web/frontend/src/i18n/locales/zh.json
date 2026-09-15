@@ -4045,6 +4045,8 @@
     "workflowList": "工作流列表"
   },
   "a4pSettings": {
+    "statusUnavailable": "Passkey 状态尚未就绪，请稍后刷新重试。",
+    "insecureContext": "当前访问地址不满足 Passkey 的安全要求，请通过本机 localhost 访问。",
     "title": "A4P 意图授权",
     "description": "启用 A4P 意图授权。仅当权限模式为“默认权限”时生效，“完全访问权限”时不生效。",
     "active": "已启用",
@@ -4062,8 +4064,8 @@
     "registering": "注册中...",
     "refresh": "刷新",
     "loading": "加载中...",
-    "unsupported": "当前浏览器不支持 WebAuthn Passkey。",
-    "originMismatch": "仅可在 {{origin}} 注册 Passkey。",
+    "unsupported": "当前浏览器不支持所需的 Passkey 功能，请使用支持的浏览器。",
+    "originMismatch": "当前 Passkey 仅支持通过 {{origin}} 访问，请切换到该地址。",
     "noPasskeys": "本地 JiuwenSwarm 用户尚未注册 Passkey。",
     "signCount": "签名计数",
     "disabledRegistrationHint": "即使 A4P 授权已关闭，仍可管理 Passkey。"

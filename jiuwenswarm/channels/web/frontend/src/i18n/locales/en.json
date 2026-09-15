@@ -4064,6 +4064,8 @@
     "workflowList": "Workflow List"
   },
   "a4pSettings": {
+    "statusUnavailable": "Passkey status is not ready. Please refresh and try again shortly.",
+    "insecureContext": "This address does not meet Passkey security requirements. Please access through localhost on this machine.",
     "title": "A4P intent authorization",
     "description": "Enable A4P intent authorization. Only applies in Default permissions mode; has no effect in Full access mode.",
     "active": "Active",
@@ -4083,8 +4085,8 @@
     "registering": "Registering...",
     "refresh": "Refresh",
     "loading": "Loading...",
-    "unsupported": "This browser does not support WebAuthn Passkeys.",
-    "originMismatch": "Passkey registration is only available at {{origin}}.",
+    "unsupported": "This browser does not support the required Passkey features. Please use a supported browser.",
+    "originMismatch": "Passkey is currently only supported at {{origin}}. Please switch to that address.",
     "noPasskeys": "No Passkey is registered for the local JiuwenSwarm user.",
     "signCount": "Sign count",
     "disabledRegistrationHint": "Passkey management remains available when A4P authorization is disabled."

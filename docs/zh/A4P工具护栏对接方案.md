@@ -227,6 +227,10 @@ JiuwenSwarm Web 当前按单用户个人助理处理，因此 A4P SDK 所需的 
 
 用户应先在 Web“设置 → 实验功能 → A4P”中注册 Passkey，再开启 `require_user_signature`。浏览器或平台认证器持有私钥，JiuwenSwarm 只持久化 SDK credential store 中的公钥记录，支持注册和查看多个 credential。
 
+`enabled` 只控制 A4P 工具授权介入和授权申请。关闭时仍允许通过 Web 设置查看、注册 Passkey，以便预先准备凭据；`a4p.webauthn.credentials.get`、`a4p.webauthn.registration.options` 和 `a4p.webauthn.registration.verify` 三个管理 RPC 仍会初始化 runtime，并要求交互式 Web route 和满足 WebAuthn 环境要求。凭据查询返回 `enabled=false` 表示授权功能关闭，不表示 Passkey 管理被禁用。
+
+普通 A4P 授权（`require_user_signature=false`）不受 Passkey 的 localhost 环境限制影响。仅浏览设置且未开启签名模式时不显示环境错误；尝试开启或注册时检查环境，不满足则说明原因且不保存开启配置、不发起注册。签名模式已开启但访问地址不支持时显示不可用提示，允许手动关闭，不自动降级。状态尚未加载或加载失败时，开启和注册提示稍后刷新重试。
+
 当前固定 origin 只支持通过 `http://localhost:5173` 打开的 Web 页面。`127.0.0.1`、其他端口及远程 origin 均不能注册或使用该 Passkey。
 
 ---
@@ -243,6 +247,7 @@ JiuwenSwarm Web 当前按单用户个人助理处理，因此 A4P SDK 所需的 
 - `request_intent_authorization()` 显式调用 `server.prepare_intent_authorization()` 生成 mandate 和 `signingOptions`，在 Web 用户批准后以 `signedMandate` 调用 `server.complete_intent_authorization()` 签发 token。
 - `dispatch_a4p_request()` 将批准/拒绝 RPC 分发给 `runtime.authorizer.complete()` / `reject()`（`WebAuthorizerBroker`）；pending 绑定逻辑路由 `session_id + app_id + agent_ref`，`ws_id` 仅用于当前连接投递。
 - `runtime.authorizer.pending_for_route()` 按逻辑路由返回尚未结束的授权请求，供 Web 重连或切回 session 后恢复卡片。
+- session token 在查找、导出和导入时过滤过期项并删除空会话条目；session/cron 共用与 SDK 一致的过期判断（UTC 秒格式，当前时间严格晚于 expireAt 才过期），过期、缺失或非法 expireAt 的新 token 不入库。闲置 session 不做定时扫描或主动释放。
 - `find_valid_intent_token()` 通过 SDK `verify_intent_token()` 校验 session token。
 - `a4p/cron_intent_tokens.sqlite3` 持久化保存 `cronJobId -> token` 绑定，并通过 SQLite 事务支持 Gateway 与 AgentServer 跨进程安全更新。
 - JiuwenSwarm 的 `SQLiteCronIntentTokenStore` 保存 cron job 与 token 的宿主归属。

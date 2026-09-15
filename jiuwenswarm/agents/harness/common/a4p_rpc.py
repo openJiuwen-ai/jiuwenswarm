@@ -27,6 +27,9 @@ _A4P_METHODS: frozenset[ReqMethod] = frozenset(
         ReqMethod.A4P_WEBAUTHN_REGISTRATION_VERIFY,
     }
 )
+# Intentionally available while disabled so users can prepare Passkeys.
+# Management still requires an interactive Web route and WebAuthn verification;
+# enabled controls intent authorization, not credential management.
 _A4P_MANAGEMENT_METHODS: frozenset[ReqMethod] = frozenset(
     {
         ReqMethod.A4P_WEBAUTHN_CREDENTIALS_GET,
