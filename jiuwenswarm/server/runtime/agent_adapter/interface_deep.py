@@ -8861,19 +8861,6 @@ class JiuWenSwarmDeepAdapter:
             tool_cards.append(registered.card)
             existing_names.add(tname)
 
-    def _build_web_tools(self, agent_id: str, cache: Any | None = None) -> list[Any]:
-        """Build the web tools for this adapter profile.
-
-        The Deep profile keeps the existing two-card behavior. Mode-specific
-        adapters may override this factory without duplicating tool collection
-        and registration.
-        """
-        return build_jiuwen_harness_named_web_tools(
-            agent_id=agent_id,
-            language=self._resolve_runtime_language(),
-            cache=cache,
-        )
-
     async def _get_tool_cards(self, agent_id: str):
         """Get tool cards."""
         tool_cards = []
@@ -8887,7 +8874,11 @@ class JiuWenSwarmDeepAdapter:
         )
 
         content_cache = await get_agent_cache_registry().get_cache(agent_id)
-        for tool_instance in self._build_web_tools(agent_id, cache=content_cache):
+        for tool_instance in build_jiuwen_harness_named_web_tools(
+            agent_id=agent_id,
+            language=self._resolve_runtime_language(),
+            cache=content_cache,
+        ):
             registered = self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(registered.card)
 
@@ -9089,11 +9080,6 @@ class JiuWenSwarmDeepAdapter:
             service_id=getattr(self, "_env_service_id", None),
             tenant_agent_id=getattr(self, "_env_agent_id", None),
         )
-
-    @staticmethod
-    def _cron_tool_names() -> frozenset[str]:
-        """Return cron card names owned by this adapter profile."""
-        return _CRON_TOOL_NAMES
 
     async def _proc_context_compaction(self) -> None:
         """Backward-compatible no-op hook for tests and legacy call sites."""
@@ -10357,12 +10343,11 @@ class JiuWenSwarmDeepAdapter:
             session_id: Session the current turn belongs to. Heartbeat and cron
                 sessions drive the scheduler themselves and get no cron tools.
         """
-        cron_tool_names = self._cron_tool_names()
         if session_id is not None and session_id.startswith(("heartbeat", "cron")):
             return
         if os.getenv("JIUWENCLAW_DISABLE_CRON_TOOLS") == "1":
             for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in cron_tool_names:
+                if getattr(existing, "name", "") in _CRON_TOOL_NAMES:
                     self._instance.ability_manager.remove(existing.name)
             self._cron_tools_registered_language = None
             logger.info(
@@ -10378,14 +10363,14 @@ class JiuWenSwarmDeepAdapter:
         # skill or plugin install re-runs ``create_instance``) hands this adapter
         # a fresh, empty AbilityManager while the fingerprint still reads as
         # registered, which would silently drop the cron tools for good.
-        if self._cron_tools_registered_language == language and (registered_names & cron_tool_names):
+        if self._cron_tools_registered_language == language and (registered_names & _CRON_TOOL_NAMES):
             return
         try:
             cron_tools = self._build_cron_tools()
             if not cron_tools:
                 return
             for existing in list(self._instance.ability_manager.list() or []):
-                if getattr(existing, "name", "") in cron_tool_names:
+                if getattr(existing, "name", "") in _CRON_TOOL_NAMES:
                     self._instance.ability_manager.remove(existing.name)
             for cron_tool in cron_tools:
                 self._register_agent_owned_tool(cron_tool, self._tool_owner_id())
