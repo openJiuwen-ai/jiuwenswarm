@@ -432,7 +432,7 @@ function SubagentDetail({
             expanded={tasksExpanded}
             onToggle={() => setTasksExpanded((value) => !value)}
           />
-          {tasksExpanded ? <MemberTaskListPanel tasks={taskListItems} emptyLabel="subagent.tasksEmpty" /> : null}
+          {tasksExpanded ? <MemberTaskListPanel tasks={taskListItems} /> : null}
         </div>
       ) : null}
     </div>

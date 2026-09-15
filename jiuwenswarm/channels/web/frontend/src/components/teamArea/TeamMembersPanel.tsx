@@ -582,7 +582,7 @@ function MemberTaskDetail({
   const teamMemberExecutionEvents = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? [],
   );
-  // @ts-ignore 调试 mock: teamMemberContextCompression 暂未使用
+  // @ts-ignore — teamMemberContextCompression 暂未使用
   const teamMemberContextCompression = useSessionStore(
     (s) => s.runtimes[activeSessionId ?? '']?.teamMemberContextCompression ?? {},
   );
@@ -654,28 +654,28 @@ function MemberTaskDetail({
         <FinalSummaryList events={finalEvents} />
       </div>
 
-      {memberTasks.length > 0 || true ? (
-        <div
-          ref={footerRef}
-          className="relative shrink-0 border-t border-border bg-card"
-          data-testid="team-area-member-detail-footer"
-        >
-          <TeamMemberContextCompressionBar
-            state={contextCompressionState}
-            onClose={() => {
-              if (activeSessionId) {
-                clearTeamMemberContextCompressionStatus(activeSessionId, member.member_id);
-              }
-            }}
-          />
-          <MemberTaskListBar
-            tasks={memberTasks}
-            expanded={taskListExpanded}
-            onToggle={() => setTaskListExpanded((expanded) => !expanded)}
-          />
-          {taskListExpanded && <MemberTaskListPanel tasks={memberTasks} />}
-        </div>
-      ) : null}
+      <div ref={footerRef} className="relative shrink-0 border-t border-border bg-card">
+        <TeamMemberContextCompressionBar
+          state={contextCompressionState}
+          onClose={() => {
+            if (activeSessionId) {
+              clearTeamMemberContextCompressionStatus(activeSessionId, member.member_id);
+            }
+          }}
+        />
+        {memberTasks.length > 0 ? (
+          <div
+            data-testid="team-area-member-detail-footer"
+          >
+            <MemberTaskListBar
+              tasks={memberTasks}
+              expanded={taskListExpanded}
+              onToggle={() => setTaskListExpanded((expanded) => !expanded)}
+            />
+            {taskListExpanded && <MemberTaskListPanel tasks={memberTasks} />}
+          </div>
+        ) : null}
+      </div>
     </section>
   );
 }

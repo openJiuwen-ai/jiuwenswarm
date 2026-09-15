@@ -62,12 +62,9 @@ export function MemberTaskListBar({
 
 export function MemberTaskListPanel({
   tasks,
-  emptyLabel = 'team.noMemberTasks',
 }: {
   tasks: MemberTaskListItem[];
-  emptyLabel?: string;
 }) {
-  const { t } = useTranslation();
   const rowAnchorRef = useRef<HTMLLIElement | null>(null);
   const { tooltip: taskTitleTooltip, handlers: taskTitleTooltipHandlers } = useAdaptiveTooltip({ anchorRef: rowAnchorRef, align: 'right', offsetY: 2 });
   const taskTitleHandlers = {
@@ -99,35 +96,29 @@ export function MemberTaskListPanel({
       style={{ boxShadow: '0 4px 10px 0 rgba(0, 0, 0, 0.12)' }}
       data-testid="team-area-member-detail-task-list-panel"
     >
-      {tasks.length === 0 ? (
-        <div className="py-2 text-center text-sm text-text-muted" data-testid="team-area-member-detail-task-list-empty">
-          {t(emptyLabel)}
-        </div>
-      ) : (
-        <ul className="space-y-1" data-testid="team-area-member-detail-task-list">
-          {tasks.map((task) => (
-            <li
-              key={task.id}
-              className="flex min-w-0 items-center gap-2"
-              data-testid="team-area-member-detail-task-list-item"
-              data-variant={task.id}
+      <ul className="space-y-1" data-testid="team-area-member-detail-task-list">
+        {tasks.map((task) => (
+          <li
+            key={task.id}
+            className="flex min-w-0 items-center gap-2"
+            data-testid="team-area-member-detail-task-list-item"
+            data-variant={task.id}
+          >
+            {task.status === 'completed' ? (
+              <img src={statusSuccessIcon} className="h-4 w-4 shrink-0" aria-hidden="true" />
+            ) : (
+              <StatusIcon status={task.status as TaskStatus} />
+            )}
+            <span
+              className="min-w-0 flex-1 truncate text-sm text-text-meta leading-[22px]"
+              data-testid="team-area-member-detail-task-list-item-title"
+              {...taskTitleHandlers}
             >
-              {task.status === 'completed' ? (
-                <img src={statusSuccessIcon} className="h-4 w-4 shrink-0" aria-hidden="true" />
-              ) : (
-                <StatusIcon status={task.status as TaskStatus} />
-              )}
-              <span
-                className="min-w-0 flex-1 truncate text-sm text-text-meta leading-[22px]"
-                data-testid="team-area-member-detail-task-list-item-title"
-                {...taskTitleHandlers}
-              >
-                {task.title}
-              </span>
-            </li>
-          ))}
-        </ul>
-      )}
+              {task.title}
+            </span>
+          </li>
+        ))}
+      </ul>
       {taskTitleTooltip}
     </div>
   );

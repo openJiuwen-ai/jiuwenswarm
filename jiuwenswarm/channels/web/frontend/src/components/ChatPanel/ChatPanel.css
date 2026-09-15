@@ -302,10 +302,7 @@
 }
 
 .team-event-group.team-event-group--context-compression {
-  margin: 0 12px;
-  border: 1px solid var(--color-chat-active-group-border);
   border-bottom: none;
-  border-radius: 18px 18px 0 0;
 }
 
 .team-event-group-summary.team-event-group-summary--context-compression {
