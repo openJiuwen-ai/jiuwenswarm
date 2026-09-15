@@ -8353,11 +8353,7 @@ class JiuWenSwarmDeepAdapter:
         """Build the single-Agent execution-graph producer."""
 
         config = load_symphony_config(self._config_base_cache)
-        if (
-            not config.enabled
-            or config.evolution.backend != "core"
-            or not (config.evolution.enabled or config.flow.enabled)
-        ):
+        if not config.enabled or not config.evolution.enabled:
             return None
         try:
             from openjiuwen.extensions.observability.demand import (

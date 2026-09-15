@@ -61,11 +61,25 @@ def _candidate() -> core_symphony.CombinationCandidate:
     )
 
 
-def test_flow_is_disabled_and_core_graph_is_default(tmp_path: Path) -> None:
+def _enable_evolution_config(monkeypatch, tmp_path: Path) -> None:
+    config = symphony_config_from_dict(
+        {
+            "enabled": True,
+            "paths": {"graph_dir": str(tmp_path / "graph")},
+            "evolution": {"enabled": True},
+        }
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
+    )
+
+
+def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
     config = symphony_config_from_dict({"paths": {"graph_dir": str(tmp_path)}})
 
-    assert config.flow.enabled is False
-    assert config.evolution.backend == "core"
+    assert config.evolution.enabled is False
+    assert not hasattr(config.evolution, "backend")
+    assert not hasattr(config, "flow")
 
 
 def test_experience_candidate_server_methods_are_routable() -> None:
@@ -214,12 +228,12 @@ def test_published_capability_snapshot_builds_nonempty_execution_edge(
     assert execution_graph["graph"]["edges"]
 
 
-def test_flow_runtime_uses_llm_review_agent(monkeypatch, tmp_path: Path) -> None:
+def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) -> None:
     config = symphony_config_from_dict(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True, "flow": {"enabled": False}},
         }
     )
     service = SwarmSymphonyService()
@@ -280,7 +294,7 @@ async def test_service_start_recovers_candidates_when_flow_is_enabled(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     service = SwarmSymphonyService()
@@ -378,7 +392,7 @@ async def test_deferred_candidate_can_be_listed_and_requested_again(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     candidate = _candidate()
@@ -496,6 +510,7 @@ async def test_web_transport_project_dir_does_not_reject_later_answer() -> None:
 async def test_install_requires_approved_server_artifact(
     monkeypatch, tmp_path: Path
 ) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
     service = SwarmSymphonyService()
     package = {
         "package_id": "cap-123",
@@ -586,6 +601,7 @@ async def test_install_requires_approved_server_artifact(
 async def test_receipt_write_crash_recovers_installed_skill_after_restart(
     monkeypatch, tmp_path: Path, allow_macos_pytest_temp_sources
 ) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
     package = {
         "package_id": "cap-crash",
         "integrity": "sha256:value",
@@ -663,6 +679,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 async def test_non_approved_review_is_persistently_idempotent(
     monkeypatch, tmp_path: Path, verdict: str
 ) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
     service = SwarmSymphonyService()
     reviews = 0
 
@@ -728,6 +745,7 @@ async def test_non_approved_review_is_persistently_idempotent(
 async def test_client_package_credentials_must_match_server_package(
     monkeypatch, tmp_path: Path
 ) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
     service = SwarmSymphonyService()
     package = {"package_id": "server-package", "integrity": "sha256:server"}
     artifact = tmp_path / "packages" / "server-package" / "skill"
@@ -877,7 +895,7 @@ def test_team_graph_rail_spec_is_leader_only() -> None:
     config = {
         "symphony": {
             "enabled": True,
-            "evolution": {"enabled": True, "backend": "core"},
+            "evolution": {"enabled": True},
         },
         "react": {"evolution": {"skill_evolution": False}},
     }
@@ -895,7 +913,7 @@ def test_team_graph_rail_provider_skips_members(monkeypatch) -> None:
         config={
             "symphony": {
                 "enabled": True,
-                "flow": {"enabled": True},
+                "evolution": {"enabled": True},
             }
         },
     )
@@ -911,7 +929,7 @@ async def test_core_graph_plan_does_not_load_legacy_overlay(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path)},
-            "evolution": {"enabled": True, "backend": "core"},
+            "evolution": {"enabled": True},
         }
     )
     service = SwarmSymphonyService()
@@ -938,7 +956,7 @@ async def test_core_graph_plan_does_not_load_legacy_overlay(
         lambda: config,
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_dynamic_overlay",
+        "jiuwenswarm.symphony.evolution.service.load_dynamic_overlay",
         lambda _path: pytest.fail("legacy overlay must not be loaded"),
     )
     monkeypatch.setattr(
@@ -953,91 +971,24 @@ async def test_core_graph_plan_does_not_load_legacy_overlay(
 
 
 @pytest.mark.asyncio
-async def test_legacy_graph_plan_uses_only_legacy_overlay(
+async def test_evolution_disabled_gates_flow_service_operations(
     monkeypatch, tmp_path: Path
 ) -> None:
     config = symphony_config_from_dict(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path)},
-            "evolution": {"enabled": True, "backend": "legacy"},
+            "evolution": {"enabled": False},
         }
     )
     service = SwarmSymphonyService()
-    overlay = {"edges": {"a:b": {"weight": 0.9}}}
-    calls: list[dict] = []
-
-    class Orchestration:
-        async def plan(self, query: str, **kwargs):
-            calls.append({"query": query, **kwargs})
-            return SimpleNamespace(
-                to_dict=lambda: {
-                    "planned_graph": {
-                        "graph": {"type": "planned_graph", "nodes": {}, "edges": []}
-                    }
-                }
-            )
-
-    class GraphEngine:
-        async def plan(self, *args, **kwargs):
-            pytest.fail("legacy mode must not consume Core dynamic graph")
-
-    runtime = SimpleNamespace(
-        orchestration=Orchestration(),
-        graph_engine=GraphEngine(),
-        graph_scope_id="scope",
-    )
-    monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
-    monkeypatch.setattr(
-        service, "graph_status", lambda: _async_value({"success": True, "exists": True})
-    )
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_dynamic_overlay", lambda _path: overlay
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_config",
-        lambda: {"preferred_language": "zh"},
-    )
-
-    result = await service.plan("query")
-
-    assert result["success"] is True
-    assert calls[0]["dynamic_overlay"] == overlay
-
-
-@pytest.mark.asyncio
-async def test_flow_disabled_submits_graph_without_candidate_prompt(
-    monkeypatch, tmp_path: Path
-) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path)},
-            "evolution": {"enabled": True, "backend": "core"},
-            "flow": {"enabled": False},
-        }
-    )
-    service = SwarmSymphonyService()
-    submitted: list[dict] = []
-
-    class Runtime:
-        flow_engine = None
-
-        async def submit_evolution(self, planned_graph, execution_graph, **kwargs):
-            submitted.append(kwargs)
-            return SimpleNamespace(new_candidates=(_candidate(),))
-
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
-    monkeypatch.setattr(service, "_runtime_for", lambda _config: Runtime())
     monkeypatch.setattr(
         service,
-        "_notify_candidate",
-        lambda *args, **kwargs: pytest.fail("Flow-off must not prompt candidates"),
+        "_runtime_for",
+        lambda _config: pytest.fail("disabled evolution must not create a runtime"),
     )
 
     await service.submit_evolution_and_notify(
@@ -1048,7 +999,25 @@ async def test_flow_disabled_submits_graph_without_candidate_prompt(
         channel_id="web",
     )
 
-    assert submitted == [{"session_id": "session-1", "capture_mode": "agent"}]
+    listed = service.list_experience_candidates()
+    requested = await service.request_experience_candidate(
+        recipe_id="recipe-1",
+        recipe_version=2,
+        session_id="session-1",
+        channel_id="web",
+    )
+    installed = await service.install_candidate(
+        request_id=experience_request_id("recipe-1", 2),
+        recipe_id="recipe-1",
+        recipe_version=2,
+        package_id=None,
+        integrity=None,
+        skill_manager=object(),
+    )
+
+    assert listed == {"success": True, "enabled": False, "candidates": []}
+    assert requested == {"success": False, "reason": "flow_disabled"}
+    assert installed == {"installed": False, "reason": "flow_disabled"}
 
 
 @pytest.mark.asyncio
@@ -1059,8 +1028,7 @@ async def test_flow_start_failure_does_not_block_graph_submission(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True, "backend": "core"},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     service = SwarmSymphonyService()
@@ -1119,8 +1087,7 @@ async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True, "backend": "core"},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     flow_instances: list[object] = []
@@ -1252,7 +1219,7 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
         {
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     changed = symphony_config_from_dict(
@@ -1260,7 +1227,7 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
             "enabled": True,
             "paths": {"graph_dir": str(tmp_path / "graph")},
             "orchestration": {"max_depth": 9},
-            "flow": {"enabled": True, "flow_dir": str(tmp_path / "flow")},
+            "evolution": {"enabled": True},
         }
     )
     entered = asyncio.Event()
@@ -1319,7 +1286,7 @@ async def test_single_agent_rail_forwards_agent_capture(monkeypatch) -> None:
     adapter._config_base_cache = {
         "symphony": {
             "enabled": True,
-            "evolution": {"enabled": True, "backend": "core"},
+            "evolution": {"enabled": True},
         }
     }
     adapter._model = object()
@@ -1382,7 +1349,7 @@ async def test_team_leader_rail_forwards_team_capture(monkeypatch) -> None:
         config={
             "symphony": {
                 "enabled": True,
-                "flow": {"enabled": True},
+                "evolution": {"enabled": True},
             }
         },
     )

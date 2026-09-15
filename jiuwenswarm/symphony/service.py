@@ -32,7 +32,6 @@ from jiuwenswarm.symphony.experience import JiuwenSwarmSkillAdapter
 from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
-from jiuwenswarm.symphony.evolution.service import load_dynamic_overlay
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
 
 logger = logging.getLogger(__name__)
@@ -61,23 +60,6 @@ def experience_request_id(recipe_id: str, version: int) -> str:
 def _graph_scope_id(graph_dir: Path) -> str:
     digest = hashlib.sha256(str(graph_dir.resolve()).encode()).hexdigest()[:20]
     return f"jiuwenswarm-{digest}"
-
-
-def _configured_evolution_backend(config: Any) -> str:
-    # Hand-built legacy config objects have no backend field and retain the
-    # pre-Core overlay behavior. Normalized config always supplies ``core``.
-    return str(getattr(config.evolution, "backend", "legacy") or "legacy")
-
-
-def _flow_enabled(config: Any) -> bool:
-    return bool(getattr(getattr(config, "flow", None), "enabled", False)) and (
-        _configured_evolution_backend(config) == "core"
-    )
-
-
-def _flow_dir(config: Any) -> Path | None:
-    value = getattr(getattr(config, "flow", None), "flow_dir", None)
-    return Path(value) if value else None
 
 
 def _unique_candidates(
@@ -358,14 +340,7 @@ class SwarmSymphonyService:
                 graph_dir=graph_dir,
                 min_edge_confidence=config.orchestration.min_edge_confidence,
                 disabled_skill_names=load_execution_disabled_skills(),
-                dynamic_overlay=(
-                    load_dynamic_overlay(graph_dir)
-                    if (
-                        config.evolution.enabled
-                        and _configured_evolution_backend(config) == "legacy"
-                    )
-                    else None
-                ),
+                dynamic_overlay=None,
             )
         payload.update(_build_log_payload(graph_dir))
         _prefer_build_failure_detail(payload)
@@ -388,7 +363,6 @@ class SwarmSymphonyService:
             get_config().get("preferred_language", "zh")
         )
         config = load_symphony_config()
-        graph_dir = config.paths.graph_dir
         requested_mode = str(mode or config.orchestration.mode).strip()
         try:
             orchestration_config_from_swarm(config, mode=requested_mode)
@@ -439,35 +413,15 @@ class SwarmSymphonyService:
                 if llm_config is not None
                 else self._runtime_for(config)
             )
-            plan_kwargs = {
-                "candidate_ids": candidate_ids,
-                "language": language,
-                "progress": progress,
-                "disabled_capability_ids": load_execution_disabled_skills(),
-                "mode": requested_mode,
-            }
-            if (
-                config.evolution.enabled
-                and _configured_evolution_backend(config) == "legacy"
-            ):
-                public_payload = await runtime.orchestration.plan(
-                    query,
-                    dynamic_overlay=load_dynamic_overlay(graph_dir),
-                    **plan_kwargs,
-                )
-            elif hasattr(runtime, "graph_engine"):
-                public_payload = await runtime.graph_engine.plan(
-                    query,
-                    graph_scope_id=runtime.graph_scope_id,
-                    **plan_kwargs,
-                )
-            else:
-                # Compatibility for embedded runtimes predating GraphEngine.
-                public_payload = await runtime.orchestration.plan(
-                    query,
-                    dynamic_overlay=None,
-                    **plan_kwargs,
-                )
+            public_payload = await runtime.graph_engine.plan(
+                query,
+                graph_scope_id=runtime.graph_scope_id,
+                candidate_ids=candidate_ids,
+                language=language,
+                progress=progress,
+                disabled_capability_ids=load_execution_disabled_skills(),
+                mode=requested_mode,
+            )
             payload = public_payload.to_dict()
         except Exception as exc:  # noqa: BLE001
             logger.exception("Symphony planning failed")
@@ -657,9 +611,6 @@ class SwarmSymphonyService:
             config.orchestration.max_depth,
             config.orchestration.min_edge_confidence,
             config.evolution.enabled,
-            _configured_evolution_backend(config),
-            _flow_enabled(config),
-            str(_flow_dir(config) or ""),
             llm_signature,
         )
         if self._runtime is None or self._runtime_key != key:
@@ -688,8 +639,8 @@ class SwarmSymphonyService:
     ) -> SymphonyRuntimeType:
         model = model_from_config(llm_config)
         flow_engine = None
-        if with_flow and _flow_enabled(config):
-            flow_dir = _flow_dir(config) or config.paths.graph_dir.parent / "flow"
+        if with_flow and config.evolution.enabled:
+            flow_dir = config.paths.graph_dir.parent / "flow"
             flow_engine = SymphonyFlowEngine(
                 flow_dir,
                 llm_client=model,
@@ -763,7 +714,7 @@ class SwarmSymphonyService:
         """Submit one Rail graph pair and deliver any new install candidates."""
 
         config = load_symphony_config()
-        if not config.evolution.enabled and not _flow_enabled(config):
+        if not config.enabled or not config.evolution.enabled:
             return
         runtime = self._runtime_for(config)
         result = await runtime.submit_evolution(
@@ -772,8 +723,6 @@ class SwarmSymphonyService:
             session_id=session_id,
             capture_mode=capture_mode,
         )
-        if not _flow_enabled(config):
-            return
         recovered = self._recovered_candidates
         try:
             recovered = (*recovered, *await self._start_flow(runtime))
@@ -809,7 +758,7 @@ class SwarmSymphonyService:
         """Start Flow recovery when the feature is enabled."""
 
         config = load_symphony_config()
-        if not config.enabled or not _flow_enabled(config):
+        if not config.enabled or not config.evolution.enabled:
             return
         runtime = self._runtime_for(config)
         recovered = await self._start_flow(runtime)
@@ -871,7 +820,7 @@ class SwarmSymphonyService:
         """Return installable Recipe versions retained by the Core Flow store."""
 
         config = load_symphony_config()
-        if not config.enabled or not _flow_enabled(config):
+        if not config.enabled or not config.evolution.enabled:
             return {"success": True, "enabled": False, "candidates": []}
         flow = self._runtime_for(config).flow_engine
         candidates = flow.list_candidates() if flow is not None else ()
@@ -892,7 +841,7 @@ class SwarmSymphonyService:
         """Re-send one retained candidate through the existing Host question flow."""
 
         config = load_symphony_config()
-        if not config.enabled or not _flow_enabled(config):
+        if not config.enabled or not config.evolution.enabled:
             return {"success": False, "reason": "flow_disabled"}
         flow = self._runtime_for(config).flow_engine
         candidate = (
@@ -929,6 +878,9 @@ class SwarmSymphonyService:
         expected_request_id = experience_request_id(recipe_id, recipe_version)
         if request_id != expected_request_id:
             return {"installed": False, "reason": "invalid_request_id"}
+        config = load_symphony_config()
+        if not config.enabled or not config.evolution.enabled:
+            return {"installed": False, "reason": "flow_disabled"}
         async with self._install_lock:
             previous = self._install_receipts.get(request_id)
             if previous is not None:

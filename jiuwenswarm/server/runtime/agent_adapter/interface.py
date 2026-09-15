@@ -232,31 +232,6 @@ def _permission_card_ids_from_answers(answers: list[dict]) -> list[str]:
     return [card_id]
 
 
-def _schedule_symphony_session_feedback(
-    session_id: str,
-    request_id: str,
-    *,
-    terminal_status: str = "success",
-) -> None:
-    """Submit session-based Symphony learning without delaying the response."""
-
-    try:
-        from jiuwenswarm.symphony.evolution.session_consumer import (
-            schedule_session_evolution_consume,
-        )
-
-        schedule_session_evolution_consume(
-            session_id,
-            request_id,
-            terminal_status=terminal_status,
-        )
-    except Exception as exc:  # noqa: BLE001
-        logging.getLogger(__name__).debug(
-            "Failed to schedule Symphony session feedback: %s",
-            exc,
-        )
-
-
 def _history_user_content(params: Any, query: Any) -> Any:
     """返回写入历史记录的用户消息内容.
 
@@ -2922,18 +2897,6 @@ class JiuWenSwarm:
         if isinstance(request.params, dict):
             restore_chat_send_equipment_params(session_id, request.params)
         query = request.params.get("query", "")
-        feedback_scheduled = False
-
-        def _schedule_feedback_once(terminal_status: str) -> None:
-            nonlocal feedback_scheduled
-            if feedback_scheduled:
-                return
-            _schedule_symphony_session_feedback(
-                session_id,
-                request.request_id,
-                terminal_status=terminal_status,
-            )
-            feedback_scheduled = True
         # proactive_recommendation 是系统触发的推荐指令（不是用户说的话），不写 user
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
@@ -2956,11 +2919,7 @@ class JiuWenSwarm:
 
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
         except _TeamPlanApprovalPayloadError as exc:
-            _schedule_feedback_once("error")
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -2968,9 +2927,6 @@ class JiuWenSwarm:
                 payload={"error": str(exc)},
                 metadata=request.metadata,
             )
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
 
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
@@ -2993,33 +2949,19 @@ class JiuWenSwarm:
                 workspace_dir=str(get_agent_home_dir()),
                 extra=request.params,
             )
-            try:
-                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
-            except asyncio.CancelledError:
-                _schedule_feedback_once("cancelled")
-                raise
-            except Exception:
-                _schedule_feedback_once("error")
-                raise
+            await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
 
         async def run_agent_task():
             return await adapter.process_message_impl(request, inputs)
 
-        try:
-            if schedule_session:
-                result = await self._session_manager.submit_and_wait(
-                    session_id, run_agent_task
-                )
-            else:
-                result = await run_agent_task()
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
+        if schedule_session:
+            result = await self._session_manager.submit_and_wait(
+                session_id, run_agent_task
+            )
+        else:
+            result = await run_agent_task()
 
         if result.ok and result.payload.get("content"):
             content = result.payload["content"]
@@ -3029,21 +2971,14 @@ class JiuWenSwarm:
                 adapter=adapter,
                 request=request,
             )
-            try:
-                content_str = await finalize_assistant_response_if_a2ui(
-                    content_str,
-                    channel=request.channel_id,
-                    user_query=user_turn.text,
-                    request_id=request.request_id or "",
-                    repair_call=repair_call,
-                    retry_without_a2ui_call=retry_without_a2ui_call,
-                )
-            except asyncio.CancelledError:
-                _schedule_feedback_once("cancelled")
-                raise
-            except Exception:
-                _schedule_feedback_once("error")
-                raise
+            content_str = await finalize_assistant_response_if_a2ui(
+                content_str,
+                channel=request.channel_id,
+                user_query=user_turn.text,
+                request_id=request.request_id or "",
+                repair_call=repair_call,
+                retry_without_a2ui_call=retry_without_a2ui_call,
+            )
             if isinstance(content, str):
                 result.payload["content"] = content_str
             result.payload = _with_web_agent_template_payload(
@@ -3072,8 +3007,6 @@ class JiuWenSwarm:
                 ),
                 mode=request.params.get("mode", "unknown"),
             )
-            _schedule_feedback_once("success")
-
             # cloud memory: after chat hook
             if memory_mode == "cloud":
                 after_ctx = MemoryHookContext(
@@ -3094,8 +3027,6 @@ class JiuWenSwarm:
             if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                 _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
 
-        if not feedback_scheduled:
-            _schedule_feedback_once("success" if result.ok else "error")
         return result
 
     async def deliver_control_input(
@@ -3271,26 +3202,10 @@ class JiuWenSwarm:
 
         rid = request.request_id
         cid = request.channel_id
-        feedback_scheduled = False
-
-        def _schedule_feedback_once(terminal_status: str) -> None:
-            nonlocal feedback_scheduled
-            if feedback_scheduled:
-                return
-            _schedule_symphony_session_feedback(
-                session_id,
-                rid,
-                terminal_status=terminal_status,
-            )
-            feedback_scheduled = True
 
         try:
             inputs, memory_mode, user_turn = self._build_inputs(request)
-        except asyncio.CancelledError:
-            _schedule_feedback_once("cancelled")
-            raise
         except _TeamPlanApprovalPayloadError as exc:
-            _schedule_feedback_once("error")
             yield AgentResponseChunk(
                 request_id=rid,
                 channel_id=cid,
@@ -3304,9 +3219,6 @@ class JiuWenSwarm:
                 is_complete=True,
             )
             return
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
 
         # Session-level MCP enable: reconcile to explicit mcp ∪ equipment
         # connectors before the agent runs. Always pass a list (never None):
@@ -3339,14 +3251,7 @@ class JiuWenSwarm:
                 workspace_dir=str(get_agent_home_dir()),
                 extra=request.params,
             )
-            try:
-                await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
-            except asyncio.CancelledError:
-                _schedule_feedback_once("cancelled")
-                raise
-            except Exception:
-                _schedule_feedback_once("error")
-                raise
+            await ExtensionRegistry.get_instance().trigger(AgentServerHookEvents.MEMORY_BEFORE_CHAT, mem_ctx)
             memory_block = "\n\n".join(b for b in mem_ctx.memory_blocks if b)
             inputs["memory_block"] = memory_block
 
@@ -3628,11 +3533,6 @@ class JiuWenSwarm:
             "[JiuWenSwarm] consumer loop starting: request_id=%s is_team=%s",
             rid, is_team_mode,
         )
-        stream_aborted = False
-        abort_terminal_status = "cancelled"
-        completion_status = "success"
-        terminal_final_persisted = False
-
         try:
             while (
                     not stream_done.is_set()
@@ -3732,7 +3632,6 @@ class JiuWenSwarm:
                             request.params,
                         ),
                     )
-                    completion_status = "error"
                     yield AgentResponseChunk(
                         request_id=rid,
                         channel_id=cid,
@@ -3761,9 +3660,6 @@ class JiuWenSwarm:
                                 data = replace(data, payload=enriched_payload)
                         if isinstance(data.payload, dict) and isinstance(data.payload.get("event_type"), str):
                             et = str(data.payload.get("event_type"))
-                            if et == "chat.error":
-                                completion_status = "error"
-                                abort_terminal_status = "error"
                             _note_goal_stream_payload(et, data.payload)
                             should_record = et.startswith("chat.") or et == "context.usage"
                             final_segment_started_at: float | None = None
@@ -3947,8 +3843,6 @@ class JiuWenSwarm:
                                 )
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
-                                    if not is_team_mode or data.payload.get("role") != "teammate":
-                                        terminal_final_persisted = True
                             if et == "chat.final":
                                 next_final_content = str(data.payload.get("content", ""))
                                 if next_final_content:
@@ -3962,9 +3856,6 @@ class JiuWenSwarm:
                             cid,
                         ) or data
                         et = str(data.get("event_type"))
-                        if et == "chat.error":
-                            completion_status = "error"
-                            abort_terminal_status = "error"
                         _note_goal_stream_payload(et, data)
                         should_record = et.startswith("chat.") or et == "context.usage"
                         final_segment_started_at = None
@@ -4141,8 +4032,6 @@ class JiuWenSwarm:
                             )
                             if et == "chat.final":
                                 durable_final_content = str(data.get("content", ""))
-                                if not is_team_mode or data.get("role") != "teammate":
-                                    terminal_final_persisted = True
                         if et == "chat.final":
                             next_final_content = str(data.get("content", ""))
                             if next_final_content:
@@ -4156,15 +4045,9 @@ class JiuWenSwarm:
                         )
         except asyncio.CancelledError:
             logger.info("[JiuWenSwarm] 流式处理被中断: request_id=%s", rid)
-            stream_aborted = True
             raise
         except GeneratorExit:
             logger.info("[JiuWenSwarm] 流式连接已关闭: request_id=%s", rid)
-            stream_aborted = True
-            raise
-        except Exception:
-            stream_aborted = True
-            abort_terminal_status = "error"
             raise
         finally:
             # Goal 还在跑时这条流不会收到收尾的 chat.final，气泡里已经展示的正文
@@ -4188,11 +4071,6 @@ class JiuWenSwarm:
                 task.cancel()
             if not stream_task.done():
                 stream_task.cancel()
-            if stream_aborted:
-                terminal_status = abort_terminal_status
-                if terminal_status == "cancelled" and terminal_final_persisted:
-                    terminal_status = "success"
-                _schedule_feedback_once(terminal_status)
             if unfinished_a2ui_tasks:
                 await asyncio.gather(*unfinished_a2ui_tasks, return_exceptions=True)
             try:
@@ -4213,29 +4091,17 @@ class JiuWenSwarm:
         # (which may be full after a disconnect), but preserve the public
         # cancellation contract once all already-produced chunks are drained.
         if producer_cancellation is not None:
-            _schedule_feedback_once(
-                "success" if terminal_final_persisted else "cancelled"
-            )
             raise producer_cancellation
 
         assistant_message = final_answer_content or "".join(final_answer_chunks)
-        try:
-            finalized_assistant_message = await finalize_assistant_response_if_a2ui(
-                assistant_message,
-                channel=cid,
-                user_query=user_turn.text,
-                request_id=rid or "",
-                repair_call=repair_call,
-                retry_without_a2ui_call=retry_without_a2ui_call,
-            )
-        except asyncio.CancelledError:
-            _schedule_feedback_once(
-                "success" if terminal_final_persisted else "cancelled"
-            )
-            raise
-        except Exception:
-            _schedule_feedback_once("error")
-            raise
+        finalized_assistant_message = await finalize_assistant_response_if_a2ui(
+            assistant_message,
+            channel=cid,
+            user_query=user_turn.text,
+            request_id=rid or "",
+            repair_call=repair_call,
+            retry_without_a2ui_call=retry_without_a2ui_call,
+        )
         if finalized_assistant_message and (
                 finalized_assistant_message != assistant_message or suppress_a2ui_stream
         ):
@@ -4270,7 +4136,6 @@ class JiuWenSwarm:
             )
             final_answer_content = finalized_assistant_message
             final_answer_chunks = []
-            _schedule_feedback_once(completion_status)
             final_chunk = _make_a2ui_final_chunk(
                 request_id=rid,
                 channel_id=cid,
@@ -4285,8 +4150,6 @@ class JiuWenSwarm:
             if enriched_payload is not final_chunk.payload:
                 final_chunk = replace(final_chunk, payload=enriched_payload)
             yield final_chunk
-
-        _schedule_feedback_once(completion_status)
 
         # cloud memory: after chat hook
         if memory_mode == "cloud":

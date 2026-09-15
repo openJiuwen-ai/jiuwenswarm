@@ -22,10 +22,8 @@ DEFAULT_BUILD_MIN_EDGE_CONFIDENCE = 0.5
 
 DEFAULT_SYMPHONY_ENABLED = False
 DEFAULT_EVOLUTION_ENABLED = False
-DEFAULT_EVOLUTION_BACKEND = "core"
-DEFAULT_CORE_FLOW_ENABLED = False
 
-DEFAULT_LEGACY_FLOW_ENABLED = True
+DEFAULT_FLOW_ENABLED = True
 DEFAULT_FLOW_MIN_EDGE_SUPPORT = 1
 DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE = 0.5
 DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE = 1
@@ -75,7 +73,7 @@ class SymphonyBuildConfig:
 
 @dataclass(frozen=True)
 class SymphonyFlowDistillConfig:
-    enabled: bool = DEFAULT_LEGACY_FLOW_ENABLED
+    enabled: bool = DEFAULT_FLOW_ENABLED
     min_edge_support: int = DEFAULT_FLOW_MIN_EDGE_SUPPORT
     min_edge_success_rate: float = DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE
     min_successes_candidate: int = DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE
@@ -86,14 +84,7 @@ class SymphonyFlowDistillConfig:
 @dataclass(frozen=True)
 class SymphonyEvolutionConfig:
     enabled: bool = DEFAULT_EVOLUTION_ENABLED
-    backend: str = DEFAULT_EVOLUTION_BACKEND
     flow: SymphonyFlowDistillConfig = SymphonyFlowDistillConfig()
-
-
-@dataclass(frozen=True)
-class SymphonyFlowConfig:
-    enabled: bool = DEFAULT_CORE_FLOW_ENABLED
-    flow_dir: Path | None = None
 
 
 @dataclass(frozen=True)
@@ -111,7 +102,6 @@ class SymphonyConfig:
     fingerprint: SymphonyFingerprintConfig
     build: SymphonyBuildConfig
     evolution: SymphonyEvolutionConfig
-    flow: SymphonyFlowConfig
     orchestration: SymphonyOrchestrationConfig
 
 
@@ -138,9 +128,6 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
     extraction = _mapping(fingerprint.get("extraction"))
     build = _mapping(data.get("build"))
     evolution = _mapping(data.get("evolution"))
-    evolution_flow = _mapping(evolution.get("flow"))
-    flow = _mapping(data.get("flow"))
-    flow_dir = flow.get("dir") or flow.get("flow_dir")
     orchestration = _mapping(data.get("orchestration"))
 
     return SymphonyConfig(
@@ -201,43 +188,31 @@ def symphony_config_from_dict(raw: dict[str, Any] | None) -> SymphonyConfig:
                 evolution.get("enabled"),
                 DEFAULT_EVOLUTION_ENABLED,
             ),
-            backend=_evolution_backend(
-                evolution.get("backend"),
-                DEFAULT_EVOLUTION_BACKEND,
-            ),
             flow=SymphonyFlowDistillConfig(
                 enabled=_bool(
-                    evolution_flow.get("enabled"),
-                    DEFAULT_LEGACY_FLOW_ENABLED,
+                    evolution.get("flow", {}).get("enabled"),
+                    DEFAULT_FLOW_ENABLED,
                 ),
                 min_edge_support=_positive_int(
-                    evolution_flow.get("min_edge_support"),
+                    evolution.get("flow", {}).get("min_edge_support"),
                     DEFAULT_FLOW_MIN_EDGE_SUPPORT,
                 ),
                 min_edge_success_rate=_clamped_float(
-                    evolution_flow.get("min_edge_success_rate"),
+                    evolution.get("flow", {}).get("min_edge_success_rate"),
                     DEFAULT_FLOW_MIN_EDGE_SUCCESS_RATE,
                 ),
                 min_successes_candidate=_positive_int(
-                    evolution_flow.get("min_successes_candidate"),
+                    evolution.get("flow", {}).get("min_successes_candidate"),
                     DEFAULT_FLOW_MIN_SUCCESSES_CANDIDATE,
                 ),
                 min_successes_verified=_positive_int(
-                    evolution_flow.get("min_successes_verified"),
+                    evolution.get("flow", {}).get("min_successes_verified"),
                     DEFAULT_FLOW_MIN_SUCCESSES_VERIFIED,
                 ),
                 min_pack_success_rate_verified=_clamped_float(
-                    evolution_flow.get("min_pack_success_rate_verified"),
+                    evolution.get("flow", {}).get("min_pack_success_rate_verified"),
                     DEFAULT_FLOW_MIN_PACK_SUCCESS_RATE_VERIFIED,
                 ),
-            ),
-        ),
-        flow=SymphonyFlowConfig(
-            enabled=_bool(flow.get("enabled"), DEFAULT_CORE_FLOW_ENABLED),
-            flow_dir=(
-                _resolve_path(flow_dir, Path("."))
-                if str(flow_dir or "").strip()
-                else None
             ),
         ),
         orchestration=SymphonyOrchestrationConfig(
@@ -328,10 +303,3 @@ def _orchestration_mode(value: Any, default: str) -> str:
     if text in {"fast", "beam"}:
         return text
     raise ValueError(f"Unsupported Symphony orchestration mode: {value}")
-
-
-def _evolution_backend(value: Any, default: str) -> str:
-    text = str(value or "").strip().lower() or default
-    if text in {"core", "legacy"}:
-        return text
-    raise ValueError(f"Unsupported Symphony evolution backend: {value}")

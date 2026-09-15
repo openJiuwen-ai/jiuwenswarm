@@ -102,11 +102,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     cfg = config.get("agent_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
     symphony = load_symphony_config(config)
-    symphony_capture_requested = (
-        symphony.enabled
-        and symphony.evolution.backend == "core"
-        and (symphony.evolution.enabled or symphony.flow.enabled)
-    )
+    symphony_capture_requested = symphony.enabled and symphony.evolution.enabled
     evolution_requested = (
         get_skill_evolution_enabled(config) or symphony_capture_requested
     )

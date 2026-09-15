@@ -148,7 +148,12 @@ def sync_team_observability() -> None:
     config = get_config()
     cfg = config.get("team_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    evolution_requested = get_skill_evolution_enabled(config)
+    from jiuwenswarm.symphony.config import load_symphony_config
+
+    symphony = load_symphony_config(config)
+    evolution_requested = get_skill_evolution_enabled(config) or (
+        symphony.enabled and symphony.evolution.enabled
+    )
     # The Web trajectory store needs the provider exactly like single-Agent
     # does: spans must be exported so the record processor can fan them out to
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
