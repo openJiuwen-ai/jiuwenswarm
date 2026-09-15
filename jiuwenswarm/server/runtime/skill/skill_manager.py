@@ -2354,7 +2354,14 @@ class SkillManager:
         calls: list[tuple[str, Awaitable[dict[str, Any]]]] = [
             (
                 "teamskillshub",
-                self.handle_skills_team_skills_hub_search({"q": query, "limit": limit}),
+                self.handle_skills_team_skills_hub_search(
+                    {
+                        "q": query,
+                        "limit": limit,
+                        "cache_mode": params.get("cache_mode"),
+                        "refresh": params.get("refresh", False),
+                    }
+                ),
             )
         ]
         source_statuses: list[dict[str, Any]] = []
@@ -2379,6 +2386,7 @@ class SkillManager:
             *(asyncio.wait_for(call, timeout=_ONLINE_SEARCH_SOURCE_TIMEOUT) for _, call in calls),
             return_exceptions=True,
         )
+        hub_cache = None
         source_results: dict[str, list[dict[str, Any]]] = {}
         for (source, _), payload in zip(calls, payloads):
             if isinstance(payload, asyncio.CancelledError):
@@ -2392,6 +2400,8 @@ class SkillManager:
                     status["detail"] = str(payload)[:500]
                 source_statuses.append(status)
                 continue
+            if source == "teamskillshub" and payload.get("cache") is not None:
+                hub_cache = payload["cache"]
             if not payload.get("success"):
                 source_statuses.append(
                     {
@@ -2416,6 +2426,7 @@ class SkillManager:
             "query": query,
             "items": self._aggregate_online_search_results(query, source_results, limit),
             "sources": source_statuses,
+            **({"cache": hub_cache} if hub_cache is not None else {}),
         }
 
     async def handle_skills_online_search_install(self, params: dict) -> dict:
@@ -3145,28 +3156,6 @@ class SkillManager:
         # 前端可传 version/display_name 覆盖 SKILL.md 值
         plugin_version = str(params.get("version") or "").strip() or "1.0.0"
         display_name = str(params.get("display_name") or meta.get("display_name") or "").strip() or skill_name
-        author = str(meta.get("author") or "").strip() or "unknown"
-        tags = meta.get("tags")
-        if isinstance(tags, list):
-            normalized_tags = [str(t).strip() for t in tags if str(t).strip()]
-        elif isinstance(tags, str) and tags.strip():
-            normalized_tags = [tags.strip()]
-        else:
-            normalized_tags = ["teamskills"]
-
-        # 生成 plugin.yaml（与 _build_teamskills_publish_zip_from_root 对齐）
-        plugin_yaml_payload = {
-            "name": skill_name,
-            "version": plugin_version,
-            "display_name": display_name,
-            "description": description,
-            "runtime": {"type": "skill"},
-            "metadata": {
-                "author": author,
-                "tags": normalized_tags,
-            },
-        }
-
         output_raw = str(params.get("output") or "out").strip() or "out"
         output_path = Path(output_raw).expanduser()
         if output_path.is_absolute():
@@ -3177,25 +3166,19 @@ class SkillManager:
 
         zip_path = out_dir / f"{skill_root.name}.zip"
         try:
-            with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-                # plugin.yaml 放在 {skill_name}/plugin.yaml
-                zf.writestr(
-                    f"{skill_name}/plugin.yaml",
-                    yaml.safe_dump(plugin_yaml_payload, sort_keys=False, allow_unicode=True),
+            from jiuwenswarm.server.runtime.marketplace.asset_package_builder import build_asset_package
+            from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishIdentity
+
+            # Build outside the source, then retain the legacy downloadable result path.
+            with tempfile.TemporaryDirectory(prefix="teamskills-pack-") as staging:
+                package = await asyncio.to_thread(
+                    build_asset_package, skill_dir,
+                    PublishIdentity("skill", skill_name, plugin_version),
+                    {"description": description, "display_name": display_name}, Path(staging),
+                    exclude_paths=(zip_path,),
                 )
-                # README.md
-                readme = skill_root / "README.md"
-                if readme.is_file():
-                    zf.write(readme, arcname=f"{skill_name}/README.md")
-                # 技能文件
-                for child in skill_root.rglob("*"):
-                    if not child.is_file():
-                        continue
-                    if self._is_under_skill_archive(skill_root, child):
-                        continue
-                    rel = child.relative_to(skill_root).as_posix()
-                    zf.write(child, arcname=f"{skill_name}/{skill_name}/{rel}")
-            checksum = hashlib.sha256(zip_path.read_bytes()).hexdigest().lower()
+                shutil.copyfile(package.artifact_path, zip_path)
+                checksum = package.artifact_sha256
             return {"success": True, "path": str(zip_path), "checksum_sha256": checksum}
         except Exception as exc:
             logger.error("Team Skills Hub pack 失败: %s", exc)
@@ -3269,6 +3252,21 @@ class SkillManager:
                 query_params["asset_type"] = search_asset_type
             if search_publisher_id:
                 query_params["publisher_id"] = search_publisher_id
+            if params.get("cache_mode") == "prefer_cache" and not search_publisher_id:
+                from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import get_hub_catalog_cache
+                effective = {k: v for k, v in params.items() if k not in {"cache_mode", "refresh"}}
+                key = json.dumps([base_url, "skill", "search", query_params], sort_keys=True)
+                effective["_catalog_load"] = True
+
+                async def load_search():
+                    result = await self.handle_skills_team_skills_hub_search(effective)
+                    if not result.get("success"):
+                        raise ValueError("Hub search failed")
+                    yield {**result, "complete": True, "has_more": False}
+                data, state = get_hub_catalog_cache().read(
+                    key, load_search, refresh=bool(params.get("refresh")), kind="skill"
+                )
+                return {**(data or {"success": True, "query": query, "skills": [], "count": 0}), "cache": state}
             data = await self._team_skills_hub_http_get_data(
                 "/api/v1/plugins",
                 params=query_params,
@@ -3313,6 +3311,8 @@ class SkillManager:
                 "skills": normalized,
             }
         except Exception as exc:
+            if params.get("_catalog_load"):
+                raise
             logger.error("Team Skills Hub 搜索失败: %s", exc)
             return {
                 "success": False,
@@ -3331,6 +3331,59 @@ class SkillManager:
         plugin_type / skill_type 规范化后写入 POST body（空则不传）。
         enrich 已废弃：保留入参以免旧调用方报错，但不再 GET /plugins。
         """
+        if params.get("cache_mode") == "prefer_cache":
+            auth = {} if params.get("_catalog_anonymous") else self._resolve_teamskills_hub_auth_with_env(params)
+            # Configured server credentials have one process-memory scope. Explicit
+            # user credentials/context additionally require a session boundary.
+            context_fields = {
+                k: params[k] for k in ("user_id", "request_id", "timestamp", "publisher_id") if params.get(k)
+            }
+            explicit_context = bool(context_fields or params.get("token") or params.get("system_token"))
+            session = str(params.get("_session_id") or params.get("session_id") or "")
+            private = bool(explicit_context or auth.get("token") or auth.get("system_token"))
+            if not explicit_context or session:
+                from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import (
+                    get_hub_catalog_cache,
+                    catalog_memory_scope,
+                )
+                effective = {k: v for k, v in params.items() if k not in {"cache_mode", "refresh"}}
+                base = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
+                effective.setdefault("top_k", effective.get("limit", 10))
+                try:
+                    normalized_top_k = max(1, min(int(effective.get("top_k", 10)), 500))
+                except (TypeError, ValueError):
+                    return {
+                        "success": False,
+                        "detail": "参数 top_k 必须是整数",
+                        "detail_key": "skills.swarmskillshub.errors.recommendFailed",
+                    }
+                key_params = {
+                    "top_k": normalized_top_k,
+                    "category_id": str(effective.get("category_id") or "").strip(),
+                    "plugin_type": ",".join(
+                        self._parse_hub_plugin_types(
+                            str(effective.get("plugin_type") or effective.get("skill_type") or "").strip()
+                        )
+                    ),
+                    "language": str(effective.get("language") or effective.get("locale") or ""),
+                }
+                identity = catalog_memory_scope(
+                    base, {k: auth.get(k, "") for k in ("token", "system_token")},
+                    {"session": session, **context_fields} if explicit_context else None,
+                ) if private else base
+                key = json.dumps([identity, "skill", "recommend", key_params], sort_keys=True, default=str)
+                effective["_catalog_load"] = True
+
+                async def load_recommendation():
+                    result = await self.handle_skills_swarm_skills_hub_recommend(effective)
+                    if not result.get("success"):
+                        raise ValueError("Hub recommendation failed")
+                    yield {**result, "complete": True, "has_more": False}
+                data, state = get_hub_catalog_cache().read(
+                    key, load_recommendation, public=not private, refresh=bool(params.get("refresh")), kind="skill"
+                )
+                return {**(data or {"success": True, "skills": [], "items": [], "count": 0}), "cache": state}
+
         top_k_raw = params.get("top_k", params.get("limit", 10))
         try:
             top_k = max(1, min(int(top_k_raw), 500))
@@ -3350,7 +3403,7 @@ class SkillManager:
         plugin_type = ",".join(plugin_types)
         base_url = self._get_team_skills_hub_base_url(str(params.get("market_url") or "").strip() or None)
 
-        auth = self._resolve_teamskills_hub_auth_with_env(params)
+        auth = {} if params.get("_catalog_anonymous") else self._resolve_teamskills_hub_auth_with_env(params)
         headers: dict[str, str] = {"Content-Type": "application/json"}
         if not auth.get("error"):
             if auth.get("system_token"):
@@ -3401,6 +3454,8 @@ class SkillManager:
                 "items": skills,
             }
         except Exception as exc:
+            if params.get("_catalog_load"):
+                raise
             logger.error("Swarm Skills Hub 推荐失败: %s", exc)
             return {
                 "success": False,
@@ -6495,48 +6550,15 @@ class SkillManager:
         skill_name = str(meta.get("name") or "").strip()
         if not skill_name:
             raise RuntimeError("SKILL.md frontmatter 缺少 name")
-        description = str(meta.get("description") or "").strip() or skill_name
-        display_name = str(meta.get("display_name") or "").strip() or skill_name
-        author = str(meta.get("author") or "").strip() or "unknown"
-        tags = meta.get("tags")
-        if isinstance(tags, list):
-            normalized_tags = [str(t).strip() for t in tags if str(t).strip()]
-        elif isinstance(tags, str) and tags.strip():
-            normalized_tags = [tags.strip()]
-        else:
-            normalized_tags = []
-        if not normalized_tags:
-            normalized_tags = ["teamskills"]
+        from jiuwenswarm.server.runtime.marketplace.asset_package_builder import build_asset_package
+        from jiuwenswarm.server.runtime.marketplace.asset_publish_models import PublishIdentity
 
-        # 与 jiuwen-teamskills 兼容：market publish 仍使用 runtime.type=skill
-        plugin_yaml_payload = {
-            "name": skill_name,
-            "version": plugin_version,
-            "display_name": display_name,
-            "description": description,
-            "runtime": {"type": "skill"},
-            "metadata": {
-                "author": author,
-                "tags": normalized_tags,
-            },
-        }
-
-        zip_path = tmpdir / "teamskills_publish_normalized.zip"
-        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr(
-                f"{skill_name}/plugin.yaml",
-                yaml.safe_dump(plugin_yaml_payload, sort_keys=False, allow_unicode=True),
+        with tempfile.TemporaryDirectory(prefix="teamskills-normalize-") as staging:
+            package = build_asset_package(
+                skill_dir, PublishIdentity("skill", skill_name, plugin_version), {}, Path(staging),
             )
-            readme = root / "README.md"
-            if readme.is_file():
-                zf.write(readme, arcname=f"{skill_name}/README.md")
-            for child in skill_dir.rglob("*"):
-                if not child.is_file():
-                    continue
-                if self._is_under_skill_archive(skill_dir, child):
-                    continue
-                rel = child.relative_to(skill_dir).as_posix()
-                zf.write(child, arcname=f"{skill_name}/{skill_name}/{rel}")
+            zip_path = tmpdir / "teamskills_publish_normalized.zip"
+            shutil.copyfile(package.artifact_path, zip_path)
         return zip_path
 
     def _find_skill_dir_by_installed_asset_id(self, asset_id: str) -> Path | None:
@@ -7034,7 +7056,10 @@ class SkillManager:
 
         if not resp.is_success:
             detail = (resp.text or "").strip()[:300]
-            raise RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}: {detail}")
+            error = RuntimeError(f"Team Skills Hub API 错误 HTTP {resp.status_code}: {detail}")
+            error.status_code = resp.status_code
+            error.retry_after = resp.headers.get("Retry-After")
+            raise error
         try:
             payload = resp.json()
         except Exception as exc:

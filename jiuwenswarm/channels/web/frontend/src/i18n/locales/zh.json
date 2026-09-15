@@ -2576,6 +2576,7 @@
       "installed": "已安装",
       "loadError": "专家列表加载失败，请重试。",
       "detailError": "专家详情加载失败，请重试。",
+      "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
@@ -3429,7 +3430,7 @@
       "breadcrumbPlugin": "插件详情",
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
-      "mcpDisconnectedBannerSelf": "当前连接器未连接，无法正常使用",
+      "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
       "connectMcp": "点击连接",
       "sections": {
         "basicInfo": "基本信息",

@@ -1,3 +1,4 @@
+import { AssetPublishHost } from './components/AssetPublishDrawer';
 // Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 /**
@@ -2617,12 +2618,12 @@ function AppContent({
   }, [kvCacheAffinityEnabled, mode, request]);
 
   const handleUseAgent = useCallback((agentId: string) => {
-    enterNewConversation('agent');
+    enterNewConversation('agent', { forceMode: 'agent' });
     useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: agentId });
   }, [enterNewConversation]);
 
   const handleUseAgentPrompt = useCallback((agentId: string, prompt: string) => {
-    enterNewConversation('agent', { initialInputValue: prompt });
+    enterNewConversation('agent', { initialInputValue: prompt, forceMode: 'agent' });
     useSessionStore.getState().setAgentSelectionIntent(NEW_CONVERSATION_ID, { kind: 'select', id: agentId });
   }, [enterNewConversation]);
 
@@ -4023,6 +4024,7 @@ function AppWithAuth({
     <>
       {remote && <LogoutButton />}
       <App settingsPageDefinition={settingsPageDefinition} resolveSettingsRequest={resolveSettingsRequest} />
+      <AssetPublishHost />
     </>
   );
 }

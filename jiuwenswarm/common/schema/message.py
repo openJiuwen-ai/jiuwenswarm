@@ -181,6 +181,14 @@ class ReqMethod(Enum):
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
 
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
+
     # mcp management.
     MCP_LIST = "mcp.list"
     MCP_SHOW = "mcp.show"

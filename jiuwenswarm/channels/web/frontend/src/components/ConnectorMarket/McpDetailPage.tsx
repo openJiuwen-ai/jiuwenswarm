@@ -1,6 +1,8 @@
+import { PublicationDetailStatus } from '../marketplace/PublicationDetailStatus';
+import { openAssetPublish } from '../../features/assetPublishEvents';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
-import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, X, ExternalLink, Pencil } from 'lucide-react';
+import { Unlink2, Trash2, Plus, Wrench, Terminal, Loader2, AlertCircle, Info, ExternalLink, Pencil } from 'lucide-react';
 // 2026-08-17：Trash2（原"卸载"按钮图标，按 source 分流 delete/disconnect）曾随彻底删除入口一起
 // 移除。2026-08-19 用户明确要求恢复：自定义 MCP 断联态（已经解绑过一次）的按钮要变成真正的
 // "卸载"（彻底删除，见 mcp.delete_custom），配图标也要换成垃圾桶——Unlink2 是"解绑"语义的图标，
@@ -198,6 +200,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   //   disconnected，下面 `installed && !linked` 那段断联 banner 会自动渲染出来，用户当场看到结果、
   //   直接重连、编辑，或者卸载（真删除，见 handleDelete）。
   async function handleUnbind() {
+    if (!linked || busy || installing || cardState === 'connecting') return;
     setBusy(true);
     await disconnectAction(runtimeName);
     setBusy(false);
@@ -233,6 +236,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
         {/* 头部：与 skill/agent 详情共用的 EntityHeader（头像/标题 20px/30px/标签行/操作区）。
             2026-09-11 集成类型徽标从 titleEnd 移入 tags 标签行，统一走 EntityHeader 的
             结构化标签（.entity-header__tag 标准 tag 视觉），titleEnd 只留瞬态 error 提示 */}
+        <PublicationDetailStatus kind="mcp" localId={runtimeName} />
         <EntityHeader
           testId="connector-market-mcp-detail-header"
           avatar={connector.icon ? <img src={connector.icon} alt="" /> : avatar}
@@ -262,6 +266,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           }
           actions={
             <div className="flex items-center gap-3" data-testid="connector-market-mcp-detail-actions">
+              {(connector.installed || connector.source !== 'hub') && <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="connector-market-mcp-publish" onClick={() => openAssetPublish({ kind: 'mcp', local_id: connector.id })}>{t('skills.actions.publish')}</button>}
               {/* 自定义 MCP 才能编辑（source==='customize'，built_in 没有可改的连接配置）——放在
               解绑左边，和"卸载/解绑的左边一个小编辑按键"的产品要求对齐。 */}
               {isCustomize && onEdit && (
@@ -283,7 +288,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
                   label={isDeleteMode ? t('connectorMarket.card.uninstall') : t('connectorMarket.card.unbind')}
                   onClick={() => setConfirmUnbind(true)}
                   danger
-                  disabled={busy}
+                  disabled={busy || installing || cardState === 'connecting' || (!isDeleteMode && !linked)}
                 />
               )}
               {installed && (
@@ -322,28 +327,19 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           }
         />
 
-        {/* "已安装+未连接"断联提示——新方案要求这个中间态在详情页左上角图标名称下方展示一行提示，
-          "连接MCP"按钮复用 handleInstall（和顶部安装按钮走同一个 connect 调用）。
-          2026-08-19 用户明确要求的视觉调整：整行加浅红底（精确色值 #FCE3E1，已落为语义 token
-          --color-feedback-danger-banner——不用 danger-subtle，那个是 10% 透明度红叠加在卡片
-          背景上换算出来的颜色，跟用户给的实际色值有肉眼可辨的偏差）；前面的断联图标从线框
-          Unlink 换成"红圆底+白色X"这种更常见的错误态图标（用 bg-danger 圆形 + 白色 X 手搭，
-          lucide 没有现成的实心圆+X 组合图标）；"连接MCP"文字从红色改成蓝色（用跟全局一致的
-          accent 蓝 token）。 */}
-        {/* Show the same banner before first install or reconnect. */}
+        {/* 尚未连接是普通状态，只有连接失败才使用错误样式。 */}
         {!linked && (
           <div
-            className="flex items-center gap-1.5 rounded-lg bg-[color:var(--color-feedback-danger-banner)] px-3 py-2 text-[13px] text-text-muted"
+            className={`flex items-center gap-1.5 rounded-lg px-3 py-2 text-[13px] ${cardState === 'error' ? 'bg-danger-subtle text-danger' : 'bg-secondary text-text-muted'}`}
+            role={cardState === 'error' ? 'alert' : 'status'}
             data-testid="connector-market-mcp-detail-disconnect-banner"
           >
-            <span className="flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-full bg-danger">
-              <X size={9} strokeWidth={3} className="text-text-inverse" />
-            </span>
-            <span>{t('connectorMarket.detail.mcpDisconnectedBannerSelf')}</span>
+            {cardState === 'error' ? <AlertCircle size={14} /> : <Info size={14} />}
+            <span>{t(cardState === 'error' ? 'connectorMarket.card.stateError' : cardState === 'connecting' ? 'connectorMarket.card.connecting' : 'connectorMarket.detail.mcpDisconnectedBannerSelf')}</span>
             <button
               type="button"
               onClick={handleInstall}
-              disabled={installing}
+              disabled={installing || busy || cardState === 'connecting'}
               className="flex items-center gap-0.5 font-medium text-[color:var(--color-chat-accent)] hover:opacity-80 disabled:opacity-60"
               data-testid="connector-market-mcp-detail-connect-mcp"
             >

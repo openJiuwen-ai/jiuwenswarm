@@ -1,3 +1,4 @@
+import type { CatalogItems } from '../catalogCache';
 import type {
   AgentCatalogItem,
   AgentDetail,
@@ -59,7 +60,7 @@ export interface AgentCatalogListOptions {
 
 export interface AgentManagementClient {
   readonly source: AgentManagementSource;
-  listCatalog(options?: AgentCatalogListOptions): Promise<AgentCatalogItem[]>;
+  listCatalog(options?: AgentCatalogListOptions): Promise<CatalogItems<AgentCatalogItem>>;
   getDefinition(id: string): Promise<AgentDetail>;
   getDefinitionFiles(id: string): Promise<DefinitionFileEntry[]>;
   getDefinitionFile(id: string, relativePath: string): Promise<AgentFileContent>;

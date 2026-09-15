@@ -1,3 +1,4 @@
+import { openAssetPublish } from '../../features/assetPublishEvents';
 /**
  * 技能详情页（统一组件）
  *
@@ -304,6 +305,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     },
     /* 右侧操作按钮 */
     <div className="flex items-center gap-6 flex-shrink-0">
+      <button type="button" className="rounded-lg border border-border bg-card px-3 py-1.5 text-sm text-text" data-testid="skill-panel-my-detail-publish-btn" onClick={() => openAssetPublish({ kind: 'skill', local_id: selectedSkill.name })}>{t('skills.actions.publish')}</button>
       {/* ... 菜单：编辑/卸载 */}
       <div className="relative">
         <button

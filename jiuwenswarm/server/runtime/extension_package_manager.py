@@ -600,6 +600,7 @@ def _build_list_card(
         "displayName": manifest.get("display_name") or pkg_dir.name,
         "displayDescription": manifest.get("display_description") or {},
         "category": category if isinstance(category, str) else "",
+        "tags": manifest.get("tags") if isinstance(manifest.get("tags"), list) else [],
         "source": source,
         "avatar": _resolve_package_avatar(pkg_dir, manifest),
     }
@@ -1651,7 +1652,9 @@ async def _list_equipment_with_hub(
 ) -> list[dict]:
     hub_asset_kind = _hub_asset_kind(kind)
     local_cards = (
-        list_agent_templates(params)
+        # Resolve Hub provenance before source filtering: local directories can
+        # contain installed Hub assets whose display source is assigned below.
+        list_agent_templates({k: v for k, v in (params or {}).items() if k != "filter"})
         if kind == _AGENT_TEMPLATE_KIND
         else list_plugin_packages(None)
     )
@@ -1678,28 +1681,35 @@ async def _list_equipment_with_hub(
         return _apply_list_source_filter(list(cards_by_id.values()), params)
 
     port = hub_port or create_default_hub_asset_port()
-    try:
-        remote_items: list[HubAssetSummary] = []
-        page_number = 1
-        while page_number <= 100:
-            page = await port.search_assets(
-                HubSearchRequest(
-                    kind=hub_asset_kind,
-                    page=page_number,
-                    page_size=100,
-                )
-            )
-            remote_items.extend(page.items)
-            if not page.items or len(remote_items) >= page.total:
-                break
-            page_number += 1
-    except Exception:
-        logger.warning(
-            "[extension_package_manager] failed to list Hub %s packages",
-            hub_asset_kind,
-            exc_info=True,
+    cache_state = None
+    if isinstance(params, dict) and params.get("cache_mode") == "prefer_cache":
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import cached_asset_catalog
+        remote_items, cache_state = await cached_asset_catalog(
+            port, hub_asset_kind, refresh=bool(params.get("refresh"))
         )
-        return _apply_list_source_filter(list(cards_by_id.values()), params)
+    else:
+        try:
+            remote_items: list[HubAssetSummary] = []
+            page_number = 1
+            while page_number <= 100:
+                page = await port.search_assets(
+                    HubSearchRequest(
+                        kind=hub_asset_kind,
+                        page=page_number,
+                        page_size=100,
+                    )
+                )
+                remote_items.extend(page.items)
+                if not page.items or len(remote_items) >= page.total:
+                    break
+                page_number += 1
+        except Exception:
+            logger.warning(
+                "[extension_package_manager] failed to list Hub %s packages",
+                hub_asset_kind,
+                exc_info=True,
+            )
+            return _apply_list_source_filter(list(cards_by_id.values()), params)
     hub_icons: dict[str, str] = {}
     for item in remote_items:
         if item.kind != hub_asset_kind or not item.icon_uri:
@@ -1715,17 +1725,31 @@ async def _list_equipment_with_hub(
         if icon:
             card["avatar"] = icon
     for item in remote_items:
-        if item.kind != hub_asset_kind or item.asset_id in cards_by_id:
+        if item.kind != hub_asset_kind:
+            continue
+        existing = cards_by_id.get(item.asset_id)
+        if kind == _AGENT_TEMPLATE_KIND and existing and existing.get("source") == "hub":
+            remote_card = _hub_list_card(item)
+            cards_by_id[item.asset_id] = {
+                **existing,
+                **{key: remote_card[key] for key in ("displayName", "displayDescription", "avatar", "tags", "version")},
+            }
+            continue
+        if item.asset_id in cards_by_id:
             continue
         name_taken = (item.package_name or item.asset_id) in local_package_ids
         # Catalog tabs drop source=local. Keep the Hub card so plaza still
         # shows the remote package (and its catalog icon) when a same-named
-        # local copy exists. Unfiltered/mine lists still prefer the local card.
-        if name_taken and source_filter not in {"builtin", "builtin+hub"}:
+        # local copy exists. Experts retain their distinct Hub identity.
+        if kind != _AGENT_TEMPLATE_KIND and name_taken and source_filter not in {"builtin", "builtin+hub"}:
             continue
         cards_by_id[item.asset_id] = _hub_list_card(item)
     cards = [cards_by_id[key] for key in sorted(cards_by_id)]
-    return _apply_list_source_filter(cards, params)
+    result = _apply_list_source_filter(cards, params)
+    if cache_state is not None:
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import CatalogCards
+        return CatalogCards(result, cache_state)
+    return result
 
 
 async def list_agent_templates_with_hub(

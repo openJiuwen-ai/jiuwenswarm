@@ -1,3 +1,9 @@
+import {
+  scheduleCatalogRefresh,
+  catalogScope,
+  withCatalogCache,
+  type CatalogCacheMetadata,
+} from '../../features/catalogCache';
 /**
  * 技能广场（SkillHub 推荐 / 在线搜索 / 广场详情）数据 hook
  *
@@ -71,6 +77,16 @@ export function useHubMarketplace({
 }: UseHubMarketplaceParams) {
   /** 搜索结果（online_search） */
   const [hubSkills, setHubSkills] = useState<MarketplacePluginItem[]>([]);
+  const [hubCache, setHubCache] = useState<CatalogCacheMetadata>();
+  const mountedRef = useRef(true);
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      hubFetchSeqRef.current += 1;
+      hubMoreFetchSeqRef.current += 1;
+    };
+  }, []);
   /** 首页推荐：团队 / 普通技能各最多 HUB_HOME_TOP_K */
   const [hubTeamHome, setHubTeamHome] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillHome, setHubSkillHome] = useState<MarketplacePluginItem[]>([]);
@@ -98,16 +114,18 @@ export function useHubMarketplace({
     async (category: string, pluginType: 'swarmskill' | 'skill', topK: number) => {
       const params = withSession({
         top_k: topK,
+        cache_mode: 'prefer_cache',
         plugin_type: pluginType,
         ...(category !== 'all' ? { category_id: category } : {}),
       });
       const data = await webRequest<{
         success: boolean;
         skills?: HubRecommendSkill[];
+        cache?: CatalogCacheMetadata;
         detail?: string;
       }>('skills.swarmskillshub.recommend', params, { timeoutMs: 30000 });
       if (!data.success) throw new Error(data.detail || 'Recommend failed');
-      return (data.skills || []).map(mapRecommendSkill);
+      return withCatalogCache((data.skills || []).map(mapRecommendSkill), data.cache);
     },
     [withSession],
   );
@@ -115,6 +133,7 @@ export function useHubMarketplace({
   const fetchHubHomeSkills = useCallback(
     async (category: string) => {
       const seq = ++hubFetchSeqRef.current;
+      const requestScope = catalogScope();
       const silent = hubHomeLoadedCategoryRef.current === category;
       if (!silent) {
         setHubLoading(true);
@@ -128,6 +147,21 @@ export function useHubMarketplace({
           fetchHubRecommendByType(category, 'skill', HUB_HOME_TOP_K),
         ]);
         if (seq !== hubFetchSeqRef.current) return;
+
+        if (requestScope !== catalogScope()) return;
+        const caches = [teamResult, skillResult].flatMap((result) =>
+          result.status === 'fulfilled' && result.value.cache ? [result.value.cache] : [],
+        );
+        const cache = caches.find((value) => value.refreshing) || caches[0];
+        setHubCache(cache);
+        scheduleCatalogRefresh(
+          'skill-recommend',
+          cache,
+          () => {
+            void fetchHubHomeSkills(category);
+          },
+          () => mountedRef.current && seq === hubFetchSeqRef.current,
+        );
 
         if (teamResult.status === 'fulfilled') {
           setHubTeamHome(teamResult.value);
@@ -158,28 +192,34 @@ export function useHubMarketplace({
   const fetchHubMoreSkills = useCallback(
     async (kind: 'swarmskill' | 'skill', category: string) => {
       const seq = ++hubMoreFetchSeqRef.current;
+      const requestScope = catalogScope();
       setHubMoreLoading(true);
       try {
         const items = await fetchHubRecommendByType(category, kind, HUB_MORE_TOP_K);
-        if (seq !== hubMoreFetchSeqRef.current) return;
+        if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
+        setHubCache(items.cache);
+        scheduleCatalogRefresh(
+          'skill-more',
+          items.cache,
+          () => {
+            void fetchHubMoreSkills(kind, category);
+          },
+          () => mountedRef.current && seq === hubMoreFetchSeqRef.current,
+        );
         if (kind === 'swarmskill') {
           setHubTeamMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category
-              ? { ...prev, team: true }
-              : { category, team: true, skill: false },
+            prev && prev.category === category ? { ...prev, team: true } : { category, team: true, skill: false },
           );
         } else {
           setHubSkillMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category
-              ? { ...prev, skill: true }
-              : { category, team: false, skill: true },
+            prev && prev.category === category ? { ...prev, skill: true } : { category, team: false, skill: true },
           );
         }
       } catch (error) {
         console.error(`Failed to fetch more ${kind} SkillHub recommend:`, error);
-        if (seq !== hubMoreFetchSeqRef.current) return;
+        if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
         if (kind === 'swarmskill') setHubTeamMore([]);
         else setHubSkillMore([]);
       } finally {
@@ -206,10 +246,12 @@ export function useHubMarketplace({
   const fetchOnlineSearch = useCallback(
     async (query: string) => {
       const seq = ++hubFetchSeqRef.current;
+      const requestScope = catalogScope();
       setHubLoading(true);
       try {
         const data = await webRequest<{
           success: boolean;
+          cache?: CatalogCacheMetadata;
           partial?: boolean;
           items?: Array<{
             source: string;
@@ -241,11 +283,23 @@ export function useHubMarketplace({
           'skills.online_search.search',
           withSession({
             q: query,
+            cache_mode: 'prefer_cache',
             limit: 50,
           }),
           { timeoutMs: 45000 },
         );
 
+        if (requestScope !== catalogScope() || seq !== hubFetchSeqRef.current) return;
+        setHubCache(data.cache);
+        scheduleCatalogRefresh(
+          'skill-search',
+          data.cache,
+          () => {
+            void fetchOnlineSearch(query);
+          },
+          () => mountedRef.current && seq === hubFetchSeqRef.current,
+        );
+        // success=false: 参数非法或所有来源均失败
         if (!data.success) {
           throw new Error(data.detail || 'Search failed');
         }
@@ -281,7 +335,6 @@ export function useHubMarketplace({
       } catch (error) {
         console.error('Failed to fetch online search:', error);
         if (seq !== hubFetchSeqRef.current) return;
-        setHubSkills([]);
       } finally {
         if (seq === hubFetchSeqRef.current) setHubLoading(false);
       }
@@ -368,6 +421,7 @@ export function useHubMarketplace({
   return {
     hubSkills,
     hubLoading,
+    hubCache,
     hubMoreLoading,
     hubTeamHome,
     hubSkillHome,

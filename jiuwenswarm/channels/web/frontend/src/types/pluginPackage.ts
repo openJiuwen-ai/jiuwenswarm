@@ -36,6 +36,7 @@ export interface PluginPackageSummary {
   displayDescription: LocalizedText;
   /** 分类；来自 manifest.category；后端缺省为 ""——前端按"未分类"归进"其他"桶处理。 */
   category: string;
+  tags?: LocalizedText[];
   /** local: 用户自己创建，builtin: 广场内置。 */
   source: PluginPackageSource;
   /** 包内头像 data URL；manifest.avatar 为空或解析失败则为 "" / 缺省。list/show 都下发。 */

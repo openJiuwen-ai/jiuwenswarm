@@ -1,0 +1,210 @@
+.asset-publish-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 10000;
+  background: rgb(0 0 0 / 30%);
+  display: flex;
+  justify-content: flex-end;
+}
+.asset-publish-drawer {
+  width: min(550px, 100vw);
+  height: 100%;
+  background: var(--color-surface-panel);
+  color: var(--color-text-primary);
+  border-left: 1px solid var(--color-border-default);
+  display: flex;
+  flex-direction: column;
+  box-shadow: 0 25px 50px -12px rgb(0 0 0 / 25%);
+  font-size: 14px;
+  line-height: 20px;
+}
+.asset-publish-header {
+  padding: 16px 24px 8px;
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 16px;
+  flex-shrink: 0;
+}
+.asset-publish-header h2 {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  color: var(--color-text-strong);
+}
+.asset-publish-notice {
+  margin: 0 24px 8px;
+  padding: 8px 12px;
+  min-height: 34px;
+  border-radius: 6px;
+  background: var(--color-skill-notice-surface);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  line-height: 18px;
+  flex-shrink: 0;
+}
+.asset-publish-notice svg {
+  flex-shrink: 0;
+}
+.asset-publish-body {
+  flex: 1;
+  min-height: 0;
+  padding: 8px 24px;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+}
+.asset-publish-drawer button {
+  padding: 0 16px;
+  min-height: 32px;
+  border: 1px solid var(--color-control-emphasis);
+  border-radius: 16px;
+  background: var(--color-surface-card);
+  color: var(--color-control-emphasis);
+  font-size: 14px;
+  line-height: 20px;
+  cursor: pointer;
+}
+.asset-publish-drawer button:hover {
+  opacity: 0.8;
+}
+.asset-publish-drawer button:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+.asset-publish-drawer .asset-publish-close {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  min-height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--color-text-muted);
+}
+.asset-publish-close:hover {
+  background: var(--color-surface-card) !important;
+}
+.asset-publish-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  margin-bottom: 16px;
+}
+.asset-publish-field > span {
+  font-weight: 500;
+}
+.asset-publish-required {
+  color: var(--color-feedback-danger);
+}
+.asset-publish-field input,
+.asset-publish-field select,
+.asset-publish-field textarea {
+  width: 100%;
+  padding: 8px 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: 6px;
+  background: var(--color-surface-panel);
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 20px;
+}
+.asset-publish-field textarea {
+  min-height: 72px;
+  resize: vertical;
+}
+.asset-publish-field :is(input, select, textarea):focus-visible,
+.asset-publish-drawer button:focus-visible {
+  outline: 2px solid var(--color-border-focus);
+  outline-offset: 2px;
+}
+.asset-publish-checkbox {
+  display: flex;
+  gap: 8px;
+  margin: 16px 0;
+  align-items: center;
+}
+.asset-publish-login {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 16px;
+  flex-wrap: wrap;
+}
+.asset-publish-footer {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 8px 24px 16px;
+  flex-shrink: 0;
+}
+.asset-publish-footer button {
+  padding: 0 32px;
+}
+.asset-publish-drawer .asset-publish-primary {
+  background: var(--color-control-emphasis);
+  color: var(--color-control-emphasis-text);
+}
+.asset-publish-primary:disabled {
+  background: var(--color-surface-card);
+  border-color: var(--color-border-default);
+  color: var(--color-text-muted);
+}
+.asset-publish-drawer section {
+  margin-top: 24px;
+}
+.asset-publish-drawer h3 {
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.asset-publish-drawer p {
+  margin: 8px 0;
+  font-size: 12px;
+  line-height: 18px;
+}
+.asset-publish-resource {
+  color: var(--color-text-muted);
+}
+.asset-publish-drawer [role='alert'] {
+  padding: 8px 12px;
+  border-radius: 6px;
+  border: 1px solid var(--color-feedback-danger);
+  background: var(--color-feedback-danger-subtle);
+  color: var(--color-feedback-danger);
+}
+.asset-publish-drawer details {
+  margin: 12px 0;
+}
+.asset-publish-drawer summary {
+  cursor: pointer;
+}
+.asset-publish-drawer pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 12px;
+  margin: 8px 0;
+}
+.asset-publish-drawer .asset-publish-record {
+  display: block;
+  width: 100%;
+  text-align: left;
+  margin-top: 8px;
+  border-radius: 6px;
+  border-color: var(--color-border-default);
+  padding: 8px 12px;
+}
+
+.asset-publish-hint {
+  display: inline-flex;
+  margin-left: 6px;
+  vertical-align: middle;
+  color: var(--color-text-muted);
+  cursor: help;
+}

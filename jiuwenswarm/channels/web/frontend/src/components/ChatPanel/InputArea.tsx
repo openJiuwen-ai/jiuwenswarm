@@ -753,7 +753,8 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const setAgentGroupSelectionIntent = useSessionStore((s) => s.setAgentGroupSelectionIntent);
   const clearAgentGroupSelectionIntent = useSessionStore((s) => s.clearAgentGroupSelectionIntent);
   const clearSelectedSkills = useSessionStore((s) => s.clearSelectedSkills);
-  const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId) ?? null;
+  const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId || item.runtimePackageName === selectedAgentId) ?? null;
+
   const installedAgentOptions = useMemo(
     () =>
       agentOptions.filter((item) => item.installed && item.connectionState === 'connected' && item.enabled !== false),
@@ -799,12 +800,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!activeSessionId || (pickerTab !== 'agent' && !selectedAgentId) || (!agentPickerOpen && !selectedAgentId)) return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
-    void agentManagementClient
-      .listCatalog()
+    void agentManagementClient.listCatalog({ filter: 'mine' })
       .then((items) => {
         if (cancelled) return;
-        const selectedItem = selectedAgentId ? items.find((item) => item.id === selectedAgentId) : null;
-        if (selectedItem?.enabled === false || selectedItem?.connectionState !== 'connected') {
+        const selectedItem = selectedAgentId ? items.find((item) => item.id === selectedAgentId || item.runtimePackageName === selectedAgentId) : null;
+        if (selectedItem && (selectedItem.enabled === false || selectedItem.connectionState !== 'connected')) {
           setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
         }
         setAgentOptions(items);
@@ -3298,7 +3298,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   ) : pickerTab === 'agent' ? (
                                     filteredAgentOptions.map((item) => {
                                       const avatarUrl = getAgentAvatarUrl(item);
-                                      const isSelected = selectedAgentId === item.id;
+                                      const isSelected = selectedAgentId === item.id || selectedAgentId === item.runtimePackageName;
                                       return (
                                         <button
                                           key={item.id}

@@ -2595,6 +2595,7 @@
       "installed": "Installed",
       "loadError": "Unable to load the Expert list. Try again.",
       "detailError": "Unable to load Expert details. Try again.",
+      "hubAssetChanged": "This expert has changed or been removed on Hub. The catalog is refreshing; go back and select it again.",
       "actionError": "The action could not be completed. Try again in a moment.",
       "duplicateName": "An Expert with this name already exists. Choose a different name and try again.",
       "agentUnavailable": "This Expert is no longer available. Refresh the list and try again.",
@@ -3448,7 +3449,7 @@
       "breadcrumbPlugin": "Plugin details",
       "breadcrumbMcp": "Connector details",
       "mcpDisconnectedBanner": "This plugin's connector isn't connected, so it can't be used normally",
-      "mcpDisconnectedBannerSelf": "This connector isn't connected, so it can't be used normally",
+      "mcpDisconnectedBannerSelf": "Not connected yet. Connect to start using it",
       "connectMcp": "Connect",
       "sections": {
         "basicInfo": "Basic info",
