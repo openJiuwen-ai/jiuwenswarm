@@ -29,6 +29,7 @@ from jiuwenclaw.agentserver.session_history import (
 )
 from jiuwenclaw.agentserver.gateway_push.wire import build_server_push_wire
 from jiuwenclaw.agentserver.tools.acp_output_tools import get_acp_output_manager
+from jiuwenclaw.agentserver.tools.client_tool import get_client_tool_manager
 from jiuwenclaw.agentserver.agent_manager import AgentManager
 from jiuwenclaw.utils import (
     FileTransferStartParams,
@@ -388,6 +389,9 @@ class AgentWebSocketServer:
         self._agent_manager = None  # TenantAgentPool 实例
         self._agents_sync_config_lock = asyncio.Lock()
         get_acp_output_manager().set_send_push_callback(
+            lambda msg: asyncio.create_task(self.send_push(msg))
+        )
+        get_client_tool_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
 
@@ -1131,6 +1135,10 @@ class AgentWebSocketServer:
 
         if request.req_method == ReqMethod.ACP_TOOL_RESPONSE:
             await self._handle_acp_tool_response(ws, request, send_lock)
+            return
+
+        if request.req_method == ReqMethod.CLIENT_TOOL_RESPONSE:
+            await self._handle_client_tool_response(ws, request, send_lock)
             return
 
         resp = await self._agent_manager.process_message(request)
@@ -3158,6 +3166,38 @@ class AgentWebSocketServer:
                 },
             )
 
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await ws.send(json.dumps(wire, ensure_ascii=False))
+
+    async def _handle_client_tool_response(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        params = request.params if isinstance(request.params, dict) else {}
+        accepted, reason = get_client_tool_manager().complete(
+            params,
+            session_id=request.session_id,
+        )
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=True,
+            payload={
+                "accepted": accepted,
+                "ignored": not accepted,
+                "reason": reason,
+                "tool_call_id": params.get("tool_call_id"),
+            },
+        )
+        if not accepted:
+            logger.info(
+                "[AgentServer] ignore client tool response: tool_call_id=%s reason=%s",
+                params.get("tool_call_id"),
+                reason,
+            )
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await ws.send(json.dumps(wire, ensure_ascii=False))
