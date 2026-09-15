@@ -210,29 +210,17 @@ class SkillPrebuiltTemplateCreateRequest(SkillPrebuiltTemplateUpdateRequest):
     skill_id: str = Field(..., min_length=1, max_length=512)
 
 
-# 入参可写别名；存盘归一到 SDK 注册名（见 _CANONICAL_MCP_TRANSPORT）。
-# 企业模板仅允许远程 MCP；本地 stdio 不在用户可配入口开放。
 _VALID_MCP_TRANSPORTS = frozenset({
+    "stdio",
     "sse",
     "http",
     "streamable-http",
     "streamable_http",
 })
 
-# http / streamable_http → streamable-http（openjiuwen StreamableHttpClient）
-_MCP_TRANSPORT_ALIASES: dict[str, str] = {
-    "http": "streamable-http",
-    "streamable_http": "streamable-http",
-}
-
 
 def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """校验 MCP 模板 ``mcp_entry``；丢弃条目级 ``enabled``（开关只认模板行）。
-
-    ``http`` / ``streamable_http`` 作为 Streamable HTTP 别名接受，存盘时写成
-    ``streamable-http``，避免 Gateway 保存成功、AgentServer 注册报
-    ``Unsupported MCP client type: http``。
-    """
+    """校验 MCP 模板 ``mcp_entry``；丢弃条目级 ``enabled``（开关只认模板行）。"""
     if not isinstance(entry, dict):
         raise ValueError("mcp_entry must be a JSON object")
     normalized = dict(entry)
@@ -246,10 +234,14 @@ def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
             "mcp_entry.transport must be one of: "
             + ", ".join(sorted(_VALID_MCP_TRANSPORTS))
         )
-    transport = _MCP_TRANSPORT_ALIASES.get(transport, transport)
-    url = str(normalized.get("url", "")).strip()
-    if not url:
-        raise ValueError("mcp_entry.url is required for remote MCP transport")
+    if transport == "stdio":
+        command = str(normalized.get("command", "")).strip()
+        if not command:
+            raise ValueError("mcp_entry.command is required for stdio transport")
+    else:
+        url = str(normalized.get("url", "")).strip()
+        if not url:
+            raise ValueError("mcp_entry.url is required for remote MCP transport")
     normalized["name"] = name
     normalized["transport"] = transport
     return normalized

@@ -288,17 +288,19 @@
 - 用法：
   - `/mcp list`：列出全部 MCP 服务（名称、transport、启用状态）；
   - `/mcp show [name]`：查看 MCP 配置；不带参数时展示当前启用项，带 `name` 时展示单个服务详情；
-  - `/mcp add --name <name> --transport <sse|http> ...`：新增远程 MCP 服务；
+  - `/mcp add --name <name> --transport <stdio|sse> ...`：新增 MCP 服务；
   - `/mcp update --name <name> ...`：更新指定 MCP 服务配置（支持更新 transport / 参数 / 启用状态）；
   - `/mcp enable <name>`：启用指定 MCP 服务；
   - `/mcp disable <name>`：禁用指定 MCP 服务；
   - `/mcp remove <name>`：删除指定 MCP 服务。
-- 传输参数（仅远程）：
-  - `sse` / `http`（`streamable-http` 别名）：需提供 `--url`，可选 `--headers`、`--timeout_s`。
+- 传输参数：
+  - `stdio`：需提供 `--command`，可选 `--args`、`--cwd`、`--env`；
+  - `sse`：需提供 `--url`，可选 `--headers`、`--timeout_s`。
 - 示例：
   - `/mcp list`
   - `/mcp show`
   - `/mcp show playwright`
+  - `/mcp add --name playwright --transport stdio --command python --args "server.py --transport stdio"`
   - `/mcp update --name playwright --transport sse --url http://127.0.0.1:9000/sse --headers "Authorization=Bearer xxx"`
   - `/mcp add --name local-sse --transport sse --url http://127.0.0.1:9000/sse`
   - `/mcp disable playwright`

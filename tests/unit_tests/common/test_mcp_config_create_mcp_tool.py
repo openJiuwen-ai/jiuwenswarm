@@ -3,26 +3,33 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
 from jiuwenswarm.common.mcp_config import (
+    _check_dangerous_args,
     _is_blocked_host,
     _loopback_mcp_allowed,
     _normalize_mcp_client_type,
+    _normalize_stdio_command_kind,
     _optional_auth_dict,
+    _path_is_under_trusted_root,
     _pick_mcp_url,
+    _trusted_cat_cafe_stdio_roots,
+    _validate_cat_cafe_request_scoped_stdio,
     _validate_request_scoped_remote_mcp,
-    build_mcp_server_config,
     create_mcp_tool,
 )
+from openjiuwen.core.foundation.tool import McpServerConfig
+
 
 class TestNormalizeMcpClientType:
     @pytest.mark.parametrize(
         "raw, expected",
         [
-            (None, ""),
-            ("", ""),
+            (None, "stdio"),
+            ("", "stdio"),
             ("stdio", "stdio"),
             ("STDIO", "stdio"),
             ("sse", "sse"),
@@ -31,15 +38,53 @@ class TestNormalizeMcpClientType:
             ("streamable_http", "streamable-http"),
             ("streamable-http", "streamable-http"),
             ("StreamableHTTP", "streamable-http"),
-            # TC_MCP_CALL_005：模板 transport=http 是 Streamable HTTP 别名
-            ("http", "streamable-http"),
-            ("HTTP", "streamable-http"),
             ("playwright", "playwright"),
             ("openapi", "openapi"),
         ],
     )
     def test_normalize(self, raw, expected):
         assert _normalize_mcp_client_type(raw) == expected
+
+
+class TestNormalizeStdioCommandKind:
+    @pytest.mark.parametrize(
+        "command, expected",
+        [
+            ("node", "node"),
+            ("node.exe", "node"),
+            ("python", "python"),
+            ("python3", "python"),
+            ("python3.11", "python"),
+            ("C:\\Program Files\\node.exe", "node"),
+            ("/usr/local/bin/node", "node"),
+            ("npx", "npx"),
+            ("npx.exe", "npx"),
+            ("npx.cmd", "npx"),
+            ("/usr/local/bin/npx", "npx"),
+            ("uvx", "uvx"),
+            ("uvx.exe", "uvx"),
+            ("/home/u/.local/bin/uvx", "uvx"),
+        ],
+    )
+    def test_valid_commands(self, command, expected):
+        assert _normalize_stdio_command_kind(command) == expected
+
+    def test_empty_command_raises(self):
+        with pytest.raises(ValueError, match="缺少"):
+            _normalize_stdio_command_kind("")
+
+    def test_whitespace_command_raises(self):
+        with pytest.raises(ValueError, match="缺少"):
+            _normalize_stdio_command_kind("   ")
+
+    def test_none_command_raises(self):
+        with pytest.raises(ValueError, match="缺少"):
+            _normalize_stdio_command_kind(None)
+
+    @pytest.mark.parametrize("cmd", ["bash", "sh", "ruby", "cmd", "powershell", "deno"])
+    def test_unsupported_command_raises(self, cmd):
+        with pytest.raises(ValueError, match="不支持"):
+            _normalize_stdio_command_kind(cmd)
 
 
 class TestPickMcpUrl:
@@ -67,6 +112,131 @@ class TestOptionalAuthDict:
     def test_invalid_type_raises(self):
         with pytest.raises(ValueError, match="必须是 JSON 对象"):
             _optional_auth_dict({"auth_headers": "not-a-dict"}, "auth_headers")
+
+
+class TestCheckDangerousArgs:
+    def test_safe_args_pass(self):
+        _check_dangerous_args("t", ["-y", "@scope/pkg", "/tmp"])
+
+    def test_eval_flag_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            _check_dangerous_args("t", ["-e", "code"])
+
+    def test_command_flag_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            _check_dangerous_args("t", ["-c", "print(1)"])
+
+    def test_module_flag_allowed(self):
+        _check_dangerous_args("t", ["-m", "os"])
+
+    def test_eval_equals_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            _check_dangerous_args("t", ["--eval=code"])
+
+    def test_command_equals_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            _check_dangerous_args("t", ["-c=print(1)"])
+
+    def test_non_list_args_noop(self):
+        _check_dangerous_args("t", "not-a-list")
+
+    def test_empty_args_pass(self):
+        _check_dangerous_args("t", [])
+
+
+class TestTrustedCatCafeStdioRoots:
+    def test_returns_list_of_paths(self):
+        roots = _trusted_cat_cafe_stdio_roots()
+        assert isinstance(roots, list)
+        for r in roots:
+            assert isinstance(r, Path)
+
+    def test_no_duplicates(self):
+        roots = _trusted_cat_cafe_stdio_roots()
+        keys = [str(r) for r in roots]
+        assert len(keys) == len(set(keys))
+
+
+class TestPathIsUnderTrustedRoot:
+    def test_subpath_is_under_root(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        child = root / "sub" / "file.py"
+        assert _path_is_under_trusted_root(child, [root])
+
+    def test_unrelated_path_is_not_under_root(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        other = tmp_path / "other" / "file.py"
+        assert not _path_is_under_trusted_root(other, [root])
+
+    def test_root_itself_is_under_root(self, tmp_path):
+        root = tmp_path / "root"
+        root.mkdir()
+        assert _path_is_under_trusted_root(root, [root])
+
+
+class TestValidateCatCafeRequestScopedStdio:
+    def test_npx_skips_path_check(self):
+        _validate_cat_cafe_request_scoped_stdio({
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/etc", "/tmp"],
+        })
+
+    def test_uvx_skips_path_check(self):
+        _validate_cat_cafe_request_scoped_stdio({
+            "command": "uvx",
+            "args": ["mcp-server-fetch", "/var/data"],
+        })
+
+    def test_npx_untrusted_cwd_allowed(self):
+        _validate_cat_cafe_request_scoped_stdio({
+            "command": "npx",
+            "args": ["-y", "pkg"],
+            "cwd": "/untrusted/random/dir",
+        })
+
+    def test_npx_dangerous_command_arg_still_blocked(self):
+        with pytest.raises(ValueError, match="python -c"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "npx",
+                "args": ["-c", "code"],
+            })
+
+    def test_uvx_dangerous_command_arg_still_blocked(self):
+        with pytest.raises(ValueError, match="python -c"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "uvx",
+                "args": ["--command", "code"],
+            })
+
+    def test_node_path_check_still_active(self):
+        with pytest.raises(ValueError, match="受信根"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "node",
+                "args": ["/untrusted/script.js"],
+            })
+
+    def test_python_path_check_still_active(self):
+        with pytest.raises(ValueError, match="受信根"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "python",
+                "args": ["/untrusted/script.py"],
+            })
+
+    def test_node_eval_still_blocked(self):
+        with pytest.raises(ValueError, match="node -e"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "node",
+                "args": ["-e", "console.log(1)"],
+            })
+
+    def test_args_not_list_raises(self):
+        with pytest.raises(ValueError, match="args 须为列表"):
+            _validate_cat_cafe_request_scoped_stdio({
+                "command": "npx",
+                "args": "not-a-list",
+            })
 
 
 class TestIsBlockedHost:
@@ -203,51 +373,81 @@ class TestValidateRequestScopedRemoteMcp:
             _validate_request_scoped_remote_mcp("t", {"url": "http://192.168.1.1/mcp"})
 
 
-class TestCreateMcpToolRejectsStdio:
-    """用户可配 create_mcp_tool 不再接受本地 stdio / 缺 type。"""
-
-    def test_basic_stdio_rejected(self):
+class TestCreateMcpToolStdio:
+    def test_basic_stdio(self):
         cfg = json.dumps({"name": "my-tool", "command": "node", "args": ["server.js"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert isinstance(result, McpServerConfig)
+        assert result.client_type == "stdio"
+        assert result.server_name == "my-tool"
+        assert result.server_path == "stdio://my-tool"
+        assert result.params["command"] == "node"
+        assert result.params["args"] == ["server.js"]
 
-    def test_explicit_stdio_type_rejected(self):
-        cfg = json.dumps({
-            "name": "my-tool",
-            "type": "stdio",
-            "command": "node",
-            "args": ["server.js"],
-        })
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
-
-    def test_stdio_with_python_rejected(self):
+    def test_stdio_with_python(self):
         cfg = json.dumps({"name": "py-tool", "command": "python", "args": ["-m", "mymod"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "python"
 
-    def test_npx_config_rejected(self):
+    def test_stdio_with_env(self):
         cfg = json.dumps({
-            "name": "npx-tool",
-            "command": "npx",
-            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+            "name": "env-tool",
+            "command": "node",
+            "args": ["s.js"],
+            "env": {"KEY": "VAL"},
         })
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.params["env"] == {"KEY": "VAL"}
 
-    def test_uvx_config_rejected(self):
-        cfg = json.dumps({"name": "uvx-tool", "command": "uvx", "args": ["mcp-server-fetch"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+    def test_stdio_with_cwd(self):
+        cfg = json.dumps({
+            "name": "cwd-tool",
+            "command": "node",
+            "args": ["s.js"],
+            "cwd": "/tmp/work",
+        })
+        result = create_mcp_tool(cfg)
+        assert result.params["cwd"] == "/tmp/work"
+
+    def test_stdio_with_server_id(self):
+        cfg = json.dumps({
+            "name": "sid-tool",
+            "server_id": "custom-id",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        result = create_mcp_tool(cfg)
+        assert result.server_id == "custom-id"
 
     def test_missing_name_raises(self):
         with pytest.raises(ValueError, match="缺少 'name'"):
             create_mcp_tool(json.dumps({"command": "node", "args": ["s.js"]}))
 
-    def test_array_stdio_config_rejected(self):
+    def test_missing_command_for_stdio_raises(self):
+        with pytest.raises(ValueError, match="缺少"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "", "args": ["s.js"]}))
+
+    def test_invalid_args_type_raises(self):
+        with pytest.raises(ValueError, match="必须是列表"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "node", "args": "not-list"}))
+
+    def test_unsupported_command_raises(self):
+        with pytest.raises(ValueError, match="不支持"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "ruby", "args": ["s.rb"]}))
+
+    def test_dangerous_eval_arg_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "node", "args": ["-e", "code"]}))
+
+    def test_dangerous_command_arg_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "python", "args": ["-c", "print(1)"]}))
+
+    def test_array_config(self):
         cfg = json.dumps([{"name": "arr-tool", "command": "node", "args": ["s.js"]}])
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.server_name == "arr-tool"
 
     def test_empty_array_raises(self):
         with pytest.raises(ValueError, match="不能为空"):
@@ -256,6 +456,56 @@ class TestCreateMcpToolRejectsStdio:
     def test_invalid_json_raises(self):
         with pytest.raises(ValueError, match="无效的 JSON"):
             create_mcp_tool("not-json")
+
+
+class TestCreateMcpToolNpxUvx:
+    def test_npx_config(self):
+        cfg = json.dumps({
+            "name": "npx-tool",
+            "command": "npx",
+            "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
+        })
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "npx"
+        assert result.params["args"] == ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+
+    def test_uvx_config(self):
+        cfg = json.dumps({"name": "uvx-tool", "command": "uvx", "args": ["mcp-server-fetch"]})
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "uvx"
+        assert result.params["args"] == ["mcp-server-fetch"]
+
+    def test_npx_with_env_and_cwd(self):
+        cfg = json.dumps({
+            "name": "npx-env",
+            "command": "npx",
+            "args": ["-y", "@scope/pkg"],
+            "env": {"API_KEY": "secret"},
+            "cwd": "/some/dir",
+        })
+        result = create_mcp_tool(cfg)
+        assert result.params["env"] == {"API_KEY": "secret"}
+        assert result.params["cwd"] == "/some/dir"
+
+    def test_npx_absolute_path(self):
+        cfg = json.dumps({"name": "npx-abs", "command": "/usr/local/bin/npx", "args": ["-y", "pkg"]})
+        result = create_mcp_tool(cfg)
+        assert result.params["command"] == "/usr/local/bin/npx"
+
+    def test_uvx_absolute_path(self):
+        cfg = json.dumps({"name": "uvx-abs", "command": r"C:\Users\me\.local\bin\uvx.exe", "args": ["pkg"]})
+        result = create_mcp_tool(cfg)
+        assert result.params["command"] == r"C:\Users\me\.local\bin\uvx.exe"
+
+    def test_npx_dangerous_eval_arg_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "npx", "args": ["-e", "code"]}))
+
+    def test_uvx_dangerous_command_arg_blocked(self):
+        with pytest.raises(ValueError, match="危险标志"):
+            create_mcp_tool(json.dumps({"name": "t", "command": "uvx", "args": ["-c", "print(1)"]}))
 
 
 class TestCreateMcpToolSse:
@@ -281,16 +531,6 @@ class TestCreateMcpToolSse:
         result = create_mcp_tool(cfg)
         assert result.auth_headers == {"Authorization": "Bearer xxx"}
         assert result.auth_query_params == {"token": "yyy"}
-
-    def test_sse_headers_alias_maps_to_auth_headers(self):
-        cfg = json.dumps({
-            "name": "sse-headers-alias",
-            "type": "sse",
-            "url": "http://127.0.0.1:3001/sse",
-            "headers": {"Authorization": "Bearer from-headers"},
-        })
-        result = create_mcp_tool(cfg)
-        assert result.auth_headers == {"Authorization": "Bearer from-headers"}
 
     def test_sse_missing_url_raises(self):
         with pytest.raises(ValueError, match="需要 url"):
@@ -409,6 +649,17 @@ class TestCreateMcpToolOpenapi:
 class TestCreateMcpToolTimeoutPassthrough:
     """前端下发的 timeout_s 必须透传进 params（供 _run_mcp_worker 按连接器超时调用）。"""
 
+    def test_stdio_timeout_s_passthrough(self):
+        cfg = json.dumps({
+            "name": "slow-stdio",
+            "command": "node",
+            "args": ["s.js"],
+            "timeout_s": 120,
+        })
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["timeout_s"] == 120
+
     def test_sse_timeout_s_passthrough(self):
         cfg = json.dumps({
             "name": "slow-sse",
@@ -434,125 +685,19 @@ class TestCreateMcpToolTimeoutPassthrough:
     def test_no_timeout_s_no_param(self):
         cfg = json.dumps({
             "name": "no-timeout",
-            "type": "sse",
-            "url": "http://127.0.0.1:3001/sse",
+            "command": "node",
+            "args": ["s.js"],
         })
         result = create_mcp_tool(cfg)
         assert "timeout_s" not in result.params
 
 
 class TestCreateMcpToolDefaultType:
-    def test_no_type_rejected(self):
+    def test_no_type_defaults_to_stdio(self):
         cfg = json.dumps({
             "name": "default-tool",
             "command": "node",
             "args": ["s.js"],
         })
-        with pytest.raises(ValueError, match="仅支持"):
-            create_mcp_tool(cfg)
-
-
-class TestBuildMcpServerConfigRejectsStdio:
-    def test_stdio_transport_returns_none(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "local",
-                "transport": "stdio",
-                "command": "node",
-                "args": ["s.js"],
-            }
-        )
-        assert cfg is None
-
-
-class TestBuildMcpServerConfigAuthHeaders:
-    """企业模板 headers / 连接器 auth_headers → SDK auth_headers。"""
-
-    def test_enterprise_headers_map_to_auth_headers(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "qa-bearer-streamable-http",
-                "transport": "streamable-http",
-                "url": "http://192.168.1.96:18016/mcp",
-                "headers": {"Authorization": "Bearer sds-dev-mcp-bearer-token"},
-                "timeout_s": 10,
-                "enabled": True,
-            },
-            server_id_scope="jiuwenswarm",
-        )
-        assert cfg is not None
-        assert cfg.auth_headers == {
-            "Authorization": "Bearer sds-dev-mcp-bearer-token",
-        }
-        assert "headers" not in (cfg.params or {})
-        assert cfg.params.get("timeout_s") == 10
-
-    def test_fractional_timeout_s_preserved(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "frac-timeout",
-                "transport": "streamable-http",
-                "url": "http://192.168.1.96:18014/mcp",
-                "timeout_s": 0.5,
-            }
-        )
-        assert cfg is not None
-        assert cfg.params.get("timeout_s") == 0.5
-
-    def test_auth_headers_alias_preferred_over_headers(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "prefer-auth",
-                "transport": "sse",
-                "url": "http://192.168.1.96:18015/sse",
-                "headers": {"Authorization": "Bearer from-headers"},
-                "auth_headers": {"Authorization": "Bearer from-auth-headers"},
-            }
-        )
-        assert cfg is not None
-        assert cfg.auth_headers == {
-            "Authorization": "Bearer from-auth-headers",
-        }
-
-    def test_query_params_map_to_auth_query_params(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "qa-query",
-                "transport": "http",
-                "url": "http://example.com/mcp",
-                "query_params": {"token": "abc"},
-            }
-        )
-        assert cfg is not None
-        # http 别名须归一为 SDK 注册名，否则 ResourceMgr 报 Unsupported MCP client type
-        assert cfg.client_type == "streamable-http"
-        assert cfg.auth_query_params == {"token": "abc"}
-
-    def test_http_alias_maps_to_streamable_http(self):
-        """对齐 TC_MCP_CALL_005：transport=http 不得原样传给 SDK。"""
-        for alias in ("http", "HTTP", "streamable_http"):
-            cfg = build_mcp_server_config(
-                {
-                    "name": "qa-streamable-http",
-                    "transport": alias,
-                    "url": "http://192.168.1.96:18016/mcp",
-                    "timeout_s": 10,
-                    "enabled": True,
-                },
-                server_id_scope="jiuwenswarm",
-            )
-            assert cfg is not None, alias
-            assert cfg.client_type == "streamable-http", alias
-            assert cfg.params.get("timeout_s") == 10
-
-    def test_non_dict_headers_ignored(self):
-        cfg = build_mcp_server_config(
-            {
-                "name": "bad-headers",
-                "transport": "sse",
-                "url": "http://example.com/sse",
-                "headers": "not-a-dict",
-            }
-        )
-        assert cfg is not None
-        assert cfg.auth_headers == {}
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"

@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import (
@@ -28,13 +30,6 @@ _MCP_ENTERPRISE_FORBIDDEN = (
     "企业版禁止使用本地 /mcp 命令，请在管理端通过 MCP 模板下发与查看。"
 )
 
-_REMOTE_MCP_TRANSPORTS = frozenset({
-    "sse",
-    "http",
-    "streamable-http",
-    "streamable_http",
-})
-
 
 def _normalize_mcp_payload(
         params: dict[str, Any], current: dict[str, Any] | None = None
@@ -45,23 +40,38 @@ def _normalize_mcp_payload(
     transport = str(merged.get("transport", "")).strip().lower()
     if not name:
         raise ValueError("MCP server name is required")
-    if transport not in _REMOTE_MCP_TRANSPORTS:
-        raise ValueError("transport must be one of sse|http")
+    if transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
+        raise ValueError("transport must be one of stdio|sse|http")
     payload: dict[str, Any] = {
         "name": name,
         "enabled": bool(merged.get("enabled", True)),
         "transport": transport,
     }
-    url = str(merged.get("url", "")).strip()
-    if not url:
-        raise ValueError(f"{transport} transport requires url")
-    payload["url"] = url
-    headers = merged.get("headers")
-    if isinstance(headers, dict):
-        payload["headers"] = {str(k): str(v) for k, v in headers.items()}
-    timeout_s = merged.get("timeout_s")
-    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
-        payload["timeout_s"] = float(timeout_s)
+    if transport == "stdio":
+        command = str(merged.get("command", "")).strip()
+        if not command:
+            raise ValueError("stdio transport requires command")
+        payload["command"] = command
+        args = merged.get("args")
+        if isinstance(args, list):
+            payload["args"] = [str(item) for item in args]
+        cwd = merged.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            payload["cwd"] = cwd.strip()
+        env = merged.get("env")
+        if isinstance(env, dict):
+            payload["env"] = {str(k): str(v) for k, v in env.items()}
+    else:
+        url = str(merged.get("url", "")).strip()
+        if not url:
+            raise ValueError(f"{transport} transport requires url")
+        payload["url"] = url
+        headers = merged.get("headers")
+        if isinstance(headers, dict):
+            payload["headers"] = {str(k): str(v) for k, v in headers.items()}
+        timeout_s = merged.get("timeout_s")
+        if isinstance(timeout_s, (int, float)):
+            payload["timeout_s"] = int(timeout_s)
     return payload
 
 
@@ -95,27 +105,53 @@ async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, s
         Returns ``(ok, message)``.
         """
     import logging as _logging
+    from openjiuwen.core.foundation.tool import McpServerConfig
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
-
-    from jiuwenswarm.common.mcp_config import build_mcp_server_config
-
     name = server_payload.get("name", "")
-    transport = str(server_payload.get("transport", "")).strip().lower()
-
-    cfg = build_mcp_server_config(server_payload)
-    if cfg is None:
-        return False, f"{name} ({transport}) pre-check failed: invalid mcp config"
+    transport = server_payload.get("transport", "")
+    # Build McpServerConfig (same logic as _fetch_mcp_tools_from_config)
+    payload: dict[str, Any] = {"server_name": name, "client_type": transport}
+    if transport == "stdio":
+        command = server_payload.get("command", "")
+        if not command:
+            return True, "skipped: no command"
+        # stdio 预检查改为纯静态校验,静态校验零 spawn、零 anyio。
+        if not shutil.which(command):
+            return False, f"{name} (stdio) pre-check failed: command not found in PATH: {command}"
+        raw_args = server_payload.get("args") or []
+        if isinstance(raw_args, list):
+            for arg in raw_args:
+                if not isinstance(arg, str):
+                    continue
+                looks_like_path = (
+                    arg.startswith(("/", "./", "../", "~"))
+                    or arg.endswith((".js", ".mjs", ".cjs", ".json", ".py", ".sh"))
+                )
+                if looks_like_path and not Path(arg).expanduser().exists():
+                    return False, f"{name} (stdio) pre-check failed: file not found: {arg}"
+        return True, f"{name} (stdio) pre-check passed (static)"
+    else:
+        url = server_payload.get("url", "")
+        if not url:
+            return True, "skipped: no url"
+        payload["server_path"] = url
+        params = {}
+        if isinstance(server_payload.get("headers"), dict):
+            params["headers"] = {str(k): str(v) for k, v in server_payload["headers"].items()}
+        if params:
+            payload["params"] = params
+    cfg = McpServerConfig(**payload)
     client = ToolMgr._create_client(cfg)
     _logging.disable(_logging.CRITICAL)
     try:
         connected = await asyncio.wait_for(client.connect(), timeout=15.0)
         if not connected:
-            return False, f"{name} ({cfg.client_type}) pre-check failed: connection refused"
-        return True, f"{name} ({cfg.client_type}) pre-check passed"
+            return False, f"{name} ({transport}) pre-check failed: connection refused"
+        return True, f"{name} ({transport}) pre-check passed"
     except asyncio.TimeoutError:
-        return False, f"{name} ({cfg.client_type}) pre-check failed: connection timed out"
+        return False, f"{name} ({transport}) pre-check failed: connection timed out"
     except Exception as exc:
-        return False, f"{name} ({cfg.client_type}) pre-check failed: {exc}"
+        return False, f"{name} ({transport}) pre-check failed: {exc}"
     finally:
         _logging.disable(_logging.NOTSET)
         try:
@@ -126,19 +162,41 @@ async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, s
 
 async def _fetch_mcp_tools_from_config(entry: dict[str, Any]) -> list[dict[str, Any]]:
     """Create a temporary MCP connection from config entry and list tools."""
+    from openjiuwen.core.foundation.tool import McpServerConfig
     from openjiuwen.core.runner.resources_manager.tool_manager import ToolMgr
-
-    from jiuwenswarm.common.mcp_config import build_mcp_server_config
-
     name = str(entry.get("name", "")).strip()
     transport = str(entry.get("transport", "")).strip().lower()
-    if not name or transport not in _REMOTE_MCP_TRANSPORTS:
+    if not name or transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
         logger.warning("[command.mcp] _fetch skipped: name=%r transport=%r", name, transport)
         return []
-    cfg = build_mcp_server_config(entry)
-    if cfg is None:
-        logger.warning("[command.mcp] _fetch skipped: invalid config name=%r transport=%r", name, transport)
-        return []
+    # Build McpServerConfig same as interface_deep._build_mcp_server_config
+    payload: dict[str, Any] = {"server_name": name, "client_type": transport}
+    if transport == "stdio":
+        command = str(entry.get("command", "")).strip()
+        if not command:
+            logger.warning("[command.mcp] _fetch skipped: no command for stdio")
+            return []
+        params: dict[str, Any] = {"command": command}
+        if isinstance(entry.get("args"), list):
+            params["args"] = [str(x) for x in entry["args"]]
+        if isinstance(entry.get("cwd"), str) and entry["cwd"].strip():
+            params["cwd"] = entry["cwd"].strip()
+        if isinstance(entry.get("env"), dict):
+            params["env"] = {str(k): str(v) for k, v in entry["env"].items()}
+        payload["server_path"] = f"stdio://{name}"
+        payload["params"] = params
+    else:
+        url = str(entry.get("url", "")).strip()
+        if not url:
+            logger.warning("[command.mcp] _fetch skipped: no url for sse")
+            return []
+        payload["server_path"] = url
+        params = {}
+        if isinstance(entry.get("headers"), dict):
+            params["headers"] = {str(k): str(v) for k, v in entry["headers"].items()}
+        if params:
+            payload["params"] = params
+    cfg = McpServerConfig(**payload)
     client = ToolMgr._create_client(cfg)
     try:
         connected = await client.connect()
@@ -267,46 +325,79 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
         elif action == "add":
             server_payload = _normalize_mcp_add_payload(ctx, params)
 
-            # 远程 MCP：可选连通性预检查失败不阻断写入（历史行为保留为仅记录）。
-            # 此处不再做本地 stdio 静态预检。
-            name = server_payload.get("name", "")
-            old_item = get_mcp_server_config(name) if name else None
+            # Pre-check: only validate when stdio args contain a local file
+            # path (e.g. "node /path/to/server.js").  Skip for package
+            # managers like npx which may need to download first.
+            pre_check_failed = False
+            if bool(server_payload.get("enabled", True)):
+                _need_pre_check = False
+                if server_payload.get("transport") == "stdio":
+                    _args = server_payload.get("args")
+                    if isinstance(_args, list):
+                        _need_pre_check = any(
+                            isinstance(a, str)
+                            and (a.startswith(("/", "./", "../"))
+                                 or a.endswith((".js", ".mjs", ".json", ".py")))
+                            for a in _args
+                        )
+                if _need_pre_check:
+                    check_ok, check_msg = await _pre_check_mcp_server(server_payload)
+                    if not check_ok:
+                        logger.warning("[command.mcp] add pre-check failed: %s", check_msg)
+                        resp = AgentResponse(
+                            request_id=request.request_id,
+                            channel_id=request.channel_id,
+                            ok=False,
+                            payload={
+                                "type": "add_failed",
+                                "name": server_payload["name"],
+                                "error": check_msg,
+                            },
+                        )
+                        pre_check_failed = True
+                    else:
+                        logger.info("[command.mcp] add pre-check ok: %s", check_msg)
 
-            _, created = upsert_mcp_server_in_config(server_payload)
-            applied = True
-            error_message = ""
+            if not pre_check_failed:
+                # 对于 update，先读旧配置，判断是否真有变化
+                name = server_payload.get("name", "")
+                old_item = get_mcp_server_config(name) if name else None
 
-            # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
-            # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
-            config_changed = created
-            if not created and old_item is not None:
-                config_changed = (dict(old_item) != dict(server_payload))
-                if not config_changed:
-                    logger.info(
-                        "[command.mcp] add/update skipped reload: '%s' config unchanged", name
-                    )
+                _, created = upsert_mcp_server_in_config(server_payload)
+                applied = True
+                error_message = ""
 
-            if config_changed:
-                try:
-                    await ctx.services.agent_manager.reload_agents_config(get_config(), None)
-                except Exception as reload_exc:  # noqa: BLE001
-                    applied = False
-                    error_message = str(reload_exc)
-                    logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+                # 判断是否需要 reload: 新增必然需要；更新时做完整比较，
+                # 配置完全一致才跳过（dict 比较成本极低，避免漏字段导致改了不生效）。
+                config_changed = created
+                if not created and old_item is not None:
+                    config_changed = (dict(old_item) != dict(server_payload))
+                    if not config_changed:
+                        logger.info(
+                            "[command.mcp] add/update skipped reload: '%s' config unchanged", name
+                        )
 
-            resp_payload: dict[str, Any] = {
-                "type": "added" if created else "updated",
-                "name": server_payload["name"],
-                "applied": applied,
-            }
-            if error_message:
-                resp_payload["error"] = error_message
-            resp = AgentResponse(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                ok=True,
-                payload=resp_payload,
-            )
+                if config_changed:
+                    try:
+                        await ctx.services.agent_manager.reload_agents_config(get_config(), None)
+                    except Exception as reload_exc:  # noqa: BLE001
+                        applied = False
+                        error_message = str(reload_exc)
+                        logger.warning("[command.mcp] reload after add failed: %s", reload_exc)
+
+                resp_payload: dict[str, Any] = {
+                    "type": "added" if created else "updated",
+                    "name": server_payload["name"],
+                    "applied": applied,
+                }
+                if error_message:
+                    resp_payload["error"] = error_message
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload=resp_payload,
+                )
         elif action in {"enable", "disable"}:
             name = str(params.get("name", "")).strip()
             if not name:
