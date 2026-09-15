@@ -2231,9 +2231,41 @@ def _main_inside_ppt_slide(html: str) -> bool:
     return start <= main_match.start() < end
 
 
+_TAG_OPEN_SCAN_RE = re.compile(r"<([a-zA-Z][a-zA-Z0-9-]*)\s")
+
+
+def _has_malformed_open_tag(html: str) -> bool:
+    """检测畸形开标签：属性引号吞入后续标签、或开标签缺失闭合 ``>``。"""
+    for match in _TAG_OPEN_SCAN_RE.finditer(html):
+        pos = match.end()
+        in_quote = None
+        tag_end = -1
+        while pos < len(html):
+            ch = html[pos]
+            next_ch = html[pos + 1] if pos + 1 < len(html) else ""
+            if in_quote:
+                if ch == in_quote:
+                    in_quote = None
+                elif ch == "<" and (next_ch.isalpha() or next_ch == "/"):
+                    # 引号区间吞入了下一个标签开头 → 解析器视角结构已损坏
+                    return True
+            else:
+                if ch == '"' or ch == "'":
+                    in_quote = ch
+                elif ch == ">":
+                    tag_end = pos
+                    break
+            pos += 1
+        if tag_end == -1:
+            return True
+    return False
+
+
 def _validate_slide_dom(html: str) -> bool:
     """P8.1 写盘前校验：拦截 LLM 畸形片段与 main 滑出 slide。"""
     if _MALFORMED_HTML_RE.search(html):
+        return False
+    if _has_malformed_open_tag(html):
         return False
     return _main_inside_ppt_slide(html)
 
@@ -2241,6 +2273,103 @@ def _validate_slide_dom(html: str) -> bool:
 def _is_slide_exportable(html: str) -> bool:
     """P8.2 fix 后校验：仅确认导出边界内的结构未被破坏。"""
     return _main_inside_ppt_slide(html)
+
+
+async def _find_latest_backup_page_path(
+    node: PlanNode,
+    pages_dir: str,
+    page_num: int,
+    *,
+    log_prefix: str = "[P8.2]",
+) -> str:
+    """定位 cli.js fix 自动备份中该页的最新版本（pages/_backup/<ts>/page-N.pptx.html）。"""
+    if not node.has_tool("glob"):
+        return ""
+    try:
+        result = await node.call_tool(
+            "glob",
+            pattern=f"_backup/*/page-{page_num}.pptx.html",
+            path=pages_dir,
+        )
+    except Exception as e:
+        if isinstance(e, AbortError):
+            raise
+        logger.warning("%s 查找 backup 失败 page=%d: %s", log_prefix, page_num, e)
+        return ""
+    # 不能用 _parse_listing：它会把结果裁成裸文件名，丢失 _backup/<ts>/ 目录，
+    # 直接从原始返回中提取时间戳，重建以 pages_dir 为锚点的完整路径。
+    timestamps = re.findall(
+        rf"_backup[/\\]+(\d+)[/\\]+page-{page_num}\.pptx\.html",
+        str(result),
+    )
+    if not timestamps:
+        return ""
+    paths = [
+        f"{pages_dir}/_backup/{ts}/page-{page_num}.pptx.html"
+        for ts in set(timestamps)
+    ]
+    return max(paths, key=_extract_backup_timestamp)
+
+
+async def restore_unexportable_pages_from_backup(
+    node: PlanNode,
+    pages_dir: str,
+    missing_pages: list[int],
+    *,
+    log_prefix: str = "[P8]",
+) -> list[int]:
+    """自愈：把不可导出页面从 cli.js fix 的自动备份恢复（备份=fix 前状态）。
+
+    cli.js fix 处理前会把全部页面备份到 pages/_backup/<ts>/；若 fix 在畸形标签
+    上误判并破坏 DOM 配对（div 失衡 → 不可导出），用备份原文覆盖回去即可恢复。
+    仅在 reconcile 判定缺页后调用（正常路径零开销）。
+
+    恢复资格与写盘校验同口径（_validate_slide_dom）：恢复本身是一次写盘，
+    备份若仍含畸形开标签（属性引号吞标签/缺闭合 ``>``）则拒收——宁可保持缺页、
+    由 P9 拒绝导出（响亮失败、可诊断），也不静默写回视觉残缺或后续含毒的页面。
+    （convert 为 Playwright Chromium 渲染，畸形标签不会使其失败、只会渲染出
+    残缺页；因此"恢复畸形备份"并不能救任务，只是掩盖缺陷。）
+
+    公共函数：P9（ppt_export）作为最后防线复用；留在本模块是因为依赖
+    _validate_slide_dom / _find_latest_backup_page_path 等私有校验器，
+    下沉 ppt_common 会形成循环导入（ppt_page_gen 已导入 ppt_common）。
+
+    返回成功恢复的页号列表；AbortError（HITL 中断）原样上抛，不吞。
+    """
+    recovered: list[int] = []
+    if not pages_dir or not missing_pages:
+        return recovered
+    if not (
+        node.has_tool("glob")
+        and node.has_tool("read_file")
+        and node.has_tool("write_file")
+    ):
+        logger.warning("%s 备份恢复跳过：glob/read_file/write_file 工具不可用", log_prefix)
+        return recovered
+    for page_num in missing_pages:
+        try:
+            backup_path = await _find_latest_backup_page_path(
+                node, pages_dir, page_num, log_prefix=log_prefix
+            )
+            if not backup_path:
+                continue
+            backup_html = await PptCommon.read_file_with_retry(
+                node, backup_path, log_prefix=log_prefix
+            )
+            # 资格=写盘校验（含畸形开标签拦截）：恢复即写盘，口径必须一致
+            if not (backup_html and _validate_slide_dom(backup_html)):
+                continue
+            page_path = f"{pages_dir}/page-{page_num}.pptx.html"
+            if await PptCommon.safe_overwrite_file(
+                node, page_path, backup_html, log_prefix=log_prefix
+            ):
+                recovered.append(page_num)
+        except Exception as e:
+            if isinstance(e, AbortError):
+                raise
+            logger.warning("%s page-%d 备份恢复失败: %s", log_prefix, page_num, e)
+            continue
+    return recovered
 
 
 _CHART_DIV_RE = re.compile(
@@ -5323,32 +5452,9 @@ class QAFixNode(PlanNode):
         )
 
     async def _find_latest_backup_path(self, pages_dir: str, page_num: int) -> str:
-        if not self.has_tool("glob"):
-            return ""
-        try:
-            result = await self.call_tool(
-                "glob",
-                pattern=f"_backup/*/page-{page_num}.pptx.html",
-                path=pages_dir,
-            )
-        except Exception as e:
-            if isinstance(e, AbortError):
-                raise
-            logger.warning("[P8.2] 查找 backup 失败 page=%d: %s", page_num, e)
-            return ""
-        # 不能用 _parse_listing：它会把结果裁成裸文件名，丢失 _backup/<ts>/ 目录，
-        # 直接从原始返回中提取时间戳，重建以 pages_dir 为锚点的完整路径。
-        timestamps = re.findall(
-            rf"_backup[/\\]+(\d+)[/\\]+page-{page_num}\.pptx\.html",
-            str(result),
+        return await _find_latest_backup_page_path(
+            self, pages_dir, page_num, log_prefix="[P8.2]"
         )
-        if not timestamps:
-            return ""
-        paths = [
-            f"{pages_dir}/_backup/{ts}/page-{page_num}.pptx.html"
-            for ts in set(timestamps)
-        ]
-        return max(paths, key=_extract_backup_timestamp)
 
     async def _fix_directory(
         self,
@@ -5855,6 +5961,24 @@ class PPTPageGenNode(DisableThinkingMixin, PlanNode):
             reported_missing=missing_pages,
             reported_page_files=final_page_files,
         )
+
+        # 自愈：fix 误修导致的不可导出页面，从 cli.js fix 的自动备份恢复
+        # （备份=fix 前状态）。仅在 reconcile 判定缺页后触发，正常路径零开销。
+        if missing_pages and pages_dir:
+            recovered_pages = await restore_unexportable_pages_from_backup(
+                self, pages_dir, missing_pages, log_prefix="[P8]"
+            )
+            if recovered_pages:
+                logger.info("[P8] 备份自愈恢复页面: %s", recovered_pages)
+                recovered_set = set(recovered_pages)
+                missing_pages = [p for p in missing_pages if p not in recovered_set]
+                for page_num in recovered_pages:
+                    filename = f"page-{page_num}.pptx.html"
+                    if filename not in final_page_files:
+                        final_page_files.append(filename)
+                final_page_files.sort(
+                    key=lambda f: _extract_page_number(f or "") or 10**9,
+                )
 
         if qa_status == "failed":
             ppt_gen_status = "failed"
