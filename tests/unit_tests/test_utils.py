@@ -356,17 +356,19 @@ def test_prepare_workspace_copies_program_evolution_design(
     ).is_file()
 
 
+@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
     tmp_path: Path,
     monkeypatch,
+    skill_name,
 ) -> None:
     """New built-in skills are copied into an existing workspace on startup."""
     builtin_dir = tmp_path / "builtin-skills"
     user_skills_dir = tmp_path / "user-skills"
-    source_skill = builtin_dir / "rsi-program-dataset-creator"
+    source_skill = builtin_dir / skill_name
     source_skill.mkdir(parents=True)
     (source_skill / "SKILL.md").write_text(
-        "---\nname: rsi-program-dataset-creator\ndescription: test\n---\n",
+        f"---\nname: {skill_name}\ndescription: test\n---\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
@@ -374,7 +376,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
 
     utils.ensure_default_builtin_skills()
 
-    installed_skill = user_skills_dir / "rsi-program-dataset-creator"
+    installed_skill = user_skills_dir / skill_name
     assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
         source_skill / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -382,7 +384,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
         (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
     )
     assert any(
-        item.get("name") == "rsi-program-dataset-creator"
+        item.get("name") == skill_name
         and item.get("source") == "builtin"
         for item in state["installed_plugins"]
     )

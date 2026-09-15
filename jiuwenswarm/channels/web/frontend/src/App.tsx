@@ -3214,6 +3214,12 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 initialInputValue: t('agentManagement.actions.createViaChatPrompt'),
                 initialSelectedSkills: ['agent-creator'],
               })}
+              onCreateGroupViaChat={() => requestSessionNavigation('new', {
+                initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
+                initialSelectedSkills: ['agent-group-creator'],
+                forceMode: 'team',
+                welcomeVariant: 'group-create',
+              })}
             />
           </div>
         )}
