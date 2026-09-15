@@ -143,9 +143,33 @@ from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
 install_shell_tool_safety_hooks()
 
 # 兼容 SSE-only 网关：让非流式 invoke()（subagent / 心跳等）能解析 text/event-stream 响应
+# 仅当 channels.xiaoyi.mode == xiaoyi_claw 时才打补丁（该网关以 SSE-only 方式返回非流式响应）。
 from jiuwenswarm.llm_sse_patch import apply_openai_sse_invoke_patch
 
-apply_openai_sse_invoke_patch()
+
+def _should_apply_sse_invoke_patch() -> bool:
+    """检测 channels.xiaoyi.mode 是否为 xiaoyi_claw。"""
+    try:
+        from jiuwenswarm.common.config import get_config
+
+        mode = (
+            get_config()
+            .get("channels", {})
+            .get("xiaoyi", {})
+            .get("mode")
+        )
+    except Exception as exc:  # noqa: BLE001 - 启动早期读配置失败时保守兜底
+        logger.warning(
+            "[app_agentserver] 读取 channels.xiaoyi.mode 失败，默认应用 SSE 兼容补丁: %s",
+            exc,
+        )
+        return True
+
+    return str(mode or "").strip() == "xiaoyi_claw"
+
+
+if _should_apply_sse_invoke_patch():
+    apply_openai_sse_invoke_patch()
 
 from jiuwenswarm.common.openjiuwen_rail_compat import install_evolution_rail_kwargs_compat
 from jiuwenswarm.openjiuwen_skip_tool_patch import apply_skip_tool_tool_message_patch
