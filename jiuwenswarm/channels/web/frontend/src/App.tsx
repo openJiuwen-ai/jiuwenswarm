@@ -3640,7 +3640,7 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               })}
               onCreateGroupViaChat={() => requestSessionNavigation('new', {
                 initialInputValue: t('agentManagement.group.actions.createViaChatPrompt'),
-                initialSelectedSkills: ['agent-creator'],
+                initialSelectedSkills: ['agent-group-creator'],
                 forceMode: 'team',
                 welcomeVariant: 'group-create',
               })}

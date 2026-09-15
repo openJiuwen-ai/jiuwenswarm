@@ -2745,7 +2745,7 @@
         "createFirst": "Create manually",
         "createByChat": "Create via chat",
         "createByUpload": "Create from file",
-        "createViaChatPrompt": "Help me create an XXX Expert or Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "createViaChatPrompt": "Help me create an XXX Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
         "install": "Install",
         "installing": "Installing…",
         "use": "Use",
