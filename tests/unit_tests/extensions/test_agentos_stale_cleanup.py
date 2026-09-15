@@ -102,6 +102,48 @@ async def test_cleanup_continues_after_one_record_fails() -> None:
 
 
 @pytest.mark.asyncio
+async def test_cleanup_does_not_unregister_service_upserted_during_delete() -> None:
+    """RELPROC-004: refresh live service_ids after delete_sandbox.
+
+    T0 snapshot has no runtime. During delete_sandbox a concurrent request
+    creates a new sandbox for the same (user, framework) and upserts the
+    registry row. Unregister must not wipe that new row.
+    """
+    manager = AgentManager()
+    stale = _record(user="u1", framework="jiuwenswarm", instance_id="sbx-old")
+    other = _record(user="u2", framework="opencode", instance_id="sbx-stale")
+
+    class _YuanRongCreatesLiveOnDelete(FakeYuanRongClient):
+        async def delete_sandbox(self, sandbox_id: str) -> None:
+            await super().delete_sandbox(sandbox_id)
+            if sandbox_id != stale.instance_id:
+                return
+
+            async def creator(info: AgentInfo) -> AgentInfo:
+                info.sandbox_id = "sbx-new"
+                info.status = AgentStatus.READY
+                return info
+
+            await manager.get_or_create_agent(
+                stale.user,
+                stale.framework,
+                creator=creator,
+                metadata={},
+            )
+
+    yuanrong = _YuanRongCreatesLiveOnDelete()
+    registry = _CleanupRegistry([stale, other])
+    await cleanup_stale_sandboxes(
+        yuanrong=yuanrong,
+        registry=registry,  # type: ignore[arg-type]
+        agent_manager=manager,
+    )
+    assert yuanrong.delete_calls == ["sbx-old", "sbx-stale"]
+    assert "sbx-new" not in yuanrong.delete_calls
+    assert registry.unregistered == [other.service_id]
+
+
+@pytest.mark.asyncio
 async def test_cleanup_skips_live_sandbox_and_service() -> None:
     yuanrong = FakeYuanRongClient()
     manager = AgentManager()
