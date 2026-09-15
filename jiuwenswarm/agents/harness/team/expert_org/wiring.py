@@ -51,8 +51,13 @@ def install_expert_org_adapters(org_runtime: Any) -> None:
     from jiuwenswarm.agents.harness.team.expert_org.launcher import JiuwenExpertTeamLauncher
 
     team_runtime_manager = getattr(org_runtime, "_team_runtime_manager", None)
+    launcher = JiuwenExpertTeamLauncher(
+        runtime_manager=team_runtime_manager,
+        organization_runtime=org_runtime,
+    )
     set_catalog(JiuwenExpertGroupCatalog())
-    set_launcher(JiuwenExpertTeamLauncher(runtime_manager=team_runtime_manager))
+    set_launcher(launcher)
+    launcher.ensure_turn_runner_installed()
     setattr(org_runtime, _ADAPTERS_FLAG, True)
 
 

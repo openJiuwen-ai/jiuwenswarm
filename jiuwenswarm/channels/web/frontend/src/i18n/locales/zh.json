@@ -186,6 +186,40 @@
         "cancelled": "已取消",
         "failed": "任务失败"
       }
+    },
+    "org": {
+      "tab": "组织信息",
+      "title": "Task Pool 与组织",
+      "refresh": "刷新",
+      "loading": "加载中…",
+      "empty": "当前 Team 未绑定 organization",
+      "noOrganization": "未绑定组织",
+      "organizationId": "Organization ID",
+      "displayName": "名称",
+      "description": "描述",
+      "ownerTeam": "Owner Team",
+      "teams": "Team 列表",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "元数据",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "任务池为空",
+      "taskId": "Task ID",
+      "taskTitle": "标题",
+      "taskStatus": "状态",
+      "taskAssignee": "执行者",
+      "taskTeam": "Team",
+      "taskType": "类型",
+      "taskUnclaimed": "待认领",
+      "taskParent": "父任务",
+      "pendingReviews": "待评审",
+      "pendingReviewsEmpty": "没有待评审的任务",
+      "reviewTask": "任务",
+      "reviewReviewer": "评审人",
+      "statsTotal": "任务总数",
+      "statsOpen": "进行中",
+      "statsUnclaimed": "待认领",
+      "statsPendingReviews": "待评审"
     }
   },
   "artifacts": {
@@ -323,6 +357,11 @@
       "placeholder": "选择模型"
     },
     "modeSwitchDisabledProcessing": "当前对话运行中，请新建对话后选择模式",
+    "teamSelect": {
+      "tooltip": "切换当前查看的 Team",
+      "loadingLabel": "加载 Team…",
+      "fallbackLabel": "选择 Team"
+    },
     "configLockedHistory": "会话已有消息，请新建会话后更改配置",
     "modeSwitchTitle": "切换模式",
     "modeSwitchConfirm": "当前会话有历史消息，切换模式将新建会话。是否继续？",

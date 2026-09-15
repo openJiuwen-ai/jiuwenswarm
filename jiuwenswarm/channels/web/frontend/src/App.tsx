@@ -51,7 +51,7 @@ import { webRequest } from './services/webClient';
 import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
 import { useSingleAgentPanelState } from './features/singleAgentPanelState';
-import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Session } from './types';
+import { AgentMode, MediaItem, UserAnswer, ModelEntry, type Message, type Session } from './types';
 import {
   ensureSessionRuntimes,
   useSessionStore,
@@ -63,6 +63,7 @@ import {
   useWorkspaceStore,
   useCronStore,
   useSubagentStore,
+  conversationKey,
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
@@ -118,6 +119,25 @@ import './App.css';
 const CHAT_PANEL_DEFAULT_WIDTH_PCT = 33.33;
 const CHAT_PANEL_MIN_WIDTH_PCT = 20;
 const CHAT_PANEL_MAX_WIDTH_PCT = 70;
+
+function splitHistoryMessagesByTeam(messages: Message[]): {
+  sessionMessages: Message[];
+  teamMessages: Map<string, Message[]>;
+} {
+  const sessionMessages: Message[] = [];
+  const teamMessages = new Map<string, Message[]>();
+  for (const message of messages) {
+    const teamId = message.teamId?.trim();
+    if (!teamId || message.role === 'user') {
+      sessionMessages.push(message);
+      continue;
+    }
+    const current = teamMessages.get(teamId) ?? [];
+    current.push(message);
+    teamMessages.set(teamId, current);
+  }
+  return { sessionMessages, teamMessages };
+}
 
 type ChatPanelResizeDrag = {
   pointerId: number;
@@ -1126,7 +1146,12 @@ function AppContent() {
     // 只 stamp 徽章：merge 完成卡只适合整页 replace（首次 history 恢复）。
     // 这里若再 merge，localStorage 里的完成卡不在本页 messages 里就会被再次注入，
     // prepend 又不按 id 去重，导致完成卡重复。
-    prependMessages(sid, stampGoalObjectiveMessages(sid, result.messages));
+    const splitMessages = splitHistoryMessagesByTeam(result.messages);
+    prependMessages(sid, stampGoalObjectiveMessages(sid, splitMessages.sessionMessages));
+    for (const [teamId, teamMessages] of splitMessages.teamMessages) {
+      useChatStore.getState().ensureTeamRuntime(sid, teamId);
+      prependMessages(conversationKey(sid, teamId), teamMessages);
+    }
     for (const item of result.toolReplay) {
       if (item.kind === 'tool_call') {
         const n = normalizeToolCallPayload(item.payload);
@@ -1946,9 +1971,17 @@ function AppContent() {
         // hooks/useWebSocket.ts 的 applyIncomingGoal/mergePersistedGoalCompletionMessages。
         // 同时给命中"曾经设置过目标"的 user 消息回填 isGoalObjectiveMessage 徽章标记，
         // 见 stampGoalObjectiveMessages。
+        const splitMessages = splitHistoryMessagesByTeam(messages);
+        for (const [teamId, teamMessages] of splitMessages.teamMessages) {
+          useChatStore.getState().ensureTeamRuntime(sessionId, teamId);
+          replaceHistoryMessages(conversationKey(sessionId, teamId), teamMessages);
+        }
         replaceHistoryMessages(
           sessionId,
-          stampGoalObjectiveMessages(sessionId, mergePersistedGoalCompletionMessages(sessionId, messages))
+          stampGoalObjectiveMessages(
+            sessionId,
+            mergePersistedGoalCompletionMessages(sessionId, splitMessages.sessionMessages),
+          )
         );
         const restoredTotalPages = totalPages ?? 1;
         setHistoryPagerMeta(sessionId, {

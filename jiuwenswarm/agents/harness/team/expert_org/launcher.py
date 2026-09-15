@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import time
 import uuid
 from dataclasses import asdict, dataclass
 from typing import Any
@@ -93,6 +94,45 @@ def _team_build_labels(
     return team_display, team_desc, leader_display, leader_desc
 
 
+def _resolve_launch_channel_id(channel_id: str | None, session_id: str) -> str:
+    """Resolve the delivery channel when agent-core omits it from expert launch."""
+    explicit = str(channel_id or "").strip().lower()
+    if explicit:
+        return explicit
+
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+        inferred = str(metadata.get("channel_id") or "").strip().lower()
+        if inferred:
+            return inferred
+    except Exception:
+        logger.debug(
+            "[ExpertTeamLauncher] session channel lookup failed session=%s",
+            session_id,
+            exc_info=True,
+        )
+
+    session_prefix = str(session_id or "").partition("_")[0].strip().lower()
+    if session_prefix in {
+        "web",
+        "tui",
+        "acp",
+        "feishu",
+        "wecom",
+        "wechat",
+        "dingtalk",
+        "telegram",
+        "discord",
+        "slack",
+    }:
+        return session_prefix
+    return "web"
+
+
 class JiuwenExpertTeamLauncher:
     """Build an independent Team from an AgentGroup package and activate it.
 
@@ -103,8 +143,17 @@ class JiuwenExpertTeamLauncher:
     On failure after a team_id is allocated, ``stop`` is called for rollback.
     """
 
-    def __init__(self, *, runtime_manager: Any | None = None) -> None:
+    def __init__(
+        self,
+        *,
+        runtime_manager: Any | None = None,
+        push_transport: Any | None = None,
+        organization_runtime: Any | None = None,
+    ) -> None:
         self._runtime_manager = runtime_manager
+        self._push_transport = push_transport
+        self._organization_runtime = organization_runtime
+        self._team_channels: dict[tuple[str, str], str] = {}
 
     def _get_runtime(self) -> Any:
         if self._runtime_manager is not None:
@@ -118,6 +167,284 @@ class JiuwenExpertTeamLauncher:
 
     async def _allocate_team_id(self) -> str:
         return f"org-expert-{uuid.uuid4().hex[:12]}"
+
+    def _get_push_transport(self) -> Any:
+        if self._push_transport is not None:
+            return self._push_transport
+        from jiuwenswarm.server.gateway_push.transport import (
+            WebSocketGatewayPushTransport,
+        )
+
+        self._push_transport = WebSocketGatewayPushTransport()
+        return self._push_transport
+
+    def ensure_turn_runner_installed(self) -> None:
+        """Reassert the host runner after any late Runner initialization."""
+        setter = getattr(self._organization_runtime, "set_leader_turn_runner", None)
+        if callable(setter):
+            setter(self.run_organization_turn)
+
+    async def run_organization_turn(
+        self,
+        team_id: str,
+        session_id: str,
+        inputs: object,
+        *,
+        source: str = "org_expert_background",
+        channel_id: str | None = None,
+        request_id: str | None = None,
+    ) -> bool:
+        """Run an org background turn and relay expert output to its Web session."""
+        runtime = self._get_runtime()
+        entry = await runtime.pool.get(team_id)
+        spec = getattr(getattr(entry, "agent", None), "spec", None)
+        spec_metadata = getattr(spec, "metadata", None)
+        if (
+            entry is None
+            or entry.current_session_id != session_id
+            or not isinstance(spec_metadata, dict)
+            or spec_metadata.get("expert_team") is not True
+        ):
+            return False
+        resolved_channel_id = (
+            str(channel_id or "").strip()
+            or self._team_channels.get((session_id, team_id))
+            or str(spec_metadata.get("channel_id") or "").strip()
+        )
+        if not resolved_channel_id:
+            return await runtime.run_organization_turn(
+                team_name=team_id,
+                session_id=session_id,
+                inputs=inputs,
+            )
+
+        from openjiuwen.agent_teams.runtime.dispatch import RunActionKind
+        from openjiuwen.agent_teams.runtime.pool import RuntimeState
+
+        if (
+            entry is None
+            or entry.current_session_id != session_id
+            or entry.state is not RuntimeState.PAUSED
+        ):
+            return False
+        activation = None
+        ran_turn = False
+        finalized = False
+        round_id = str(request_id or "").strip() or f"org-{uuid.uuid4().hex}"
+        frame_sequence = 0
+        leader_text_parts: list[str] = []
+        saw_leader_final = False
+        try:
+            activation = await runtime.activate(spec, session_id, inputs)
+            agent = getattr(activation, "agent", None)
+            action_kind = getattr(getattr(activation, "action", None), "kind", None)
+            if agent is None or action_kind in {
+                RunActionKind.REJECT_RUNNING,
+                RunActionKind.REJECT_ORPHANED,
+                RunActionKind.REJECT_INCONSISTENT,
+            }:
+                return False
+            ran_turn = True
+            stream = agent.stream(inputs, session=activation.session)
+            try:
+                async for chunk in stream:
+                    payload = getattr(chunk, "payload", None)
+                    if isinstance(payload, dict) and payload.get("event_type") in {
+                        "team.idle",
+                        "team.completed",
+                    }:
+                        finalized = True
+                        await runtime.finalize(team_name=team_id, session_id=session_id)
+                        break
+                    relayed = await self._relay_expert_chunk(
+                        chunk,
+                        team_id=team_id,
+                        session_id=session_id,
+                        channel_id=resolved_channel_id,
+                        round_id=round_id,
+                        frame_sequence=frame_sequence,
+                        source=source,
+                    )
+                    if relayed is not None:
+                        frame_sequence += 1
+                        if relayed.get("role") == "leader":
+                            event_type = relayed.get("event_type")
+                            content = relayed.get("content")
+                            if event_type == "chat.delta" and isinstance(content, str):
+                                leader_text_parts.append(content)
+                            elif event_type == "chat.final":
+                                saw_leader_final = True
+            finally:
+                close = getattr(stream, "aclose", None)
+                if callable(close):
+                    await close()
+            if not saw_leader_final and (
+                leader_text_parts or source == "org_expert_direct"
+            ):
+                await self._push_expert_payload(
+                    {
+                        "event_type": "chat.final",
+                        "content": "".join(leader_text_parts),
+                        "role": "leader",
+                    },
+                    team_id=team_id,
+                    session_id=session_id,
+                    channel_id=resolved_channel_id,
+                    round_id=round_id,
+                    frame_sequence=frame_sequence,
+                    source=source,
+                )
+            return True
+        except Exception as exc:
+            logger.warning(
+                "[ExpertTeamLauncher] organization background turn failed "
+                "team=%s session=%s",
+                team_id,
+                session_id,
+                exc_info=True,
+            )
+            if source != "org_expert_direct":
+                await self._push_expert_payload(
+                    {
+                        "event_type": "chat.error",
+                        "error": str(exc),
+                        "role": "leader",
+                    },
+                    team_id=team_id,
+                    session_id=session_id,
+                    channel_id=resolved_channel_id,
+                    round_id=round_id,
+                    frame_sequence=frame_sequence,
+                    source=source,
+                )
+            return False
+        finally:
+            if ran_turn and activation is not None:
+                if not finalized:
+                    await runtime.finalize(team_name=team_id, session_id=session_id)
+                current = await runtime.pool.get(team_id)
+                interact_gate = getattr(current, "interact_gate", None)
+                close_and_drain = getattr(interact_gate, "close_and_drain", None)
+                if callable(close_and_drain):
+                    await close_and_drain()
+                await activation.session.post_run()
+
+    async def _relay_expert_chunk(
+        self,
+        chunk: Any,
+        *,
+        team_id: str,
+        session_id: str,
+        channel_id: str,
+        round_id: str,
+        frame_sequence: int = 0,
+        source: str = "org_expert_background",
+    ) -> dict[str, Any] | None:
+        """Convert one Team output frame to a team-attributed server push."""
+        from openjiuwen.agent_teams.schema.team import TeamRole
+
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _TEAM_ATTRIBUTED_EVENT_TYPES,
+            _enrich_teammate_event,
+            _is_leader_output,
+            _is_teammate_output,
+            _tag_team_output_origin,
+            _truncate_team_tool_result_event,
+        )
+        from jiuwenswarm.server.utils.stream_utils import parse_stream_chunk
+
+        is_leader = _is_leader_output(chunk)
+        is_teammate = _is_teammate_output(chunk)
+        if not is_leader and not is_teammate:
+            return None
+        parsed = parse_stream_chunk(chunk)
+        if parsed is None or parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+            return None
+
+        if is_teammate:
+            parsed = _enrich_teammate_event(parsed, chunk)
+        else:
+            parsed["role"] = TeamRole.LEADER.value
+        parsed = _truncate_team_tool_result_event(parsed)
+        await self._push_expert_payload(
+            parsed,
+            team_id=team_id,
+            session_id=session_id,
+            channel_id=channel_id,
+            round_id=round_id,
+            frame_sequence=frame_sequence,
+            source=source,
+        )
+        return parsed
+
+    async def _push_expert_payload(
+        self,
+        payload: dict[str, Any],
+        *,
+        team_id: str,
+        session_id: str,
+        channel_id: str,
+        round_id: str,
+        frame_sequence: int,
+        source: str = "org_expert_background",
+    ) -> bool:
+        from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
+            _tag_team_output_origin,
+        )
+
+        parsed = dict(payload)
+        parsed["rid"] = round_id
+        parsed["source"] = source
+        parsed = _tag_team_output_origin(parsed, team_id)
+        event_type = str(parsed.get("event_type") or "")
+
+        try:
+            delivered = await self._get_push_transport().send_push(
+                {
+                    "request_id": f"{round_id}:{frame_sequence}",
+                    "channel_id": channel_id,
+                    "session_id": session_id,
+                    "payload": parsed,
+                    "is_complete": False,
+                }
+            )
+        except Exception:
+            logger.warning(
+                "[ExpertTeamLauncher] expert output push raised team=%s session=%s",
+                team_id,
+                session_id,
+                exc_info=True,
+            )
+            if source == "org_expert_direct":
+                raise RuntimeError("failed to deliver direct expert output")
+            return False
+        if not delivered:
+            logger.warning(
+                "[ExpertTeamLauncher] expert output push failed team=%s session=%s",
+                team_id,
+                session_id,
+            )
+            if source == "org_expert_direct":
+                raise RuntimeError("failed to deliver direct expert output")
+            return False
+
+        if source == "org_expert_direct" and event_type in {"chat.final", "chat.error"}:
+            from jiuwenswarm.server.runtime.session.session_history import (
+                append_history_record,
+            )
+
+            append_history_record(
+                session_id=session_id,
+                request_id=f"{round_id}:{frame_sequence}",
+                channel_id=channel_id,
+                role="assistant",
+                event_type=event_type,
+                content=parsed.get("content") or parsed.get("error") or "",
+                timestamp=time.time(),
+                extra=parsed,
+                mode="team",
+            )
+        return True
 
     async def _resolve_donor_backend(
         self,
@@ -166,6 +493,8 @@ class JiuwenExpertTeamLauncher:
         metadata["agent_group_name"] = agent_group_name
         metadata["expert_team"] = True
         metadata["capabilities"] = list(agent_group_package.capabilities)
+        if channel_id:
+            metadata["channel_id"] = str(channel_id)
         if display_name:
             metadata["display_name"] = display_name
         updates["metadata"] = metadata
@@ -260,6 +589,7 @@ class JiuwenExpertTeamLauncher:
             raise ValueError("organization_id is required")
         if not str(session_id or "").strip():
             raise ValueError("session_id is required")
+        self.ensure_turn_runner_installed()
 
         from jiuwenswarm.agents.swarm.agent_group import (
             load_agent_group_package_bundle,
@@ -273,6 +603,15 @@ class JiuwenExpertTeamLauncher:
         )
         team_id = await self._allocate_team_id()
         runtime = self._get_runtime()
+        resolved_channel = _resolve_launch_channel_id(channel_id, session_id)
+        logger.info(
+            "[ExpertTeamLauncher] resolved output channel team=%s session=%s "
+            "channel=%s explicit=%s",
+            team_id,
+            session_id,
+            resolved_channel,
+            bool(str(channel_id or "").strip()),
+        )
         donor_backend = await self._resolve_donor_backend(
             session_id=session_id,
             team_id=team_id,
@@ -288,7 +627,7 @@ class JiuwenExpertTeamLauncher:
                 agent_group_name=group_name,
                 agent_group_package=agent_group_package,
                 display_name=display_name,
-                channel_id=channel_id,
+                channel_id=resolved_channel,
                 shared_db=shared_db,
             )
             activation_attempted = True
@@ -320,6 +659,7 @@ class JiuwenExpertTeamLauncher:
                         exc,
                     )
 
+            self._team_channels[(session_id, team_id)] = resolved_channel
             return LaunchedExpertTeam(
                 team_id=team_id,
                 leader_id=_leader_id_from_agent(agent, team_id),
@@ -336,6 +676,7 @@ class JiuwenExpertTeamLauncher:
         if not name:
             return
         runtime = self._get_runtime()
+        self._team_channels.pop((session_id, name), None)
         stop_team = getattr(runtime, "stop_team", None)
         if not callable(stop_team):
             return

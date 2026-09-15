@@ -1351,6 +1351,27 @@ overflow: hidden;
   height: 14px;
 }
 
+/* team 下拉的状态点：比统一图标更能说明这个 team 是活着还是只是挂着配置。
+   running 用绿色（和后端 TeamRuntimePool 的 active 语义一致），
+   pending/configured 走中性灰，不认识的状态由 TeamStateDot 换成 Users 图标。 */
+.chat-team-select__dot {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 999px;
+  background: var(--color-text-tertiary, #9ca3af);
+  flex: 0 0 auto;
+}
+
+.chat-team-select__dot--running {
+  background: var(--color-status-success, #22c55e);
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.16);
+}
+
+.chat-team-select__dot--idle {
+  background: var(--color-text-tertiary, #9ca3af);
+}
+
 /* "+"菜单的"扩展"项单独放大图标（用户 2026-08-19 反馈手绘拼图图标比旁边 lucide 图标显得小）。
    选择器叠两个 class（.chat-mode-select__icon.chat-mode-select__icon--lg）保证特异度稳定盖过
    上面那条共享基础规则，不依赖源码顺序，也不影响其余三个菜单项。 */

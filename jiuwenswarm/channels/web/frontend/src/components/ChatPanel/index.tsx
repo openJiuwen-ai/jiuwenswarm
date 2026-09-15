@@ -9,7 +9,13 @@ import { createPortal } from 'react-dom';
 import { ArrowRight, CheckCircle2, ClipboardList, Copy, Info, LoaderCircle, Share2, Sparkles, X } from 'lucide-react';
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
-import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
+import {
+  useChatStore,
+  useHarnessStore,
+  useSessionStore,
+  useTeamSelectorStore,
+  useTodoStore,
+} from '../../stores';
 import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import { MessageList } from './MessageList';
@@ -41,6 +47,16 @@ import {
   canLoadOlderHistory,
   shouldShowHistoryRetry,
 } from '../../features/historyPagination';
+
+/**
+ * 稳定的空值。
+ *
+ * 会话视图（会话 + team）尚未建立时用这些常量兜底：每次 `?? []` 会产生新引用，
+ * 让消费方（memo、useEffect 依赖）以为内容变了而反复重算。
+ */
+const EMPTY_MESSAGES: Message[] = [];
+const EMPTY_TOOL_CALL_IDS: string[] = [];
+
 import {
   DESKTOP_FILE_DRAG_EVENT,
   DESKTOP_LOCAL_FILES_EVENT,
@@ -127,7 +143,10 @@ function SuggestionCard({ text, onClick }: { text: string; onClick: () => void }
 
 function InterruptResultBubble() {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const interruptResult = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.interruptResult ?? null);
+  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  const interruptResult = useChatStore(
+    (s) => s.getTeamRuntime(activeSessionId, activeTeamId)?.interruptResult ?? null
+  );
   const message = interruptResult?.message?.trim();
 
   if (!message || interruptResult?.success) {
@@ -147,7 +166,11 @@ function InterruptResultBubble() {
 
 function ActiveTeamGroupEntry({ isProcessing, teamAreaExpanded }: { isProcessing: boolean; teamAreaExpanded?: boolean | null }) {
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
+  const activeTeamId = useChatStore((s) => s.activeTeamId);
+  // 集群卡片同样跟着当前选中的 team 走：它展示的是这条对话里的成员活动。
+  const messages = useChatStore(
+    (s) => s.getTeamRuntime(activeSessionId, activeTeamId)?.messages ?? EMPTY_MESSAGES
+  );
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const teamHistoryMessages = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamHistoryMessages ?? []);
   const teamMemberExecutionEvents = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMemberExecutionEvents ?? []);
@@ -434,6 +457,28 @@ function getActiveTeamMessages(historyMessages: Message[], messages: Message[]):
       }
       seen.add(key);
       return true;
+    });
+}
+
+/** 将主运行态中的用户输入按归属合入当前 Team 对话。 */
+function mergeTeamUserMessages(
+  sessionMessages: Message[],
+  teamMessages: Message[],
+  teamId: string,
+  isOwner: boolean,
+): Message[] {
+  const users = sessionMessages.filter((message) => {
+    if (message.role !== 'user') return false;
+    const messageTeamId = message.teamId?.trim();
+    return messageTeamId === teamId || (isOwner && !messageTeamId);
+  });
+  if (users.length === 0) return teamMessages;
+  const sessionUserIds = new Set(users.map((message) => message.id));
+  return [...users, ...teamMessages.filter((message) => !sessionUserIds.has(message.id))]
+    .sort((left, right) => {
+      const leftAt = Date.parse(left.timestamp);
+      const rightAt = Date.parse(right.timestamp);
+      return (Number.isFinite(leftAt) ? leftAt : 0) - (Number.isFinite(rightAt) ? rightAt : 0);
     });
 }
 
@@ -762,11 +807,38 @@ export function ChatPanel({
 }: ChatPanelProps) {
   const { t } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const messages = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.messages ?? []);
-  const isThinking = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.isThinking ?? false);
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
-  const contextCompressionRuntime = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionRuntime);
-  const contextCompressionSummary = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.contextCompressionSummary);
+  // 下拉、发送与展示统一使用 TeamSelector 的选中态，避免两个 store 短暂不同步时串页。
+  const activeTeamId = useTeamSelectorStore((s) =>
+    activeSessionId ? s.runtimes[activeSessionId]?.selectedTeamId ?? null : null
+  );
+  const isOwnerTeamView = useTeamSelectorStore((s) => {
+    if (!activeSessionId || !activeTeamId) return false;
+    return Boolean(
+      s.runtimes[activeSessionId]?.teams.some(
+        (team) => team.team_id === activeTeamId && team.is_owner,
+      ),
+    );
+  });
+  // 整条对话的运行态取自「会话 + 当前选中 team」这条视图：切换下拉时换的是内容来源，
+  // 而不只是右侧面板的数据。取 runtime 对象本身而不是 `.messages`：runtime 的引用只在
+  // 更新时变，避免了 selector 每次返回新数组导致的空转重渲染。
+  const conversationRuntime = useChatStore((s) => s.getTeamRuntime(activeSessionId, activeTeamId));
+  // 用户输入保留在主运行态供会话级能力使用，展示时再按 teamId 合入对应 Team。
+  const sessionMessages = useChatStore((s) =>
+    activeSessionId ? s.getRuntime(activeSessionId)?.messages ?? EMPTY_MESSAGES : EMPTY_MESSAGES
+  );
+  const teamViewMessages = conversationRuntime?.messages ?? EMPTY_MESSAGES;
+  const messages = useMemo(
+    () =>
+      activeTeamId
+        ? mergeTeamUserMessages(sessionMessages, teamViewMessages, activeTeamId, isOwnerTeamView)
+        : teamViewMessages,
+    [activeTeamId, isOwnerTeamView, sessionMessages, teamViewMessages]
+  );
+  const isThinking = conversationRuntime?.isThinking ?? false;
+  const toolExecutionOrder = conversationRuntime?.toolExecutionOrder ?? EMPTY_TOOL_CALL_IDS;
+  const contextCompressionRuntime = conversationRuntime?.contextCompressionRuntime;
+  const contextCompressionSummary = conversationRuntime?.contextCompressionSummary;
   const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
   const hasHarnessProgress = useHarnessStore((s) => (
     mode === 'auto_harness' && (s.runtimes[activeSessionId ?? '']?.stageResults.length ?? 0) > 0

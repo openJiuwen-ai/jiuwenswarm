@@ -581,6 +581,17 @@ def _safe_query_preview(query: Any, limit: int = DEFAULT_PREVIEW_MAX_CHARS) -> s
 # on the same stream.
 _MODEL_OUTPUT_EVENT_TYPES = frozenset({"chat.delta", "chat.final", "chat.reasoning"})
 
+# 前端按 team 分流对话视图时，需要知道这些帧属于哪个 team。见 _tag_team_output_origin。
+_TEAM_ATTRIBUTED_EVENT_TYPES = frozenset({
+    "chat.delta",
+    "chat.final",
+    "chat.reasoning",
+    "chat.tool_call",
+    "chat.tool_result",
+    "chat.usage",
+    "chat.error",
+})
+
 
 def _resolve_user_turn(
     inputs: dict[str, Any],
@@ -1333,6 +1344,28 @@ def _enrich_teammate_event(parsed: dict[str, Any], chunk: Any) -> dict[str, Any]
 
 
 _TEAM_TOOL_RESULT_TEXT_LIMIT = 512
+
+
+def _tag_team_output_origin(parsed: dict[str, Any], team_name: str) -> dict[str, Any]:
+    """给模型产出的帧打上 team_name/team_id，供前端分流到各自的对话视图。
+
+    一个 session 可以同时挂多个 team（TeamRuntimePool 以 team_name 为键、按
+    current_session_id 归属），而 chat.delta / chat.reasoning 这些帧本身不带任何
+    team 标识——前端只有一个 session_id 可用于归属，于是多个 team 的流会混进同一份
+    messages 里，切换 team 时看到的是同一段对话。
+
+    只标注模型产出与工具事件：team.member / team.task / team.completed 这类控制帧
+    的归属由 payload 内层的 team_id 表达，重复注入外层 team_name 反而会让既有的
+    fan_out / agent_ref 推导（_build_team_event_chunk_meta 读 event.event 内层）
+    与外层字段不一致。
+    """
+    if not team_name:
+        return parsed
+    if parsed.get("event_type") not in _TEAM_ATTRIBUTED_EVENT_TYPES:
+        return parsed
+    parsed["team_name"] = team_name
+    parsed["team_id"] = team_name
+    return parsed
 
 
 def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
@@ -2405,8 +2438,9 @@ async def _consume_stream_with_query(
                         parsed.get("event_type"),
                         parsed.get("role") or getattr(chunk, "role", None),
                     )
-                if not is_leader and parsed.get("event_type") == "chat.reasoning":
-                    continue
+                # teammate 的 chat.reasoning 曾经在这里被丢掉，只留 leader 的。
+                # 现在放行：前端按 team 分开看思考过程时，teammate 的推理是
+                # 主会话内唯一能看到「别的队友在想什么」的来源（见 _tag_team_output_origin）。
                 if _is_duplicate_ask_user_question(parsed, emitted_ask_user_request_ids):
                     continue
                 # Skip non-leader __interaction__ (permission ASK) — approval
@@ -2415,6 +2449,10 @@ async def _consume_stream_with_query(
                 if not is_leader and parsed.get("event_type") == "chat.ask_user_question":
                     continue
                 parsed["rid"] = round_id
+                # 标注来源 team，让前端能把这一帧分流到对应 team 的对话视图。
+                # 放在 role 标记之前：_enrich_teammate_event 会覆盖 member_name，
+                # 但不动 team_name，顺序上只是先钉住归属再补身份。
+                parsed = _tag_team_output_origin(parsed, roster_team_name)
                 if is_teammate:
                     parsed = _enrich_teammate_event(parsed, chunk)
                 elif is_leader:

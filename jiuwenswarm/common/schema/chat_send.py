@@ -162,6 +162,9 @@ class ChatSendParams(TypedDict, total=False):
     team: NotRequired[bool]
     """团队模式布尔标志。"""
 
+    target_team_id: NotRequired[str]
+    """当前用户消息明确指定的 Team；Owner 走常规路径，组织 Expert 走定向执行。"""
+
     run: NotRequired[dict]
     """Run 上下文结构（cron / 定时任务场景由 Gateway 注入）。"""
 

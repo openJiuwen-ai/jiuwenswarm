@@ -304,6 +304,7 @@ class MessageHandler(ABC):
         self._disconnect_cancel_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._stream_app_ids: dict[str, str] = {}  # request_id -> app_id, 多应用流式精确路由
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
+        self._server_push_lock = asyncio.Lock()
         self._evolution_approval = EvolutionApprovalCoordinator()
         # 配置仅在启动/成功热重载时解析；流式 chunk 热路径直接读取该内存值，
         # 避免每个审批事件重新读取磁盘配置。
@@ -2895,6 +2896,15 @@ class MessageHandler(ABC):
         )
 
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
+        """Serialize server-push handling so a final cannot overtake its deltas."""
+        lock = getattr(self, "_server_push_lock", None)
+        if lock is None:
+            lock = asyncio.Lock()
+            self._server_push_lock = lock
+        async with lock:
+            await self._handle_agent_server_push_ordered(wire)
+
+    async def _handle_agent_server_push_ordered(self, wire: dict[str, Any]) -> None:
         """AgentServer ``send_push`` 下行：与 RPC 共用连接但不得占用 unary/stream 等待队列。"""
         from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
 
@@ -3399,7 +3409,7 @@ class MessageHandler(ABC):
         return msg.req_method == ReqMethod.CHAT_SEND
 
     def _session_has_streams_blocking_processing_false(
-        self, session_id: str | None
+        self, session_id: str | None, *, exclude_rid: str | None = None
     ) -> bool:
         """同 session 是否还有应挡住 ``is_processing=false`` 补发的流.
 
@@ -3413,6 +3423,8 @@ class MessageHandler(ABC):
         from jiuwenswarm.common.schema.message import ReqMethod
 
         for active_rid, sid in self._stream_sessions.items():
+            if active_rid == exclude_rid:
+                continue
             if sid != session_id:
                 continue
             if self._stream_emits_processing_status.get(active_rid, True):
@@ -4291,6 +4303,18 @@ class MessageHandler(ABC):
                     )
                 if self._is_terminal_stream_chunk(chunk):
                     continue
+                payload = chunk.payload or {}
+                if (
+                    isinstance(payload, dict)
+                    and payload.get("event_type") == "chat.processing_status"
+                    and payload.get("is_processing") is False
+                    and self._session_has_streams_blocking_processing_false(
+                        session_id, exclude_rid=rid
+                    )
+                ):
+                    # 这是单个请求的结束；同 session 仍有其他对话流时不能向前端
+                    # 宣告整个会话空闲；保留自动收尾，让最后一个流退出时发送权威 false。
+                    continue
                 published = await self.publish_stream_chunk(
                     chunk,
                     session_id=session_id,
@@ -4298,7 +4322,6 @@ class MessageHandler(ABC):
                 )
                 if not published:
                     continue
-                payload = chunk.payload or {}
                 if isinstance(payload, dict):
                     event_type = payload.get("event_type")
                     if event_type == "chat.processing_status":

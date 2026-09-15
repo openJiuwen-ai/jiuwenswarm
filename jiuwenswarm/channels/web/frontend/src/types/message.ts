@@ -86,6 +86,8 @@ export interface Message {
   // 主动推荐消息标记
   isProactiveRecommendation?: boolean;
   proactiveType?: 'skill_recommend' | 'task_reminder' | 'need_exploration';
+  /** Team-attributed history is restored into this Team's conversation runtime. */
+  teamId?: string;
   /**
    * 这条用户消息是否曾经用于设置/修改持续目标（"设为目标"徽章）。发送那一刻本地回显消息
    * 直接置 true；历史消息刷新后重新加载时，优先读后端 history 字段

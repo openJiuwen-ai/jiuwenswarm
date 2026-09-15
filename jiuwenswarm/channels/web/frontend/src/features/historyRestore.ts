@@ -900,6 +900,7 @@ function parseHistoryTimelineEntry(
   subagentId?: string,
 ): HistoryTimelineEntry | null {
   const role = normalizeHistoryRole(record.role);
+  const teamId = pickFirstString(record, ['team_id', 'team_name']);
   // 无有效时间戳时用空串占位（勿用 Date.now()）；排序/工具构建侧已对空串做防护。
   const at = recordTimestampIso(record) ?? '';
 
@@ -932,6 +933,7 @@ function parseHistoryTimelineEntry(
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
         ...(skills && skills.length > 0 ? { skills } : {}),
+        ...(teamId ? { teamId } : {}),
       },
     };
   }
@@ -1043,6 +1045,7 @@ function parseHistoryTimelineEntry(
             timestamp: safeTimestampMs(at),
           })}`,
           timestamp: at,
+          ...(teamId ? { teamId } : {}),
         },
       };
     }

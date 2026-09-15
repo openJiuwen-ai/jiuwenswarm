@@ -186,6 +186,40 @@
         "cancelled": "Cancelled",
         "failed": "Failed"
       }
+    },
+    "org": {
+      "tab": "Organization",
+      "title": "Task Pool & Organization",
+      "refresh": "Refresh",
+      "loading": "Loading…",
+      "empty": "This Team is not bound to an organization",
+      "noOrganization": "No organization bound",
+      "organizationId": "Organization ID",
+      "displayName": "Name",
+      "description": "Description",
+      "ownerTeam": "Owner Team",
+      "teams": "Teams",
+      "leadTeam": "Team",
+      "leadMember": "Leader",
+      "metadata": "Metadata",
+      "taskPool": "Task Pool",
+      "taskPoolEmpty": "Task pool is empty",
+      "taskId": "Task ID",
+      "taskTitle": "Title",
+      "taskStatus": "Status",
+      "taskAssignee": "Assignee",
+      "taskTeam": "Team",
+      "taskType": "Type",
+      "taskUnclaimed": "Unclaimed",
+      "taskParent": "Parent",
+      "pendingReviews": "Pending reviews",
+      "pendingReviewsEmpty": "No tasks pending review",
+      "reviewTask": "Task",
+      "reviewReviewer": "Reviewer",
+      "statsTotal": "Total tasks",
+      "statsOpen": "Open",
+      "statsUnclaimed": "Unclaimed",
+      "statsPendingReviews": "Pending review"
     }
   },
   "artifacts": {
@@ -324,6 +358,11 @@
     },
     "configLockedHistory": "Session has messages — create a new session to change config",
     "modeSwitchDisabledProcessing": "This conversation is running. Start a new conversation to choose another mode",
+    "teamSelect": {
+      "tooltip": "Switch the Team being viewed",
+      "loadingLabel": "Loading teams…",
+      "fallbackLabel": "Select Team"
+    },
     "modeSwitchTitle": "Switch Mode",
     "modeSwitchConfirm": "Current session has history messages. Switching mode will create a new session. Continue?",
     "skills": "Skills",

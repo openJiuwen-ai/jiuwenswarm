@@ -740,6 +740,7 @@ class WebChannel(BaseWsChannel):
             }
             for _key in (
                 "role", "member_name", "member_action", "source_channel", "user_id", "display_name",
+                "team_name", "team_id",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
