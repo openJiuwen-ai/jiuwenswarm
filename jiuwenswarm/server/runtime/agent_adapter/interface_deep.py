@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, 
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
+    from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
 
 import yaml
 from pydantic import ValidationError
@@ -1683,6 +1684,7 @@ class JiuWenSwarmDeepAdapter:
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         self._instance: DeepAgent | None = None
+        self._interaction_output_handoff: OutputHandoff | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -12316,14 +12318,13 @@ class JiuWenSwarmDeepAdapter:
             # all resumed output. Goal readers and permission-queue callbacks
             # remain live owners and must keep their existing injection path.
             previous = getattr(self, "_interaction_output_handoff", None)
-            if (
-                previous is not None
-                and previous.owner is self._instance
-                and self._is_interrupt_resume_dispatch(request.params)
-                and answer is None
-                and not self._goal_record_is_active()
-            ):
-                await previous.wait()
+            if previous is not None and previous.owner is self._instance:
+                if (
+                    self._is_interrupt_resume_dispatch(request.params)
+                    and answer is None
+                    and not self._goal_record_is_active()
+                ):
+                    await previous.wait()
             stream = await self._instance.attach_output()
             if stream is None and (answer is not None or not send_without_output):
                 if answer is not None:

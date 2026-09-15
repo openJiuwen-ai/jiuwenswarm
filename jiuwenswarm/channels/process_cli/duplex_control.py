@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import uuid
 from collections.abc import AsyncIterator, Callable
 from copy import deepcopy
@@ -179,18 +180,18 @@ class DuplexController:
                     await self._queue.put(_StreamItem(operation_id, event=event))
         except Exception as caught:  # noqa: BLE001 - propagate through the consumer queue
             error = caught
-        except SystemExit:
+        except builtins.SystemExit:
             error = RuntimeError("Runtime stream exited unexpectedly.")
         finally:
             close = getattr(stream, "aclose", None)
             try:
                 if close is not None:
                     await close()
-            except (Exception, SystemExit) as caught:  # noqa: BLE001 - stream-close boundary
+            except (Exception, builtins.SystemExit) as caught:  # noqa: BLE001 - stream-close boundary
                 if error is None:
                     error = (
                         RuntimeError("Runtime stream exited during close.")
-                        if isinstance(caught, SystemExit)
+                        if isinstance(caught, builtins.SystemExit)
                         else caught
                     )
             if not self._stopping_streams:
@@ -278,9 +279,8 @@ class DuplexController:
                     explicit = (
                         event.runtime_completion == "completed" and not self._pending
                     )
-                    if event.runtime_completion != "suspended" and (
-                        final or root_terminal or explicit
-                    ):
+                    completion_observed = final or root_terminal or explicit
+                    if event.runtime_completion != "suspended" and completion_observed:
                         completed = True
         return completed
 

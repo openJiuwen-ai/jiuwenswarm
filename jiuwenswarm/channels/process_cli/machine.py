@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
 import os
 import time
@@ -250,7 +251,7 @@ class _MachineRun:
             # safely be reset by wait_for's separate task.
             async with asyncio.timeout(SHUTDOWN_TIMEOUT_SECONDS):
                 await operation()
-        except (Exception, asyncio.CancelledError, SystemExit) as error:
+        except (Exception, asyncio.CancelledError, builtins.SystemExit) as error:
             self.cleanup_errors.append(name)
             logger.warning("one-shot %s failed (%s)", name, type(error).__name__)
             if isinstance(error, asyncio.CancelledError) and self.error is None:
@@ -365,7 +366,7 @@ async def run_machine(
         code = "OUTPUT_CLOSED" if writer.broken else "RUNTIME_FAILED"
         run.fail(RuntimeErrorInfo(code=code, message="Command I/O failed."))
         logger.warning("one-shot I/O failed (%s)", type(error).__name__)
-    except SystemExit:
+    except builtins.SystemExit:
         run.fail(
             RuntimeErrorInfo(
                 code="RUNTIME_FAILED", message="Runtime exited unexpectedly."

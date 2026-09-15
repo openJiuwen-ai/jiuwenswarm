@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import contextlib
 import io
 import logging
@@ -227,7 +228,7 @@ def execute_source(
             result = _failure(
                 writer, code="CANCELLED", message="Command interrupted.", exit_code=130
             )
-        except (Exception, SystemExit) as error:  # noqa: BLE001 - bootstrap/shutdown boundary
+        except (Exception, builtins.SystemExit) as error:  # noqa: BLE001 - bootstrap/shutdown boundary
             logger.warning("one-shot bootstrap failed (%s)", type(error).__name__)
             result = _failure(
                 writer,
