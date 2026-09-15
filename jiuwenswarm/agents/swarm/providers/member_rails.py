@@ -15,6 +15,7 @@ by the build context instead of imperatively threaded dataclasses.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -619,6 +620,36 @@ class TeamPermissionInput(ConstructionInput):
     )
 
 
+def _narrow_team_permissions(
+    permissions_config: dict[str, Any], override: dict[str, str],
+) -> dict[str, Any]:
+    """Adapt legacy tool dictionaries to the SDK's scalar narrowing input."""
+    from openjiuwen.agent_teams.security.narrowing import narrow_permissions
+    from openjiuwen.harness.security.models import PermissionLevel
+
+    base_tools = dict(permissions_config.get("tools") or {})
+    definitions = {}
+    for name in override:
+        raw = base_tools.get(name)
+        if isinstance(raw, dict):
+            definitions[name] = raw
+            level = raw.get("*")
+            if not isinstance(level, str):
+                base_tools.pop(name)
+                continue
+            try:
+                base_tools[name] = PermissionLevel(level.strip().lower()).value
+            except ValueError:
+                # Invalid baselines fall back to defaults, just as in the SDK policy.
+                base_tools.pop(name)
+
+    narrowed = narrow_permissions({**permissions_config, "tools": base_tools}, override)
+    for name, definition in definitions.items():
+        # Keep the full user definition; only the '*' baseline is tightened.
+        narrowed["tools"][name] = {**deepcopy(definition), "*": narrowed["tools"][name]}
+    return narrowed
+
+
 @harness_element(
     kind=ElementKind.RAIL,
     name=TEAM_PERMISSION,
@@ -651,10 +682,9 @@ def _build_team_permission_rail(params: dict[str, Any], context: Any) -> Any | N
     )
     from openjiuwen.agent_teams.tools.message_manager import TeamMessageManager
     from openjiuwen.harness.security.host import ToolPermissionHost
-    from openjiuwen.agent_teams.security.narrowing import narrow_permissions
 
     override = get_permissions_override(context)
-    narrowed_config = narrow_permissions(inp.permissions_config, override) if override else inp.permissions_config
+    narrowed_config = _narrow_team_permissions(inp.permissions_config, override) if override else inp.permissions_config
 
     message_manager = TeamMessageManager(
         backend.team_name,

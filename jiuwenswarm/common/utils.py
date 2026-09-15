@@ -333,6 +333,7 @@ def merge_template_with_override(
 
     - override 中独有的顶层键**不会保留**，会被清理（与 migrate_config_from_template
       的 Remove 规则一致）。
+    - permissions.tools 是开放映射：保留用户工具名，同名工具以用户完整规则为准。
     - 深度递归（上限 4 层）。
     """
     return _deep_merge(template, override, depth=0)
@@ -342,6 +343,7 @@ def _deep_merge(
     template: dict[str, Any],
     override: dict[str, Any],
     depth: int = 0,
+    path: tuple[str, ...] = (),
 ) -> dict[str, Any]:
     """Recursively merge template with user override, cleaning deprecated fields.
 
@@ -349,8 +351,13 @@ def _deep_merge(
     - Add: fields only in template → use template value
     - Keep: override values for fields that exist in template (preserve user settings)
     - Remove: fields only in override (deprecated config, cleanup)
+    - Exception: permissions.tools contains dynamic tool names, not schema fields
     - Max recursion depth: 4
     """
+    if path == ("permissions", "tools"):
+        # A user tool policy replaces the entire default policy, including patterns.
+        return {**copy.deepcopy(template), **copy.deepcopy(override)}
+
     if depth >= 4:
         return override
 
@@ -360,7 +367,7 @@ def _deep_merge(
         if key not in override:
             result[key] = copy.deepcopy(tmpl_val)
         elif isinstance(tmpl_val, dict) and isinstance(override.get(key), dict):
-            result[key] = _deep_merge(tmpl_val, override[key], depth + 1)
+            result[key] = _deep_merge(tmpl_val, override[key], depth + 1, path + (key,))
         else:
             result[key] = override[key]
 
