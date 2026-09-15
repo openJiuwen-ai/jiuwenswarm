@@ -19,6 +19,11 @@
 #endif
 #define MyAppPublisher "openJiuwen"
 #define MyAppURL "https://openjiuwen.com"
+; 项目根目录 = 脚本所在目录（scripts）的上一级。ISCC 不折叠 "..\"，相对路径会
+; 带着 "scripts\..\" 原样参与文件扫描，叠加 Electron 包内 node_modules 的深层
+; 路径后可触顶 Windows MAX_PATH(260)，报"系统找不到指定的路径"；因此 dist 与
+; 图标统一用基于 SourcePath（脚本所在目录，ISPP 预定义变量）的绝对路径引用。
+#define ProjectRoot ExtractFileDir(RemoveBackslashUnlessRoot(SourcePath))
 
 [Setup]
 AppId={{B8F3A2D1-7E4C-4A9B-8D6F-1C2E3F4A5B6C}
@@ -28,7 +33,7 @@ AppPublisher={#MyAppPublisher}
 AppPublisherURL={#MyAppURL}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
-OutputDir=..\dist
+OutputDir={#ProjectRoot}\dist
 #ifdef ELECTRON_FRONTEND_ONLY
   OutputBaseFilename={#MyAppName}-frontend-test-{#MyAppVersion}
 #else
@@ -38,7 +43,7 @@ OutputDir=..\dist
     OutputBaseFilename={#MyAppName}-setup-{#MyAppVersion}
   #endif
 #endif
-SetupIconFile=..\jiuwenswarm\channels\web\frontend\public\logo.ico
+SetupIconFile={#ProjectRoot}\jiuwenswarm\channels\web\frontend\public\logo.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 Compression=lzma2/normal
 SolidCompression=yes
@@ -63,7 +68,7 @@ Name: "english"; MessagesFile: "compiler:Default.isl"
 Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{cm:AdditionalIcons}"
 
 [Files]
-Source: "..\dist\{#MyAppName}-Electron\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+Source: "{#ProjectRoot}\dist\{#MyAppName}-Electron\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
 
 #ifndef ELECTRON_FRONTEND_ONLY
 [UninstallRun]
