@@ -17,11 +17,6 @@ import ModelPicker from '../ModelPicker';
 import { usePersonalContextStore } from '../../stores';
 import { useSessionStore } from '../../stores';
 import { STRATEGY_OPTIONS } from '../../services/personalContextApi';
-import {
-  authorizationAction,
-  safeHttpsUrl,
-  startAuthorizationPolling,
-} from './authorizationPolling';
 import './SettingsPanel.css';
 import feishuLogo from '../../assets/settings/channels/feishu.svg';
 import githubLogo from '../../assets/settings/channels/GitHub.svg';
@@ -29,8 +24,6 @@ import gitcodeLogo from '../../assets/settings/channels/gitcode.png';
 interface PersonalContextSettingsPanelProps {
   isConnected: boolean;
 }
-
-type AuthorizationProvider = 'feishu' | 'github' | 'gitcode';
 
 export function PersonalContextSettingsPanel({
   isConnected,
@@ -58,32 +51,10 @@ export function PersonalContextSettingsPanel({
   const [error, setError] = useState<string | null>(null);
   const [githubModalOpen, setGithubModalOpen] = useState(false);
   const [gitcodeModalOpen, setGitcodeModalOpen] = useState(false);
-  const [authNotices, setAuthNotices] = useState<Partial<Record<AuthorizationProvider, string>>>({});
-  const [feishuStartedFromAuthorized, setFeishuStartedFromAuthorized] = useState(false);
-  const [feishuPollingExpired, setFeishuPollingExpired] = useState(false);
 
   // 后端 stored_config 落盘后不带 configured 字段，只有 PersonalContextStatus 稳定带。
   // 因此"是否已配置"以 status.configured 为准，而非 config.configured。
   const isConfigured = status?.configured === true || config.collection_enabled === true;
-  const feishuAuth = authByProvider.feishu;
-  const feishuState = feishuAuth?.state ?? 'not_authorized';
-  const feishuDisplayState = feishuPollingExpired && feishuState === 'authorizing'
-    ? 'authorization_failed'
-    : feishuState;
-  const githubState = authByProvider.github?.state ?? 'not_authorized';
-  const gitcodeState = authByProvider.gitcode?.state ?? 'not_authorized';
-  const feishuVerificationUrl = safeHttpsUrl(feishuAuth?.verification_url);
-  const feishuExpiresAt = feishuAuth?.expires_at
-    ? new Date(feishuAuth.expires_at).toLocaleString()
-    : null;
-
-  const clearAuthNotice = useCallback((provider: AuthorizationProvider) => {
-    setAuthNotices((current) => ({ ...current, [provider]: undefined }));
-  }, []);
-
-  const showAuthNotice = useCallback((provider: AuthorizationProvider, message: string) => {
-    setAuthNotices((current) => ({ ...current, [provider]: message }));
-  }, []);
 
   useEffect(() => {
     if (!isConnected) return;
@@ -145,80 +116,27 @@ export function PersonalContextSettingsPanel({
 
   const handleFeishuAuthorize = useCallback(() => {
     setError(null);
-    clearAuthNotice('feishu');
-    setFeishuPollingExpired(false);
-    const startedFromAuthorized = feishuState === 'authorized' || feishuStartedFromAuthorized;
-    setFeishuStartedFromAuthorized(startedFromAuthorized);
-    void authorizeProvider('feishu', undefined, true)
-      .then((result) => {
-        const verificationUrl = safeHttpsUrl(result.verification_url);
-        if (verificationUrl) {
-          window.open(verificationUrl, '_blank', 'noopener,noreferrer');
-        }
-        if (result.state === 'authorized') {
-          setFeishuPollingExpired(false);
-          showAuthNotice('feishu', t('personalContext.authorization.success'));
-        } else if (result.state === 'authorization_failed') {
-          setFeishuPollingExpired(false);
-          setError(
-            startedFromAuthorized
-              ? t('personalContext.authorization.failedOriginalRetained')
-              : result.error ?? t('personalContext.authorization.failed'),
-          );
-        }
-      })
-      .catch((e: unknown) => {
-        setError(
-          startedFromAuthorized
-            ? t('personalContext.authorization.failedOriginalRetained')
-            : e instanceof Error
-              ? e.message
-              : String(e),
-        );
-      });
-  }, [
-    authorizeProvider,
-    clearAuthNotice,
-    feishuStartedFromAuthorized,
-    feishuState,
-    showAuthNotice,
-    t,
-  ]);
+    void authorizeProvider('feishu').then((result) => {
+      // 收到 verification_url 后在新窗口打开飞书授权页
+      if (result?.verification_url) {
+        window.open(result.verification_url, '_blank', 'noopener,noreferrer');
+      }
+    }).catch((e: unknown) => {
+      setError(e instanceof Error ? e.message : String(e));
+    });
+  }, [authorizeProvider]);
+
+  const feishuAuth = authByProvider.feishu;
+  const feishuState = feishuAuth?.state ?? 'not_authorized';
+  const githubState = authByProvider.github?.state ?? 'not_authorized';
+  const gitcodeState = authByProvider.gitcode?.state ?? 'not_authorized';
 
   // 飞书授权中（设备流需用户在浏览器完成）时轮询状态，直到变 authorized/failed
   useEffect(() => {
-    if (!isConnected || feishuDisplayState !== 'authorizing') return;
-    return startAuthorizationPolling({
-      expiresAt: feishuAuth?.expires_at ?? null,
-      readStatus: () => loadAuthStatus('feishu'),
-      onTerminal: (result) => {
-        if (result.state === 'authorized') {
-          setFeishuPollingExpired(false);
-          setError(null);
-          showAuthNotice('feishu', t('personalContext.authorization.success'));
-          return;
-        }
-        setFeishuPollingExpired(false);
-        setError(
-          feishuStartedFromAuthorized
-            ? t('personalContext.authorization.failedOriginalRetained')
-            : result.error ?? t('personalContext.authorization.failed'),
-        );
-      },
-      onExpired: () => {
-        setFeishuPollingExpired(true);
-        setError(t('personalContext.authorization.expired'));
-      },
-    });
-  }, [
-    feishuAuth?.expires_at,
-    feishuDisplayState,
-    feishuStartedFromAuthorized,
-    isConnected,
-    loadAuthStatus,
-    showAuthNotice,
-    t,
-  ]);
+    if (!isConnected || feishuState !== 'authorizing') return;
+    const id = window.setInterval(() => void loadAuthStatus('feishu'), 5000);
+    return () => window.clearInterval(id);
+  }, [isConnected, feishuState, loadAuthStatus]);
 
   if (loadingConfig && !isConfigured) {
     return (
@@ -311,122 +229,52 @@ export function PersonalContextSettingsPanel({
                   <div className="pc-settings__row-hint">{t('personalContext.authorization.subtitle')}</div>
                 </div>
               </div>
-              <div className="pc-settings__auth-cards" data-testid="personal-context-authorization-list">
+              <div className="pc-settings__auth-cards">
                 {/* 飞书 */}
-                <div className="pc-settings__auth-card" data-testid="personal-context-authorization-card-feishu">
+                <div className="pc-settings__auth-card">
                   <div className="pc-settings__auth-icon pc-settings__auth-icon--feishu"><img src={feishuLogo} alt="飞书" /></div>
-                  <div className="pc-settings__auth-body">
-                    <span
-                      className="pc-settings__auth-name"
-                      data-testid="personal-context-authorization-provider-feishu"
-                    >
-                      {t('personalContext.provider.feishu')}
-                    </span>
-                    {feishuDisplayState === 'authorizing' && feishuVerificationUrl && (
-                      <a
-                        className="pc-settings__auth-link"
-                        data-testid="personal-context-feishu-verification-link"
-                        href={feishuVerificationUrl}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                      >
-                        {t('personalContext.authorization.openVerification')}
-                      </a>
-                    )}
-                    {feishuDisplayState === 'authorizing' && feishuExpiresAt && (
-                      <span
-                        className="pc-settings__auth-meta"
-                        data-testid="personal-context-feishu-authorization-expiry"
-                      >
-                        {t('personalContext.authorization.expiresAt', { time: feishuExpiresAt })}
-                      </span>
-                    )}
-                    {authNotices.feishu && (
-                      <span
-                        className="pc-settings__auth-success"
-                        data-testid="personal-context-authorization-feedback-feishu"
-                        role="status"
-                      >
-                        {authNotices.feishu}
-                      </span>
-                    )}
-                  </div>
+                  <span className="pc-settings__auth-name">{t('personalContext.provider.feishu')}</span>
                   <button
                     type="button"
                     className="pc-settings__auth-action"
-                    data-testid="personal-context-authorization-action-feishu"
                     onClick={handleFeishuAuthorize}
-                    disabled={!isConnected || !!pendingWrites['auth:feishu'] || feishuDisplayState === 'authorizing'}
+                    disabled={!isConnected || !!pendingWrites['auth:feishu'] || feishuState === 'authorizing'}
                   >
-                    {t(`personalContext.authorization.${authorizationAction(feishuDisplayState)}`)}
+                    {feishuState === 'authorizing'
+                      ? t('personalContext.authorization.authorizing')
+                      : feishuState === 'authorized'
+                        ? t('personalContext.authorization.reauthorize')
+                        : t('personalContext.authorization.authorize')}
                   </button>
                 </div>
                 {/* GitHub */}
-                <div className="pc-settings__auth-card" data-testid="personal-context-authorization-card-github">
+                <div className="pc-settings__auth-card">
                   <div className="pc-settings__auth-icon pc-settings__auth-icon--github"><img src={githubLogo} alt="GitHub" /></div>
-                  <div className="pc-settings__auth-body">
-                    <span
-                      className="pc-settings__auth-name"
-                      data-testid="personal-context-authorization-provider-github"
-                    >
-                      {t('personalContext.provider.github')}
-                    </span>
-                    {authNotices.github && (
-                      <span
-                        className="pc-settings__auth-success"
-                        data-testid="personal-context-authorization-feedback-github"
-                        role="status"
-                      >
-                        {authNotices.github}
-                      </span>
-                    )}
-                  </div>
+                  <span className="pc-settings__auth-name">{t('personalContext.provider.github')}</span>
                   <button
                     type="button"
                     className="pc-settings__auth-action"
-                    data-testid="personal-context-authorization-action-github"
-                    onClick={() => {
-                      setError(null);
-                      clearAuthNotice('github');
-                      setGithubModalOpen(true);
-                    }}
-                    disabled={!isConnected || !!pendingWrites['auth:github']}
+                    onClick={() => setGithubModalOpen(true)}
+                    disabled={!isConnected}
                   >
-                    {t(`personalContext.authorization.${authorizationAction(githubState)}`)}
+                    {githubState === 'authorized'
+                      ? t('personalContext.authorization.reauthorize')
+                      : t('personalContext.authorization.authorize')}
                   </button>
                 </div>
                 {/* GitCode */}
-                <div className="pc-settings__auth-card" data-testid="personal-context-authorization-card-gitcode">
+                <div className="pc-settings__auth-card">
                   <div className="pc-settings__auth-icon pc-settings__auth-icon--gitcode"><img src={gitcodeLogo} alt="GitCode" /></div>
-                  <div className="pc-settings__auth-body">
-                    <span
-                      className="pc-settings__auth-name"
-                      data-testid="personal-context-authorization-provider-gitcode"
-                    >
-                      {t('personalContext.provider.gitcode')}
-                    </span>
-                    {authNotices.gitcode && (
-                      <span
-                        className="pc-settings__auth-success"
-                        data-testid="personal-context-authorization-feedback-gitcode"
-                        role="status"
-                      >
-                        {authNotices.gitcode}
-                      </span>
-                    )}
-                  </div>
+                  <span className="pc-settings__auth-name">{t('personalContext.provider.gitcode')}</span>
                   <button
                     type="button"
                     className="pc-settings__auth-action"
-                    data-testid="personal-context-authorization-action-gitcode"
-                    onClick={() => {
-                      setError(null);
-                      clearAuthNotice('gitcode');
-                      setGitcodeModalOpen(true);
-                    }}
-                    disabled={!isConnected || !!pendingWrites['auth:gitcode']}
+                    onClick={() => setGitcodeModalOpen(true)}
+                    disabled={!isConnected}
                   >
-                    {t(`personalContext.authorization.${authorizationAction(gitcodeState)}`)}
+                    {gitcodeState === 'authorized'
+                      ? t('personalContext.authorization.reauthorize')
+                      : t('personalContext.authorization.authorize')}
                   </button>
                 </div>
               </div>
@@ -441,11 +289,7 @@ export function PersonalContextSettingsPanel({
         <GithubTokenModal
           onClose={() => setGithubModalOpen(false)}
           onSave={async (token) => {
-            const result = await authorizeProvider('github', { token }, true);
-            if (result.state !== 'authorized') {
-              throw new Error(result.error ?? t('personalContext.authorization.failed'));
-            }
-            showAuthNotice('github', t('personalContext.authorization.repositorySuccess'));
+            await authorizeProvider('github', { token });
           }}
         />
       )}
@@ -454,11 +298,7 @@ export function PersonalContextSettingsPanel({
         <GitcodeTokenModal
           onClose={() => setGitcodeModalOpen(false)}
           onSave={async (pat) => {
-            const result = await authorizeProvider('gitcode', { pat }, true);
-            if (result.state !== 'authorized') {
-              throw new Error(result.error ?? t('personalContext.authorization.failed'));
-            }
-            showAuthNotice('gitcode', t('personalContext.authorization.repositorySuccess'));
+            await authorizeProvider('gitcode', { pat });
           }}
         />
       )}

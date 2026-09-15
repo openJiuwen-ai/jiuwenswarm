@@ -70,12 +70,11 @@ interface PersonalContextState {
   /** 停止单次采集任务（不改 enabled 自动调度开关）。 */
   stopRun: (serviceId: string) => Promise<void>;
 
-  loadAuthStatus: (provider: string) => Promise<AuthorizationResult | null>;
+  loadAuthStatus: (provider: string) => Promise<void>;
   /** 授权（飞书 OAuth 设备流不带 credentials；github/gitcode 传 {token}/{pat}）。 */
   authorizeProvider: (
     provider: string,
     credentials?: Record<string, string>,
-    reauthorize?: boolean,
   ) => Promise<AuthorizationResult>;
   /** 派生：provider 是否已授权（飞书/github/gitcode 走 authByProvider 真实态，其余无需授权）。 */
   isProviderAuthorized: (provider: FetchProvider) => boolean;
@@ -317,20 +316,15 @@ export const usePersonalContextStore = create<PersonalContextState>((set, get) =
     try {
       const result = await pcApi.getAuthStatus(provider);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
-      return result;
     } catch {
-      return null;
+      // 静默；授权状态读取失败不阻塞主流程
     }
   },
 
-  authorizeProvider: async (provider, credentials, reauthorize = false) => {
+  authorizeProvider: async (provider, credentials) => {
     set({ pendingWrites: { ...get().pendingWrites, [`auth:${provider}`]: true } });
     try {
-      const result = await pcApi.authorizeProvider(
-        provider,
-        credentials,
-        reauthorize,
-      );
+      const result = await pcApi.authorizeProvider(provider, credentials);
       set({ authByProvider: { ...get().authByProvider, [provider]: result } });
       return result;
     } finally {

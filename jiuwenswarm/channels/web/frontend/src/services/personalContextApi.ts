@@ -356,17 +356,12 @@ export const pcApi = {
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
 
-  authorizeProvider: (
-    provider: string,
-    credentials?: Record<string, string>,
-    reauthorize = false,
-  ) =>
+  authorizeProvider: (provider: string, credentials?: Record<string, string>) =>
     webRequest<AuthorizationResult>(
       'personal_context.fetch.authorize_provider',
       {
         provider,
         ...(credentials ? { credentials } : {}),
-        ...(reauthorize ? { reauthorize: true } : {}),
       },
       { timeoutMs: FETCH_OP_TIMEOUT_MS },
     ),
