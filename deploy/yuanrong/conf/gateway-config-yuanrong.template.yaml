@@ -371,7 +371,8 @@ react:
   stream_character_threshold: 2000
   context_engine_config:
     enable_kv_cache_release: false
-    enable_openrouter_model_context_window_tokens: true
+    # Model context metadata is configured explicitly per model; otherwise use 256K.
+    enable_openrouter_model_context_window_tokens: false
     enable_reload: true
     enabled: true
     message_summary_offloader_config:
