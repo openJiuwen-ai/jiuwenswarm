@@ -176,6 +176,15 @@ def test_has_malformed_open_tag_detects_incident_pattern():
     assert _has_malformed_open_tag('<div class="a') is True
     # 引号吞入下一个标签开头（跨标签吞没）
     assert _has_malformed_open_tag('<div class="outer<span class="x">y</span>') is True
+    # 引号角色混淆：级联引号错位后第三个引号吞到文件尾（tag-to-EOF 路径）
+    assert _has_malformed_open_tag('<div title="a <b class="x">hi</div>') is True
+    # 引号角色混淆双签名：区间含 ">" 且以 "=" 结尾（值吞入完整标签后撞上
+    # 下一属性的开引号，本属性值的真正闭合被吞）
+    assert _has_malformed_open_tag(
+        '<div title="a\n<span>hi</span> rest="v">x</div>'
+    ) is True
+    # 裸属性名后紧跟引号：引号吞入 ">" 后续到文件尾未闭合
+    assert _has_malformed_open_tag('<div title="a <b> c="v">y</div>') is True
     # 引号已闭合但标签缺 ">"：新标签被 htmlparser2 吞成属性名
     assert _has_malformed_open_tag('<div class="a" <span>text</span></div>') is True
     assert _has_malformed_open_tag('<div class="a" <span class="b">t</span></div>') is True
@@ -198,6 +207,15 @@ def test_has_malformed_open_tag_allows_legitimate_constructs():
         "halfwidth lt in data attr": '<div data-trend="a<b and c">x</div>',
         "halfwidth lt in onclick": '<div onclick="return a<b;">x</div>',
         "halfwidth lt+gt in cn attr": '<div title="利润<支出>预算">x</div>',
+        "tag-like text in attr": '<div title="支持 <b> 标记">x</div>',
+        "tag-like alt": '<img alt="<logo>" src="a.png">',
+        "code in data attr": '<div data-code="a<b>c">x</div>',
+        "formula in data attr": '<div data-formula="若a<b则c>d">x</div>',
+        "eq-suffix formula in data attr": '<div data-formula="若a<b则x=">填空</div>',
+        "eq-suffix code attr with next attr": '<div data-code="a <b x=" data-note="n">t</div>',
+        "self-closing tag text in attr": '<div data-x="<br/>换行">x</div>',
+        "quoted value itself tag-like": '<div title="<b class=x>">y</div>',
+        "swallow-looking value then bare attr": '<div title="a <b>"x>y</div>',
         "cn lt in body text": '<div class="slide"><p>利润<支出</p></div>',
         "cn lt in body text 2": '<div>本季度收入<成本</div>',
         "js lt in script raw text": '<script>for(i=0;i<n;i++){sum+=a[i]}</script>',
