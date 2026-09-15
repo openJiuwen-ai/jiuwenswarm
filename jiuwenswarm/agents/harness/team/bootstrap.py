@@ -16,5 +16,9 @@ def configure_agent_teams_home() -> None:
     from jiuwenswarm.agents.harness.team.expert_org.wiring import (
         register_expert_adapter_installer,
     )
+    from jiuwenswarm.agents.harness.team.summary_org.wiring import (
+        register_summary_adapter_installer,
+    )
 
     register_expert_adapter_installer()
+    register_summary_adapter_installer()
