@@ -85,6 +85,7 @@ import {
   findOverlappingFileExecutionEvent,
   mergeFileDownloadItems,
 } from '../utils/fileDownloadDedup';
+import { trayRunStarted, trayRunFinished, trayRunNeedsApproval } from '../utils/desktopTrayBridge';
 import { buildExtensionSendPayload } from '../utils/enabledExtensions';
 import { makeEventDedupKey } from '../utils/wsEventDedup';
 import {
@@ -2797,6 +2798,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const cronJobId = typeof cronMeta.job_id === 'string' ? cronMeta.job_id.trim() : '';
           const cronStatus = typeof cronMeta.status === 'string' ? cronMeta.status.trim() : '';
           const isPlaceholder = typeof cronMeta.is_placeholder === 'boolean' ? cronMeta.is_placeholder : false;
+          if (cronJobId && cronStatus === 'running') {
+            const cronExecSessionId =
+              typeof cronMeta.exec_session_id === 'string' ? cronMeta.exec_session_id.trim() : '';
+            trayRunStarted(`cron:${cronJobId}`, cronExecSessionId || undefined);
+          }
           if (cronJobId && cronStatus !== 'running') {
             const cronJob = useCronStore.getState().jobs.find((j) => j.id === cronJobId);
             const cronProjectId = cronJob?.project_id || 'default';
@@ -2805,6 +2811,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 非占位（最终结果）广播到达时标记定时任务未读
           if (cronJobId && !isPlaceholder) {
             useCronStore.getState().markCronJobUnread(cronJobId);
+            const cronJob = useCronStore.getState().jobs.find((j) => j.id === cronJobId);
+            const cronFailed = cronStatus === 'failed';
+            trayRunFinished(`cron:${cronJobId}`, {
+              failed: cronFailed,
+              title: cronJob?.name || t(cronFailed ? 'desktopTray.cronFailedTitle' : 'desktopTray.cronFinishedTitle'),
+              body: normalizeFinalContent(payload),
+              jobId: cronJobId,
+            });
           }
         }
 
@@ -3012,6 +3026,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               automation: hbFinalAutomation,
             });
           }
+          trayRunFinished(`heartbeat:${hbFinalAutomation.run_id}`, {
+            failed: false,
+            title: t('desktopTray.heartbeatFinishedTitle'),
+            body: content,
+            jobId: hbFinalAutomation.job_id,
+          });
           // §2.2 兜底：chat.final 是这一轮的收尾标志之一，正常应该由紧随其后的
           // chat.processing_status(false) 关闭 session 级 isProcessing/isThinking；
           // 这里是它丢帧时的兜底，避免输入区转圈/停止按钮卡死。只关这个 session 的
@@ -3808,6 +3828,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               timestamp: new Date().toISOString(),
               automation: hbErrorAutomation,
             });
+            trayRunFinished(`heartbeat:${hbErrorAutomation.run_id}`, {
+              failed: true,
+              title: t('desktopTray.heartbeatFailedTitle'),
+              body: errorMsg,
+              jobId: hbErrorAutomation.job_id,
+            });
           }
           // 关掉该 run 的 assistant 消息 streaming（若有），避免光标永久闪烁
           const assistantMsgId = heartbeatAssistantMessageId(hbErrorAutomation.run_id);
@@ -3890,7 +3916,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           // 这里立即派发一次心跳列表刷新（面板没打开时没有 listener，事件本身无副作用），
           // 让卡片上的「下次触发时间/状态」在本轮执行期间就更新，而不是等本轮结束。
           // 同一 run 可能收到重复的 processing=true 帧，按 run_id 去重只刷一次。
-          refreshHeartbeatListAtRunStart(
+          const didRefreshHeartbeatList = refreshHeartbeatListAtRunStart(
             heartbeatStartRefreshedRunIdsRef.current,
             hbAutomation.run_id,
             sessionId,
@@ -3900,6 +3926,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               );
             },
           );
+          if (didRefreshHeartbeatList) {
+            trayRunStarted(`heartbeat:${hbAutomation.run_id}`, sessionId);
+          }
           const userMsgId = heartbeatUserMessageId(hbAutomation.run_id);
           const prompt = typeof payload.content === 'string' ? payload.content : '';
           const existing = useChatStore.getState().getRuntime(sessionId)?.messages.find((m) => m.id === userMsgId);
@@ -4384,6 +4413,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
         const questionPayload = payload as Record<string, unknown>;
+        const firstQuestion = Array.isArray(questionPayload.questions) ? questionPayload.questions[0] : undefined;
+        trayRunNeedsApproval(sessionId, {
+          title: t('desktopTray.needsApprovalTitle'),
+          body: typeof firstQuestion?.question === 'string' ? firstQuestion.question : '',
+        });
         const evolutionMeta =
           questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'
             ? (questionPayload.evolution_meta as Record<string, unknown>)

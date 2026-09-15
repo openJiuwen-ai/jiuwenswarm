@@ -52,6 +52,12 @@ interface Window {
       get_clipboard_files?: () =>
         | Promise<Array<Record<string, unknown>>>
         | Array<Record<string, unknown>>;
+      report_tray_state?: (
+        state: 'idle' | 'running' | 'waiting' | 'error',
+        title?: string,
+        body?: string,
+        jobId?: string,
+      ) => Promise<void> | void;
     };
   };
   /** Durable ingest hook invoked by desktop_app.py run_js on native file drops. */
