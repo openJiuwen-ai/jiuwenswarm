@@ -7,8 +7,8 @@
 进程同时服务 flash 与 agent 两套 agent，互不串味、不重启。
 
 flash 是一个**固定语义的 mode**——它的定义（行为开关 + rail 白名单）和它的实现
-（三个 override）都内聚在本文件，不依赖 config.yaml 也不侵入父类
-``JiuWenSwarmDeepAdapter``（对 flash 一无所知，零 profile 代码）。这与 code 模式
+都内聚在本文件；工具权限沿用全局 config，其余 profile 行为不依赖 config.yaml。
+父类只提供通用工具工厂与生命周期扩展点，不感知具体 flash 工具。这与 code 模式
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
 类常量，flash 同样把行为开关与 keep 白名单作为类常量。
 
@@ -20,7 +20,10 @@ flash 行为由类常量定义：
 - :data:`_PROFILE_PROTECTED_RAILS` — 白名单下也必留的 rail（丢掉会留下半成品
   依赖或破坏安全不变量，如 ``_disabled_tools_rail``）。
 
-覆盖五个宿主方法注入 flash 行为：
+覆盖宿主方法注入 flash 行为，主要分为三组：
+- 工具工厂与生命周期 — ``_build_web_tools`` / ``_build_cron_tools`` /
+  ``_cron_tool_names`` / ``_build_progressive_tool_rail``，仅为 flash 注册
+  ``web_flash`` 与 ``cron_flash``。
 - :meth:`create_instance` — 先合并 flash react 覆盖进 config_base，再
   ``await super().create_instance(...)``。super 内部四步（``_resolve_instance_config_base``
   补缺 / ``coalesce_config_skill_envs`` / ``merge_memory_config_into_config`` /
@@ -48,6 +51,7 @@ from typing import Any
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
+    _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
     _resolve_instance_config_base,
 )
@@ -58,11 +62,9 @@ logger = logging.getLogger(__name__)
 class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     """Flash 模式适配器 — 极简单 agent profile（单轮、无 task loop、无自演进）。
 
-    继承 :class:`JiuWenSwarmDeepAdapter`，只覆盖五个宿主方法
-    （``create_instance`` / ``_apply_reload_config_snapshot`` / ``_instantiate_rails``
-    / ``_update_rails_for_mode`` / ``try_start_dreaming``）
-    注入 flash 的行为覆盖与 rail 裁剪，不重写 ``_build_agent_rails`` 本体——复用父类
-    按 mode 构建的 rail 表，只在其实例化前用白名单裁剪。
+    继承 :class:`JiuWenSwarmDeepAdapter`，通过工具工厂、配置合并和 rail 生命周期
+    扩展点注入 flash 行为，不重写 ``_build_agent_rails`` 本体——复用父类按 mode
+    构建的 rail 表，只在其实例化前用白名单裁剪。
     """
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
@@ -141,6 +143,77 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         service_id: str | None = None,
     ) -> None:
         super().__init__(workspace_dir=workspace_dir, agent_id=agent_id, service_id=service_id)
+
+    def _build_web_tools(self, agent_id: str, cache: Any | None = None) -> list[Any]:
+        """Expose the single ``web_flash`` card only for the Flash profile."""
+        from jiuwenswarm.agents.harness.flash.tools.web_flash import (
+            build_web_flash_tool,
+        )
+
+        return [
+            build_web_flash_tool(
+                agent_id=agent_id,
+                language=self._resolve_runtime_language(),
+                cache=cache,
+            )
+        ]
+
+    def _build_cron_tools(self) -> list[Any]:
+        """Expose the single ``cron_flash`` card only for the Flash profile."""
+        from jiuwenswarm.agents.harness.flash.tools.cron_flash import (
+            build_cron_flash_tool,
+        )
+
+        service_id = getattr(self, "_env_service_id", None)
+        tenant_agent_id = getattr(self, "_env_agent_id", None)
+        backend = self._cron_runtime.get_backend(
+            service_id=service_id,
+            agent_id=tenant_agent_id,
+        )
+        if backend is None:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] cron backend is not ready, skip cron_flash"
+            )
+            return []
+        self._cron_runtime.ensure_scheduler_started(
+            service_id=service_id,
+            agent_id=tenant_agent_id,
+        )
+        return [
+            build_cron_flash_tool(
+                backend,
+                context=self._runtime_cron_tool_context,
+                agent_id=self._tool_owner_id(),
+                language=self._resolve_runtime_language(),
+            )
+        ]
+
+    def _cron_tool_names(self) -> frozenset[str]:
+        """Use the Flash profile's merged cron card for lifecycle checks."""
+        return frozenset({"cron_flash"})
+
+    def _build_progressive_tool_rail(self, config: dict[str, Any]) -> Any:
+        """Keep the two merged Flash tools visible to the model."""
+        flash_config = copy.deepcopy(config) if isinstance(config, dict) else {}
+        lazy_config = flash_config.setdefault("tool_lazy_load", {})
+        if not isinstance(lazy_config, dict):
+            lazy_config = {}
+            flash_config["tool_lazy_load"] = lazy_config
+        configured = lazy_config.get("eager_tools", _DEFAULT_PROGRESSIVE_EAGER_TOOLS)
+        eager_tools = list(configured) if isinstance(configured, list) else list(
+            _DEFAULT_PROGRESSIVE_EAGER_TOOLS
+        )
+        eager_tools = [
+            name
+            for name in eager_tools
+            if name not in {"web_search", "fetch_webpage", "cron"}
+            and not str(name).startswith("cron_")
+        ]
+        for name in ("web_flash", "cron_flash"):
+            if name not in eager_tools:
+                eager_tools.append(name)
+        lazy_config["eager_tools"] = eager_tools
+        return super()._build_progressive_tool_rail(flash_config)
 
     # ── 宿主方法覆盖 ──────────────────────────────────────────────
 

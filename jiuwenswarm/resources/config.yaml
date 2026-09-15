@@ -1138,6 +1138,8 @@ permissions:
     cron_delete_job: allow
     cron_toggle_job: allow
     cron_preview_job: allow
+    web_flash: allow
+    cron_flash: allow
     acp_chat: ask
     skill_acceleration_exec: ask
 
