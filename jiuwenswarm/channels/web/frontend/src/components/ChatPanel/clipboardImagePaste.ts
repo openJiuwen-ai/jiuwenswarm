@@ -78,3 +78,34 @@ export function getClipboardImageFiles(clipboardData: ClipboardDataLike | null |
   }
   return files;
 }
+
+/** Dispatched by desktop context-menu paste when Clipboard API yields image blobs. */
+export const DESKTOP_CLIPBOARD_IMAGES_EVENT = 'jiuwen-desktop-clipboard-images';
+
+export type DesktopClipboardImagesEventDetail = {
+  files?: File[];
+};
+
+/**
+ * Read image blobs via Clipboard API (screenshots / copied bitmaps).
+ * Used when there is no paste ClipboardEvent (e.g. custom context-menu Paste).
+ */
+export async function readClipboardImageFilesFromClipboardApi(
+  clipboard: Clipboard | null | undefined = typeof navigator !== 'undefined' ? navigator.clipboard : undefined,
+): Promise<File[]> {
+  if (!clipboard || typeof clipboard.read !== 'function') return [];
+  try {
+    const items = await clipboard.read();
+    const files: File[] = [];
+    for (const item of items) {
+      const imageType = item.types.find((type) => ACCEPTED_IMAGE_TYPES.has(type.toLowerCase()));
+      if (!imageType) continue;
+      const blob = await item.getType(imageType);
+      const type = ACCEPTED_IMAGE_TYPES.has(blob.type) ? blob.type : imageType.toLowerCase();
+      files.push(ensureClipboardImageFilename(new File([blob], '', { type })));
+    }
+    return files;
+  } catch {
+    return [];
+  }
+}

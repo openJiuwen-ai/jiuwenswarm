@@ -22,7 +22,13 @@
     "expandMore": "展开 {{count}} 个",
     "optional": "（可选）",
     "processing": "处理中…",
-    "retry": "重试"
+    "retry": "重试",
+    "editMenu": {
+      "cut": "剪切",
+      "copy": "复制",
+      "paste": "粘贴",
+      "selectAll": "全选"
+    }
   },
   "a2ui": {
     "generating": "A2UI 界面生成中...",
