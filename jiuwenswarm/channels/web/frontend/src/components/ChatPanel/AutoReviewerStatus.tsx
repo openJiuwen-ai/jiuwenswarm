@@ -1,7 +1,7 @@
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
 import type { AutoReviewerMetadata, AutoReviewerStatus } from '../../types';
-import { normalizeReviewerStatus } from '../../features/tool-events/reviewerMetadata';
+import { effectiveReviewerStatus, normalizeReviewerStatus } from '../../features/tool-events/reviewerMetadata';
 
 export type AutoReviewerBadgeTone = 'danger' | 'info' | 'neutral' | 'success' | 'warning';
 
@@ -116,7 +116,7 @@ export function reviewerDetailValues(reviewer?: AutoReviewerMetadata) {
 
 export function AutoReviewerDetails({ reviewer }: { reviewer?: AutoReviewerMetadata }) {
   const { t } = useTranslation();
-  if (!reviewer) return null;
+  if (!reviewer || !effectiveReviewerStatus(reviewer)) return null;
   const details = reviewerDetailValues(reviewer);
   const sourceCategory = reviewerDecisionSourceCategory(reviewer.decision_source);
   const sourceLabel = sourceCategory ? t(`chatUi.autoReviewer.details.sourceValues.${sourceCategory}`) : undefined;
