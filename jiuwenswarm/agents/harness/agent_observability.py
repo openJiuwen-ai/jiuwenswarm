@@ -36,6 +36,7 @@ from jiuwenswarm.agents.harness.observability_runtime import build_observability
 from jiuwenswarm.common.config import (
     get_config,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.utils import get_user_workspace_dir
 from jiuwenswarm.observability.config import load_trajectory_store_settings
@@ -43,7 +44,6 @@ from jiuwenswarm.observability.runtime import (
     shutdown_trajectory_runtime,
     sync_trajectory_runtime,
 )
-from jiuwenswarm.symphony.config import load_symphony_config
 
 logger = logging.getLogger(__name__)
 
@@ -101,11 +101,9 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
     config = get_config()
     cfg = config.get("agent_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    symphony = load_symphony_config(config)
-    symphony_capture_requested = symphony.enabled and symphony.evolution.enabled
-    evolution_requested = (
-        get_skill_evolution_enabled(config) or symphony_capture_requested
-    )
+    evolution_requested = get_skill_evolution_enabled(
+        config
+    ) or get_symphony_evolution_enabled(config)
     want_enabled = (
         bool(cfg.get("enabled", False))
         or trajectory_settings.enabled

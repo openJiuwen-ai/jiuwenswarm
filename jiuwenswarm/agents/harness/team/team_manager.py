@@ -66,6 +66,7 @@ from jiuwenswarm.common.config import (
     get_config,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
@@ -148,12 +149,9 @@ def sync_team_observability() -> None:
     config = get_config()
     cfg = config.get("team_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    from jiuwenswarm.symphony.config import load_symphony_config
-
-    symphony = load_symphony_config(config)
-    evolution_requested = get_skill_evolution_enabled(config) or (
-        symphony.enabled and symphony.evolution.enabled
-    )
+    evolution_requested = get_skill_evolution_enabled(
+        config
+    ) or get_symphony_evolution_enabled(config)
     # The Web trajectory store needs the provider exactly like single-Agent
     # does: spans must be exported so the record processor can fan them out to
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
