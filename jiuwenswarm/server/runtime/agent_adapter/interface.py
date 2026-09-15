@@ -2746,8 +2746,6 @@ class JiuWenSwarm:
                     return _duplicate_permission_response(request)
                 try:
                     return await adapter.process_message_impl(request, inputs)
-                except asyncio.CancelledError:
-                    raise
                 except Exception as exc:
                     # unary 任务异常：只记日志并返回 ok=False。
                     # 错误落盘统一由下方 ``elif not result.ok`` 分支处理（当普通 assistant 回复写入）。
@@ -2823,7 +2821,7 @@ class JiuWenSwarm:
                 config = get_config()
                 if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
-            elif not result.ok:
+            elif not result.ok and is_enterprise():
                 # 失败时也当普通 assistant 回复追加进历史（event_type=chat.final），
                 # 与成功回复走同一条历史恢复链路，刷新后即可在前端看到错误提示。
                 err = None
