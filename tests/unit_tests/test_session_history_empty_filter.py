@@ -109,6 +109,81 @@ def test_has_persistable_assistant_payload_tool_result_empty_rejected():
     ) is False
 
 
+def test_context_usage_with_structured_payload_is_persisted(tmp_path, monkeypatch):
+    """context.usage 是空 content 的结构化监控事件，payload 非空时必须落盘，
+    且 rate/context_max/tokens_used 合并到记录顶层供 history.get 恢复。"""
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-ctx-usage",
+        request_id="r1",
+        channel_id="web",
+        role="assistant",
+        event_type="context.usage",
+        content="",
+        timestamp=1.0,
+        extra={"rate": 42.5, "context_max": 200000, "tokens_used": 85000},
+    )
+
+    data = _wait_history("s-ctx-usage", min_count=1)
+    assert len(data) == 1
+    record = data[0]
+    assert record["event_type"] == "context.usage"
+    assert record["rate"] == 42.5
+    assert record["context_max"] == 200000
+    assert record["tokens_used"] == 85000
+
+
+def test_context_usage_without_payload_is_rejected():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="context.usage",
+        extra={},
+    ) is False
+
+
+def test_context_usage_is_restorable_history_record():
+    """history.get 恢复白名单必须放行 context.usage（AgentServer 侧按此集合过滤）。"""
+    from jiuwenswarm.server import wire_truncate
+
+    assert "context.usage" in wire_truncate._HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES
+
+
+def test_chat_usage_summary_with_usage_is_persisted(tmp_path, monkeypatch):
+    """chat.usage_summary 空 content 但 usage 非空时必须落盘，
+    供历史恢复重建每轮 token 统计（对齐 develop）。"""
+    monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: tmp_path)
+
+    session_history.append_history_record(
+        session_id="s-usage-summary",
+        request_id="r1",
+        channel_id="web",
+        role="assistant",
+        event_type="chat.usage_summary",
+        content="",
+        timestamp=1.0,
+        extra={
+            "usage": {"input_tokens": 100, "output_tokens": 50, "total_tokens": 150},
+            "model": "test-model",
+        },
+    )
+
+    data = _wait_history("s-usage-summary", min_count=1)
+    assert len(data) == 1
+    record = data[0]
+    assert record["event_type"] == "chat.usage_summary"
+    assert record["usage"]["total_tokens"] == 150
+    assert record["model"] == "test-model"
+
+
+def test_chat_usage_summary_with_empty_usage_is_rejected():
+    assert session_history._has_persistable_assistant_payload(
+        content_text="",
+        event_type="chat.usage_summary",
+        extra={"usage": {}},
+    ) is False
+
+
 def test_has_persistable_assistant_payload_tool_result_falsy_values_rejected():
     assert session_history._has_persistable_assistant_payload(
         content_text="",

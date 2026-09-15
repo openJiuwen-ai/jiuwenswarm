@@ -60,6 +60,7 @@ _HISTORY_RESTORABLE_ASSISTANT_EVENT_TYPES = frozenset(
         "context.compact_boundary",
         "context.compact_summary",
         "context.rewind_summary",
+        "context.usage",
     }
 )
 

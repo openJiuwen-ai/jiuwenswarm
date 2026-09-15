@@ -103,6 +103,10 @@ def _has_persistable_assistant_payload(
         return True
     if payload.get("tool_call") or payload.get("tool_calls"):
         return True
+    if et == "chat.usage_summary" and isinstance(payload.get("usage"), dict):
+        # usage_summary 是空 content 的结构化事件，usage 非空即值得落盘，
+        # 供历史恢复重建每轮 token 统计（与 develop 行为一致）。
+        return bool(payload["usage"])
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
