@@ -261,6 +261,8 @@ Context compression manages dialogue history retention strategies.
 - **Default**: `true` (enabled)
 - **Purpose**: Automatically compress and offload dialogue history when exceeding context window limits to maintain fluent interaction.
 
+When `react.context_engine_config.enabled=true`, JiuwenSwarm preserves the default `reasoning_tool_loop_compact_config` values even if a runtime or benchmark profile overrides only part of `react.context_engine_config`. Benchmark configs that replace the whole section should keep or intentionally disable `reasoning_tool_loop_compact_config`; otherwise repeated reasoning/tool loops lose their compaction guard.
+
 When enabled, the system will:
 
 1. Monitor message count and token usage
@@ -461,6 +463,7 @@ These are **conceptual** paths in the main configuration for cross-reference wit
 | `react.context_engine_config.round_level_compressor_config.trigger_context_ratio` | Round-level compression trigger ratio of the effective context budget | `0.8` |
 | `react.context_engine_config.round_level_compressor_config.min_target_context_ratio` | Round-level compression target lower bound (fraction of window) | `0.1` |
 | `react.context_engine_config.round_level_compressor_config.keep_recent_messages` | Round-level compression: number of recent messages to keep | `4` |
+| `react.task_loop_no_progress_guard` | Stops unattended task-loop runs after repeated empty or near-empty no-tool answers | `enabled: true`, `max_consecutive_empty_answers: 3`, `min_answer_chars: 20` |
 
 <a id="dotenv-configuration"></a>
 
