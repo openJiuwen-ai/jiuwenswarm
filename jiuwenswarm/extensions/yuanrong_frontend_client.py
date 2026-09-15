@@ -852,6 +852,19 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             resolved_offset,
             resolved_limit,
         )
+        if status == 416:
+            # File exists but offset is at/past EOF. Gateway /file-api treats this
+            # as a successful empty read (HTTP 200 + eof), not HTTP Range failure.
+            resolved_size = total_size if total_size > 0 else resolved_offset
+            return AgentFileDownloadChunk(
+                data=b"",
+                path=normalized_path,
+                offset=resolved_offset,
+                chunk_size=0,
+                size=resolved_size,
+                content_type="application/octet-stream",
+                eof=True,
+            )
         if status in {404, 413} or status >= 500 or not (200 <= status < 300):
             self._raise_agent_file_http_error(status, data)
         chunk_size = len(data)
@@ -1067,7 +1080,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
     @staticmethod
     def _parse_content_range_total(content_range: str, *, fallback_size: int) -> int:
         text = str(content_range or "").strip()
-        match = re.match(r"bytes\s+\d+-\d+/(\d+|\*)", text, flags=re.IGNORECASE)
+        match = re.match(r"bytes\s+(?:\d+-\d+|\*)/(\d+|\*)", text, flags=re.IGNORECASE)
         if not match:
             return fallback_size
         total_text = match.group(1)
@@ -1095,14 +1108,26 @@ class YuanrongFrontendAgentClient(AgentServerClient):
             return str(parsed.get("error") or parsed.get("message") or text)
         return text
 
+    @staticmethod
+    def _agent_file_404_error_code(message: str) -> str:
+        """Classify YuanRong file-API 404. Default is path miss, not sandbox miss."""
+        lowered = str(message or "").lower()
+        instance_markers = (
+            "instance not found",
+            "instance_not_found",
+            "sandbox not found",
+            "agent not found",
+            "no such instance",
+            "instance does not exist",
+        )
+        if any(marker in lowered for marker in instance_markers):
+            return "instance_not_found"
+        return "file_not_found"
+
     def _agent_file_http_error(self, status: int, body: bytes | str) -> YuanrongAgentFileError:
         message = self._parse_agent_file_error_body(body)
         if status == 404:
-            lowered = message.lower()
-            if "file not found" in lowered:
-                code = "file_not_found"
-            else:
-                code = "instance_not_found"
+            code = self._agent_file_404_error_code(message)
         elif status == 413:
             code = "file_too_large"
         elif status == 400:
@@ -1308,7 +1333,18 @@ class YuanrongFrontendAgentClient(AgentServerClient):
         except urllib.error.HTTPError as err:
             body = err.read() if err.fp else b""
             status = int(getattr(err, "code", 500) or 500)
-            logger.error(
+            err_headers = getattr(err, "headers", None)
+            content_type = "application/octet-stream"
+            total_size = 0
+            if err_headers is not None:
+                content_type = str(err_headers.get("Content-Type") or content_type)
+                content_range = str(err_headers.get("Content-Range") or "")
+                total_size = self._parse_content_range_total(
+                    content_range,
+                    fallback_size=0,
+                )
+            log_fn = logger.info if status == 416 else logger.error
+            log_fn(
                 "[YuanrongFrontendAgentClient] file download HTTP error: "
                 "instance=%s path=%s code=%d trace_id=%s",
                 request.instance_id,
@@ -1316,7 +1352,7 @@ class YuanrongFrontendAgentClient(AgentServerClient):
                 status,
                 request.trace_id or "",
             )
-            return status, body, "application/octet-stream", 0
+            return status, body, content_type, total_size
         except Exception as err:
             logger.error(
                 "[YuanrongFrontendAgentClient] file download failed: "
