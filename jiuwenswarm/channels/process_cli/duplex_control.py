@@ -29,6 +29,14 @@ _ACK_EVENTS = frozenset(
 _MAX_PENDING = 16
 
 
+def _has_text(event: RuntimeEvent) -> bool:
+    payload = event.payload or {}
+    return any(
+        isinstance(payload.get(key), str) and payload[key].strip()
+        for key in ("content", "delta", "text", "message", "answer")
+    )
+
+
 class DuplexControlError(ValueError):
     """Invalid routing or an unsupported interaction, without input echo."""
 
@@ -67,6 +75,7 @@ class DuplexController:
         self._streams: dict[str, asyncio.Task[None]] = {}
         self._stopping_input = False
         self._stopping_streams = False
+        self._input_closed = False
 
     def start(self) -> None:
         self._owner = asyncio.current_task()
@@ -91,11 +100,8 @@ class DuplexController:
                 if self._stopping_input:
                     return
                 if line is None:
-                    self._terminate(
-                        code="INPUT_CLOSED",
-                        message="Control input closed before completion.",
-                        cancelled=True,
-                    )
+                    self._input_closed = True
+                    self._check_answer_available()
                     return
                 control = decode_control(line)
                 if control.request_id != self.writer.request_id:
@@ -128,6 +134,14 @@ class DuplexController:
             self._terminate(
                 code=code,
                 message="Control input was rejected; no answer was delivered.",
+            )
+
+    def _check_answer_available(self) -> None:
+        if self._input_closed and self._pending:
+            self._terminate(
+                code="INPUT_CLOSED",
+                message="Control input closed while an interaction requires an answer.",
+                cancelled=True,
             )
 
     def _answer_input(
@@ -173,14 +187,20 @@ class DuplexController:
                     await self._queue.put(_StreamItem(operation_id, event=event))
         except Exception as caught:  # noqa: BLE001 - propagate through the consumer queue
             error = caught
+        except SystemExit:
+            error = RuntimeError("Runtime stream exited unexpectedly.")
         finally:
             close = getattr(stream, "aclose", None)
             try:
                 if close is not None:
                     await close()
-            except Exception as caught:  # noqa: BLE001 - never hide a stream-close error
+            except (Exception, SystemExit) as caught:  # noqa: BLE001 - stream-close boundary
                 if error is None:
-                    error = caught
+                    error = (
+                        RuntimeError("Runtime stream exited during close.")
+                        if isinstance(caught, SystemExit)
+                        else caught
+                    )
             if not self._stopping_streams:
                 await self._queue.put(_StreamItem(operation_id, error=error, done=True))
             elif error is not None:
@@ -228,6 +248,7 @@ class DuplexController:
         self._add_stream(request.request_id, stream)
         completed = False
         had_interaction = False
+        continuation_text = False
         while self._streams or self._pending:
             item = await self._queue.get()
             if item.done:
@@ -245,20 +266,34 @@ class DuplexController:
             if event.event_type in _INTERACTIONS:
                 completed = False
                 had_interaction = True
+                continuation_text = False
                 token, payload = self._register_interaction(event)
                 observe(event)
                 self._notice(
                     "interaction.requested", interaction_id=token, interaction=payload
                 )
+                self._check_answer_available()
             else:
                 observe(event)
+                if event.event_type == "chat.delta" and not self._pending:
+                    continuation_text = continuation_text or _has_text(event)
                 if event.event_type not in _ACK_EVENTS and event.ok:
                     root_terminal = (
                         not had_interaction
                         and item.operation_id == request.request_id
                         and event.is_complete
                     )
-                    if event.event_type == "chat.final" or root_terminal:
+                    # Interrupted runs can close with an empty segment flush
+                    # plus an answer ACK without ever executing a continuation.
+                    # That tail alone is not evidence that the answer ran.
+                    final = event.event_type == "chat.final" and not self._pending
+                    empty_interrupted_flush = (
+                        had_interaction
+                        and (event.payload or {}).get("final_mode") == "patch_segment"
+                        and not _has_text(event)
+                        and not continuation_text
+                    )
+                    if (final and not empty_interrupted_flush) or root_terminal:
                         completed = True
         return completed
 
