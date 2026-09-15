@@ -61,6 +61,9 @@ export async function switchMode(
 const MODE_ALIASES: Record<string, ClientMode> = {
   // Bare role aliases (no third segment) — default to *.normal variant.
   agent: "agent.work.normal",
+  auto: "auto",
+  "agent.auto": "auto",
+  "macro.auto": "auto",
   code: "agent.code.normal",
   team: "team.work.normal",
   "agent.work": "agent.work.normal",
@@ -104,6 +107,7 @@ export function buildModeAutocompleteItems(): AutocompleteItem[] {
     { value: "agent.work", label: "agent" },
     { value: "agent.work", label: "  agent.work" },
     { value: "agent.code", label: "  agent.code" },
+    { value: "auto", label: "auto" },
     { value: "team.work", label: "team" },
     { value: "team.work", label: "  team.work" },
     { value: "team.code", label: "  team.code" },
@@ -114,6 +118,7 @@ export function createModeCommand(): SlashCommand {
   const directModes = [
     "agent.work",
     "agent.code",
+    "auto",
     "team.work",
     "team.code",
   ] as const;
@@ -121,8 +126,8 @@ export function createModeCommand(): SlashCommand {
   return {
     name: "mode",
     description: "Switch chat mode",
-    usage: "/mode <agent.work|agent.code|team.work|team.code>",
-    example: "/mode agent.code",
+    usage: "/mode <agent.work|agent.code|auto|team.work|team.code>",
+    example: "/mode auto",
     kind: CommandKind.BUILT_IN,
     takesArgs: true,
     completion: async () => [...directModes],
@@ -147,7 +152,7 @@ export function createModeCommand(): SlashCommand {
           makeItem(
             ctx.sessionId,
             "error",
-            "usage: /mode <agent.work|agent.code|team.work|team.code>",
+            "usage: /mode <agent.work|agent.code|auto|team.work|team.code>",
           ),
         );
         return;

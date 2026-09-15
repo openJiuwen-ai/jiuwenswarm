@@ -134,11 +134,12 @@ def test_valid_mode_inputs_covers_new_and_legacy() -> None:
     assert NEW_CANONICAL_MODES <= _VALID_MODE_INPUTS
     assert set(DEPRECATION_MAP.keys()) <= _VALID_MODE_INPUTS
     assert set(MODE_ALIASES.keys()) <= _VALID_MODE_INPUTS
-    # 额外 sanity：8 + 10 + 2 = 20（DEPRECATION_MAP 含裸 code），三集合互不相交
+    # 额外 sanity：三组 canonical/alias 输入互不相交，另加 Auto 用户选择。
     assert len(_VALID_MODE_INPUTS) == (
         len(NEW_CANONICAL_MODES)
         + len(DEPRECATION_MAP.keys())
         + len(MODE_ALIASES.keys())
+        + 1
     )
 
 

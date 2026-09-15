@@ -169,9 +169,11 @@ from jiuwenswarm.server.personal_context.ws_handler import (
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.runtime.request import (
     PREVIOUS_SESSION_MODE_KEY as _SESSION_PREVIOUS_MODE_KEY,  # noqa: F401
+    agent_manager_mode_for_request as _agent_manager_mode_for_request,
     apply_resolved_mode_to_request as _apply_resolved_mode_to_request,
     prepare_chat_turn,
     resolve_agent_request_mode,
+    resolve_auto_macro_lane_for_request as _resolve_auto_macro_lane_for_request,  # noqa: F401
     resolve_request_project_dir,
     resolve_request_runtime_mode,
     sync_chat_request_metadata as _sync_chat_request_metadata,
@@ -7021,8 +7023,10 @@ class AgentWebSocketServer:
             params = request.params or {}
 
             channel_id = request.channel_id or "default"
-            mode, sub_mode, canonical_mode = resolve_agent_request_mode(params.get("mode", "agent"))
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            mode, sub_mode, canonical_mode = resolve_agent_request_mode(
+                params.get("mode", "agent")
+            )
+            agent_mode = _agent_manager_mode_for_request(mode)
             # 同 command.btw：先按 session_id 找承载会话的 agent，按 mode 兜底会命中影子 agent。
             agent = self._agent_manager.get_agent_for_session_nowait(
                 channel_id=channel_id,
@@ -7163,7 +7167,7 @@ class AgentWebSocketServer:
 
             channel_id = request.channel_id or "default"
             mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent"))
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
             agent = await self._agent_manager.get_agent(
                 channel_id=channel_id,
                 mode=agent_mode,
@@ -7210,7 +7214,7 @@ class AgentWebSocketServer:
 
             channel_id = request.channel_id or "default"
             mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent"))
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
             agent = await self._agent_manager.get_agent(
                 channel_id=channel_id,
                 mode=agent_mode,
@@ -7250,7 +7254,7 @@ class AgentWebSocketServer:
             mode, sub_mode, canonical_mode = resolve_agent_request_mode(
                 params.get("mode", "agent")
             )
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
 
             agent = await self._agent_manager.get_agent(
                 channel_id=channel_id,
@@ -7322,7 +7326,7 @@ class AgentWebSocketServer:
                 return
 
             mode, sub_mode, _ = resolve_agent_request_mode(params.get("mode", "agent"))
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
 
             agent = self._agent_manager.get_agent_for_session_nowait(
                 channel_id=channel_id,
@@ -11570,7 +11574,7 @@ class AgentWebSocketServer:
         try:
             # Get or create the agent instance (auto-create if not exists)
             mode, sub_mode = _apply_resolved_mode_to_request(request)
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
             channel_id = request.channel_id or "web"
             agent = await self._agent_manager.get_agent(
                 channel_id=channel_id,
@@ -11643,7 +11647,7 @@ class AgentWebSocketServer:
             # Get or create the agent instance (auto-create if not exists)
             channel_id = request.channel_id or "web"
             mode, sub_mode = _apply_resolved_mode_to_request(request)
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
             agent = await self._agent_manager.get_agent(
                 channel_id=channel_id,
                 project_dir=resolve_request_project_dir(request),
@@ -11720,7 +11724,7 @@ class AgentWebSocketServer:
 
         try:
             mode, sub_mode = _apply_resolved_mode_to_request(request)
-            agent_mode = "agent" if mode == "auto_harness" else mode
+            agent_mode = _agent_manager_mode_for_request(mode)
             agent = await self._agent_manager.get_agent(
                 channel_id=request.channel_id,
                 project_dir=resolve_request_project_dir(request),
@@ -11916,7 +11920,7 @@ class AgentWebSocketServer:
             needs_agent = action in ("create", "run", "cancel", "delete", "issue_watch_once")
             if needs_agent:
                 mode, sub_mode = _apply_resolved_mode_to_request(request)
-                agent_mode = "agent" if mode == "auto_harness" else mode
+                agent_mode = _agent_manager_mode_for_request(mode)
                 agent = await self._agent_manager.get_agent(
                     channel_id=request.channel_id or "tui",
                     mode=agent_mode,

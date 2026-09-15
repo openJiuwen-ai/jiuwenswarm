@@ -53,6 +53,7 @@ from jiuwenswarm.extensions.hook_event import GatewayHookEvents
 from jiuwenswarm.extensions.hooks_context import GatewayChatHookContext
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.mode_matrix import (
+    canonicalize_mode_text,
     DEPRECATION_MAP,
     MODE_ALIASES,
     NEW_AGENT_CODE_NORMAL,
@@ -78,7 +79,10 @@ _ACP_ORIGINAL_SESSION_ID_KEY = "acp_original_session_id"
 # 先归一到 team.plan.normal / code.team，再 deprecate_mode 映到新 canonical），
 # 故白名单必须显式并入 MODE_ALIASES.keys()，否则会被前置校验判「非法指令」。
 _VALID_MODE_INPUTS: frozenset[str] = frozenset(
-    NEW_CANONICAL_MODES | set(DEPRECATION_MAP.keys()) | set(MODE_ALIASES.keys())
+    NEW_CANONICAL_MODES
+    | set(DEPRECATION_MAP.keys())
+    | set(MODE_ALIASES.keys())
+    | {"auto"}
 )
 # ACP: one in-flight chat replaces any prior work on that channel.
 # TUI/CLI 已移除此列表：多窗口 TUI 各自维护独立 session，互不干扰。
@@ -158,6 +162,7 @@ def normalize_legacy_health_check_relay_payload(
 
 class ChannelMode(str, Enum):
     AGENT = "agent"
+    AUTO = "auto"
     # 历史值：plan / fast 已合并为 agent，保留以兼容旧持久化 channel state。
     AGENT_PLAN = "agent.plan"
     AGENT_FAST = "agent.fast"
@@ -195,7 +200,10 @@ def channel_mode_from_str(mode_str: str) -> ChannelMode:
     :attr:`ChannelMode.AGENT`。集中此逻辑避免 ``_get_channel_default_state``、
     ``handle_mode_switch``、``_external_session_aliases`` 等多处手抄。
     """
-    new_mode_str = deprecate_mode(mode_str)
+    canonical_mode = canonicalize_mode_text(mode_str)
+    if canonical_mode == "auto":
+        return ChannelMode.AUTO
+    new_mode_str = deprecate_mode(canonical_mode)
     if new_mode_str in NEW_CANONICAL_MODES:
         try:
             return ChannelMode(new_mode_str)

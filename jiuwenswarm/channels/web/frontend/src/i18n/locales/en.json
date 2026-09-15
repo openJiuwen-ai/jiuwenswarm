@@ -696,6 +696,7 @@
     "modePlan": "Planning Mode",
     "modeAgent": "Performance Mode",
     "modeAgentTeam": "Cluster Mode",
+    "modeAuto": "Auto",
     "modeAutoHarness": "Auto-Harness Mode",
     "modeAutoHarnessDesc": "Automatically analyze and optimize target repository",
     "recording": "Recording... (click the microphone again to finish)",
@@ -2848,6 +2849,13 @@
     "paused": "Paused",
     "waitingTasks": "Waiting Tasks",
     "messageQueue": "Message Queue",
+    "macroRouting": {
+      "title": "Routed mode",
+      "selected": "Selected: {{mode}}",
+      "source": "{{value}}",
+      "confidence": "{{value}}% confidence"
+    },
+    "parallelProgress": "Parallel tasks running ({{completedCount}}/{{total}} complete)",
     "turnRunning": "Running",
     "turnElapsed": "Took",
     "workCompleted": "Completed {{duration}}",

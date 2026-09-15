@@ -1,6 +1,6 @@
 import { visibleWidth } from "@mariozechner/pi-tui";
 import type { AppSnapshot } from "../app-state.js";
-import { formatModeForDisplay, isTeamMode } from "../core/modes.js";
+import { formatModeForDisplay, isEffectiveTeamMode } from "../core/modes.js";
 import { renderTeamPanel } from "./components/team-panel.js";
 import { isTeamWorking } from "./components/team-shared.js";
 import { renderTodoList } from "./components/todo-list.js";
@@ -153,7 +153,11 @@ function buildStatusLines(
     const displayTitle = raw.length > 30 ? raw.slice(0, 30) + "..." : raw;
     left.push(displayTitle);
   }
-  left.push(`mode:${formatModeForDisplay(snapshot.mode)}`);
+  const modeLabel =
+    snapshot.mode === "auto" && snapshot.lastMacroRoutedMode
+      ? `auto→${snapshot.lastMacroRoutedMode === "team" ? "cluster" : "agent"}`
+      : formatModeForDisplay(snapshot.mode);
+  left.push(`mode:${modeLabel}`);
   if (snapshot.transcriptFoldMode !== "none") left.push(`fold:${snapshot.transcriptFoldMode}`);
   // agentos 模型：非空表示当前对话走的是手动添加的 AgentOS 模型，
   // 而非启动默认；用户切回 defaults 模型时此字段被清空。
@@ -162,7 +166,7 @@ function buildStatusLines(
     left.push(`agentos:${m.length > 20 ? m.slice(0, 20) + "…" : m}`);
   }
   const teamWorking =
-    isTeamMode(snapshot.mode) &&
+    isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode) &&
     isTeamWorking(snapshot.teamMemberEvents, snapshot.teamMessageEvents);
   const right = snapshot.lastError
     ? `error:${snapshot.lastError.split("\n")[0].slice(0, 50)}`
@@ -360,7 +364,7 @@ export function buildAppScreenLines(snapshot: AppSnapshot, options: ScreenLayout
     );
   const todoLines = renderTodoList(snapshot.todos, options.width, options.todosCollapsed, options.animationPhase);
   const hasTeamActivity =
-    isTeamMode(snapshot.mode) ||
+    isEffectiveTeamMode(snapshot.mode, snapshot.lastMacroRoutedMode) ||
     snapshot.teamMemberEvents.length > 0 ||
     snapshot.teamTaskEvents.length > 0 ||
     snapshot.teamMessageEvents.length > 0;
