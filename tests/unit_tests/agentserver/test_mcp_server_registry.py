@@ -185,6 +185,36 @@ async def test_add_scan_failure_does_not_write(registry: McpServerRegistry, monk
 
 
 @pytest.mark.asyncio
+async def test_add_servers_unexpected_error_does_not_fail_batch(
+    registry: McpServerRegistry, monkeypatch
+) -> None:
+    """单个 server 提交阶段抛错时，同批其它 server 仍返回自己的结果并入册。"""
+
+    monkeypatch.setattr(
+        "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
+        _ok_discover,
+    )
+    import jiuwenswarm.common.mcp_server_registry as registry_mod
+
+    orig = registry_mod.CachedServerRecord
+
+    def boom_record(*args, **kwargs):
+        name = kwargs.get("name") if "name" in kwargs else (args[0] if args else "")
+        if name == "bad":
+            raise RuntimeError("commit boom")
+        return orig(*args, **kwargs)
+
+    monkeypatch.setattr(registry_mod, "CachedServerRecord", boom_record)
+    results = await registry.add_servers([_user_cfg("ok"), _user_cfg("bad")])
+    by_name = {item["name"]: item for item in results}
+    assert by_name["ok"]["ok"] is True
+    assert by_name["bad"]["ok"] is False
+    assert "commit boom" in by_name["bad"]["error"]
+    assert await registry.get_server("ok") is not None
+    assert await registry.get_server("bad") is None
+
+
+@pytest.mark.asyncio
 async def test_remove_and_update(registry: McpServerRegistry, monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.common.mcp_server_registry.list_request_mcp_server_tools",
@@ -660,6 +690,30 @@ async def test_global_pool_reuses_worker() -> None:
         w2 = await registry.worker_pool.acquire("chrome-devtools", params)
         assert w1 is w2
         await registry.worker_pool.close_all()
+
+
+@pytest.mark.asyncio
+async def test_pool_acquire_rebuilds_when_params_fingerprint_differs(monkeypatch) -> None:
+    """同名但连接参数不同时不得复用旧 worker（update 后旧 v1 不得占坑）。"""
+
+    pool = GlobalMcpWorkerPool()
+    started: list[str] = []
+    import jiuwenswarm.common.mcp_server_registry as registry_mod
+
+    async def fake_run(params, worker):
+        started.append(str(params.get("url") or ""))
+        await worker.queue.get()
+
+    monkeypatch.setattr(registry_mod, "_run_mcp_worker", fake_run)
+    w1 = await pool.acquire("s", {"url": "https://example.com/a"})
+    await _wait_until(lambda: len(started) >= 1)
+    w2 = await pool.acquire("s", {"url": "https://example.com/b"})
+    await _wait_until(lambda: len(started) >= 2)
+    assert w1 is not w2
+    assert w1.params_fingerprint != w2.params_fingerprint
+    w3 = await pool.acquire("s", {"url": "https://example.com/b"})
+    assert w3 is w2
+    await pool.close_all()
 
 
 @pytest.mark.asyncio
