@@ -2,6 +2,7 @@
 
 """Unit tests for the replace_all merge helper preserving YAML env-var placeholders."""
 
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     _is_env_var_placeholder,
     _merge_models_for_replace_all,
@@ -368,7 +369,52 @@ def test_new_entry_without_origin_index_uses_payload_verbatim():
     assert mcc["verify_ssl"] is True
     assert mcc["vendor_key"] == "anthropic"
     assert mcc["plan"] == "custom_api"
+    assert out[0]["model_config_obj"]["context_window"] == DEFAULT_CONTEXT_WINDOW_TOKENS
     assert out[0]["alias"] == "claude"
+
+
+def test_existing_entry_persists_explicit_one_million_context_window():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+        "context_window_tokens": 1048576,
+        "context_window_tokens_provided": True,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert out[0]["model_config_obj"]["context_window"] == 1048576
+
+
+def test_existing_entry_without_context_field_keeps_it_absent_for_compatibility():
+    raw = _raw_entry_with_placeholder()
+    resolved = _resolved_entry_for(raw, api_key_plain="sk-real-secret", api_base="https://api.example.com")
+    parsed = [{
+        "model_name": "gpt-4o",
+        "api_base": "https://api.example.com",
+        "api_key": "sk-real-secret",
+        "model_provider": "OpenAI",
+        "temperature": 0.95,
+        "timeout": 1800,
+        "verify_ssl": False,
+        "is_default": True,
+        "alias": "gpt",
+        "origin_index": 0,
+    }]
+
+    out = _merge_models_for_replace_all(parsed, [raw], [resolved], crypto=_StubCrypto())
+
+    assert "context_window" not in out[0]["model_config_obj"]
 
 
 def test_existing_entry_updates_and_clears_exact_vendor_identity():

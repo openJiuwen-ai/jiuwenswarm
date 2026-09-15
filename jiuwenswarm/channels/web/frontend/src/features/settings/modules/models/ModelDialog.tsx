@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import type { ModelEntry, VendorFetchModelsResult, VendorPreset, VendorPresetMap } from '../../../../types';
 import { Button } from '../../../../components/ui';
-import { Form, FormDialog, useForm, type FormItem } from '../../../../components/form';
+import { Form, FormDialog, useForm, useFormState, type FormItem } from '../../../../components/form';
 import { buildModelValidationPayload } from '../../services/settingsContract';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsFormDialogClose } from '../../services/useSettingsFormDialogClose';
@@ -26,6 +26,11 @@ import {
 } from './modelAdapters';
 import { validateModelDraft } from './modelValidation';
 import { buildReasoningOptions, resolveModelReasoning } from './modelReasoning';
+import {
+  CONTEXT_WINDOW_1M_FIELD,
+  ONE_MILLION_CONTEXT_WINDOW_TOKENS,
+  formatContextWindowTokens,
+} from './contextWindow';
 
 type ConnectionFailure = {
   error: string;
@@ -84,6 +89,7 @@ export function ModelDialog({
   const { isConnected, request } = useSettingsServices();
   const initialValues = useMemo(() => createModelDraft(model, catalog), [catalog, model]);
   const form = useForm({ initialValues });
+  useFormState(form);
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetching, setFetching] = useState(false);
@@ -111,6 +117,7 @@ export function ModelDialog({
   });
   const values = form.getValues();
   const errors = validateModelDraft(values, models, model?.origin_index, catalog, t);
+  const contextWindow1mEnabled = Boolean(values[CONTEXT_WINDOW_1M_FIELD]);
   const account = values.vendor_selection === OPENAI_ACCOUNT_SELECTION;
   const preset = findVendorPreset(catalog, values.vendor_selection);
   const custom = values.vendor_selection === CUSTOM_VENDOR_SELECTION;
@@ -472,6 +479,28 @@ export function ModelDialog({
     ),
   });
   formItems.push({
+    name: 'context_window_tokens',
+    label: t('settingsPanel.models.contextWindow'),
+    component: 'input',
+    type: 'text',
+    required: true,
+    disabled: contextWindow1mEnabled,
+    placeholder: t('settingsPanel.models.contextWindowPlaceholder'),
+    helpTips: t('settingsPanel.models.contextWindowHint'),
+  });
+  formItems.push({
+    name: CONTEXT_WINDOW_1M_FIELD,
+    label: t('settingsPanel.models.contextWindow1m'),
+    component: 'switch',
+    switchLabel: t('settingsPanel.models.contextWindow1m'),
+    helpTips: t('settingsPanel.models.contextWindow1mHint'),
+    description: t('settingsPanel.models.contextWindow1mWarning'),
+    onChange: (enabled) => {
+      if (enabled) form.setFieldValue('context_window_tokens', formatContextWindowTokens(ONE_MILLION_CONTEXT_WINDOW_TOKENS));
+      invalidateConnectionState();
+    },
+  });
+  formItems.push({
     name: 'alias',
     label: t('settingsPanel.models.customName'),
     component: 'input',
@@ -564,6 +593,7 @@ export function ModelDialog({
             api_key: [{ validator: () => errors.api_key }],
             api_base: [{ validator: () => errors.api_base }],
             reasoning_level: [{ validator: () => errors.reasoning_level }],
+            context_window_tokens: [{ validator: () => errors.context_window_tokens }],
           }}
           items={formItems}
         />

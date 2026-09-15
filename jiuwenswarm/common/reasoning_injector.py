@@ -98,7 +98,7 @@ def _build_model_request_kwargs(
     # 兼容老用户配置：旧版 AgentOS 使用 max_tokens 表示模型上下文窗口，
     # 而 core 中同名字段表示最大输出 token 数。构建 ModelRequestConfig 前将
     # 旧值迁移到 context_window，避免误限输出；新旧字段并存时以新字段为准。
-    # 两个字段都未配置时不注入任何值，交由 core 按模型名解析或使用默认值。
+    # 两个字段都未配置时不注入任何值，由 JiuwenSwarm 使用固定默认上下文窗口。
     if is_agentos:
         legacy_context_window = request_kwargs.pop("max_tokens", None)
         if "context_window" not in request_kwargs and legacy_context_window is not None:

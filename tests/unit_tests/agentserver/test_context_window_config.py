@@ -5,6 +5,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.server.runtime.agent_adapter import interface_code
 from jiuwenswarm.server.runtime.agent_adapter.interface_code import (
     JiuwenSwarmCodeAdapter,
@@ -30,7 +31,7 @@ def test_deep_agent_context_engine_config_ignores_invalid_context_window_tokens(
         {"context_engine_config": {"context_window_tokens": "not-a-number"}}
     )
 
-    assert config.context_window_tokens is None
+    assert config.context_window_tokens == DEFAULT_CONTEXT_WINDOW_TOKENS
 
 
 def test_deep_agent_context_engine_config_tracks_selected_model_identity():

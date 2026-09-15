@@ -10,6 +10,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from jiuwenswarm.common.context_window import DEFAULT_CONTEXT_WINDOW_TOKENS
 from jiuwenswarm.gateway.channel_manager.web import app_web_handlers
 from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
     WebHandlersBindParams,
@@ -944,6 +945,37 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     assert channel.responses[-1]["ok"] is True
     assert model["vendor_key"] == "alibaba"
     assert model["plan"] == "token_plan"
+    assert model["context_window_tokens"] == DEFAULT_CONTEXT_WINDOW_TOKENS
+
+
+@pytest.mark.asyncio
+async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -> None:
+    from jiuwenswarm.server.runtime import opencode_zen
+
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(
+        app_web_handlers,
+        "get_default_models",
+        lambda _config: [{
+            "model_client_config": {
+                "model_name": "",
+                "api_base": "",
+                "api_key": "",
+                "client_provider": "",
+            },
+            "model_config_obj": {},
+            "is_default": True,
+        }],
+    )
+    monkeypatch.setattr(opencode_zen, "get_zen_free_model_entries", lambda: [])
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["models.list"](object(), "req-empty-model", {}, "session-1")
+
+    model = channel.responses[-1]["payload"]["models"][0]
+    assert model["model_name"] == ""
+    assert "context_window_tokens" not in model
 
 
 @pytest.mark.asyncio
@@ -986,7 +1018,7 @@ async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
         "is_agentos": False,
         "is_free": True,
         "alias": "DeepSeek V4 Flash",
-        "context_window_tokens": 200000,
+        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
     }]
 
 
@@ -1662,11 +1694,39 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
     persisted_mcc = persisted[0][0]["model_client_config"]
     assert persisted_mcc["vendor_key"] == "alibaba"
     assert persisted_mcc["plan"] == "token_plan"
+    assert persisted[0][0]["model_config_obj"]["context_window"] == DEFAULT_CONTEXT_WINDOW_TOKENS
     assert reload_options_seen[-1]["target_channel_id"] == "web"
     assert reload_options_seen[-1]["reload_scopes"] == ["model"]
     assert channel.responses[-1]["id"] == "req-models"
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["applied_without_restart"] is True
+
+
+@pytest.mark.asyncio
+async def test_models_replace_all_rejects_invalid_context_window():
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["models.replace_all"](
+        object(),
+        "req-models-invalid-context-window",
+        {
+            "models": [{
+                "model_name": "model-one",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
+                "model_provider": "OpenAI",
+                "context_window_tokens": "not-a-window",
+                "is_default": True,
+            }],
+        },
+        "sess-1",
+    )
+
+    response = channel.responses[-1]
+    assert response["ok"] is False
+    assert response["code"] == "BAD_REQUEST"
+    assert "context_window_tokens must be a positive integer" in response["error"]
 
 
 @pytest.mark.asyncio

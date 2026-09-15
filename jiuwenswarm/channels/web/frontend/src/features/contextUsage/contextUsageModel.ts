@@ -124,7 +124,10 @@ export function formatContextTokens(value: number): string {
 
 export function formatContextLimitTokens(value: number): string {
   if (value < 1_000) return String(value);
-  return `${(value / 1_000).toFixed(1)}K`;
+  if (value >= 1024 * 1024) {
+    return `${Number((value / (1024 * 1024)).toFixed(1))}M`;
+  }
+  return `${Number((value / 1024).toFixed(1))}K`;
 }
 
 /** Only the finite ring geometry is bounded; the displayed occupancy may exceed 100%. */
