@@ -2364,6 +2364,7 @@ class JiuWenSwarm:
                 "skill-creator-router",
                 "swarmskill-creator",
                 "agent-creator",
+                "agent-group-creator",
                 "plugin-creator",
             }
             workspace_candidates = [

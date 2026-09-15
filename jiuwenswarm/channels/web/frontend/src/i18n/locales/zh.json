@@ -145,9 +145,9 @@
       "modelIdHint": "例如：glm-4.7。不同厂商的模型 ID 不同，请以其模型列表或官方文档为准。",
       "fetchLatestModels": "拉取最新",
       "presetModels": "当前展示提供商预设模型，展开列表后将拉取最新模型",
-      "noPresetModels": "暂无预设模型，展开列表或点击刷新以拉取最新模型",
-      "noPresetModelsApiKeyRequired": "暂无预设模型，请先填写 API Key 后拉取最新模型",
-      "noPresetModelsNoEndpoint": "该提供商没有可用的预设模型，也未提供模型列表接口",
+      "noPresetModels": "展开列表或点击刷新以拉取最新模型",
+      "noPresetModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
+      "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
       "fetchModelsFailed": "模型列表拉取失败",
@@ -155,11 +155,11 @@
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
       "fetchModelsUnrecognizedResult": "提供商返回了未识别的模型列表来源或原因",
       "fetchReasons": {
-        "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
-        "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
-        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
-        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
+        "noEndpoint": "该提供商未提供模型列表接口",
+        "apiKeyRequired": "填写 API Key 后可拉取最新模型",
+        "remoteFailed": "远端拉取失败或返回为空",
+        "remoteAuthFailed": "API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -2726,7 +2726,7 @@
         "createFirst": "手动创建",
         "createByChat": "通过聊天创建",
         "createByUpload": "上传文件创建",
-        "createViaChatPrompt": "帮我创建一个 XXX 专家或专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
         "install": "安装",
         "installing": "安装中…",
         "use": "使用",
@@ -3213,14 +3213,19 @@
       "rename": "重命名",
       "renamePlaceholder": "输入新名称",
       "deleteProject": "删除项目",
-      "deleteProjectDescription": "确定要移除“<name>{{projectName}}</name>”吗？项目下有会话运行时无法归档；归档后项目及其下会话将被隐藏，定时任务将停用。重新选择该项目目录可恢复。",
+      "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
+      "archiveSessions": "归档全部会话",
+      "deleteArchivedSessions": "删除已归档会话",
+      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
+      "deleteArchivedSessionsDescription": "永久删除“<name>{{projectName}}</name>”下全部已归档会话，此操作不可恢复。",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
       "errors": {
         "pathExists": "该项目路径已存在，请选择其他目录或直接从现有项目开始新对话",
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
-        "projectArchived": "该项目目录属于已归档项目，恢复失败，请重试"
+        "projectUnavailable": "项目不可用，请刷新后重试"
       },
       "cancel": "取消",
       "confirm": "确定"

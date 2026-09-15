@@ -145,9 +145,9 @@
       "modelIdHint": "For example: glm-4.7. Model IDs vary by provider; refer to its model list or official documentation.",
       "fetchLatestModels": "Fetch latest",
       "presetModels": "Showing provider presets. Open the list to fetch the latest models",
-      "noPresetModels": "No preset models. Open the list or refresh to fetch the latest models",
-      "noPresetModelsApiKeyRequired": "No preset models. Enter an API key before fetching the latest models",
-      "noPresetModelsNoEndpoint": "This provider has no preset models or model-list endpoint",
+      "noPresetModels": "Open the list or refresh to fetch the latest models",
+      "noPresetModelsApiKeyRequired": "Enter an API key before fetching the model list",
+      "noPresetModelsNoEndpoint": "This provider does not expose a model-list endpoint",
       "fetchModelsLoading": "Fetching...",
       "fetchModelsRemote": "Fetched {{count}} models from the provider",
       "fetchModelsFailed": "Failed to fetch the model list",
@@ -155,11 +155,11 @@
       "fetchModelsInvalidResponse": "The provider model-list response is invalid",
       "fetchModelsUnrecognizedResult": "The provider returned an unrecognized model-list source or reason",
       "fetchReasons": {
-        "noEndpoint": "Using the provider preset list: this provider does not expose a model-list endpoint",
-        "apiKeyRequired": "Using the provider preset list: enter an API key to fetch the latest models",
-        "remoteFailed": "Using the provider preset list: the remote request failed or returned no models",
-        "remoteAuthFailed": "Using the provider preset list: invalid API key or auth mismatch (HTTP 401/403)",
-        "remoteRateLimited": "Using the provider preset list: rate limited (HTTP 429), retry later"
+        "noEndpoint": "This provider does not expose a model-list endpoint",
+        "apiKeyRequired": "Enter an API key to fetch the latest models",
+        "remoteFailed": "The remote request failed or returned no models",
+        "remoteAuthFailed": "Invalid API key or auth mismatch (HTTP 401/403)",
+        "remoteRateLimited": "Rate limited (HTTP 429), retry later"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -2745,7 +2745,7 @@
         "createFirst": "Create manually",
         "createByChat": "Create via chat",
         "createByUpload": "Create from file",
-        "createViaChatPrompt": "Help me create an XXX Expert or Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
+        "createViaChatPrompt": "Help me create an XXX Expert Team, skilled at XXXXX. My experience is: [please add your industry background and relevant experience]",
         "install": "Install",
         "installing": "Installing…",
         "use": "Use",
@@ -3232,14 +3232,19 @@
       "rename": "Rename",
       "renamePlaceholder": "Enter a new name",
       "deleteProject": "Delete project",
-      "deleteProjectDescription": "Remove “<name>{{projectName}}</name>”? Finish any running conversations first. Archiving hides the project and its conversations and disables cron jobs. Re-selecting the project directory restores it.",
+      "deleteProjectDescription": "Permanently delete “<name>{{projectName}}</name>” and all its conversations and cron jobs, including active conversations. Running tasks will stop. The working directory will be kept. This cannot be undone.",
+      "archiveSessions": "Archive all conversations",
+      "deleteArchivedSessions": "Delete archived conversations",
+      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and report a failure. Cron jobs stay unchanged.",
+      "deleteArchivedSessionsDescription": "Permanently delete all archived conversations in “<name>{{projectName}}</name>”. This cannot be undone.",
+      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
         "pathExists": "This project path already exists. Choose another directory or start a new conversation from the existing project.",
         "nameExists": "This project name already exists. Please choose another name.",
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
-        "projectArchived": "This directory belongs to an archived project. Restoring it failed, please retry."
+        "projectUnavailable": "Project unavailable. Refresh and retry."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

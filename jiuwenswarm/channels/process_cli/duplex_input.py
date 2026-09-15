@@ -145,6 +145,7 @@ class DuplexLineReader:
     ) -> None:
         _validate_limits(max_line_bytes, poll_interval)
         source = sys.stdin if stream is None else stream
+        self._source: _MemorySource | _DescriptorSource
         try:
             if isinstance(source, (io.BytesIO, io.StringIO)):
                 self._source = _MemorySource(source)
@@ -247,6 +248,44 @@ class DuplexLineReader:
                 else:
                     self._eof = True
             return None
+        finally:
+            self._reading = False
+
+    async def read_document(self) -> bytes:
+        """Read one bounded document to EOF without blocking signal handling.
+
+        Used only for ``--run-json -``. Unlike JSONL, a final newline is not
+        required and embedded newlines count against the document byte limit.
+        The caller must not mix document and line reads on the same reader.
+        """
+        if self._reading:
+            raise RuntimeError("only one machine input read may be active")
+        self._reading = True
+        try:
+            while not self.closed:
+                await asyncio.sleep(0)
+                if self.closed:
+                    break
+                if len(self._buffer) > self._max_line_bytes:
+                    self._fail("run input exceeds the byte limit")
+                if self._eof:
+                    document = bytes(self._buffer)
+                    self._discard_buffer()
+                    return document
+                remaining = self._max_line_bytes + 1 - len(self._buffer)
+                try:
+                    chunk = self._source.read_available(
+                        min(_READ_CHUNK_BYTES, remaining)
+                    )
+                except (OSError, ValueError):
+                    self._fail("run input could not be read")
+                if chunk is None:
+                    await self._wait_for_data()
+                elif chunk:
+                    self._buffer.extend(chunk)
+                else:
+                    self._eof = True
+            self._fail("run input closed before EOF")
         finally:
             self._reading = False
 

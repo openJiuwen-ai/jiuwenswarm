@@ -12,10 +12,5 @@ export function projectCreateErrorKey(error: unknown): string | null {
   if (code === 'PROJECT_DIR_MISSING' || message.includes('project directory does not exist')) {
     return 'multiSession.project.errors.pathMissing';
   }
-  // 命中已归档项目但无法自动恢复（如后端未返回 project_id）时的兜底提示；
-  // 正常路径由 workspaceStore.createProject 自动调用 project.unarchive 恢复。
-  if (code === 'PROJECT_ARCHIVED') {
-    return 'multiSession.project.errors.projectArchived';
-  }
   return null;
 }

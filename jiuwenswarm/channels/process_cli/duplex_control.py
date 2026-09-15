@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import uuid
 from collections.abc import AsyncIterator, Callable
 from copy import deepcopy
@@ -67,6 +68,7 @@ class DuplexController:
         self._streams: dict[str, asyncio.Task[None]] = {}
         self._stopping_input = False
         self._stopping_streams = False
+        self._input_closed = False
 
     def start(self) -> None:
         self._owner = asyncio.current_task()
@@ -91,11 +93,8 @@ class DuplexController:
                 if self._stopping_input:
                     return
                 if line is None:
-                    self._terminate(
-                        code="INPUT_CLOSED",
-                        message="Control input closed before completion.",
-                        cancelled=True,
-                    )
+                    self._input_closed = True
+                    self._check_answer_available()
                     return
                 control = decode_control(line)
                 if control.request_id != self.writer.request_id:
@@ -128,6 +127,14 @@ class DuplexController:
             self._terminate(
                 code=code,
                 message="Control input was rejected; no answer was delivered.",
+            )
+
+    def _check_answer_available(self) -> None:
+        if self._input_closed and self._pending:
+            self._terminate(
+                code="INPUT_CLOSED",
+                message="Control input closed while an interaction requires an answer.",
+                cancelled=True,
             )
 
     def _answer_input(
@@ -173,14 +180,20 @@ class DuplexController:
                     await self._queue.put(_StreamItem(operation_id, event=event))
         except Exception as caught:  # noqa: BLE001 - propagate through the consumer queue
             error = caught
+        except builtins.SystemExit:
+            error = RuntimeError("Runtime stream exited unexpectedly.")
         finally:
             close = getattr(stream, "aclose", None)
             try:
                 if close is not None:
                     await close()
-            except Exception as caught:  # noqa: BLE001 - never hide a stream-close error
+            except (Exception, builtins.SystemExit) as caught:  # noqa: BLE001 - stream-close boundary
                 if error is None:
-                    error = caught
+                    error = (
+                        RuntimeError("Runtime stream exited during close.")
+                        if isinstance(caught, builtins.SystemExit)
+                        else caught
+                    )
             if not self._stopping_streams:
                 await self._queue.put(_StreamItem(operation_id, error=error, done=True))
             elif error is not None:
@@ -250,6 +263,7 @@ class DuplexController:
                 self._notice(
                     "interaction.requested", interaction_id=token, interaction=payload
                 )
+                self._check_answer_available()
             else:
                 observe(event)
                 if event.event_type not in _ACK_EVENTS and event.ok:
@@ -258,7 +272,15 @@ class DuplexController:
                         and item.operation_id == request.request_id
                         and event.is_complete
                     )
-                    if event.event_type == "chat.final" or root_terminal:
+                    # UI segment flushes and stream EOF are not execution
+                    # outcomes. Runtime distinguishes suspended flushes from
+                    # completed (possibly text-free) runs without text guesses.
+                    final = event.event_type == "chat.final" and not self._pending
+                    explicit = (
+                        event.runtime_completion == "completed" and not self._pending
+                    )
+                    completion_observed = final or root_terminal or explicit
+                    if event.runtime_completion != "suspended" and completion_observed:
                         completed = True
         return completed
 

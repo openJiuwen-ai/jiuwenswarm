@@ -1655,7 +1655,10 @@ async def run_pending_shutdown_cleanup_for_session(
         from jiuwenswarm.agents.harness.team import get_team_manager
 
         manager = get_team_manager(active_channel_id)
-        deleted = await manager.delete_session_runtime(sid, reason="team.shutdown_all_members: ")
+        deleted = await manager.stop_session_runtime(
+            sid,
+            reason="team.shutdown_all_members: ",
+        )
         logger.info(
             "[RemoteMemberBootstrap] post-stream shutdown cleanup finished "
             "session_id=%s deleted=%s",

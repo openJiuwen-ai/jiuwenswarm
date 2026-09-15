@@ -117,3 +117,6 @@ class AgentResponseChunk:
     is_complete: bool = False
     agent_ref: Any = None       # AgentRef(mode, id), V2 新增
     metadata: dict = field(default_factory=dict)  # fan_out_targets (V1 wire key, list[LogicalTarget])
+    # Internal execution outcome, never a wire field. EOF/empty UI flushes can
+    # terminate a suspended round without completing its user's request.
+    runtime_completion: str | None = field(default=None, kw_only=True)

@@ -726,6 +726,7 @@ def _install_default_builtin_skills(
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
     - rsi-program-dataset-creator: 程序演进任务设计与评测编排
     - agent-creator: Agent 模板包创建助手
+    - agent-group-creator: 专家团包创建助手
     - plugin-creator: 插件能力扩展包创建助手
     - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
     - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
@@ -749,6 +750,7 @@ def _install_default_builtin_skills(
         "huawei-cloud-maas-setup",
         "rsi-program-dataset-creator",
         "agent-creator",
+        "agent-group-creator",
         "plugin-creator",
         "baoyu-image-gen",
         "docx-pro",
@@ -824,6 +826,7 @@ def ensure_default_builtin_skills() -> None:
         "huawei-cloud-maas-setup",
         "rsi-program-dataset-creator",
         "agent-creator",
+        "agent-group-creator",
         "plugin-creator",
         "baoyu-image-gen",
         "docx-pro",

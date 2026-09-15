@@ -38,7 +38,7 @@ class TestCreateProject:
         assert proj.project_id.startswith("proj_")
         assert proj.name == "我的应用"
         assert proj.project_dir == "E:\\projA"
-        assert proj.hidden is False
+        assert "hidden" not in proj.to_dict()
         assert proj.pinned is False
         assert proj.pin_order == 0
 
@@ -57,18 +57,16 @@ class TestCreateProject:
         assert get_project_by_id("proj_nope", cache_bust=True) is None
 
     @staticmethod
-    def test_get_by_dir_finds_hidden_and_visible(project_store_dir):
+    def test_get_by_dir_finds_project(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
             create_project, save_project, get_project_by_dir,
         )
 
         proj = create_project("P1", "E:\\path1")
-        proj.hidden = True
         save_project(proj)
 
         found = get_project_by_dir("E:\\path1", cache_bust=True)
         assert found is not None
-        assert found.hidden is True
         assert found.project_id == proj.project_id
 
     @staticmethod
@@ -113,30 +111,28 @@ class TestSaveProject:
 
 class TestListProjects:
     @staticmethod
-    def test_list_excludes_hidden_by_default(project_store_dir):
+    def test_list_includes_all_projects(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
             create_project, save_project, list_projects,
         )
 
         p1 = create_project("P1", "E:\\p1")
         p2 = create_project("P2", "E:\\p2")
-        p2.hidden = True
         save_project(p2)
 
         visible = list_projects(cache_bust=True)
         ids = [p.project_id for p in visible]
         assert p1.project_id in ids
-        assert p2.project_id not in ids
+        assert p2.project_id in ids
 
     @staticmethod
-    def test_list_includes_hidden_when_flag(project_store_dir):
+    def test_legacy_list_flag_does_not_change_results(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
             create_project, save_project, list_projects,
         )
 
         p1 = create_project("P1", "E:\\p1")
         p2 = create_project("P2", "E:\\p2")
-        p2.hidden = True
         save_project(p2)
 
         all_proj = list_projects(include_hidden=True, cache_bust=True)
@@ -175,22 +171,6 @@ class TestCronProjectResolution:
         assert resolve_cron_project_id(project_dir) == "proj_external"
 
 
-class TestHiddenRestore:
-    @staticmethod
-    def test_hidden_then_restore_visibility(project_store_dir):
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, list_projects, get_project_by_id,
-        )
-
-        proj = create_project("P", "E:\\p")
-        proj.hidden = True
-        save_project(proj)
-        assert get_project_by_id(proj.project_id, cache_bust=True).hidden is True
-        assert proj.project_id not in [p.project_id for p in list_projects(cache_bust=True)]
-
-        proj.hidden = False
-        save_project(proj)
-        assert proj.project_id in [p.project_id for p in list_projects(cache_bust=True)]
 
 
 class TestPinReindex:
@@ -270,101 +250,66 @@ class TestPinReindex:
         assert all_proj[p2.project_id].pin_order == 1
 
 
-class TestCreateOrRestoreProject:
+class TestCreateProjectChecked:
     @staticmethod
     def test_create_new_returns_not_restored(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project,
+            create_project_checked,
         )
 
-        proj, restored = create_or_restore_project("P", "E:\\p")
+        proj, restored = create_project_checked("P", "E:\\p")
         assert proj.project_id.startswith("proj_")
         assert restored is False
         assert proj.name == "P"
         assert proj.project_dir == "E:\\p"
 
-    @staticmethod
-    def test_restore_hidden_by_dir(project_store_dir):
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, create_or_restore_project,
-            get_project_by_id,
-        )
-
-        proj = create_project("旧名", "E:\\p")
-        proj.hidden = True
-        save_project(proj)
-
-        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
-        with pytest.raises(LifecycleError) as exc:
-            create_or_restore_project("新名", "E:\\p")
-        assert exc.value.code == "PROJECT_ARCHIVED"
-        # 错误明细携带 project_id，供前端接 project.unarchive 恢复
-        assert exc.value.details["project_id"] == proj.project_id
-        persisted = get_project_by_id(proj.project_id, cache_bust=True)
-        assert persisted.hidden is True
-        assert persisted.name == "旧名"
 
     @staticmethod
     def test_path_conflict_on_visible(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project, ProjectDirConflict,
+            create_project_checked, ProjectDirConflict,
         )
 
-        create_or_restore_project("P1", "E:\\p")
+        create_project_checked("P1", "E:\\p")
         with pytest.raises(ProjectDirConflict):
-            create_or_restore_project("P2", "E:\\p")
+            create_project_checked("P2", "E:\\p")
 
     @staticmethod
     def test_name_conflict_on_create(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project, ProjectNameConflict,
+            create_project_checked, ProjectNameConflict,
         )
 
-        create_or_restore_project("P1", "E:\\p1")
+        create_project_checked("P1", "E:\\p1")
         with pytest.raises(ProjectNameConflict):
-            create_or_restore_project("P1", "E:\\p2")
+            create_project_checked("P1", "E:\\p2")
 
     @staticmethod
-    def test_name_conflict_with_hidden_project_on_create(project_store_dir):
+    def test_name_conflict_with_existing_project_on_create(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, create_or_restore_project,
+            create_project, save_project, create_project_checked,
             ProjectNameConflict,
         )
 
         proj = create_project("P", "E:\\p1")
-        proj.hidden = True
         save_project(proj)
         with pytest.raises(ProjectNameConflict):
-            create_or_restore_project("P", "E:\\p2")
+            create_project_checked("P", "E:\\p2")
+
 
     @staticmethod
-    def test_name_conflict_excludes_path_match_on_restore(project_store_dir):
+    def test_name_conflict_with_duplicate_legacy_records(project_store_dir):
+        # 底层可导入旧记录；公开创建接口仍须检查名称冲突。
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, create_or_restore_project,
-        )
-
-        proj = create_project("P", "E:\\p")
-        proj.hidden = True
-        save_project(proj)
-        from jiuwenswarm.server.runtime.session.lifecycle import LifecycleError
-        with pytest.raises(LifecycleError) as exc:
-            create_or_restore_project("P", "E:\\p")
-        assert exc.value.code == "PROJECT_ARCHIVED"
-
-    @staticmethod
-    def test_name_conflict_on_restore_with_other_visible(project_store_dir):
-        # setup 走底层 create_project:公开 API create_or_restore_project 现会拦截隐藏项目同名
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, create_or_restore_project,
+            create_project, save_project, create_project_checked,
             ProjectNameConflict,
         )
 
         proj = create_project("P", "E:\\p")
-        proj.hidden = True
         save_project(proj)
         create_project("P", "E:\\p2")
         with pytest.raises(ProjectNameConflict):
-            create_or_restore_project("P", "E:\\p")
+            create_project_checked("P", "E:\\p")
 
 
 class TestRenameProject:
@@ -403,13 +348,12 @@ class TestRenameProject:
             rename_project(p2.project_id, "P1")
 
     @staticmethod
-    def test_rename_conflicts_with_hidden_project(project_store_dir):
+    def test_rename_conflicts_with_existing_project(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
             create_project, save_project, rename_project, ProjectNameConflict,
         )
 
         p1 = create_project("P", "E:\\p1")
-        p1.hidden = True
         save_project(p1)
         p2 = create_project("P2", "E:\\p2")
         with pytest.raises(ProjectNameConflict):
@@ -422,50 +366,6 @@ class TestRenameProject:
         assert rename_project("proj_nope", "X") is None
 
 
-class TestRestoreProject:
-    @staticmethod
-    def test_restore_hidden(project_store_dir):
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, restore_project, get_project_by_id,
-        )
-
-        proj = create_project("P", "E:\\p")
-        proj.hidden = True
-        save_project(proj)
-
-        restored = restore_project(proj.project_id)
-        assert restored is not None
-        assert restored.hidden is False
-        assert get_project_by_id(proj.project_id, cache_bust=True).hidden is False
-
-    @staticmethod
-    def test_restore_already_visible_returns_none(project_store_dir):
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, restore_project,
-        )
-
-        proj = create_project("P", "E:\\p")
-        assert restore_project(proj.project_id) is None
-
-    @staticmethod
-    def test_restore_not_found_returns_none(project_store_dir):
-        from jiuwenswarm.server.runtime.session.project_store import restore_project
-
-        assert restore_project("proj_nope") is None
-
-    @staticmethod
-    def test_restore_conflict_on_name(project_store_dir):
-        # setup 走底层 create_project:公开 API create_or_restore_project 现会拦截隐藏项目同名
-        from jiuwenswarm.server.runtime.session.project_store import (
-            create_project, save_project, restore_project, ProjectNameConflict,
-        )
-
-        proj = create_project("P", "E:\\p")
-        proj.hidden = True
-        save_project(proj)
-        create_project("P", "E:\\p2")
-        with pytest.raises(ProjectNameConflict):
-            restore_project(proj.project_id)
 
 
 class TestCrossModeCoexistence:
@@ -474,13 +374,13 @@ class TestCrossModeCoexistence:
     @staticmethod
     def test_cross_mode_coexist_and_same_mode_conflict(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project, list_projects,
+            create_project_checked, list_projects,
             ProjectDirConflict, ProjectNameConflict,
         )
 
         # 同名同路径、不同 work_mode → 两个独立项目
-        proj_work, restored_w = create_or_restore_project("App", "E:\\proj", work_mode="work")
-        proj_code, restored_c = create_or_restore_project("App", "E:\\proj", work_mode="code")
+        proj_work, restored_w = create_project_checked("App", "E:\\proj", work_mode="work")
+        proj_code, restored_c = create_project_checked("App", "E:\\proj", work_mode="code")
         assert restored_w is False and restored_c is False
         assert proj_work.project_id != proj_code.project_id
         ids = {p.project_id for p in list_projects()}
@@ -488,62 +388,50 @@ class TestCrossModeCoexistence:
 
         # 同模式同路径 → 冲突;同模式同名不同路径 → 冲突
         with pytest.raises(ProjectDirConflict):
-            create_or_restore_project("P2", "E:\\proj", work_mode="work")
-        create_or_restore_project("P", "E:\\d1", work_mode="work")
+            create_project_checked("P2", "E:\\proj", work_mode="work")
+        create_project_checked("P", "E:\\d1", work_mode="work")
         with pytest.raises(ProjectNameConflict):
-            create_or_restore_project("P", "E:\\d2", work_mode="work")
+            create_project_checked("P", "E:\\d2", work_mode="work")
 
     @staticmethod
-    def test_mode_isolation_for_get_rename_hide_restore(project_store_dir):
-        """按 (dir, mode) 查询 / 重命名 / 隐藏恢复 均不跨模式影响。"""
+    def test_mode_isolation_for_get_rename_delete(project_store_dir):
+        """按 (dir, mode) 查询 / 重命名 / 删除 均不跨模式影响。"""
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project, get_project_by_dir_and_mode,
-            rename_project, get_project_by_id, hide_project, restore_project,
+            create_project_checked, get_project_by_dir_and_mode,
+            rename_project, get_project_by_id, delete_project,
             save_project, create_project, ProjectNameConflict,
         )
 
-        proj_work, _ = create_or_restore_project("App", "E:\\proj", work_mode="work")
-        proj_code, _ = create_or_restore_project("App", "E:\\proj", work_mode="code")
+        proj_work, _ = create_project_checked("App", "E:\\proj", work_mode="work")
+        proj_code, _ = create_project_checked("App", "E:\\proj", work_mode="code")
 
         # get_by_dir_and_mode 各自命中
         assert get_project_by_dir_and_mode("E:\\proj", "work").project_id == proj_work.project_id
         assert get_project_by_dir_and_mode("E:\\proj", "code").project_id == proj_code.project_id
 
         # rename 跨模式不冲突:work 已有 "AppB",code 改名 "AppB" 应成功
-        create_or_restore_project("AppB", "E:\\wb", work_mode="work")
+        create_project_checked("AppB", "E:\\wb", work_mode="work")
         assert rename_project(proj_code.project_id, "AppB") is not None
         # 同模式内冲突:再创建一个 code 项目,改名为 "AppB" → 冲突
-        proj_code_c, _ = create_or_restore_project("AppC", "E:\\cc", work_mode="code")
+        proj_code_c, _ = create_project_checked("AppC", "E:\\cc", work_mode="code")
         with pytest.raises(ProjectNameConflict):
             rename_project(proj_code_c.project_id, "AppB")
 
-        # hide work 不影响 code;restore work 不波及 code
-        hide_project(proj_work.project_id)
-        assert get_project_by_id(proj_work.project_id, cache_bust=True).hidden is True
-        assert get_project_by_id(proj_code.project_id, cache_bust=True).hidden is False
-        restore_project(proj_work.project_id)
-        assert get_project_by_id(proj_work.project_id, cache_bust=True).hidden is False
-
-        # create_or_restore 不跨模式恢复:hidden 的 work 项目不阻碍 code 创建
-        work_hidden = create_project("AppX", "E:\\projx")
-        work_hidden.work_mode = "work"
-        work_hidden.hidden = True
-        save_project(work_hidden)
-        proj_code_x, restored = create_or_restore_project("AppX", "E:\\projx", work_mode="code")
-        assert restored is False
-        assert proj_code_x.project_id != work_hidden.project_id
-        assert get_project_by_id(work_hidden.project_id, cache_bust=True).hidden is True
+        # Deleting one mode leaves the project in the other mode untouched.
+        delete_project(proj_work.project_id)
+        assert get_project_by_id(proj_work.project_id, cache_bust=True) is None
+        assert get_project_by_id(proj_code.project_id, cache_bust=True) is not None
 
     @staticmethod
     def test_cron_resolve_project_dir_mode_aware(project_store_dir):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project, resolve_cron_project_id,
+            create_project_checked, resolve_cron_project_id,
         )
 
         # 用真实绝对路径,确保 resolve_cron_project_id 的 isabs 校验跨平台通过
         proj_dir = str(project_store_dir.parent / "proj")
-        proj_work, _ = create_or_restore_project("App", proj_dir, work_mode="work")
-        proj_code, _ = create_or_restore_project("App", proj_dir, work_mode="code")
+        proj_work, _ = create_project_checked("App", proj_dir, work_mode="work")
+        proj_code, _ = create_project_checked("App", proj_dir, work_mode="code")
 
         assert resolve_cron_project_id(proj_dir, work_mode="work") == proj_work.project_id
         assert resolve_cron_project_id(proj_dir, work_mode="code") == proj_code.project_id
@@ -812,13 +700,13 @@ class TestResolveCronProjectBinding:
     @staticmethod
     def test_real_project_id_injects_stored_work_mode(project_store_dir, tmp_path):
         from jiuwenswarm.server.runtime.session.project_store import (
-            create_or_restore_project,
+            create_project_checked,
             resolve_cron_project_binding,
         )
 
         pd = tmp_path / "real-proj"
         pd.mkdir()
-        proj, _ = create_or_restore_project("Real", str(pd), work_mode="code")
+        proj, _ = create_project_checked("Real", str(pd), work_mode="code")
         binding = resolve_cron_project_binding(proj.project_id, "", "work")
         assert binding.error is None
         assert binding.project_id == proj.project_id

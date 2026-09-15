@@ -585,8 +585,6 @@ class CronTools:
             raw_project_id = str(r.project_id or "").strip()
         binding = resolve_cron_project_binding(raw_project_id, project_dir_val, work_mode)
         if binding.error is not None:
-            if binding.hidden:
-                raise ValueError(f"project not found: {raw_project_id!r}")
             raise ValueError(binding.error)
         resolved_project_id = binding.project_id
         work_mode = binding.work_mode

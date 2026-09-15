@@ -821,8 +821,7 @@ export function buildTurnWorkMeta(items: RenderItem[], isProcessing: boolean): M
 }
 
 /**
- * 「已完成」折叠条应挂在该轮第一个可折叠项上。
- * 若工具前还有 hideMeta 开场白，锚在那句上，避免展开后开场白跑到折叠条上面。
+ * 「已完成」折叠条只挂在该轮第一个思考或工具项上，正文不参与折叠。
  */
 export function buildTurnFoldAnchorKeys(
   items: RenderItem[],
@@ -835,10 +834,6 @@ export function buildTurnFoldAnchorKeys(
     }
     const meta = turnWorkMeta.get(item.turnId);
     if (!meta?.completed || !meta.hasWork) {
-      continue;
-    }
-    if (item.type === 'message' && item.hideMeta) {
-      anchors.set(item.turnId, item.key);
       continue;
     }
     if (item.type === 'reasoning' || item.type === 'toolGroup') {

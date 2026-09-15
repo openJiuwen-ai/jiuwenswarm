@@ -143,7 +143,9 @@ def _safe_schema_reason(error: Exception) -> str:
     return "run input does not match the schema"
 
 
-def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInput:
+def read_run_input(
+    source: str, *, stdin: BinaryIO | TextIO | None = None
+) -> OneShotRunInput:
     """Read one strict UTF-8 JSON document from a file or stdin through EOF.
 
     ``source='-'`` uses the supplied stdin, or the process stdin. A binary
