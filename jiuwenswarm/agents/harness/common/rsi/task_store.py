@@ -95,7 +95,11 @@ class RsiTaskStore:
         return tasks
 
     def delete(self, task_id: str, *, forbid_running: bool = True, forbid_active_artifact: bool = True) -> None:
-        """删除任务（一致性规则 §8.2：运行中/排队/暂停/在用产物不可删）。"""
+        """删除任务：先移除列表索引，再尽力清理物理目录。
+
+        一致性规则 §8.2 仍禁止删除运行中/排队/暂停/在用产物；索引删除失败
+        会继续向上抛出，索引成功后的物理清理失败则直接忽略。
+        """
         task = self.get(task_id)
         state = TaskStatus(task.status)
         if forbid_running and state in _NON_DELETABLE_STATES:
@@ -109,10 +113,15 @@ class RsiTaskStore:
                     raise RsiTaskStateConflict(f"任务 {task_id} 产物仍在生效，不可删除")
         task_dir = self.task_dir(self.tasks_root, task_id)
         with _LOCK:
+            task_file = task_dir / "task.json"
             try:
-                shutil.rmtree(task_dir)
+                task_file.unlink()
             except FileNotFoundError:
-                pass  # 目录已不存在视为删除成功（幂等）
+                pass  # 索引已不存在视为删除成功（幂等）
+            try:
+                shutil.rmtree(task_dir, ignore_errors=True)
+            except Exception:
+                return
 
     # -- 状态机 --
 

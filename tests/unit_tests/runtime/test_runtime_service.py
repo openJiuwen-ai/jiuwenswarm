@@ -27,7 +27,11 @@ from jiuwenswarm.runtime import service as runtime_service_module
 from jiuwenswarm.runtime.events import RuntimeEvent
 from jiuwenswarm.runtime.plan import PlanStateResult
 from jiuwenswarm.runtime.request import prepare_chat_turn
-from jiuwenswarm.runtime.session.model import SessionExecutionState, SessionWorkKind
+from jiuwenswarm.runtime.session.model import (
+    SessionCloseTimeoutError,
+    SessionExecutionState,
+    SessionWorkKind,
+)
 from jiuwenswarm.runtime.session_provisioner import (
     SessionCreateResult,
     SessionDescriptor,
@@ -2846,6 +2850,22 @@ async def test_close_drain_failure_still_runs_host_and_agent_cleanup(error_type)
     assert manager.cleanup_calls == 1
     lease.release.assert_awaited_once()
     coordinator_close.assert_awaited_once()
+
+
+@pytest.mark.asyncio
+async def test_close_timeout_keeps_runtime_and_agent_resources_alive() -> None:
+    manager = FakeAgentManager()
+    lease = SimpleNamespace(release=AsyncMock())
+    runtime = AgentRuntime(agent_manager=manager, resource_lease=lease)
+    error = SessionCloseTimeoutError("runtime", ("heartbeat-run",))
+    runtime._session_coordinator.close = AsyncMock(side_effect=error)
+
+    with pytest.raises(SessionCloseTimeoutError):
+        await runtime.close()
+
+    assert not runtime.closed
+    assert manager.cleanup_calls == 0
+    lease.release.assert_not_awaited()
 
 
 @pytest.mark.asyncio

@@ -621,6 +621,7 @@ class HeartbeatJobStore:
         run_id: str,
         *,
         now: float,
+        preserve_as_queued: bool = False,
     ) -> tuple[bool, HeartbeatJob]:
         """Roll back an exact claim when the session became busy before dispatch."""
         matched = False
@@ -640,6 +641,17 @@ class HeartbeatJobStore:
                 resume_status=None,
                 resume_enabled=None,
                 resume_next_run_at=None,
+                queued_run_id=(run_id if preserve_as_queued else rs.queued_run_id),
+                queued_trigger=(
+                    rs.current_trigger
+                    if preserve_as_queued
+                    else rs.queued_trigger
+                ),
+                queued_reschedule=(
+                    rs.current_reschedule
+                    if preserve_as_queued
+                    else rs.queued_reschedule
+                ),
             )
             if not job.enabled or job.status == STATUS_DISABLED:
                 return replace(
@@ -647,7 +659,12 @@ class HeartbeatJobStore:
                     status=STATUS_DISABLED,
                     enabled=False,
                     next_run_at=None,
-                    run_state=cleared,
+                    run_state=replace(
+                        cleared,
+                        queued_run_id=None,
+                        queued_trigger=None,
+                        queued_reschedule=False,
+                    ),
                     updated_at=float(now),
                 )
             return replace(
@@ -666,34 +683,57 @@ class HeartbeatJobStore:
         result = await self._mutate_job(job_id, _defer)
         return matched, result
 
-    async def pop_queued_run(
-        self, job_id: str
-    ) -> tuple[str, str, bool] | None:
-        queued: tuple[str, str, bool] | None = None
+    async def promote_queued_run(
+        self, job_id: str, *, now: float
+    ) -> tuple[HeartbeatJob, str] | None:
+        """Atomically move one queued reservation into the active run slot."""
+        run_id: str | None = None
 
-        def _pop(job: HeartbeatJob) -> HeartbeatJob:
-            nonlocal queued
+        def _promote(job: HeartbeatJob) -> HeartbeatJob:
+            nonlocal run_id
             rs = job.run_state
-            if not rs.queued_run_id:
+            if rs.current_run_id or not rs.queued_run_id:
                 return job
-            queued = (
-                rs.queued_run_id,
-                rs.queued_trigger or "scheduler",
-                bool(rs.queued_reschedule),
-            )
+            run_limit_reached = job.max_runs is not None and int(
+                job.run_count
+            ) >= int(job.max_runs)
+            if (
+                not job.enabled
+                or job.is_terminal()
+                or run_limit_reached
+            ):
+                return replace(
+                    job,
+                    run_state=replace(
+                        rs,
+                        queued_run_id=None,
+                        queued_trigger=None,
+                        queued_reschedule=False,
+                    ),
+                    updated_at=float(now),
+                )
+            run_id = rs.queued_run_id
             return replace(
                 job,
+                status=STATUS_RUNNING,
                 run_state=replace(
                     rs,
+                    current_run_id=run_id,
+                    current_run_started_at=float(now),
+                    current_trigger=rs.queued_trigger or "scheduler",
+                    current_reschedule=bool(rs.queued_reschedule),
+                    resume_status=job.status,
+                    resume_enabled=job.enabled,
+                    resume_next_run_at=job.next_run_at,
                     queued_run_id=None,
                     queued_trigger=None,
                     queued_reschedule=False,
                 ),
-                updated_at=time.time(),
+                updated_at=float(now),
             )
 
-        await self._mutate_job(job_id, _pop)
-        return queued
+        promoted = await self._mutate_job(job_id, _promote)
+        return None if run_id is None else (promoted, run_id)
 
     async def record_cancel_result(
         self,
