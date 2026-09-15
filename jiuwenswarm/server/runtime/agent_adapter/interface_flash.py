@@ -87,10 +87,18 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     # rail 白名单（attr_name）：只保留这些 + PROTECTED，其余 drop。这是 flash 能力
     # 的边界——和 code 模式的 _FIXED_RAIL_NAMES 同性质，是 mode 的固定定义。
     #
-    # 注意 _ask_user_rail 不在内：它在 _build_agent_rails 的构建门控是
-    # ``mode.startswith("agent")``（interface_deep.py:8187），flash 不命中→冷启动
-    # 从不构建；动态注册路径又由本类的 _update_rails_for_mode 覆盖关闭。故它对
-    # flash 是死条目，不放进来误导「flash 挂了 ask_user」。
+    # _skill_rail（SkillUseRail）：技能执行能力的唯一来源——SkillTool /
+    # ListSkillTool 由其 setup() 注册（全仓库无其它注册点），技能目录/引导 prompt
+    # 也由它注入。「技能执行」≠「技能演进」：前者是跑已安装技能，flash 必须保留
+    # （否则 search/install 得到却执行不了，后台 skill_turbo PPT 等直接失败）；
+    # 后者（SkillEvolutionRail / SkillCreateRail）属自演进，flash 不留。两者分开。
+    # _skill_credential_injection_rail：技能 envs（react.skill_envs 凭证）注入，
+    # 没有 it 则带凭证的技能跑不起来，与 _skill_rail 同进同出。
+    # _ask_user_rail：交互请求由 _set_user_interaction_enabled（在
+    # _update_rails_for_mode 之后调用）按 supports_user_interaction 动态挂载/卸载，
+    # 非交互请求自动卸载。放进白名单是为了让 _drop_non_whitelist_dynamic_rails
+    # 跳过它，避免每请求「卸载→重建」churn；其生命周期交给
+    # _set_user_interaction_enabled 管理。
     _FLASH_RAIL_KEEP: frozenset[str] = frozenset({
         "_runtime_prompt_rail",
         "_response_prompt_rail",
@@ -106,6 +114,11 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_filesystem_rail",
         # _progressive_tool_rail: ProgressiveToolRail, 系统提示词中的渐进式工具引导。
         "_progressive_tool_rail",
+        # 技能执行 + 凭证注入：见上方注释，flash 必须能跑已安装技能。
+        "_skill_rail",
+        "_skill_credential_injection_rail",
+        # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
+        "_ask_user_rail",
     })
 
     # PROTECTED rails are always built even under a keep-whitelist (dropping
@@ -190,7 +203,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         """flash 的 rail 生命周期：闭合白名单，不动态注册全量 rail.
 
         父类 ``_update_rails_for_mode``（interface_deep.py:9990，每请求由
-        :10596 调用）调 ``_update_agent_rails()`` 动态注册 ``_context_assemble_rail`` /
+        :10595 调用）调 ``_update_agent_rails()`` 动态注册 ``_context_assemble_rail`` /
         ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些**不在** flash 白名单
         内，却会绕过 ``_instantiate_rails`` 的冷启动裁剪被挂上，使白名单形同虚设。
 
@@ -199,8 +212,14 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         2. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
-        白名单内的 rail（task_planning / context_processor 等）冷启动已由
+        白名单内的 rail（task_planning / context_processor / skill 等）冷启动已由
         ``_instantiate_rails`` 挂好，这里不重复注册。
+
+        关于 ``_ask_user_rail``：它在白名单内，故本方法的卸载步骤**跳过** it——其
+        生命周期交由紧随本方法之后调用的 ``_set_user_interaction_enabled``（interface_deep.py:
+        10599）按 ``supports_user_interaction`` 管理：交互请求挂载、非交互请求卸载。
+        把它留在白名单正是为了避免每请求「本方法卸载→_set_user_interaction_enabled
+        重建」的 churn（参见 PR6431 review #4 修正）。
         """
         self._last_mode = mode
         await self._drop_non_whitelist_dynamic_rails()

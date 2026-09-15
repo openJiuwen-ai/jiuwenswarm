@@ -63,7 +63,9 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         _info("_task_planning_rail"),          # in KEEP
         _info("_permission_rail"),              # in KEEP and PROTECTED
         _info("_disabled_tools_rail"),          # PROTECTED only
-        _info("_ask_user_rail"),                # neither (dead entry removed)
+        _info("_skill_rail"),                   # in KEEP (skill execution)
+        _info("_skill_credential_injection_rail"),  # in KEEP
+        _info("_ask_user_rail"),                # in KEEP (interactive dynamic mount)
         _info("_context_assemble_rail"),        # neither (dynamic reg target)
         _info("_memory_rail"),                  # neither (dynamic reg target)
         _info("_symphony_orchestration_rail"),  # neither
@@ -76,18 +78,45 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_task_planning_rail",
         "_permission_rail",
         "_disabled_tools_rail",
+        "_skill_rail",
+        "_skill_credential_injection_rail",
+        "_ask_user_rail",
     }
 
 
-def test_ask_user_rail_is_not_in_keep():
-    """#4: ``_ask_user_rail`` is a dead entry — removed from the keep whitelist.
+def test_skill_execution_rails_are_in_keep():
+    """#2 (corrected): flash must keep skill *execution*, not just search/install.
 
-    Build is gated by ``mode.startswith("agent")`` (interface_deep.py:8187), so
-    flash never builds it; the dynamic path is closed by the
-    ``_update_rails_for_mode`` override. Keeping it would falsely advertise
-    that flash mounts structured ask_user.
+    ``SkillToolkit`` (registered in ``_get_tool_cards``, not rail-gated) only
+    provides search_skill / install_skill / uninstall_skill. The actual skill
+    execution tool (``SkillTool`` / ``ListSkillTool``) plus the skill-catalog
+    prompt injection come from ``_skill_rail`` (SkillUseRail), and skill envs
+    (``react.skill_envs`` credentials) from ``_skill_credential_injection_rail``.
+    Both must be in the whitelist or flash is a half-state: can install but not
+    run skills (background skill_turbo PPT jobs would fail). Skill *evolution*
+    (SkillEvolutionRail / SkillCreateRail) stays dropped — that is the
+    self-evolution flash excludes by design.
     """
-    assert "_ask_user_rail" not in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    keep = JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
+    assert "_skill_rail" in keep
+    assert "_skill_credential_injection_rail" in keep
+    # evolution / create rails are NOT kept (self-evolution, excluded by design).
+    assert "_skill_evolution_rail" not in keep
+    assert "_skill_create_rail" not in keep
+
+
+def test_ask_user_rail_is_in_keep_to_avoid_churn():
+    """#4 (corrected): ``_ask_user_rail`` is kept so the per-request drop skips it.
+
+    ``_set_user_interaction_enabled`` (called right after ``_update_rails_for_mode``)
+    mounts ask_user for interactive requests and unmounts it for non-interactive
+    ones. If the rail were outside the whitelist, the override would unregister it
+    each request, then ``_set_user_interaction_enabled(True)`` would rebuild +
+    re-register it — a per-request churn (with a misleading "dropped dynamic rails:
+    ['StructuredAskUserRail']" log). Keeping it lets the drop step skip it; its
+    lifecycle is fully owned by ``_set_user_interaction_enabled``.
+    """
+    assert "_ask_user_rail" in JiuwenSwarmFlashAdapter._FLASH_RAIL_KEEP
 
 
 # ---------------------------------------------------------------------------
@@ -107,22 +136,27 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     """
     adapter = JiuwenSwarmFlashAdapter()
 
-    # Simulate rails a prior reload / parent path may have registered.
+    # Simulate rails a prior reload / parent path may have registered. None of
+    # these are in the flash whitelist, so the override must unregister each.
+    # (``_ask_user_rail`` is NOT here — it is whitelisted (#4 corrected), so the
+    # drop skips it and _set_user_interaction_enabled owns its lifecycle.)
     leaked = {
         "_context_assemble_rail": SimpleNamespace(name="context_assemble"),
         "_memory_rail": SimpleNamespace(name="memory"),
         "_external_memory_rail": SimpleNamespace(name="external_memory"),
         "_skill_create_rail": SimpleNamespace(name="skill_create"),
-        "_ask_user_rail": SimpleNamespace(name="ask_user"),
     }
     for attr, rail in leaked.items():
         setattr(adapter, attr, rail)
 
     unregister = AsyncMock()
     adapter._instance = SimpleNamespace(unregister_rail=unregister)
-    # Whitelisted rails set to a sentinel must be left untouched.
+    # Whitelisted rails set to a sentinel must be left untouched — including
+    # _ask_user_rail (kept, so dropped-skip applies to it too).
     adapter._task_planning_rail = SimpleNamespace(name="keep-me")
     adapter._context_processor_rail = SimpleNamespace(name="keep-me-2")
+    adapter._skill_rail = SimpleNamespace(name="keep-me-skill")
+    adapter._ask_user_rail = SimpleNamespace(name="keep-me-ask-user")
 
     await adapter._update_rails_for_mode("flash")
 
@@ -132,6 +166,8 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
         assert unregistered.count(rail) == 1
     assert adapter._task_planning_rail is not None
     assert adapter._context_processor_rail is not None
+    assert adapter._skill_rail is not None
+    assert adapter._ask_user_rail is not None  # kept, not churned
     assert all(getattr(adapter, a) is None for a in leaked)
 
     assert unregister.await_count == len(leaked)
@@ -262,6 +298,25 @@ def test_resolve_mode_enabled_does_not_touch_code_or_team(monkeypatch):
     assert resolve_agent_request_mode("code") == ("code", "normal", "code.normal")
     # team stays team
     assert resolve_agent_request_mode("team")[0] == "team"
+
+
+def test_resolve_mode_guard_covers_agent_family_not_enumerated(monkeypatch):
+    """The guard matches the ``agent`` family by first segment, not a hard enum.
+
+    Any ``agent.*`` sub-mode (e.g. ``agent.team``, ``agent.custom``) is an
+    agent-family request and injects to flash when the switch is on — a hard
+    enum of ``agent.plan`` / ``agent.fast`` would miss new sub-modes and leave
+    the same mode family inconsistent (PR6431 review, 次要项). Bare ``plan`` /
+    ``fast`` (legacy cron data) also inject.
+    """
+    from jiuwenswarm.server.handlers._shared import resolve_agent_request_mode
+
+    _set_flash_enabled(monkeypatch, True)
+    # agent.* family all inject
+    assert resolve_agent_request_mode("agent.team") == ("flash", None, "flash")
+    assert resolve_agent_request_mode("agent.custom") == ("flash", None, "flash")
+    # bare plan/fast inject (legacy cron job data)
+    assert resolve_agent_request_mode("fast") == ("flash", None, "flash")
 
 
 def test_resolve_mode_explicit_flash_dispatches_directly(monkeypatch):

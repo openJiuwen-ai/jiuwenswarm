@@ -145,10 +145,13 @@ def resolve_agent_request_mode(
     mode_text = raw_value.strip().lower() if isinstance(raw_value, str) else ""
 
     # ── flash 配置触发 guard（前置；只命中 agent 类请求，其余 mode 不受影响）──
-    # flash.enabled=true 时，普通 agent 对话（agent/plan/fast/空，work_mode 非
-    # code）直接归到 flash；code/team/显式 flash 不命中，走下面的原归一化。
+    # flash.enabled=true 时，普通 agent 对话（agent 族：agent / agent.* / 裸 plan /
+    # fast / 空，work_mode 非 code）直接归到 flash；code/team/显式 flash 不命中，
+    # 走下面的原归一化。用 split 取首段判断（``agent`` 族），避免硬编码子模式枚举——
+    # 新增 agent.* 子模式自动覆盖，无需同步维护枚举（参见 PR6431 review 次要项）。
     # try/except 兜底：config 不可读时安全降级为不注入，保持原 agent 行为。
-    if mode_text in ("", "agent", "agent.plan", "agent.fast", "plan", "fast"):
+    _guard_head = mode_text.split(".", 1)[0] if mode_text else ""
+    if not mode_text or _guard_head in ("agent", "plan", "fast"):
         _wm = work_mode.strip().lower() if isinstance(work_mode, str) else ""
         if _wm != "code":
             try:
