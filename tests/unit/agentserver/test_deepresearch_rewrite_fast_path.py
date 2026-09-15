@@ -13,6 +13,13 @@ from jiuwenclaw.agentserver.tools.deepresearch.deepresearch_rewrite_fast_path im
 )
 
 
+_BASE_REVISION = {
+    "document_id": "doc_test",
+    "revision_id": "rev_parent",
+    "content_sha256": "a" * 64,
+}
+
+
 def _payload(**overrides) -> dict:
     payload = {
         "report_path": "/workspace/report.md",
@@ -43,6 +50,14 @@ def test_parse_rewrite_envelope_accepts_exact_request():
     assert request.action == "expand"
     assert request.instruction == ""
     assert request.selection["protocol_version"] == 2
+    assert request.base_revision is None
+
+
+def test_parse_rewrite_envelope_accepts_base_revision():
+    request = parse_rewrite_envelope(_query(base_revision=_BASE_REVISION))
+
+    assert request is not None
+    assert request.base_revision == _BASE_REVISION
 
 
 def test_parse_rewrite_envelope_accepts_outer_whitespace():
@@ -74,6 +89,27 @@ def test_parse_rewrite_envelope_ignores_plain_message():
         json.dumps(_payload(report_path=123), ensure_ascii=False),
         json.dumps(_payload(selection="raw text"), ensure_ascii=False),
         json.dumps(_payload(instruction=None), ensure_ascii=False),
+        json.dumps(
+            _payload(base_revision={**_BASE_REVISION, "extra": "not allowed"}),
+            ensure_ascii=False,
+        ),
+        json.dumps(
+            _payload(
+                base_revision={
+                    key: value
+                    for key, value in _BASE_REVISION.items()
+                    if key != "revision_id"
+                }
+            ),
+            ensure_ascii=False,
+        ),
+        json.dumps(_payload(base_revision="rev_parent"), ensure_ascii=False),
+        json.dumps(
+            _payload(
+                base_revision={**_BASE_REVISION, "content_sha256": "A" * 64}
+            ),
+            ensure_ascii=False,
+        ),
     ],
 )
 def test_parse_rewrite_envelope_rejects_recognized_invalid_request(body):
@@ -150,6 +186,38 @@ async def test_run_rewrite_fast_path_ignores_plain_message_without_side_effects(
     prepare.assert_not_awaited()
     model.assert_not_awaited()
     commit.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "base_revision",
+    [
+        {**_BASE_REVISION, "extra": "not allowed"},
+        {
+            key: value
+            for key, value in _BASE_REVISION.items()
+            if key != "document_id"
+        },
+        123,
+        {**_BASE_REVISION, "content_sha256": "A" * 64},
+    ],
+)
+async def test_run_rewrite_fast_path_rejects_invalid_base_revision_before_prepare(
+    base_revision,
+):
+    prepare = AsyncMock()
+
+    result = await run_rewrite_fast_path(
+        _query(base_revision=base_revision),
+        prepare_invoke=prepare,
+        model_invoke=AsyncMock(),
+        commit_invoke=AsyncMock(),
+    )
+
+    assert result is not None
+    assert result.status == "error"
+    assert result.error_code == "BAD_REQUEST"
+    prepare.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -410,11 +478,28 @@ async def test_run_rewrite_fast_path_passes_exact_tool_arguments():
         action="expand",
         selection=_payload()["selection"],
         instruction="保持专业语气",
+        base_revision=None,
     )
     commit.assert_awaited_once_with(
         context_token="secret-context-token",
         structured_result=_STRUCTURED_RESULT,
     )
+
+
+@pytest.mark.asyncio
+async def test_run_rewrite_fast_path_passes_base_revision_to_prepare():
+    prepare = AsyncMock(return_value=_json_result(_PREPARED))
+
+    await run_rewrite_fast_path(
+        _query(base_revision=_BASE_REVISION),
+        prepare_invoke=prepare,
+        model_invoke=AsyncMock(
+            return_value=SimpleNamespace(content=_json_result(_STRUCTURED_RESULT))
+        ),
+        commit_invoke=AsyncMock(return_value=_json_result(_COMPLETED)),
+    )
+
+    assert prepare.await_args.kwargs["base_revision"] == _BASE_REVISION
 
 
 @pytest.mark.asyncio

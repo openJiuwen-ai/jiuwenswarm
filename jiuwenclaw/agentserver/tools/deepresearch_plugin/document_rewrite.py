@@ -91,7 +91,9 @@ class _RewriteContext:
     parent_revision_id: str
     final_result_path: str
     final_result_sha256: str
+    registered_parent_hash: str
     parent_hash: str
+    external_edit_adopted: bool
     selection_start_byte: int
     selection_end_byte: int
     selected_units: tuple["_SelectedUnitRange", ...]
@@ -387,7 +389,10 @@ def _citation_index(
 
 
 def _citation_occurrence_index(
-    markdown: str, citations: list[dict]
+    markdown: str,
+    citations: list[dict],
+    *,
+    ambiguity_error_code: str = "DOCUMENT_NOT_FOUND",
 ) -> dict[tuple[int, int], dict]:
     _, by_key = _citation_index(citations)
     boundary_table = Utf8BoundaryTable(markdown)
@@ -409,9 +414,28 @@ def _citation_occurrence_index(
                 result[byte_range] = items[0]
             continue
         if len(ranges) != len(items):
-            raise RewriteError("DOCUMENT_NOT_FOUND", "report citation data is ambiguous")
+            raise RewriteError(
+                ambiguity_error_code,
+                "report citation data is ambiguous",
+            )
         result.update(zip(ranges, items))
     return result
+
+
+def _require_all_citations_whitelisted(
+    markdown: str, citation_occurrences: dict[tuple[int, int], dict]
+) -> None:
+    boundary_table = Utf8BoundaryTable(markdown)
+    for match in CITATION_RE.finditer(markdown):
+        byte_range = (
+            boundary_table.codepoint_to_byte[match.start()],
+            boundary_table.codepoint_to_byte[match.end()],
+        )
+        if byte_range not in citation_occurrences:
+            raise RewriteError(
+                "FORMAT_CONFLICT",
+                "citation is outside the final-result whitelist",
+            )
 
 
 def _mapping_conflict(message: str) -> None:
@@ -433,6 +457,36 @@ def _require_selection_protocol(selection: object) -> dict:
             "SELECTION_PROTOCOL_UNSUPPORTED", "selection protocol version 2 is required"
         )
     return selection
+
+
+def _validate_base_revision(base_revision: object) -> tuple[str, str, str] | None:
+    if base_revision is None:
+        return None
+    valid = (
+        type(base_revision) is dict
+        and set(base_revision)
+        == {"document_id", "revision_id", "content_sha256"}
+        and type(base_revision.get("document_id")) is str
+        and re.fullmatch(
+            r"doc_[A-Za-z0-9_-]{1,128}", base_revision["document_id"]
+        )
+        is not None
+        and type(base_revision.get("revision_id")) is str
+        and re.fullmatch(
+            r"rev_[A-Za-z0-9_-]{1,128}", base_revision["revision_id"]
+        )
+        is not None
+        and type(base_revision.get("content_sha256")) is str
+        and re.fullmatch(r"[0-9a-f]{64}", base_revision["content_sha256"])
+        is not None
+    )
+    if not valid:
+        raise RewriteError("BAD_REQUEST", "base revision identity is invalid")
+    return (
+        base_revision["document_id"],
+        base_revision["revision_id"],
+        base_revision["content_sha256"],
+    )
 
 
 def _validate_selection_request(selection: object) -> tuple[int, int, str, str]:
@@ -661,6 +715,7 @@ def prepare_rewrite(
     selection: object,
     instruction: str = "",
     session_id: str,
+    base_revision: object | None = None,
 ) -> dict:
     root = Path(workspace_root).expanduser().resolve()
     report = Path(report_path).expanduser().resolve()
@@ -672,6 +727,7 @@ def prepare_rewrite(
     if not isinstance(instruction, str) or len(instruction) > 2_000:
         raise RewriteError("BAD_REQUEST", "instruction size is invalid")
     _validate_selection_request(selection)
+    requested_base_identity = _validate_base_revision(base_revision)
 
     try:
         report_bytes = report.read_bytes()
@@ -693,10 +749,25 @@ def prepare_rewrite(
     )
     if not valid_document_id or not valid_revision_id or not valid_content_hash:
         raise RewriteError("DOCUMENT_NOT_FOUND", "report provenance is invalid")
+    registered_identity = (document_id, revision_id, content_sha256)
+    if (
+        requested_base_identity is not None
+        and requested_base_identity != registered_identity
+    ):
+        raise RewriteError("REVISION_CONFLICT", "the base revision changed")
     actual_hash = _sha256(report_bytes)
-    if actual_hash != content_sha256:
+    external_edit_adopted = actual_hash != content_sha256
+    if external_edit_adopted and requested_base_identity is None:
         raise RewriteError("REVISION_CONFLICT", "the report revision changed")
     final_result_citations = _load_final_result_citations(report, provenance, root)
+    citation_occurrences = None
+    if external_edit_adopted:
+        citation_occurrences = _citation_occurrence_index(
+            markdown,
+            final_result_citations,
+            ambiguity_error_code="FORMAT_CONFLICT",
+        )
+        _require_all_citations_whitelisted(markdown, citation_occurrences)
 
     start, end, selected_text = _validate_selection(selection, markdown)
     rewrite_map = build_rewrite_map(markdown)
@@ -716,7 +787,10 @@ def prepare_rewrite(
     if normalized_visible != selected_text.replace("\r\n", "\n").replace("\r", "\n"):
         _mapping_conflict("selected text does not match normalized Markdown visibility")
 
-    citation_occurrences = _citation_occurrence_index(markdown, final_result_citations)
+    if citation_occurrences is None:
+        citation_occurrences = _citation_occurrence_index(
+            markdown, final_result_citations
+        )
     allowed: dict[str, dict] = {}
     selected_anchors = []
     for unit in covered:
@@ -764,7 +838,9 @@ def prepare_rewrite(
         parent_revision_id=revision_id,
         final_result_path=str(provenance["final_result_path"]),
         final_result_sha256=str(provenance["final_result_sha256"]),
+        registered_parent_hash=content_sha256,
         parent_hash=actual_hash,
+        external_edit_adopted=external_edit_adopted,
         selection_start_byte=start,
         selection_end_byte=end,
         selected_units=selected_unit_ranges,
@@ -1548,7 +1624,7 @@ def commit_rewrite(*, context_token: str, session_id: str, structured_result: ob
         expected_identity = (
             context.document_id,
             context.parent_revision_id,
-            context.parent_hash,
+            context.registered_parent_hash,
             context.final_result_path,
             context.final_result_sha256,
         )
@@ -1611,7 +1687,14 @@ def commit_rewrite(*, context_token: str, session_id: str, structured_result: ob
         child_hash = _sha256(child_bytes)
         child_provenance = dict(provenance)
         history = list(provenance.get("rewrite_history") or [])
-        history.append({
+        adoption_metadata = {}
+        if context.external_edit_adopted:
+            adoption_metadata = {
+                "external_edit_adopted": True,
+                "registered_parent_content_sha256": context.registered_parent_hash,
+                "adopted_parent_content_sha256": context.parent_hash,
+            }
+        history_entry = {
             "rewrite_protocol_version": 2,
             "action": context.action,
             "parent_revision_id": context.parent_revision_id,
@@ -1625,17 +1708,21 @@ def commit_rewrite(*, context_token: str, session_id: str, structured_result: ob
                 if unit.unit_id in {item.unit_id for item in context.selected_units}
             ],
             "citation_ids": citation_ids,
-        })
+        }
+        history_entry.update(adoption_metadata)
+        history.append(history_entry)
         highlights = _current_highlight_ranges(
             original_map, child_map, context, slot_texts
         )
+        operation = {"action": context.action}
+        operation.update(adoption_metadata)
         child_provenance.update({
             "rewrite_protocol_version": 2,
             "revision_id": revision_id,
             "parent_revision_id": context.parent_revision_id,
             "content_sha256": child_hash,
             "created_at": datetime.now(timezone.utc).isoformat(),
-            "operation": {"action": context.action},
+            "operation": operation,
             "rewrite_history": history,
             "rewrite_highlights": {
                 "revision_id": revision_id,
@@ -1658,4 +1745,5 @@ def commit_rewrite(*, context_token: str, session_id: str, structured_result: ob
         "provenance_path": str(provenance_path),
         "citation_integrity_status": "verified",
         "citation_semantic_status": "not_verified",
+        "external_edit_adopted": context.external_edit_adopted,
     }

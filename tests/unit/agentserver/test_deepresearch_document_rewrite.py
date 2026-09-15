@@ -16,6 +16,15 @@ from jiuwenclaw.agentserver.tools.deepresearch_plugin.document_rewrite import (
 )
 
 
+class AlwaysEqualStr(str):
+    def __eq__(self, other):
+        return True
+
+
+class BaseRevisionDict(dict):
+    pass
+
+
 def _write_document(root: Path, body: str) -> tuple[Path, dict]:
     report = root / "report-v1.md"
     report.write_text(body, encoding="utf-8")
@@ -109,6 +118,13 @@ def _set_snapshot_citations(report: Path, provenance: dict, citations: list[dict
     )
 
 
+def _base_revision(provenance: dict) -> dict[str, str]:
+    return {
+        key: provenance[key]
+        for key in ("document_id", "revision_id", "content_sha256")
+    }
+
+
 def _selection(body: str, raw: str, visible: str | None = None, occurrence: int = 1) -> dict:
     cursor = -1
     for _ in range(occurrence):
@@ -132,15 +148,21 @@ def _prepare(
     visible: str | None = None,
     occurrence: int = 1,
     action: str = "shorten",
+    base_revision: object | None = None,
 ):
     body = report.read_text(encoding="utf-8")
+    prepare_kwargs = {
+        "workspace_root": root,
+        "report_path": report,
+        "action": action,
+        "selection": _selection(body, raw, visible, occurrence),
+        "instruction": "更清晰",
+        "session_id": "S1",
+    }
+    if base_revision is not None:
+        prepare_kwargs["base_revision"] = base_revision
     return prepare_rewrite(
-        workspace_root=root,
-        report_path=report,
-        action=action,
-        selection=_selection(body, raw, visible, occurrence),
-        instruction="更清晰",
-        session_id="S1",
+        **prepare_kwargs,
     )
 
 
@@ -176,6 +198,328 @@ def _committed_child(root: Path, body: str = "original text\n"):
         ),
     )
     return report, result
+
+
+def test_prepare_and_commit_adopt_corrected_parent_when_base_matches(tmp_path):
+    original = "用户原始保留。\n\n待改旧句。\n"
+    corrected = "用户订正保留。\n\n待改新句。\n"
+    report, provenance = _write_document(tmp_path, original)
+    sidecar = report.with_suffix(".provenance.json")
+    report.write_text(corrected, encoding="utf-8")
+    corrected_parent_bytes = report.read_bytes()
+    registered_sidecar_bytes = sidecar.read_bytes()
+
+    prepared = _prepare(
+        tmp_path,
+        report,
+        "待改新句。",
+        base_revision=_base_revision(provenance),
+    )
+    slot_id = prepared["units"][0]["slots"][0]["slot_id"]
+    result = commit_rewrite(
+        context_token=prepared["context_token"],
+        session_id="S1",
+        structured_result=_structured_payload(
+            prepared, {slot_id: "模型改写句。"}
+        ),
+    )
+
+    child = Path(result["report_path"])
+    child_bytes = child.read_bytes()
+    child_provenance = json.loads(
+        Path(result["provenance_path"]).read_text(encoding="utf-8")
+    )
+    adoption_metadata = {
+        "external_edit_adopted": True,
+        "registered_parent_content_sha256": provenance["content_sha256"],
+        "adopted_parent_content_sha256": hashlib.sha256(
+            corrected_parent_bytes
+        ).hexdigest(),
+    }
+
+    assert child_bytes == "用户订正保留。\n\n模型改写句。\n".encode("utf-8")
+    assert report.read_bytes() == corrected_parent_bytes
+    assert sidecar.read_bytes() == registered_sidecar_bytes
+    assert child_provenance["content_sha256"] == hashlib.sha256(
+        child_bytes
+    ).hexdigest()
+    assert {
+        key: child_provenance["operation"][key]
+        for key in adoption_metadata
+    } == adoption_metadata
+    assert {
+        key: child_provenance["rewrite_history"][-1][key]
+        for key in adoption_metadata
+    } == adoption_metadata
+    assert result["external_edit_adopted"] is True
+
+
+def test_prepare_rejects_corrected_parent_without_base_before_context(tmp_path, monkeypatch):
+    report, _ = _write_document(tmp_path, "原始内容。\n")
+    report.write_text("用户订正内容。\n", encoding="utf-8")
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(tmp_path, report, "用户订正内容。")
+
+    assert caught.value.code == "REVISION_CONFLICT"
+    assert stored_contexts == []
+
+
+@pytest.mark.parametrize("stale_field", ["document_id", "revision_id", "content_sha256"])
+def test_prepare_rejects_corrected_parent_with_stale_base_before_context(
+    tmp_path, monkeypatch, stale_field
+):
+    report, provenance = _write_document(tmp_path, "原始内容。\n")
+    report.write_text("用户订正内容。\n", encoding="utf-8")
+    base_revision = _base_revision(provenance)
+    base_revision[stale_field] = {
+        "document_id": "doc_stale",
+        "revision_id": "rev_stale",
+        "content_sha256": "f" * 64,
+    }[stale_field]
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(
+            tmp_path,
+            report,
+            "用户订正内容。",
+            base_revision=base_revision,
+        )
+
+    assert caught.value.code == "REVISION_CONFLICT"
+    assert stored_contexts == []
+
+
+@pytest.mark.parametrize(
+    "base_revision",
+    [
+        "rev_parent",
+        {"document_id": "doc_test", "revision_id": "rev_parent"},
+        {
+            "document_id": "doc_test",
+            "revision_id": "rev_parent",
+            "content_sha256": "a" * 64,
+            "extra": "not allowed",
+        },
+        {
+            "document_id": "doc_test",
+            "revision_id": "rev_parent",
+            "content_sha256": "A" * 64,
+        },
+    ],
+)
+def test_prepare_rejects_invalid_base_revision_before_context(
+    tmp_path, monkeypatch, base_revision
+):
+    report, _ = _write_document(tmp_path, "原始内容。\n")
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(
+            tmp_path,
+            report,
+            "原始内容。",
+            base_revision=base_revision,
+        )
+
+    assert caught.value.code == "BAD_REQUEST"
+    assert stored_contexts == []
+
+
+@pytest.mark.parametrize("subclass_kind", ["field", "container"])
+def test_prepare_rejects_base_revision_subclasses_before_context(
+    tmp_path, monkeypatch, subclass_kind
+):
+    report, provenance = _write_document(tmp_path, "原始内容。\n")
+    if subclass_kind == "field":
+        base_revision = {
+            "document_id": AlwaysEqualStr("doc_attacker"),
+            "revision_id": AlwaysEqualStr("rev_attacker"),
+            "content_sha256": AlwaysEqualStr("f" * 64),
+        }
+    else:
+        base_revision = BaseRevisionDict(_base_revision(provenance))
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(
+            tmp_path,
+            report,
+            "原始内容。",
+            base_revision=base_revision,
+        )
+
+    assert caught.value.code == "BAD_REQUEST"
+    assert stored_contexts == []
+
+
+def test_commit_rejects_corrected_parent_mutated_after_prepare_without_child(tmp_path):
+    report, provenance = _write_document(tmp_path, "原始内容。\n")
+    report.write_text("用户订正内容。\n", encoding="utf-8")
+    prepared = _prepare(
+        tmp_path,
+        report,
+        "用户订正内容。",
+        base_revision=_base_revision(provenance),
+    )
+    markdown_paths = set(tmp_path.glob("*.md"))
+    sidecar_paths = set(tmp_path.glob("*.provenance.json"))
+    report.write_text("用户再次订正内容。\n", encoding="utf-8")
+
+    with pytest.raises(RewriteError) as caught:
+        commit_rewrite(
+            context_token=prepared["context_token"],
+            session_id="S1",
+            structured_result=_structured_payload(prepared),
+        )
+
+    assert caught.value.code == "REVISION_CONFLICT"
+    assert set(tmp_path.glob("*.md")) == markdown_paths
+    assert set(tmp_path.glob("*.provenance.json")) == sidecar_paths
+
+
+def test_prepare_rejects_unknown_citation_in_corrected_parent_before_context(
+    tmp_path, monkeypatch
+):
+    known = "[[1]](https://example.com/source)"
+    unknown = "[[9]](https://unknown.example/source)"
+    report, provenance = _write_document(tmp_path, f"原始内容 {known}\n")
+    report.write_text(f"用户订正内容 {known}，新增 {unknown}\n", encoding="utf-8")
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(
+            tmp_path,
+            report,
+            "用户订正内容",
+            base_revision=_base_revision(provenance),
+        )
+
+    assert caught.value.code == "FORMAT_CONFLICT"
+    assert stored_contexts == []
+
+
+@pytest.mark.parametrize("current_occurrence_count", [1, 3])
+def test_prepare_classifies_adopted_duplicate_citation_occurrence_drift_as_format_conflict(
+    tmp_path, monkeypatch, current_occurrence_count
+):
+    citation = "[[1]](https://example.com/source)"
+    original = f"原始内容 {citation} 中段 {citation}\n"
+    report, provenance = _write_document(tmp_path, original)
+    snapshot_path = report.with_name(provenance["final_result_path"])
+    first = json.loads(snapshot_path.read_text(encoding="utf-8"))[
+        "citation_messages"
+    ]["data"][0]
+    _set_snapshot_citations(
+        report,
+        provenance,
+        [
+            dict(first, id=3, chunk="first occurrence evidence"),
+            dict(first, id=4, chunk="second occurrence evidence"),
+        ],
+    )
+    corrected = "用户订正内容 " + " 中段 ".join(
+        [citation] * current_occurrence_count
+    ) + "\n"
+    report.write_text(corrected, encoding="utf-8")
+    stored_contexts = []
+    monkeypatch.setattr(
+        rewrite_module,
+        "_store_context",
+        lambda *args: stored_contexts.append(args),
+    )
+
+    with pytest.raises(RewriteError) as caught:
+        _prepare(
+            tmp_path,
+            report,
+            "用户订正内容",
+            base_revision=_base_revision(provenance),
+        )
+
+    assert caught.value.code == "FORMAT_CONFLICT"
+    assert stored_contexts == []
+
+
+def test_unchanged_legacy_rewrite_reports_no_external_adoption(tmp_path):
+    report, _ = _write_document(tmp_path, "原始内容。\n")
+    prepared = _prepare(tmp_path, report, "原始内容。")
+    slot_id = prepared["units"][0]["slots"][0]["slot_id"]
+
+    result = commit_rewrite(
+        context_token=prepared["context_token"],
+        session_id="S1",
+        structured_result=_structured_payload(prepared, {slot_id: "模型改写。"}),
+    )
+
+    child_provenance = json.loads(
+        Path(result["provenance_path"]).read_text(encoding="utf-8")
+    )
+    adoption_fields = {
+        "external_edit_adopted",
+        "registered_parent_content_sha256",
+        "adopted_parent_content_sha256",
+    }
+    assert result["external_edit_adopted"] is False
+    assert adoption_fields.isdisjoint(child_provenance["operation"])
+    assert adoption_fields.isdisjoint(child_provenance["rewrite_history"][-1])
+
+
+def test_unchanged_matching_base_rewrites_without_external_adoption(tmp_path):
+    report, provenance = _write_document(tmp_path, "原始内容。\n")
+    prepared = _prepare(
+        tmp_path,
+        report,
+        "原始内容。",
+        base_revision=_base_revision(provenance),
+    )
+    slot_id = prepared["units"][0]["slots"][0]["slot_id"]
+
+    result = commit_rewrite(
+        context_token=prepared["context_token"],
+        session_id="S1",
+        structured_result=_structured_payload(prepared, {slot_id: "模型改写。"}),
+    )
+
+    assert Path(result["report_path"]).read_text(encoding="utf-8") == "模型改写。\n"
+    child_provenance = json.loads(
+        Path(result["provenance_path"]).read_text(encoding="utf-8")
+    )
+    adoption_fields = {
+        "external_edit_adopted",
+        "registered_parent_content_sha256",
+        "adopted_parent_content_sha256",
+    }
+    assert result["external_edit_adopted"] is False
+    assert adoption_fields.isdisjoint(child_provenance["operation"])
+    assert adoption_fields.isdisjoint(child_provenance["rewrite_history"][-1])
 
 
 def test_prepare_html_export_uses_child_markdown_and_preserves_snapshot_metadata(
