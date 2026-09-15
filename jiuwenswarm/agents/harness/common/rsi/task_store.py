@@ -9,7 +9,6 @@
 from __future__ import annotations
 
 import json
-import logging
 import shutil
 import threading
 from collections.abc import Callable
@@ -23,8 +22,6 @@ from jiuwenswarm.agents.harness.common.rsi.models import (
     TaskStatus,
     utcnow_iso,
 )
-
-logger = logging.getLogger(__name__)
 
 #: 合法状态迁移表（内部 v3 §6）。key=当前状态；value=允许迁移到的状态。
 _STATUS_TRANSITIONS: dict[TaskStatus, frozenset[TaskStatus]] = {
@@ -101,7 +98,7 @@ class RsiTaskStore:
         """删除任务：先移除列表索引，再尽力清理物理目录。
 
         一致性规则 §8.2 仍禁止删除运行中/排队/暂停/在用产物；索引删除失败
-        会继续向上抛出，索引成功后的物理清理失败则只记录日志。
+        会继续向上抛出，索引成功后的物理清理失败则直接忽略。
         """
         task = self.get(task_id)
         state = TaskStatus(task.status)
@@ -124,13 +121,7 @@ class RsiTaskStore:
             try:
                 shutil.rmtree(task_dir, ignore_errors=True)
             except Exception:
-                # 索引已删除后，任务不会再出现在列表中；目录清理仅尽力而为。
-                logger.warning(
-                    "[RSI] failed to clean task directory for task %s: %s",
-                    task_id,
-                    task_dir,
-                    exc_info=True,
-                )
+                pass
 
     # -- 状态机 --
 

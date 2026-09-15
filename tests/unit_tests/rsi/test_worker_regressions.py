@@ -508,6 +508,23 @@ class TestDeleteFailures:
         assert ctx.task_service.list({}) == []
         assert task_dir.is_dir()
 
+    def test_delete_suppresses_cleanup_exception_without_logging(self, ctx, monkeypatch):
+        """物理目录清理异常直接忽略，不产生日志。"""
+        ctx.bind_task_service(harness_refs_provider=lambda: None)
+        t = _create(ctx)
+        import jiuwenswarm.agents.harness.common.rsi.task_store as ts
+
+        def _boom(*args, **kwargs):
+            raise PermissionError("locked")
+
+        def _unexpected_warning(*args, **kwargs):
+            raise AssertionError("cleanup failures must not be logged")
+
+        with monkeypatch.context() as patch:
+            patch.setattr(ts.shutil, "rmtree", _boom)
+            patch.setattr(ts, "logger", SimpleNamespace(warning=_unexpected_warning), raising=False)
+            assert ctx.task_service.delete({"task_id": t}) == {"ok": True}
+
     def test_delete_propagates_task_index_failure(self, ctx, monkeypatch):
         """任务索引删除失败时必须保留错误，避免列表与删除结果不一致。"""
         ctx.bind_task_service(harness_refs_provider=lambda: None)
