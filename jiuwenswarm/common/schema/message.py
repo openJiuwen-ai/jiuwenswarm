@@ -220,6 +220,7 @@ class ReqMethod(Enum):
     SKILLS_VISIBILITY_SET = "skills.visibility.set"
     SKILLS_VISIBILITY_UPDATE = "skills.visibility.update"
     SKILLS_INSTALL = "skills.install"
+    SKILLS_PACK_MEMBER_INSTALL = "skills.pack_member.install"
     SKILLS_IMPORT_LOCAL = "skills.import_local"
     SKILLS_IMPORT_UPLOAD = "skills.import_upload"
     SKILLS_CREATE_FROM_KNOWLEDGE = "skills.create_from_knowledge"

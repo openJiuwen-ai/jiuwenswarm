@@ -10,7 +10,7 @@ import {
  * 首页按类型各拉 HUB_HOME_TOP_K；「更多」专页按需拉 HUB_MORE_TOP_K。
  * 离开页签保留首页/更多列表；再进入同分类时 stale-while-revalidate（先展示旧数据再静默刷新）。
  */
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
 import type { HubSkillDetail, LoadState, MarketplacePluginItem } from './types';
 
@@ -28,6 +28,8 @@ type HubRecommendSkill = {
   version?: string;
   latest_version?: string;
   plugin_type?: string;
+  /** 技能包标记（推荐条目允许返回 skillpack） */
+  skill_type?: string;
   tags?: string[];
   publisher_name?: string;
   install_count?: number;
@@ -47,6 +49,7 @@ function mapRecommendSkill(s: HubRecommendSkill): MarketplacePluginItem {
     like_count: s.like_count ?? 0,
     view_count: s.view_count ?? 0,
     plugin_type: s.plugin_type || null,
+    skill_type: s.skill_type || null,
     tags: s.tags || null,
     latest_version: s.latest_version || s.version || null,
     icon_uri: s.icon_uri || null,
@@ -58,7 +61,7 @@ export type WithSessionFn = <T extends Record<string, unknown> = Record<string, 
 ) => T & { session_id: string };
 
 export type SkillPanelTab = 'my' | 'marketplace' | 'graph';
-export type MarketplaceSubView = 'list' | 'team' | 'skill' | 'detail';
+export type MarketplaceSubView = 'list' | 'team' | 'skill' | 'packs' | 'detail';
 
 interface UseHubMarketplaceParams {
   activeTab: SkillPanelTab;
@@ -90,9 +93,12 @@ export function useHubMarketplace({
   /** 首页推荐：团队 / 普通技能各最多 HUB_HOME_TOP_K */
   const [hubTeamHome, setHubTeamHome] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillHome, setHubSkillHome] = useState<MarketplacePluginItem[]>([]);
+  /** 首页推荐：技能包最多 HUB_HOME_TOP_K */
+  const [hubPackHome, setHubPackHome] = useState<MarketplacePluginItem[]>([]);
   /** 「更多」专页：单类型最多 HUB_MORE_TOP_K */
   const [hubTeamMore, setHubTeamMore] = useState<MarketplacePluginItem[]>([]);
   const [hubSkillMore, setHubSkillMore] = useState<MarketplacePluginItem[]>([]);
+  const [hubPackMore, setHubPackMore] = useState<MarketplacePluginItem[]>([]);
   const [hubLoading, setHubLoading] = useState(false);
   const [hubMoreLoading, setHubMoreLoading] = useState(false);
   /** 更多列表已加载的分类 + 类型，避免同分类重复请求 */
@@ -100,6 +106,7 @@ export function useHubMarketplace({
     category: string;
     team: boolean;
     skill: boolean;
+    pack: boolean;
   } | null>(null);
   /** 技能广场请求序号：防抖搜索/分类切换时丢弃过期响应 */
   const hubFetchSeqRef = useRef(0);
@@ -111,7 +118,7 @@ export function useHubMarketplace({
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
 
   const fetchHubRecommendByType = useCallback(
-    async (category: string, pluginType: 'swarmskill' | 'skill', topK: number) => {
+    async (category: string, pluginType: 'swarmskill' | 'skill' | 'skillpack', topK: number) => {
       const params = withSession({
         top_k: topK,
         cache_mode: 'prefer_cache',
@@ -139,17 +146,19 @@ export function useHubMarketplace({
         setHubLoading(true);
         setHubTeamMore([]);
         setHubSkillMore([]);
+        setHubPackMore([]);
         setHubMoreLoadedFor(null);
       }
       try {
-        const [teamResult, skillResult] = await Promise.allSettled([
+        const [teamResult, skillResult, packResult] = await Promise.allSettled([
           fetchHubRecommendByType(category, 'swarmskill', HUB_HOME_TOP_K),
           fetchHubRecommendByType(category, 'skill', HUB_HOME_TOP_K),
+          fetchHubRecommendByType(category, 'skillpack', HUB_HOME_TOP_K),
         ]);
         if (seq !== hubFetchSeqRef.current) return;
 
         if (requestScope !== catalogScope()) return;
-        const caches = [teamResult, skillResult].flatMap((result) =>
+        const caches = [teamResult, skillResult, packResult].flatMap((result) =>
           result.status === 'fulfilled' && result.value.cache ? [result.value.cache] : [],
         );
         const cache = caches.find((value) => value.refreshing) || caches[0];
@@ -177,7 +186,14 @@ export function useHubMarketplace({
           if (!silent) setHubSkillHome([]);
         }
 
-        if (teamResult.status === 'fulfilled' || skillResult.status === 'fulfilled') {
+        if (packResult.status === 'fulfilled') {
+          setHubPackHome(packResult.value);
+        } else {
+          console.error('Failed to fetch skillpack SkillHub recommend:', packResult.reason);
+          if (!silent) setHubPackHome([]);
+        }
+
+        if (teamResult.status === 'fulfilled' || skillResult.status === 'fulfilled' || packResult.status === 'fulfilled') {
           hubHomeLoadedCategoryRef.current = category;
         } else if (!silent) {
           hubHomeLoadedCategoryRef.current = null;
@@ -190,7 +206,7 @@ export function useHubMarketplace({
   );
 
   const fetchHubMoreSkills = useCallback(
-    async (kind: 'swarmskill' | 'skill', category: string) => {
+    async (kind: 'swarmskill' | 'skill' | 'skillpack', category: string) => {
       const seq = ++hubMoreFetchSeqRef.current;
       const requestScope = catalogScope();
       setHubMoreLoading(true);
@@ -209,18 +225,30 @@ export function useHubMarketplace({
         if (kind === 'swarmskill') {
           setHubTeamMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category ? { ...prev, team: true } : { category, team: true, skill: false },
+            prev && prev.category === category
+              ? { ...prev, team: true }
+              : { category, team: true, skill: false, pack: false },
+          );
+        } else if (kind === 'skillpack') {
+          setHubPackMore(items);
+          setHubMoreLoadedFor((prev) =>
+            prev && prev.category === category
+              ? { ...prev, pack: true }
+              : { category, team: false, skill: false, pack: true },
           );
         } else {
           setHubSkillMore(items);
           setHubMoreLoadedFor((prev) =>
-            prev && prev.category === category ? { ...prev, skill: true } : { category, team: false, skill: true },
+            prev && prev.category === category
+              ? { ...prev, skill: true }
+              : { category, team: false, skill: true, pack: false },
           );
         }
       } catch (error) {
         console.error(`Failed to fetch more ${kind} SkillHub recommend:`, error);
         if (requestScope !== catalogScope() || seq !== hubMoreFetchSeqRef.current) return;
         if (kind === 'swarmskill') setHubTeamMore([]);
+        else if (kind === 'skillpack') setHubPackMore([]);
         else setHubSkillMore([]);
       } finally {
         if (seq === hubMoreFetchSeqRef.current) setHubMoreLoading(false);
@@ -243,6 +271,18 @@ export function useHubMarketplace({
     [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory, setMarketplaceSubView],
   );
 
+  /** 进入"全部技能包"专页，并按需拉取全量技能包（HUB_MORE_TOP_K） */
+  const openHubAllPacks = useCallback(() => {
+    setMarketplaceSubView('packs');
+    const needFetch =
+      !hubMoreLoadedFor ||
+      hubMoreLoadedFor.category !== marketplaceCategory ||
+      !hubMoreLoadedFor.pack;
+    if (needFetch) {
+      void fetchHubMoreSkills('skillpack', marketplaceCategory);
+    }
+  }, [fetchHubMoreSkills, hubMoreLoadedFor, marketplaceCategory, setMarketplaceSubView]);
+
   const fetchOnlineSearch = useCallback(
     async (query: string) => {
       const seq = ++hubFetchSeqRef.current;
@@ -262,6 +302,10 @@ export function useHubMarketplace({
             version: string;
             author: string;
             is_team_skill: boolean;
+            /** 技能包标记（搜索结果允许返回 skillpack） */
+            skill_type?: string;
+            /** 技能包成员数量 */
+            member_count?: number;
             native_score: number | null;
             category: string;
             updated_at: number;
@@ -322,6 +366,8 @@ export function useHubMarketplace({
           like_count: 0,
           view_count: 0,
           plugin_type: s.is_team_skill ? 'swarmskill' : 'skill',
+          skill_type: s.skill_type || null,
+          member_count: s.member_count ?? null,
           latest_version: s.version || null,
           source: s.source,
           identifier: s.identifier,
@@ -357,10 +403,36 @@ export function useHubMarketplace({
     return () => window.clearTimeout(timer);
   }, [activeTab, marketplaceCategory, searchKeyword, fetchHubHomeSkills, fetchOnlineSearch]);
 
+  // 分组：skillpack → 精选技能包，swarmskill → 精选团队技能，其余 → 精选技能
+  // （搜索时取搜索结果；无搜索词时取首页推荐 + 全量技能包合并，保持互斥分桶）
+  const { teamSkills, featuredSkills, skillPacks } = useMemo(() => {
+    const team: MarketplacePluginItem[] = [];
+    const featured: MarketplacePluginItem[] = [];
+    const packs: MarketplacePluginItem[] = [];
+    const all = searchKeyword
+      ? hubSkills
+      : [...hubTeamHome, ...hubSkillHome, ...hubPackHome, ...hubPackMore];
+    for (const skill of all) {
+      if (skill.skill_type === 'skillpack' || skill.plugin_type === 'skillpack') {
+        packs.push(skill);
+      } else if (skill.plugin_type === 'swarmskill') {
+        team.push(skill);
+      } else {
+        featured.push(skill);
+      }
+    }
+    return { teamSkills: team, featuredSkills: featured, skillPacks: packs };
+  }, [searchKeyword, hubSkills, hubTeamHome, hubSkillHome, hubPackHome, hubPackMore]);
+
+  // 广场详情页签（内容详情 / 包含技能，仅技能包显示"包含技能"）
+  const [hubDetailTab, setHubDetailTab] = useState<'content' | 'members'>('content');
+
   const fetchHubSkillDetail = useCallback(
     async (skill: MarketplacePluginItem) => {
       setHubDetailState('loading');
       setMarketplaceSubView('detail');
+      // 每次进入详情 / 切换技能时重置回"内容详情"页签
+      setHubDetailTab('content');
       try {
         if (skill.source === 'clawhub') {
           setHubDetail({
@@ -427,17 +499,21 @@ export function useHubMarketplace({
     hubSkillHome,
     hubTeamMore,
     hubSkillMore,
-    /** 兼容旧命名：首页列表即 teamSkills / featuredSkills */
-    teamSkills: hubTeamHome,
-    featuredSkills: hubSkillHome,
+    /** 分组结果：skillpack → 技能包，swarmskill → 团队技能，其余 → 精选技能 */
+    teamSkills,
+    featuredSkills,
+    skillPacks,
     selectedHubSkill,
     hubDetail,
     hubDetailState,
+    hubDetailTab,
+    setHubDetailTab,
     setSelectedHubSkill,
     setHubDetail,
     setHubDetailState,
     fetchHubSkillDetail,
     openHubMore,
+    openHubAllPacks,
     invalidateHubFetch,
     pauseHubFetching,
   };
