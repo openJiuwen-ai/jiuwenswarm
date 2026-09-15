@@ -102,6 +102,11 @@ _LEGACY_TODO_TOOLS = {
 _SESSION_STATUS_TOOLS = {"session_list", "session_message_list"}
 _SESSION_SEND_TOOLS = {"session_send_message"}
 _SESSION_MESSAGE_MANAGEMENT_TOOLS = {"session_message_resolve"}
+_INTERNAL_READONLY_TOOLS = {
+    "cron_list_jobs", "cron_get_job", "cron_preview_job",
+    "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",
+    "read_terminal_output", "wait_for_terminal_exit", "convert_timestamp_to_utc8_time",
+}
 _ASK_USER_TOOLS = {"ask_user"}
 _SKILL_READ_TOOLS = {"skill_tool"}
 _SKILL_CHANGE_TOOLS = {"install_skill", "uninstall_skill"}
@@ -172,6 +177,7 @@ _STATIC_CANONICAL_TOOL_NAMES = frozenset(
     | _SESSION_STATUS_TOOLS
     | _SESSION_SEND_TOOLS
     | _SESSION_MESSAGE_MANAGEMENT_TOOLS
+    | _INTERNAL_READONLY_TOOLS
     | _ASK_USER_TOOLS
     | _SKILL_READ_TOOLS
     | _SKILL_CHANGE_TOOLS
@@ -237,6 +243,11 @@ def classify_tool(tool_name: str) -> ToolCapability:
     if resolution.conflict:
         return _capability(
             resolution, "unknown", "unknown", "unknown", set(), "high", True
+        )
+    if tool_name in _INTERNAL_READONLY_TOOLS and not resolution.aliases:
+        category = "cron" if lowered.startswith("cron_") else "task_management"
+        return _capability(
+            resolution, category, "internal_readonly", "internal_state", set(), "low", False
         )
     if lowered in _SHELL_TOOLS:
         return _capability(
