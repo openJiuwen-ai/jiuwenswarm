@@ -174,7 +174,8 @@ async def test_real_core_nested_permission_resume(tmp_path, case, target_name):
         func=lambda value: executed.append(value) or "done",
     )
     manager.add_ability(target.card, target)
-    progressive._authorize_discovered_tools(session, [target_name])
+    discovered = await progressive._search_tools(target_name, session=session)
+    assert any(tool["name"] == target_name for tool in discovered)
     calls = [
         ToolCall(
             id=f"outer-{i}", type="function", name="tool_call",
