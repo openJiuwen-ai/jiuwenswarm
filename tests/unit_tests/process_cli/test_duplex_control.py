@@ -779,6 +779,48 @@ async def test_unsupported_interaction_never_uses_legacy_harness_or_auto_answer(
 
 
 @pytest.mark.asyncio
+async def test_cancelled_control_reader_propagates_without_protocol_failure() -> None:
+    reader = QueueReader()
+    writer = OneShotWriter(io.StringIO(), request_id="reader-cancel")
+    control = DuplexController(reader, writer)
+    task = asyncio.create_task(control._read_controls())
+    try:
+        async with asyncio.timeout(1):
+            await reader.reading.wait()
+            task.cancel("reader stopped")
+            with pytest.raises(asyncio.CancelledError, match="reader stopped"):
+                await task
+        assert task.cancelled()
+        assert control.failure is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.close()
+
+
+@pytest.mark.asyncio
+async def test_cancelled_pump_propagates_and_closes_stream() -> None:
+    reader = QueueReader()
+    writer = OneShotWriter(io.StringIO(), request_id="pump-cancel")
+    control = DuplexController(reader, writer)
+    stream = QueueStream()
+    task = asyncio.create_task(control._pump("operation", stream))
+    try:
+        async with asyncio.timeout(1):
+            await stream.started.wait()
+            task.cancel("pump stopped")
+            with pytest.raises(asyncio.CancelledError, match="pump stopped"):
+                await task
+        assert task.cancelled()
+        assert stream.closed
+        assert control.failure is None
+    finally:
+        task.cancel()
+        await asyncio.gather(task, return_exceptions=True)
+        await reader.close()
+
+
+@pytest.mark.asyncio
 async def test_reader_failure_is_safe_and_does_not_leave_pump_tasks(
     run_factory,
 ) -> None:

@@ -123,8 +123,6 @@ class DuplexController:
                 self._add_stream(
                     answer.request_id, self._client.stream_interaction_answer(answer)
                 )
-        except asyncio.CancelledError:
-            raise
         except Exception as error:  # noqa: BLE001 - control input must stop owned execution
             code = getattr(error, "code", "INVALID_CONTROL")
             self._terminate(
@@ -173,8 +171,6 @@ class DuplexController:
             async for event in stream:
                 if not self._stopping_streams:
                     await self._queue.put(_StreamItem(operation_id, event=event))
-        except asyncio.CancelledError:
-            raise
         except Exception as caught:  # noqa: BLE001 - propagate through the consumer queue
             error = caught
         finally:
