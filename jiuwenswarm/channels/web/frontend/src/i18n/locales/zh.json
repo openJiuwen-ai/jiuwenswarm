@@ -1961,7 +1961,8 @@
     },
     "mySkillsGroups": {
       "added": "已添加技能",
-      "builtin": "内置技能"
+      "builtin": "内置技能",
+      "skillPack": "技能包"
     },
     "publishFilter": {
       "all": "全部",
@@ -1990,6 +1991,7 @@
     "noEnabledSkills": "暂无启用的技能",
     "noBuiltinSkills": "暂无内置技能",
     "setEnabledError": "设置技能启用状态失败",
+    "packBlockedHint": "技能包包含未安装的技能，请先在「包含技能」中安装后再启用",
     "setEnabledSuccess": "已启用技能 {name}",
     "setDisabledSuccess": "已禁用技能 {name}",
     "marketplaceTabs": {
@@ -2152,6 +2154,17 @@
     "featuredTeamSkills": "精选团队技能",
     "featuredSkills": "精选技能",
     "noMatches": "暂无匹配的技能",
+    "featuredSkillPacks": "精选技能包",
+    "allSkillPacks": "全部技能包",
+    "skillPackTag": "技能包",
+    "memberCountSuffix": "{{count}} 个技能",
+    "includedSkills": "包含技能",
+    "noPackMembers": "暂无包含技能",
+    "memberUnavailable": "不可用",
+    "memberBlockedReasonDisabled": "已禁用",
+    "memberBlockedReasonMissing": "文件缺失",
+    "memberBlockedReasonInvalid": "格式无效",
+    "memberBlockedReasonUninstalled": "已卸载",
     "viewMode": {
       "list": "列表模式",
       "grid": "平铺模式"
