@@ -86,10 +86,16 @@ def test_flash_progressive_tools_replace_deep_web_and_cron(monkeypatch) -> None:
     result = adapter._build_progressive_tool_rail({
         "tool_lazy_load": {
             "enabled": True,
-            "eager_tools": ["bash", "web_search", "fetch_webpage", "cron_create_job"],
+            "eager_tools": [
+                "bash",
+                "web_search",
+                "fetch_webpage",
+                "cron_create_job",
+                "cron_metrics",
+            ],
         },
     })
 
     assert result == "rail"
     eager = captured["tool_lazy_load"]["eager_tools"]
-    assert eager == ["bash", "web_flash", "cron_flash"]
+    assert eager == ["bash", "cron_metrics", "web_flash", "cron_flash"]

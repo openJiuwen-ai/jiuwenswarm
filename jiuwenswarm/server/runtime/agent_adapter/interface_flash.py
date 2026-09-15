@@ -51,6 +51,7 @@ from typing import Any
 
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
+    _CRON_TOOL_NAMES,
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
     _resolve_instance_config_base,
@@ -204,12 +205,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         eager_tools = list(configured) if isinstance(configured, list) else list(
             _DEFAULT_PROGRESSIVE_EAGER_TOOLS
         )
-        replaced_tool_names = {"web_search", "fetch_webpage", "cron"}
+        replaced_tool_names = {"web_search", "fetch_webpage"} | set(
+            _CRON_TOOL_NAMES
+        )
         retained_tools = []
         for name in eager_tools:
             if name in replaced_tool_names:
-                continue
-            if str(name).startswith("cron_"):
                 continue
             retained_tools.append(name)
         eager_tools = retained_tools

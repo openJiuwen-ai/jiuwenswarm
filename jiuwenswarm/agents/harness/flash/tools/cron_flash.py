@@ -653,10 +653,8 @@ def build_cron_flash_tool(
     language: str = "cn",
 ) -> LocalFunction:
     """构造 cron_flash 工具（单个 LocalFunction），合并公共后端的独立 cron 工具。"""
-    cron_context = context if isinstance(context, CronToolContext) or context is None else context
-
     async def _invoke(**kwargs: Any) -> Any:
-        return await _cron_dispatch(backend, cron_context, kwargs or {})
+        return await _cron_dispatch(backend, context, kwargs or {})
 
     tool_id = f"cron_flash_{agent_id}" if agent_id else "cron_flash_merged"
     style = _schema_style()

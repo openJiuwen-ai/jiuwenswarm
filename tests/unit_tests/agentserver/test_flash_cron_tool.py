@@ -6,6 +6,9 @@ import pytest
 from jsonschema import Draft202012Validator
 from jsonschema.exceptions import ValidationError
 
+from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
+    _CronToolsCronBackend,
+)
 from jiuwenswarm.agents.harness.flash.tools.cron_flash import (
     _cron_dispatch,
     _merged_cron_description,
@@ -14,6 +17,7 @@ from jiuwenswarm.agents.harness.flash.tools.cron_flash import (
     _translate_to_native,
     build_cron_flash_tool,
 )
+
 
 class _Backend:
     def __init__(self) -> None:
@@ -58,6 +62,24 @@ class _Backend:
     async def run_now(self, job_id):
         self.calls.append(("run", job_id))
         return "run-id"
+
+
+class _RouteCapturingCronTools:
+    def __init__(self) -> None:
+        self.routes = []
+        self.payloads = []
+        self.reset_tokens = []
+
+    def push_cron_route(self, route):
+        self.routes.append(route)
+        return "route-token"
+
+    def reset_cron_route(self, token):
+        self.reset_tokens.append(token)
+
+    async def create_job(self, payload):
+        self.payloads.append(payload)
+        return payload
 
 
 def test_description_is_default_and_not_duplicated(monkeypatch) -> None:
@@ -183,6 +205,38 @@ async def test_tool_card_validation_preserves_nested_schedule_fields() -> None:
         },
     })
     assert backend.calls[0][0] == "add"
+
+
+@pytest.mark.asyncio
+async def test_flat_create_passes_session_and_app_via_backend_route() -> None:
+    cron_tools = _RouteCapturingCronTools()
+    backend = _CronToolsCronBackend(cron_tools=cron_tools, message_handler=None)
+    context = SimpleNamespace(
+        channel_id="feishu",
+        session_id="session-1",
+        metadata={"request_id": "request-1", "app_id": "app-1"},
+        mode="flash",
+    )
+    tool = build_cron_flash_tool(
+        backend,
+        context=context,
+        agent_id="flash-agent",
+    )
+
+    await tool.invoke({
+        "add": {
+            "name": "report",
+            "schedule": {"kind": "cron", "expr": "0 0 9 * * ? *"},
+            "description": "write report",
+        },
+    })
+
+    route = cron_tools.routes[0]
+    assert route.channel_id == "feishu"
+    assert route.session_id == "session-1"
+    assert route.app_id == "app-1"
+    assert cron_tools.payloads[0]["mode"] == "agent"
+    assert cron_tools.reset_tokens == ["route-token"]
 
 
 def test_translate_at_and_timeout() -> None:
