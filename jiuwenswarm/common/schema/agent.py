@@ -84,6 +84,14 @@ class AgentRequest:
     # 创建者/调用者标识（envelope.user_id 透传）。AgentServer 据此回写会话
     # metadata.user_id，供 gateway 列表接口按用户隔离会话历史。默认空串向后兼容。
     user_id: str = ""
+    # AgentServer-only continuation context. Gateway payloads never populate
+    # this field; it carries mailbox lineage through an interrupt answer
+    # without changing the answer's model-visible user origin.
+    trusted_session_message_route: dict[str, Any] | None = field(
+        default=None,
+        repr=False,
+        compare=False,
+    )
 
 
 @dataclass
