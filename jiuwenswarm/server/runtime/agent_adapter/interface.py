@@ -1115,8 +1115,15 @@ class JiuWenSwarm:
             return {"sessions_root": self._sessions_dir}
         return {}
 
-    def _append_history_record(self, **kwargs: Any) -> None:
-        kwargs.update(self._history_kwargs())
+    def _append_history_record(self, *, request: Any | None = None, **kwargs: Any) -> None:
+        if kwargs.get("sessions_root") is None:
+            enterprise_root = self._history_kwargs().get("sessions_root")
+            if enterprise_root is not None:
+                kwargs["sessions_root"] = enterprise_root
+            elif request is not None:
+                from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
+
+                kwargs["sessions_root"] = _sessions_dir_for_request(request)
         append_history_record(**kwargs)
 
     def _append_ask_user_answered_history(
@@ -2530,6 +2537,7 @@ class JiuWenSwarm:
                                 else None
                             )
                             self._append_history_record(
+                                request=request,
                                 session_id=session_id,
                                 request_id=request.request_id,
                                 channel_id=request.channel_id,
@@ -2620,6 +2628,7 @@ class JiuWenSwarm:
         # history——否则刷新页面会显示"[主动推荐指令] xxx"这种用户没说过的消息。
         if _should_record_user_history(request.params):
             self._append_history_record(
+                request=request,
                 session_id=session_id,
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -2746,6 +2755,20 @@ class JiuWenSwarm:
                     return _duplicate_permission_response(request)
                 try:
                     return await adapter.process_message_impl(request, inputs)
+                except Exception as exc:
+                    # unary 任务异常：只记日志并返回 ok=False。
+                    # 错误落盘统一由下方 ``elif not result.ok`` 分支处理（当普通 assistant 回复写入）。
+                    logger.exception(
+                        "[JiuWenSwarm] unary 任务异常: request_id=%s session_id=%s error=%s",
+                        request.request_id, session_id, exc,
+                    )
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={"error": str(exc)},
+                        metadata=request.metadata,
+                    )
                 finally:
                     if permission_reservation is not None:
                         permission_reservation.complete()
@@ -2777,6 +2800,8 @@ class JiuWenSwarm:
                 )
                 if isinstance(content, str):
                     result.payload["content"] = content_str
+                from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
+
                 append_history_record(
                     session_id=session_id,
                     request_id=request.request_id,
@@ -2786,6 +2811,7 @@ class JiuWenSwarm:
                     content=content_str,
                     timestamp=time.time(),
                     mode=request.params.get("mode", "unknown"),
+                    sessions_root=_sessions_dir_for_request(request),
                 )
 
                 # cloud memory: after chat hook
@@ -2807,6 +2833,22 @@ class JiuWenSwarm:
                 config = get_config()
                 if is_auto_memory_enabled(mode, config) and is_memory_enabled(mode, config):
                     _trigger_auto_memory_extraction(adapter, request, session_id, is_stream=False)
+            elif not result.ok and is_enterprise():
+                # 失败时也当普通 assistant 回复追加进历史（event_type=chat.final），
+                # 与成功回复走同一条历史恢复链路，刷新后即可在前端看到错误提示。
+                err = None
+                if isinstance(result.payload, dict):
+                    err = result.payload.get("error") or result.payload.get("message")
+                append_history_record(
+                    session_id=session_id,
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    role="assistant",
+                    event_type="chat.final",
+                    content=str(err or "任务执行失败"),
+                    timestamp=time.time(),
+                    mode=request.params.get("mode", "unknown"),
+                )
 
             _schedule_symphony_session_feedback(session_id, request.request_id)
             await self._try_apply_adapter_pending_reload()
@@ -2959,6 +3001,7 @@ class JiuWenSwarm:
             and _should_record_user_history(params_for_history)
         ):
             self._append_history_record(
+                request=request,
                 session_id=session_id,
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -3151,6 +3194,7 @@ class JiuWenSwarm:
             if not pending_text or pending_text == durable_final_content:
                 return
             self._append_history_record(
+                request=request,
                 session_id=session_id,
                 request_id=rid,
                 channel_id=cid,
@@ -3300,6 +3344,7 @@ class JiuWenSwarm:
                     if error_type:
                         error_payload["error_type"] = error_type
                     self._append_history_record(
+                        request=request,
                         session_id=session_id,
                         request_id=rid,
                         channel_id=cid,
@@ -3500,6 +3545,7 @@ class JiuWenSwarm:
                                     if pk not in extra_fields and pk in request.params:
                                         extra_fields[pk] = request.params[pk]
                                 self._append_history_record(
+                                    request=request,
                                     session_id=session_id,
                                     request_id=rid,
                                     channel_id=cid,
@@ -3681,6 +3727,7 @@ class JiuWenSwarm:
                                 if pk not in extra_fields and pk in request.params:
                                     extra_fields[pk] = request.params[pk]
                             self._append_history_record(
+                                request=request,
                                 session_id=session_id,
                                 request_id=rid,
                                 channel_id=cid,
@@ -3748,6 +3795,7 @@ class JiuWenSwarm:
                 finalized_assistant_message != assistant_message or suppress_a2ui_stream
         ):
             self._append_history_record(
+                request=request,
                 session_id=session_id,
                 request_id=rid,
                 channel_id=cid,

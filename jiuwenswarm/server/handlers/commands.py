@@ -178,11 +178,15 @@ async def handle_command_workflows(ctx: RequestContext) -> None:
         # terminal workflow runs remain queryable after the team session
         # is cancelled or stopped.
         try:
+            from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import (
                 restore_workflow_runs,
             )
 
-            restored = restore_workflow_runs(session_id)
+            restored = restore_workflow_runs(
+                session_id,
+                sessions_root=_sessions_dir_for_request(request),
+            )
             workflows = (
                 [run.to_workflow_run_dict() for run in restored.values()]
                 if restored

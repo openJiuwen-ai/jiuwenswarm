@@ -42,9 +42,11 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
             session_id: str,
             channel_id: Optional[str] = None,
             initial_runs: Optional[dict[str, WorkflowRunState]] = None,
+            sessions_root: str | None = None,
     ) -> None:
         super().__init__(monitor, session_id)
         self._channel_id = channel_id
+        self._sessions_root = sessions_root
         self._runs: dict[str, WorkflowRunState] = dict(initial_runs or {})
 
     # ------------------------------------------------------------------
@@ -156,7 +158,11 @@ class WorkflowMonitorHandler(BaseMonitorHandler):
     def _persist(self) -> None:
         try:
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import persist_workflow_runs
-            persist_workflow_runs(self._runs, self._session_id)
+            persist_workflow_runs(
+                self._runs,
+                self._session_id,
+                sessions_root=self._sessions_root,
+            )
         except Exception as e:
             logger.warning("[WorkflowMonitorHandler] checkpoint persist failed: %s", e)
 

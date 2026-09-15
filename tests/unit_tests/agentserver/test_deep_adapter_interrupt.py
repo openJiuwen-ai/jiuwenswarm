@@ -226,7 +226,11 @@ async def test_team_stream_binds_a2a_resource_context(
     monkeypatch.setattr(interface_deep, "set_perf_summary_context", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(interface_deep, "finalize_perf_summary_request", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(interface_deep, "clear_perf_summary_context", lambda *_args, **_kwargs: None)
-    monkeypatch.setattr(interface_deep, "resolve_tenant_sessions_dir", lambda _key: Path("."))
+    monkeypatch.setattr(
+        interface_deep,
+        "resolve_tenant_sessions_dir",
+        lambda _key, *, service_id=None, agent_id=None: Path("."),
+    )
     monkeypatch.setattr(interface_deep, "evolution_slash_command_name", lambda _query: None)
     monkeypatch.setattr(
         tenant_agent_pool.TenantAgentPool,

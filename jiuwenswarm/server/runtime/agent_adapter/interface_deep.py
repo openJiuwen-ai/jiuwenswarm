@@ -2149,9 +2149,9 @@ class JiuWenSwarmDeepAdapter:
     ) -> None:
         # Apply the MCP per-call timeout patch once per process: wraps
         # StreamableHttpClient/SseClient.call_tool & list_tools in
-        # asyncio.wait_for and honors config ``timeout_s`` (--timeout_s), so a
-        # killed remote MCP server fails fast instead of hanging on the MCP
-        # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
+        # asyncio.wait_for and honors config ``timeout_s`` (--timeout_s). On
+        # timeout the session is force-invalidated so the next call can
+        # reconnect (TC_MCP_CALL_014). Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
@@ -17369,7 +17369,11 @@ class JiuWenSwarmDeepAdapter:
                 )
                 team_stream_kwargs = {
                     "config_base": self._config_base_cache,
-                    "sessions_root": resolve_tenant_sessions_dir(workspace_key),
+                    "sessions_root": resolve_tenant_sessions_dir(
+                        workspace_key,
+                        service_id=_tenant_service_id,
+                        agent_id=_tenant_agent_id,
+                    ),
                 }
                 if (
                     evolution_slash_command_name(str(inputs.get("query") or ""))

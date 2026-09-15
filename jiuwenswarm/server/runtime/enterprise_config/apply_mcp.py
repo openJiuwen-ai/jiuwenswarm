@@ -73,6 +73,9 @@ def mcp_entity_to_server_entry(entity: dict[str, Any]) -> dict[str, Any] | None:
     normalized["name"] = name
     transport = str(normalized.get("transport", "")).strip().lower()
     if transport:
+        # 与 build_mcp_server_config / SDK 对齐：http 是 streamable-http 别名
+        if transport in {"http", "streamable_http"}:
+            transport = "streamable-http"
         normalized["transport"] = transport
     # 运行时 servers[] 仍需要 enabled 字段；企业侧开关已由模板行决定
     normalized["enabled"] = True

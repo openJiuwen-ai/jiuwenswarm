@@ -29,6 +29,7 @@ from openjiuwen.harness.rails import (
     TeamSkillEvolutionRail,
 )
 from jiuwenswarm.agents.harness.team.bootstrap import configure_agent_teams_home
+from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.utils import get_user_workspace_dir
 
@@ -675,6 +676,124 @@ class TeamManager:
         return TeamAgentSpec.model_validate(spec_dict)
 
     @staticmethod
+    def _find_session_binding(session_id: str):
+        """Look up the global session→team binding, fail-open on store errors."""
+        try:
+            from jiuwenswarm.server.runtime.team_binding_store import (
+                get_team_binding_store,
+            )
+
+            return get_team_binding_store().find_by_session(session_id)
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[TeamManager] team binding store lookup failed: "
+                "session_id=%s: %s",
+                session_id,
+                exc,
+            )
+            return None
+
+    @staticmethod
+    def _metadata_matches_session_binding(
+        team_name: str,
+        template_id: str,
+        runtime_team_name: str,
+        binding,
+        session_id: str,
+    ) -> bool:
+        entity = str(getattr(binding, "team_name", "") or "").strip()
+        if not entity or not team_name:
+            return False
+        if team_name != entity:
+            return False
+        binding_template_id = str(getattr(binding, "template_id", "") or "").strip()
+        if binding_template_id and template_id and template_id != binding_template_id:
+            return False
+        expected_runtime = TeamManager.build_session_scoped_team_name(
+            entity,
+            session_id,
+        )
+        if runtime_team_name and runtime_team_name not in {expected_runtime, entity}:
+            return False
+        return True
+
+    @staticmethod
+    def _persist_session_team_binding_fields(
+        session_id: str,
+        *,
+        team_name: str,
+        runtime_team_name: str,
+        template_id: str,
+        sessions_root: str | Path | None = None,
+    ) -> None:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            update_session_metadata,
+        )
+
+        update_session_metadata(
+            session_id=session_id,
+            team_name=team_name,
+            runtime_team_name=runtime_team_name,
+            team_template_id=template_id,
+            touch_last_message_at=False,
+            sync=True,
+            sessions_root=sessions_root,
+        )
+
+    @staticmethod
+    def _reconcile_team_identity_from_binding(
+        session_id: str,
+        *,
+        binding,
+        team_name: str,
+        runtime_team_name: str,
+        template_id: str,
+        sessions_root: str | Path | None = None,
+    ) -> tuple[str, str, str] | None:
+        """Apply binding-store authority when metadata is missing or polluted."""
+        entity = str(getattr(binding, "team_name", "") or "").strip()
+        binding_template_id = str(getattr(binding, "template_id", "") or "").strip()
+        if not entity:
+            return None
+        if TeamManager._metadata_matches_session_binding(
+            team_name,
+            template_id,
+            runtime_team_name,
+            binding,
+            session_id,
+        ):
+            return None
+        expected_runtime = TeamManager.build_session_scoped_team_name(
+            entity,
+            session_id,
+        )
+        reconciled_template_id = binding_template_id or template_id
+        try:
+            TeamManager._persist_session_team_binding_fields(
+                session_id,
+                team_name=entity,
+                runtime_team_name=expected_runtime,
+                template_id=reconciled_template_id,
+                sessions_root=sessions_root,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[TeamManager] team binding metadata heal failed (non-fatal): "
+                "session_id=%s team_name=%s: %s",
+                session_id,
+                entity,
+                exc,
+            )
+        logger.info(
+            "[TeamManager] reconciled session team identity from binding store: "
+            "session_id=%s team_name=%s template_id=%s",
+            session_id,
+            entity,
+            reconciled_template_id,
+        )
+        return entity, expected_runtime, reconciled_template_id
+
+    @staticmethod
     def _lookup_bound_team_identity(
         session_id: str,
         *,
@@ -688,18 +807,18 @@ class TeamManager:
         team_name = str(metadata.get("team_name") or "").strip()
         runtime_team_name = resolve_session_runtime_team_name(metadata)
         template_id = str(metadata.get("team_template_id") or "").strip()
-        if not team_name:
-            # Session metadata may live under a tenant sessions root that the
-            # bind path did not write to (handlers vs runtime resolve the root
-            # at different ContextVar binding moments). The binding store is
-            # the authoritative session→team record and is global, so recover
-            # from it before falling back to defaults.
-            recovered = TeamManager._recover_torn_team_binding(
+        binding = TeamManager._find_session_binding(session_id)
+        if binding is not None:
+            reconciled = TeamManager._reconcile_team_identity_from_binding(
                 session_id,
+                binding=binding,
+                team_name=team_name,
+                runtime_team_name=runtime_team_name,
+                template_id=template_id,
                 sessions_root=sessions_root,
             )
-            if recovered is not None:
-                team_name, runtime_team_name, template_id = recovered
+            if reconciled is not None:
+                team_name, runtime_team_name, template_id = reconciled
         template_snapshot = get_session_team_template_snapshot(
             session_id,
             sessions_root=sessions_root,
@@ -778,64 +897,17 @@ class TeamManager:
         Returns:
             ``(team_name, runtime_team_name, template_id)`` or ``None``.
         """
-        try:
-            from jiuwenswarm.server.runtime.team_binding_store import (
-                get_team_binding_store,
-            )
-
-            binding = get_team_binding_store().find_by_session(session_id)
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[TeamManager] team binding store lookup failed: "
-                "session_id=%s: %s",
-                session_id,
-                exc,
-            )
-            return None
+        binding = TeamManager._find_session_binding(session_id)
         if binding is None:
             return None
-        team_name = str(binding.team_name or "").strip()
-        template_id = str(binding.template_id or "").strip()
-        if not team_name:
-            return None
-        runtime_team_name = TeamManager.build_session_scoped_team_name(
-            team_name,
+        return TeamManager._reconcile_team_identity_from_binding(
             session_id,
+            binding=binding,
+            team_name="",
+            runtime_team_name="",
+            template_id="",
+            sessions_root=sessions_root,
         )
-        # Self-heal: re-persist the binding into the metadata root this
-        # request reads. Non-fatal on failure — this request already builds
-        # from the recovered values; the heal only benefits later turns.
-        try:
-            from jiuwenswarm.server.runtime.session.session_metadata import (
-                update_session_metadata,
-            )
-
-            update_session_metadata(
-                session_id=session_id,
-                team_name=team_name,
-                runtime_team_name=runtime_team_name,
-                team_template_id=template_id,
-                touch_last_message_at=False,
-                sync=True,
-                sessions_root=sessions_root,
-            )
-        except Exception as exc:  # noqa: BLE001
-            logger.warning(
-                "[TeamManager] team binding metadata heal failed (non-fatal): "
-                "session_id=%s team_name=%s: %s",
-                session_id,
-                team_name,
-                exc,
-            )
-        logger.info(
-            "[TeamManager] recovered team binding from binding store "
-            "(session metadata carried none): session_id=%s team_name=%s "
-            "template_id=%s",
-            session_id,
-            team_name,
-            template_id,
-        )
-        return team_name, runtime_team_name, template_id
 
     def _load_session_team_spec(
         self,
@@ -1341,26 +1413,29 @@ class TeamManager:
         self,
         session_id: str,
         deep_agent: DeepAgent,
-        request_id: str | None = None,
-        channel_id: str | None = None,
-        request_metadata: dict[str, Any] | None = None,
+        *,
+        params: TeamBootstrapParams | None = None,
     ) -> TeamAgent:
         """Build an auxiliary TeamAgent for distributed teammate bootstrap.
 
         Local leader requests are built and owned by Runner's TeamRuntimePool;
         they must not use this cache.
         """
+        bootstrap = params or TeamBootstrapParams()
         config_base = get_config()
         await self._ensure_postgresql_for_leader(config_base)
         logger.info("[TeamManager] building TeamAgentSpec: session_id=%s", session_id)
-        spec, has_binding = self._load_session_team_spec(session_id)
+        load_kwargs: dict[str, Any] = {}
+        if bootstrap.sessions_root is not None:
+            load_kwargs["sessions_root"] = bootstrap.sessions_root
+        spec, has_binding = self._load_session_team_spec(session_id, **load_kwargs)
         if not has_binding:
             self._apply_session_scoped_team_name(
                 spec,
                 session_id=session_id,
             )
 
-        resolved_mode = str((request_metadata or {}).get("mode") or "").strip()
+        resolved_mode = str((bootstrap.request_metadata or {}).get("mode") or "").strip()
         # Provider-based assembly: source every member capability from the shared
         # config source, no pre-built parent DeepAgent / customizer. Mirrors
         # get_swarm_enriched_team_spec so a team rebuilt here (e.g. the distributed
@@ -1368,15 +1443,15 @@ class TeamManager:
         # serializable build_context_seed.
         from jiuwenswarm.agents.swarm import enrich_team_spec_for_swarm
 
-        self.apply_team_plan_mode(spec, request_metadata=request_metadata)
+        self.apply_team_plan_mode(spec, request_metadata=bootstrap.request_metadata)
         enrich_team_spec_for_swarm(
             spec,
             session_id=session_id,
             mode=resolved_mode,
-            project_dir=(request_metadata or {}).get("project_dir"),
-            request_id=request_id,
-            channel_id=channel_id,
-            request_metadata=request_metadata,
+            project_dir=(bootstrap.request_metadata or {}).get("project_dir"),
+            request_id=bootstrap.request_id,
+            channel_id=bootstrap.channel_id,
+            request_metadata=bootstrap.request_metadata,
         )
 
         logger.info("[TeamManager] TeamAgentSpec ready: team_name=%s", spec.team_name)
@@ -1385,7 +1460,7 @@ class TeamManager:
         try:
             logger.info("[TeamManager] creating TeamAgent from spec")
             team_agent = spec.build()
-            team_agent.channel_id = channel_id  # 记录 channel，供 _destroy_other_sessions 按 channel 隔离
+            team_agent.channel_id = bootstrap.channel_id  # 记录 channel，供 _destroy_other_sessions 按 channel 隔离
             self._team_agents[session_id] = team_agent
             # After build, initialize team shared skill links.
             self.ensure_team_shared_skills_ready_for_session(session_id, spec)
@@ -1403,27 +1478,28 @@ class TeamManager:
                     attach_distributed_local_spawn_guard(
                         team_agent,
                         session_id=session_id,
-                        channel_id=channel_id,
+                        channel_id=bootstrap.channel_id,
                     )
                     attach_build_team_post_tool_registration_hook(
                         team_agent,
                         session_id=session_id,
-                        channel_id=channel_id,
+                        channel_id=bootstrap.channel_id,
                     )
                     attach_shutdown_member_remote_cleanup_wrapper(
                         team_agent,
                         session_id=session_id,
-                        channel_id=channel_id,
+                        channel_id=bootstrap.channel_id,
+                        sessions_root=bootstrap.sessions_root,
                     )
                     attach_clean_team_distributed_teardown_wrapper(
                         team_agent,
                         session_id=session_id,
-                        channel_id=channel_id,
+                        channel_id=bootstrap.channel_id,
                     )
                     attach_remote_bootstrap_ack_listener(
                         team_agent,
                         session_id=session_id,
-                        channel_id=channel_id,
+                        channel_id=bootstrap.channel_id,
                     )
                 except Exception as exc:
                     logger.warning(
@@ -1443,9 +1519,8 @@ class TeamManager:
         self,
         session_id: str,
         deep_agent: DeepAgent,
-        request_id: str | None = None,
-        channel_id: str | None = None,
-        request_metadata: dict[str, Any] | None = None,
+        *,
+        params: TeamBootstrapParams | None = None,
     ) -> TeamAgent:
         """Return the distributed bootstrap TeamAgent for a session.
 
@@ -1458,13 +1533,12 @@ class TeamManager:
             if team_agent is not None:
                 return team_agent
 
-            await self._destroy_other_sessions(session_id, channel_id)
+            bootstrap = params or TeamBootstrapParams()
+            await self._destroy_other_sessions(session_id, bootstrap.channel_id)
             return await self.create_team(
                 session_id,
                 deep_agent,
-                request_id,
-                channel_id,
-                request_metadata,
+                params=bootstrap,
             )
 
     async def interact(self, session_id: str, user_input: Any) -> tuple[bool, str | None]:
