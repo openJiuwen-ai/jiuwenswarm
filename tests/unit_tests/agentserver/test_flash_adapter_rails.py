@@ -65,9 +65,12 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         _info("_disabled_tools_rail"),          # PROTECTED only
         _info("_skill_rail"),                   # in KEEP (skill execution)
         _info("_skill_credential_injection_rail"),  # in KEEP
+        _info("_skill_active_state_rail"),      # in KEEP（本仓决策：技能链对等保留）
+        _info("_skill_authorization_rail"),     # in KEEP（本仓决策：授权门禁保留）
+        _info("_memory_rail"),                  # in KEEP（本仓决策：统一 memory 工具）
         _info("_ask_user_rail"),                # in KEEP (interactive dynamic mount)
         _info("_context_assemble_rail"),        # neither (dynamic reg target)
-        _info("_memory_rail"),                  # neither (dynamic reg target)
+        _info("_external_memory_rail"),         # neither (dynamic reg target)
         _info("_symphony_orchestration_rail"),  # neither
     ]
 
@@ -80,6 +83,9 @@ def test_keep_whitelist_keeps_protected_and_drops_others():
         "_disabled_tools_rail",
         "_skill_rail",
         "_skill_credential_injection_rail",
+        "_skill_active_state_rail",
+        "_skill_authorization_rail",
+        "_memory_rail",
         "_ask_user_rail",
     }
 
@@ -138,11 +144,12 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
 
     # Simulate rails a prior reload / parent path may have registered. None of
     # these are in the flash whitelist, so the override must unregister each.
-    # (``_ask_user_rail`` is NOT here — it is whitelisted (#4 corrected), so the
-    # drop skips it and _set_user_interaction_enabled owns its lifecycle.)
+    # (``_ask_user_rail`` and ``_memory_rail`` are NOT here — both are
+    # whitelisted (#4 corrected / unified-memory design), so the drop skips
+    # them; ask_user's lifecycle is owned by _set_user_interaction_enabled,
+    # memory's by _handle_memory_rail_by_config via the agent-profile gate.)
     leaked = {
         "_context_assemble_rail": SimpleNamespace(name="context_assemble"),
-        "_memory_rail": SimpleNamespace(name="memory"),
         "_external_memory_rail": SimpleNamespace(name="external_memory"),
         "_skill_create_rail": SimpleNamespace(name="skill_create"),
     }
@@ -152,13 +159,21 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     unregister = AsyncMock()
     adapter._instance = SimpleNamespace(unregister_rail=unregister)
     # Whitelisted rails set to a sentinel must be left untouched — including
-    # _ask_user_rail (kept, so dropped-skip applies to it too).
+    # _ask_user_rail (kept, so dropped-skip applies to it too) and _memory_rail
+    # (kept; flash mounts the unified memory rail itself before the drop).
     adapter._task_planning_rail = SimpleNamespace(name="keep-me")
     adapter._context_processor_rail = SimpleNamespace(name="keep-me-2")
     adapter._skill_rail = SimpleNamespace(name="keep-me-skill")
     adapter._ask_user_rail = SimpleNamespace(name="keep-me-ask-user")
+    adapter._memory_rail = SimpleNamespace(name="keep-me-memory")
 
-    await adapter._update_rails_for_mode("flash")
+    # 统一 memory 工具的挂/卸走 agent 档闸门，这里 mock 掉以隔离 drop 逻辑本身。
+    handle_memory = AsyncMock()
+    with pytest.MonkeyPatch.context() as mp:
+        mp.setattr(adapter, "_handle_memory_rail_by_config", handle_memory)
+        await adapter._update_rails_for_mode("flash")
+
+    handle_memory.assert_awaited_once_with("agent")
 
     # Each leaked rail was unregistered exactly once; whitelisted rails were not.
     unregistered = [call.args[0] for call in unregister.call_args_list]
@@ -168,6 +183,7 @@ async def test_update_rails_for_mode_drops_non_whitelist_dynamic_rails():
     assert adapter._context_processor_rail is not None
     assert adapter._skill_rail is not None
     assert adapter._ask_user_rail is not None  # kept, not churned
+    assert adapter._memory_rail is not None  # kept, not churned
     assert all(getattr(adapter, a) is None for a in leaked)
 
     assert unregister.await_count == len(leaked)
