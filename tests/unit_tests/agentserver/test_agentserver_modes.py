@@ -171,7 +171,18 @@ async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_term
         (None, ("agent", None, "agent")),
     ],
 )
-def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, expected):
+def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(
+    raw_mode, expected, monkeypatch
+):
+    # Isolate mode normalization from the flash.enabled config switch: the
+    # user's ~/.jiuwenswarm config may have flash.enabled=true (which rewrites
+    # agent→flash). These cases assert pure normalization (plan→agent etc.),
+    # independent of that switch, so force it off.
+    import jiuwenswarm.server.handlers._shared as _shared
+
+    monkeypatch.setattr(
+        _shared, "get_config", lambda: {"flash": {"enabled": False}}
+    )
     assert agent_ws_server_module.resolve_agent_request_mode(raw_mode) == expected
 
 
@@ -185,10 +196,15 @@ def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, e
     ],
 )
 def test_resolve_agent_request_mode_aligns_single_agent_with_work_mode(
-    raw_mode,
-    work_mode,
-    expected,
+    raw_mode, work_mode, expected, monkeypatch
 ):
+    # Same flash-switch isolation as above (work_mode=work hits the
+    # agent-or-flash exit, which must resolve to "agent" with the switch off).
+    import jiuwenswarm.server.handlers._shared as _shared
+
+    monkeypatch.setattr(
+        _shared, "get_config", lambda: {"flash": {"enabled": False}}
+    )
     assert agent_ws_server_module.resolve_agent_request_mode(
         raw_mode,
         work_mode=work_mode,
