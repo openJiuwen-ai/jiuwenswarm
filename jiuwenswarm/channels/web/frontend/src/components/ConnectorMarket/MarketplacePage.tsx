@@ -539,14 +539,13 @@ export function MarketplacePage({
               : filteredPlugins.map((pkg) => {
                   const pluginInstalled = !!installed[pkg.id];
                   const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-                  // plugin_packages.list 不下发 avatar（只有 show 详情才有），卡片层级没有真实图标
-                  // 可用，不传 iconUrl，EntityAvatar 会直接走生成的首字符色块。
                   return (
                     <MyMarketCard
                       key={pkg.id}
                       title={localizedText(pkg.displayName, i18n.language)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
+                      iconUrl={pkg.avatar || undefined}
                       state={derivePluginCardState(pluginInstalled, pluginConnected)}
                       onOpenDetail={() => onOpenPluginDetail(pkg.id)}
                       onUse={() => onUse({ kind: 'plugin', id: pkg.runtimePackageName })}
@@ -591,6 +590,7 @@ export function MarketplacePage({
                       title={localizedText(pkg.displayName, i18n.language)}
                       description={localizedText(pkg.displayDescription, i18n.language)}
                       avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
+                      iconUrl={pkg.avatar || undefined}
                       state={derivePluginCardState(pluginInstalled, pluginConnected)}
                       canOpenDetail
                       onOpenDetail={() => onOpenPluginDetail(pkg.id)}

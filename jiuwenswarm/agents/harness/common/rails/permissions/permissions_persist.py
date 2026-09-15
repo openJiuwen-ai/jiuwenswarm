@@ -374,7 +374,11 @@ def persist_cli_trusted_directory_with_overrides(raw_path: str) -> dict[str, Any
             overrides = _ensure_approval_overrides_list(permissions)
             # 写回 list（_ensure 可能过滤）
             permissions["approval_overrides"] = overrides
-            shell_tools = sorted({"bash", "mcp_exec_command", "create_terminal"})
+            from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
+                shell_tool_names,
+            )
+
+            shell_tools = shell_tool_names()
             _append_override_if_missing(
                 overrides,
                 oid=shell_override_id,

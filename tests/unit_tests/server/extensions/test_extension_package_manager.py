@@ -1153,6 +1153,42 @@ class TestListShowAndFileRead:
         assert shown is not None
         assert shown["details"] == "README detail"
 
+    def test_plugin_list_and_show_inline_manifest_avatar(
+        self, extension_workspace: Path
+    ) -> None:
+        pkg = seed_package(
+            extension_workspace,
+            PLUGIN_PACKAGES,
+            "avatar-plugin",
+            extra_manifest={
+                "display_name": {"zh": "头像插件", "en": "Avatar Plugin"},
+                "avatar": "avatars/avatar.png",
+            },
+        )
+        avatar_dir = pkg / "avatars"
+        avatar_dir.mkdir()
+        png = bytes.fromhex(
+            "89504e470d0a1a0a0000000d49484452000000010000000108060000001f15c489"
+            "0000000a49444154789c63000100000500010d0a2db40000000049454e44ae426082"
+        )
+        (avatar_dir / "avatar.png").write_bytes(png)
+        listed = next(
+            card for card in catalog.list_plugin_packages() if card["id"] == "avatar-plugin"
+        )
+        assert listed["avatar"].startswith("data:image/png;base64,")
+        shown = catalog.show_plugin_package("avatar-plugin")
+        assert shown is not None
+        assert shown["avatar"] == listed["avatar"]
+
+    def test_plugin_list_empty_avatar_when_manifest_omits_it(
+        self, extension_workspace: Path
+    ) -> None:
+        seed_package(extension_workspace, PLUGIN_PACKAGES, "plain-plugin")
+        listed = next(
+            card for card in catalog.list_plugin_packages() if card["id"] == "plain-plugin"
+        )
+        assert listed["avatar"] == ""
+
     def test_show_plugin_without_readme_keeps_empty_details(
         self, extension_workspace: Path
     ) -> None:

@@ -1,4 +1,5 @@
 import asyncio
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -8,6 +9,7 @@ from openjiuwen.harness.rails.security.tool_security_rail import (
 )
 from openjiuwen.harness.security import PermissionLevel
 
+from jiuwenswarm.common import projectless_workspace
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     apply_permission_trusted_dirs,
 
@@ -15,6 +17,7 @@ from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import 
     build_permission_rail,
     convert_interactions_to_ask_user_question,
     merge_permission_trusted_dirs,
+    resolve_permission_workspace_dir,
 )
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -27,6 +30,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail im
 )
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import (
     PermissionInterruptRequest,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_decision_facts import (
     build_tool_decision_facts,
@@ -49,7 +55,7 @@ def test_permission_builder_defaults_to_develop_manual_rail() -> None:
     )
 
     assert isinstance(rail, PermissionInterruptRail)
-    assert type(rail) is PermissionInterruptRail
+    assert type(rail) is JiuwenSwarmPermissionInterruptRail
     assert not isinstance(rail, AutoPermissionInterruptRail)
 
 
@@ -1090,6 +1096,31 @@ def test_permission_rail_workspace_uses_session_dir():
     assert resolved == expected
     assert resolved != get_workspace_dir().resolve()
     assert resolved != get_agent_workspace_dir().resolve()
+
+
+def test_resolve_permission_workspace_dir_prefers_projectless_registry(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tasks_dir = tmp_path / "tasks"
+    registry_dir = tmp_path / "registry"
+    task_root = tasks_dir / "2026-09-04" / "chat-1"
+    task_root.mkdir(parents=True)
+    session_id = "web_projectless_permission"
+    safe_session = projectless_workspace.slugify(session_id, fallback="default")
+    registry_dir.mkdir()
+    (registry_dir / f"{safe_session}.json").write_text(
+        json.dumps({"root_dir": str(task_root)}),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(tasks_dir))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(registry_dir))
+
+    resolved = resolve_permission_workspace_dir(session_id).resolve()
+    fallback = get_default_project_session_workspace_dir(session_id).resolve()
+
+    assert resolved == task_root.resolve()
+    assert resolved != fallback
 
 
 def test_permission_rail_workspace_without_session_uses_projects_root():

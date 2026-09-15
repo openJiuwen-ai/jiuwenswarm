@@ -75,6 +75,10 @@ class ToolCapability:
 
 
 _SHELL_TOOLS = {"bash", "cmd", "powershell", "mcp_exec_command", "create_terminal"}
+
+
+def shell_tool_names() -> list[str]:
+    return sorted(_SHELL_TOOLS)
 _CODE_TOOLS = {"code"}
 _PATH_TOOLS = {
     "apply_patch",

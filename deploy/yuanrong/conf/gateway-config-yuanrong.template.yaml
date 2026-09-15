@@ -698,6 +698,9 @@ permissions:
   enabled: false
   schema: tiered_policy
   permission_mode: normal
+  shell_guard:
+    unknown_structure: false
+    interpreter_sink: false
 
   defaults:
     "*": "allow"
@@ -895,22 +898,6 @@ permissions:
     - id: shell_ask_erase
       tools: [bash, powershell, mcp_exec_command, create_terminal]
       pattern: "erase *"
-      severity: HIGH
-    - id: shell_ask_mv
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "mv *"
-      severity: HIGH
-    - id: shell_ask_cp
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "cp *"
-      severity: HIGH
-    - id: shell_ask_chmod
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chmod *"
-      severity: HIGH
-    - id: shell_ask_chown
-      tools: [bash, powershell, mcp_exec_command, create_terminal]
-      pattern: "chown *"
       severity: HIGH
     - id: shell_ask_sensitive_file_reads
       tools: [bash, powershell, mcp_exec_command, create_terminal]

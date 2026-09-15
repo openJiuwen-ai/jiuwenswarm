@@ -20,6 +20,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions import permissions_laye
 from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import PermissionInterruptRequest
 from jiuwenswarm.agents.harness.common.rails.permissions.auto_permission_rail import AutoPermissionInterruptRail
 from jiuwenswarm.agents.harness.common.rails.permissions.permission_compose import compose_host_effective_permissions
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
+)
 from jiuwenswarm.agents.harness.common.rails.stream_event_rail import JiuSwarmStreamEventRail
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
@@ -153,7 +156,8 @@ async def test_manual_smart_manual_replaces_complete_registered_group(lifecycle,
     assert adapter._model is model and adapter._sys_operation is sysop
     h.change("manual")
     await h.reload()
-    assert type(adapter._permission_rail) is PermissionInterruptRail
+    assert type(adapter._permission_rail) is JiuwenSwarmPermissionInterruptRail
+    assert isinstance(adapter._permission_rail, PermissionInterruptRail)
     assert adapter._permission_state.permission_epoch is None and not adapter._enable_auto_permission
     assert adapter._stream_event_rail._root_permission_queue is None
     assert adapter._ask_user_rail._strict_continuation_contract is False

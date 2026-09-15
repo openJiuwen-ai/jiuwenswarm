@@ -312,9 +312,11 @@ export function ExtensionPickerPanel({ onClose, panelRef, direction }: Extension
                 data-testid="chat-panel-extension-picker-item"
                 data-variant={marketplaceId}
               >
-                <div className="chat-skill-select__avatar" style={avatar.style}>
-                  {avatar.firstChar}
-                </div>
+                <EntityAvatar
+                  iconUrl={pkg.avatar || undefined}
+                  avatar={avatar}
+                  className="chat-skill-select__avatar"
+                />
                 <ItemDescCell text={desc} handlers={tooltipHandlers}>
                   <div className="chat-skill-select__item-name">{label}</div>
                 </ItemDescCell>
