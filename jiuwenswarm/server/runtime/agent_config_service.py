@@ -278,21 +278,22 @@ class AgentConfigService:
                 f"Agent 名称格式无效: '{name}'。要求 3-50 字符，仅允许字母、数字、连字符、下划线"
             )
 
-        existing = self.get_agent(params.name)
+        existing = self.get_agent(name)
         if existing is not None and existing.source == "builtin":
-            raise ValueError(f"不能覆盖内置 agent: {params.name}")
+            raise ValueError(f"不能覆盖内置 agent: {name}")
 
         target_dir = self._resolve_location_dir(params.location)
         target_dir.mkdir(parents=True, exist_ok=True)
-        file_path = target_dir / f"{params.name}.md"
+        file_path = target_dir / f"{name}.md"
 
+        params.name = name
         content = _format_agent_file(params)
         file_path.write_text(content, encoding="utf-8")
 
-        logger.info("Created agent '%s' at %s", params.name, file_path)
+        logger.info("Created agent '%s' at %s", name, file_path)
 
         return AgentDefinition(
-            name=params.name,
+            name=name,
             description=params.description,
             prompt=params.prompt,
             source=params.location,
@@ -312,6 +313,7 @@ class AgentConfigService:
         Raises:
             ValueError: agent 不存在或为内置 agent
         """
+        name = name.strip()
         agent = self.get_agent(name)
         if agent is None:
             raise ValueError(f"Agent 不存在: {name}")
@@ -334,6 +336,7 @@ class AgentConfigService:
         Raises:
             ValueError: agent 为内置 agent
         """
+        name = name.strip()
         agent = self.get_agent(name)
         if agent is None:
             return False

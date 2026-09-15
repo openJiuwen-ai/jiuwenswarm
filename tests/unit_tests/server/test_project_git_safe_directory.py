@@ -437,6 +437,86 @@ def test_create_branch_checkout_timeout_returns_pre_status(monkeypatch, tmp_path
     assert status_calls == [False]
 
 
+@pytest.mark.parametrize(
+    ("marker", "expected_kind"),
+    [
+        ("MERGE_HEAD", "merge"),
+        ("rebase-merge", "rebase"),
+        ("rebase-apply", "rebase"),
+        ("CHERRY_PICK_HEAD", "cherry-pick"),
+        ("REVERT_HEAD", "revert"),
+    ],
+)
+def test_is_transient_state_recognizes_git_markers(tmp_path, marker, expected_kind):
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    git_dir = project_dir / ".git"
+    git_dir.mkdir(parents=True)
+    marker_path = git_dir / marker
+    if marker.startswith("rebase-"):
+        marker_path.mkdir()
+    else:
+        marker_path.write_text("pending\n", encoding="utf-8")
+
+    assert project_git._is_transient_state(str(project_dir)) == (True, expected_kind)
+
+
+def test_merge_transient_state_blocks_all_guarded_writes(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.session import project_git
+
+    project_dir = tmp_path / "project"
+    git_dir = project_dir / ".git"
+    git_dir.mkdir(parents=True)
+    (git_dir / "MERGE_HEAD").write_text("merge-head\n", encoding="utf-8")
+    project = Project(
+        project_id="proj_test",
+        name="test",
+        project_dir=str(project_dir),
+        work_mode="code",
+    )
+    calls: list[list[str]] = []
+
+    def fake_run_git(args, *, cwd, timeout=project_git.GIT_COMMAND_TIMEOUT_SEC):
+        calls.append(args)
+        if args == ["check-ref-format", "--branch", "feature"]:
+            return _cp(["git", *args], 0, stdout="feature\n")
+        if args == ["rev-parse", "--show-toplevel"]:
+            return _cp(["git", *args], 0, stdout=f"{project_dir}\n")
+        if args == ["symbolic-ref", "--short", "HEAD"]:
+            return _cp(["git", *args], 0, stdout="main\n")
+        if args == ["rev-parse", "--short", "HEAD"]:
+            return _cp(["git", *args], 0, stdout="abc1234\n")
+        if args == ["rev-parse", "--abbrev-ref", "main@{upstream}"]:
+            return _cp(["git", *args], 1)
+        if args == ["status", "--porcelain", "--no-renames"]:
+            return _cp(["git", *args], 0, stdout="UU conflicted.txt\n")
+        if args == ["for-each-ref", "--format=%(refname:short)", "refs/heads/"]:
+            return _cp(["git", *args], 0, stdout="main\nfeature\n")
+        if args == ["for-each-ref", "--format=%(refname:short)", "refs/remotes/"]:
+            return _cp(["git", *args], 0)
+        raise AssertionError(f"write guard allowed unexpected git command: {args}")
+
+    monkeypatch.setattr(project_git, "_find_git_executable", lambda: "git")
+    monkeypatch.setattr(project_git, "_run_git", fake_run_git)
+
+    results = [
+        project_git.ProjectGitService.switch_branch(project, "feature"),
+        project_git.ProjectGitService.create_branch(project, "feature"),
+        project_git.ProjectGitService.commit(project, "must be blocked"),
+        project_git.ProjectGitService.push(project, branch="main"),
+    ]
+
+    assert [result.error.code for result in results if result.error] == [
+        "GIT_TRANSIENT_STATE",
+        "GIT_TRANSIENT_STATE",
+        "GIT_TRANSIENT_STATE",
+        "GIT_TRANSIENT_STATE",
+    ]
+    assert all(result.repo_status.transient for result in results)
+    assert not any(args[0] in {"checkout", "branch", "add", "commit", "push"} for args in calls)
+
+
 def test_is_transient_state_uses_absolute_not_resolve(monkeypatch, tmp_path):
     """Bug 修复:``_is_transient_state`` 用 absolute() 不解析 symlink。
 
@@ -449,7 +529,7 @@ def test_is_transient_state_uses_absolute_not_resolve(monkeypatch, tmp_path):
     # 真实 gitdir 在别处,merge 目录在真实路径下
     real_git_dir = tmp_path / "real_git_dir"
     real_git_dir.mkdir()
-    (real_git_dir / "merge").mkdir()
+    (real_git_dir / "MERGE_HEAD").write_text("merge-head\n", encoding="utf-8")
 
     # 通过 symlink 访问真实 gitdir(模拟 worktree 通过 symlink 挂载)
     symlink_git_dir = tmp_path / "symlink_git_dir"
