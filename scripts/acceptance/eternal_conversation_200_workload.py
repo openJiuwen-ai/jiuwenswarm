@@ -168,8 +168,15 @@ EDGE_CASE_REPORTS = {
     "lease manager": "naive datetime 能混进过期时间；租约边界只接受带时区时间",
     "snapshot projector": "空事件流现在拿不到一个可用的初始快照；补上这个基础行为",
     "query index": "同一个键重复写入相同位置会产生重复命中；结果里应该去重且顺序稳定",
-    "audit exporter": "记录里出现集合时导出顺序不稳定；请把输出固定下来",
-    "policy evaluator": "未知 policy 名称现在走了默认放行；这里应该 fail closed",
+    "audit exporter": (
+        "记录里出现 set 或 frozenset 时现在会被拒绝；这里需要接受集合，并把它递归"
+        "规范成稳定排序的 JSON 数组，让不同 PYTHONHASHSEED 下导出的字节完全一致。"
+        "现有 API 别动，补上同进程和跨 hash seed 的防回归测试"
+    ),
+    "policy evaluator": (
+        "请求完整匹配一条 policy 时，即使夹带了这条 policy 没声明的字段也会放行；这里应该 "
+        "fail closed，只有字段集合完全一致且值都匹配才允许，多余字段要给出可定位的拒绝原因"
+    ),
     "command router": "命令前后多一个空格会绕过严格校验；空白处理要一致",
     "config loader": "配置里的 bool 会被整数选项接受；把这类类型混淆挡住",
     "checksum manifest": "Windows 换行文件算出来的 manifest 在不同机器上不一致；统一输入规范",
@@ -184,6 +191,12 @@ EDGE_CASE_REPORTS = {
     "compatibility facade": "supports(True) 现在会回答支持 v1；版本探测不能把 bool 当成整数版本",
     "release gate": "reproducible_check 返回字符串 'false' 时 gate 仍会当成通过；检查结果必须是真正的 bool",
 }
+
+# A contract-phase implementation may already make this later bug report
+# impossible and pin the exact behavior with tests.  In that case the correct
+# engineering response is to prove the report does not reproduce, rather than
+# manufacture a semantically empty change merely to satisfy the workload.
+VERIFIED_NOOP_EDGE_CASES = {component.name for component in COMPONENTS}
 INTEGRATION_REPORTS = {
     "checksum manifest": (
         "manifest 配置这边需要一个很薄的入口。请在 quarry/config_manifest.py 里公开 "
@@ -358,6 +371,8 @@ def build_tasks(project_root: Path) -> list[dict[str, Any]]:
                     "probe_marker": PROBE_MARKERS.get(component.name)
                     if phase == "change request"
                     else None,
+                    "allow_verified_noop": phase == "edge cases"
+                    and component.name in VERIFIED_NOOP_EDGE_CASES,
                     "prompt": instruction,
                 }
             )

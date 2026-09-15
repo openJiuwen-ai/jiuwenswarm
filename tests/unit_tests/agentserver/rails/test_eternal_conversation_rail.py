@@ -7,15 +7,20 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from openjiuwen.core.foundation.llm.schema.message import SystemMessage, UserMessage
+from openjiuwen.core.foundation.tool.schema import ToolInfo
 from openjiuwen.harness.prompts import SystemPromptBuilder
 
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation.background_agents import (
-    RETRY_CHECKLIST,
+    BUILDER_RETRY_CHECKLIST,
+    EXTRACTOR_RETRY_CHECKLIST,
     BackgroundAgentRunner,
+    ExtractorForkContext,
 )
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation.coordinator import (
     SessionCoordinator,
     _extractor_evidence,
+    _normalize_changes,
     _raw_range,
     _validate_extractor,
 )
@@ -37,12 +42,17 @@ from jiuwenswarm.agents.harness.common.rails.eternal_conversation.prompts import
 from jiuwenswarm.agents.harness.common.rails.eternal_conversation.registry import (
     get_session_coordinator,
 )
+from jiuwenswarm.agents.harness.common.rails.eternal_conversation.retrieval import (
+    extract_user_text,
+    user_text_query,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
 from scripts.acceptance.eternal_conversation_200 import (
     await_tui_connection_ack,
     derived_evidence_view_inventory,
     ensure_project_checkpoint,
     evidence_inventory,
+    extractor_fork_cache_inventory,
     raw_history_metrics,
     raw_hash_chain_inventory,
     render_ask_user_answer,
@@ -50,6 +60,72 @@ from scripts.acceptance.eternal_conversation_200 import (
     task_evidence,
     write_project_checkpoint,
 )
+
+
+def test_rail_freezes_exact_worker_prefix_with_seventy_percent_measurement() -> None:
+    rail = EternalConversationRail()
+    rail._session_id = "session-a"
+    rail._agent = SimpleNamespace(
+        deep_config=SimpleNamespace(kv_cache_affinity_config={"enabled": True})
+    )
+    messages = [
+        SystemMessage(content="exact system"),
+        UserMessage(content="do the foreground task"),
+    ]
+    tools = [
+        ToolInfo(
+            name="read_file",
+            description="Read a file",
+            parameters={"type": "object"},
+        )
+    ]
+    fork = rail._freeze_extractor_fork_context(
+        SimpleNamespace(
+            inputs=SimpleNamespace(
+                messages=messages,
+                tools=tools,
+                response=SimpleNamespace(
+                    usage_metadata=SimpleNamespace(input_tokens=700)
+                ),
+                context_usage_report=None,
+            ),
+            context_usage_report=SimpleNamespace(
+                context_window=SimpleNamespace(limit_tokens=1000)
+            ),
+            session=SimpleNamespace(get_session_id=lambda: "session-a"),
+        )
+    )
+
+    assert fork is not None
+    assert fork.system_prompt == "exact system"
+    assert fork.messages[0].content == "do the foreground task"
+    assert fork.tools[0].name == "read_file"
+    assert fork.source_input_tokens == 700
+    assert fork.context_window_tokens == 1000
+    assert fork.within_seventy_percent is True
+
+
+def test_rail_reads_mapping_usage_and_context_window_for_fork_policy() -> None:
+    rail = EternalConversationRail()
+    rail._session_id = "session-a"
+    rail._agent = SimpleNamespace(deep_config=None)
+
+    fork = rail._freeze_extractor_fork_context(
+        SimpleNamespace(
+            inputs=SimpleNamespace(
+                messages=[SystemMessage(content="system")],
+                tools=[],
+                response=SimpleNamespace(usage_metadata={"input_tokens": 699}),
+            ),
+            context_usage_report={"context_window": {"limit_tokens": 1000}},
+            session=SimpleNamespace(get_session_id=lambda: "session-a"),
+        )
+    )
+
+    assert fork is not None
+    assert fork.source_input_tokens == 699
+    assert fork.context_window_tokens == 1000
+    assert fork.within_seventy_percent is True
 
 
 def _read_jsonl(path: Path) -> list[dict]:
@@ -101,6 +177,53 @@ def test_acceptance_checkpoint_restores_only_incomplete_task(tmp_path: Path) -> 
     source.write_text("accepted\n", encoding="utf-8")
     restore_incomplete_checkpoint(checkpoint, project, 3, audit)
     assert source.read_text(encoding="utf-8") == "accepted\n"
+
+
+def test_acceptance_fork_gate_uses_exact_prefix_not_provider_cache(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    (audit / "extractor-fork-cache.jsonl").write_text(
+        json.dumps(
+            {
+                "byte_prefix_match": True,
+                "full_prefix_hit": False,
+                "fork_prefix_hit_rate": 0.98,
+                "prefix_sha256": "same-prefix",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inventory = extractor_fork_cache_inventory(tmp_path)
+
+    assert inventory["verified"] is True
+    assert inventory["byte_prefix_matches"] == 1
+    assert inventory["provider_cache_diagnostic"] == {
+        "full_prefix_hits": 0,
+        "all_calls_full_hit": False,
+    }
+
+
+def test_acceptance_fork_gate_rejects_changed_worker_prefix(tmp_path: Path) -> None:
+    audit = tmp_path / "audit"
+    audit.mkdir()
+    (audit / "extractor-fork-cache.jsonl").write_text(
+        json.dumps(
+            {
+                "byte_prefix_match": False,
+                "full_prefix_hit": True,
+                "prefix_sha256": "changed-prefix",
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+    inventory = extractor_fork_cache_inventory(tmp_path)
+
+    assert inventory["verified"] is False
+    assert inventory["byte_prefix_matches"] == 0
 
 
 def test_acceptance_retry_never_promotes_partial_edits_to_baseline(
@@ -677,6 +800,53 @@ def test_extractor_rejects_unsupported_ut_action_before_memory_cli() -> None:
         _validate_extractor(value)
 
 
+def test_extractor_rejects_non_numeric_priority_before_memory_cli() -> None:
+    value = {
+        "snapshot": {
+            "resident_memory": [],
+            "recent_context": [],
+            "current_state": [],
+            "completed": [],
+            "next_actions": [],
+            "constraints": [],
+        },
+        "changed_uts": [
+            {
+                "action": "upsert",
+                "id": "ut-songta",
+                "priority": "normal",
+                "content": "The acceptance codename is Songta.",
+                "queries": ["Songta"],
+                "must_include": ["Songta"],
+                "tags": ["codename"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="priority must be one of"):
+        _validate_extractor(value)
+
+
+def test_normalize_changes_replaces_blank_structural_memory_id() -> None:
+    normalized = _normalize_changes(
+        [
+            {
+                "action": "upsert",
+                "id": "ut-songta",
+                "memory_id": "",
+                "priority": 50,
+                "content": "The acceptance codename is Songta.",
+                "queries": ["Songta"],
+                "must_include": ["Songta"],
+            }
+        ],
+        "session-a",
+        "raw-history:cursor-1-4",
+    )
+
+    assert normalized[0]["memory_id"] == "memory-ut-songta"
+
+
 def test_builder_prompt_cannot_take_over_extractor_semantic_judgment() -> None:
     assert "boundary is structural, not semantic" in BUILDER_SYSTEM_PROMPT
     assert "extraction Agent exclusively owns" in BUILDER_SYSTEM_PROMPT
@@ -785,10 +955,71 @@ async def test_dynamic_memory_search_unifies_pending_and_built(tmp_path: Path) -
     await gateway.call("freeze-pending", "--output", str(batch_path))
     frozen = json.loads(batch_path.read_text(encoding="utf-8"))
     assert "created_at" not in frozen
+    assert frozen["memory_revision"] == 1
+    assert frozen["snapshot_revision"] == 1
+    assert frozen["covered_through"] == 1
     assert frozen["frozen_at"] >= frozen["items"][0]["updated_at"]
     await gateway.call("build-pending", "--file", str(batch_path))
     built = await gateway.search("NimbusGate")
     assert built["matches"][0]["build_state"] == "built"
+    calls = _read_jsonl(tmp_path / "feature" / "audit" / "memory-cli-calls.jsonl")
+    assert calls
+    assert all(row["root"] == str(gateway.root) for row in calls)
+    assert all(row["script"] == str(gateway.script) for row in calls)
+
+
+@pytest.mark.asyncio
+async def test_dynamic_memory_search_matches_chinese_and_orders_by_priority(
+    tmp_path: Path,
+) -> None:
+    writer = EvidenceWriter(tmp_path / "feature", "session-a")
+    gateway = DynamicMemoryGateway(tmp_path / "feature" / "memory", writer)
+    proposal = {
+        "base_memory_revision": 0,
+        "base_snapshot_revision": 0,
+        "from_cursor": 1,
+        "to_cursor": 1,
+        "snapshot": {"constraints": []},
+        "changed_uts": [
+            {
+                "action": "upsert",
+                "id": "atlas-convention",
+                "memory_id": "memory-atlas-convention",
+                "priority": 100,
+                "content": "Atlas：返回成功前必须真正落盘，变更前必须由用户确认。",
+                "queries": ["Atlas 落盘约定"],
+                "must_include": ["Atlas", "返回成功前必须真正落盘"],
+                "evidence_refs": ["raw-history:cursor-1-1"],
+                "source": "session-a",
+                "tags": ["constraint", "user-requirement"],
+            },
+            {
+                "action": "upsert",
+                "id": "journal-current-state",
+                "memory_id": "memory-journal-current-state",
+                "priority": 50,
+                "content": "Journal 当前使用同步磁盘写入。",
+                "queries": ["Journal 同步写盘"],
+                "must_include": ["Journal"],
+                "evidence_refs": ["raw-history:cursor-1-1"],
+                "source": "session-a",
+                "tags": ["implementation"],
+            },
+        ],
+        "evidence_refs": ["raw-history:cursor-1-1"],
+        "semantic_statement": "Chinese retrieval preserves critical constraints.",
+    }
+    await gateway.file_command("publish-pending", proposal, "proposal")
+
+    result = await gateway.search(
+        "日志磁盘写有点慢，改成内存里返回，磁盘放后台慢慢写。"
+    )
+
+    assert [item["id"] for item in result["matches"]][:2] == [
+        "atlas-convention",
+        "journal-current-state",
+    ]
+    assert result["matches"][0]["priority"] == 100
 
 
 class _FakeModel:
@@ -809,7 +1040,7 @@ class _FakeModel:
                         "action": "upsert",
                         "id": "ut-nimbus-gate",
                         "memory_id": "memory-ut-nimbus-gate",
-                        "priority": 90,
+                        "priority": 80,
                         "content": "NimbusGate is the private compatibility environment.",
                         "queries": ["NimbusGate"],
                         "must_include": ["NimbusGate"],
@@ -893,10 +1124,39 @@ async def test_background_retry_rebuilds_with_full_structural_checklist(
     )
 
     assert result == {"accepted": True}
-    assert RETRY_CHECKLIST in model.prompts[1]
+    assert BUILDER_RETRY_CHECKLIST in model.prompts[1]
     assert "accepted must be true" in model.prompts[1]
     assert 'Here is the exact previous response' in model.prompts[1]
     assert '{}' in model.prompts[1]
+
+
+@pytest.mark.asyncio
+async def test_extractor_retry_warns_about_output_truncation(tmp_path: Path) -> None:
+    class RetryModel:
+        def __init__(self) -> None:
+            self.prompts: list[str] = []
+
+        async def invoke(self, messages, **kwargs):
+            self.prompts.append(str(messages[1].content))
+            content = '{"snapshot":' if len(self.prompts) == 1 else '{"accepted":true}'
+            return SimpleNamespace(content=content, usage_metadata=None)
+
+    model = RetryModel()
+    runner = BackgroundAgentRunner(
+        lambda: model,
+        EvidenceWriter(tmp_path, "session-a"),
+    )
+
+    result = await runner.call_json(
+        role="extractor",
+        system_prompt="return JSON",
+        request={"batch": 1},
+    )
+
+    assert result == {"accepted": True}
+    assert EXTRACTOR_RETRY_CHECKLIST in model.prompts[1]
+    assert "entire JSON response under 8000 characters" in model.prompts[1]
+    assert "it was truncated" in model.prompts[1]
 
 
 def test_extractor_snapshot_limit_error_identifies_exact_item() -> None:
@@ -906,14 +1166,214 @@ def test_extractor_snapshot_limit_error_identifies_exact_item() -> None:
         "current_state": [],
         "completed": [],
         "next_actions": [],
-        "constraints": ["x" * 304],
+        "constraints": ["x" * 1001],
     }
 
     with pytest.raises(
         ValueError,
-        match=r"snapshot\.constraints\[0\] has 304 characters; hard limit is 280",
+        match=r"snapshot\.constraints\[0\] has 1001 characters; hard limit is 1000",
     ):
         _validate_extractor({"snapshot": snapshot, "changed_uts": []})
+
+
+def test_extractor_snapshot_accepts_item_at_character_limit() -> None:
+    snapshot = {
+        "resident_memory": [],
+        "recent_context": [],
+        "current_state": [],
+        "completed": [],
+        "next_actions": [],
+        "constraints": ["x" * 1000],
+    }
+
+    _validate_extractor({"snapshot": snapshot, "changed_uts": []})
+
+
+def test_extractor_must_include_error_identifies_ut_and_exact_phrase() -> None:
+    snapshot = {
+        "resident_memory": [],
+        "recent_context": [],
+        "current_state": [],
+        "completed": [],
+        "next_actions": [],
+        "constraints": [],
+    }
+    proposal = {
+        "snapshot": snapshot,
+        "changed_uts": [
+            {
+                "action": "upsert",
+                "id": "capabilities-crash-recovery-requirements",
+                "priority": 80,
+                "content": "CapabilityRegistry supports recover(path).",
+                "queries": ["CapabilityRegistry recover"],
+                "must_include": ["CapabilityRegistry.recover"],
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError) as raised:
+        _validate_extractor(proposal)
+
+    message = str(raised.value)
+    assert "changed_uts[0]" in message
+    assert "capabilities-crash-recovery-requirements" in message
+    assert "must_include[0]" in message
+    assert repr("CapabilityRegistry.recover") in message
+    assert "copy it verbatim into content" in message
+
+
+def test_transport_envelope_retrieval_uses_only_user_authored_text() -> None:
+    wrapped = (
+        "你收到一条消息：\n"
+        '{"source":"web","content":"日志改成后台写。","type":"user input",'
+        '"origin_kind":"external_user_authored","trusted_dirs":"[x]"}'
+    )
+
+    assert extract_user_text(wrapped) == "日志改成后台写。"
+    assert extract_user_text('{"content":"user-authored JSON"}') == (
+        '{"content":"user-authored JSON"}'
+    )
+    events = [
+        {"cursor": 1, "type": "user-message", "payload": {"parts": [wrapped]}},
+        {"cursor": 2, "type": "model-visible-envelope", "payload": {"response": "noise"}},
+    ]
+    assert user_text_query(events) == "日志改成后台写。"
+
+
+def test_extractor_unresolved_constraint_requires_snapshot_feedback() -> None:
+    candidate = {
+        "id": "atlas-convention",
+        "must_include": ["Atlas", "返回成功前必须真正落盘"],
+    }
+    value = {
+        "snapshot": {
+            "resident_memory": [],
+            "recent_context": [],
+            "current_state": [],
+            "completed": [],
+            "next_actions": [],
+            "constraints": ["异步落盘与 Atlas 冲突，等待用户确认。"],
+        },
+        "changed_uts": [],
+        "constraint_assessments": [
+            {
+                "ut_id": "atlas-convention",
+                "outcome": "unresolved",
+                "direct_user_evidence_refs": [],
+                "acknowledgement_quotes": [],
+                "snapshot_notice": "异步落盘与 Atlas 冲突，等待用户确认。",
+            }
+        ],
+    }
+
+    _validate_extractor(value, candidate_constraints=[candidate])
+    value["snapshot"]["constraints"] = []
+    with pytest.raises(ValueError, match="snapshot_notice"):
+        _validate_extractor(value, candidate_constraints=[candidate])
+
+
+def test_extractor_canonicalizes_constraint_assessment_id_alias() -> None:
+    candidate = {
+        "id": "atlas-convention",
+        "must_include": ["Atlas", "返回成功前必须真正落盘"],
+    }
+    assessment = {
+        "id": "atlas-convention",
+        "outcome": "preserved",
+    }
+    value = {
+        "snapshot": {
+            "resident_memory": [],
+            "recent_context": [],
+            "current_state": [],
+            "completed": [],
+            "next_actions": [],
+            "constraints": [],
+        },
+        "changed_uts": [],
+        "constraint_assessments": [assessment],
+    }
+
+    _validate_extractor(value, candidate_constraints=[candidate])
+
+    assert assessment["ut_id"] == "atlas-convention"
+    assert "id" not in assessment
+
+
+def test_extractor_rejects_conflicting_constraint_assessment_id_alias() -> None:
+    candidate = {
+        "id": "atlas-convention",
+        "must_include": ["Atlas", "返回成功前必须真正落盘"],
+    }
+    value = {
+        "snapshot": {
+            "resident_memory": [],
+            "recent_context": [],
+            "current_state": [],
+            "completed": [],
+            "next_actions": [],
+            "constraints": [],
+        },
+        "changed_uts": [],
+        "constraint_assessments": [
+            {
+                "id": "different-convention",
+                "ut_id": "atlas-convention",
+                "outcome": "preserved",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="id and ut_id must match"):
+        _validate_extractor(value, candidate_constraints=[candidate])
+
+
+def test_extractor_cannot_override_constraint_without_naming_anchor() -> None:
+    candidate = {
+        "id": "atlas-convention",
+        "must_include": ["Atlas", "返回成功前必须真正落盘"],
+    }
+    value = {
+        "snapshot": {
+            "resident_memory": [],
+            "recent_context": [],
+            "current_state": [],
+            "completed": [],
+            "next_actions": [],
+            "constraints": [],
+        },
+        "changed_uts": [],
+        "constraint_assessments": [
+            {
+                "ut_id": "atlas-convention",
+                "outcome": "overridden",
+                "direct_user_evidence_refs": ["raw-history:cursor-152"],
+                "acknowledgement_quotes": ["改成内存返回，后台写盘"],
+                "snapshot_notice": "",
+            }
+        ],
+    }
+
+    with pytest.raises(ValueError, match="exact constraint anchor"):
+        _validate_extractor(
+            value,
+            candidate_constraints=[candidate],
+            direct_user_evidence={
+                "raw-history:cursor-152": "改成内存返回，后台写盘"
+            },
+        )
+
+    value["constraint_assessments"][0]["acknowledgement_quotes"] = [
+        "明确覆盖 Atlas，改成后台写盘"
+    ]
+    _validate_extractor(
+        value,
+        candidate_constraints=[candidate],
+        direct_user_evidence={
+            "raw-history:cursor-152": "我明确覆盖 Atlas，改成后台写盘"
+        },
+    )
 
 
 @pytest.mark.asyncio
@@ -940,6 +1400,56 @@ async def test_coordinator_runs_two_background_agents_and_publishes_auditable_st
     assert builder[-1]["status"] == "accepted"
     assert extractor[-1]["usage"]["input_tokens"] == 11
     assert (tmp_path / "audit" / "source-manifest.json").is_file()
+
+
+@pytest.mark.asyncio
+async def test_coordinator_routes_task_boundary_to_its_exact_extractor_fork(
+    tmp_path: Path,
+) -> None:
+    coordinator = SessionCoordinator(tmp_path, "session-a", lambda: _FakeModel())
+    observed: list[tuple[str, ExtractorForkContext | None]] = []
+
+    async def call_json(**kwargs):
+        observed.append((kwargs["role"], kwargs.get("fork_context")))
+        if kwargs["role"] == "builder":
+            return {"approved": True, "diagnostics": []}
+        return {
+            "snapshot": {
+                "resident_memory": [],
+                "recent_context": [],
+                "current_state": [],
+                "completed": [],
+                "next_actions": [],
+                "constraints": [],
+            },
+            "changed_uts": [],
+            "semantic_statement": "The exact Worker fork was processed.",
+        }
+
+    coordinator.agents.call_json = call_json
+    await coordinator.evidence.append("task-started", {"query": "work"}, task_id="t1")
+    finished = await coordinator.evidence.append(
+        "task-finished", {"result": "done"}, task_id="t1"
+    )
+    fork = ExtractorForkContext(
+        system_prompt="exact Worker system",
+        messages=(UserMessage(content="work"),),
+        tools=(),
+        parent_session_id="session-a",
+        source_input_tokens=700,
+        context_window_tokens=1000,
+        prefix_sha256="exact-prefix",
+    )
+
+    await coordinator.request_extract(finished["cursor"], fork_context=fork)
+    await coordinator.wait_idle()
+
+    assert observed[0] == ("extractor", fork)
+    assert all(role != "builder" or context is None for role, context in observed)
+    assert coordinator._extractor_forks == {}
+    audit = _read_jsonl(tmp_path / "audit" / "extractor-forks.jsonl")
+    assert audit[-1]["accepted"] is True
+    assert audit[-1]["prefix_sha256"] == "exact-prefix"
 
 
 @pytest.mark.asyncio
@@ -1232,7 +1742,7 @@ async def test_rail_prefetches_relevant_pending_and_built_memory_for_user_reques
     assert coordinator is not None
 
     async def search(query: str) -> dict:
-        assert "删除 v1" in query
+        assert query == "请删除 v1 入口"
         return {
             "matches": [
                 {
@@ -1250,12 +1760,17 @@ async def test_rail_prefetches_relevant_pending_and_built_memory_for_user_reques
         }
 
     monkeypatch.setattr(coordinator.memory, "search", search)
-    await rail.before_invoke(
-        SimpleNamespace(context=None, inputs=SimpleNamespace(query="请删除 v1 入口"))
+    assembled_query = (
+        "你收到一条消息：\n"
+        '{"source":"web","content":"请删除 v1 入口","type":"user input",'
+        '"origin_kind":"external_user_authored"}'
     )
+    inputs = SimpleNamespace(query=assembled_query)
+    await rail.before_invoke(SimpleNamespace(context=None, inputs=inputs))
     await rail.before_model_call(SimpleNamespace())
     prompt = builder.build()
 
+    assert inputs.query == assembled_query
     assert "<relevant-long-term-memory>" in prompt
     assert "<memory-action-gate>" in prompt
     assert prompt.index("ut-v1-window") < prompt.index("ut-current-request")
@@ -1447,14 +1962,13 @@ async def test_large_foreground_context_reuses_fully_covered_projection(
 
 
 @pytest.mark.asyncio
-async def test_large_foreground_context_uses_post_processor_byte_size(
+async def test_large_foreground_context_defers_to_context_window_policy(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
 
     monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
     monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT", 1000)
-    monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_BYTE_LIMIT", 100)
     rail = EternalConversationRail()
     rail.init(
         SimpleNamespace(
@@ -1493,7 +2007,128 @@ async def test_large_foreground_context_uses_post_processor_byte_size(
         )
     )
 
+    assert messages == ["x" * 120]
+
+
+@pytest.mark.asyncio
+async def test_large_context_waits_for_lagging_extractor_projection(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    monkeypatch.setattr(rail_module, "FOREGROUND_CONTEXT_REPLACEMENT_MESSAGE_LIMIT", 2)
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(
+            system_prompt_builder=SystemPromptBuilder(language="cn"),
+            ability_manager=_AbilityManager(),
+        )
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-lagging-extractor",
+        request_id="task-next",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+    calls: list[str] = []
+    projection = {
+        "snapshot_revision": 7,
+        "memory_revision": 5,
+        "covered_through": 42,
+    }
+
+    async def no_projection_yet(*, force: bool = False) -> dict | None:
+        calls.append(f"projection:{force}")
+        return None
+
+    async def wait_for_projection() -> dict:
+        calls.append("wait-extractor")
+        return projection
+
+    monkeypatch.setattr(coordinator, "projection_for_boundary", no_projection_yet)
+    monkeypatch.setattr(coordinator, "wait_for_projection_boundary", wait_for_projection)
+
+    await rail.before_invoke(SimpleNamespace(context=None, inputs=SimpleNamespace(query="")))
+    messages = ["one", "two", "three"]
+    context = SimpleNamespace(
+        get_messages=lambda: list(messages),
+        set_messages=lambda value: messages.__setitem__(slice(None), value),
+    )
+    await rail.on_user_message(
+        SimpleNamespace(
+            context=context,
+            inputs=SimpleNamespace(parts=["next"], source="query"),
+        )
+    )
+
+    assert calls == ["projection:False", "projection:False", "projection:True", "wait-extractor"]
     assert messages == []
+    state = json.loads(coordinator.state_path.read_text(encoding="utf-8"))
+    assert state["applied_snapshot_revision"] == 7
+
+
+@pytest.mark.asyncio
+async def test_projection_boundary_waits_for_extractor_but_not_builder(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.eternal_conversation.rail as rail_module
+
+    monkeypatch.setattr(rail_module, "get_agent_sessions_dir", lambda: tmp_path)
+    rail = EternalConversationRail()
+    rail.init(
+        SimpleNamespace(
+            system_prompt_builder=SystemPromptBuilder(language="cn"),
+            ability_manager=_AbilityManager(),
+        )
+    )
+    rail.configure_runtime(
+        enabled=True,
+        session_id="session-extractor-only-wait",
+        request_id="task-next",
+        mode="code.normal",
+        channel="web",
+        project_dir=str(tmp_path),
+        model=_FakeModel(),
+    )
+    coordinator = rail._coordinator
+    assert coordinator is not None
+    extractor_released = asyncio.Event()
+    builder_released = asyncio.Event()
+
+    async def extractor() -> None:
+        await extractor_released.wait()
+
+    async def builder() -> None:
+        await builder_released.wait()
+
+    expected = {
+        "snapshot_revision": 3,
+        "memory_revision": 2,
+        "covered_through": 9,
+    }
+
+    async def projection(*, force: bool = False) -> dict:
+        assert force is True
+        return expected
+
+    coordinator._worker = asyncio.create_task(extractor())
+    coordinator._builder = asyncio.create_task(builder())
+    monkeypatch.setattr(coordinator, "projection_for_boundary", projection)
+    waiter = asyncio.create_task(coordinator.wait_for_projection_boundary())
+    await asyncio.sleep(0)
+    assert not waiter.done()
+    extractor_released.set()
+
+    assert await waiter == expected
+    assert coordinator._builder is not None and not coordinator._builder.done()
+    builder_released.set()
+    await coordinator._builder
 
 
 @pytest.mark.asyncio

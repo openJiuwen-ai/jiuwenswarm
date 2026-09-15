@@ -1,0 +1,36 @@
+id: VER-20260917-001-persist-web-code-200
+applies_to:
+  source_revision: working-tree-2026-09-17
+  modules: [agent-harness]
+  flows: [eternal-conversation-memory, gateway-agentserver-e2e-chat]
+  symbols:
+    - EternalConversationRail.before_invoke
+    - SessionCoordinator._validate_extractor
+    - extractor_fork_cache_inventory
+  paths:
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/rail.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/coordinator.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/background_agents.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/prompts.py
+    - jiuwenswarm/agents/harness/common/rails/eternal_conversation/retrieval.py
+    - jiuwenswarm/resources/agent/workspace/skills/dynamic-memory-cli/scripts/dynamic_memory_cli.py
+    - scripts/acceptance/eternal_conversation_200.py
+evidence:
+  level: live_provider
+  scenario: web-code-persist-session-200-natural-tasks
+  environment: local Windows Python 3.12
+  model: DeepSeek-V4-Flash-0731
+  command: .venv/Scripts/python.exe scripts/acceptance/eternal_conversation_200.py --web-url ws://127.0.0.1:20000/ws --channel web --mode code --formal --resume --model-name DeepSeek-V4-Flash-0731
+  repetitions: 1
+  successes: 200
+  warnings: 0
+result: passed
+status: active
+recorded_at: 2026-09-17T04:15:00Z
+supersedes:
+  - VER-20260912-001-web-code-task124-memory-error
+  - VER-20260914-002-persist-extractor-fork
+evidence_paths:
+  - .codex_tmp/persist-acceptance-dashboard/runs/20260916-retrieval-priority-identity-fix-r2/evidence/web-code-eternal-web-code-8e509c671de1494b884539d08a9ef656/proof.json
+  - .codex_tmp/persist-acceptance-dashboard/runs/20260916-retrieval-priority-identity-fix-r2/evidence/web-code-eternal-web-code-8e509c671de1494b884539d08a9ef656/final-pytest.json
+notes: Accepted proof records 200/200 passed tasks, 5/5 hidden conflict probes with memory search, 49 context replacements, final pytest return code 0, Snapshot revision 198, memory revision 195, and covered cursor 12829. Raw History hash chain and derived views verify at 12829 records. Foreground, Extractor, Builder, and memory-cli histories are non-empty. All 511 Extractor forks have byte-identical Worker prefixes; provider full-cache hits were 221/511 and remain diagnostic due endpoint model routing. Active memory ended with 184 Built and zero Pending UTs; Atlas is Built at priority 100. The task-124 MemoryError did not recur. One pre-fix background barrier error was recovered at task 181 after canonicalizing an unambiguous `id` assessment alias to `ut_id`.
