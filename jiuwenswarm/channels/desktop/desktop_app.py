@@ -447,6 +447,27 @@ def _build_child_env(
     return env
 
 
+def _child_log_files(name: str) -> tuple[object, object]:
+    """为子进程打开 stdout/stderr 日志文件句柄，重定向到 logs 目录下的 child-<name>.log。
+
+    原先子进程 stdout/stderr 丢到 DEVNULL，gateway/agent 孙进程退出（如 code 15 被信号杀）
+    时真实报错/traceback 丢失，desktop.log 只剩 "exited early with code 15"，无法定位。
+    改为落盘后，孙进程的 traceback/报错可直接在 child-<name>.log 末尾查到。
+    文件句柄由子进程继承，子进程退出后由 OS 关闭；父进程侧不再持有。
+    """
+    try:
+        log_dir = get_logs_dir()
+        log_dir.mkdir(parents=True, exist_ok=True)
+        log_path = log_dir / f"child-{name}.log"
+        # 追加写：多次启动的输出累积在同一文件，配合下方启动分隔行便于定位最后一次。
+        out = open(log_path, "ab", buffering=0)
+        logger.info("[desktop] %s child stdout/stderr -> %s", name, log_path)
+        return out, out
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[desktop] failed to open child log for %s: %s", name, exc)
+        return subprocess.DEVNULL, subprocess.DEVNULL
+
+
 def _start_process(
     name: str,
     command: list[str],
@@ -455,10 +476,17 @@ def _start_process(
     desktop_token: str = "",
 ) -> subprocess.Popen[bytes]:
     logger.info("[desktop] starting %s: %s", name, command)
+    stdout, stderr = _child_log_files(name)
+    # 写一条启动分隔行，便于在累积日志里定位本次启动段（含进程是否被信号杀的关键信息）。
+    try:
+        if stdout is not subprocess.DEVNULL:
+            stdout.write(f"\n===== [desktop] starting {name} at {time.strftime('%Y-%m-%d %H:%M:%S')} =====\n".encode("utf-8"))
+    except Exception:  # noqa: BLE001
+        pass
     kwargs: dict[str, object] = {
         "env": _build_child_env(name, ports, startup_diagnostics_dir, desktop_token),
-        "stdout": subprocess.DEVNULL,
-        "stderr": subprocess.DEVNULL,
+        "stdout": stdout,
+        "stderr": stderr,
     }
     # macOS/Linux: 用 start_new_session=True 创建新进程组，
     # 以便后续用 os.killpg 杀掉整个进程树（含孙子进程）。
