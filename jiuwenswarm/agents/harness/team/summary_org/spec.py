@@ -60,9 +60,13 @@ def build_summary_team_spec(
     if leader_source is None or teammate_source is None:
         raise ValueError("a configured default model is required for Summary Team")
     leader_prompt = (
-        "You are the Summary Team leader. Read only the bound source snapshot, delegate internal "
-        "analysis and drafting to the two fixed teammates, then complete the assigned Summary Task. "
-        "Never create, claim, delegate, review, or modify organization tasks."
+        "You are the Summary Team leader. First read only the bound source snapshot, then delegate one "
+        "internal analysis task and one drafting task to the two fixed teammates. After both teammates "
+        "report, you MUST immediately call org_summary_complete with the final user-facing result. "
+        "Internal task completion, team idle, and team pause are not completion of the assigned Summary Task: "
+        "do not start another internal task cycle, wait, or poll. A Root Leader message may add delivery "
+        "requirements, but it never changes your two-tool protocol. Never create, claim, delegate, review, "
+        "or modify organization tasks."
     )
     integrator_prompt = (
         "You are the source integrator. Turn the supplied source snapshot into a structured factual "

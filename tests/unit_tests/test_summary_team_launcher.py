@@ -183,3 +183,5 @@ def test_summary_team_spec_uses_inprocess_transport(monkeypatch):
     assert "delivery-drafter" in spec.agents
     assert "source attribution" in spec.agents["source-integrator"].system_prompt
     assert "user-facing draft" in spec.agents["delivery-drafter"].system_prompt
+    assert "MUST immediately call org_summary_complete" in spec.agents["leader"].system_prompt
+    assert "not completion of the assigned Summary Task" in spec.agents["leader"].system_prompt
