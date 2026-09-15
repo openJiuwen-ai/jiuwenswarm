@@ -144,6 +144,10 @@ class ProgressiveToolRail(DeepAgentRail):
         self._owned_tool_ids: set[str] = set()
         self._cached_all_tool_infos: list[Any] = []
         self._cached_deferred_tool_infos: list[Any] = []
+        # Fingerprint of deferred tool *names* last written into TOOL_NAVIGATION.
+        # Instance id churn (OfficeClaw request-scoped MCP rebind) must refresh
+        # invoke caches but must not rewrite this system prompt section.
+        self._navigation_name_fingerprint: frozenset[str] | None = None
         # Request-scoped OfficeClaw MCP allowlist for this session agent.
         # Interaction rounds do not inherit the facade ContextVar, so
         # invoke_tool re-binds from this attribute before tool execution.
@@ -159,6 +163,8 @@ class ProgressiveToolRail(DeepAgentRail):
             if str(name).strip()
         }
         self.invalidate_deferred_tool_cache()
+        # Blacklist changes may remove names from the nav; force a rebuild.
+        self._navigation_name_fingerprint = None
 
     def _current_disabled_tools(self) -> frozenset[str]:
         """Union of constructor seed and live DisabledToolsRail when reachable.
@@ -621,43 +627,86 @@ class ProgressiveToolRail(DeepAgentRail):
             name = str(getattr(tool, "name", "") or "")
             if name in self.eager_tools and name not in disabled:
                 filtered_tools.append(tool)
-        inputs.tools = filtered_tools
+        # Canonical eager order — never follow ability_manager / MCP rebind order.
+        # Mid-task send_file_to_user <-> tools_search swaps break LLM prefix cache.
+        inputs.tools = self._order_tools_by_eager_list(filtered_tools)
 
         removed = sorted(set(
             str(getattr(tool, "name", "") or "")
             for tool in tools
         ) - set(
             str(getattr(tool, "name", "") or "")
-            for tool in filtered_tools
+            for tool in inputs.tools
         ))
 
         logger.info(
             "%s filter tools %s -> %s removed=%s disabled=%s",
             _LOG_PREFIX,
             original_count,
-            len(filtered_tools),
+            len(inputs.tools),
             removed,
             sorted(disabled),
         )
 
         await self._add_navigation_section(ctx)
 
+    def _order_tools_by_eager_list(self, tools: list[Any]) -> list[Any]:
+        """Stable-sort filtered tools to match ``self.eager_tools`` order."""
+        by_name: dict[str, Any] = {}
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name and name not in by_name:
+                by_name[name] = tool
+        ordered = [by_name[name] for name in self.eager_tools if name in by_name]
+        leftovers = sorted(
+            (name for name in by_name if name not in self.eager_tools),
+        )
+        ordered.extend(by_name[name] for name in leftovers)
+        return ordered
+
+    @staticmethod
+    def _deferred_name_fingerprint(tools: list[Any]) -> frozenset[str]:
+        """Name-only fingerprint for TOOL_NAVIGATION cache stability."""
+        return frozenset(
+            name
+            for name in (
+                str(getattr(tool, "name", "") or "").strip() for tool in tools
+            )
+            if name
+        )
+
     # ------------------------------------------------------------------
     # Navigation prompt
     # ------------------------------------------------------------------
 
     async def _add_navigation_section(self, ctx: AgentCallbackContext) -> None:
-        """Add tool navigation prompt section."""
+        """Add tool navigation prompt section when deferred *names* change.
+
+        OfficeClaw request-scoped MCP rebinds swap tool ids while keeping names.
+        Instance caches still refresh via ``_refresh_deferred_tool_cache_if_stale``;
+        the system TOOL_NAVIGATION text must stay frozen across id-only churn.
+        """
         if ctx.agent is None:
+            return
+
+        name_fp = self._deferred_name_fingerprint(self._cached_deferred_tool_infos)
+        if (
+            self._navigation_name_fingerprint is not None
+            and name_fp == self._navigation_name_fingerprint
+        ):
             return
 
         navigation_section = await self._build_navigation_section()
         if navigation_section is None:
+            # Empty deferred set: clear fingerprint so a later non-empty set rebuilds.
+            if not name_fp:
+                self._navigation_name_fingerprint = frozenset()
             return
 
         spb = getattr(ctx.agent, "system_prompt_builder", None)
         if spb is not None and hasattr(spb, "add_section"):
             spb.add_section(navigation_section)
+            self._navigation_name_fingerprint = name_fp
 
     async def _build_navigation_section(self) -> PromptSection | None:
         """Build navigation prompt section for deferred tools."""
