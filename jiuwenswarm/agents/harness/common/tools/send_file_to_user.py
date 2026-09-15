@@ -366,29 +366,62 @@ class SendFileToolkit:
 
                 todos, todo_changed = complete_open_todos_for_session(self.session_id)
                 if todo_changed > 0:
-                    await server.send_push(
-                        {
-                            "request_id": self.request_id,
-                            "channel_id": self.channel_id,
-                            "session_id": self.session_id,
-                            "payload": {
-                                "event_type": "todo.updated",
-                                "todos": todos,
+                    # 优先走当前会话输出流推送 todo.updated：桌面端直接以 E2A chunk 接收，
+                    # 不经过 gateway channel_manager 转发，避免 desktop channel 找不到时
+                    # robot_messages 被丢弃导致任务清单状态不刷新。
+                    try:
+                        from openjiuwen.core.session import get_current_session
+                        from openjiuwen.core.session.stream import OutputSchema
+
+                        session = get_current_session()
+                        if session is not None and hasattr(session, "write_stream"):
+                            await session.write_stream(
+                                OutputSchema(
+                                    type="todo.updated",
+                                    index=0,
+                                    payload={
+                                        "todos": todos,
+                                        "session_id": self.session_id,
+                                    },
+                                )
+                            )
+                            logger.info(
+                                "[SendFileToolkit] 交付后经会话流同步 TODO "
+                                "session_id=%s changed=%s",
+                                self.session_id,
+                                todo_changed,
+                            )
+                        else:
+                            raise RuntimeError("no current session write_stream")
+                    except Exception as stream_err:
+                        logger.debug(
+                            "[SendFileToolkit] 会话流推送 TODO 失败，回退 send_push: %s",
+                            stream_err,
+                        )
+                        await server.send_push(
+                            {
+                                "request_id": self.request_id,
+                                "channel_id": self.channel_id,
                                 "session_id": self.session_id,
-                            },
-                            "is_complete": False,
-                            **(
-                                {"metadata": dict(self._request_metadata)}
-                                if self._request_metadata
-                                else {}
-                            ),
-                        }
-                    )
-                    logger.info(
-                        "[SendFileToolkit] 交付后同步 TODO session_id=%s changed=%s",
-                        self.session_id,
-                        todo_changed,
-                    )
+                                "payload": {
+                                    "event_type": "todo.updated",
+                                    "todos": todos,
+                                    "session_id": self.session_id,
+                                },
+                                "is_complete": False,
+                                **(
+                                    {"metadata": dict(self._request_metadata)}
+                                    if self._request_metadata
+                                    else {}
+                                ),
+                            }
+                        )
+                        logger.info(
+                            "[SendFileToolkit] 交付后经 send_push 同步 TODO "
+                            "session_id=%s changed=%s",
+                            self.session_id,
+                            todo_changed,
+                        )
             except Exception as todo_err:
                 logger.warning(
                     "[SendFileToolkit] 交付后同步 TODO 失败（不阻断发文件）: %s",
