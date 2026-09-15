@@ -382,3 +382,61 @@ def test_flash_mode_memory_reads_agent_profile() -> None:
     # agent 档与未识别 mode 行为不变
     assert is_memory_enabled("agent", config) is True
     assert is_memory_enabled("team", config) is False
+
+
+def test_flash_read_text_dependency_on_parent_signature() -> None:
+    """flash read 依赖 ReadFileTool._read_text 的 apply_size_cap 关键字。
+
+    agent-core 升级若改掉该参数名/顺序，这里第一时间红，而不是在运行中
+    静默传错参数（read→edit 同文件回归见 flash_read_tool 注释）。
+    """
+    import inspect
+
+    from openjiuwen.harness.tools.filesystem import ReadFileTool
+
+    params = inspect.signature(ReadFileTool._read_text).parameters
+    assert "apply_size_cap" in params
+    assert params["apply_size_cap"].kind is inspect.Parameter.POSITIONAL_OR_KEYWORD
+
+
+def test_flash_read_multi_all_failed_sets_error() -> None:
+    """多文件读取全部失败时 success=False 且 error 非空（ToolOutput 约定）。"""
+    import asyncio
+
+    from jiuwenswarm.agents.harness.flash.tools.flash_read_tool import (
+        FlashReadFileTool,
+    )
+
+    tool = object.__new__(FlashReadFileTool)
+
+    async def _fail(raw_path, model_name):
+        return {
+            "file_path": raw_path,
+            "content": "",
+            "type": "error",
+            "multimodal": [],
+            "line_count": 0,
+            "error": "boom",
+        }
+
+    tool._read_one_file = _fail
+
+    out = asyncio.run(tool._invoke_multi(["a.txt", "b.txt"], "m"))
+    assert out.success is False
+    assert out.error and "failed" in out.error
+    assert out.data["succeeded"] == 0
+    assert out.data["failed"] == 2
+
+
+def test_flash_memory_read_only_check_fails_closed() -> None:
+    """只读探测回调抛异常时默认只读（fail-closed），不静默放开写入。"""
+    from jiuwenswarm.agents.harness.flash.tools.flash_memory_tool import (
+        FlashMemoryTool,
+    )
+
+    def _boom():
+        raise RuntimeError("heartbeat check exploded")
+
+    tool = object.__new__(FlashMemoryTool)
+    tool._read_only_flag = _boom
+    assert tool._is_read_only() is True

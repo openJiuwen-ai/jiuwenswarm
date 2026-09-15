@@ -159,7 +159,13 @@ class FlashMemoryTool(Tool):
             try:
                 return bool(self._read_only_flag())
             except Exception:
-                return False
+                # fail-closed：只读检测本身抛异常时默认只读，宁可拒绝写入也不
+                # 放开写权限。
+                logger.warning(
+                    "FlashMemoryTool read-only check failed; defaulting to read-only",
+                    exc_info=True,
+                )
+                return True
         return False
 
     async def invoke(self, inputs: Dict[str, Any], **kwargs) -> ToolOutput:

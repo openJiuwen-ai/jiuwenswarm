@@ -28,9 +28,9 @@ class FlashTodoRail(DeepAgentRail):
     - No outer-task-loop hooks (no after_tool_call / after_task_iteration):
       TaskPlan sync / advance reminders are intentionally dropped.
 
-    Concurrency safety (kept from ConcurrentSafeTaskPlanningRail): check
-    ``Runner.resource_mgr.get_tool`` before adding, so parallel agents sharing
-    one resource id don't spam "resource already exist" errors.
+    Concurrency safety: registration goes through ``add_ability`` alone, which
+    rebinds the resource-manager entry with ``refresh=True`` atomically (later
+    owner wins) — no racy get-then-add against the process-global registry.
     """
 
     priority = 90
@@ -42,7 +42,6 @@ class FlashTodoRail(DeepAgentRail):
         self.engines: dict = {}
 
     def init(self, agent) -> None:
-        from openjiuwen.core.runner import Runner
         from openjiuwen.harness.tools import (
             TodoCreateTool,
             TodoGetTool,
@@ -100,8 +99,10 @@ class FlashTodoRail(DeepAgentRail):
         unified_tool = UnifiedTodoTool(engines, language, agent_id)
 
         try:
-            if Runner.resource_mgr.get_tool(unified_tool.card.id) is None:
-                Runner.resource_mgr.add_tool(unified_tool)
+            # 统一卡是 stateful（card.stateless 默认 False），add_ability 内部即
+            # 以 refresh=True 在 resource_mgr 原子重绑（后注册者胜）——不在这里
+            # 先 get_tool/add_tool：那对全局注册表是非原子的检查后写入，并发
+            # 建同名 agent 时会竞出 "already exist"。
             ability_manager.add_ability(unified_tool.card, unified_tool)
             self._tools.append(unified_tool)
             logger.info(

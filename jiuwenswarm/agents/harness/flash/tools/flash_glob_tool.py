@@ -347,7 +347,8 @@ class FlashGlobTool(GlobTool):
         )
 
     async def stream(self, inputs: Dict[str, Any], **kwargs) -> Any:
-        pass
+        # 与 UnifiedTodoTool 同约定：flash 工具不走增量流式，整包一次性产出。
+        yield await self.invoke(inputs, **kwargs)
 
 
 __all__ = ["FlashGlobTool"]

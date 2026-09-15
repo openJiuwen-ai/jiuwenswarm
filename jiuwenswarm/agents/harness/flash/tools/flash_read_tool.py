@@ -304,6 +304,13 @@ class FlashReadFileTool(ReadFileTool):
                 if result.get("multimodal"):
                     multimodal_all.extend(result["multimodal"])
 
+        # 全部失败时补汇总 error：ToolOutput 约定 success=False 时 error 非空，
+        # 逐文件详情仍在 data.files 里。
+        error_msg = (
+            f"All {len(file_paths)} files failed to read (see per-file errors in data.files)"
+            if succeeded == 0
+            else None
+        )
         return ToolOutput(
             success=succeeded > 0,
             data={
@@ -314,6 +321,7 @@ class FlashReadFileTool(ReadFileTool):
                 "parallel_read": True,
                 "multimodal": multimodal_all,
             },
+            error=error_msg,
         )
 
     # ------------------------------------------------------------------
@@ -335,7 +343,8 @@ class FlashReadFileTool(ReadFileTool):
         return await super().invoke(inputs, **kwargs)
 
     async def stream(self, inputs: Dict[str, Any], **kwargs) -> Any:
-        pass
+        # 与 UnifiedTodoTool 同约定：flash 工具不走增量流式，整包一次性产出。
+        yield await self.invoke(inputs, **kwargs)
 
 
 __all__ = ["FlashReadFileTool"]

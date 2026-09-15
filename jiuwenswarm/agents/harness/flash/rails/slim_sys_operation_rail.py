@@ -80,8 +80,9 @@ class SlimSysOperationRail(SysOperationRail):
         # 工具 id 形如 "write_file_<agent_id>"，与 SysOperation 实例无关；若上一次
         # agent 生命周期里的同名工具仍残留在 resource_mgr，旧工具实例会持有过期的
         # SysOperation 引用，导致 SANDBOX 切换时 fs/shell 调用走 LOCAL 并写穿宿主。
-        # add_ability 的 refresh=True 注册（已存在则先 remove 再 add）天然处理这种
-        # 残留 rebind。
+        # 这些工具是 stateful（card.stateless 默认 False），add_ability 对 stateful
+        # 工具会在 resource_mgr 里以 refresh=True 重绑（后注册者胜），残留旧实例
+        # 天然被本次注册的断实例替换。
         for tool in self.tools:
             agent.ability_manager.add_ability(tool.card, tool)
 
