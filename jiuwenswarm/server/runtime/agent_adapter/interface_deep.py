@@ -147,7 +147,6 @@ from jiuwenswarm.agents.harness.common.prompt.prompt_builder import (
 )
 from jiuwenswarm.agents.harness.common.rails import (
     BrowserTaskPromptRail,
-    IdentityRail,
     JiuSwarmStreamEventRail,
     InvocationContextRail,
     MultimodalImageRail,
@@ -156,7 +155,6 @@ from jiuwenswarm.agents.harness.common.rails import (
     RuntimePromptRail,
     StructuredAskUserRail,
     SymphonyOrchestrationRail,
-    XiaoyiDefaultToolVisibilityRail,
 )
 from jiuwenswarm.common.invocation_context.codec import attach_invocation_context
 from jiuwenswarm.server.invocation_context_builder import build_invocation_context
@@ -193,7 +191,6 @@ from jiuwenswarm.agents.harness.common.memory.config import (
     is_proactive_memory,
 )
 from jiuwenswarm.agents.harness.common.memory.external_memory_config import is_builtin_memory_allowed
-from jiuwenswarm.agents.harness.common.memory.workspace import configure_workspace_memory  # noqa: E402
 from jiuwenswarm.common.model_config_validation import is_placeholder_api_base
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import TOOL_PERMISSION_CHANNEL_ID
 from jiuwenswarm.agents.harness.common.channel_runtime_context import (
@@ -271,7 +268,12 @@ from jiuwenswarm.agents.harness.common.rails.skill_retrieval_prompt_rail import 
     SkillRetrievalPromptRail,
 )
 from jiuwenswarm.symphony.config import load_symphony_config
+from jiuwenswarm.agents.harness.common.tools.wiki_tools import wiki_ingest, wiki_query, wiki_lint
 from jiuwenswarm.agents.harness.common.tools.acp_output_tools import get_tools as get_acp_output_tools
+from jiuwenswarm.agents.harness.common.tools.channel_config_tools import (
+    configure_channel,
+    get_wechat_login_status,
+)
 from jiuwenswarm.agents.harness.common.tools.multi_session_toolkits import MultiSessionToolkit
 from jiuwenswarm.agents.harness.common.tools.acp_chat import acp_chat
 from jiuwenswarm.agents.harness.common.tools.invoke_meta.invoke_tool import InvokeTool
@@ -414,9 +416,7 @@ logger = logging.getLogger(__name__)
 
 def _maybe_report_xiaoyi_billing_new(request: Any, query: str, invocation: Any) -> None:
     """xiaoyi 渠道一轮 query 的 NEW 上报（fire-and-forget；每 core 只发一次，
-    HITL 续跑同 core 不重复）。非 xiaoyi 渠道静默跳过——桌面对话与 cron 手动执行
-    由桌面侧计费，gateway 调度 cron（channel_id=__cron__）由 scheduler._run_agent
-    计费（同 common/billing_client.py 管道），本函数均不重复上报。
+    HITL 续跑同 core 不重复）。非 xiaoyi 渠道（桌面/cron 由桌面侧计费）静默跳过。
     计费永不影响会话主路径（任何异常仅记日志）。
     """
     try:
@@ -559,35 +559,6 @@ _SKILL_RETRIEVAL_TOOL_NAMES = frozenset(
         "skill_branch_peek",
     }
 )
-_XIAOYI_FETCH_WEBPAGE_DESCRIPTION = {
-    "cn": (
-        "抓取网页文本，返回状态码、标题和正文文本。可用于核实具体页面内容，不要只依赖摘要。"
-        "可设置 max_chars=0 关闭截断，也可以调大 timeout_seconds 处理慢站点。"
-        "适用场景：文档、博客、新闻、API 参考等普通网页。"
-        "代码仓地址（GitHub/GitLab/Gitee/Gitcode/Bitbucket 等）一般不适合用本工具——"
-        "网页只能看到渲染后的目录页；要读源码、看历史、跨文件搜索，"
-        "更顺手的方式是用 shell 工具（bash 或 powershell）执行 `git clone` 拉到本地。"
-    ),
-    "en": (
-        "Fetch webpage text content from a URL and return status, title, and plain text. "
-        "Use it to verify a specific page instead of relying only on summaries. Set max_chars=0 "
-        "to disable clipping and use a larger timeout_seconds for slow pages. "
-        "Best fit: documentation, blog posts, news, API references, and similar general web content. "
-        "Git repository URLs (GitHub/GitLab/Gitee/Gitcode/Bitbucket, etc.) are usually a poor fit; "
-        "reading source, history, or searching across files is easier after a local `git clone` "
-        "via the shell tool (bash or powershell)."
-    ),
-}
-
-
-def _apply_xiaoyi_fetch_webpage_description(tool: Any, language: str) -> Any:
-    """Replace upstream search-tool wording with the Xiaoyi Work entry point."""
-    card = getattr(tool, "card", None)
-    if card is not None and getattr(card, "name", "") == "fetch_webpage":
-        card.description = _XIAOYI_FETCH_WEBPAGE_DESCRIPTION.get(
-            language, _XIAOYI_FETCH_WEBPAGE_DESCRIPTION["en"]
-        )
-    return tool
 # Total ``_update_runtime_config`` cost above which its per-stage breakdown is
 # worth an INFO line. It runs once per turn ahead of the model call, so anything
 # at this scale is directly visible in time-to-first-token.
@@ -1206,7 +1177,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._context_assemble_mode: str | None = None
         self._context_processor_rail: ContextProcessorRail | None = None
         self._runtime_prompt_rail: RuntimePromptRail | None = None
-        self._identity_rail: IdentityRail | None = None
         self._response_prompt_rail: ResponsePromptRail | None = None
         self._invocation_context_rail: InvocationContextRail | None = None
         self._security_rail: SecurityRail | None = None
@@ -1227,7 +1197,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         self._skill_create_rail: SkillCreateRail | None = None
         self._subagent_rail: SubagentRail | None = None
         self._ask_user_rail: StructuredAskUserRail | None = None
-        self._tool_visibility_rail: XiaoyiDefaultToolVisibilityRail | None = None
         self._permission_rail: Any = None
         self._avatar_rail: Any = None
         self._memory_forbidden_rail: Any = None
@@ -3148,13 +3117,19 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             warn_label="vision tools",
         )
 
-        # Audio tools (including the otherwise always-visible audio_metadata)
-        # are deliberately excluded from the Xiaoyi Work default set.
+        desired_audio_tools = self._iter_runtime_audio_tools(agent_id)
+        if self._audio_tools_registered:
+            current_names = {tool.card.name for tool in self._audio_tools}
+            desired_names = {tool.card.name for tool in desired_audio_tools}
+            if current_names != desired_names:
+                self._remove_registered_tools(self._audio_tools)
+                self._audio_tools = []
+                self._audio_tools_registered = False
         self._audio_tools, self._audio_tools_registered = self._sync_tool_group(
             current_tools=self._audio_tools,
             registered=self._audio_tools_registered,
-            enabled=False,
-            create_fn=list,
+            enabled=bool(desired_audio_tools),
+            create_fn=lambda: desired_audio_tools,
             warn_label="audio tools",
         )
 
@@ -4229,11 +4204,7 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
     def _build_filesystem_rail() -> SysOperationRail | None:
         """Build SysOperationRail."""
         try:
-            # No ``with_code_tool``: the code tool (python/js interpreter) is
-            # redundant with bash/powershell and is filtered from the default
-            # Xiaoyi tool set (XiaoyiDefaultToolVisibilityRail), so it is not
-            # registered here at all.
-            fs_rail = SysOperationRail()
+            fs_rail = SysOperationRail(with_code_tool=True)
             logger.info("[JiuWenSwarmDeepAdapter] SysOperationRail create success")
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] SysOperationRail create failed: %s", exc)
@@ -4913,16 +4884,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             rail = None
         return rail
 
-    def _build_identity_rail(self) -> IdentityRail | None:
-        """Build IdentityRail to load IDENTITY.md into the identity section."""
-        try:
-            rail = IdentityRail(language=self._resolve_runtime_language())
-            logger.info("[JiuWenSwarmDeepAdapter] IdentityRail create success")
-        except Exception as exc:
-            logger.warning("[JiuWenSwarmDeepAdapter] IdentityRail create failed: %s", exc)
-            rail = None
-        return rail
-
     def _build_skill_retrieval_prompt_rail(self) -> SkillRetrievalPromptRail | None:
         """Build lightweight agentic skill retrieval prompt guidance."""
         if not is_skill_retrieval_enabled():
@@ -5098,11 +5059,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             return None
 
     @staticmethod
-    def _build_xiaoyi_default_tool_visibility_rail() -> XiaoyiDefaultToolVisibilityRail:
-        """Build the final model-tool filter shared by all Xiaoyi Work modes."""
-        return XiaoyiDefaultToolVisibilityRail()
-
-    @staticmethod
     def _build_work_plan_approval_rail() -> Any | None:
         """构建 work plan 的审批 rail（``exit_plan_mode`` 即时弹窗）。"""
         try:
@@ -5131,7 +5087,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 self._build_invocation_context_rail,
             ),
             _RailBuildInfo("_runtime_prompt_rail", self._build_runtime_prompt_rail),
-            _RailBuildInfo("_identity_rail", self._build_identity_rail),
             _RailBuildInfo("_response_prompt_rail", self._build_response_prompt_rail),
             _RailBuildInfo(
                 "_multimodal_image_rail",
@@ -5151,10 +5106,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             ),
             _RailBuildInfo("_circuit_breaker_rail", self._build_circuit_breaker_rail),
             _RailBuildInfo("_cspl_sentinel_rail", self._build_cspl_sentinel_rail),
-            _RailBuildInfo(
-                "_tool_visibility_rail",
-                self._build_xiaoyi_default_tool_visibility_rail,
-            ),
             _RailBuildInfo("_avatar_rail", self._build_avatar_rail),
             _RailBuildInfo("_memory_forbidden_rail", self._build_memory_forbidden_rail),
             _RailBuildInfo("_subagent_rail", self._build_subagent_rail),
@@ -5298,7 +5249,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                 "[JiuWenSwarmDeepAdapter] ensure workspace/todo dir failed: %s", exc
             )
         workspace_obj = Workspace(root_path=self._workspace_dir or "./", language=resolved_language)
-        configure_workspace_memory(workspace_obj, config_base)
         normalized_tool_cards = [
             tool.card if hasattr(tool, "card") else tool for tool in (tool_cards or [])
         ]
@@ -5491,6 +5441,15 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
         """Get tool cards."""
         tool_cards = []
 
+        for wtool in [wiki_ingest, wiki_query, wiki_lint]:
+            self._register_shared_tool(wtool)
+            tool_cards.append(wtool.card)
+
+        for channel_tool in (configure_channel, get_wechat_login_status):
+            if not Runner.resource_mgr.get_tool(channel_tool.card.id):
+                Runner.resource_mgr.add_tool(channel_tool)
+            tool_cards.append(channel_tool.card)
+
         # 付费搜索工具：有任意一个付费 key 就注册
         if is_paid_search_enabled():
             self._paid_search_tool = WebPaidSearchTool(
@@ -5502,10 +5461,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
 
         for tool_cls in [WebFreeSearchTool, WebFetchWebpageTool]:
             tool_instance = tool_cls(agent_id=agent_id)
-            _apply_xiaoyi_fetch_webpage_description(
-                tool_instance,
-                self._resolve_output_language(),
-            )
             self._register_agent_owned_tool(tool_instance, agent_id)
             tool_cards.append(tool_instance.card)
 
@@ -5529,10 +5484,20 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     exc,
                 )
 
-        # Do not register audio_metadata or any other audio tool by default.
-        # An explicit product integration may still instantiate audio tools.
         self._audio_tools = []
         self._audio_tools_registered = False
+        try:
+            self._audio_tools = self._iter_runtime_audio_tools(agent_id)
+            for tool in self._audio_tools:
+                self._register_agent_owned_tool(tool, agent_id)
+                tool_cards.append(tool.card)
+            self._audio_tools_registered = bool(self._audio_tools)
+        except Exception as exc:
+            self._audio_tools = []
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] audio tools registration failed: %s",
+                exc,
+            )
 
         self._video_tool_registered = False
         if self._video_model_config and not _runtime_tool_is_disabled("video_understanding"):
@@ -5608,20 +5573,19 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                     "[JiuWenSwarmDeepAdapter] xiaoyi phone tools registration failed: %s", exc
                 )
 
-        # SkillToolkit (uninstall_skill) disabled — tool no longer exposed to LLM.
-        # try:
-        #     skill_toolkit = SkillToolkit(manager=self._skill_manager)
-        #     skill_tool_names: list[str] = []
-        #     for tool in skill_toolkit.get_tools():
-        #         self._register_shared_tool(tool)
-        #         tool_cards.append(tool.card)
-        #         skill_tool_names.append(tool.card.name)
-        #     logger.info(
-        #         "[JiuWenSwarmDeepAdapter] SkillToolkit registered: tools=%s",
-        #         skill_tool_names,
-        #     )
-        # except Exception as exc:
-        #     logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
+        try:
+            skill_toolkit = SkillToolkit(manager=self._skill_manager)
+            skill_tool_names: list[str] = []
+            for tool in skill_toolkit.get_tools():
+                self._register_shared_tool(tool)
+                tool_cards.append(tool.card)
+                skill_tool_names.append(tool.card.name)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] SkillToolkit registered: tools=%s",
+                skill_tool_names,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] skill tools registration failed: %s", exc)
 
         if is_skill_retrieval_enabled():
             try:
@@ -5873,9 +5837,9 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             enable_task_loop=self._resolve_enable_task_loop(config, config_base),
             add_general_purpose_agent=should_enable_general_agent,
             max_iterations=config.get("max_iterations", 15),
-            workspace=configure_workspace_memory(
-                Workspace(root_path=self._workspace_dir or "./", language=self._resolve_runtime_language()),
-                config_base,
+            workspace=Workspace(
+                root_path=self._workspace_dir or "./",
+                language=self._resolve_runtime_language(),
             ),
             sys_operation=sys_operation,
             language=self._resolve_runtime_language(),
@@ -6978,20 +6942,6 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
             self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
             self._runtime_prompt_rail.set_mode(runtime_config.mode)
             self._runtime_prompt_rail.set_session_id(runtime_config.session_id)
-        if self._identity_rail:
-            self._identity_rail.set_language(resolved_language)
-            # 显式指定 IDENTITY.md 读取路径为全局 agent workspace（跨会话稳定），
-            # 防止默认路径解析逻辑受 workspace 切换影响。
-            try:
-                from jiuwenswarm.common.utils import get_deepagent_identity_md_path
-                self._identity_rail.set_identity_md_path(
-                    str(get_deepagent_identity_md_path())
-                )
-            except Exception:
-                logger.debug(
-                    "[JiuWenSwarmDeepAdapter] set_identity_md_path failed",
-                    exc_info=True,
-                )
         if self._response_prompt_rail:
             self._response_prompt_rail.set_channel(resolved_channel)
         if isinstance(self._subagent_rail, BrowserTaskPromptRail):
@@ -7100,12 +7050,8 @@ class JiuWenSwarmDeepAdapter(ExpertCapabilityMixin):
                         )
                     except Exception:
                         pass
-            # 仅在旧本地记忆启用时恢复写入工具，避免绕过配置开关。
-            elif (
-                get_memory_mode(get_config()) == "local"
-                and is_builtin_memory_allowed(get_config())
-                and is_memory_enabled(runtime_config.mode, get_config())
-            ):
+            # 非群聊数字分身且记忆启用时，恢复写入工具
+            else:
                 try:
                     from openjiuwen.core.memory.lite.memory_tools import (
                         get_decorated_tools as _get_sdk_memory_tools,

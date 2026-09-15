@@ -138,3 +138,95 @@ def test_send_file_push_error_uses_failure_envelope(tmp_path):
     assert "data=None" not in result
     assert "Failed to submit files:" in result
     assert "pipe down" in result
+
+
+def test_send_file_success_completes_open_todos_and_pushes_update(tmp_path, monkeypatch):
+    file_path = tmp_path / "handoff.md"
+    file_path.write_text("hello", encoding="utf-8")
+    todo_root = tmp_path / "todo"
+    session_dir = todo_root / "sess-deliver"
+    session_dir.mkdir(parents=True)
+    (session_dir / "todo.json").write_text(
+        '[{"id":"gen","content":"生成","activeForm":"生成","status":"in_progress"},'
+        '{"id":"deliver","content":"交付","activeForm":"交付","status":"pending"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.todo_snapshot.get_deepagent_todo_dir",
+        lambda: todo_root,
+    )
+
+    toolkit = sfu.SendFileToolkit(
+        request_id="r1",
+        session_id="sess-deliver",
+        channel_id="desktop",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock()
+
+    with patch(
+        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+        return_value=mock_server,
+    ), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        result = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "Sent" in result
+    assert mock_server.send_push.await_count == 2
+    todo_payload = mock_server.send_push.await_args_list[1].args[0]["payload"]
+    assert todo_payload["event_type"] == "todo.updated"
+    assert {t["id"]: t["status"] for t in todo_payload["todos"]} == {
+        "gen": "completed",
+        "deliver": "completed",
+    }
+
+
+def test_send_file_success_emits_todo_update_via_current_session_stream(tmp_path, monkeypatch):
+    """有当前会话时，todo.updated 应直接写入会话流，不依赖 gateway send_push。"""
+    file_path = tmp_path / "handoff.md"
+    file_path.write_text("hello", encoding="utf-8")
+    todo_root = tmp_path / "todo"
+    session_dir = todo_root / "sess-stream"
+    session_dir.mkdir(parents=True)
+    (session_dir / "todo.json").write_text(
+        '[{"id":"gen","content":"生成","activeForm":"生成","status":"in_progress"},'
+        '{"id":"deliver","content":"交付","activeForm":"交付","status":"pending"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.todo_snapshot.get_deepagent_todo_dir",
+        lambda: todo_root,
+    )
+
+    toolkit = sfu.SendFileToolkit(
+        request_id="r1",
+        session_id="sess-stream",
+        channel_id="desktop",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock()
+    mock_session = MagicMock()
+    mock_session.write_stream = AsyncMock()
+
+    with patch(
+        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+        return_value=mock_server,
+    ), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ), patch(
+        "openjiuwen.core.session.get_current_session",
+        return_value=mock_session,
+    ):
+        result = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "Sent" in result
+    # 会话流应被调用一次，且为 todo.updated 帧
+    assert mock_session.write_stream.await_count == 1
+    stream_schema = mock_session.write_stream.await_args.args[0]
+    assert stream_schema.type == "todo.updated"
+    assert stream_schema.payload["todos"][0]["status"] == "completed"
+    assert stream_schema.payload["todos"][1]["status"] == "completed"
+    # 不应再走 send_push 回退
+    assert mock_server.send_push.await_count == 1
+    assert mock_server.send_push.await_args_list[0].args[0]["payload"]["event_type"] == "chat.file"

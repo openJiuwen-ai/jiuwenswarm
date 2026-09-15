@@ -120,3 +120,60 @@ def load_todo_snapshot_for_frontend(session_id: str) -> list[dict[str, Any]]:
     if not isinstance(raw, list):
         return []
     return format_todos_for_frontend(raw)
+
+
+# Statuses that still mean "not done" on the checklist (delivery sync targets).
+_OPEN_TODO_STATUSES = frozenset(
+    {
+        TodoStatus.PENDING,
+        TodoStatus.IN_PROGRESS,
+        "pending",
+        "waiting",
+        "in_progress",
+        "running",
+    }
+)
+
+
+def complete_open_todos_for_session(session_id: str) -> tuple[list[dict[str, Any]], int]:
+    """Mark pending/in_progress todos completed after a successful file delivery.
+
+    Returns ``(frontend_snapshot, changed_count)``. Missing/unreadable todo files
+    yield ``([], 0)`` and do not raise — delivery must not fail because of todos.
+    """
+    sid = (session_id or "").strip()
+    if not sid:
+        return [], 0
+
+    path = get_deepagent_todo_dir() / sid / "todo.json"
+    if not path.is_file():
+        return [], 0
+
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return [], 0
+
+    if not isinstance(raw, list):
+        return [], 0
+
+    changed = 0
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        status_raw = item.get("status", "pending")
+        status_key = status_raw.value if hasattr(status_raw, "value") else str(status_raw).lower()
+        if status_raw in _OPEN_TODO_STATUSES or status_key in _OPEN_TODO_STATUSES:
+            item["status"] = TodoStatus.COMPLETED.value
+            changed += 1
+
+    if changed:
+        try:
+            path.write_text(
+                json.dumps(raw, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except Exception:
+            return [], 0
+
+    return format_todos_for_frontend(raw), changed

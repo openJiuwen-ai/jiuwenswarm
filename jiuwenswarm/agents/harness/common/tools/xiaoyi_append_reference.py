@@ -51,7 +51,7 @@ class XiaoyiAppendReferenceToolkit:
     async def append_reference(self, references: Any = None, **_ignored: Any) -> str:
         items = coerce_references(references)
         if not items:
-            return "Failed to send references: references must be a non-empty array, and each item must contain title/url/source/name"
+            return "发送引用来源失败：references 必须是非空数组，且每项含 title/url/source/name"
 
         try:
             from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
@@ -90,14 +90,14 @@ class XiaoyiAppendReferenceToolkit:
                 self.session_id,
                 len(items),
             )
-            return f"Sent {len(items)} references"
+            return f"成功发送 {len(items)} 条引用来源"
         except Exception as e:
             logger.exception(
                 "[XiaoyiAppendReference] 失败 session_id=%s error=%s",
                 self.session_id,
                 e,
             )
-            return f"Failed to submit references: {e}"
+            return f"提交引用来源失败: {e}"
 
     def get_tools(self) -> List[Tool]:
         def make_tool(
@@ -117,48 +117,44 @@ class XiaoyiAppendReferenceToolkit:
             make_tool(
                 name="xiaoyi_append_reference",
                 description=(
-                    "[Reference sources] Return information sources found during the "
-                    "answer (e.g. web search) to the user as reference cards on the "
-                    "mobile client. When the conversation involves web search, or "
-                    "depends on data from query skills such as weather / finance / "
-                    "health / encyclopedia, you MUST call this tool exactly once when "
-                    "composing the final merged answer; do not call it multiple times. "
-                    "For example, results from web-search tools such as xiaoyi-web-search "
-                    "must be delivered as reference sources. Calling this tool does not "
-                    "interrupt the current streaming output. "
-                    "title is the page title, name is the site name (e.g. Baidu Baike), "
-                    "source is the source type (e.g. web_search), url is the clickable link."
+                    "【引用来源】将回答过程中搜索到的信息依赖引用返回给用户（手机端参考来源卡片）。"
+                    "对话涉及联网搜索、或天气/金融/健康/百科等查询 skill 拿到的数据依赖时，"
+                    "必须在最后融合答复时统一调用本工具一次，不要分别调用。"
+                    "例如 xiaoyi-web-search 等联网搜索工具的结果必须下发引用来源。"
+                    "调用不会中断当前流式输出。"
+                    "title 为页面标题，name 为站点名称（如百度百科），"
+                    "source 为来源类型（如 web_search），url 为可点击链接。"
                 ),
                 input_params={
                     "type": "object",
                     "properties": {
                         "references": {
                             "type": "array",
-                            "description": "Array of reference items, each element is one reference object",
+                            "description": "引用来源数组，每个元素为一个引用对象",
                             "items": {
                                 "type": "object",
                                 "properties": {
                                     "title": {
                                         "type": "string",
-                                        "description": "Title of the referenced page, shown as the card's main title",
+                                        "description": "引用页面的标题，用于卡片主标题展示",
                                     },
                                     "url": {
                                         "type": "string",
-                                        "description": "Link address of the referenced page, used for click-through",
+                                        "description": "引用页面的链接地址，用于点击跳转",
                                     },
                                     "source": {
                                         "type": "string",
                                         "description": (
-                                            "Source type identifier, e.g. web_search, document, knowledge_base"
+                                            "来源类型标识，如 web_search、document、knowledge_base"
                                         ),
                                     },
                                     "name": {
                                         "type": "string",
-                                        "description": "Site name, e.g. Baidu Baike, Wikipedia",
+                                        "description": "站点名称，如百度百科、维基百科",
                                     },
                                     "imageUrl": {
                                         "type": "string",
-                                        "description": "Small logo icon URL for the page title, optional",
+                                        "description": "页面标题 logo 小图标 URL，可选",
                                     },
                                 },
                                 "required": ["title", "url", "source", "name"],

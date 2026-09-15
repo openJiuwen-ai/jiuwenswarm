@@ -45,7 +45,6 @@ from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.push i
 from jiuwenswarm.gateway.channel_manager.im_platforms.xiaoyi.xiaoyi_utils.formatter import (
     get_status_state_for_event,
     get_status_text_for_event,
-    is_retry_notice_text,
     should_send_as_reasoning_text,
     should_send_as_status_update,
     should_send_as_text,
@@ -498,13 +497,6 @@ class XiaoyiChannel(BaseChannel):
             getattr(config, "team_ws_keepalive_interval", 20) or 20
         )
         self._ws_keepalive_task: asyncio.Task | None = None
-        # 任务进行中的周期状态保活间隔（秒）。注意：**必须小于客户端的"静默对账"阈值**
-        # （小艺Work 桌面端 claw_desktop: RUN_STREAM_FRESH_MS = 45s），否则长静默期
-        # 客户端判定事件流失活、用历史草稿把仍在跑的轮次误标「已完成」。
-        # 默认 20s：即使丢一帧（40s）仍小于阈值；30s 丢一帧就会踩线。
-        self._status_update_interval: float = float(
-            getattr(config, "status_update_interval", 20) or 20
-        )
         # V2: push 合并窗口缓冲 push_id → [(ts, content, summary)]，避免短时多条 push 轰炸
         self._push_merge_buffers: dict[str, list[tuple[float, str, str]]] = {}
         # V2: push 延迟 flush 任务 push_id → asyncio.Task，窗口到期统一发送
@@ -1109,38 +1101,13 @@ class XiaoyiChannel(BaseChannel):
                 and msg.event_type == EventType.CHAT_PROCESSING_STATUS
                 and is_processing is False
             ):
-                # 团队会话的正常回合收尾由 team.completed 承担（防中途帧误结
-                # A2A 任务）。例外：携带 error 的终态帧（leader 死亡探针/停摆
-                # 看门狗补发的回合失败）必须放行——team.completed 不会来，
-                # 拦下的话手机端任务永远停在「正在处理中」。
-                _term_err = (
-                    str(msg.payload.get("error") or "").strip()
-                    if isinstance(msg.payload, dict)
-                    else ""
+                logger.info(
+                    "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_DEFERRED "
+                    "message_id=%s session_id=%s task_id=%s",
+                    msg.id,
+                    session_id,
+                    task_id,
                 )
-                if _term_err:
-                    for url_key in list(self._ws_connections.keys()):
-                        await self._send_status_update_with_state(
-                            task_id, session_id, _term_err, "failed", url_key
-                        )
-                    if session_id:
-                        await self._finalize_session(session_id, task_id)
-                    logger.info(
-                        "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_FAILED "
-                        "message_id=%s session_id=%s task_id=%s error=%r",
-                        msg.id,
-                        session_id,
-                        task_id,
-                        _term_err,
-                    )
-                else:
-                    logger.info(
-                        "[GUI_AGENT_DIAG] phase=XIAOYI_TEAM_STATUS_DEFERRED "
-                        "message_id=%s session_id=%s task_id=%s",
-                        msg.id,
-                        session_id,
-                        task_id,
-                    )
                 return
             if not is_processing and not self._is_session_active(session_id, task_id):
                 logger.info(
@@ -1205,18 +1172,6 @@ class XiaoyiChannel(BaseChannel):
                 error_detail = msg.payload.get("error", "")
                 if error_detail:
                     error_text = str(error_detail)
-
-            # 重试通知是过程性文案（LLMRetryRail 广播）：不能作为 failed 终态外发，
-            # 否则一次自动重试就会把手机/镜像侧的任务判死。终态仍由后续真错误/真结束驱动。
-            if is_retry_notice_text(error_text):
-                logger.info(
-                    "[GUI_AGENT_DIAG] phase=XIAOYI_RETRY_NOTICE_SKIPPED "
-                    "message_id=%s session_id=%s error=%r",
-                    msg.id,
-                    session_id,
-                    error_text,
-                )
-                return
 
             # 发送 failed 状态更新
             for url_key in list(self._ws_connections.keys()):
@@ -2763,14 +2718,12 @@ class XiaoyiChannel(BaseChannel):
         self._clear_task_timeout(session_id, task_id)
         self._task_timeout_tasks[task_key] = asyncio.create_task(task_timeout_handler())
 
-        # 任务进行中的周期状态保活：向手机/镜像侧持续推 status-update（working，带文案）。
-        # 间隔必须小于客户端静默对账阈值（桌面端 45s），否则长静默期（如后台装依赖、
-        # 长工具）客户端会误判完成。默认 20s，可用 config.status_update_interval 覆盖。
+        # Start 60-second periodic timeout for status updates
         async def periodic_timeout_handler():
-            """任务期间的周期状态保活（默认 20s，见 _status_update_interval）。"""
+            """60-second periodic timeout for status updates."""
             try:
                 while (session_id, task_id) in self._active_tasks:
-                    await asyncio.sleep(self._status_update_interval)
+                    await asyncio.sleep(60)
                     if (session_id, task_id) not in self._active_tasks:
                         break
                     # Skip if already waiting for push (1-hour timeout triggered)
@@ -3071,18 +3024,6 @@ class XiaoyiChannel(BaseChannel):
                 },
             },
         }
-        # 与 _send_status_update_with_state 对齐补一条诊断日志：周期保活帧同样带文案与
-        # state，排障时不应看起来像"空帧"（此前该函数无日志，容易被误判为空文案保活）。
-        logger.info(
-            "[GUI_AGENT_DIAG] phase=XIAOYI_STATUS_RESPONSE_BUILT "
-            "session_id=%s task_id=%s connection=%s state=working final=False "
-            "text=%r response=%r",
-            session_id,
-            task_id,
-            "*",
-            message,
-            response,
-        )
         # Send to all active connections
         for url_key in list(self._ws_connections.keys()):
             await self._send_agent_response(session_id, task_id, response, url_key)
