@@ -39,7 +39,7 @@ from jiuwenswarm.server.runtime.session.history_io import (
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
 from jiuwenswarm.agents.harness.team.team_manager import TEAM_EVENT_QUEUE_MAXSIZE
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
-from jiuwenswarm.common.utils import get_agent_skills_dir
+from jiuwenswarm.common.utils import get_agent_skills_dir, mask_sensitive
 from jiuwenswarm.common.config import get_config, get_skill_evolution_enabled
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -2559,6 +2559,39 @@ async def _process_team_message_stream(
             params_obj if isinstance(params_obj, dict) else None,
             requested_model_name or "",
         )
+        # Remember whether the caller explicitly selected a model.  Only an
+        # explicit choice updates the long-lived Team binding; inherited
+        # session metadata remains a compatibility fallback and is not
+        # implicitly promoted to Team scope.
+        explicit_model_selection = (
+            isinstance(params_obj, dict) and "model_selection" in params_obj
+        )
+        model_selection = params_obj.get("model_selection") if isinstance(params_obj, dict) else None
+        compiled_model_selection = params_obj.get("compiled_model_selection") if isinstance(params_obj, dict) else None
+        # Public requests persist and carry only the stable business reference.
+        # A compiled payload is accepted as a trusted internal hand-off when a
+        # server-side caller supplies it, but browsers do not need to build it.
+        if model_selection is not None:
+            from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+            model_selection = SwarmModelSelection.model_validate(model_selection).model_dump()
+        if model_selection is None:
+            current_metadata = get_session_metadata(session_id, cache_bust=True)
+            stored_selection = None
+            team_name_for_selection = str(current_metadata.get("team_name") or "").strip()
+            if team_name_for_selection:
+                try:
+                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    stored_selection = get_team_binding_store().get_team_selection(
+                        team_name_for_selection
+                    )
+                except Exception:
+                    stored_selection = None
+            if not isinstance(stored_selection, dict):
+                stored_selection = current_metadata.get("model_selection")
+            if isinstance(stored_selection, dict):
+                from jiuwenswarm.common.model_selection import ModelSelection as SwarmModelSelection
+                model_selection = SwarmModelSelection.model_validate(stored_selection).model_dump()
+        runtime_model_selection = model_selection
         # Provider-based assembly: build members from the shared config source,
         # no pre-built parent DeepAgent required.
         # 会话级 swarmflow 配置：请求 params > metadata > config.yaml
@@ -2582,7 +2615,33 @@ async def _process_team_message_stream(
             login_model_entry=login_model_entry,
             agent_group_name=agent_group_name,
             swarmflow_config=swarmflow_config,
+            model_selection=runtime_model_selection,
+            compiled_model_selection=compiled_model_selection,
         )
+        if isinstance(model_selection, dict) and model_selection.get("type") and model_selection.get("id"):
+            existing_selection = get_session_metadata(session_id, cache_bust=True).get("model_selection")
+            if existing_selection != model_selection:
+                update_session_metadata(
+                    session_id=session_id,
+                    model_selection={"type": model_selection["type"], "id": model_selection["id"]},
+                    touch_last_message_at=False,
+                    cache_bust=True,
+                    sync_write=True,
+                )
+            if explicit_model_selection:
+                team_name = str(get_session_metadata(session_id, cache_bust=True).get("team_name") or "").strip()
+                if team_name:
+                    from jiuwenswarm.server.runtime.team_binding_store import get_team_binding_store
+                    binding_store = get_team_binding_store()
+                    # Legacy session-only Teams may not have a binding yet;
+                    # retain their session persistence without making model
+                    # selection fail solely because the optional Team store
+                    # is absent.
+                    if binding_store.get(team_name) is not None:
+                        binding_store.set_team_selection(
+                            team_name=team_name,
+                            selection=model_selection,
+                        )
         # 请求携带了会话级配置时持久化（刷新恢复用）
         if (
             isinstance(params_obj, dict)
@@ -2628,13 +2687,29 @@ async def _process_team_message_stream(
             )
     except Exception as exc:
         logger.exception("[TeamHelpers] TeamAgent create failed: %s", exc)
-        error_payload: dict[str, Any] = {
-            "event_type": "chat.error",
-            "error": str(exc),
-        }
+        # Resolver/compiler failures can originate in provider configuration;
+        # never put credentials or authorization headers into a user-visible
+        # Team error payload.
+        error_payload: dict[str, Any] = {"event_type": "chat.error", "error": mask_sensitive(str(exc))}
         error_code = getattr(exc, "code", None)
-        if isinstance(error_code, str) and error_code.startswith("AGENT_GROUP_"):
-            error_payload["code"] = error_code
+        if error_code:
+            error_payload["code"] = str(error_code)
+        details = getattr(exc, "details", None)
+        if isinstance(details, dict):
+            def _safe_detail(value: Any) -> Any:
+                if isinstance(value, dict):
+                    return {
+                        key: _safe_detail(item)
+                        for key, item in value.items()
+                        if str(key).lower() not in {"api_key", "apikey", "secret", "token", "password", "authorization"}
+                    }
+                if isinstance(value, list):
+                    return [_safe_detail(item) for item in value]
+                if isinstance(value, str):
+                    return mask_sensitive(value)
+                return value
+
+            error_payload.update(_safe_detail(details))
         yield AgentResponseChunk(
             request_id=rid,
             channel_id=channel_id,

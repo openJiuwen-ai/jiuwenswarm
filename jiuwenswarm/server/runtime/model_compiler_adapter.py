@@ -1,0 +1,24 @@
+"""Thin JiuwenSwarm-to-agent-core compiler boundary."""
+
+from __future__ import annotations
+
+from typing import Any
+
+from jiuwenswarm.common.model_errors import MODEL_RUNTIME_UNAVAILABLE, ModelSelectionError
+from jiuwenswarm.common.model_selection import ResolvedModel, ResolvedSelection
+
+
+def compile_model_selection(resolved: ResolvedSelection) -> Any:
+    try:
+        from openjiuwen.core.foundation.llm.routing.compiler import compile_model_selection as compile_core
+        from openjiuwen.core.foundation.llm.routing.schema import ResolvedModel as CoreModel
+        from openjiuwen.core.foundation.llm.routing.schema import ResolvedModelGroup as CoreGroup
+        from openjiuwen.core.foundation.llm.routing.schema import ResolvedRoute as CoreRoute
+    except ImportError as exc:
+        raise ModelSelectionError(MODEL_RUNTIME_UNAVAILABLE, "agent-core model-selection compiler is unavailable") from exc
+    if isinstance(resolved, ResolvedModel):
+        core = CoreModel(**resolved.model_dump())
+    else:
+        routes = [CoreRoute(route_id=r.route_id, model=CoreModel(**r.model.model_dump()), enabled=r.enabled, request_overrides=r.request_overrides, tpm=r.tpm, rpm=r.rpm, timeout=r.timeout) for r in resolved.routes]
+        core = CoreGroup(model_group_id=resolved.model_group_id, routes=routes, request_config=resolved.request_config, routing=resolved.routing)
+    return compile_core(core)

@@ -1506,6 +1506,29 @@ def get_agentos_models(config: dict[str, Any] | None = None) -> list[dict[str, A
     return entries
 
 
+def load_models_config(config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Return a decrypted, ID-indexed model catalog snapshot.
+
+    This is deliberately a read-only boundary for the runtime resolver.  It
+    never mutates ``config.yaml`` and keeps the existing model decryption and
+    default inference rules in one place.
+    """
+    snapshot = deepcopy(config if config is not None else get_config())
+    models = snapshot.get("models") or {}
+    defaults = _decrypt_model_entries(models.get("defaults") or [])
+    agentos = get_agentos_models(snapshot)
+    groups = deepcopy(models.get("groups") or [])
+    by_id: dict[str, dict[str, Any]] = {}
+    for source, entries in (("defaults", defaults), ("agentos", agentos)):
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            model_id = str(entry.get("model_id") or "").strip()
+            if model_id:
+                by_id[model_id] = {"source": source, "entry": entry}
+    return {"defaults": defaults, "agentos": agentos, "groups": groups, "by_id": by_id}
+
+
 def get_default_models(config: dict[str, Any] | None = None) -> list[dict[str, Any]]:
     """获取默认模型列表，兼容新旧格式。
 
