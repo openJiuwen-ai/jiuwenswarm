@@ -287,7 +287,7 @@ def test_slim_search_skill_card_id_distinct_from_stock() -> None:
     "search_skill"；若 slim 版同 id，后注册为 no-op，flash 会话调到的
     将是不带 install 参数的 stock 实例。name 保持不变（模型可见面不变）。
     """
-    from jiuwenswarm.agents.harness.flash.slim_skill_toolkit import (
+    from jiuwenswarm.agents.harness.flash.tools.slim_skill_toolkit import (
         SlimSkillToolkit,
     )
 

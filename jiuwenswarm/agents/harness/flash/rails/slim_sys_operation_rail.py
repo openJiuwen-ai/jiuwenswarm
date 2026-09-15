@@ -36,8 +36,8 @@ class SlimSysOperationRail(SysOperationRail):
             WriteFileTool,
         )
 
-        from .flash_glob_tool import FlashGlobTool
-        from .flash_read_tool import FlashReadFileTool
+        from ..tools.flash_glob_tool import FlashGlobTool
+        from ..tools.flash_read_tool import FlashReadFileTool
 
         lang = agent.system_prompt_builder.language
         agent_id = getattr(getattr(agent, "card", None), "id", None)

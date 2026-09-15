@@ -22,7 +22,7 @@ from openjiuwen.core.memory.lite.memory_tool_context import MemoryToolContext
 from openjiuwen.harness.prompts.sections.memory import build_memory_section
 from openjiuwen.harness.rails import MemoryRail
 
-from .flash_memory_tool import FlashMemoryTool
+from ..tools.flash_memory_tool import FlashMemoryTool
 
 logger = logging.getLogger(__name__)
 

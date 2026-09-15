@@ -1,6 +1,6 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""flash 模式工具面包：统一/精简工具类与配套 rail。
+"""flash 模式工具面包：统一/精简工具类（tools/）与配套 rail（rails/）。
 
 由 :class:`JiuwenSwarmFlashAdapter
 <jiuwenswarm.server.runtime.agent_adapter.interface_flash.JiuwenSwarmFlashAdapter>`
@@ -8,13 +8,14 @@
 不经过本包。
 """
 
-from .flash_glob_tool import FlashGlobTool
-from .flash_memory_rail import FlashMemoryRail
-from .flash_memory_tool import FlashMemoryTool
-from .flash_read_tool import FlashReadFileTool
-from .flash_todo import FlashTodoRail, UnifiedTodoTool
-from .slim_skill_toolkit import SlimSkillToolkit
-from .slim_sys_operation_rail import SlimSysOperationRail
+from .rails import FlashMemoryRail, FlashTodoRail, SlimSysOperationRail
+from .tools import (
+    FlashGlobTool,
+    FlashMemoryTool,
+    FlashReadFileTool,
+    SlimSkillToolkit,
+    UnifiedTodoTool,
+)
 
 __all__ = [
     "FlashGlobTool",
