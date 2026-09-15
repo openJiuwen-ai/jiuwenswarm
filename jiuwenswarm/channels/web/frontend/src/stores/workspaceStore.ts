@@ -1,6 +1,7 @@
 import { create } from 'zustand';
 import i18n from '../i18n';
 import { projectRegistryClient } from '../features/workspace/projectRegistryClient';
+import { archivedTaskClient, findBatchSessionResult } from '../features/workspace/archivedTaskClient';
 import { persistWorkMode, readStoredWorkMode } from '../features/workspace/workModeStorage';
 import type { ProjectInfo, Session, WorkMode } from '../types';
 import { useChatStore } from './chatStore';
@@ -46,10 +47,10 @@ interface WorkspaceState {
   error: string | null;
   setWorkMode: (workMode: WorkMode) => Promise<void>;
   loadProjects: () => Promise<void>;
-  loadProjectSessions: (projectId: string, limit?: number) => Promise<void>;
+  loadProjectSessions: (projectId: string, limit?: number, refreshEpoch?: number) => Promise<void>;
   showMoreSessions: (projectId: string) => Promise<void>;
   collapseSessions: (projectId: string) => Promise<void>;
-  loadPinnedSessions: () => Promise<void>;
+  loadPinnedSessions: (refreshEpoch?: number) => Promise<void>;
   setSelectedProject: (project: ProjectInfo | null) => void;
   toggleProjectExpanded: (projectId: string) => void;
   createProject: (name: string, projectDir: string) => Promise<ProjectInfo>;
@@ -57,6 +58,13 @@ interface WorkspaceState {
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   removeSessions: (sessionIds: string[]) => void;
+  archiveProject: (projectId: string) => Promise<void>;
+  archiveSession: (sessionId: string) => Promise<void>;
+  /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
+  removeSessionLocally: (sessionId: string) => void;
+  /** 归档成功后同步从侧边栏移除项目及其会话列表缓存。 */
+  removeProjectLocally: (projectId: string) => void;
+  refreshWorkspaceData: () => Promise<void>;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -241,6 +249,9 @@ function getProjectSessionListsAfterPin(
   };
 }
 
+/** 工作区全量刷新代数：新刷新开始时递增，过期请求在写回前丢弃，避免归档/撤销竞态导致列表闪烁。 */
+let workspaceRefreshEpoch = 0;
+
 export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   workMode: readStoredWorkMode(),
   projects: [],
@@ -304,10 +315,11 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     }
   },
 
-  loadProjectSessions: async (projectId, limit) => {
+  loadProjectSessions: async (projectId, limit, refreshEpoch) => {
     const requestedLimit = limit ?? getVisibleCount(get(), projectId);
     try {
       const payload = await projectRegistryClient.getSessions(projectId, requestedLimit);
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const sessions = reconcileVisibleProjectSessions(
         payload.sessions || [],
         get().projectSessions[projectId] || [],
@@ -344,8 +356,9 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjectSessions(projectId, PROJECT_SESSION_PAGE_SIZE);
   },
 
-  loadPinnedSessions: async () => {
+  loadPinnedSessions: async (refreshEpoch) => {
     const payload = await projectRegistryClient.pinnedSessions();
+    if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
     const { workMode, projects } = get();
     const visibleProjectIds = new Set(projects.map((project) => project.project_id));
     set({
@@ -388,6 +401,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
+  // 既有“删除项目”入口现在对应项目归档，后端隐藏项目及其活跃会话并停用 cron。
   removeProject: async (projectId) => {
     await projectRegistryClient.remove(projectId);
     const sessionState = useSessionStore.getState();
@@ -398,11 +412,88 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     ]);
     if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
     get().removeSessions([...ids]);
+    await get().refreshWorkspaceData();
+  },
+
+  // 归档项目只影响可见性：后端会隐藏项目与其下会话、停用 cron。
+  // 列表移除由调用方在 toast 同帧本地更新，再后台 refresh 对账。
+  archiveProject: async (projectId) => {
+    await archivedTaskClient.archiveProject(projectId);
+  },
+
+  archiveSession: async (sessionId) => {
+    const response = await archivedTaskClient.archiveSession(sessionId);
+    const result = findBatchSessionResult(response, sessionId);
+    if (!result?.ok) {
+      const error = new Error(result?.error || 'Failed to archive session');
+      Object.assign(error, { code: result?.code });
+      throw error;
+    }
+  },
+
+  removeSessionLocally: (sessionId) => {
+    set((state) => {
+      let ownerProjectId: string | null = null;
+      for (const [projectId, sessions] of Object.entries(state.projectSessions)) {
+        if (sessions.some((session) => session.session_id === sessionId)) {
+          ownerProjectId = projectId;
+          break;
+        }
+      }
+      if (
+        !ownerProjectId
+        && !state.pinnedSessions.some((session) => session.session_id === sessionId)
+      ) {
+        return state;
+      }
+      return {
+        projectSessions: patchSessionLists(
+          state.projectSessions,
+          sessionId,
+          {},
+          { removeFromProjectLists: true },
+        ),
+        pinnedSessions: state.pinnedSessions.filter((session) => session.session_id !== sessionId),
+        projectSessionTotals: ownerProjectId
+          ? {
+              ...state.projectSessionTotals,
+              [ownerProjectId]: Math.max(0, (state.projectSessionTotals[ownerProjectId] ?? 1) - 1),
+            }
+          : state.projectSessionTotals,
+      };
+    });
+  },
+
+  removeProjectLocally: (projectId) => {
+    set((state) => {
+      if (!state.projects.some((project) => project.project_id === projectId)) return state;
+      const { [projectId]: _sessions, ...projectSessions } = state.projectSessions;
+      const { [projectId]: _total, ...projectSessionTotals } = state.projectSessionTotals;
+      const { [projectId]: _visibility, ...sessionVisibility } = state.sessionVisibility;
+      const { [projectId]: _expanded, ...expandedProjectIds } = state.expandedProjectIds;
+      return {
+        projects: state.projects.filter((project) => project.project_id !== projectId),
+        projectSessions,
+        projectSessionTotals,
+        sessionVisibility,
+        expandedProjectIds,
+        selectedProject: state.selectedProject?.project_id === projectId ? null : state.selectedProject,
+      };
+    });
+  },
+
+  // 归档/恢复/删除相关事件与操作后的统一对账入口：刷新项目、置顶会话
+  // 以及默认项目与已展开项目的会话列表。用 epoch 丢弃过期写回，避免归档/撤销交错时列表闪烁。
+  refreshWorkspaceData: async () => {
+    const epoch = ++workspaceRefreshEpoch;
     await get().loadProjects();
+    if (epoch !== workspaceRefreshEpoch) return;
+    await get().loadPinnedSessions(epoch);
+    if (epoch !== workspaceRefreshEpoch) return;
     const state = get();
     await Promise.all(state.projects
       .filter((project) => isDefaultProject(project) || Boolean(state.expandedProjectIds[project.project_id]))
-      .map((project) => state.loadProjectSessions(project.project_id)));
+      .map((project) => state.loadProjectSessions(project.project_id, undefined, epoch)));
   },
 
   removeSessions: (sessionIds) => {
