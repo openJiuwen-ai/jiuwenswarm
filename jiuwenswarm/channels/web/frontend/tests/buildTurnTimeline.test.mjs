@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 
-import { buildRenderItems } from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
+import { buildRenderItems, buildTurnWorkMeta, buildTurnFoldAnchorKeys } from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
 
 const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
@@ -230,4 +231,28 @@ test('slash 命令结果自成时间线块，不把上一轮任务用时排到�
     1,
     '命令卡片自身不应新增任务用时',
   );
+});
+
+
+test('正文不参与工作折叠，后续总结不会把澄清问题收起', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const question = assistantMessage(U + 1_000, U + 1_000, 'questions');
+      question.message.content = '请补充岗位方向、背景和面试时间。';
+      const items = buildRenderItems([
+        userMessage(U), question,
+        reasoningItem({ id: 'reasoning', text: '等待用户回复', startedAt: S, closed: true }),
+        assistantMessage(A, A, 'summary'),
+      ], isTeam, isProcessing);
+      const anchors = buildTurnFoldAnchorKeys(items, buildTurnWorkMeta(items, isProcessing));
+      assert.equal(anchors.get(1), isProcessing ? undefined : 'reasoning');
+      assert.equal(items.find((item) => item.key === 'questions').message.content, question.message.content);
+    }
+  }
+  // 渲染层不得再用 hideMeta 将正文放进折叠容器。
+  const source = readFileSync(new URL('../src/components/ChatPanel/MessageList.tsx', import.meta.url), 'utf8');
+  const messageBranch = source.split("if (item.type === 'message') {").at(-1).split("if (item.type === 'reasoning' || item.type === 'toolGroup') {")[0];
+  assert.ok(messageBranch.includes('<MessageItem'));
+  assert.ok(messageBranch.includes('renderAfterMessage?.(item.message)'));
+  assert.doesNotMatch(messageBranch, /timeline-collapse|turnFoldable/);
 });
