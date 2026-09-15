@@ -3317,10 +3317,12 @@
     "titleConfirm": "操作确认",
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
+    "allowSession": "会话内记住",
     "skip": "跳过",
     "tip": {
       "allowOnce": "仅本次授权执行",
       "allowAlways": "记住该规则，以后自动放行",
+      "allowSession": "本次会话内自动放行同类操作",
       "skip": "拒绝执行此操作"
     }
   },

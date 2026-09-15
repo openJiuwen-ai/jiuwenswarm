@@ -3336,10 +3336,12 @@
     "titleConfirm": "Confirm action",
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
+    "allowSession": "Remember for session",
     "skip": "Skip",
     "tip": {
       "allowOnce": "Allow this action only this time",
       "allowAlways": "Remember this rule and auto-allow from now on",
+      "allowSession": "Remember this rule for the current session",
       "skip": "Reject this action"
     }
   },

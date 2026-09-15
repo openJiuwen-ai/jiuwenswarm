@@ -1,8 +1,8 @@
 /**
  * AuthorizationPrompt — 授权 / 操作确认吸附条
  *
- * 吸附在输入框正上方（不随消息滚动）。复用后端下发的选项
- * （如 本次允许 / 总是允许 / 拒绝），仅重排布局，文案原样呈现；
+ * 吸附在输入框正上方（不随消息滚动）。复用后端下发的选项，
+ * 中文界面保留后端文案，英文界面根据语义映射到 i18n 文案。
  * 语义与选项值原样回传，不改任何后端行为。确认后不在对话中回显。
  *
  * 结构：标题行（后端 header，如「权限审批: write_file」）+ 动作按钮；
@@ -81,7 +81,7 @@ function HoverTip({ text, children }: { text: string; children: React.ReactNode 
 }
 
 export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptProps) {
-  const { t } = useTranslation();
+  const { t, i18n } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const [submitting, setSubmitting] = useState(false);
 
@@ -90,25 +90,47 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
 
-  // 按钮文案与说明原样使用后端下发的 label / description；
-  // semantic 仅用于固定排序与样式映射，不再覆盖显示文案。
+  // 中文界面原样使用后端下发的 label / description；
+  // semantic 用于固定排序与样式映射，并在英文界面映射到对应的 i18n 文案。
+
+  const isEnglish = i18n.resolvedLanguage === 'en';
+
+  const localizeAction = (action: ResolvedAction): ResolvedAction => {
+    if (!isEnglish) return action;
+    const labels: Record<AuthSemantic, string> = {
+      'allow-once': t('authPrompt.allowOnce'),
+      'allow-always': t('authPrompt.allowAlways'),
+      'session-allow': t('authPrompt.allowSession'),
+      reject: t('authPrompt.skip'),
+      other: action.label,
+    };
+    const tips: Record<AuthSemantic, string> = {
+      'allow-once': t('authPrompt.tip.allowOnce'),
+      'allow-always': t('authPrompt.tip.allowAlways'),
+      'session-allow': t('authPrompt.tip.allowSession'),
+      reject: t('authPrompt.tip.skip'),
+      other: action.tip,
+    };
+    return { ...action, label: labels[action.semantic], tip: tips[action.semantic] };
+  };
+
   const actions = useMemo<ResolvedAction[]>(() => {
     const opts = primary?.options ?? [];
     const resolved: ResolvedAction[] = opts.map((option) => {
       const semantic = classifyAuthOption(option.value || option.label);
-      return {
+      return localizeAction({
         semantic,
         option,
         label: option.label,
         tip: (option.description || '').trim(),
-      };
+      });
     });
     const rank = (s: AuthSemantic) => {
       const idx = ACTION_ORDER.indexOf(s);
       return idx === -1 ? ACTION_ORDER.length : idx;
     };
     return resolved.sort((a, b) => rank(a.semantic) - rank(b.semantic));
-  }, [primary]);
+  }, [primary, isEnglish, t]);
 
   /** 把选中的语义应用到所有 question（多条时统一处理）。 */
   const buildAnswers = useCallback(
@@ -138,7 +160,10 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
   if (!primary) return null;
 
   const fallbackTitle = isConfirm ? t('authPrompt.titleConfirm') : t('authPrompt.title');
-  const title = (primary.header || '').trim() || fallbackTitle;
+  const rawTitle = (primary.header || '').trim();
+  const title = isEnglish
+    ? rawTitle.replace(/^权限审批(?::\s*)?/, `${t('authPrompt.title')}: `).trim() || fallbackTitle
+    : rawTitle || fallbackTitle;
 
   return (
     <div
