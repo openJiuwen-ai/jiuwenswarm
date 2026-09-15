@@ -13,6 +13,13 @@ config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
 类常量，flash 同样把行为开关、keep 白名单与工具面裁剪作为类常量/override。
 
+部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
+officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
+flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
+``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
+normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
+mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
+
 flash 行为由类常量定义：
 - :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
   等）与渐进式工具的常驻名单（``tool_lazy_load.eager_tools`` 整表替换），深合并
@@ -930,8 +937,27 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         if not isinstance(base_react, dict):
             base_react = {}
             out["react"] = base_react
+        base_lazy = base_react.get("tool_lazy_load")
+        base_eager = (
+            base_lazy.get("eager_tools") if isinstance(base_lazy, dict) else None
+        )
         for k, v in self._FLASH_REACT_OVERRIDE.items():
             base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
+        # eager_tools 是整表替换（设计上 flash 须写全最终名单）：部署配置过的
+        # 自定义常驻工具会退到 deferred，这里把差异打出来，避免工具呈现变化
+        # 不可观测。
+        if isinstance(base_eager, list):
+            merged_lazy = out["react"].get("tool_lazy_load")
+            merged_eager = (
+                merged_lazy.get("eager_tools") if isinstance(merged_lazy, dict) else None
+            )
+            dropped = [t for t in base_eager if t not in (merged_eager or [])]
+            if dropped:
+                logger.warning(
+                    "[JiuwenSwarmFlashAdapter] flash eager_tools override replaces "
+                    "the deployment list; these tools fall back to deferred: %s",
+                    dropped,
+                )
         self._warn_evolution_env_bypass(out)
         return out
 

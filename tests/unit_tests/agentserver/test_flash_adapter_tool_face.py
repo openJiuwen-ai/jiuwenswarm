@@ -318,9 +318,23 @@ async def test_unified_todo_get_forwards_id() -> None:
 
 @pytest.mark.asyncio
 async def test_unified_todo_get_requires_id() -> None:
+    """参数错误返回结构化 ToolOutput（不 raise，与 FlashMemoryTool 同风格）。"""
     tool = UnifiedTodoTool({"get": _StubTodoEngine()}, language="cn")
-    with pytest.raises(ValueError):
-        await tool.invoke({"action": "get"})
+
+    result = await tool.invoke({"action": "get"})
+
+    assert result.success is False
+    assert "'id' is required" in result.error
+
+
+@pytest.mark.asyncio
+async def test_unified_todo_unsupported_action_returns_error() -> None:
+    tool = UnifiedTodoTool({}, language="cn")
+
+    result = await tool.invoke({"action": "purge"})
+
+    assert result.success is False
+    assert "unsupported todo action" in result.error
 
 
 # ── flash memory rail（只读双源 / 恢复注册） ─────────────────────────
@@ -439,3 +453,38 @@ def test_flash_memory_read_only_check_fails_closed() -> None:
     tool = object.__new__(FlashMemoryTool)
     tool._read_only_flag = _boom
     assert tool._is_read_only() is True
+
+
+def test_flash_eager_tools_override_logs_dropped_deployment_entries() -> None:
+    """flash eager_tools 整表替换时，被替换掉的部署名单差异必须打出日志。"""
+    adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
+
+    config_base = {
+        "react": {
+            "tool_lazy_load": {
+                "eager_tools": ["visual_question_answering", "audio_metadata", "todo"]
+            }
+        }
+    }
+
+    # 同 test_evolution_env_bypass_warns：仓库 logger 不传播，直接挂模块 logger。
+    captured: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _CaptureHandler()
+    interface_flash.logger.addHandler(handler)
+    try:
+        merged = adapter._apply_flash_react_override(config_base)
+    finally:
+        interface_flash.logger.removeHandler(handler)
+
+    merged_eager = merged["react"]["tool_lazy_load"]["eager_tools"]
+    assert "todo" in merged_eager
+    assert "visual_question_answering" not in merged_eager
+
+    warning_text = " ".join(m for m in captured if "eager_tools" in m)
+    assert "visual_question_answering" in warning_text
+    assert "audio_metadata" in warning_text

@@ -1,21 +1,12 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""FlashTodoRail — lightweight unified-todo rail (replaces TaskPlanningRail).
+"""UnifiedTodoTool — flash 统一 todo 工具（todo_create/get/list/modify 4 合 1）。
 
-New standalone rail (does NOT inherit TaskPlanningRail / ConcurrentSafeTaskPlanningRail)
-registering a single unified `todo` tool (action dispatch: create / list / get /
-modify). The 4 stock Todo engines (TodoCreateTool / TodoListTool / TodoGetTool /
-CompatibleTodoModifyTool) are instantiated but never individually registered —
-the unified tool dispatches to them and threads ``session`` through (todo.json
-is keyed by session).
-
-Why standalone (not a TaskPlanningRail subclass): the stock base class hard-codes
-``tool_name.startswith("todo_")`` / ``== "todo_create"`` in its outer-task-loop
-hooks; the unified tool name ``todo`` silently breaks those checks. Ditching the
-inheritance removes the coupling entirely. What we drop (TaskPlan sync / advance
-reminders / model selection) is not used by this deployment; the frontend todo
-refresh chain lives in stream_event_rail / task_execution_rail, whose tool-name
-constants include "todo".
+单卡 action 分发到 4 个 stock Todo 引擎（引擎不单独注册），session 透传
+（todo.json 按 session 键控）。挂载与提示注入见 flash_todo_rail.FlashTodoRail
+（独立 rail，不继承 TaskPlanningRail：其外层 task-loop 钩子硬编码
+``todo_`` 前缀，统一名 ``todo`` 会静默绕过这些检查；前端 todo 刷新链路在
+stream_event_rail / task_execution_rail，其工具名常量已含 ``todo``）。
 """
 
 from __future__ import annotations
@@ -24,6 +15,7 @@ import logging
 from typing import Any
 
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
+from openjiuwen.harness.tools.base_tool import ToolOutput
 
 logger = logging.getLogger(__name__)
 
@@ -183,14 +175,17 @@ class UnifiedTodoTool(Tool):
         self._engines = engines
 
     async def invoke(self, inputs, **kwargs):
+        # 参数错误用结构化 ToolOutput 返回（与 FlashMemoryTool 同风格），
+        # 不 raise——交给模型读到错误后自行纠正参数。
         data = dict(inputs or {})
         action = str(data.get("action") or "").strip().lower()
 
         if action == "create":
             tasks = data.get("tasks")
             if not tasks or not isinstance(tasks, list):
-                raise ValueError(
-                    "'tasks' is required for action=create and must be a JSON array"
+                return ToolOutput(
+                    success=False,
+                    error="'tasks' is required for action=create and must be a JSON array",
                 )
             return await self._engines["create"].invoke({"tasks": tasks}, **kwargs)
 
@@ -200,20 +195,22 @@ class UnifiedTodoTool(Tool):
         if action == "get":
             task_id = str(data.get("id") or "").strip()
             if not task_id:
-                raise ValueError("'id' is required for action=get")
+                return ToolOutput(success=False, error="'id' is required for action=get")
             return await self._engines["get"].invoke({"id": task_id}, **kwargs)
 
         if action == "modify":
             modify_action = str(data.get("modify_action") or "").strip().lower()
             if not modify_action:
-                raise ValueError("'modify_action' is required for action=modify")
+                return ToolOutput(
+                    success=False, error="'modify_action' is required for action=modify"
+                )
             inner = {"action": modify_action}
             for key in ("todos", "ids", "todo_data"):
                 if data.get(key) is not None:
                     inner[key] = data[key]
             return await self._engines["modify"].invoke(inner, **kwargs)
 
-        raise ValueError(f"unsupported todo action: {action!r}")
+        return ToolOutput(success=False, error=f"unsupported todo action: {action!r}")
 
     async def stream(self, inputs, **kwargs):
         yield await self.invoke(inputs, **kwargs)
