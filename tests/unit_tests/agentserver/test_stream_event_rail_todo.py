@@ -75,7 +75,7 @@ async def test_context_usage_reports_input_tokens_instead_of_reply_total(monkeyp
             }
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.resolve_context_window_tokens",
         lambda **_kwargs: 10000,
     )
     session = _FakeSession()
@@ -111,7 +111,7 @@ async def test_context_usage_keeps_zero_input_tokens_instead_of_falling_back(mon
             }
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.resolve_context_window_tokens",
         lambda **_kwargs: 10000,
     )
     session = _FakeSession()
@@ -166,13 +166,13 @@ async def test_context_usage_rail_does_not_duplicate_core_snapshot_without_repor
 async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
     captured_kwargs = {}
 
-    def _resolve_context_max(**kwargs):
+    def _resolve_context_window_tokens(**kwargs):
         captured_kwargs.update(kwargs)
         return 1000000
 
     monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.ContextUtils.resolve_context_max",
-        _resolve_context_max,
+        "jiuwenswarm.agents.harness.common.rails.stream_event_rail.resolve_context_window_tokens",
+        _resolve_context_window_tokens,
     )
     session = _FakeSession()
     ctx = SimpleNamespace(
@@ -184,7 +184,7 @@ async def test_context_usage_keeps_runtime_context_limit_fallback(monkeypatch):
 
     await _TestRail().emit_context_usage(ctx)
 
-    assert captured_kwargs["fallback_context_window_tokens"] == 1048576
+    assert captured_kwargs["context_engine_config"]["context_window_tokens"] == 1048576
     assert session.outputs[0].payload["context_max"] == 1000000
 
 

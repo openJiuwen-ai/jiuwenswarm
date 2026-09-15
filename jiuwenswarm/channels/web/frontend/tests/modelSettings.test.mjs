@@ -112,6 +112,34 @@ test('preset protocol mapping uses only the exact server fields', () => {
   assert.equal('endpoint_profile' in anthropic, false);
 });
 
+test('model context windows parse editable sizes and support the 1M lock switch', () => {
+  const freshDraft = createModelDraft(undefined, catalog);
+  assert.equal(freshDraft.context_window_tokens, '256K');
+  assert.equal(freshDraft.context_window_1m_enabled, false);
+
+  const saved = modelDraftToEntry(
+    { ...freshDraft, vendor_selection: CUSTOM_VENDOR_SELECTION, model_name: 'custom-model', context_window_tokens: '200k', api_key: 'secret', api_base: 'https://custom.example/v1' },
+    undefined,
+    catalog,
+    true,
+  );
+  assert.equal(saved.context_window_tokens, 200 * 1024);
+
+  const locked = modelDraftToEntry(
+    { ...freshDraft, vendor_selection: CUSTOM_VENDOR_SELECTION, model_name: 'custom-model', context_window_tokens: '200k', context_window_1m_enabled: true, api_key: 'secret', api_base: 'https://custom.example/v1' },
+    undefined,
+    catalog,
+    true,
+  );
+  assert.equal(locked.context_window_tokens, 1048576);
+
+  const modelDialog = source('src/features/settings/modules/models/ModelDialog.tsx');
+  assert.match(modelDialog, /name: 'context_window_tokens'/);
+  assert.match(modelDialog, /name: CONTEXT_WINDOW_1M_FIELD/);
+  assert.match(modelDialog, /disabled: contextWindow1mEnabled/);
+  assert.match(modelDialog, /settingsPanel\.models\.contextWindowHint/);
+});
+
 test('switching providers clears credentials before applying the next connection preset', () => {
   const startingDraft = {
     ...createModelDraft(undefined, catalog),
@@ -280,6 +308,7 @@ test('alias validation is optional, global, exact, and excludes the edited row o
     api_key: 'secret',
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
+    context_window_tokens: '262144',
     is_default: false,
   };
   assert.equal(validateModelDraft(baseDraft, models, undefined, catalog, t).alias, undefined);
@@ -309,6 +338,7 @@ test('model API keys accept 2048 characters and reject longer values', () => {
     model_input_mode: 'manual',
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
+    context_window_tokens: '262144',
     is_default: false,
   };
   assert.equal(
@@ -343,6 +373,7 @@ test('reasoning validation uses the selected model capability rather than a fron
     api_key: 'secret',
     api_base: 'https://custom.example/v1',
     reasoning_level: 'extreme',
+    context_window_tokens: '262144',
     is_default: false,
   };
   for (const level of ['extreme', 'low', 'medium', 'high']) {
@@ -408,6 +439,7 @@ test('custom vendor uses server reasoning data even when there are no built-in p
     api_key: 'secret',
     api_base: 'https://custom.example/v1',
     reasoning_level: '',
+    context_window_tokens: '262144',
     is_default: false,
   };
   assert.deepEqual(validateModelDraft(draft, [], undefined, emptyCatalog, t), {});
