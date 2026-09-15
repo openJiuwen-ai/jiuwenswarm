@@ -90,6 +90,13 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "plan.mode_exited",
         "runtime.accepted",
         "execution.error",
+        "proactive_recommendation",
+        # RSI pushes contain the complete node/progress payload.  Reducing
+        # them to {session_id, content} would make the evolution tree appear
+        # empty in the browser.
+        "rsi.training.status.changed",
+        "rsi.training.progress",
+        "rsi.training.tree.delta",
     }
 )
 
@@ -739,11 +746,22 @@ class WebChannel(BaseWsChannel):
                 continue
             key = (session_id, trace_id)
             current = self._trajectory_pending_updates.get(key)
-            revision = int(getattr(update, "revision", 0))
-            current_revision = (
-                int(getattr(current, "revision", 0)) if current is not None else -1
+            # Records and frames advance on separate watermarks, so a hint
+            # bringing new frames for an unchanged record has to outrank the
+            # one it is coalesced against rather than tie with it.
+            incoming = (
+                int(getattr(update, "revision", 0)),
+                int(getattr(update, "frame_seq", 0)),
             )
-            if revision >= current_revision:
+            held = (
+                (
+                    int(getattr(current, "revision", 0)),
+                    int(getattr(current, "frame_seq", 0)),
+                )
+                if current is not None
+                else (-1, -1)
+            )
+            if incoming >= held:
                 self._trajectory_pending_updates[key] = update
         task = self._trajectory_send_task
         if self._trajectory_pending_updates and (task is None or task.done()):
@@ -779,6 +797,7 @@ class WebChannel(BaseWsChannel):
                 "session_id": session_id,
                 "trace_id": str(getattr(update, "trace_id", "") or ""),
                 "revision": int(getattr(update, "revision", 0)),
+                "frame_seq": int(getattr(update, "frame_seq", 0)),
                 "store_epoch": getattr(update, "store_epoch", None),
                 "lifecycle": str(getattr(update, "lifecycle", "final") or "final"),
             }
@@ -890,6 +909,10 @@ class WebChannel(BaseWsChannel):
             }
             for _key in (
                 "role", "member_name", "member_action", "source_channel", "user_id", "display_name",
+                # 后台跨会话轮必须保留请求边界和来源。前端据此创建独立 turn，
+                # 不能把它的流式输出复用到上一轮用户消息上。
+                "request_id", "turn_request_id", "final_mode", "segment_id",
+                "message_origin", "session_message_id", "cross_session",
                 # 主动推荐标记需透传到所有 chunk 事件（chat.delta/chat.reasoning/…），
                 # 否则前端无法按 source 短路：proactive 的 chat.reasoning 会被当作
                 # 用户轮思考流追加进 reasoningSegments，污染上一条消息的思考状态。
@@ -903,6 +926,8 @@ class WebChannel(BaseWsChannel):
                 _val = msg.payload.get(_key)
                 if _val is not None:
                     payload[_key] = _val
+            if cls._should_backfill_request_id(event_name) and "request_id" not in payload and msg.id:
+                payload["request_id"] = msg.id
             if event_name in {"chat.delta", "chat.final", "chat.reasoning"}:
                 agent_template_name = msg.payload.get("agent_template_name")
                 if agent_template_name is not None:

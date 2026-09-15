@@ -61,7 +61,6 @@ class SessionExecutionRegistry:
     def resume_waiting(handle: SessionExecutionHandle) -> None:
         if handle.state is SessionExecutionState.WAITING_FOR_CONTROL:
             handle.state = SessionExecutionState.RUNNING
-        handle.waiting_control_id = None
 
     def mark_terminal(
         self,
@@ -75,6 +74,7 @@ class SessionExecutionRegistry:
         if handle.state.terminal:
             return
         handle.state = state
+        handle.waiting_control_id = None
         handle.finished_at = time.monotonic()
         if error is not None:
             handle.error = str(error)

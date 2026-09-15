@@ -5,10 +5,14 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session.session_history import (
     get_read_history_path,
@@ -532,46 +536,128 @@ def list_session_turns(
     return {"turns": turns, "total": user_count}
 
 
-def get_last_turn_info(
+_TURN_MUTATION_LOCKS: dict[str, threading.Lock] = {}
+_TURN_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def turn_mutation_lock(session_id: str) -> Iterator[None]:
+    """按 session 串行化 discard/redo 等轮次状态变更。
+
+    状态校验(turn diff 的 status 检查)与状态变更(restore/mark/unmark/
+    truncate)之间不是原子的:并发请求可同时通过校验各自执行——重复
+    discard 会双双返回成功(违反 ``NOTHING_TO_DISCARD`` 契约),并发 redo
+    会因前一个已移除 ``discarded_out`` 标记而误报 ``REDO_HISTORY_MISSING``。
+    本锁在变更全程按 session 互斥;discard/redo 运行在线程池中
+    (``asyncio.to_thread``),线程锁即足以覆盖真实并发。
+
+    锁按 session_id 惰性创建、进程生命周期内复用(数量与 session 同量级,
+    不做主动回收)。
+    """
+    with _TURN_MUTATION_LOCKS_GUARD:
+        lock = _TURN_MUTATION_LOCKS.setdefault(session_id, threading.Lock())
+    with lock:
+        yield
+
+
+def _turn_still_in_history(
+    turn: dict[str, Any], record: dict[str, Any] | None
+) -> bool:
+    """校验候选轮是否仍对应当前 history 中的第 N 条 user 消息。
+
+    conversation rewind / 历史重写会移除或替换 user 消息,但 change_sets 与
+    snapshot 不随之清理;按 request_id → user_message_id → timestamp 三级
+    身份核对(镜像 ``DiffService._entry_matches_turn`` 的规则),排除已回退
+    或被替换的轮次。
+    """
+    from jiuwenswarm.server.utils.diff_service import DiffService
+
+    return DiffService.turn_matches_history_record(turn, record)
+
+
+def get_last_modified_turn_info(
     *,
     session_id: str,
+    project_dir: str | None = None,
+    extra_history_roots: list[str] | None = None,
 ) -> dict[str, Any]:
-    """返回最后一轮 user message 的 turn_index 和 timestamp.
+    """返回最后一个有文件修改的轮次的 turn_index 和 timestamp.
 
-    用于"撤销本轮代码修改"(``project.git.discard_turn_changes``)功能:
-    该接口需要最后一轮的 turn_index(传给 ``restore_session_files``)和
-    timestamp(传给 ``truncate_file_ops_by_timestamp``)。
+    用于"撤销/重新应用代码修改"(``project.git.discard_turn_changes`` /
+    ``project.git.redo_turn_changes``)定位目标轮:turn diff 中 files
+    非空的最新轮次(含 change_sets 持久化的 discarded 轮,其快照保留
+    撤销前的文件列表)。
 
-    与 ``list_session_turns`` 不同,本函数不过滤不可选的 user message,
-    返回的是最后一条 user message 的信息(包括系统注入的消息)。
+    纯对话轮(无文件修改)不构成撤销目标——否则新一轮对话没有任何
+    文件改动时,上一轮的修改既无法撤销,discard 还会把空轮误标为
+    discarded。
+
+    已从会话回退(rewind)或被替换的轮次同样不构成撤销目标:change_sets
+    与 snapshot 不随 rewind 清理,须按当前 history 的 user 消息身份校验
+    排除,否则会定位到当前会话已不存在的轮次,restore 空转却返回成功。
 
     Returns:
         ``{"turn_index": int, "timestamp": float}``;
-        无 history 或无 user message 时返回 ``{"turn_index": 0, "timestamp": 0.0}``。
+        无 history 或无带文件修改的轮次时返回 ``{"turn_index": 0, "timestamp": 0.0}``;
+        目标轮详情缺失(change_sets 有记录但快照丢失)时返回该轮序号与
+        零时间戳,由调用方按 ``DIFF_HISTORY_EXPIRED`` 拒绝——它仍是最后
+        一个有修改的轮,不能降级选中更早轮次。
+
+    Raises:
+        history 读取或 turn diff 计算失败时原样向上传播。"定位目标轮失败"
+        是错误态,由调用方映射为 ``INTERNAL_ERROR``;若在此吞掉并返回
+        ``{"turn_index": 0}``,discard/redo 会报 ``NO_TURN_TO_DISCARD``
+        ("没有可撤销的修改"),把内部错误伪装成业务空态误导用户。
     """
-    if not history_exists(session_id):
-        return {"turn_index": 0, "timestamp": 0.0}
+    from jiuwenswarm.server.utils.diff_service import get_diff_service
 
-    try:
+    user_records: list[dict[str, Any]] = []
+    if history_exists(session_id):
         history = load_history_records(session_id)
-    except Exception as exc:
-        logger.warning("get_last_turn_info: failed to read history: %s", exc)
-        return {"turn_index": 0, "timestamp": 0.0}
+        if isinstance(history, list):
+            user_records = [
+                r
+                for r in history
+                if isinstance(r, dict) and r.get("role") == "user"
+            ]
 
-    if not isinstance(history, list):
-        return {"turn_index": 0, "timestamp": 0.0}
+    turns = get_diff_service().get_turn_diff_summaries(
+        session_id,
+        project_dir,
+        extra_history_roots=extra_history_roots,
+    )
 
-    user_count = 0
-    last_timestamp: float = 0.0
-    for record in history:
-        if record.get("role") != "user":
+    # get_turn_diff_summaries 按 turnIndex 倒序返回,跳过纯对话轮与已回退轮。
+    for turn in turns:
+        turn_index = int(turn.get("turnIndex", 0) or 0)
+        if turn_index <= 0:
             continue
-        user_count += 1
-        ts = record.get("timestamp", 0)
-        if isinstance(ts, (int, float)):
-            last_timestamp = float(ts)
-
-    return {"turn_index": user_count, "timestamp": last_timestamp}
+        record = (
+            user_records[turn_index - 1]
+            if 0 < turn_index <= len(user_records)
+            else None
+        )
+        if not _turn_still_in_history(turn, record):
+            continue
+        if not turn.get("files"):
+            # change_sets 有该轮记录但快照丢失/损坏:summaries 降级构造的
+            # 摘要 files 为空而 stats.filesChanged > 0。若跳过它会误选更早
+            # 轮次,后续 redo 按时间下界读日志会重新应用该轮已撤销的内容;
+            # 返回零时间戳,交由调用方守卫以 DIFF_HISTORY_EXPIRED 拒绝。
+            logger.warning(
+                "get_last_modified_turn_info: turn %s has change_set records "
+                "but no snapshot details",
+                turn_index,
+            )
+            return {"turn_index": turn_index, "timestamp": 0.0}
+        timestamp = turn.get("start_timestamp")
+        if not isinstance(timestamp, (int, float)):
+            # change_sets 降级构造的轮次可能缺 start_timestamp,
+            # 按当前 history 的第 N 条 user 消息兜底(与 turn_index 编号规则一致)。
+            ts = record.get("timestamp", 0) if record else 0
+            timestamp = ts if isinstance(ts, (int, float)) else 0
+        return {"turn_index": turn_index, "timestamp": float(timestamp or 0.0)}
+    return {"turn_index": 0, "timestamp": 0.0}
 
 
 def restore_session_files(
@@ -781,6 +867,7 @@ def _build_context_messages_from_history(
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+        OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
         OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
@@ -829,12 +916,40 @@ def _build_context_messages_from_history(
         # ── User message ──
         if role == "user":
             if content.strip():
-                source_kind = str(record.get("channel_id") or "history").strip()
+                internal_session_message = (
+                    record.get("message_origin") == SESSION_MESSAGE_ORIGIN
+                )
+                if internal_session_message:
+                    from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
+                        render_cross_session_history_content,
+                    )
+
+                    cross_session = record.get("cross_session")
+                    cross_session = (
+                        dict(cross_session)
+                        if isinstance(cross_session, dict)
+                        else {}
+                    )
+                    language = str(cross_session.get("language") or "zh").strip()
+                    content = render_cross_session_history_content(
+                        content,
+                        cross_session,
+                        language=language,
+                    )
+                source_kind = (
+                    "agent_session"
+                    if internal_session_message
+                    else str(record.get("channel_id") or "history").strip()
+                )
                 context_messages.append(UserMessage(
                     content=content,
                     metadata={
                         OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
-                            OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            (
+                                OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
+                                if internal_session_message
+                                else OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER
+                            ),
                         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                     },
                 ))

@@ -1113,6 +1113,7 @@ test('every visible Settings control maps to an exact persistence field or RPC',
     'proactive_recommendation_enabled',
     'proactive_recommendation_max_recommend_per_day',
     'proactive_recommendation_max_rounds_per_tick',
+    'rsi_enabled',
     'task_full_duplex_enabled',
     'trajectory_ui_enabled',
   ]);

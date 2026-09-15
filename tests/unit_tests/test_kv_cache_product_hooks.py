@@ -30,12 +30,79 @@ def _set_gate(monkeypatch: pytest.MonkeyPatch, enabled: bool) -> None:
     )
 
 
+@pytest.mark.asyncio
+async def test_product_shutdown_does_not_wait_forever_for_cancelled_task(monkeypatch):
+    started = asyncio.Event()
+    release = asyncio.Event()
+
+    async def resistant():
+        started.set()
+        try:
+            await release.wait()
+        except asyncio.CancelledError:
+            await release.wait()
+
+    task = asyncio.create_task(resistant())
+    kv_cache_product_hooks._PRODUCT_GUARD_TASKS.add(task)
+    task.add_done_callback(kv_cache_product_hooks._PRODUCT_GUARD_TASKS.discard)
+    await started.wait()
+    monkeypatch.setattr(
+        kv_cache_product_hooks, "KVC_TERMINAL_CLEANUP_TIMEOUT_SECONDS", 0.01
+    )
+    try:
+        await asyncio.wait_for(kv_cache_product_hooks.cancel_pending_tasks(), timeout=0.5)
+        assert not task.done()
+    finally:
+        release.set()
+        await task
+
+
 async def _drain_product_actions() -> None:
     while kv_cache_product_hooks._PRODUCT_GUARD_TASKS:
         await asyncio.gather(
             *tuple(kv_cache_product_hooks._PRODUCT_GUARD_TASKS),
             return_exceptions=True,
         )
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("is_team", [False, True])
+@pytest.mark.parametrize("state", ["off", "no-runtime", "success", "error", "cancel"])
+async def test_release_uses_correct_session_and_preserves_business_boundary(monkeypatch, is_team, state):
+    from unittest.mock import AsyncMock, Mock
+    from jiuwenswarm.server.runtime.session.kv_cache import kv_cache_application_runtime
+
+    _set_gate(monkeypatch, state != "off")
+    runtime = object()
+    lookup = Mock(return_value=None if state == "no-runtime" else runtime)
+    monkeypatch.setattr(kv_cache_application_runtime, "get_kv_cache_runtime", lookup)
+    release = AsyncMock(return_value=True)
+    if state == "error":
+        release.side_effect = RuntimeError("provider unavailable")
+    elif state == "cancel":
+        release.side_effect = asyncio.CancelledError()
+    normal_factory = Mock(return_value=SimpleNamespace(release_kvc=release))
+    team_factory = Mock(return_value=SimpleNamespace(release_kvc=release))
+    monkeypatch.setattr("openjiuwen.core.session.agent.create_agent_session", normal_factory)
+    monkeypatch.setattr("openjiuwen.core.session.agent_team.create_agent_team_session", team_factory)
+
+    if state == "cancel":
+        with pytest.raises(asyncio.CancelledError):
+            await kv_cache_product_hooks.release_session_kvc(session_id="root", is_team=is_team)
+    else:
+        result = await kv_cache_product_hooks.release_session_kvc(session_id="root", is_team=is_team)
+        assert result is (state == "success")
+    if state == "off":
+        lookup.assert_not_called()
+    if state in {"off", "no-runtime"}:
+        normal_factory.assert_not_called()
+        team_factory.assert_not_called()
+        release.assert_not_awaited()
+    else:
+        selected, other = (team_factory, normal_factory) if is_team else (normal_factory, team_factory)
+        selected.assert_called_once_with(session_id="root", kv_cache_runtime=runtime)
+        other.assert_not_called()
+        release.assert_awaited_once_with()
 
 
 def test_resolve_switch_context_keeps_product_facts_when_affinity_disabled(

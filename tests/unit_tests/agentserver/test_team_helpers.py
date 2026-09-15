@@ -423,7 +423,9 @@ class _InactiveTeamRuntimeManagerMixin:
         pass
 
     @staticmethod
-    def broadcast_event(session_id: str, event: dict) -> None:
+    def broadcast_event(
+        session_id: str, event: dict, *, channel_id: str | None = None
+    ) -> None:
         pass
 
     def begin_round(

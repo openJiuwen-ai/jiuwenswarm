@@ -433,10 +433,24 @@ class TestSessionAdapter:
         assert resp.payload["code"] == "NOT_FOUND"
         assert evict_calls == []
 
+    @pytest.mark.parametrize("affinity_enabled", [False, True])
+    @pytest.mark.parametrize("release_fails", [False, True])
     async def test_session_delete_offline_fallback_evicts_and_removes_dir(
-        self, monkeypatch, tmp_path,
+        self, monkeypatch, tmp_path, affinity_enabled, release_fails,
     ) -> None:
         """SessionAdapter.session.delete：普通会话的本地 fallback 触发 root evict 并删除目录。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_model_provider.is_kv_cache_affinity_enabled",
+            lambda: affinity_enabled,
+        )
+        runtime = object()
+        def get_runtime():
+            assert affinity_enabled, "OFF must not look up or create KVC runtime"
+            return runtime
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime.get_kv_cache_runtime",
+            get_runtime,
+        )
         evict_calls: list[dict] = []
         session_root = tmp_path / "sessions" / "sess-del"
         session_root.mkdir(parents=True)
@@ -457,6 +471,8 @@ class TestSessionAdapter:
                         "parent_session_id": "sess-del",
                     }
                 )
+                if release_fails:
+                    raise RuntimeError("KVC unavailable")
                 return True
 
         monkeypatch.setattr(
@@ -468,9 +484,105 @@ class TestSessionAdapter:
         )
         assert resp.ok is True
         assert resp.payload == {"session_id": "sess-del"}
-        assert evict_calls == [
+        assert evict_calls == ([
             {"session_id": "sess-del", "parent_session_id": "sess-del"}
-        ]
+        ] if affinity_enabled else [])
+        assert not session_root.exists()
+
+    async def test_session_delete_offline_fallback_erases_mailbox_content(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from jiuwenswarm.server.runtime.gateway_adapter import session_adapter as module
+        from jiuwenswarm.server.runtime.session.session_message_store import (
+            SessionMessageStore,
+        )
+
+        session_root = tmp_path / "sessions" / "sess-del"
+        session_root.mkdir(parents=True)
+        mailbox = SessionMessageStore(tmp_path / "session_messages.sqlite3")
+        record, _ = mailbox.enqueue(
+            owner_scope_id="user-1",
+            source_session_id="source-1",
+            source_title_snapshot="Source",
+            source_request_id="request-1",
+            source_tool_call_id="call-1",
+            idempotency_key="call-1",
+            target_session_id="sess-del",
+            content="sensitive content",
+            hop_count=1,
+        )
+        monkeypatch.setattr(module, "get_agent_root_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "agent"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
+            lambda sid, sessions_root=None: (session_root, None),
+        )
+
+        class _Session:
+            async def release_kvc(self):
+                return True
+
+        monkeypatch.setattr(
+            "openjiuwen.core.session.agent.create_agent_session",
+            lambda **_kwargs: _Session(),
+        )
+
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})
+        )
+
+        assert resp.ok is True
+        erased = mailbox.get(record.message_id)
+        assert erased.status == "cancelled"
+        assert erased.content == ""
+
+    async def test_session_delete_succeeds_when_mailbox_cleanup_fails(
+        self, monkeypatch, tmp_path,
+    ) -> None:
+        from jiuwenswarm.server.runtime.gateway_adapter import session_adapter as module
+        from jiuwenswarm.server.runtime.session import session_message_store
+
+        session_root = tmp_path / "sessions" / "sess-del"
+        session_root.mkdir(parents=True)
+        monkeypatch.setattr(module, "get_agent_root_dir", lambda: tmp_path)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+            lambda sid, cache_bust=False: {"mode": "agent"},
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_history.resolve_session_dir",
+            lambda sid, sessions_root=None: (session_root, None),
+        )
+
+        class _Session:
+            async def release_kvc(self):
+                return True
+
+        class _Mailbox:
+            def __init__(self, _path):
+                pass
+
+            def exists(self):
+                return True
+
+            def cancel_pending_for_target(self, _target):
+                raise RuntimeError("mailbox unavailable")
+
+        monkeypatch.setattr(
+            "openjiuwen.core.session.agent.create_agent_session",
+            lambda **_kwargs: _Session(),
+        )
+        monkeypatch.setattr(session_message_store, "SessionMessageStore", _Mailbox)
+
+        resp = await SessionAdapter().handle(
+            _request(ReqMethod.SESSION_DELETE, {"session_id": "sess-del"})
+        )
+
+        assert resp.ok is True
+        assert resp.payload == {"session_id": "sess-del"}
         assert not session_root.exists()
 
 

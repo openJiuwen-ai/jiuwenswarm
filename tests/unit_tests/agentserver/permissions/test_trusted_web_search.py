@@ -206,11 +206,8 @@ async def test_adapter_matches_upstream_output_and_argument_normalization(
     url = "https://release-notes.invalid/v1"
     calls: list[tuple[str, int, int]] = []
 
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session
-        calls.append((query, max_results, timeout_seconds))
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        calls.append((request.query, request.max_results, request.timeout_seconds))
         return (
             "duckduckgo",
             [
@@ -264,13 +261,8 @@ async def test_root_queue_real_search_execution_records_fetch_provenance(
     manager = AbilityManager()
     tool = TrustedWebFreeSearchTool(agent_id="agent-1")
 
-    async def fake_search(
-        session: object,
-        query: str,
-        max_results: int,
-        timeout_seconds: int,
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [
             {"title": "Result", "url": url, "snippet": "Summary"}
         ]
@@ -364,10 +356,8 @@ async def test_adapter_matches_upstream_without_recording_unsuccessful_results(
     monkeypatch: pytest.MonkeyPatch,
     outcome: str,
 ) -> None:
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         if outcome == "failure":
             raise RuntimeError("search unavailable")
         return "duckduckgo", []
@@ -412,10 +402,8 @@ async def test_adapter_keeps_provenance_when_rendering_fails_after_rows(
 ) -> None:
     url = "https://release-notes.invalid/v1"
 
-    async def fake_search(
-        session: object, query: str, max_results: int, timeout_seconds: int
-    ) -> tuple[str, list[dict[str, str]]]:
-        del session, query, max_results, timeout_seconds
+    async def fake_search(request: Any) -> tuple[str, list[dict[str, str]]]:
+        del request
         return "duckduckgo", [{"url": url}]
 
     monkeypatch.setattr(WebFreeSearchTool, "_search_free", staticmethod(fake_search))

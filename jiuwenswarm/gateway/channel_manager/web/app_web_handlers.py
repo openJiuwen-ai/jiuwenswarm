@@ -68,6 +68,7 @@ from jiuwenswarm.common.config import (
     update_symphony_in_config,
     update_permissions_enabled_in_config,
     update_setup_guide_enabled_in_config,
+    update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
     update_memory_forbidden_enabled_in_config,
     update_memory_forbidden_description_in_config,
@@ -1124,6 +1125,7 @@ _CONFIG_YAML_KEYS = frozenset({
     "memory_forbidden_enabled",
     "memory_forbidden_description",
     "a2ui_enabled",
+    "rsi_enabled",
     "trajectory_ui_enabled",
     "task_full_duplex_enabled",
     "proactive_recommendation_enabled",
@@ -2987,6 +2989,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["setup_guide_enabled"] = (
                 "true" if setup_guide_cfg.get("enabled", True) else "false"
             )
+            rsi_cfg = raw.get("rsi") or {}
+            payload["rsi_enabled"] = "true" if rsi_cfg.get("enabled", True) else "false"
             for key, val in payload.items():
                 from jiuwenswarm.extensions.registry import ExtensionRegistry
                 if (("api_key" in key.lower() or "token" in key.lower())
@@ -3038,6 +3042,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("context_engine_enabled", "false")
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
+            payload.setdefault("rsi_enabled", "true")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -3269,6 +3274,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     update_permissions_enabled_in_config(parsed)
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
+                elif param_key == "rsi_enabled":
+                    update_rsi_enabled_in_config(parsed)
                 elif param_key == "enable_free_models":
                     update_enable_free_models_in_config(parsed)
                 elif param_key == "memory_forbidden_enabled":
@@ -4648,42 +4655,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             label="session.pin",
         )
 
-    async def _session_delete(ws, req_id, params, session_id, user_id=None):
-        """删除一个 session（统一薄代理 E2A 转发 + 单用户共享目录适配器 fallback）。
-
-        手写 E2A 与本地 ``_delete_from_shared_dir`` 收敛到
-        ``proxy_unary_request``——单用户 WebSocket 客户端在 AgentServer 不可达时
-        由薄代理跑 SessionAdapter 的文件级删除（共享目录等价）；AgentOS 与
-        client 未构造（ac=None）时返回可重试 SERVICE_UNAVAILABLE（决策 D8）。
-        """
-        if not isinstance(params, dict):
-            await channel.send_response(
-                ws, req_id, ok=False, error="params must be object", code="BAD_REQUEST",
-            )
-            return
-        session_id_to_delete = params.get("session_id")
-        if not isinstance(session_id_to_delete, str) or not session_id_to_delete.strip():
-            await channel.send_response(
-                ws, req_id, ok=False, error="session_id is required", code="BAD_REQUEST",
-            )
-            return
-
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params,
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.SESSION_DELETE,
-            label="session.delete",
-        )
-
     async def _project_list(ws, req_id, params, session_id, user_id=None):
+        channel.ensure_lifecycle_watch(user_id)
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
@@ -4765,6 +4738,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_CREATE,
             label="project.create",
+            # PROJECT_ARCHIVED 失败明细携带 project_id，前端据此调用
+            # project.unarchive 恢复归档项目，不能在 Gateway 丢弃。
+            preserve_error_payload=True,
             on_done=lambda ok, _payload: (
                 _schedule_agent_prewarm_sync("project.create") if ok else None
             ),
@@ -4810,54 +4786,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_PIN,
             label="project.pin",
-        )
-
-    async def _project_remove(ws, req_id, params, session_id, user_id=None):
-        """Forward project soft-deletion; clean Gateway Git watchers on success."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        project_id = str((params or {}).get("project_id") or "").strip()
-
-        def _after_remove(ok: bool, _payload: object) -> None:
-            if not ok:
-                return
-            registry = getattr(channel, "git_watcher_registry", None)
-            if registry is not None and project_id:
-                registry.cleanup_project(project_id)
-            _schedule_agent_prewarm_sync("project.remove")
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_REMOVE,
-            label="project.remove",
-            on_done=_after_remove,
-        )
-
-    async def _project_restore(ws, req_id, params, session_id, user_id=None):
-        """Forward project restoration to the target AgentServer."""
-        from jiuwenswarm.common.schema.message import ReqMethod
-        from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
-
-        await proxy_unary_request(
-            channel=channel,
-            agent_client=_resolve(agent_client),
-            ws=ws,
-            req_id=req_id,
-            params=params if isinstance(params, dict) else {},
-            session_id=session_id,
-            user_id=user_id,
-            req_method=ReqMethod.PROJECT_RESTORE,
-            label="project.restore",
-            on_done=lambda ok, _payload: (
-                _schedule_agent_prewarm_sync("project.restore") if ok else None
-            ),
         )
 
     async def _project_info(ws, req_id, params, session_id, user_id=None):
@@ -6714,7 +6642,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     channel.register_method("session.list", _session_list)
     channel.register_method("session.create", _session_create)
-    channel.register_method("session.delete", _session_delete)
     channel.register_method("session.get_metadata", _session_get_metadata)
     channel.register_method("session.plan_status", _session_plan_status)
     channel.register_method("session.rename", _session_rename)
@@ -6727,8 +6654,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("project.create", _project_create)
     channel.register_method("project.rename", _project_rename)
     channel.register_method("project.pin", _project_pin)
-    channel.register_method("project.remove", _project_remove)
-    channel.register_method("project.restore", _project_restore)
+    from jiuwenswarm.gateway.channel_manager.web.lifecycle_handlers import register_lifecycle_handlers
+    register_lifecycle_handlers(channel, lambda: _resolve(agent_client), lambda: _resolve(cron_controller))
     channel.register_method("project.pinned_sessions", _project_pinned_sessions)
 
     # Git RPC handlers (设计文档 §4.1.11-§4.1.15)
@@ -7329,12 +7256,18 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             await channel.send_response(ws, req_id, ok=False, error="invalid req_method", code="INTERNAL_ERROR")
             return
 
+        request_params = dict(params if isinstance(params, dict) else {})
+        if str(req_method.value).startswith("rsi."):
+            request_params["session_id"] = session_id
+            if req_method is ReqMethod.RSI_ARTIFACT_DOWNLOAD and user_id:
+                request_params["_download_user_id"] = user_id
+
         await proxy_unary_request(
             channel=channel,
             agent_client=_resolve(agent_client),
             ws=ws,
             req_id=req_id,
-            params=params if isinstance(params, dict) else {},
+            params=request_params,
             session_id=session_id,
             user_id=user_id,
             req_method=req_method,
@@ -7354,6 +7287,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     _register_harness("harness.activate", _HarnessReq.HARNESS_PACKAGES_ACTIVATE)
     _register_harness("harness.deactivate", _HarnessReq.HARNESS_PACKAGES_DEACTIVATE)
     _register_harness("harness.delete", _HarnessReq.HARNESS_PACKAGES_DELETE)
+
+    # RSI 优化平台 18 个 web method（web 契约 v0.3 §4）：经 E2A 转发到 AgentServer。
+    # 与 harness.* 同构（仅注册 + proxy_unary_request，不承载业务）。
+    rsi_methods = [
+        ("rsi.dataset.validate", _HarnessReq.RSI_DATASET_VALIDATE),
+        ("rsi.task.create", _HarnessReq.RSI_TASK_CREATE),
+        ("rsi.task.list", _HarnessReq.RSI_TASK_LIST),
+        ("rsi.task.get", _HarnessReq.RSI_TASK_GET),
+        ("rsi.task.delete", _HarnessReq.RSI_TASK_DELETE),
+        ("rsi.training.start", _HarnessReq.RSI_TRAINING_START),
+        ("rsi.training.pause", _HarnessReq.RSI_TRAINING_PAUSE),
+        ("rsi.training.resume", _HarnessReq.RSI_TRAINING_RESUME),
+        ("rsi.training.terminate", _HarnessReq.RSI_TRAINING_TERMINATE),
+        ("rsi.report.get", _HarnessReq.RSI_REPORT_GET),
+        ("rsi.usage.get", _HarnessReq.RSI_USAGE_GET),
+        ("rsi.artifact.download", _HarnessReq.RSI_ARTIFACT_DOWNLOAD),
+        ("rsi.artifact.files.list", _HarnessReq.RSI_ARTIFACT_FILES_LIST),
+        ("rsi.artifact.files.get", _HarnessReq.RSI_ARTIFACT_FILES_GET),
+        ("rsi.tree.get", _HarnessReq.RSI_TREE_GET),
+        ("rsi.harness.install", _HarnessReq.RSI_HARNESS_INSTALL),
+        ("rsi.harness.versions.list", _HarnessReq.RSI_HARNESS_VERSIONS_LIST),
+        ("rsi.harness.rollback", _HarnessReq.RSI_HARNESS_ROLLBACK),
+    ]
+    for _method_name, _req_method in rsi_methods:
+        _register_harness(_method_name, _req_method)
 
     async def _harness_import_handler(ws, req_id, params, session_id, user_id=None):
         """Import harness archives without exceeding the internal WS frame limit."""

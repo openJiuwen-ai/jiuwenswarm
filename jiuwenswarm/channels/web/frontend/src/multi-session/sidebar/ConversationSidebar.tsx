@@ -49,7 +49,7 @@ import NewTaskIcon from '../../assets/work-mode/new-task.svg?react';
 import PinIcon from '../../assets/work-mode/pin.svg?react';
 import PlusIcon from '../../assets/work-mode/plus.svg?react';
 import UnpinIcon from '../../assets/work-mode/unpin.svg?react';
-import SidebarCollapseIcon from '../../assets/sidebar/collapse.svg?react';
+import PanelCollapseIcon from '../../assets/panel-collapse.svg?react';
 
 const UNREAD_KEY = 'jiuwenswarm_session_unread';
 const RELATIVE_TIME_REFRESH_MS = 60_000;
@@ -65,6 +65,8 @@ export type NewConversationOptions = {
    * 见 App.tsx enterNewConversation。 */
   initialEnabledPlugins?: string[];
   initialEnabledMcps?: string[];
+  /** 专家团「通过聊天创建」入口使用 4.9 高保真欢迎态。 */
+  welcomeVariant?: 'group-create';
   /**
    * 强制新会话进入指定模式，覆盖"继承当前活动会话模式"的默认行为，也覆盖未发送的临时新会话
    * 草稿里残留的模式。用于扩展页"使用插件/使用 MCP/试试这样用"这类入口——插件/MCP 不支持
@@ -1337,7 +1339,7 @@ export function ConversationSidebar({
           aria-label={t('common.collapse') || 'Collapse'}
           data-testid="multi-session-sidebar-collapse"
         >
-          <SidebarCollapseIcon aria-hidden />
+          <PanelCollapseIcon aria-hidden />
         </button>
         </div>
         <div className="conversation-sidebar__operations" data-testid="multi-session-operations">

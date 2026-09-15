@@ -218,6 +218,15 @@ class FakeAgentClient:
                 ok=True,
                 payload={"session_id": "cron_agentserver_allocated"},
             )
+        if envelope.method == "project.lifecycle":
+            # scheduler.project_execution_allowed 的准入查询：
+            # 默认按"项目存在且未归档"放行，归档拦截场景由专项测试覆盖。
+            return AgentResponse(
+                request_id=envelope.request_id or "",
+                channel_id=envelope.channel or "",
+                ok=True,
+                payload={"exists": True, "execution_blocked": False},
+            )
         return AgentResponse(
             request_id=envelope.request_id or "",
             channel_id=envelope.channel or "",
@@ -1232,6 +1241,48 @@ class TestTeamModeWake:
         assert "model" not in env.params
 
     @pytest.mark.asyncio
+    async def test_agent_wake_passes_job_mcp_as_params_mcp(self, tmp_path):
+        """会话级 MCP 选择：执行时注入 chat.send 的 mcp 字段（走 reconcile）。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(
+            description="simple reminder",
+            targets="tui",
+            mcp=["feishu-doc", "github"],
+        )
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert env.params["mcp"] == ["feishu-doc", "github"]
+
+    @pytest.mark.asyncio
+    async def test_agent_wake_omits_mcp_when_job_has_none(self, tmp_path):
+        """未配置 mcp 的 job 保持既有行为（不注入，仅 init 全局默认集）。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(description="simple reminder", targets="tui")
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert "mcp" not in env.params
+
+    @pytest.mark.asyncio
     async def test_agent_wake_does_not_resolve_project_dir_in_gateway(self, tmp_path):
         """Phase 4：scheduler 触发时不再本地反查 project_id → project_dir。
 
@@ -1251,8 +1302,11 @@ class TestTeamModeWake:
         assert task is not None
         await task
 
-        create_env = agent.unary_requests[0]
-        assert create_env.method == "session.create"
+        # 唤醒前 scheduler 会先发 project.lifecycle 准入查询，session.create
+        # 不再是第一条 unary 请求，按 method 定位。
+        create_env = next(
+            env for env in agent.unary_requests if env.method == "session.create"
+        )
         # 不再本地反查 project_dir（Gateway 不访问用户目录项目表）
         assert "project_dir" not in create_env.params
         assert create_env.params["project_id"] == "proj-1"

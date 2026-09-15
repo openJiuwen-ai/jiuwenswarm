@@ -16,6 +16,7 @@ from jiuwenswarm.runtime.cron.models import (
     CronJob,
     CronTarget,
     CRON_JOB_DEFAULT_MODE,
+    normalize_cron_job_mcp,
     normalize_cron_job_mode,
     normalize_cron_job_timeout_seconds,
 )
@@ -249,6 +250,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
@@ -311,6 +313,7 @@ class CronJobStore:
             timeout_seconds=timeout,
             project_id=pid,
             model_name=model_name_val,
+            mcp=normalize_cron_job_mcp(mcp),
             app_id=str(app_id or "").strip(),
             work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
             user_id=str(user_id or "").strip(),
@@ -337,6 +340,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
         user_id: str = "",
@@ -357,6 +361,7 @@ class CronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
             user_id=user_id,
@@ -404,12 +409,21 @@ class CronJobStore:
             if enabled_val and "expired" not in patch:
                 updated = replace(updated, expired=False)
         if "cron_expr" in patch:
-            updated = replace(
-                updated, cron_expr=str(patch.get("cron_expr") or "").strip()
-            )
+            new_cron_expr = str(patch.get("cron_expr") or "").strip()
+            updated = replace(updated, cron_expr=new_cron_expr)
             # Editing schedule implies it is no longer expired, unless caller explicitly sets expired.
             if "expired" not in patch:
                 updated = replace(updated, expired=False)
+            # 排程实际变更时重置 delete_after_run：该标记绑定的是旧排程的一次性语义
+            # （典型：agent 以 kind=at + deleteAfterRun 创建的提醒任务）。若换排程后保留，
+            # 循环任务会在首次执行后被调度器标记过期（web/TUI 编辑不含该字段，必然残留）。
+            # 调用方显式传 delete_after_run 时不覆盖；真正的一次性排程（有界 cron）执行后
+            # 仍走调度器的自然过期路径（无下一次触发时间），行为不变。
+            if (
+                new_cron_expr != existing.cron_expr
+                and "delete_after_run" not in patch
+            ):
+                updated = replace(updated, delete_after_run=False)
         if "timezone" in patch:
             updated = replace(
                 updated, timezone=str(patch.get("timezone") or "").strip()
@@ -482,6 +496,11 @@ class CronJobStore:
                 else None
             )
             updated = replace(updated, model_name=new_model_name)
+        if "mcp" in patch:
+            # 显式传 null/[] 归 None（不注入）；非字符串元素被过滤。
+            updated = replace(
+                updated, mcp=normalize_cron_job_mcp(patch.get("mcp"))
+            )
         if "work_mode" in patch:
             # work_mode 由 controller 从 project_dir + work_mode 重解析后注入,
             # 或由 project_id 变更时从 Project 记录注入。store 层仅做规范化写入。

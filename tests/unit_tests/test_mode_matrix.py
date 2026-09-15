@@ -371,6 +371,12 @@ def test_is_plan_mode(mode, expected):
         ("team.plan.normal", True),
         ("team.plan.code", True),
         ("code.team", True),
+        # Web 统一三段命名后 plan on/off 都发 team.*.{normal|plan}；session_history
+        # 与 session_adapter 的 team 判定依赖 is_team_mode 覆盖这些新串。
+        (NEW_TEAM_WORK_NORMAL, True),
+        (NEW_TEAM_WORK_PLAN, True),
+        (NEW_TEAM_CODE_NORMAL, True),
+        (NEW_TEAM_CODE_PLAN, True),
         ("agent", False),
         ("agent.plan", False),
         ("code.plan", False),

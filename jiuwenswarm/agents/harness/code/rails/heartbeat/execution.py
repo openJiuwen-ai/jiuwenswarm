@@ -37,6 +37,8 @@ class _SessionAdmissionState:
     heartbeat_run_id: str | None = None
     heartbeat_blocked: bool = False
     pending_interrupt_ids: set[str] = field(default_factory=set)
+    session_message_run_id: str | None = None
+    session_message_waiters: int = 0
 
 
 class SessionRunAdmission:
@@ -124,6 +126,10 @@ class SessionRunAdmission:
                 state.pending_interrupt_ids.discard(str(request_id or ""))
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
+
+    def is_session_message_active(self, session_id: str) -> bool:
+        state = self._states.get(session_id)
+        return bool(state is not None and state.session_message_run_id)
 
     async def block_heartbeats(self, session_id: str) -> str | None:
         """Prevent new Heartbeats while a Session deletion is prepared."""
@@ -216,6 +222,7 @@ class SessionRunAdmission:
                 await self._condition.wait_for(
                     lambda: (
                         self._state(session_id).heartbeat_run_id is None
+                        and self._state(session_id).session_message_run_id is None
                         and (not team or self._state(session_id).active_users == 0)
                     )
                 )
@@ -283,6 +290,7 @@ class SessionRunAdmission:
         )
         return (
             state.heartbeat_run_id is None
+            and state.session_message_run_id is None
             and not direct_user_active
             and not team_user_active
         )
@@ -318,11 +326,57 @@ class SessionRunAdmission:
                 user_has_work
                 or state.heartbeat_run_id is not None
                 or bool(state.pending_interrupt_ids)
+                or state.session_message_run_id is not None
+                or state.session_message_waiters > 0
             )
             if state.heartbeat_blocked or session_has_work:
                 return False
             state.heartbeat_run_id = run_id
             return True
+
+    async def begin_session_message(self, session_id: str, run_id: str) -> None:
+        """Exclusively admit one queued cross-Session turn.
+
+        A user waiter always keeps the mailbox turn outside the Runtime. Once
+        this method returns, later ordinary user turns wait for this exact run;
+        interrupt answers bypass re-admission in ``AgentRuntime`` so an active
+        ask-user interaction cannot deadlock itself.
+        """
+
+        async with self._condition:
+            state = self._state(session_id)
+            state.session_message_waiters += 1
+            try:
+                await self._condition.wait_for(
+                    lambda: self._session_message_can_begin(session_id)
+                )
+                state.session_message_run_id = run_id
+            finally:
+                state.session_message_waiters = max(
+                    0, state.session_message_waiters - 1
+                )
+                self._condition.notify_all()
+
+    def _session_message_can_begin(self, session_id: str) -> bool:
+        state = self._state(session_id)
+        return bool(
+            not state.heartbeat_blocked
+            and state.heartbeat_run_id is None
+            and state.session_message_run_id is None
+            and state.active_users == 0
+            and state.user_waiters == 0
+            and state.team_user_submissions == 0
+            and not state.team_user_active
+        )
+
+    async def end_session_message(self, session_id: str, run_id: str) -> None:
+        async with self._condition:
+            state = self._states.get(session_id)
+            if state is None or state.session_message_run_id != run_id:
+                return
+            state.session_message_run_id = None
+            self._drop_idle_state(session_id, state)
+            self._condition.notify_all()
 
     async def end_heartbeat(self, session_id: str, run_id: str) -> None:
         async with self._condition:
@@ -345,6 +399,8 @@ class SessionRunAdmission:
             user_has_work
             or state.heartbeat_run_id is not None
             or bool(state.pending_interrupt_ids)
+            or state.session_message_run_id is not None
+            or state.session_message_waiters > 0
         )
         if not session_has_work and not state.heartbeat_blocked:
             self._states.pop(session_id, None)

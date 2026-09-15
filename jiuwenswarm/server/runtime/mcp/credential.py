@@ -5,7 +5,7 @@
 The complexity of MCPs is the **credential acquisition strategy**, not the
 transport. Three kinds exist:
 
-  * none        — free-connect remote MCP (notion/supabase/canva...); no-op.
+  * none        — free-connect remote MCP (notion/supabase...); no-op.
   * token       — static token the user supplies; injected into env/headers/url
                   ``${VAR}`` placeholders (tianyancha/gildata/gmail/jira...).
   * cli_oauth   — the CLI binary manages its own OAuth (feishu/dingtalk...);

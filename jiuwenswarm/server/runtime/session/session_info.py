@@ -43,4 +43,7 @@ def to_session_info(meta: dict[str, Any]) -> dict[str, Any]:
         ),
         "model": str(meta.get("model", "")),
         "work_mode": str(meta.get("work_mode") or DEFAULT_WEB_WORK_MODE),
+        "lifecycle_operation": meta.get("lifecycle_operation"),
+        "execution_blocked": bool(meta.get("execution_blocked", False)),
+        "stop_pending": bool(meta.get("stop_pending", False)),
     }

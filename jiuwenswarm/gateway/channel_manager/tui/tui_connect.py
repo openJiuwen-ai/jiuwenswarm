@@ -2334,6 +2334,14 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
         if callable(is_bound_to_client):
             owns_session = bool(is_bound_to_client("tui", sid, ws))
         cleanup_handed_off = not (mh is not None and sid and owns_session)
+        # The disconnect cancel must carry the client's live mode, or the
+        # AgentServer routes it through the non-team terminate path and
+        # hard-stops running swarmflow runs instead of pausing them. The
+        # channel-state table cannot supply it for TUI (TUI is not a control
+        # channel), so the tui.disconnect request params are the only source.
+        disconnect_mode = ""
+        if isinstance(params, dict):
+            disconnect_mode = str(params.get("mode") or "").strip()
         if mh is not None and sid and owns_session:
             schedule_cleanup = getattr(
                 mh, "schedule_cancel_agent_sessions_on_disconnect", None
@@ -2344,6 +2352,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         [("tui", sid)],
                         delay_seconds=_TUI_EXPLICIT_EXIT_CANCEL_GRACE_SECONDS,
                         user_id=getattr(ws, "_gateway_user_id", None),
+                        mode=disconnect_mode or None,
                     )
                     cleanup_handed_off = True
                 else:

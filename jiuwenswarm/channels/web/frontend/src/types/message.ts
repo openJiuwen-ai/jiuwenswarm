@@ -5,6 +5,7 @@
 import type { SkillTreePath } from './skillTree';
 import type { BeamSearchProgress } from './beamSearch';
 import type { HeartbeatAutomationMetadata } from './heartbeat';
+import type { CrossSessionMessageMetadata } from '../utils/crossSessionMessage';
 
 export type MessageRole = 'user' | 'assistant' | 'system' | 'tool';
 
@@ -118,6 +119,8 @@ export interface Message {
    * 字段重新盖章，保证实时与历史共用同一识别逻辑。对齐「心跳任务前端开发与接口规格说明2」§7-§9。
    */
   automation?: HeartbeatAutomationMetadata;
+  /** 来自同一用户其他会话中 Agent 的后台请求。 */
+  crossSession?: CrossSessionMessageMetadata;
 }
 
 export interface ToolCall {

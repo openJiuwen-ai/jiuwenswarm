@@ -53,13 +53,21 @@ def build_error_response(
     code: str = "INTERNAL_ERROR",
     *,
     ok: bool = False,
+    extra: dict[str, Any] | None = None,
 ) -> AgentResponse:
-    """异常/失败映射为统一的失败 AgentResponse。"""
+    """异常/失败映射为统一的失败 AgentResponse。
+
+    ``extra`` 追加结构化错误明细（如 ``PROJECT_ARCHIVED`` 携带 ``project_id``），
+    供 Gateway 以 ``preserve_error_payload`` 透传给前端。
+    """
+    payload: dict[str, Any] = {"error": str(error), "code": code}
+    if extra:
+        payload.update(extra)
     return AgentResponse(
         request_id=request.request_id,
         channel_id=request.channel_id,
         ok=ok,
-        payload={"error": str(error), "code": code},
+        payload=payload,
         metadata=request.metadata,
     )
 

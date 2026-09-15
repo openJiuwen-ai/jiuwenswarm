@@ -1,11 +1,11 @@
-.page-content[data-testid="agent-management-panel"] {
+.page-content[data-testid='agent-management-panel'] {
   --agent-content-max: 1400px;
   --agent-page-gutter: 32px;
-  --agent-radius-chip: 4px;
   --agent-opacity-disabled: 0.45;
   --agent-opacity-muted: 0.55;
   --agent-opacity-hidden: 0;
   --agent-opacity-visible: 1;
+  --agent-radius-chip: 4px;
   min-width: 0;
   flex: 1 1 auto;
   overflow-x: hidden;
@@ -14,8 +14,60 @@
   color: var(--color-text-primary);
 }
 
+.page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  row-gap: var(--space-agent-group-grid);
+  margin-bottom: 0;
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs {
+  grid-row: 2;
+  grid-column: 1 / -1;
+  justify-self: start;
+  margin-left: 0;
+  border: 0;
+  gap: var(--space-agent-group-grid);
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button {
+  padding: 0;
+  font-size: 16px;
+  line-height: 24px;
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button + button {
+  border-left: 1px solid var(--color-border-default);
+  padding-left: var(--space-agent-group-grid);
+}
+
+.page-content[data-variant="mine"] .agent-management-secondary-tabs button::after {
+  content: none;
+}
+
+.page-content[data-variant="mine"] .agent-management-primary-actions {
+  grid-row: 1;
+  grid-column: 2;
+}
+
+.page-content[data-definition-kind="group"] .agent-group-detail {
+  transform: none;
+  overflow-y: auto;
+}
+
+.agent-group-detail > *,
+.agent-group-editor > * {
+  flex-shrink: 0;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail,
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: none;
+}
+
 [data-testid="agent-management-panel"][data-variant="catalog"],
 [data-testid="agent-management-panel"][data-variant="mine"],
+.page-content[data-testid="agent-management-panel"][data-variant="teams"],
 [data-testid="agent-management-panel"][data-variant="detail"],
 [data-testid="agent-management-panel"][data-variant="create"] {
   overflow-y: hidden;
@@ -23,7 +75,9 @@
 }
 
 [data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor,
-[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail {
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+[data-testid="agent-management-panel"][data-variant="create"] .agent-group-editor,
+[data-testid="agent-management-panel"][data-variant="detail"] .agent-group-detail {
   transform: translateX(4px);
 }
 
@@ -43,35 +97,6 @@
   line-height: 36px;
 }
 
-
-
-.agent-management-detail-tabs button {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  cursor: pointer;
-}
-
-.agent-management-detail-tabs button::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: transparent;
-  content: '';
-}
-
-.agent-management-detail-tabs button.is-active {
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
-.agent-management-detail-tabs button.is-active::after {
-  background: var(--color-text-primary);
-}
-
 .agent-management-primary-actions {
   display: flex;
   align-items: center;
@@ -82,40 +107,6 @@
 
 .agent-management-create-menu {
   position: relative;
-}
-
-.agent-management-create-menu__popover {
-  position: absolute;
-  top: calc(100% + 8px);
-  right: 0;
-  z-index: 20;
-  width: max-content;
-  min-width: 131px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-card);
-  box-shadow: var(--effect-shadow-md);
-  padding: 6px;
-}
-
-.agent-management-create-menu__popover button {
-  display: block;
-  width: 100%;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-primary);
-  padding: 8px 12px;
-  text-align: left;
-  cursor: pointer;
-  font-size: 14px;
-  white-space: nowrap;
-}
-
-.agent-management-create-menu__popover button:hover,
-.agent-management-create-menu__popover button:focus-visible {
-  background: var(--color-action-secondary);
-  outline: 0;
 }
 
 .agent-management-button {
@@ -135,7 +126,7 @@
 
 .agent-management-button:disabled {
   cursor: wait;
-  opacity: var(--agent-opacity-muted);
+  opacity: var(--opacity-agent-muted);
 }
 
 .agent-management-button--primary {
@@ -176,6 +167,279 @@
   min-height: 24px;
 }
 
+.agent-management-secondary-tabs {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  margin-left: 18px;
+  border-bottom: 1px solid var(--color-border-default);
+}
+
+.agent-management-secondary-tabs button {
+  position: relative;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 7px 10px 8px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-management-secondary-tabs button:hover,
+.agent-management-secondary-tabs button:focus-visible,
+.agent-management-secondary-tabs button.is-active {
+  color: var(--color-text-primary);
+  outline: 0;
+}
+
+.agent-management-secondary-tabs button.is-active {
+  font-weight: 600;
+}
+
+.agent-management-secondary-tabs button.is-active::after {
+  position: absolute;
+  right: 8px;
+  bottom: -1px;
+  left: 8px;
+  height: 2px;
+  background: var(--color-action-primary);
+  content: '';
+}
+
+[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+  height: 160px;
+}
+
+.agent-management-card {
+  position: relative;
+  height: 160px;
+  overflow: visible;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  transition:
+    border-color var(--duration-normal) var(--ease-out),
+    box-shadow var(--duration-normal) var(--ease-out),
+    transform var(--duration-normal) var(--ease-out);
+}
+
+.agent-group-avatar,
+.agent-group-member-avatar {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  border-radius: var(--radius-full);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+  font-weight: 600;
+}
+
+.agent-group-avatar img,
+.agent-group-member-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-group-avatar--card {
+  width: 44px;
+  height: 44px;
+  font-size: 18px;
+}
+
+.agent-group-member-avatar {
+  width: 36px;
+  height: 36px;
+  font-size: 15px;
+}
+
+.agent-group-editor__selection-label {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 8px;
+}
+
+.agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 600;
+}
+
+.agent-group-editor__selection-label button {
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link);
+  padding: 0;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.agent-group-editor__selection-label button:disabled {
+  cursor: wait;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  min-height: 42px;
+  align-items: center;
+  gap: 8px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 8px 10px;
+}
+
+.agent-group-editor__selected-agent strong {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  display: flex;
+  gap: 4px;
+  border-bottom: 1px solid var(--color-border-default);
+  padding: 0 24px;
+}
+
+.agent-group-upload-dialog__kind button {
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 10px 4px 9px;
+  cursor: pointer;
+}
+
+.agent-group-upload-dialog__kind button.is-active {
+  border-bottom-color: var(--color-action-primary);
+  color: var(--color-text-primary);
+  font-weight: 600;
+}
+
+.agent-management-card:hover,
+.agent-management-card:focus-within {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-md);
+  transform: translateY(-1px);
+}
+
+.agent-management-card__body {
+  display: flex;
+  width: 100%;
+  height: 100%;
+  flex-direction: column;
+  align-items: stretch;
+  justify-content: flex-start;
+  border: 0;
+  background: transparent;
+  padding: 23px;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-management-card__heading {
+  display: flex;
+  height: 56px;
+  flex: 0 0 56px;
+  align-items: flex-start;
+  gap: 16px;
+  min-width: 0;
+}
+
+.agent-management-card__content {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  flex-direction: column;
+  gap: 4px;
+  padding-top: 0;
+}
+
+.agent-management-card:hover .agent-management-card__content,
+.agent-management-card:focus-within .agent-management-card__content {
+  padding-right: 64px;
+}
+
+.agent-management-card--multi-action:hover .agent-management-card__content,
+.agent-management-card--multi-action:focus-within .agent-management-card__content {
+  padding-right: 148px;
+}
+
+.agent-management-card__title-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 6px;
+}
+
+.agent-management-card__title {
+  overflow: hidden;
+  color: var(--color-text-strong);
+  font-size: 18px;
+  font-weight: 600;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__description {
+  display: -webkit-box;
+  overflow: hidden;
+  flex: 0 0 auto;
+  margin-top: 12px;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-management-card__meta {
+  --agent-management-tag-overflow-width: 20px;
+  display: flex;
+  min-width: 0;
+  min-height: 24px;
+  align-items: center;
+  gap: 8px;
+  overflow: hidden;
+}
+
+.agent-management-card__meta>.agent-management-tag {
+  display: block;
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 0 auto;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-management-card__tag-overflow {
+  display: inline-flex;
+  width: var(--agent-management-tag-overflow-width);
+  height: 24px;
+  flex: 0 0 var(--agent-management-tag-overflow-width);
+  align-items: center;
+  justify-content: center;
+  color: var(--color-text-secondary);
+}
+
+.agent-management-card__meta-measure {
+  position: absolute;
+  top: 0;
+  left: -9999px;
+  display: flex;
+  gap: 8px;
+  visibility: hidden;
+  width: max-content;
+  pointer-events: none;
+}
 .agent-management-card__update {
   position: relative;
   display: inline-flex;
@@ -198,55 +462,31 @@
   background: var(--color-feedback-success);
 }
 
-.agent-management-card__update-tooltip {
-  position: absolute;
-  bottom: calc(100% + 12px);
-  left: 50%;
-  z-index: 5;
-  width: max-content;
-  max-width: 220px;
-  border-radius: var(--radius-md);
-  background: var(--color-text-strong);
-  box-shadow: var(--effect-shadow-md);
-  color: var(--color-text-inverse);
-  padding: 10px 16px;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 20px;
-  opacity: var(--agent-opacity-hidden);
+.agent-management-card__actions {
+  display: flex;
+  gap: 8px;
+  margin-left: auto;
+  opacity: var(--opacity-agent-hidden);
   pointer-events: none;
-  transform: translate(-50%, 4px);
+  transform: translateY(-4px);
   transition:
     opacity var(--duration-fast) var(--ease-out),
     transform var(--duration-fast) var(--ease-out);
 }
 
-.agent-management-card__update-tooltip::after {
+.agent-management-card.page-card > .agent-management-card__actions {
   position: absolute;
-  bottom: -6px;
-  left: 50%;
-  width: 12px;
-  height: 12px;
-  background: var(--color-text-strong);
-  content: '';
-  transform: translateX(-50%) rotate(45deg);
+  top: 36px;
+  right: 24px;
+  margin-left: 0;
 }
 
-.page-card:hover .agent-management-card__update-tooltip {
-  opacity: var(--agent-opacity-visible);
-  transform: translate(-50%, 0);
-}
-
-.agent-management-card__actions {
-  display: flex;
-  gap: 8px;
-  margin-left: auto;
-  opacity: 0;
-  transition: opacity 150ms ease;
-}
-
-.page-card:hover .agent-management-card__actions {
-  opacity: 1;
+.page-card:hover .agent-management-card__actions,
+.agent-management-card:hover .agent-management-card__actions,
+.agent-management-card:focus-within .agent-management-card__actions {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
+  transform: translateY(0);
 }
 
 .agent-management-card__actions .agent-management-button {
@@ -284,41 +524,10 @@
 .agent-management-card-action--use:disabled,
 .agent-management-detail-action--use:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
+  opacity: var(--opacity-agent-disabled);
 }
 
-.agent-management-avatar {
-  display: inline-flex;
-  width: 48px;
-  height: 48px;
-  flex: 0 0 48px;
-  align-items: center;
-  justify-content: center;
-  overflow: hidden;
-  border-radius: var(--radius-md);
-  background: var(--color-action-primary-subtle);
-  color: var(--color-text-link);
-}
-
-.agent-management-avatar img {
-  display: block;
-  width: 100%;
-  height: 100%;
-  object-fit: cover;
-}
-
-.agent-management-tag,
-.agent-management-chip {
-  display: inline-flex;
-  align-items: center;
-  min-height: 24px;
-  border-radius: var(--radius-sm);
-  background: var(--color-action-secondary);
-  color: var(--color-text-secondary);
-  padding: 0 8px;
-  font-size: 12px;
-  line-height: 18px;
-}
+/* 详情页头像已迁移到共享组件 ui/EntityHeader（.entity-header__avatar） */
 
 .agent-management-state,
 .agent-management-detail--state {
@@ -335,6 +544,44 @@
 .agent-management-state p,
 .agent-management-detail--state p {
   margin: 0;
+}
+
+/* 详情加载中：参考 .skill-detail-state（index.css）——flex:1 撑满详情可用区域，
+   返回按钮贴顶（.detail-back 自带限宽居中），文案区 flex:1 占满剩余空间并水平垂直居中，
+   避免返回按钮/文案悬在页面垂直中部；错误态仍沿用上方整体居中样式 */
+.agent-management-detail--state[data-variant='loading'] {
+  flex: 1;
+  min-height: 0;
+  align-items: stretch;
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='loading'] p {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+/* 详情错误态：与加载态同构——返回按钮贴顶，文案+重试按钮整体在剩余空间垂直居中
+   （auto margin 分摊剩余空间实现居中，不改 DOM 结构） */
+.agent-management-detail--state[data-variant='error'] {
+  justify-content: flex-start;
+  gap: 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .detail-back {
+  margin-bottom: auto;
+}
+
+.agent-management-detail--state[data-variant='error'] p {
+  margin: 16px 0 0;
+}
+
+.agent-management-detail--state[data-variant='error'] .agent-management-button {
+  margin: 16px 0 auto;
 }
 
 .agent-management-inline-error,
@@ -381,9 +628,8 @@
 
 .agent-management-pagination__buttons button:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
+  opacity: var(--opacity-agent-disabled);
 }
-
 .agent-management-editor {
   padding-bottom: 72px;
 }
@@ -399,7 +645,6 @@
 
 /* detail-body 已移至 index.css 统一管理（限宽由 .detail-body > * 规则承担） */
 
-
 .agent-management-editor h1 {
   font-size: 20px;
   line-height: 30px;
@@ -407,68 +652,9 @@
 
 /* detail-back 已移至 index.css 统一管理 */
 
-.agent-management-detail__header {
-  display: flex;
-  align-items: center;
-  justify-content: space-between;
-  gap: 24px;
-}
+/* 详情头部（identity/标题/徽标）已迁移到共享组件 ui/EntityHeader */
 
-.agent-management-detail__identity {
-  display: flex;
-  min-width: 0;
-  align-items: center;
-  gap: 16px;
-}
-
-.agent-management-detail__identity > div {
-  min-width: 0;
-  flex: 1 1 auto;
-  overflow: hidden;
-}
-
-.agent-management-detail__identity h1 {
-  margin: 0 0 1px;
-  color: var(--color-text-primary);
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 30px;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-avatar--detail {
-  width: 32px;
-  height: 32px;
-  flex-basis: 32px;
-  border-radius: var(--radius-md);
-}
-
-.agent-management-detail__badges,
-.agent-management-chip-row {
-  display: flex;
-  align-items: center;
-  flex-wrap: wrap;
-  gap: 8px;
-}
-
-.agent-management-detail__badges {
-  gap: 17px;
-}
-
-.agent-management-detail__badges .agent-management-tag {
-  color: var(--color-text-primary);
-  padding-right: 4px;
-  padding-left: 4px;
-}
-
-.agent-management-source,
-.agent-management-installed {
-  color: var(--color-text-primary);
-  font-size: 12px;
-  line-height: 18px;
-}
+/* 详情页能力 chip 已迁移到共享类 ui 层 index.css（.detail-chip-row / .detail-chip） */
 
 .agent-management-detail__actions {
   display: flex;
@@ -477,15 +663,23 @@
   flex: 0 0 auto;
 }
 
+/* 详情头部操作按钮统一 28px 高、药丸形（含带边框的连接/使用/安装按钮，对齐 use-btn） */
+.agent-management-detail__actions .agent-management-button {
+  min-height: 28px;
+  border-radius: var(--radius-full);
+}
+
 .agent-management-detail-action--install {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
 .agent-management-detail-action--use {
   min-width: 56px;
   min-height: 28px;
+  padding: 0 28px;
   border-radius: var(--radius-full);
 }
 
@@ -510,7 +704,7 @@
 
 .agent-management-detail-action--uninstall:disabled {
   cursor: wait;
-  opacity: var(--agent-opacity-muted);
+  opacity: var(--opacity-agent-muted);
 }
 
 .agent-management-inline-error {
@@ -535,21 +729,12 @@
   color: var(--color-text-secondary);
 }
 
-.agent-management-detail-section {
-  margin-top: 31px;
-}
-
-.agent-management-detail-section--prompts {
-  margin-top: 32px;
-}
-
-.agent-management-detail-section h2,
-.agent-management-detail-capability-group h2 {
-  margin: 0 0 8px;
-  color: var(--color-text-primary);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 28px;
+/* 详情体（.detail-body）已改为 flex+gap 统一 32px 间距：详情页内的提示条清零自带 margin，
+   避免与 gap 叠加；列表页 index.tsx 的提示条不在 .agent-management-detail 内，保留原间距 */
+.agent-management-detail .agent-management-inline-error,
+.agent-management-detail .agent-management-inline-notice,
+.agent-management-detail .agent-management-connection-warning {
+  margin: 0;
 }
 
 .agent-management-form-section h2 {
@@ -560,21 +745,13 @@
   line-height: 22px;
 }
 
-.agent-management-detail-description {
-  max-width: 100%;
-  min-width: 0;
-  margin: 0;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
+/* 详情页能力 chip（原 .agent-management-detail .agent-management-chip）已迁移到
+   共享类 index.css（.detail-chip），规格不变：32px 药丸 / tag-surface 底 / 14px */
 
-.agent-management-detail-capabilities {
-  display: block;
-  margin-top: 32px;
-}
+/* 详情页快捷输入列表/行（原 .agent-management-prompt-list / .agent-management-prompt /
+   .agent-management-prompt__icon）已迁移到共享类 index.css：容器 .detail-prompt-list +
+   chip .detail-chip.detail-chip--link.detail-chip--spread + 图标位 .detail-chip__icon，
+   chip 规格与连接器详情示例统一为 32px 药丸（原 40px 带边框行不再保留）。 */
 
 .agent-management-detail-capability-group {
   min-width: 0;
@@ -592,16 +769,6 @@
   padding: 0 16px;
   font-size: 14px;
   line-height: 22px;
-}
-
-.agent-management-detail-capability-grid {
-  display: grid;
-  grid-template-columns: repeat(2, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.agent-management-detail-capability-grid .agent-management-capability-card {
-  min-height: 116px;
 }
 
 .agent-management-detail-capability-group+.agent-management-detail-capability-group {
@@ -651,9 +818,10 @@
   cursor: pointer;
 }
 
+.agent-management-detail .detail-chip--link:disabled,
 .agent-management-prompt__send:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
+  opacity: var(--opacity-agent-disabled);
 }
 
 .agent-management-detail-tabs {
@@ -674,52 +842,7 @@
 
 .agent-management-detail-tabs button:disabled {
   cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
-}
-
-.agent-management-detail-content {
-  min-width: 0;
-  max-width: 100%;
-  padding-top: 21px;
-  color: var(--color-text-primary);
-  font-size: 16px;
-  line-height: 24px;
-  overflow-wrap: anywhere;
-  word-break: break-word;
-}
-
-.agent-management-detail-content :where(pre) {
-  max-width: 100%;
-  overflow-x: auto;
-}
-
-.agent-management-detail-content h1,
-.agent-management-detail-content h2,
-.agent-management-detail-content h3 {
-  margin: 0 0 8px;
-  color: var(--color-text-primary);
-  font-weight: 600;
-}
-
-.agent-management-detail-content h1 {
-  font-size: 18px;
-  line-height: 28px;
-}
-
-.agent-management-detail-content h2 {
-  font-size: 18px;
-  line-height: 28px;
-}
-
-.agent-management-detail-content h3 {
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-detail-content p {
-  margin: 0 0 24px;
-  font-size: 16px;
-  line-height: 24px;
+  opacity: var(--opacity-agent-disabled);
 }
 
 .agent-management-file-preview {
@@ -738,146 +861,6 @@
   background: var(--color-surface-card);
 }
 
-.agent-management-file-tree {
-  min-width: 0;
-  min-height: 0;
-}
-
-.agent-management-file-entry {
-  display: flex;
-  width: 100%;
-  min-height: 36px;
-  margin-bottom: 8px;
-  align-items: center;
-  gap: 6px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding-top: 0;
-  padding-bottom: 0;
-  padding-right: 8px;
-  cursor: pointer;
-  text-align: left;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-file-tree>div>.agent-management-file-entry,
-.agent-management-file-entry.is-skill-definition {
-  margin-bottom: 6px;
-}
-
-.agent-management-file-entry:hover,
-.agent-management-file-entry.is-selected {
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-}
-
-.agent-management-file-entry.is-unsupported {
-  color: var(--color-text-tertiary);
-}
-
-.agent-management-file-entry__chevron {
-  display: inline-flex;
-  width: 14px;
-  flex: 0 0 14px;
-  align-items: center;
-  justify-content: center;
-}
-
-.agent-management-file-entry__icon {
-  display: inline-flex;
-  width: 24px;
-  height: 24px;
-  flex: 0 0 24px;
-  align-items: center;
-  justify-content: center;
-}
-
-.agent-management-file-entry__icon>svg {
-  flex: 0 0 auto;
-}
-
-.agent-management-file-entry__label {
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-file-content {
-  display: flex;
-  min-height: 0;
-  min-width: 0;
-  flex-direction: column;
-}
-
-.agent-management-file-content__header {
-  display: flex;
-  flex: 0 0 58px;
-  min-height: 58px;
-  align-items: center;
-  justify-content: space-between;
-  gap: 16px;
-  border-bottom: 1px solid var(--color-border-default);
-  padding: 0 23px;
-  color: var(--color-text-strong);
-  font-size: 18px;
-  font-weight: 600;
-  line-height: 28px;
-}
-
-.agent-management-file-content__header>* {
-  position: relative;
-  top: -2px;
-}
-
-.agent-management-file-content__header > span {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-file-content__actions {
-  display: flex;
-  align-items: center;
-  gap: 4px;
-  flex: 0 0 auto;
-}
-
-.agent-management-file-content__actions button {
-  display: inline-flex;
-  min-width: 30px;
-  min-height: 30px;
-  align-items: center;
-  justify-content: center;
-  gap: 4px;
-  border: 0;
-  border-radius: var(--radius-sm);
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 0 6px;
-  cursor: pointer;
-}
-
-.agent-management-file-content__actions button:hover:not(:disabled) {
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-}
-
-.agent-management-file-content__actions button:disabled {
-  cursor: not-allowed;
-  opacity: var(--agent-opacity-disabled);
-}
-
-.agent-management-file-content__body {
-  min-height: 0;
-  flex: 1 1 auto;
-  overflow: auto;
-  padding: 15px;
-}
-
 .agent-management-markdown {
   min-width: 0;
   color: var(--color-text-primary);
@@ -885,164 +868,9 @@
   line-height: 24px;
 }
 
-.agent-management-markdown__frontmatter {
-  max-width: 100%;
-  margin: 0 0 20px;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  color: var(--color-text-secondary);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre-wrap;
-  overflow-wrap: anywhere;
-}
-
-.agent-management-markdown__body {
-  min-width: 0;
-  color: var(--color-text-primary);
-  font-size: 14px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body> :first-child {
-  margin-top: 0;
-}
-
-.agent-management-markdown__body> :last-child {
-  margin-bottom: 0;
-}
-
-.agent-management-markdown__body :where(h1, h2, h3, h4, h5, h6) {
-  color: var(--color-text-strong);
-  font-weight: 600;
-}
-
-.agent-management-markdown__body :where(h1) {
-  margin: 0 0 16px;
-  font-size: 20px;
-  line-height: 28px;
-}
-
-.agent-management-markdown__body :where(h2) {
-  margin: 24px 0 8px;
-  font-size: 18px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(h3) {
-  margin: 20px 0 8px;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(p) {
-  margin: 0 0 12px;
-  font-size: 14px;
-  line-height: 24px;
-}
-
-.agent-management-markdown__body :where(ul, ol) {
-  margin: 0 0 16px;
-  padding-left: 22px;
-}
-
-.agent-management-markdown__body :where(li + li) {
-  margin-top: 4px;
-}
-
-.agent-management-markdown__body :where(blockquote) {
-  border-left-color: var(--color-border-strong);
-  color: var(--color-text-secondary);
-}
-
-.agent-management-markdown__body :where(:not(pre) > code) {
-  border-radius: var(--radius-sm);
-  background: var(--color-action-secondary);
-  color: var(--color-text-strong);
-  padding: 2px 5px;
-  font-family: var(--font-mono);
-  font-size: 0.9em;
-  white-space: break-spaces;
-}
-
-.agent-management-markdown__body :where(pre) {
-  max-width: 100%;
-  margin: 16px 0;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  padding: 12px 14px;
-}
-
-.agent-management-markdown__body :where(pre code) {
-  background: transparent;
-  padding: 0;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre;
-}
-
-.agent-management-code {
-  max-width: 100%;
-  min-height: 100%;
-  margin: 0;
-  overflow: auto;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-  color: var(--color-text-primary);
-  padding: 12px 14px;
-  font-family: var(--font-mono);
-  font-size: 12px;
-  line-height: 20px;
-  white-space: pre;
-}
-
-.agent-management-code-preview {
-  height: 100%;
-  min-height: 0;
-  overflow: hidden;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-md);
-  background: var(--color-surface-panel);
-}
-
-.agent-management-code-preview .cm-editor {
-  height: 100%;
-}
-
-.agent-management-detail-content :where(code)::before,
-.agent-management-detail-content :where(code)::after,
 .agent-management-markdown :where(code)::before,
 .agent-management-markdown :where(code)::after {
   content: none !important;
-}
-
-.agent-management-file-state {
-  display: flex;
-  min-height: 120px;
-  align-items: center;
-  justify-content: center;
-  flex-direction: column;
-  gap: 12px;
-  color: var(--color-text-secondary);
-  padding: 16px;
-  text-align: center;
-  font-size: 13px;
-}
-
-.agent-management-file-state p {
-  margin: 0;
-}
-
-.agent-management-file-state--error {
-  color: var(--color-feedback-danger);
 }
 
 .agent-management-editor__header {
@@ -1062,6 +890,25 @@
   color: var(--color-text-secondary);
   font-size: 14px;
   line-height: 22px;
+}
+
+.agent-management-editor__tabs button {
+  position: relative;
+  min-height: 32px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  cursor: pointer;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+}
+
+.agent-management-editor__tabs button:hover,
+.agent-management-editor__tabs button:focus-visible {
+  color: var(--color-text-strong);
+  outline: 0;
 }
 
 .agent-management-editor__tabs span:nth-child(-n + 2) {
@@ -1110,17 +957,17 @@
   margin-top: 32px;
 }
 
-.agent-management-editor>.agent-management-form-section:first-of-type {
+.agent-management-editor > .agent-management-form-section:first-of-type {
   margin-top: 32px;
 }
 
-.agent-management-form-section>h2 {
+.agent-management-form-section > h2 {
   margin-bottom: 24px;
   font-size: 18px;
   line-height: 28px;
 }
 
-.agent-management-editor>.agent-management-form-section:first-of-type>h2 {
+.agent-management-editor > .agent-management-form-section:first-of-type > h2 {
   margin-bottom: 16px;
   line-height: 28px;
 }
@@ -1148,7 +995,7 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid>.agent-management-form-field--wide {
+.agent-management-form-grid > .agent-management-form-field--wide {
   position: relative;
   display: flex;
   flex-direction: column;
@@ -1158,11 +1005,11 @@
   line-height: 22px;
 }
 
-.agent-management-form-grid>.agent-management-form-field--runtime-id {
+.agent-management-form-grid > .agent-management-form-field--runtime-id {
   order: 5;
 }
 
-.agent-management-form-grid>.agent-management-form-field--tag-picker {
+.agent-management-form-grid > .agent-management-form-field--tag-picker {
   gap: 2px;
   margin-bottom: 16px;
   min-width: 0;
@@ -1261,7 +1108,7 @@
   font: inherit;
 }
 
-.agent-management-tag--selected>button {
+.agent-management-tag--selected > button {
   display: inline-flex;
   width: 16px;
   height: 16px;
@@ -1422,7 +1269,7 @@
   line-height: 1.7;
 }
 
-.agent-management-form-grid>label:has(.agent-management-persona) {
+.agent-management-form-grid > label:has(.agent-management-persona) {
   gap: 14px;
 }
 
@@ -1477,27 +1324,27 @@
   line-height: 22px;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h1,
-.agent-management-persona-rendered .agent-management-markdown>h2,
-.agent-management-persona-rendered .agent-management-markdown>h3 {
+.agent-management-persona-rendered .agent-management-markdown > h1,
+.agent-management-persona-rendered .agent-management-markdown > h2,
+.agent-management-persona-rendered .agent-management-markdown > h3 {
   color: var(--color-text-strong);
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h1 {
+.agent-management-persona-rendered .agent-management-markdown > h1 {
   margin: 0 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>h2 {
+.agent-management-persona-rendered .agent-management-markdown > h2 {
   margin: 24px 0 8px;
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
 }
 
-.agent-management-persona-rendered .agent-management-markdown>p {
+.agent-management-persona-rendered .agent-management-markdown > p {
   margin: 0 0 24px;
   font-size: 16px;
   line-height: 24px;
@@ -1637,8 +1484,8 @@
   text-align: left;
 }
 
-.agent-management-capability-card>span:nth-child(2),
-.agent-management-selection-card>span:nth-child(2) {
+.agent-management-capability-card > span:nth-child(2),
+.agent-management-selection-card > span:nth-child(2) {
   display: flex;
   min-width: 0;
   flex: 1 1 auto;
@@ -1694,6 +1541,18 @@
   color: var(--color-text-secondary);
   padding: 0;
   cursor: pointer;
+  opacity: var(--opacity-agent-hidden);
+  pointer-events: none;
+  transition: opacity var(--duration-fast) var(--ease-out), color var(--duration-fast) var(--ease-out);
+}
+
+.agent-management-capability-card:hover .agent-management-capability-card__remove,
+.agent-management-capability-card:focus-within .agent-management-capability-card__remove,
+.agent-group-editor__member-card:hover .agent-management-capability-card__remove,
+.agent-group-editor__member-card:focus-within .agent-management-capability-card__remove,
+.agent-management-capability-card__remove:focus-visible {
+  opacity: var(--opacity-agent-visible);
+  pointer-events: auto;
 }
 
 .agent-management-capability-card__remove:hover,
@@ -1710,7 +1569,7 @@
   border: 0;
   border-radius: var(--radius-md);
   padding: 24px;
-  box-shadow: 0 4px 16px rgba(0, 0, 0, 0.08);
+  box-shadow: var(--effect-shadow-md);
 }
 
 .agent-management-selected-capabilities .agent-management-capability-card__heading {
@@ -1741,7 +1600,7 @@
   font-size: 20px;
 }
 
-.agent-management-selected-capabilities .agent-management-capability-card>small {
+.agent-management-selected-capabilities .agent-management-capability-card > small {
   display: -webkit-box;
   width: 100%;
   height: 44px;
@@ -1775,19 +1634,19 @@
   padding: 24px;
 }
 
-.agent-management-upload-dialog>header,
-.agent-management-upload-dialog>footer {
+.agent-management-upload-dialog > header,
+.agent-management-upload-dialog > footer {
   display: flex;
   align-items: center;
   justify-content: flex-end;
   gap: 12px;
 }
 
-.agent-management-upload-dialog>header {
+.agent-management-upload-dialog > header {
   justify-content: space-between;
 }
 
-.agent-management-upload-dialog>header h2 {
+.agent-management-upload-dialog > header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 18px;
@@ -1800,7 +1659,7 @@
   box-shadow: none;
 }
 
-.agent-management-upload-dialog>header button {
+.agent-management-upload-dialog > header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -1814,8 +1673,8 @@
   cursor: pointer;
 }
 
-.agent-management-upload-dialog>header button:hover,
-.agent-management-upload-dialog>header button:focus-visible {
+.agent-management-upload-dialog > header button:hover,
+.agent-management-upload-dialog > header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -1869,7 +1728,7 @@
   border-color: var(--color-border-danger);
 }
 
-.agent-management-upload-picker>span {
+.agent-management-upload-picker > span {
   color: var(--color-chat-supporting-text);
   font-size: 13px;
   line-height: 20px;
@@ -1884,12 +1743,12 @@
   text-align: left;
 }
 
-.agent-management-upload-picker__selected>svg {
+.agent-management-upload-picker__selected > svg {
   flex: 0 0 22px;
   color: var(--color-text-secondary);
 }
 
-.agent-management-upload-picker__selected>div {
+.agent-management-upload-picker__selected > div {
   min-width: 0;
   flex: 1 1 auto;
 }
@@ -1948,20 +1807,20 @@
   line-height: 18px;
 }
 
-.agent-management-upload-dialog>footer .agent-management-button {
+.agent-management-upload-dialog > footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-upload-dialog>footer .agent-management-button--primary {
+.agent-management-upload-dialog > footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-upload-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-upload-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
@@ -1996,8 +1855,8 @@
   box-shadow: var(--effect-shadow-xl);
 }
 
-.agent-management-selection-dialog>header,
-.agent-management-selection-dialog>footer {
+.agent-management-selection-dialog > header,
+.agent-management-selection-dialog > footer {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -2006,50 +1865,12 @@
   padding: 16px 24px;
 }
 
-.agent-management-selection-dialog>header h2 {
+.agent-management-selection-dialog > header h2 {
   margin: 0;
   color: var(--color-text-strong);
   font-size: 16px;
   font-weight: 600;
   line-height: 24px;
-}
-
-.agent-management-selection-tabs {
-  display: flex;
-  align-items: center;
-  gap: 28px;
-  border-bottom: 1px solid var(--color-border-default);
-  padding: 0 24px;
-}
-
-.agent-management-selection-tab {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 12px 0;
-  cursor: pointer;
-  font: inherit;
-  font-size: 14px;
-}
-
-.agent-management-selection-tab.is-active {
-  color: var(--color-text-strong);
-}
-
-.agent-management-selection-tab.is-active::after {
-  position: absolute;
-  right: 0;
-  bottom: -1px;
-  left: 0;
-  height: 2px;
-  background: var(--color-text-strong);
-  content: '';
-}
-
-.agent-management-selection-tab[aria-disabled='true'] {
-  cursor: default;
-  opacity: 0.55;
 }
 
 .agent-management-selection-search {
@@ -2166,7 +1987,7 @@
   box-shadow: none;
 }
 
-.agent-management-selection-dialog>header button {
+.agent-management-selection-dialog > header button {
   display: inline-flex;
   width: 32px;
   height: 32px;
@@ -2180,8 +2001,8 @@
   cursor: pointer;
 }
 
-.agent-management-selection-dialog>header button:hover,
-.agent-management-selection-dialog>header button:focus-visible {
+.agent-management-selection-dialog > header button:hover,
+.agent-management-selection-dialog > header button:focus-visible {
   background: var(--color-action-secondary);
   color: var(--color-text-strong);
   outline: 0;
@@ -2210,32 +2031,32 @@
   margin: 0;
 }
 
-.agent-management-selection-dialog>footer {
+.agent-management-selection-dialog > footer {
   border-top: 1px solid var(--color-border-default);
   border-bottom: 0;
   color: var(--color-text-secondary);
   font-size: 14px;
 }
 
-.agent-management-selection-dialog>footer .agent-management-button {
+.agent-management-selection-dialog > footer .agent-management-button {
   min-height: 32px;
   border-radius: var(--radius-full);
   padding-right: 16px;
   padding-left: 16px;
 }
 
-.agent-management-selection-dialog>footer .agent-management-button--primary {
+.agent-management-selection-dialog > footer .agent-management-button--primary {
   border-color: var(--color-text-strong);
   background: var(--color-text-strong);
   color: var(--color-text-inverse);
 }
 
-.agent-management-selection-dialog>footer .agent-management-button--primary:hover:not(:disabled) {
+.agent-management-selection-dialog > footer .agent-management-button--primary:hover:not(:disabled) {
   border-color: var(--color-text-primary);
   background: var(--color-text-primary);
 }
 
-.agent-management-selection-dialog>footer>div {
+.agent-management-selection-dialog > footer > div {
   display: flex;
   gap: 12px;
 }
@@ -2259,9 +2080,10 @@
   flex: 0 0 16px;
   align-items: center;
   justify-content: center;
-  border: 0;
-  border-radius: 0;
-  color: inherit;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-sm);
+  background: var(--color-surface-card);
+  color: var(--color-text-inverse);
 }
 
 .agent-management-selection-card__action svg {
@@ -2279,6 +2101,35 @@
 
 .agent-management-selection-card.is-selected {
   background: var(--color-feedback-info-subtle);
+}
+
+.agent-management-selection-card.is-selected .agent-management-selection-card__action {
+  border-color: var(--color-action-primary);
+  background: var(--color-action-primary);
+}
+
+.agent-management-selection-card:disabled,
+.agent-management-selection-card.is-disabled {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+  cursor: not-allowed;
+  opacity: var(--opacity-agent-muted);
+}
+
+.agent-management-selection-card:disabled .agent-management-selection-card__action,
+.agent-management-selection-card.is-disabled .agent-management-selection-card__action {
+  border-color: var(--color-border-default);
+  background: var(--color-action-secondary);
+  color: var(--color-text-tertiary);
+}
+
+.agent-management-selection-card:disabled:hover,
+.agent-management-selection-card:disabled:focus-visible,
+.agent-management-selection-card.is-disabled:hover,
+.agent-management-selection-card.is-disabled:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
 }
 
 .agent-management-inline-action {
@@ -2299,74 +2150,9 @@
   color: var(--color-text-strong);
 }
 
-.agent-management-skill-options {
-  display: grid;
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 16px;
-}
-
-.agent-management-skill-option {
-  display: flex;
-  min-width: 0;
-  min-height: 156px;
-  align-items: flex-start;
-  gap: 12px;
-  border: 1px solid var(--color-border-default);
-  border-radius: var(--radius-xl);
-  background: var(--color-surface-card);
-  padding: 24px;
-  color: var(--color-text-primary);
-  cursor: pointer;
-  text-align: left;
-}
-
-.agent-management-skill-option:hover,
-.agent-management-skill-option.is-selected {
-  border-color: var(--color-border-hover);
-  background: var(--color-action-secondary);
-}
-
-.agent-management-skill-option__icon {
-  display: inline-flex;
-  width: 28px;
-  height: 28px;
-  flex: 0 0 28px;
-  align-items: center;
-  justify-content: center;
-  border-radius: var(--radius-sm);
-  background: var(--color-action-primary-subtle);
-  color: var(--color-text-link);
-}
-
-.agent-management-skill-option>span:last-child {
-  display: flex;
-  min-width: 0;
-  flex-direction: column;
-  gap: 6px;
-}
-
-.agent-management-skill-option strong {
-  overflow: hidden;
-  color: var(--color-text-strong);
-  font-size: 14px;
-  line-height: 20px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
-.agent-management-skill-option small {
-  color: var(--color-text-secondary);
-  font-size: 13px;
-  line-height: 20px;
-}
-
 .agent-management-form-muted {
   color: var(--color-text-secondary);
   font-size: 13px;
-}
-
-.agent-management-form-empty-state {
-  margin: 0 0 20px;
 }
 
 .agent-management-form-error {
@@ -2430,26 +2216,8 @@
 }
 
 @media (max-width: 800px) {
-  .page-content[data-testid="agent-management-panel"] {
+  .page-content[data-testid='agent-management-panel'] {
     --agent-page-gutter: 20px;
-  }
-
-  .agent-management-detail__header {
-    align-items: flex-start;
-    flex-direction: column;
-  }
-
-  .agent-management-detail__identity {
-    width: 100%;
-  }
-
-  .agent-management-detail__identity h1 {
-    display: -webkit-box;
-    -webkit-box-orient: vertical;
-    -webkit-line-clamp: 2;
-    overflow-wrap: anywhere;
-    text-overflow: ellipsis;
-    white-space: normal;
   }
 
   .agent-management-primary-actions {
@@ -2457,10 +2225,16 @@
     padding-bottom: 16px;
   }
 
+  .agent-management-secondary-tabs {
+    margin-left: 0;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: 1fr;
+  }
+
   .agent-management-detail-capabilities,
-  .agent-management-detail-capability-grid,
   .agent-management-prompt-list,
-  .agent-management-skill-options,
   .agent-management-selected-capabilities,
   .agent-management-selection-grid {
     grid-template-columns: 1fr;
@@ -2475,7 +2249,7 @@
     min-height: 160px;
   }
 
-  [data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
+  [data-testid='agent-management-panel'][data-variant='mine'] .agent-management-card {
     height: auto;
   }
 
@@ -2483,7 +2257,7 @@
     right: 16px;
     top: auto;
     bottom: 16px;
-    opacity: var(--agent-opacity-visible);
+    opacity: var(--opacity-agent-visible);
     pointer-events: auto;
     transform: none;
   }
@@ -2493,9 +2267,781 @@
   .agent-management-card {
     height: auto;
   }
+}
+/* 0807 high-fidelity alignment: keep the existing live seams and tune only
+   the Agent/AgentGroup surfaces covered by the design exports. */
+.page-content[data-testid="agent-management-panel"] .card-grid-auto {
+  padding-top: 32px !important;
+}
 
-  .agent-management-pagination {
-    align-items: flex-start;
-    flex-direction: column;
+.page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+  width: 360px !important;
+}
+
+.page-content[data-testid="agent-management-panel"][data-variant="detail"] .agent-management-detail,
+.page-content[data-testid="agent-management-panel"][data-variant="create"] .agent-management-editor {
+  padding-top: 0;
+}
+
+.agent-group-avatar {
+  width: 48px;
+  height: 48px;
+  flex-basis: 48px;
+  border: 1px solid var(--color-agent-group-avatar-border, var(--color-border-default));
+  border-radius: var(--radius-agent-group-avatar);
+  background: var(--color-agent-group-avatar-surface);
+  color: var(--color-agent-group-avatar-text);
+}
+
+.agent-group-avatar--variant-1,
+.agent-group-member-avatar--variant-1 {
+  border-color: var(--color-agent-group-avatar-variant-1-border);
+  background: var(--color-agent-group-avatar-variant-1-surface);
+  color: var(--color-agent-group-avatar-variant-1-text);
+}
+
+.agent-group-avatar--variant-2,
+.agent-group-member-avatar--variant-2 {
+  border-color: var(--color-agent-group-avatar-variant-2-border);
+  background: var(--color-agent-group-avatar-variant-2-surface);
+  color: var(--color-agent-group-avatar-variant-2-text);
+}
+
+.agent-group-avatar--variant-3,
+.agent-group-member-avatar--variant-3 {
+  border-color: var(--color-agent-group-avatar-variant-3-border);
+  background: var(--color-agent-group-avatar-variant-3-surface);
+  color: var(--color-agent-group-avatar-variant-3-text);
+}
+
+.agent-group-avatar--variant-4,
+.agent-group-member-avatar--variant-4 {
+  border-color: var(--color-agent-group-avatar-variant-4-border);
+  background: var(--color-agent-group-avatar-variant-4-surface);
+  color: var(--color-agent-group-avatar-variant-4-text);
+}
+
+.agent-group-avatar--variant-5,
+.agent-group-member-avatar--variant-5 {
+  border-color: var(--color-agent-group-avatar-variant-5-border);
+  background: var(--color-agent-group-avatar-variant-5-surface);
+  color: var(--color-agent-group-avatar-variant-5-text);
+}
+
+.agent-group-avatar--variant-6,
+.agent-group-member-avatar--variant-6 {
+  border-color: var(--color-agent-group-avatar-variant-6-border);
+  background: var(--color-agent-group-avatar-variant-6-surface);
+  color: var(--color-agent-group-avatar-variant-6-text);
+}
+
+.agent-group-detail .agent-management-detail__identity h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 8px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 8px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+.agent-group-detail__capabilities {
+  margin-top: 32px;
+}
+
+.agent-group-editor__header {
+  display: block;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  margin-top: 29px;
+  margin-bottom: 32px;
+}
+
+.agent-group-editor__header h1 {
+  font-size: 20px;
+  line-height: 30px;
+}
+
+.agent-group-editor .agent-management-editor__tabs {
+  width: 100%;
+  align-items: flex-start;
+  gap: 14px;
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button,
+.agent-group-editor .agent-management-editor__tabs span {
+  position: relative;
+  width: max-content !important;
+  min-width: max-content;
+  min-height: 32px;
+  height: 32px !important;
+  box-sizing: border-box;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 0 0 8px;
+  font-size: 16px;
+  line-height: 24px;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.agent-group-editor .agent-management-editor__tabs button:first-child {
+  min-width: 80px;
+  margin-right: 18px;
+}
+
+.agent-group-editor .agent-management-editor__tabs button.is-active,
+.agent-group-editor .agent-management-editor__tabs span.is-active {
+  color: var(--color-text-strong);
+  font-weight: 600;
+}
+
+.agent-group-editor .agent-management-editor__tabs span.is-active::after {
+  position: absolute;
+  right: 0;
+  bottom: 0;
+  left: 0;
+  height: 2px;
+  background: var(--color-text-strong);
+  content: '';
+}
+
+.agent-group-editor .agent-management-form-section {
+  margin-top: 32px;
+}
+
+.agent-group-editor .agent-management-form-section > h2 {
+  margin-bottom: 24px;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+}
+
+.agent-group-editor .agent-management-form-field--wide {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-editor .agent-management-form-field--tag-picker {
+  gap: 2px;
+  margin-bottom: 16px;
+  min-width: 0;
+}
+
+.agent-group-editor .agent-management-form-field--wide input,
+.agent-group-editor .agent-management-form-field--wide textarea {
+  box-sizing: border-box;
+  width: 100%;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  color: var(--color-text-primary);
+  padding: 10px 12px;
+  font: inherit;
+  line-height: 20px;
+}
+
+.agent-group-editor .agent-management-form-field--wide input {
+  height: 32px;
+}
+
+.agent-group-editor .agent-management-form-field--wide textarea {
+  min-height: 64px;
+  resize: vertical;
+}
+
+.agent-group-editor .agent-group-editor__intro-section textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  margin-top: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  min-height: 64px;
+  box-sizing: border-box;
+  align-items: center;
+  border-radius: var(--radius-md);
+  padding: 12px 16px;
+}
+
+.agent-group-editor__selection-label button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+}
+
+.agent-group-upload-dialog__radio {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  box-sizing: border-box;
+  align-items: center;
+  justify-content: center;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-full);
+}
+
+.agent-group-upload-dialog__radio::after {
+  width: 8px;
+  height: 8px;
+  border-radius: var(--radius-full);
+  background: transparent;
+  content: '';
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio {
+  border-color: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog__kind button.is-active .agent-group-upload-dialog__radio::after {
+  background: var(--color-action-primary);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  order: 1;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+}
+
+@media (max-width: 900px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(320px, 100%) !important;
+  }
+
+  .agent-group-detail__members {
+    grid-template-columns: repeat(auto-fit, minmax(174px, 1fr));
+  }
+}
+
+@media (max-width: 1000px) {
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .page-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-primary-actions {
+    grid-column: 1;
+    grid-row: 2;
+    justify-content: flex-end;
+    min-width: 0;
+    width: 100%;
+  }
+
+  .page-content[data-testid="agent-management-panel"][data-variant="mine"] .agent-management-secondary-tabs {
+    grid-column: 1;
+    grid-row: 3;
+  }
+}
+
+@media (max-width: 720px) {
+  .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
+    width: min(228px, 100%) !important;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+}
+
+.agent-group-upload-dialog-overlay {
+  align-items: flex-start;
+  justify-content: center;
+  box-sizing: border-box;
+  padding: var(--space-agent-group-upload-top) var(--space-agent-group-gutter) var(--space-agent-group-gutter);
+}
+
+.agent-management-upload-dialog.agent-group-upload-dialog {
+  width: var(--size-agent-group-upload-dialog-width);
+  height: var(--size-agent-group-upload-dialog-height);
+  box-sizing: border-box;
+  gap: 0;
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--radius-md);
+  padding: var(--space-agent-group-upload-inset);
+}
+
+.agent-group-upload-dialog > header {
+  height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog > header button {
+  width: var(--size-agent-group-drawer-control);
+  height: var(--size-agent-group-drawer-control);
+}
+
+.agent-group-upload-dialog .agent-management-upload-dialog__hint {
+  height: var(--size-agent-group-upload-hint-height);
+  min-height: var(--size-agent-group-upload-hint-height);
+  flex: 0 0 var(--size-agent-group-upload-hint-height);
+  align-items: center;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-grid) 0 0;
+}
+
+.agent-group-upload-dialog__kind {
+  order: 2;
+  height: 50px;
+  flex: 0 0 50px;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 0;
+  box-sizing: border-box;
+  margin: var(--space-agent-group-control) 0 14px;
+  border: 0;
+  padding: var(--space-agent-group-control) 0 0;
+}
+
+.agent-group-upload-dialog__label {
+  font-size: 14px;
+  line-height: 22px;
+}
+
+.agent-group-upload-dialog__options {
+  display: flex;
+  height: 20px;
+  align-items: center;
+  gap: 20px;
+}
+
+.agent-group-upload-dialog__options button {
+  display: inline-flex;
+  height: 20px;
+  align-items: center;
+  gap: var(--space-agent-group-control);
+  border: 0;
+  padding: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-upload-dialog__options button.is-active {
+  border-bottom: 0;
+  font-weight: 400;
+}
+
+.agent-group-upload-dialog .agent-management-upload-picker {
+  order: 3;
+  height: var(--size-agent-group-upload-drop-height);
+  min-height: var(--size-agent-group-upload-drop-height);
+  flex: 0 0 var(--size-agent-group-upload-drop-height);
+  box-sizing: border-box;
+  border-radius: var(--radius-xl);
+}
+
+.agent-group-upload-dialog > footer {
+  order: 4;
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  flex: 0 0 var(--size-agent-group-drawer-control);
+  gap: var(--space-agent-group-control);
+  margin-top: var(--space-agent-group-grid) !important;
+  padding: 0;
+}
+
+.agent-group-upload-dialog > footer .agent-management-button {
+  width: var(--size-agent-group-upload-button-width);
+  min-width: var(--size-agent-group-upload-button-width);
+  height: var(--size-agent-group-drawer-control);
+  min-height: var(--size-agent-group-drawer-control);
+  padding: 0 16px;
+  border-radius: var(--radius-full);
+}
+
+.agent-management-upload-dialog__hint-copy {
+  min-width: 0;
+}
+
+.agent-group-detail .agent-group-avatar--detail {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  border-radius: var(--radius-md);
+}
+
+.agent-group-editor__header {
+  margin-bottom: 0;
+}
+
+[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: none;
+}
+
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="create"] .agent-group-editor {
+  transform: translateX(4px);
+}
+
+.agent-group-editor__intro-field textarea {
+  min-height: 184px;
+}
+
+.agent-group-editor__selection-label .agent-management-inline-action {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 2px 0;
+  font-size: 12px;
+  line-height: 16px;
+  white-space: nowrap;
+}
+
+/* Keep the Expert Team detail page on the same centered detail container and
+   metadata rhythm as the ordinary Expert detail page. */
+.page-content[data-testid="agent-management-panel"][data-definition-kind="group"][data-variant="detail"] .agent-group-detail {
+  transform: translateX(4px);
+}
+
+.agent-group-detail .agent-management-detail__badges {
+  gap: 17px;
+}
+
+.agent-group-detail .agent-management-detail__badges .agent-management-tag {
+  min-height: 24px;
+  border-radius: var(--radius-sm);
+  background: var(--color-action-secondary);
+  color: var(--color-text-primary);
+  padding: 0 4px;
+  font-size: 12px;
+  line-height: 18px;
+}
+
+/* Expert Team pickers share the same selection-card seam as the Expert skill
+   picker. Keep the avatar inside the existing capability-card icon geometry. */
+.agent-management-selection-avatar {
+  overflow: hidden;
+}
+
+.agent-management-selection-avatar img {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.agent-management-selection-avatar > span {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+}
+
+/* Newly added Expert Team fields keep the same quiet focus treatment as the
+   ordinary Expert Team name input. */
+.agent-group-editor input:focus,
+.agent-group-editor input:focus-visible,
+.agent-group-editor textarea:focus,
+.agent-group-editor textarea:focus-visible {
+  border-color: var(--color-border-default);
+  outline: 0;
+  box-shadow: none;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-member-card__identity > .agent-group-member-card__badge {
+  margin-top: 0;
+}
+
+/* Expert Team creation follows the original high-fidelity hierarchy: one
+   selected leader card, followed by a three-column member card grid. Empty
+   states remain actions, not fake inputs. */
+.agent-group-editor__team-config-section .agent-group-editor__selection-grid {
+  display: block;
+  margin-top: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field {
+  display: block;
+  min-width: 0;
+  min-height: 0;
+  margin-top: 0;
+  border: 0;
+  background: transparent;
+  padding: 0;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-field + .agent-group-editor__selection-field {
+  margin-top: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label {
+  margin-bottom: 12px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label > span {
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 500;
+  line-height: 20px;
+}
+
+.agent-group-editor__team-config-section .agent-group-editor__selection-label .agent-management-inline-action {
+  color: var(--color-text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.agent-group-editor__selected-agent {
+  display: flex;
+  width: min(100%, 456px);
+  min-height: 132px;
+  align-items: flex-start;
+  box-sizing: border-box;
+  gap: 12px;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__selected-agent-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__selected-agent-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__selected-agent-copy p,
+.agent-group-editor__member-card-copy p {
+  display: -webkit-box;
+  min-width: 0;
+  margin: 0;
+  overflow: hidden;
+  color: var(--color-text-secondary);
+  font-size: 14px;
+  line-height: 22px;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+}
+
+.agent-group-editor__selected-agent-action {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-cards {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 0;
+}
+
+.agent-group-editor__member-card {
+  display: block;
+  min-width: 0;
+  min-height: 132px;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-xl);
+  background: var(--color-surface-card);
+  padding: 16px;
+}
+
+.agent-group-editor__member-card-top {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.agent-group-editor__member-card-copy {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.agent-group-editor__member-card-copy strong {
+  display: block;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--color-text-primary);
+  font-size: 18px;
+  line-height: 28px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-group-editor__member-card-top > button {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  background: transparent;
+  margin-left: auto;
+  color: var(--color-text-secondary);
+  padding: 4px;
+  cursor: pointer;
+}
+
+.agent-group-editor__member-card .agent-management-capability-card__remove {
+  width: 32px;
+  height: 32px;
+  flex-basis: 32px;
+  padding: 0;
+}
+
+/* Detail roster cards follow the high-fidelity member tile: avatar first,
+   then the compact name row. The native title keeps long names discoverable
+   without adding another visible line to the card. */
+.agent-group-detail__members {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, 174px);
+  gap: 16px;
+}
+
+.agent-group-member-card {
+  display: flex;
+  width: 174px;
+  height: 104px;
+  min-width: 0;
+  min-height: 104px;
+  flex-direction: column;
+  align-items: center;
+  box-sizing: border-box;
+  border: 1px solid var(--color-border-default);
+  border-radius: var(--radius-md);
+  background: var(--color-surface-card);
+  padding: 12px 16px;
+  text-align: center;
+  transition: border-color var(--duration-fast) var(--ease-out), box-shadow var(--duration-fast) var(--ease-out);
+}
+
+.agent-group-member-card:hover {
+  border-color: var(--color-border-hover);
+  box-shadow: var(--effect-shadow-sm);
+}
+
+.agent-group-member-card__avatar-wrap {
+  display: flex;
+  width: 100%;
+  justify-content: center;
+}
+
+.agent-group-member-avatar {
+  width: 40px;
+  height: 40px;
+  flex-basis: 40px;
+}
+
+.agent-group-member-card__identity {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  justify-content: center;
+  gap: 4px;
+  margin-top: 8px;
+  text-align: center;
+}
+
+.agent-group-member-card__identity > strong {
+  min-width: 0;
+  max-width: 100%;
+  flex: 0 1 auto;
+  margin: 0;
+  color: var(--color-text-primary);
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+}
+
+.agent-group-member-card__badge {
+  min-height: 20px;
+  border-radius: var(--radius-sm);
+  background: var(--color-member-card-badge-surface);
+  color: var(--color-text-link);
+  padding: 0 6px;
+  font-size: 11px;
+  line-height: 20px;
+  white-space: nowrap;
+}
+
+@media (max-width: 720px) {
+  .agent-group-editor__selected-agent {
+    width: 100%;
+  }
+
+  .agent-group-editor__member-cards {
+    grid-template-columns: 1fr;
+  }
+
+  .agent-group-member-card {
+    width: 100%;
   }
 }

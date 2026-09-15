@@ -170,7 +170,7 @@ async def test_mode_event_and_terminal_sentinel_cross_runtime_server_gateway_cha
         initializer=AsyncMock(),
         plan_controller=_PlanController(),
     )
-    runtime.prepare_chat_turn = AsyncMock(
+    runtime._prepare_chat_turn = AsyncMock(
         return_value=(
             agent_ref["mode"],
             None,

@@ -6872,6 +6872,14 @@ class SkillManager:
                 continue
         return False
 
+    @staticmethod
+    def _path_is_in_process_temp(path: Path) -> bool:
+        """判断路径是否位于当前进程的标准临时目录内。"""
+        try:
+            return SkillManager._path_is_within_root(path, Path(tempfile.gettempdir()))
+        except (OSError, ValueError, RuntimeError):
+            return False
+
     def _assert_import_local_source_safe(self, raw_path: str) -> None:
         """拒绝符号链接、URL 协议与落在基础黑名单根下的本地导入源。
 
@@ -6905,7 +6913,15 @@ class SkillManager:
             resolved = expanded.resolve()
         except (OSError, ValueError, RuntimeError) as exc:
             raise ValueError(f"path 无效: {exc}") from exc
+        # macOS 的进程临时目录位于 /private/var 下；放行该目录避免正常的
+        # 上传/解压暂存文件被 /var 基础黑名单误判。显式运维黑名单仍优先。
+        allow_process_temp = (
+            not os.getenv(_IMPORT_LOCAL_FORBIDDEN_DIRS_ENV)
+            and self._path_is_in_process_temp(resolved)
+        )
         for root in self._get_import_local_forbidden_roots():
+            if allow_process_temp and root == Path("/var"):
+                continue
             if self._path_is_within_root(resolved, root):
                 raise ValueError(f"path 位于禁止导入的目录: {raw}")
         if resolved.is_dir():

@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import asyncio
+from copy import deepcopy
 from dataclasses import replace
 import inspect
 import logging
@@ -22,6 +23,10 @@ from pathlib import Path
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from jiuwenswarm.dotenv_early import load_dotenv_runtime
+from jiuwenswarm.common.session_message import (
+    SESSION_MESSAGE_INTERNAL_KEY,
+    SESSION_MESSAGE_ORIGIN,
+)
 
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     SKILLS_REBUILD_SILENT,
@@ -75,6 +80,10 @@ from jiuwenswarm.common.mode_matrix import (
     is_web_composable_mode,
     read_request_work_mode,
 )
+from jiuwenswarm.common.context_keys import (
+    JIUWENSWARM_CHANNEL_CONTEXT_KEY,
+    JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
+)
 from jiuwenswarm.extensions.registry import ExtensionRegistry
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
@@ -106,6 +115,26 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_context import (
     HOST_USER_ORIGIN_EXTERNAL,
     HOST_USER_ORIGIN_INTERNAL,
 )
+
+
+def _with_request_runtime_context(
+    run: object,
+    *,
+    channel: str,
+    skip_a2ui: bool,
+) -> dict[str, Any]:
+    """Return a copy of ``run`` carrying JiuwenSwarm request metadata."""
+    run_data = dict(run) if isinstance(run, dict) else {}
+    raw_context = run_data.get("context")
+    context = dict(raw_context) if isinstance(raw_context, dict) else {}
+    raw_extra = context.get("extra")
+    extra = dict(raw_extra) if isinstance(raw_extra, dict) else {}
+    extra[JIUWENSWARM_CHANNEL_CONTEXT_KEY] = channel
+    if skip_a2ui:
+        extra[JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY] = True
+    context["extra"] = extra
+    run_data["context"] = context
+    return run_data
 
 
 class _TeamPlanApprovalPayloadError(ValueError):
@@ -429,7 +458,7 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
     if not isinstance(params, dict):
         return None
 
-    extra: dict[str, Any] = {}
+    extra = _with_cross_session_history_metadata(None, params) or {}
     raw_media_items = params.get("media_items")
     if isinstance(raw_media_items, list):
         media_items: list[dict[str, Any]] = []
@@ -462,6 +491,37 @@ def _history_user_extra(params: Any) -> dict[str, Any] | None:
             extra["skills"] = skills
 
     return _with_heartbeat_history_metadata(extra, params)
+
+
+def _with_cross_session_history_metadata(
+    extra: dict[str, Any] | None,
+    params: Any,
+) -> dict[str, Any] | None:
+    """Persist the public origin marker on cross-Session assistant records."""
+    result = dict(extra or {})
+    if not isinstance(params, dict):
+        return result or None
+    raw_cross_session = params.get(SESSION_MESSAGE_INTERNAL_KEY)
+    if not isinstance(raw_cross_session, dict):
+        return result or None
+    cross_session: dict[str, Any] = {}
+    for key in (
+        "message_id",
+        "source_session_id",
+        "source_title",
+        "chain_id",
+        "parent_message_id",
+        "hop_count",
+        "language",
+    ):
+        if key in raw_cross_session:
+            cross_session[key] = raw_cross_session[key]
+    result["message_origin"] = SESSION_MESSAGE_ORIGIN
+    result["cross_session"] = cross_session
+    message_id = str(cross_session.get("message_id") or "").strip()
+    if message_id:
+        result["session_message_id"] = message_id
+    return result
 
 
 def _web_agent_template_name(params: Any, channel_id: Any) -> str | None:
@@ -936,6 +996,19 @@ _PACKAGE_ROUTES: dict[ReqMethod, str] = {
     ReqMethod.PLUGIN_PACKAGES_UNINSTALL: "uninstall_plugin_package",
 }
 
+_AGENT_GROUP_PACKAGE_METHODS: frozenset[ReqMethod] = frozenset(
+    {
+        ReqMethod.AGENT_GROUPS_LIST,
+        ReqMethod.AGENT_GROUPS_SHOW,
+        ReqMethod.AGENT_GROUPS_FILE_LIST,
+        ReqMethod.AGENT_GROUPS_FILE_READ,
+        ReqMethod.AGENT_GROUPS_CREATE,
+        ReqMethod.AGENT_GROUPS_IMPORT_LOCAL,
+        ReqMethod.AGENT_GROUPS_INSTALL,
+        ReqMethod.AGENT_GROUPS_UNINSTALL,
+    }
+)
+
 _SKILL_COMMAND_REGEX = re.compile(
     r"^/skills use\s+(?P<skill_names>[^,]+)\s*,\s*(?P<query>.*)$"
 )
@@ -1071,6 +1144,14 @@ class JiuWenSwarm:
         self._heartbeat_service: Any | None = None
         self._permissions_changed_notifier: Callable[[], None] | None = None
         self._permissions_external_input_context_builder: Callable[..., Any] | None = None
+        # Preserve an SDK-declared root Agent across the SkillNet rebuild hook.
+        # Default Agent builds retain their historical no-argument reload path.
+        self._runtime_agent_create_snapshot: tuple[
+            dict[str, Any] | None,
+            str,
+            str | None,
+            dict[str, Any],
+        ] | None = None
         # SkillDev 模式：懒初始化，首次 skilldev.* 请求时构造
         self._skilldev_service = None
 
@@ -1238,8 +1319,14 @@ class JiuWenSwarm:
             return "code"
         return "agent"
 
-    async def create_instance(self, config: dict[str, Any] | None = None, *,
-                              mode: str = "agent", sub_mode: str = None) -> None:
+    async def create_instance(
+        self,
+        config: dict[str, Any] | None = None,
+        *,
+        mode: str = "agent",
+        sub_mode: str = None,
+        agent_definition: dict[str, Any] | None = None,
+    ) -> None:
         """初始化 Agent 实例.
 
         Args:
@@ -1247,8 +1334,26 @@ class JiuWenSwarm:
             mode: 实例化模式，"claw"（默认）或 "code"，透传给底层 adapter.
             sub_mode: 子模式
         """
+        runtime_agent_snapshot = (
+            (
+                deepcopy(config) if config is not None else None,
+                mode,
+                sub_mode,
+                deepcopy(agent_definition),
+            )
+            if agent_definition is not None
+            else None
+        )
         adapter = self._ensure_adapter(mode=mode)
-        await adapter.create_instance(config, mode=mode, sub_mode=sub_mode)
+        create_kwargs: dict[str, Any] = {"mode": mode, "sub_mode": sub_mode}
+        if agent_definition is not None:
+            if mode != "code":
+                raise ValueError(
+                    "custom Agent definitions are supported only in code mode"
+                )
+            create_kwargs["agent_definition"] = dict(agent_definition)
+        await adapter.create_instance(config, **create_kwargs)
+        self._runtime_agent_create_snapshot = runtime_agent_snapshot
         logger.info(
             "[JiuWenSwarm] Agent instance created: sdk=%s, mode=%s, sub_mode=%s",
             self._sdk_name, mode, sub_mode,
@@ -1261,7 +1366,17 @@ class JiuWenSwarm:
 
     async def _on_skillnet_install_complete(self) -> None:
         """Reload the agent and refresh live team skill rails after async install."""
-        await self.create_instance()
+        snapshot = self._runtime_agent_create_snapshot
+        if snapshot is None:
+            await self.create_instance()
+        else:
+            config, mode, sub_mode, definition = deepcopy(snapshot)
+            await self.create_instance(
+                config,
+                mode=mode,
+                sub_mode=sub_mode,
+                agent_definition=definition,
+            )
         await self._reload_team_skill_rails()
 
     @staticmethod
@@ -1386,13 +1501,21 @@ class JiuWenSwarm:
         _request_debug = False
         _dbg_mode = params.get("mode")
         _dbg_mode_s = _dbg_mode.strip().lower() if isinstance(_dbg_mode, str) else ""
-        if not (params.get("team") or is_team_runtime_mode(_dbg_mode_s)):
+        cross_session_turn = isinstance(
+            params.get(SESSION_MESSAGE_INTERNAL_KEY), dict
+        )
+        if not cross_session_turn and not (
+            params.get("team") or is_team_runtime_mode(_dbg_mode_s)
+        ):
             if isinstance(query, str):
                 from jiuwenswarm.server.runtime.debug_trace.directives import strip_debug_directive
                 query, _request_debug = strip_debug_directive(query)
         if self._is_malformed_team_plan_approval_payload(params):
             raise _TeamPlanApprovalPayloadError(self._team_plan_approval_payload_error_message())
-        channel = request.channel_id or (request.session_id.split('_')[0] if request.session_id else "web")
+        request_channel = str(request.channel_id or "").strip()
+        channel = request_channel or (
+            request.session_id.split('_')[0] if request.session_id else "web"
+        )
         language = config_base.get("preferred_language", "zh")
 
         # Get trusted directories from request params (passed by TUI)
@@ -1501,7 +1624,10 @@ class JiuWenSwarm:
         }
         if _request_debug:
             inputs["_request_debug"] = True
-        if request.metadata and request.metadata.get("skip_a2ui") is True:
+        skip_a2ui = bool(
+            request.metadata and request.metadata.get("skip_a2ui") is True
+        )
+        if skip_a2ui:
             inputs["skip_a2ui"] = True
 
         # 传递 enable_memory 参数
@@ -1529,6 +1655,16 @@ class JiuWenSwarm:
                 "kind": "cron",
                 "context": {"extra": {"cron": cron}},
             }
+
+        # DeepAgent normalizes inputs to a fixed InvokeInputs schema, so loose
+        # top-level fields such as ``channel`` do not reach model-call rails.
+        # RunContext.extra is the SDK-supported request-scoped extension point
+        # and survives every ReAct iteration independently of the Agent mode.
+        inputs["run"] = _with_request_runtime_context(
+            inputs.get("run"),
+            channel=request_channel,
+            skip_a2ui=skip_a2ui,
+        )
 
         # Per-request workspace_dir scopes one prompt's cwd to the given
         # directory; threaded into inputs["cwd"] which downstream init_cwd
@@ -2406,11 +2542,17 @@ class JiuWenSwarm:
                 payload = {}
         except Exception as exc:
             logger.warning("[extension_package_manager] request %s failed: %s", method, exc)
+            error_code = getattr(exc, "code", None)
+            if method in _AGENT_GROUP_PACKAGE_METHODS and not isinstance(error_code, str):
+                error_code = "AGENT_GROUP_REQUEST_FAILED"
+            error_payload = {"error": str(exc)}
+            if isinstance(error_code, str) and error_code:
+                error_payload["code"] = error_code
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": str(exc)},
+                payload=error_payload,
                 metadata=request.metadata,
             )
         return AgentResponse(
@@ -3313,12 +3455,15 @@ class JiuWenSwarm:
             })
             if not isinstance(extra_fields, dict):
                 extra_fields = {}
-            extra_fields = _with_heartbeat_history_metadata(
-                _with_web_agent_template_metadata(
-                    extra_fields,
+            extra_fields = _with_cross_session_history_metadata(
+                _with_heartbeat_history_metadata(
+                    _with_web_agent_template_metadata(
+                        extra_fields,
+                        request.params,
+                        cid,
+                        event_type="chat.final",
+                    ),
                     request.params,
-                    cid,
-                    event_type="chat.final",
                 ),
                 request.params,
             ) or {}
@@ -3764,13 +3909,16 @@ class JiuWenSwarm:
                                         extra_fields[pk] = request.params[pk]
                                 if not isinstance(extra_fields, dict):
                                     extra_fields = {}
-                                extra_fields = _with_heartbeat_history_metadata(
-                                    _with_web_agent_template_metadata(
-                                        extra_fields,
+                                extra_fields = _with_cross_session_history_metadata(
+                                    _with_heartbeat_history_metadata(
+                                        _with_web_agent_template_metadata(
+                                            extra_fields,
+                                            request.params,
+                                            cid,
+                                            event_type=et,
+                                            payload=payload_dict,
+                                        ),
                                         request.params,
-                                        cid,
-                                        event_type=et,
-                                        payload=payload_dict,
                                     ),
                                     request.params,
                                 ) or {}
@@ -3955,13 +4103,16 @@ class JiuWenSwarm:
                                     extra_fields[pk] = request.params[pk]
                             if not isinstance(extra_fields, dict):
                                 extra_fields = {}
-                            extra_fields = _with_heartbeat_history_metadata(
-                                _with_web_agent_template_metadata(
-                                    extra_fields,
+                            extra_fields = _with_cross_session_history_metadata(
+                                _with_heartbeat_history_metadata(
+                                    _with_web_agent_template_metadata(
+                                        extra_fields,
+                                        request.params,
+                                        cid,
+                                        event_type=et,
+                                        payload=data,
+                                    ),
                                     request.params,
-                                    cid,
-                                    event_type=et,
-                                    payload=data,
                                 ),
                                 request.params,
                             ) or {}
@@ -4339,6 +4490,27 @@ class JiuWenSwarm:
         if method is None:
             return
         await method(operation, config_path)
+
+    async def apply_rsi_harness_install(
+        self,
+        operation: str,
+        *,
+        config_path: str,
+        installation_id: str,
+    ) -> dict[str, Any]:
+        """Apply an RSI-published Harness through the adapter-owned LoadRecord."""
+
+        adapter = self._adapter
+        if adapter is None:
+            return {"status": "SKIPPED", "resources": []}
+        method = getattr(adapter, "apply_rsi_harness_install", None)
+        if method is None:
+            return {"status": "SKIPPED", "resources": []}
+        return await method(
+            operation,
+            config_path=config_path,
+            installation_id=installation_id,
+        )
 
     async def _unload_live_equipment(self, kind: str, package_id: str) -> None:
         """Unload a catalog package from live session adapters before delete.

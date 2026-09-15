@@ -158,8 +158,9 @@ async def test_handler_requires_session_id():
 
 @pytest.mark.asyncio
 async def test_handler_missing_session_is_not_found():
-    with patch(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+    with patch.object(
+        agent_ws_server_module,
+        "get_session_metadata",
         return_value={},
     ) as get_meta:
         resp = await _call_handler(_server(), _request("missing"))
@@ -182,8 +183,9 @@ async def test_handler_missing_session_is_not_found():
 @pytest.mark.asyncio
 async def test_handler_uses_metadata_when_no_live_agent(mode, expected):
     original_meta = {"session_id": "s1", "mode": mode}
-    with patch(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+    with patch.object(
+        agent_ws_server_module,
+        "get_session_metadata",
         return_value=dict(original_meta),
     ):
         resp = await _call_handler(_server(), _request("s1"))
@@ -197,8 +199,9 @@ async def test_handler_live_plan_mode_overrides_stale_metadata():
     server = _server()
     server._try_read_live_plan_mode = MagicMock(return_value="normal")
     meta = {"session_id": "s1", "mode": "agent.work.plan"}
-    with patch(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+    with patch.object(
+        agent_ws_server_module,
+        "get_session_metadata",
         return_value=meta,
     ):
         resp = await _call_handler(server, _request("s1"))
@@ -212,8 +215,9 @@ async def test_handler_live_plan_mode_overrides_stale_metadata():
 async def test_handler_team_plan_ignores_live_agent_plan_mode():
     server = _server()
     server._try_read_live_plan_mode = MagicMock(return_value="normal")
-    with patch(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+    with patch.object(
+        agent_ws_server_module,
+        "get_session_metadata",
         return_value={"session_id": "s-team", "mode": "team.work.plan"},
     ):
         resp = await _call_handler(server, _request("s-team"))
@@ -229,8 +233,9 @@ async def test_handler_does_not_start_or_switch_plan_mode():
     agent.switch_mode = MagicMock()
     agent.ensure_live_session_instance = MagicMock()
     server = _server(agents={"web": {"k": agent}})
-    with patch(
-        "jiuwenswarm.server.runtime.session.session_metadata.get_session_metadata",
+    with patch.object(
+        agent_ws_server_module,
+        "get_session_metadata",
         return_value={"mode": "agent.work.plan"},
     ):
         await _call_handler(server, _request("s1"))

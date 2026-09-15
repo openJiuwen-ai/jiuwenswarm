@@ -15,7 +15,11 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from jiuwenswarm.observability.config import TrajectoryStoreSettings
-from jiuwenswarm.observability.models import TraceRecordData, WriteBatchResult
+from jiuwenswarm.observability.models import (
+    StreamFrameData,
+    TraceRecordData,
+    WriteBatchResult,
+)
 from jiuwenswarm.observability.sink import TrajectoryRecordSink
 from jiuwenswarm.observability.store import TrajectoryStore
 
@@ -39,7 +43,6 @@ def _settings(
         queue_size=queue_size,
         batch_size=batch_size,
         flush_interval_ms=flush_interval_ms,
-        poll_interval_ms=2000,
     )
 
 
@@ -94,6 +97,29 @@ def _snapshot(revision: int) -> SimpleNamespace:
     return record
 
 
+def _frame(sequence: int, *, text: str | None = None) -> SimpleNamespace:
+    return SimpleNamespace(
+        event_name="openjiuwen.stream.chunk",
+        timestamp_unix_nano=1_700_000_000_000_000_000 + sequence,
+        observed_timestamp_unix_nano=1_700_000_000_000_000_000 + sequence,
+        trace_id=_TRACE_ID,
+        span_id=_SPAN_ID,
+        sequence=sequence,
+        kind="text-delta",
+        session_id="session-1",
+        execution_subject_id="main",
+        execution_subject_session_id="session-1",
+        text=text if text is not None else f"w{sequence} ",
+        tool_call_id=None,
+        tool_name=None,
+        arguments_delta=None,
+        request_id="request-1",
+        run_id="run-1",
+        agent_mode="agent.work.normal",
+        schema_version="1",
+    )
+
+
 class _BlockingStore:
     def __init__(self) -> None:
         self.write_started = threading.Event()
@@ -105,7 +131,11 @@ class _BlockingStore:
     def delete_expired(self, *, now: int | None = None) -> int:
         return 0
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         self.write_started.set()
         self.release_write.wait(timeout=10)
         return WriteBatchResult(
@@ -124,7 +154,11 @@ class _BusyThenSuccessfulStore(_BlockingStore):
         self.failures = failures
         self.attempts = 0
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         self.attempts += 1
         if self.attempts <= self.failures:
             raise sqlite3.OperationalError("database is locked")
@@ -135,9 +169,15 @@ class _RecordingStore(_BlockingStore):
     def __init__(self) -> None:
         super().__init__()
         self.batches: list[tuple[TraceRecordData, ...]] = []
+        self.frames: list[StreamFrameData] = []
 
-    def write_records(self, records: Sequence[TraceRecordData]) -> WriteBatchResult:
+    def write_records(
+        self,
+        records: Sequence[TraceRecordData],
+        frames: Sequence[StreamFrameData] = (),
+    ) -> WriteBatchResult:
         self.batches.append(tuple(records))
+        self.frames.extend(frames)
         self.write_started.set()
         return WriteBatchResult(inserted=len(records), conflicts=0, updates=())
 
@@ -279,6 +319,59 @@ def test_sink_coalesces_pending_live_snapshots_by_identity(tmp_path: Path) -> No
     test_logger.info("live snapshot flood retained only the newest pending identity")
 
 
+def test_sink_keeps_every_stream_frame_unlike_snapshots(tmp_path: Path) -> None:
+    """Frames are additive, so none may be coalesced away like a snapshot."""
+    store = _RecordingStore()
+    sink = TrajectoryRecordSink(
+        _settings(tmp_path / "trajectory.sqlite3", queue_size=512, batch_size=8),
+        store=store,
+    )
+    sink.start()
+    frame_count = 200
+    try:
+        for sequence in range(frame_count):
+            sink.consume_stream_frame(_frame(sequence))
+    finally:
+        assert sink.close(timeout=10) is True
+
+    assert [frame.sequence for frame in store.frames] == list(range(frame_count))
+    # The text of a stream is only correct if every space survived.
+    assert "".join(frame.text or "" for frame in store.frames) == "".join(
+        f"w{sequence} " for sequence in range(frame_count)
+    )
+    assert sink.stats().coalesced == 0
+    test_logger.info("stream frames reached the store intact: count=%d", frame_count)
+
+
+def test_frame_flood_never_displaces_a_final_record(tmp_path: Path) -> None:
+    """A burst of frames must not push the authoritative record out.
+
+    Frames and records share a writer but not a queue, precisely so a fast
+    stream cannot trade the one record that is authoritative for increments
+    a completed span would restate anyway.
+    """
+    store = _BlockingStore()
+    sink = TrajectoryRecordSink(
+        _settings(tmp_path / "trajectory.sqlite3", queue_size=4, batch_size=1),
+        store=store,
+    )
+    sink.start()
+    try:
+        # Hold the writer so nothing drains, then overrun the frame queue.
+        sink.consume_stream_frame(_frame(0))
+        assert store.write_started.wait(timeout=5)
+        for sequence in range(1, 40):
+            sink.consume_stream_frame(_frame(sequence))
+        assert sink.stats().dropped > 0, "the frame queue should have overrun"
+        sink.consume(_record())
+    finally:
+        store.release_write.set()
+        assert sink.close(timeout=10) is True
+
+    assert sink.stats().dropped_final == 0
+    test_logger.info("final record survived a frame flood that overran its own queue")
+
+
 def test_sink_debounces_snapshot_flood_before_sqlite_write(tmp_path: Path) -> None:
     store = _RecordingStore()
     sink = TrajectoryRecordSink(
@@ -305,14 +398,19 @@ def test_sink_debounces_snapshot_flood_before_sqlite_write(tmp_path: Path) -> No
 
 
 def test_sink_rejects_invalid_raw_type_without_raising(tmp_path: Path) -> None:
+    # The payload is validated on the writer thread, not at the ingress: Core
+    # encodes raw_json lazily, so reading it here would undo that deferral.
     sink = TrajectoryRecordSink(_settings(tmp_path / "trajectory.sqlite3"))
+    sink.start()
     record = _record()
     record.raw_json = "not-bytes"
 
     sink.consume(record)
+    assert sink.close(timeout=5) is True
 
     stats = sink.stats()
     assert stats.failed == 1
+    assert stats.committed == 0
     assert stats.dropped == 0
     test_logger.info("invalid Core record isolated from the caller")
 

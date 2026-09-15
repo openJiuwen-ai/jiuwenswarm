@@ -12,8 +12,9 @@ from __future__ import annotations
 
 import asyncio
 import json
+from types import SimpleNamespace
 from typing import Any
-from unittest.mock import AsyncMock, patch
+from unittest.mock import AsyncMock, Mock, patch
 
 import pytest
 
@@ -309,6 +310,101 @@ class TestHandleMcpInstall:
         payload = _extract_payload(json.loads(ws.sent[0]))
         assert payload["type"] == "installed"
         assert payload["item"]["name"] == "hub-mcp"
+        assert "connect" in payload
+
+    @pytest.mark.anyio
+    async def test_install_embeds_connect_result(self) -> None:
+        """Embed the connect result in the Hub install response."""
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server._agent_manager = SimpleNamespace(
+            probe_mcp_live_connection=AsyncMock(return_value=(True, "")),
+            sync_mcp_credentials=Mock(),
+        )
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.MCP_INSTALL,
+            params={"id": "mcp-asset-uuid"},
+        )
+        install = AsyncMock(
+            return_value={"id": "mcp-asset-uuid", "name": "hub-mcp", "installed": True}
+        )
+        connect = AsyncMock(
+            return_value={
+                "name": "hub-mcp",
+                "transport": "streamable-http",
+                "url": "https://example.test/mcp",
+                "enabled": True,
+                "server_id_scope": "mcp:hub-mcp",
+                "auth_required": False,
+            }
+        )
+        set_state = Mock()
+        with (
+            patch(
+                "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
+                new=install,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+                new=connect,
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.mcp.state_store.set_mcp_state",
+                new=set_state,
+            ),
+        ):
+            await server._handle_mcp_install(ws, request, asyncio.Lock())
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "installed"
+        assert payload["item"]["name"] == "hub-mcp"
+        assert payload["connect"]["type"] == "connected"
+        assert payload["connect"]["name"] == "hub-mcp"
+        set_state.assert_called_once_with("hub-mcp", state="connected")
+
+    @pytest.mark.anyio
+    async def test_install_probe_failure_keeps_hub_install_retryable(self) -> None:
+        """Keep a downloaded Hub package retryable when its probe fails."""
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+        server._agent_manager = SimpleNamespace(
+            probe_mcp_live_connection=AsyncMock(return_value=(False, "unreachable")),
+            sync_mcp_credentials=Mock(),
+        )
+        ws = _FakeWS()
+        request = _make_request(
+            req_method=ReqMethod.MCP_INSTALL,
+            params={"id": "mcp-asset-uuid"},
+        )
+        rollback = Mock()
+        with (
+            patch(
+                "jiuwenswarm.server.runtime.mcp.marketplace.install_hub_mcp",
+                new=AsyncMock(
+                    return_value={"id": "mcp-asset-uuid", "name": "hub-mcp", "installed": True}
+                ),
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.mcp.registry.connect_mcp",
+                new=AsyncMock(
+                    return_value={"name": "hub-mcp", "transport": "streamable-http"}
+                ),
+            ),
+            patch(
+                "jiuwenswarm.server.runtime.mcp.registry.rollback_failed_connect",
+                new=rollback,
+            ),
+        ):
+            await server._handle_mcp_install(ws, request, asyncio.Lock())
+
+        payload = _extract_payload(json.loads(ws.sent[0]))
+        assert payload["type"] == "installed"
+        assert payload["connect"]["type"] == "connect_failed"
+        assert payload["connect"]["code"] == "MCP_UNREACHABLE"
+        rollback.assert_not_called()
 
     @pytest.mark.anyio
     async def test_install_requires_asset_id(self) -> None:

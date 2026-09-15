@@ -11,10 +11,9 @@ from typing import Any, cast
 
 import pytest
 
-from jiuwenswarm.runtime import (
-    AgentRuntime,
+from jiuwenswarm.runtime import AgentRuntime, RuntimeStateError
+from jiuwenswarm.runtime.session_provisioner import (
     RuntimeSessionProvisioner,
-    RuntimeStateError,
     SessionCreateInput,
     SessionProvisionCommitContext,
     SessionProvisionCommitTiming,
@@ -353,7 +352,10 @@ async def test_non_explicit_tui_with_project_id_skips_project_creation(
     monkeypatch.setattr(
         project_store,
         "get_project_by_id",
-        lambda _project_id, cache_bust=True: SimpleNamespace(work_mode="code"),
+        # lifecycle.guard 在会话创建准入时读取 hidden（项目归档屏障）。
+        lambda _project_id, cache_bust=True: SimpleNamespace(
+            work_mode="code", hidden=False
+        ),
     )
 
     prepared = await _provisioner(state).prepare_session_create(
@@ -446,7 +448,7 @@ async def test_after_delivery_kvc_failure_is_logged_and_drained(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path: Any,
 ) -> None:
-    from jiuwenswarm.runtime import session_provisioner as provisioner_module
+    import jiuwenswarm.runtime.session_provisioner as provisioner_module
 
     state = _State()
     failure = RuntimeError("kvc failed")

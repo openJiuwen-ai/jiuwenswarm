@@ -26,6 +26,10 @@ a2ui:
   non_web_fallback_enabled: false
   dev_smoke_tools_enabled: false
 
+# RSI 递归自我改进实验入口；默认开启
+rsi:
+  enabled: true
+
 symphony:
   enabled: false
   paths:
@@ -283,7 +287,7 @@ models:
         stream_idle_timeout: 120
         verify_ssl: true
         custom_headers: {}
-      model_config_obj:
+      model_config_obj: {}
         # 模型支持的上下文总长度（tokens）。每个模型条目均可配（与 timeout 一样，
         # defaults / agentos / video / audio / vision / image_gen 均可填）。
         # 经 _build_model_from_entry 放进 core 的 ModelRequestConfig，供 core 从
@@ -296,7 +300,8 @@ models:
         # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
         # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
         # 不填 = core 按模型名查表 / 兜底 200000。
-        context_window: 131072
+        # 如需覆盖 core 的自动识别结果，可在 model_config_obj 下配置：
+        # context_window: 131072
       is_default: true
   video:
       model_client_config:
@@ -531,7 +536,6 @@ trajectory_ui:
   queue_size: 4096                  # Agent 主线程非阻塞写入队列上限
   batch_size: 64                    # writer 单事务最大记录数
   flush_interval_ms: 200            # writer 最大合批等待时间
-  poll_interval_ms: 2000            # Web 端兜底轮询间隔
   detail_max_bytes: 4194304          # 单次详情响应累计 raw 投影预算（超大 Span 仅返回索引）
 
 experimental:

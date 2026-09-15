@@ -38,6 +38,10 @@ export interface Session {
   current_task?: string;
   tools?: string[];
   team_name?: string;
+  /** 首条团队消息成功绑定的 AgentGroup id；后端 metadata 读回后成为只读绑定。 */
+  agent_group_name?: string | null;
+  /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
+  team_leader_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string;         // 渠道ID
   user_id?: string;            // 创建人ID
@@ -120,6 +124,8 @@ export interface ModelEntry {
   endpoint_profile?: string;
   /** AgentOS 备份模型只读标识；此类条目不参与 models.replace_all。 */
   is_agentos?: boolean;
+  /** RSI 模型目录中的免费模型标识；仅用于前端展示分组。 */
+  is_free?: boolean;
 }
 
 export interface VendorPreset {
