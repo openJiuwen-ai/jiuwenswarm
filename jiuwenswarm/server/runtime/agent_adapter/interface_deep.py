@@ -11183,6 +11183,8 @@ class JiuWenSwarmDeepAdapter:
                     "read_memory",
                     "memory_search",
                     "memory_get",
+                    # flash 统一记忆工具（单卡，需与五件套一起按名移除）
+                    "memory",
                 )
                 for tool_name in _all_memory_tools:
                     try:
@@ -11200,6 +11202,12 @@ class JiuWenSwarmDeepAdapter:
                         )
                     except Exception:
                         pass
+                # flash 的统一 memory 工具读写同卡，无法按名只摘写入，
+                # 改用 rail 级只读开关；stock MemoryRail 无此方法，getattr 防御。
+                memory_rail = getattr(self, "_memory_rail", None)
+                set_read_only = getattr(memory_rail, "set_read_only", None)
+                if callable(set_read_only):
+                    set_read_only(True)
             # 非群聊数字分身且记忆启用时，恢复写入工具
             else:
                 try:
@@ -11213,6 +11221,16 @@ class JiuWenSwarmDeepAdapter:
                             self._instance.ability_manager.add(tool.card)
                 except ImportError:
                     pass
+                # flash：场景2 按名移除过统一 memory 工具、场景1 置过只读，
+                # 恢复时从 rail 重新注册并解除只读（stock MemoryRail 无这些方法，
+                # getattr 防御）。
+                memory_rail = getattr(self, "_memory_rail", None)
+                restore_memory_tool = getattr(memory_rail, "restore_memory_tool", None)
+                if callable(restore_memory_tool):
+                    restore_memory_tool(self._instance)
+                set_read_only = getattr(memory_rail, "set_read_only", None)
+                if callable(set_read_only):
+                    set_read_only(False)
         stage_timer.mark("memory_tools")
 
     @staticmethod
