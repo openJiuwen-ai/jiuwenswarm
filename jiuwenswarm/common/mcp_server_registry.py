@@ -278,6 +278,12 @@ def _worker_pool_key(server_name: str, params: Mapping[str, Any]) -> str:
     return f"{server_name}#{env_fp}"
 
 
+def _worker_matches_fingerprint(worker: _PooledMcpWorker | None, wanted_fp: str) -> bool:
+    if worker is None or not worker.alive:
+        return False
+    return worker.params_fingerprint == wanted_fp
+
+
 class GlobalMcpWorkerPool:
     """按 server_name（可附 env 指纹）跨请求复用 ``_PooledMcpWorker``。"""
 
@@ -298,47 +304,41 @@ class GlobalMcpWorkerPool:
         if isinstance(env, Mapping):
             copied["env"] = dict(env)
         wanted_fp = config_fingerprint(copied)
-        stale = None
-        async with self._lock:
-            worker = self._workers.get(key)
-            if (
-                not force_rebuild
-                and worker is not None
-                and worker.alive
-                and getattr(worker, "params_fingerprint", "") == wanted_fp
-            ):
-                worker.last_used = time.monotonic()
-                return worker
-            if force_rebuild and worker is not None:
-                stale = self._workers.pop(key, None)
-            elif (
-                worker is not None
-                and worker.alive
-                and getattr(worker, "params_fingerprint", "") != wanted_fp
-            ):
-                stale = self._workers.pop(key, None)
+        stale = await self._evict_locked(key, wanted_fp, force_rebuild=force_rebuild)
         if stale is not None:
             await shutdown_pooled_mcp_worker(stale)
         extra = None
         async with self._lock:
             worker = self._workers.get(key)
-            if (
-                worker is not None
-                and worker.alive
-                and getattr(worker, "params_fingerprint", "") == wanted_fp
-            ):
+            if worker is not None and _worker_matches_fingerprint(worker, wanted_fp):
                 worker.last_used = time.monotonic()
                 return worker
             if worker is not None and worker.alive:
                 extra = self._workers.pop(key, None)
-            worker = _PooledMcpWorker(server_name)
-            worker.params_fingerprint = wanted_fp
+            worker = _PooledMcpWorker(server_name, wanted_fp)
             self._workers[key] = worker
             worker.task = asyncio.create_task(_run_mcp_worker(copied, worker))
             worker.last_used = time.monotonic()
         if extra is not None:
             await shutdown_pooled_mcp_worker(extra)
         return worker
+
+    async def _evict_locked(
+        self,
+        key: str,
+        wanted_fp: str,
+        *,
+        force_rebuild: bool,
+    ) -> _PooledMcpWorker | None:
+        async with self._lock:
+            worker = self._workers.get(key)
+            if worker is None:
+                return None
+            if (not force_rebuild) and _worker_matches_fingerprint(worker, wanted_fp):
+                return None
+            if force_rebuild or worker.alive:
+                return self._workers.pop(key, None)
+            return None
 
     async def close_server(self, server_name: str) -> None:
         name = str(server_name or "").strip()
@@ -409,43 +409,39 @@ class McpServerRegistry:
         sem = asyncio.Semaphore(self.settings.scan_concurrency)
 
         async def _scan_and_commit(name: str, config: dict[str, Any]) -> dict[str, Any]:
-            try:
-                async with sem:
-                    tools, params, error = await self._discover(name, config)
-                    if error:
-                        return {"name": name, "ok": False, "error": error}
-                    now = time.monotonic()
-                    entry = McpServerEntry(
-                        name=name,
-                        config=copy.deepcopy(config),
-                        enabled=True,
-                        created_at=now,
-                        updated_at=now,
-                    )
-                    record = CachedServerRecord(
-                        name=name,
-                        tools=copy.deepcopy(tools),
-                        version=1,
-                        last_scan_at=now,
-                        last_scan_ok=True,
-                        last_error="",
-                        connect_params=copy.deepcopy(params),
-                    )
-                    async with self._lock:
-                        if name in self._registry:
-                            return {"name": name, "ok": False, "error": "already exists"}
-                        self._registry[name] = entry
-                        self._cache[name] = record
-                    tool_names = [str(t.get("name") or "") for t in tools]
-                    return {
-                        "name": name,
-                        "ok": True,
-                        "tools": tool_names,
-                        "tools_count": len(tool_names),
-                    }
-            except Exception as exc:
-                logger.exception("[McpServerRegistry] add_servers failed: name=%s", name)
-                return {"name": name, "ok": False, "error": str(exc)}
+            async with sem:
+                tools, params, error = await self._discover(name, config)
+                if error:
+                    return {"name": name, "ok": False, "error": error}
+                now = time.monotonic()
+                entry = McpServerEntry(
+                    name=name,
+                    config=copy.deepcopy(config),
+                    enabled=True,
+                    created_at=now,
+                    updated_at=now,
+                )
+                record = CachedServerRecord(
+                    name=name,
+                    tools=copy.deepcopy(tools),
+                    version=1,
+                    last_scan_at=now,
+                    last_scan_ok=True,
+                    last_error="",
+                    connect_params=copy.deepcopy(params),
+                )
+                async with self._lock:
+                    if name in self._registry:
+                        return {"name": name, "ok": False, "error": "already exists"}
+                    self._registry[name] = entry
+                    self._cache[name] = record
+                tool_names = [str(t.get("name") or "") for t in tools]
+                return {
+                    "name": name,
+                    "ok": True,
+                    "tools": tool_names,
+                    "tools_count": len(tool_names),
+                }
 
         if to_scan:
             scanned = await asyncio.gather(
@@ -453,10 +449,15 @@ class McpServerRegistry:
                 return_exceptions=True,
             )
             for (index, name, _), item in zip(to_scan, scanned):
-                if isinstance(item, BaseException):
-                    results[index] = {"name": name, "ok": False, "error": str(item)}
-                else:
+                if isinstance(item, dict):
                     results[index] = item
+                else:
+                    logger.warning(
+                        "[McpServerRegistry] add_servers failed: name=%s error=%s",
+                        name,
+                        item,
+                    )
+                    results[index] = {"name": name, "ok": False, "error": str(item)}
         return [
             item if item is not None else {"name": "", "ok": False, "error": "internal error"}
             for item in results
@@ -708,68 +709,70 @@ class McpServerRegistry:
         sem = asyncio.Semaphore(self.settings.scan_concurrency)
 
         async def _scan_one(entry: McpServerEntry) -> None:
-            try:
-                async with sem:
-                    async with self._lock:
-                        if self._registry.get(entry.name) is not entry:
-                            return
-                    tools, params, error = await self._discover(entry.name, entry.config)
-                    async with self._lock:
-                        if self._registry.get(entry.name) is not entry:
-                            return
-                        current = self._cache.get(entry.name)
-                        now = time.monotonic()
-                        if error:
-                            fail_count = (current.scan_fail_count + 1) if current is not None else 1
-                            if current is not None:
-                                current.last_scan_at = now
-                                current.last_scan_ok = False
-                                current.last_error = error
-                                current.scan_fail_count = fail_count
-                            if fail_count >= self.settings.scan_fail_threshold:
-                                logger.error(
-                                    "[McpServerRegistry] remote scan failed %s times: name=%s error=%s",
-                                    fail_count,
-                                    entry.name,
-                                    error,
-                                )
-                            return
-                        if current is not None and cached_tools_equal(current.tools, tools):
+            async with sem:
+                async with self._lock:
+                    if self._registry.get(entry.name) is not entry:
+                        return
+                tools, params, error = await self._discover(entry.name, entry.config)
+                async with self._lock:
+                    if self._registry.get(entry.name) is not entry:
+                        return
+                    current = self._cache.get(entry.name)
+                    now = time.monotonic()
+                    if error:
+                        fail_count = (current.scan_fail_count + 1) if current is not None else 1
+                        if current is not None:
                             current.last_scan_at = now
-                            current.last_scan_ok = True
-                            current.last_error = ""
-                            current.scan_fail_count = 0
-                            if params:
-                                current.connect_params = copy.deepcopy(params)
-                            return
-                        version = (current.version + 1) if current is not None else 1
-                        self._cache[entry.name] = CachedServerRecord(
-                            name=entry.name,
-                            tools=copy.deepcopy(tools),
-                            version=version,
-                            last_scan_at=now,
-                            last_scan_ok=True,
-                            last_error="",
-                            connect_params=copy.deepcopy(params) if params else (
-                                copy.deepcopy(current.connect_params) if current is not None else {}
-                            ),
-                        )
-                        logger.info(
-                            "[McpServerRegistry] tools changed: name=%s version=%s count=%s",
-                            entry.name,
-                            version,
-                            len(tools),
-                        )
-            except Exception:
-                logger.exception(
-                    "[McpServerRegistry] scan_once failed: name=%s", entry.name
-                )
+                            current.last_scan_ok = False
+                            current.last_error = error
+                            current.scan_fail_count = fail_count
+                        if fail_count >= self.settings.scan_fail_threshold:
+                            logger.error(
+                                "[McpServerRegistry] remote scan failed %s times: name=%s error=%s",
+                                fail_count,
+                                entry.name,
+                                error,
+                            )
+                        return
+                    if current is not None and cached_tools_equal(current.tools, tools):
+                        current.last_scan_at = now
+                        current.last_scan_ok = True
+                        current.last_error = ""
+                        current.scan_fail_count = 0
+                        if params:
+                            current.connect_params = copy.deepcopy(params)
+                        return
+                    version = (current.version + 1) if current is not None else 1
+                    self._cache[entry.name] = CachedServerRecord(
+                        name=entry.name,
+                        tools=copy.deepcopy(tools),
+                        version=version,
+                        last_scan_at=now,
+                        last_scan_ok=True,
+                        last_error="",
+                        connect_params=copy.deepcopy(params) if params else (
+                            copy.deepcopy(current.connect_params) if current is not None else {}
+                        ),
+                    )
+                    logger.info(
+                        "[McpServerRegistry] tools changed: name=%s version=%s count=%s",
+                        entry.name,
+                        version,
+                        len(tools),
+                    )
 
         if snapshot:
-            await asyncio.gather(
+            scanned = await asyncio.gather(
                 *[_scan_one(entry) for entry in snapshot],
                 return_exceptions=True,
             )
+            for entry, item in zip(snapshot, scanned):
+                if item is not None:
+                    logger.warning(
+                        "[McpServerRegistry] scan_once failed: name=%s error=%s",
+                        entry.name,
+                        item,
+                    )
         await self.worker_pool.reap_idle(self.settings.worker_idle_ttl_s)
 
     async def _scanner_loop(self) -> None:

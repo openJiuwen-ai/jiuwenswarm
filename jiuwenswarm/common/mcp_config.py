@@ -870,13 +870,12 @@ class _PooledMcpWorker:
 
     __slots__ = ("queue", "task", "server_name", "last_used", "params_fingerprint")
 
-    def __init__(self, server_name: str) -> None:
+    def __init__(self, server_name: str, params_fingerprint: str = "") -> None:
         self.queue: asyncio.Queue[_McpCallRequest | None] = asyncio.Queue()
         self.task: asyncio.Task | None = None
         self.server_name = server_name
         self.last_used = time.monotonic()
-        # 全局池写入构建参数指纹；请求级旧池保持空串，不参与比对。
-        self.params_fingerprint = ""
+        self.params_fingerprint = params_fingerprint
 
     @property
     def alive(self) -> bool:
