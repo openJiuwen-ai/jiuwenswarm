@@ -398,7 +398,8 @@ class SwarmSymphonyService:
                             "retryable": False,
                             "build_status": "running",
                             "operation": "plan",
-                            "detail": graph_build.get("detail") or failure["detail"],
+                            "detail": graph_build.get("detail")
+                            or failure["detail"],
                         }
                     )
                 return failure

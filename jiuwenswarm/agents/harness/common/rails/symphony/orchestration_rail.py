@@ -65,13 +65,6 @@ _GRAPH_PREPARING_CONTENT = {
     ),
 }
 
-_SENSITIVE_INPUT_NAME = re.compile(
-    r"(?:password|passwd|secret|token|api[_ -]?key|credential|authorization|"
-    r"密码|口令|密钥|令牌|凭据)",
-    re.IGNORECASE,
-)
-_MAX_RESUME_ANSWER_CHARS = 1024
-_MAX_RESUME_ANSWERS = 16
 _INVOKE_ROUTE_KEY = "_symphony_orchestration_route"
 
 
@@ -94,7 +87,7 @@ class _PausedInvokeKey:
 
 @dataclass
 class _SymphonyInvokeState:
-    """Only the minimum non-secret state needed for a HITL recompose."""
+    """State needed to recompose the original task with HITL answers."""
 
     scope: _InvokeScope
     original_query: str
@@ -102,7 +95,6 @@ class _SymphonyInvokeState:
     answers: list[str] = field(default_factory=list)
     awaiting_input: bool = False
     pending_recompose: bool = False
-    answered: bool = False
     generation: int = 0
     valid: bool = True
     route_token: str = ""
@@ -244,9 +236,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
     async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
         """Turn the outer AbilityManager timeout into the same terminal result."""
         try:
-            if not self._is_graph_tool_call(ctx) or not self._is_outer_graph_timeout(
-                ctx
-            ):
+            if not self._is_graph_tool_call(ctx) or not self._is_outer_graph_timeout(ctx):
                 return
             self._terminate_graph_build_timeout(ctx, self._outer_timeout_payload(ctx))
         finally:
@@ -714,31 +704,21 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         answers = payload.get("answers")
         if not isinstance(answers, Mapping):
             return
-        state.answered = True
         for question, answer in answers.items():
-            if len(state.answers) >= _MAX_RESUME_ANSWERS:
-                break
             normalized = self._normalized_answer(question, answer)
             if normalized is not None:
                 state.answers.append(normalized)
 
     def _normalized_answer(self, question: str, answer: str) -> str | None:
         label = str(question or "").strip()
-        if not label or _SENSITIVE_INPUT_NAME.search(label):
+        if not label:
             return None
         serialized = json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
-        if len(serialized) > _MAX_RESUME_ANSWER_CHARS:
-            serialized = '"[truncated]"'
-        return f"{label[:256]}: {serialized}"
+        return f"{label}: {serialized}"
 
     @staticmethod
     def _resume_query(state: _SymphonyInvokeState) -> str:
         if not state.answers:
-            if state.answered:
-                return (
-                    f"{state.original_query}\n\n补充信息：\n"
-                    "- 用户已回答，但内容因安全策略未纳入。"
-                )
             return state.original_query
         return f"{state.original_query}\n\n补充信息：\n" + "\n".join(
             f"- {answer}" for answer in state.answers

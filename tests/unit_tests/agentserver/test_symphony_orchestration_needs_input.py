@@ -286,11 +286,9 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
     resumed = await agent.invoke(_inputs(answer, mode=mode))
     assert resumed["result_type"] == "answer"
     assert compose_calls[1]["candidate_skill_ids"] == ["skill-a"]
-    assert (
-        "task" in compose_calls[1]["query"]
-        and "engineering" in compose_calls[1]["query"]
+    assert compose_calls[1]["query"] == (
+        'task\n\n补充信息：\n- Audience: "engineering"\n- api_key: "secret"'
     )
-    assert "secret" not in compose_calls[1]["query"]
     assert skill_calls == [{"skill_name": "skill-a"}]
     assert client.index == len(client.responses)
 
@@ -467,9 +465,7 @@ async def test_exact_ids_and_valid_ask_user_payload_are_required_to_claim() -> N
 
 
 @pytest.mark.asyncio
-async def test_cross_session_cannot_claim_and_sensitive_only_answer_stays_safe() -> (
-    None
-):
+async def test_cross_session_cannot_claim_and_all_answers_are_preserved() -> None:
     rail = SymphonyOrchestrationRail()
     await _pause_for_test(rail, _outer_ctx("task", session_id="s-a"), "ask-a")
     answer = InteractiveInput()
@@ -483,9 +479,77 @@ async def test_cross_session_cannot_claim_and_sensitive_only_answer_stays_safe()
         for state in rail._active_states.values()
         if state.scope.session_id == "s-a"
     )
-    assert state.answered and not state.answers
-    assert "leak" not in rail._resume_query(state)
-    assert "已回答" in rail._resume_query(state)
+    assert state.answers == ['api_key: "leak"', 'token: "also-leak"']
+    assert rail._resume_query(state) == (
+        'task\n\n补充信息：\n- api_key: "leak"\n- token: "also-leak"'
+    )
+
+
+@pytest.mark.asyncio
+async def test_resume_preserves_complete_ordered_answers_across_rounds() -> None:
+    rail = SymphonyOrchestrationRail()
+    original_query = '原始任务：生成 "方案"\n保留任务边界'
+    labels = (
+        "password",
+        "passwd",
+        "secret",
+        "Token预算",
+        "api_key",
+        "api-key",
+        "API KEY",
+        "credential",
+        "authorization",
+        "密码",
+        "口令",
+        "密钥",
+        "令牌",
+        "凭据",
+    )
+    first_answers = {label: f"回答-{index}" for index, label in enumerate(labels)}
+    first_answers["完整问题" * 70] = "完整回答" * 300
+    second_answers = {
+        "Token预算": '第二轮\n"引号"\\路径\t制表符',
+        **{f"补充问题-{index}": f"补充回答-{index}" for index in range(5)},
+    }
+    expected_lines: list[str] = []
+    await _pause_for_test(rail, _outer_ctx(original_query), "ask-1")
+
+    for index, answers in enumerate((first_answers, second_answers), start=1):
+        answer = InteractiveInput()
+        answer.update(f"ask-{index}", {"answers": answers})
+        resumed = _outer_ctx(answer)
+        await rail.before_invoke(resumed)
+        expected_lines.extend(
+            f"{label}: {json.dumps(value, ensure_ascii=False)}"
+            for label, value in answers.items()
+        )
+        state = rail._outer_states[id(resumed)]
+        assert state.original_query == original_query
+        assert state.answers == expected_lines
+
+        compose = _inner_tool_ctx(
+            resumed,
+            name=rail.COMPOSE_TOOL_NAME,
+            call_id=f"compose-{index}",
+            args={"query": "drift"},
+            result={
+                "planned_graph": {"graph": {"metadata": {"status": "needs_input"}}}
+            },
+        )
+        await rail.before_tool_call(compose)
+        assert compose.inputs.tool_args["query"] == (
+            f"{original_query}\n\n补充信息：\n"
+            + "\n".join(f"- {line}" for line in expected_lines)
+        )
+        await rail.after_tool_call(compose)
+        resumed.inputs.result = {
+            "result_type": "interrupt",
+            "component_ids": [f"ask-{index + 1}"],
+        }
+        await rail.after_invoke(resumed)
+
+    assert len(expected_lines) == 21
+    assert expected_lines[15] == 'Token预算: "第二轮\\n\\"引号\\"\\\\路径\\t制表符"'
 
 
 @pytest.mark.asyncio
@@ -553,7 +617,7 @@ async def test_invalid_ask_user_answers_do_not_claim_paused_state(
     await rail.before_invoke(_outer_ctx(response))
     assert not rail._paused_states
     state = next(iter(rail._active_states.values()))
-    assert not state.answered and not state.answers
+    assert not state.answers
 
 
 @pytest.mark.asyncio

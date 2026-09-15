@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import asdict, dataclass, is_dataclass
 from typing import Any
 
-from openjiuwen.symphony import (  # type: ignore[import-untyped]
+from openjiuwen.symphony import (
     CapabilityFingerprint,
     CapabilityDescriptor,
     FingerprintArtifact,

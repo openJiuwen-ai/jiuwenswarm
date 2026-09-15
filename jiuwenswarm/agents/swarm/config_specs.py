@@ -541,7 +541,6 @@ def _role_evolution_rails(config: dict[str, Any], role: str) -> list[RailSpec]:
             ),
         ]
     return [
-        *rails,
         RailSpec(
             type=registry.MEMBER_SKILL_EVOLUTION,
             params=_member_evolution_rail_params(config),

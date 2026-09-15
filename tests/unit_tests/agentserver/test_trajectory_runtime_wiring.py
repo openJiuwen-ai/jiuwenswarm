@@ -24,7 +24,6 @@ from jiuwenswarm.observability import runtime as trajectory_runtime
 @pytest.fixture(autouse=True)
 def reset_observability_demands():
     """Isolate the process-wide observability state around each test."""
-
     def _reset():
         trajectory_runtime.shutdown_trajectory_runtime()
         observability_demand.reset_observability_demands()
