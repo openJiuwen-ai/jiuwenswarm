@@ -145,9 +145,9 @@
       "modelIdHint": "例如：glm-4.7。不同厂商的模型 ID 不同，请以其模型列表或官方文档为准。",
       "fetchLatestModels": "拉取最新",
       "presetModels": "当前展示提供商预设模型，展开列表后将拉取最新模型",
-      "noPresetModels": "暂无预设模型，展开列表或点击刷新以拉取最新模型",
-      "noPresetModelsApiKeyRequired": "暂无预设模型，请先填写 API Key 后拉取最新模型",
-      "noPresetModelsNoEndpoint": "该提供商没有可用的预设模型，也未提供模型列表接口",
+      "noPresetModels": "展开列表或点击刷新以拉取最新模型",
+      "noPresetModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
+      "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
       "fetchModelsFailed": "模型列表拉取失败",
@@ -155,11 +155,11 @@
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
       "fetchModelsUnrecognizedResult": "提供商返回了未识别的模型列表来源或原因",
       "fetchReasons": {
-        "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
-        "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
-        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
-        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
+        "noEndpoint": "该提供商未提供模型列表接口",
+        "apiKeyRequired": "填写 API Key 后可拉取最新模型",
+        "remoteFailed": "远端拉取失败或返回为空",
+        "remoteAuthFailed": "API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",

@@ -21,7 +21,6 @@ import {
   normalizeModelOptions,
   rebaseModelDraft,
   reconcileModelReasoning,
-  selectProviderDefaultModel,
   type ModelDraft,
   type ModelProtocol,
 } from './modelAdapters';
@@ -48,15 +47,12 @@ function getPresetStatusKey(
   options: readonly string[],
 ): string | undefined {
   if (!preset) return undefined;
+  if (!apiKey.trim()) return 'settingsPanel.models.noPresetModelsApiKeyRequired';
   if (!preset.models_endpoint)
     return options.length > 0
       ? 'settingsPanel.models.fetchReasons.noEndpoint'
       : 'settingsPanel.models.noPresetModelsNoEndpoint';
-  if (preset.models_needs_key && !apiKey.trim())
-    return options.length > 0
-      ? 'settingsPanel.models.fetchReasons.apiKeyRequired'
-      : 'settingsPanel.models.noPresetModelsApiKeyRequired';
-  return options.length > 0 ? 'settingsPanel.models.presetModels' : 'settingsPanel.models.noPresetModels';
+  return options.length > 0 ? undefined : 'settingsPanel.models.noPresetModels';
 }
 
 function getModelFetchKey(preset: VendorPreset, apiKey: string): string {
@@ -91,15 +87,10 @@ export function ModelDialog({
   const [submitting, setSubmitting] = useState(false);
   const [testing, setTesting] = useState(false);
   const [fetching, setFetching] = useState(false);
-  const [modelOptions, setModelOptions] = useState<string[]>(() => {
-    const preset = findVendorPreset(catalog, initialValues.vendor_selection);
-    const options = normalizeModelOptions(preset?.model_options ?? []);
-    const currentModel = initialValues.model_name.trim();
-    return preset && currentModel && !options.includes(currentModel) ? [currentModel, ...options] : options;
-  });
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
   const [fetchStatus, setFetchStatus] = useState(() => {
     const preset = findVendorPreset(catalog, initialValues.vendor_selection);
-    const options = normalizeModelOptions(preset?.model_options ?? []);
+    const options: string[] = [];
     const statusKey = getPresetStatusKey(preset, initialValues.api_key, options);
     return statusKey ? t(statusKey) : '';
   });
@@ -191,9 +182,7 @@ export function ModelDialog({
     applyModelDraft(rebasedValues);
     catalogBaseline.current = next;
     const nextPreset = findVendorPreset(catalog, next.vendor_selection);
-    const presetOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
-    const nextOptions =
-      next.model_name && !presetOptions.includes(next.model_name) ? [next.model_name, ...presetOptions] : presetOptions;
+    const nextOptions: string[] = [];
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
   }, [applyModelDraft, catalog, form, model, t]);
@@ -221,9 +210,8 @@ export function ModelDialog({
     fetchedModelLists.current.clear();
     const next = applyVendorSelection(form.getValues(), selection, catalog);
     const nextPreset = findVendorPreset(catalog, selection);
-    const nextOptions = normalizeModelOptions(nextPreset?.model_options ?? []);
-    const nextModel = selectProviderDefaultModel(next.model_name, nextOptions);
-    applyModelDraft({ ...next, model_name: nextModel });
+    const nextOptions: string[] = [];
+    applyModelDraft(next);
     form.clearValidate(['api_key', 'model_name']);
     setModelOptions(nextOptions);
     setFetchStatus(describePresetStatus(nextPreset, next.api_key, nextOptions));
@@ -279,10 +267,9 @@ export function ModelDialog({
     const currentValues = form.getValues();
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset || fetching) return;
-    const presetOptions = normalizeModelOptions(currentPreset.model_options);
-    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
-      updateModelOptions(presetOptions);
-      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, presetOptions));
+    if (!currentPreset.models_endpoint || !currentValues.api_key.trim()) {
+      updateModelOptions([]);
+      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
       return;
     }
     const currentRequestId = ++fetchRequestId.current;
@@ -309,7 +296,7 @@ export function ModelDialog({
         fetchedModelLists.current.add(getModelFetchKey(currentPreset, currentValues.api_key));
         setFetchStatus(t('settingsPanel.models.fetchModelsRemote', { count: nextOptions.length }));
       } else if (result.source === 'preset' && result.reason) {
-        updateModelOptions(nextOptions);
+        updateModelOptions([]);
         const reasonKey = FETCH_REASON_KEYS[result.reason];
         setFetchStatus(
           reasonKey
@@ -321,13 +308,9 @@ export function ModelDialog({
       }
     } catch (error) {
       if (currentRequestId === fetchRequestId.current) {
-        updateModelOptions(presetOptions);
+        updateModelOptions([]);
         const message = error instanceof Error ? error.message : t('settingsPanel.models.fetchModelsFailed');
-        setFetchStatus(
-          presetOptions.length > 0
-            ? t('settingsPanel.models.fetchModelsFailedUsingPreset', { error: message })
-            : message,
-        );
+        setFetchStatus(message);
       }
     } finally {
       if (currentRequestId === fetchRequestId.current) setFetching(false);
@@ -338,10 +321,9 @@ export function ModelDialog({
     const currentValues = form.getValues();
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset) return;
-    const presetOptions = normalizeModelOptions(currentPreset.model_options);
-    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
-      updateModelOptions(presetOptions);
-      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, presetOptions));
+    if (!currentPreset.models_endpoint || !currentValues.api_key.trim()) {
+      updateModelOptions([]);
+      setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
       return;
     }
     const fetchKey = getModelFetchKey(currentPreset, currentValues.api_key);
@@ -427,7 +409,7 @@ export function ModelDialog({
         fetchedModelLists.current.clear();
         const nextPreset = findVendorPreset(catalog, nextValues.vendor_selection);
         if (!nextPreset) return;
-        const nextOptions = updateModelOptions(nextPreset.model_options);
+        const nextOptions = updateModelOptions([]);
         setFetchStatus(describePresetStatus(nextPreset, nextValues.api_key, nextOptions));
       },
     });
@@ -462,7 +444,13 @@ export function ModelDialog({
               openAIAccount.loadingModels ||
               submitting ||
               saving
-            : !isConnected || !preset?.models_endpoint || testing || fetching || submitting || saving
+            : !isConnected ||
+              !preset?.models_endpoint ||
+              !values.api_key.trim() ||
+              testing ||
+              fetching ||
+              submitting ||
+              saving
         }
         emptyText={
           account
