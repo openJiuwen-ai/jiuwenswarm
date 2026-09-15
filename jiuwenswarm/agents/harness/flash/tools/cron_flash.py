@@ -104,7 +104,10 @@ def _field(key: str, language: str = "cn") -> str:
 _ACTION_DESCS: dict[str, dict[str, str]] = {
     "status": {"cn": "任务数概览", "en": "job count summary (no params)"},
     "list": {"cn": "列任务（可选 include_disabled 含停用）", "en": "list jobs (optional include_disabled)"},
-    "add": {"cn": "创建定时任务（需 name+schedule+description；可选 id 自定义任务ID，不带则系统生成）", "en": "create a job (requires name+schedule+description; optional id for a custom job id, auto-generated if absent)"},
+    "add": {
+        "cn": "创建定时任务（需 name+schedule+description；可选 id 自定义任务ID，不带则系统生成）",
+        "en": "create a job (requires name+schedule+description; optional custom job id, auto-generated if absent)",
+    },
     "get": {"cn": "按 job_id 查询单个任务", "en": "lookup one job by job_id"},
     "update": {
         "cn": "修改定时任务（必填 job_id，其余字段只传要改的，不可改 id）",
