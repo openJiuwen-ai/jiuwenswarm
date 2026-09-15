@@ -12311,11 +12311,29 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
         try:
+            # Plain interrupt rounds finish their output before a resume starts.
+            # An ACK-only inject into a lease with EOF already queued can lose
+            # all resumed output. Goal readers and permission-queue callbacks
+            # remain live owners and must keep their existing injection path.
+            previous = getattr(self, "_interaction_output_handoff", None)
+            if (
+                previous is not None
+                and previous.owner is self._instance
+                and self._is_interrupt_resume_dispatch(request.params)
+                and answer is None
+                and not self._goal_record_is_active()
+            ):
+                await previous.wait()
             stream = await self._instance.attach_output()
             if stream is None and (answer is not None or not send_without_output):
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
                 return None, False
+            if stream is not None:
+                from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
+
+                stream = OutputHandoff(self._instance, stream)
+                self._interaction_output_handoff = stream
             mode = self._resolve_input_dispatch_mode(request.params)
             dispatched = await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
@@ -15803,6 +15821,9 @@ class JiuWenSwarmDeepAdapter:
                         "content": "",
                     }),
                     is_complete=False,
+                    runtime_completion=self._stream_completion_state(
+                        had_interaction=bool(emitted_ask_user_events),
+                    ),
                 )
 
             if (
@@ -15990,6 +16011,14 @@ class JiuWenSwarmDeepAdapter:
             payload=None,
             is_complete=True,
         )
+
+    def _stream_completion_state(self, *, had_interaction: bool) -> str:
+        """Distinguish an interrupt flush from a text-free completed round."""
+        loop_session = getattr(self._instance, "loop_session", None)
+        if loop_session is None:
+            return "suspended" if had_interaction else "completed"
+        state = loop_session.get_state(INTERRUPTION_KEY)
+        return "suspended" if getattr(state, "interrupted_tools", None) else "completed"
 
     @staticmethod
     def _stream_text_payload(

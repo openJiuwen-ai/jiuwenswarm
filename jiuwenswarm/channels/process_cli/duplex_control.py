@@ -29,14 +29,6 @@ _ACK_EVENTS = frozenset(
 _MAX_PENDING = 16
 
 
-def _has_text(event: RuntimeEvent) -> bool:
-    payload = event.payload or {}
-    return any(
-        isinstance(payload.get(key), str) and payload[key].strip()
-        for key in ("content", "delta", "text", "message", "answer")
-    )
-
-
 class DuplexControlError(ValueError):
     """Invalid routing or an unsupported interaction, without input echo."""
 
@@ -248,7 +240,6 @@ class DuplexController:
         self._add_stream(request.request_id, stream)
         completed = False
         had_interaction = False
-        continuation_text = False
         while self._streams or self._pending:
             item = await self._queue.get()
             if item.done:
@@ -266,7 +257,6 @@ class DuplexController:
             if event.event_type in _INTERACTIONS:
                 completed = False
                 had_interaction = True
-                continuation_text = False
                 token, payload = self._register_interaction(event)
                 observe(event)
                 self._notice(
@@ -275,25 +265,22 @@ class DuplexController:
                 self._check_answer_available()
             else:
                 observe(event)
-                if event.event_type == "chat.delta" and not self._pending:
-                    continuation_text = continuation_text or _has_text(event)
                 if event.event_type not in _ACK_EVENTS and event.ok:
                     root_terminal = (
                         not had_interaction
                         and item.operation_id == request.request_id
                         and event.is_complete
                     )
-                    # Interrupted runs can close with an empty segment flush
-                    # plus an answer ACK without ever executing a continuation.
-                    # That tail alone is not evidence that the answer ran.
+                    # UI segment flushes and stream EOF are not execution
+                    # outcomes. Runtime distinguishes suspended flushes from
+                    # completed (possibly text-free) runs without text guesses.
                     final = event.event_type == "chat.final" and not self._pending
-                    empty_interrupted_flush = (
-                        had_interaction
-                        and (event.payload or {}).get("final_mode") == "patch_segment"
-                        and not _has_text(event)
-                        and not continuation_text
+                    explicit = (
+                        event.runtime_completion == "completed" and not self._pending
                     )
-                    if (final and not empty_interrupted_flush) or root_terminal:
+                    if event.runtime_completion != "suspended" and (
+                        final or root_terminal or explicit
+                    ):
                         completed = True
         return completed
 

@@ -82,10 +82,10 @@ async def test_interaction_after_clean_eof_fails_without_approval() -> None:
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize("text_after_answer", [False, True])
+@pytest.mark.parametrize("completion", ["suspended", "completed", None])
 @pytest.mark.parametrize("output_stream", ["original", "answer"])
-async def test_empty_interrupted_segment_needs_continuation_evidence(
-    text_after_answer: bool, output_stream: str
+async def test_empty_interrupted_segment_uses_runtime_outcome(
+    completion: str | None, output_stream: str
 ) -> None:
     run = RunHarness()
     run.client.original.emit(_event("chat.delta", delta="before the question"))
@@ -95,20 +95,42 @@ async def test_empty_interrupted_segment_needs_continuation_evidence(
         _, answer = await run.answer(await run.card())
         answer.emit(_event("runtime.accepted"))
         target = run.client.original if output_stream == "original" else answer
-        if text_after_answer:
-            target.emit(_event("chat.delta", delta="the answer was used"))
-        target.emit(_event("chat.final", content="", final_mode="patch_segment"))
+        target.emit(
+            _event("chat.tool_result", tool_name="write_file", result="success")
+        )
+        event = _event("chat.final", content="", final_mode="patch_segment")
+        event.runtime_completion = completion
+        target.emit(event)
         run.client.original.emit(None)
         answer.emit(None)
         result = await run.finish()
-        if text_after_answer:
+        if completion != "suspended":
             assert result.status == "completed"
-            assert "the answer was used" in result.output
+            assert run.client.cancel_request is None
         else:
             assert result.status == "failed"
             assert result.error.code == "INCOMPLETE_RUN"
             assert result.exit_code == 1
             assert run.client.cancel_request.session_id == "runtime-session"
+    finally:
+        await run.cleanup_test()
+
+
+@pytest.mark.asyncio
+async def test_old_suspended_tail_cannot_complete_an_ack_only_answer() -> None:
+    run = RunHarness()
+    run.client.original.emit(_card())
+    run.start()
+    try:
+        _, answer = await run.answer(await run.card())
+        tail = _event("chat.final", content="", final_mode="patch_segment")
+        tail.runtime_completion = "suspended"
+        run.client.original.emit(tail)
+        run.client.original.emit(None)
+        answer.emit(_event("runtime.accepted"))
+        answer.emit(None)
+        result = await run.finish()
+        assert result.error.code == "INCOMPLETE_RUN"
     finally:
         await run.cleanup_test()
 

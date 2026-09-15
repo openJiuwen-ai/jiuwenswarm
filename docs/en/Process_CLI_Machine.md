@@ -222,12 +222,14 @@ unsupported (`INTERACTION_UNSUPPORTED`), with cancellation and cleanup, rather
 than being translated into a different approval type.
 
 An answer acknowledgement or answer-stream EOF is **not** run completion.
-After an interaction, an empty `patch_segment` flush without subsequent
-assistant answer text is not completion evidence either. If all streams end
-with only that tail, the CLI returns `INCOMPLETE_RUN`, not success. This is a
-conservative adapter check; it does not repair or retry a missing Runtime
-continuation, and intentionally does not promise success for an ambiguous,
-text-free post-interaction tail.
+Runtime marks synthetic finals as `suspended` or `completed` internally;
+an interrupt's suspended UI flush is not completion evidence. If all streams
+end with only that tail and an acknowledgement, the CLI returns `INCOMPLETE_RUN`.
+An actual completed final may be empty: success does not depend on assistant
+text or a tool result. These internal marks do not change the wire protocol.
+For plain interrupted rounds the shared Adapter drains the previous output
+owner before dispatching the answer, preventing injection into a finishing
+lease. Answers are dispatched once, never automatically replayed.
 Runtime may continue output on the original stream or on the answering stream;
 the CLI drains both, retaining the same external run/Session identity and output
 sequence. It stops its input reader and closes all streams before Session and

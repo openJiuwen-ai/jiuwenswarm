@@ -20,6 +20,7 @@ class RuntimeEvent:
     metadata: dict[str, Any] | None = None
     is_complete: bool = False
     ok: bool = True
+    runtime_completion: str | None = None
 
     @property
     def event_type(self) -> str:
@@ -28,7 +29,10 @@ class RuntimeEvent:
         return str(self.payload.get("event_type") or "")
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        value = asdict(self)
+        # Execution-only state must not change existing JSON/wire renderers.
+        value.pop("runtime_completion", None)
+        return value
 
     @classmethod
     def from_agent_message(
@@ -68,6 +72,7 @@ class RuntimeEvent:
             ),
             is_complete=bool(getattr(message, "is_complete", default_complete)),
             ok=bool(getattr(message, "ok", True)),
+            runtime_completion=getattr(message, "runtime_completion", None),
         )
 
     @classmethod
