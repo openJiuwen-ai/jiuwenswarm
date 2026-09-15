@@ -754,13 +754,21 @@ def _readonly_resource(name, tmp_path, monkeypatch, session_id="session-a", *, n
 @pytest.mark.parametrize(("name", "args"), _READONLY_CASES)
 @pytest.mark.parametrize("variant", ["valid", "shadow", "callable", "cross_session", "deny", "session_deny", "fail_closed"])
 async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args, variant):
+    from openjiuwen.core.runner.resources_manager.resource_manager import ResourceMgr
+
+    # Stateless registration keeps an existing singleton; this case must own the actual binding.
+    monkeypatch.setattr(tool_binding_module.Runner, "resource_mgr", ResourceMgr())
     tool = _readonly_resource(name, tmp_path, monkeypatch, "another-session" if variant == "cross_session" else "session-a")
+    # SDK registration may rewrite the shared card. Restore both fields after this case.
+    monkeypatch.setattr(tool.card, "id", tool.card.id)
+    monkeypatch.setattr(tool.card, "stateless", name == "convert_timestamp_to_utc8_time")
     if variant == "shadow":
         tool = LocalFunction(card=tool.card, func=lambda **kwargs: "not the builtin")
     if variant == "callable":
         monkeypatch.setattr(tool, "_func", lambda **kwargs: "replaced")
     manager = AbilityManager(owner_id="readonly-permission")
     manager.add_ability(tool.card, tool)
+    assert tool_binding_module.Runner.resource_mgr.get_tool(tool.card.id, session=None) is tool
     denies = SessionDenyStore()
     if variant == "session_deny":
         denies.record_denial(session_id="session-a", tool_name=name, tool_args=args, reason="user_rejected")
@@ -788,7 +796,7 @@ async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args
 
 
 @pytest.mark.parametrize(("name", "args"), _READONLY_CASES)
-@pytest.mark.parametrize("defect", ["owner", "missing", "card", "lookup", "code", "invoke"])
+@pytest.mark.parametrize("defect", ["owner", "missing", "card", "lookup", "code", "invoke", "invoke_proxy"])
 def test_readonly_binding_rejects_unverified_dependencies(tmp_path, monkeypatch, name, args, defect):
     from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission import readonly_tool_bindings as bindings
     tool = _readonly_resource(name, tmp_path, monkeypatch, no_create=name.startswith("cron_"))
@@ -816,6 +824,23 @@ def test_readonly_binding_rejects_unverified_dependencies(tmp_path, monkeypatch,
         monkeypatch.setattr(tool_binding_module.Runner.resource_mgr, "get_tool", lambda *a, **k: 1 / 0)
     elif defect == "code":
         monkeypatch.setattr(tool, "_func", lambda **kwargs: None)
+    elif defect == "invoke_proxy":
+        original = tool.invoke
+
+        class InvokeProxy:
+            @property
+            def __class__(self):
+                return original.__class__
+
+            def __getattr__(self, key):
+                return getattr(original, key)
+
+            async def __call__(self, *args, **kwargs):
+                raise AssertionError("a proxy must never receive the builtin fast path")
+
+        proxy = InvokeProxy()
+        assert isinstance(proxy, original.__class__)
+        monkeypatch.setattr(tool, "invoke", proxy)
     else:
         monkeypatch.setattr(tool, "invoke", AsyncMock())
     assert not bindings.trusted_readonly_binding(invocation, "session-a")
