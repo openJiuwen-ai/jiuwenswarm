@@ -37,6 +37,16 @@ test('Skill Hub marketplace and installation rely on the server-configured Hub',
   assert.match(hubMarketplaceSource, /const HUB_HOME_TOP_K = 6/);
   assert.match(hubMarketplaceSource, /const HUB_MORE_TOP_K = 500/);
   assert.match(marketplaceSource, /category_id: category/);
+  assert.match(hubMarketplaceSource, /hubHomeLoadedCategoryRef/);
+  assert.match(hubMarketplaceSource, /const silent = hubHomeLoadedCategoryRef\.current === category/);
+  assert.match(
+    sourceBetween(hubMarketplaceSource, 'const pauseHubFetching = useCallback', 'return {'),
+    /setHubSkills\(\[\]\)/,
+  );
+  assert.doesNotMatch(
+    sourceBetween(hubMarketplaceSource, 'const pauseHubFetching = useCallback', 'return {'),
+    /setHubTeamHome\(\[\]\)/,
+  );
   assert.match(installationSource, /['"]skills\.online_search\.install['"]/);
   assert.doesNotMatch(marketplaceSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);
   assert.doesNotMatch(installationSource, /\bmarket_url\b|https?:\/\/|\b\d{1,3}(?:\.\d{1,3}){3}\b/);

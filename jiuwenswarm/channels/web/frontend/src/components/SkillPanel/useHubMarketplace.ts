@@ -2,6 +2,7 @@
  * 技能广场（SkillHub 推荐 / 在线搜索 / 广场详情）数据 hook
  *
  * 首页按类型各拉 HUB_HOME_TOP_K；「更多」专页按需拉 HUB_MORE_TOP_K。
+ * 离开页签保留首页/更多列表；再进入同分类时 stale-while-revalidate（先展示旧数据再静默刷新）。
  */
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { webRequest } from '../../services/webClient';
@@ -87,6 +88,8 @@ export function useHubMarketplace({
   /** 技能广场请求序号：防抖搜索/分类切换时丢弃过期响应 */
   const hubFetchSeqRef = useRef(0);
   const hubMoreFetchSeqRef = useRef(0);
+  /** 当前首页列表对应的分类；与请求分类一致时可静默刷新 */
+  const hubHomeLoadedCategoryRef = useRef<string | null>(null);
   const [selectedHubSkill, setSelectedHubSkill] = useState<MarketplacePluginItem | null>(null);
   const [hubDetail, setHubDetail] = useState<HubSkillDetail | null>(null);
   const [hubDetailState, setHubDetailState] = useState<LoadState>('idle');
@@ -112,10 +115,13 @@ export function useHubMarketplace({
   const fetchHubHomeSkills = useCallback(
     async (category: string) => {
       const seq = ++hubFetchSeqRef.current;
-      setHubLoading(true);
-      setHubTeamMore([]);
-      setHubSkillMore([]);
-      setHubMoreLoadedFor(null);
+      const silent = hubHomeLoadedCategoryRef.current === category;
+      if (!silent) {
+        setHubLoading(true);
+        setHubTeamMore([]);
+        setHubSkillMore([]);
+        setHubMoreLoadedFor(null);
+      }
       try {
         const [teamResult, skillResult] = await Promise.allSettled([
           fetchHubRecommendByType(category, 'swarmskill', HUB_HOME_TOP_K),
@@ -127,14 +133,20 @@ export function useHubMarketplace({
           setHubTeamHome(teamResult.value);
         } else {
           console.error('Failed to fetch team SkillHub recommend:', teamResult.reason);
-          setHubTeamHome([]);
+          if (!silent) setHubTeamHome([]);
         }
 
         if (skillResult.status === 'fulfilled') {
           setHubSkillHome(skillResult.value);
         } else {
           console.error('Failed to fetch skill SkillHub recommend:', skillResult.reason);
-          setHubSkillHome([]);
+          if (!silent) setHubSkillHome([]);
+        }
+
+        if (teamResult.status === 'fulfilled' || skillResult.status === 'fulfilled') {
+          hubHomeLoadedCategoryRef.current = category;
+        } else if (!silent) {
+          hubHomeLoadedCategoryRef.current = null;
         }
       } finally {
         if (seq === hubFetchSeqRef.current) setHubLoading(false);
@@ -332,6 +344,7 @@ export function useHubMarketplace({
   const invalidateHubFetch = useCallback(() => {
     hubFetchSeqRef.current += 1;
     hubMoreFetchSeqRef.current += 1;
+    hubHomeLoadedCategoryRef.current = null;
     setHubSkills([]);
     setHubTeamHome([]);
     setHubSkillHome([]);
@@ -342,18 +355,14 @@ export function useHubMarketplace({
     setHubMoreLoading(false);
   }, []);
 
-  /** 离开技能广场页签：作废在途请求并停止加载 */
+  /** 离开技能广场页签：作废在途请求，保留首页/更多列表供再次进入时 stale-while-revalidate */
   const pauseHubFetching = useCallback(() => {
     hubFetchSeqRef.current += 1;
     hubMoreFetchSeqRef.current += 1;
     setHubLoading(false);
     setHubMoreLoading(false);
+    // 仅清搜索结果；首页与「更多」列表保留
     setHubSkills([]);
-    setHubTeamHome([]);
-    setHubSkillHome([]);
-    setHubTeamMore([]);
-    setHubSkillMore([]);
-    setHubMoreLoadedFor(null);
   }, []);
 
   return {
