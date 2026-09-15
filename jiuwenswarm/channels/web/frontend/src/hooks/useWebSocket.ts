@@ -80,6 +80,8 @@ import {
   extractCrossSessionMessage,
   crossSessionUserMessageId,
   crossSessionAssistantMessageId,
+  generateUuidV4,
+  prefixedMessageId,
 } from '../utils';
 import {
   findOverlappingFileExecutionEvent,
@@ -1477,7 +1479,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const webError = error as WebError;
         const errorMsg = webError.message || t('network.sendMessageFailed');
         useChatStore.getState().addMessage(sessionId, {
-          id: `error-${Date.now()}`,
+          id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -1598,7 +1600,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       const unsupportedEvolutionMode = unsupportedEvolutionModeMessage(content, currentMode ?? 'agent');
       if (unsupportedEvolutionMode) {
         useChatStore.getState().addMessage(sessionId, {
-          id: `error-${Date.now()}`,
+          id: prefixedMessageId('error-'),
           role: 'system',
           content: unsupportedEvolutionMode,
           timestamp: new Date().toISOString(),
@@ -1644,7 +1646,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       // 名字发给后端；被摘掉的项同步从 sessionStore 里移除，让"+"扩展面板的开关同步变回关闭。
       const extensionPayload = buildExtensionSendPayload(sessionId);
       useChatStore.getState().addMessage(sessionId, {
-        id: `user-${Date.now()}`,
+        id: prefixedMessageId('user-'),
         role: 'user',
         content: stripUploadDocumentBlocks(content) || content.replace(/\n*【上传文档[\s\S]*$/, '').trim() || content,
         mediaItems,
@@ -1769,7 +1771,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const errorMsg = webError.message || t('network.sendMessageFailed');
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: `error-${Date.now()}`,
+          id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -1855,7 +1857,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const errorMsg = webError.message || t('network.sendMessageFailed');
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: `error-${Date.now()}`,
+          id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -1940,7 +1942,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           closeActiveTeamLeaderMessages(sessionId);
         }
         useChatStore.getState().addMessage(sessionId, {
-          id: `user-${Date.now()}`,
+          id: prefixedMessageId('user-'),
           role: 'user',
           content: newInput,
           timestamp: new Date().toISOString(),
@@ -2670,7 +2672,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             // 因为再也等不到后续 chat.final 收尾而永久闪烁（bug001）。paused 状态下新起的
             // 气泡直接落地为非 streaming，內容仍然展示，只是不再挂一个不会消失的光标。
             const isPaused = Boolean(useChatStore.getState().getRuntime(sessionId)?.isPaused);
-            const msgId = `team-leader-${Date.now()}`;
+            const msgId = prefixedMessageId('team-leader-');
             useChatStore.getState().addMessage(sessionId, {
               id: msgId,
               role: 'system',
@@ -2716,7 +2718,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
         }
         if (!currentStreamId && content) {
-          const assistantMsgId = `assistant-${Date.now()}`;
+          const assistantMsgId = prefixedMessageId('assistant-');
           const proactiveRecId = typeof payload.proactive_rec_id === 'string' ? payload.proactive_rec_id : undefined;
           const proactiveType = typeof payload.proactive_type === 'string' ? payload.proactive_type : undefined;
           useChatStore.getState().addMessage(sessionId, {
@@ -2905,7 +2907,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           const content = normalizeFinalContent(payload);
           if (content) {
             useChatStore.getState().addMessage(sessionId, {
-              id: `team-human-${memberAction}-${Date.now()}`,
+              id: `team-human-${memberAction}-${generateUuidV4()}`,
               role: 'system',
               content,
               timestamp: normalizeEventTimestampIso(payload.timestamp),
@@ -3068,14 +3070,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               useChatStore.getState().collapseTurnFinal(sessionId, {
                 kind: 'team',
                 content,
-                finalId: `team-leader-${Date.now()}`,
+                finalId: prefixedMessageId('team-leader-'),
                 timestampIso: iso,
               });
               return;
             }
             if (finalAction.type === 'append') {
               useChatStore.getState().addMessage(sessionId, {
-                id: `team-leader-${Date.now()}`,
+                id: prefixedMessageId('team-leader-'),
                 role: 'system',
                 content: `team.leader:${JSON.stringify({ content, timestamp: Date.parse(iso) || Date.now() })}`,
                 timestamp: iso,
@@ -3091,7 +3093,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               return;
             }
             useChatStore.getState().addMessage(sessionId, {
-              id: `team-leader-${Date.now()}`,
+              id: prefixedMessageId('team-leader-'),
               role: 'system',
               content: `team.leader:${JSON.stringify({ content, timestamp: Date.parse(iso) || Date.now() })}`,
               timestamp: iso,
@@ -3109,7 +3111,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           }
 
           useChatStore.getState().addMessage(sessionId, {
-            id: `team-leader-${Date.now()}`,
+            id: prefixedMessageId('team-leader-'),
             role: 'system',
             content: `team.leader:${JSON.stringify({ content, timestamp })}`,
             timestamp: new Date().toISOString(),
@@ -3148,7 +3150,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               useChatStore.getState().stopStreaming(sessionId);
             }
             if (shouldCollapseTurnFinal(messages, content, 'agent', finalAction)) {
-              const finalId = `msg-final-${Date.now()}`;
+              const finalId = prefixedMessageId('msg-final-');
               useChatStore.getState().collapseTurnFinal(sessionId, {
                 kind: 'agent',
                 content,
@@ -3286,7 +3288,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               ? `cron-placeholder-${cronRunId}`
               : cronRunId && !isCronPlaceholderContent
                 ? `cron-final-${cronRunId}`
-                : `msg-${Date.now()}`;
+                : prefixedMessageId('msg-');
 
           const existing = messages.find((m) => m.id === messageId);
           if (existing) {
@@ -3360,7 +3362,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
               }
               return;
             }
-            const finalMsgId = `msg-final-${Date.now()}`;
+            const finalMsgId = prefixedMessageId('msg-final-');
             useChatStore.getState().addMessage(sessionId, {
               id: finalMsgId,
               role: 'assistant',
@@ -3516,7 +3518,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             });
           } else {
             useChatStore.getState().addMessage(sessionId, {
-              id: `team-leader-${Date.now()}`,
+              id: prefixedMessageId('team-leader-'),
               role: 'system',
               content: '',
               timestamp: new Date().toISOString(),
@@ -4064,7 +4066,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const content = pickString(payload.content, payload.message, payload.text);
         if (!content) return;
         const noticeType = pickString(payload.notice_type, payload.type) || 'notice';
-        const requestId = getPayloadRequestId(payload) || `${Date.now()}`;
+        const requestId = getPayloadRequestId(payload) || generateUuidV4();
         const messageId = `notice-${noticeType}-${requestId}`;
         const chatState = useChatStore.getState();
         const existing = chatState.getRuntime(sessionId)?.messages.find((message) => message.id === messageId);
@@ -4139,7 +4141,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         onErrorRef.current?.(errorMsg);
         useChatStore.getState().setSessionError(sessionId, errorMsg);
         useChatStore.getState().addMessage(sessionId, {
-          id: `error-${Date.now()}`,
+          id: prefixedMessageId('error-'),
           role: 'system',
           content: t('network.errorPrefix', { message: errorMsg }),
           timestamp: new Date().toISOString(),
@@ -4457,7 +4459,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         clearThinkingForVisibleOutput(sessionId);
         useChatStore.getState().addMessage(sessionId, {
-          id: `team-event-${Date.now()}`,
+          id: prefixedMessageId('team-event-'),
           role: 'system',
           content: `team.event:${JSON.stringify(payload)}`,
           timestamp: new Date().toISOString(),
@@ -4471,7 +4473,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
         clearThinkingForVisibleOutput(sessionId);
         useChatStore.getState().addMessage(sessionId, {
-          id: `team-message-${Date.now()}`,
+          id: prefixedMessageId('team-message-'),
           role: 'system',
           content: `team.event:${JSON.stringify(payload)}`,
           timestamp: new Date().toISOString(),
@@ -4689,7 +4691,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
 
         useChatStore.getState().addMessage(sessionId, {
-          id: `harness-msg-${Date.now()}`,
+          id: prefixedMessageId('harness-msg-'),
           role: 'system',
           content,
           timestamp: new Date().toISOString(),
@@ -4732,7 +4734,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
           if (status === 'failed' && error) {
             useChatStore.getState().addMessage(sessionId, {
-              id: `harness-error-${Date.now()}`,
+              id: prefixedMessageId('harness-error-'),
               role: 'system',
               content: `Stage ${stage} failed: ${error}`,
               timestamp: new Date().toISOString(),
