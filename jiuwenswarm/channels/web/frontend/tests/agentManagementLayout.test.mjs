@@ -12,8 +12,20 @@ const groupCatalogSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/GroupCatalogPage.tsx', import.meta.url),
   'utf8',
 );
+const catalogPageSource = readFileSync(
+  new URL('../src/components/AgentManagementPanel/CatalogPage.tsx', import.meta.url),
+  'utf8',
+);
 const groupCardSource = readFileSync(
   new URL('../src/components/AgentManagementPanel/GroupCard.tsx', import.meta.url),
+  'utf8',
+);
+const agentManagementCss = readFileSync(
+  new URL('../src/components/AgentManagementPanel/agentManagement.css', import.meta.url),
+  'utf8',
+);
+const entityHeaderCss = readFileSync(
+  new URL('../src/components/ui/EntityHeader/EntityHeader.css', import.meta.url),
   'utf8',
 );
 const groupEditorSource = readFileSync(
@@ -96,10 +108,9 @@ test('Expert and Expert Team management keep the shared page shell and field lim
   assert.match(panelSource, /<div className="page-shell flex-none"[^>]*>\s*<PageHeader/);
   assert.match(groupCatalogSource, /className="page-shell agent-management-toolbar"/);
   assert.match(groupCatalogSource, /className="page-scroll min-h-0 flex-1 overflow-y-auto"/);
-  assert.match(groupCardSource, /<article[\s\S]*agent-group-card/);
-  assert.match(groupCardSource, /data-testid="agent-group-card-open"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
   assert.match(groupCardSource, /className="agent-management-card__actions"/);
-  assert.doesNotMatch(groupCardSource, /<PageCard/);
   assert.match(groupEditorSource, /id="agent-management-group-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
   assert.match(
     groupEditorSource,
@@ -117,18 +128,9 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
     inputAreaSource,
     /const existingTeamGroupSelectionDisabled = Boolean\([\s\S]*activeSessionId !== NEW_CONVERSATION_ID/,
   );
-  assert.match(
-    inputAreaSource,
-    /const agentSelectionDisabled = isTeamMode;/,
-  );
-  assert.match(
-    inputAreaSource,
-    /const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked;/,
-  );
-  assert.match(
-    inputAreaSource,
-    /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/,
-  );
+  assert.match(inputAreaSource, /const agentSelectionDisabled = isTeamMode;/);
+  assert.match(inputAreaSource, /const agentGroupSelectionDisabled = isAgentMode \|\| agentGroupPickerLocked;/);
+  assert.match(inputAreaSource, /aria-disabled=\{agentSelectionDisabled\}[\s\S]*disabled=\{agentSelectionDisabled\}/);
   assert.match(
     inputAreaSource,
     /aria-disabled=\{agentGroupSelectionDisabled\}[\s\S]*disabled=\{agentGroupSelectionDisabled\}/,
@@ -144,6 +146,45 @@ test('primary management tabs retain tab semantics and chat picker enforces mode
 test('Expert and Expert Team content details use the same full-width markdown layout', () => {
   assert.match(agentDetailSource, /<MarkdownPane[\s\S]*testId="agent-management-detail-content"/);
   assert.match(groupDetailSource, /<MarkdownPane[\s\S]*testId="agent-group-detail-content"/);
+});
+
+test('Expert Team cards and details reuse the Expert visual primitives', () => {
+  assert.match(catalogPageSource, /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card"/);
+  assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
+  assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*interactive/);
+  assert.match(
+    groupCardSource,
+    /className="agent-management-card__actions"[\s\S]*onClick=\{\(event\) => event\.stopPropagation\(\)\}/,
+  );
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__actions\s*\{\s*display: contents;/);
+  assert.match(agentManagementCss, /\.agent-management-page-card \.entity-header__identity\s*\{\s*flex: 1 1 auto;/);
+  assert.match(
+    agentManagementCss,
+    /\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*position: absolute;/,
+  );
+  assert.match(
+    agentManagementCss,
+    /@media \(max-width: 800px\)[\s\S]*\.agent-management-page-card \.agent-management-card__actions\s*\{[\s\S]*top: auto;/,
+  );
+  assert.match(agentManagementCss, /\.agent-management-page-card:focus-within \.agent-management-card__actions/);
+  assert.match(entityHeaderCss, /\.entity-header__tags\s*\{[\s\S]*width: 100%;/);
+  assert.match(
+    agentManagementCss,
+    /@media \(min-width: 801px\)[\s\S]*\.agent-management-page-card:focus-within \.entity-header__identity/,
+  );
+  assert.match(groupDetailSource, /import \{[^}]*EntityHeader[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*DetailSection[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /import \{[^}]*Tabs[^}]*\} from '\.\.\/ui';/);
+  assert.match(groupDetailSource, /<EntityHeader[\s\S]*testId="agent-management-detail-header"/);
+  assert.match(groupDetailSource, /<DetailSection[\s\S]*testId="agent-management-detail-ability"/);
+  assert.match(groupDetailSource, /<PageToolbar[\s\S]*<Tabs[\s\S]*wrapperTestId="agent-group-detail-tabs"/);
+  assert.match(groupDetailSource, /className="detail-back"/);
+  assert.match(groupDetailSource, /className="detail-body flex-1 min-h-0 overflow-y-auto"/);
+  assert.doesNotMatch(groupDetailSource, /detail-back mb-\[35px\]/);
+  assert.doesNotMatch(groupDetailSource, /overflow-y-auto pb-\[72px\]/);
+  assert.doesNotMatch(groupDetailSource, /<header className="agent-management-detail__header">/);
 });
 
 test('Expert Team leader badge does not add a redundant status icon', () => {

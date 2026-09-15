@@ -51,11 +51,6 @@
   grid-column: 2;
 }
 
-.page-content[data-definition-kind="group"] .agent-group-detail {
-  transform: none;
-  overflow-y: auto;
-}
-
 .agent-group-detail > *,
 .agent-group-editor > * {
   flex-shrink: 0;
@@ -578,11 +573,34 @@
     transform var(--duration-fast) var(--ease-out);
 }
 
+.agent-management-page-card .entity-header__actions {
+  display: contents;
+}
+
+.agent-management-page-card .entity-header__identity {
+  flex: 1 1 auto;
+}
+
+.agent-management-page-card .agent-management-card__actions {
+  position: absolute;
+  top: 36px;
+  right: 24px;
+  margin-left: 0;
+}
+
 .agent-management-card:hover .agent-management-card__actions,
-.agent-management-card:focus-within .agent-management-card__actions {
+.page-card:hover .agent-management-card__actions,
+.agent-management-page-card:focus-within .agent-management-card__actions {
   opacity: var(--opacity-agent-visible);
   pointer-events: auto;
   transform: translateY(0);
+}
+
+@media (min-width: 801px) {
+  .agent-management-page-card:hover .entity-header__identity,
+  .agent-management-page-card:focus-within .entity-header__identity {
+    padding-right: 128px;
+  }
 }
 
 .agent-management-card__actions .agent-management-button {
@@ -2889,31 +2907,7 @@
     height: auto;
   }
 
-  .agent-management-card__body {
-    height: auto;
-    padding-bottom: 64px;
-  }
-
-  .agent-management-card__heading {
-    height: auto;
-    min-height: 56px;
-    flex: 0 0 auto;
-  }
-
-  .agent-management-card:hover .agent-management-card__content,
-  .agent-management-card:focus-within .agent-management-card__content,
-  .agent-management-card--multi-action:hover .agent-management-card__content,
-  .agent-management-card--multi-action:focus-within .agent-management-card__content {
-    padding-right: 0;
-  }
-
-  .agent-management-card__meta {
-    flex-wrap: wrap;
-    align-content: flex-start;
-    row-gap: 4px;
-  }
-
-  .agent-management-card__actions {
+  .agent-management-page-card .agent-management-card__actions {
     right: 16px;
     top: auto;
     bottom: 16px;
@@ -3257,10 +3251,10 @@
 
 .agent-management-upload-dialog.agent-group-upload-dialog {
   width: var(--size-agent-group-upload-dialog-width);
-  height: var(--size-agent-group-upload-dialog-height);
+  height: auto;
   box-sizing: border-box;
   gap: 0;
-  overflow: hidden;
+  overflow-y: auto;
   border: 0;
   border-radius: var(--radius-md);
   padding: var(--space-agent-group-upload-inset);
@@ -3277,10 +3271,10 @@
 }
 
 .agent-group-upload-dialog .agent-management-upload-dialog__hint {
-  height: var(--size-agent-group-upload-hint-height);
-  min-height: var(--size-agent-group-upload-hint-height);
-  flex: 0 0 var(--size-agent-group-upload-hint-height);
-  align-items: center;
+  height: auto;
+  min-height: 0;
+  flex: 0 0 auto;
+  align-items: flex-start;
   box-sizing: border-box;
   margin: var(--space-agent-group-grid) 0 0;
 }
@@ -3358,13 +3352,6 @@
 
 .agent-management-upload-dialog__hint-copy {
   min-width: 0;
-}
-
-.agent-group-detail .agent-group-avatar--detail {
-  width: 32px;
-  height: 32px;
-  flex-basis: 32px;
-  border-radius: var(--radius-md);
 }
 
 .agent-group-editor__header {

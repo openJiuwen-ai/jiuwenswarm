@@ -25,6 +25,8 @@ export interface PageCardProps {
   ariaLabel?: string;
   className?: string;
   testId?: string;
+  /** Optional test hook for the clickable card header. */
+  headerTestId?: string;
   variant?: string;
 }
 
@@ -41,6 +43,7 @@ export function PageCard({
   ariaLabel,
   className,
   testId,
+  headerTestId,
   variant,
 }: PageCardProps) {
   const classNames = ['page-card'];
@@ -69,6 +72,7 @@ export function PageCard({
     >
       <EntityHeader
         variant="card"
+        testId={headerTestId}
         avatar={avatar}
         title={title}
         titleEnd={titleEnd}

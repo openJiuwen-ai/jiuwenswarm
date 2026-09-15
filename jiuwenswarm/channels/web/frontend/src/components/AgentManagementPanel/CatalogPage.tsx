@@ -1,8 +1,10 @@
+import { type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
-import type { AgentCatalogItem, RequestStatus } from '../../features/agentManagement';
-import { CategoryTabs } from '../ui';
-import { DefinitionCard } from './DefinitionCard';
+import { type AgentCatalogItem, getAgentAvatarUrl, type RequestStatus } from '../../features/agentManagement';
+import { CategoryTabs, PageCard } from '../ui';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
+import ReminderIcon from '../../assets/agent-management/remind.svg?react';
 
 const PAGE_SIZE = 15;
 const CATEGORIES = [
@@ -34,8 +36,10 @@ type CatalogPageProps = {
   onUse: (id: string) => void;
   onReconnect: (id: string) => void;
   onInstall: (id: string) => void;
-  onUninstall: (id: string) => void;
-  onEdit: (id: string) => void;
+  // Kept optional for the current panel call seam; catalog actions intentionally
+  // do not expose uninstall/edit. Those actions remain on the detail page.
+  onUninstall?: (id: string) => void;
+  onEdit?: (id: string) => void;
   onCreate: () => void;
 };
 
@@ -57,8 +61,6 @@ export function CatalogPage({
   onUse,
   onReconnect,
   onInstall,
-  onUninstall,
-  onEdit,
   onCreate,
 }: CatalogPageProps) {
   const { t } = useTranslation();
@@ -115,24 +117,87 @@ export function CatalogPage({
           </div>
         ) : (
           <>
-            <div className="card-grid-auto" style={{ paddingTop: '16px' }}>
-              {items.map((item) => (
-                <DefinitionCard
-                  key={item.id}
-                  item={item}
-                  scope={scope}
-                  busy={busyId === item.id}
-                  onOpen={onOpen}
-                  onUse={onUse}
-                  onReconnect={onReconnect}
-                  onInstall={onInstall}
-                  onUninstall={onUninstall}
-                  onEdit={onEdit}
-                />
-              ))}
+            <div className="card-grid-auto">
+              {items.map((item) => {
+                const isBusy = busyId === item.id;
+                const avatarUrl = getAgentAvatarUrl(item);
+                const description = item.description || t('agentManagement.unknownDescription');
+                const needsConnection = item.installed && item.connectionState !== 'connected';
+                const avatar = { name: item.displayName, iconUrl: avatarUrl, testId: 'agent-management-card-avatar' };
+                const labelTags: string[] | undefined = item.tags.length > 0
+                  ? item.tags.map(tag => tag.label)
+                  : undefined;
+
+                let actionContent: ReactNode = null;
+                if (item.installed) {
+                  actionContent = (
+                    <div
+                      className="agent-management-card__actions"
+                      aria-label={t('agentManagement.card.actions', { name: item.displayName })}
+                    >
+                      <button
+                        type="button"
+                        className="agent-management-button agent-management-button--primary agent-management-card-action--use"
+                        disabled={isBusy || item.enabled === false}
+                        aria-disabled={isBusy || item.enabled === false}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          needsConnection ? onReconnect(item.id) : onUse(item.id);
+                        }}
+                      >
+                        {t('agentManagement.actions.use')}
+                      </button>
+                    </div>
+                  );
+                } else {
+                  actionContent = (
+                    <div
+                      className="agent-management-card__actions"
+                      aria-label={t('agentManagement.card.actions', { name: item.displayName })}
+                    >
+                      <button
+                        type="button"
+                        className="agent-management-button agent-management-button--primary"
+                        disabled={isBusy}
+                        aria-busy={isBusy}
+                        onClick={(event) => {
+                          event.stopPropagation();
+                          onInstall(item.id);
+                        }}
+                      >
+                        {isBusy ? t('agentManagement.actions.installing') : t('agentManagement.actions.install')}
+                      </button>
+                    </div>
+                  );
+                }
+
+                return (
+                  <PageCard
+                    key={item.id}
+                    className="agent-management-page-card agent-definition-card"
+                    testId="agent-card"
+                    variant={item.id}
+                    onClick={() => onOpen(item.id)}
+                    avatar={avatar}
+                    title={item.displayName}
+                    titleEnd={
+                      scope === 'mine' && item.updateAvailable ? (
+                        <UpdateBadge label={t('agentManagement.states.newVersion')} />
+                      ) : undefined
+                    }
+                    label={labelTags}
+                    description={description}
+                    actionSlot={actionContent}
+                  />
+                );
+              })}
             </div>
             {totalPages > 1 ? (
-              <div className="agent-management-pagination" aria-label={t('agentManagement.pagination.label')}>
+              <div
+                className="agent-management-pagination"
+                aria-label={t('agentManagement.pagination.label')}
+                data-testid="agent-catalog-pagination"
+              >
                 <span>
                   {t('agentManagement.pagination.range', {
                     start: (page - 1) * PAGE_SIZE + 1,
@@ -143,6 +208,7 @@ export function CatalogPage({
                 <div className="agent-management-pagination__buttons">
                   <button
                     type="button"
+                    data-testid="agent-catalog-page-previous"
                     disabled={page <= 1}
                     onClick={() => onPageChange(page - 1)}
                     aria-label={t('agentManagement.pagination.previous')}
@@ -152,6 +218,7 @@ export function CatalogPage({
                   <span>{t('agentManagement.pagination.page', { page, total: totalPages })}</span>
                   <button
                     type="button"
+                    data-testid="agent-catalog-page-next"
                     disabled={page >= totalPages}
                     onClick={() => onPageChange(page + 1)}
                     aria-label={t('agentManagement.pagination.next')}
@@ -169,3 +236,16 @@ export function CatalogPage({
 }
 
 export { PAGE_SIZE };
+
+function UpdateBadge({ label }: { label: string }) {
+  const { tooltip, handlers } = useAdaptiveTooltip({ placement: 'top' });
+  return (
+    <>
+      <span className="agent-management-card__update" data-tooltip={label} {...handlers}>
+        <ReminderIcon aria-hidden="true" />
+        <span className="agent-management-card__update-dot" aria-hidden="true" />
+      </span>
+      {tooltip}
+    </>
+  );
+}
