@@ -355,7 +355,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   const loadProjects = useCallback(async () => {
     try {
       const payload = await projectRegistryClient.list('all');
-      const visible = (payload.projects || []).filter((p) => !p.hidden);
+      const visible = payload.projects || [];
       setProjects(visible);
       return visible;
     } catch {

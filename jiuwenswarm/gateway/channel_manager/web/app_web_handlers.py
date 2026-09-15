@@ -2582,7 +2582,6 @@ def _project_info_payload(
             "pinned": False,
             "pin_order": 0,
             "is_default": True,
-            "hidden": False,
             "work_mode": work_mode,
             "git": git_payload,
             "session_count": st["session_count"],
@@ -2599,7 +2598,6 @@ def _project_info_payload(
         "pinned": proj.pinned,
         "pin_order": proj.pin_order,
         "is_default": False,
-        "hidden": proj.hidden,
         "work_mode": work_mode,
         "git": git_payload,
         "session_count": st["session_count"],
@@ -4660,14 +4658,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
-        include_hidden: 是否包含已软删除(``hidden:true``)项目,默认 ``false``。
-            仅 ``"all"`` / ``"unpinned"`` 生效;``"pinned"`` 模式自动排除隐藏项目。
         work_mode: 可选,按工作模式过滤(``"code"`` / ``"work"``),不传则返回全部模式。
             默认项目按 work_mode 拆分:``default``(work)+ ``default_code``(code)。
 
         统计口径: ``session_count`` / ``last_message_at`` / ``last_user_message_at``
         仅统计该项目的非置顶**普通**会话(``cron_id`` 为空)。置顶会话与 cron 会话
-        不计入任何项目统计。隐藏项目统计恒为 0/null(其非置顶会话已临时归属默认项目)。
+        不计入任何项目统计。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -4738,8 +4734,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_CREATE,
             label="project.create",
-            # PROJECT_ARCHIVED 失败明细携带 project_id，前端据此调用
-            # project.unarchive 恢复归档项目，不能在 Gateway 丢弃。
+            # 保留 AgentServer 返回的结构化错误明细。
             preserve_error_payload=True,
             on_done=lambda ok, _payload: (
                 _schedule_agent_prewarm_sync("project.create") if ok else None

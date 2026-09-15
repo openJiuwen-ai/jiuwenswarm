@@ -3232,14 +3232,19 @@
       "rename": "Rename",
       "renamePlaceholder": "Enter a new name",
       "deleteProject": "Delete project",
-      "deleteProjectDescription": "Remove “<name>{{projectName}}</name>”? Finish any running conversations first. Archiving hides the project and its conversations and disables cron jobs. Re-selecting the project directory restores it.",
+      "deleteProjectDescription": "Permanently delete “<name>{{projectName}}</name>” and all its conversations and cron jobs, including active conversations. Running tasks will stop. The working directory will be kept. This cannot be undone.",
+      "archiveSessions": "Archive all conversations",
+      "deleteArchivedSessions": "Delete archived conversations",
+      "archiveSessionsDescription": "Archive all ordinary conversations in “<name>{{projectName}}</name>”. Running conversations will remain active and report a failure. Cron jobs stay unchanged.",
+      "deleteArchivedSessionsDescription": "Permanently delete all archived conversations in “<name>{{projectName}}</name>”. This cannot be undone.",
+      "batchPartialFailure": "{{succeeded}} succeeded, {{failed}} failed. Failed items can be retried.",
       "defaultProjectName": "Default Project",
       "absolutePathError": "Enter an absolute path, for example /Users/name/work/project",
       "errors": {
         "pathExists": "This project path already exists. Choose another directory or start a new conversation from the existing project.",
         "nameExists": "This project name already exists. Please choose another name.",
         "pathMissing": "Project directory does not exist. Choose an existing directory.",
-        "projectArchived": "This directory belongs to an archived project. Restoring it failed, please retry."
+        "projectUnavailable": "Project unavailable. Refresh and retry."
       },
       "cancel": "Cancel",
       "confirm": "Confirm"

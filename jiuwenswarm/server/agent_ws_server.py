@@ -5419,7 +5419,7 @@ class AgentWebSocketServer:
         methods = {
             "session.archive", "session.unarchive", "session.archived.list",
             "session.delete",
-            "project.archive", "project.unarchive", "project.archived.list",
+            "project.sessions.archive", "project.sessions.delete_archived",
             "project.delete", "project.lifecycle",
         }
         if method not in methods:
@@ -5432,13 +5432,15 @@ class AgentWebSocketServer:
         try:
             if method == "session.archived.list":
                 payload = service.list_sessions(params)
-            elif method == "project.archived.list":
-                payload = service.list_projects(params)
+            elif method.startswith("project.sessions."):
+                payload = await service.project_batch(
+                    params.get("project_id"), method.rsplit(".", 1)[1], request.channel_id or ""
+                )
             elif method == "project.lifecycle" and params.get("events"):
                 payload = {"events": lc.event_snapshots()}
             elif method == "project.lifecycle" and params.get("inventory"):
                 from jiuwenswarm.server.runtime.session.project_store import list_projects
-                payload = {"projects": [dict(project_id=p.project_id, hidden=p.hidden,
+                payload = {"projects": [dict(project_id=p.project_id,
                             operation=lc.state("project", p.project_id).get("operation"))
                             for p in list_projects(include_hidden=True, cache_bust=True)]}
                 known = {item["project_id"] for item in payload["projects"]}
@@ -5447,7 +5449,7 @@ class AgentWebSocketServer:
                     operation = lc.read_json(path).get("operation") or {}
                     project_id = operation.get("resource_id")
                     if project_id and project_id not in known and operation.get("status") != "completed":
-                        payload["projects"].append(dict(project_id=project_id, hidden=True, operation=operation))
+                        payload["projects"].append(dict(project_id=project_id, operation=operation))
             elif method == "project.lifecycle":
                 project_id = lc.validate_id(params.get("project_id"))
                 payload = lc.projection("project", project_id)

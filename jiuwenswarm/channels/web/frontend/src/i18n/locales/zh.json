@@ -3213,14 +3213,19 @@
       "rename": "重命名",
       "renamePlaceholder": "输入新名称",
       "deleteProject": "删除项目",
-      "deleteProjectDescription": "确定要移除“<name>{{projectName}}</name>”吗？项目下有会话运行时无法归档；归档后项目及其下会话将被隐藏，定时任务将停用。重新选择该项目目录可恢复。",
+      "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
+      "archiveSessions": "归档全部会话",
+      "deleteArchivedSessions": "删除已归档会话",
+      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
+      "deleteArchivedSessionsDescription": "永久删除“<name>{{projectName}}</name>”下全部已归档会话，此操作不可恢复。",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
       "errors": {
         "pathExists": "该项目路径已存在，请选择其他目录或直接从现有项目开始新对话",
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
-        "projectArchived": "该项目目录属于已归档项目，恢复失败，请重试"
+        "projectUnavailable": "项目不可用，请刷新后重试"
       },
       "cancel": "取消",
       "confirm": "确定"

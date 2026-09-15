@@ -102,21 +102,12 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                     "completed_cron_job_ids",
                 }:
                     public[k] = v
-            if method in {"project.archive", "project.delete"}:
+            if method == "project.delete":
                 cc = resolve_cron()
                 try:
                     if cc is None:
                         raise RuntimeError("cron service is unavailable")
                     cc.scheduler.remember_lifecycle_owner(user_id)
-                    if method == "project.archive" and cc.scheduler.has_running_project_sessions(
-                        str(public.get("project_id") or ""), user_id
-                    ):
-                        await channel.send_response(
-                            ws, req_id, ok=False, code="PROJECT_BUSY",
-                            error="Project has running sessions; finish them before archiving",
-                            payload={"project_id": public.get("project_id"), "stop_pending": False},
-                        )
-                        return
                 except Exception as exc:
                     await channel.send_response(
                         ws, req_id, ok=False, error=str(exc), code="INTERNAL_ERROR"
@@ -199,10 +190,9 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                                     error.get("error", "cron progress commit failed")
                                 )
 
-                        counts = await cc.stop_project_jobs(
+                        await cc.delete_project_jobs(
                             str(public.get("project_id") or ""),
                             user_id=user_id,
-                            delete=method == "project.delete",
                             checkpoint=checkpoint,
                             plan=checkpoint_plan,
                         )
@@ -212,19 +202,14 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                                 **public,
                                 **token,
                                 "_lifecycle_stage": "finish",
-                                **counts,
-                                "deleted_cron_jobs": len(planned)
-                                if method == "project.delete"
-                                else 0,
+                                "deleted_cron_jobs": len(planned),
                                 "completed_cron_job_ids": completed,
                             },
                             session_id,
                             user_id,
                         )
                     except Exception as exc:
-                        phase = (
-                            "delete_cron" if method == "project.delete" else "stop_cron"
-                        )
+                        phase = "delete_cron"
                         _, status = await call(
                             "project.lifecycle",
                             {
@@ -241,9 +226,7 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                         for k in ("lifecycle_operation", "execution_blocked", "stop_pending"):
                             status_fields[k] = status.get(k)
                         payload = dict(
-                            code="PARTIAL_PROJECT_DELETE_FAILED"
-                            if method == "project.delete"
-                            else "PARTIAL_PROJECT_ARCHIVE_FAILED",
+                            code="PARTIAL_PROJECT_DELETE_FAILED",
                             error=str(exc),
                             operation_id=token["operation_id"],
                             project_id=public.get("project_id"),
@@ -279,7 +262,9 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
                 )
                 # Match the caller's user boundary; never broadcast personal IDs
                 # across all tenants connected to the Gateway.
-                if method.startswith("session."):
+                if method.startswith("project.sessions."):
+                    event = "session.archived" if method.endswith(".archive") else "session.deleted"
+                if method.startswith(("session.", "project.sessions.")):
                     for item in payload.get("results", [payload]):
                         if item.get("ok", True) and item.get("session_id"):
                             await channel.send_event(ws, event, item)
@@ -293,9 +278,8 @@ def register_lifecycle_handlers(channel, resolve_client, resolve_cron):
         "session.unarchive",
         "session.archived.list",
         "session.delete",
-        "project.archive",
-        "project.unarchive",
-        "project.archived.list",
+        "project.sessions.archive",
+        "project.sessions.delete_archived",
         "project.delete",
     ):
         channel.register_method(method, handler(method))

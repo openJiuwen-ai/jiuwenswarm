@@ -56,6 +56,7 @@ interface WorkspaceState {
   renameProject: (projectId: string, name: string) => Promise<void>;
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
+  removeSessions: (sessionIds: string[]) => void;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
   renameSession: (sessionId: string, title: string) => Promise<void>;
@@ -65,16 +66,6 @@ interface WorkspaceState {
 
 function findProject(projects: ProjectInfo[], projectId: string): ProjectInfo | null {
   return projects.find((project) => project.project_id === projectId) ?? null;
-}
-
-// project.create 命中同目录已归档项目时，后端返回 PROJECT_ARCHIVED，
-// 错误 payload 携带 project_id 供恢复流程使用（见 webClient WebError.payload）。
-function extractArchivedProjectId(error: unknown): string | null {
-  if (!error || typeof error !== 'object') return null;
-  const webError = error as { code?: unknown; payload?: unknown };
-  if (webError.code !== 'PROJECT_ARCHIVED') return null;
-  const projectId = (webError.payload as { project_id?: unknown } | undefined)?.project_id;
-  return typeof projectId === 'string' && projectId ? projectId : null;
 }
 
 function isDefaultProject(project: ProjectInfo): boolean {
@@ -102,7 +93,7 @@ function findProjectIdForSession(projects: ProjectInfo[], session: Pick<Session,
     return projectId;
   }
   const project = findProject(projects, projectId);
-  return project && !project.hidden ? project.project_id : findDefaultProjectId(projects);
+  return project ? project.project_id : findDefaultProjectId(projects);
 }
 
 function patchSessionLists(
@@ -376,24 +367,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   })),
 
   createProject: async (name, projectDir) => {
-    let projectId: string;
-    try {
-      projectId = (await projectRegistryClient.create(
-        name,
-        projectDir,
-        get().workMode,
-      )).project_id;
-    } catch (error) {
-      // 重新选择已归档项目的目录：旧版由 project.create 后端自动恢复，
-      // 现改为显式调用 project.unarchive（错误明细携带 project_id）。
-      const archivedProjectId = extractArchivedProjectId(error);
-      if (!archivedProjectId) throw error;
-      await projectRegistryClient.unarchive(archivedProjectId);
-      // 旧版恢复会同步采用本次输入的名称；unarchive 不改名，这里补一次
-      // 尽力重命名，失败（如名称冲突）时保留项目原名，不阻断恢复。
-      await projectRegistryClient.rename(archivedProjectId, name).catch(() => undefined);
-      projectId = archivedProjectId;
-    }
+    const projectId = (await projectRegistryClient.create(name, projectDir, get().workMode)).project_id;
     await get().loadProjects();
     const project = findProject(get().projects, projectId);
     if (!project) throw new Error('project.create returned a project that is missing from project.list');
@@ -416,11 +390,30 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
 
   removeProject: async (projectId) => {
     await projectRegistryClient.remove(projectId);
+    const sessionState = useSessionStore.getState();
+    const ids = new Set([
+      ...(get().projectSessions[projectId] || []).map((session) => session.session_id),
+      ...get().pinnedSessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
+      ...sessionState.sessions.filter((session) => session.project_id === projectId).map((session) => session.session_id),
+    ]);
+    if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
+    get().removeSessions([...ids]);
     await get().loadProjects();
     const state = get();
     await Promise.all(state.projects
       .filter((project) => isDefaultProject(project) || Boolean(state.expandedProjectIds[project.project_id]))
       .map((project) => state.loadProjectSessions(project.project_id)));
+  },
+
+  removeSessions: (sessionIds) => {
+    const ids = new Set(sessionIds);
+    for (const id of ids) useSessionStore.getState().removeSession(id);
+    set((state) => ({
+      projectSessions: Object.fromEntries(Object.entries(state.projectSessions).map(([id, sessions]) => [
+        id, sessions.filter((session) => !ids.has(session.session_id)),
+      ])),
+      pinnedSessions: state.pinnedSessions.filter((session) => !ids.has(session.session_id)),
+    }));
   },
 
   upsertSession: (session, options = {}) => {

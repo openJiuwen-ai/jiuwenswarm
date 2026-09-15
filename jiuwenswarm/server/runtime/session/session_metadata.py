@@ -154,7 +154,7 @@ def _build_project_lookup() -> tuple[
         for p in list_projects(include_hidden=True, cache_bust=True):
             if p.project_id:
                 id_to_work_mode[p.project_id] = p.work_mode
-            if not p.project_dir or p.hidden:
+            if not p.project_dir:
                 continue
             dir_to_projects.setdefault(
                 _normalize_path_for_match(p.project_dir), []
