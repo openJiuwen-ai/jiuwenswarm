@@ -20,6 +20,9 @@ from typing import TYPE_CHECKING
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.agents.harness.common.rails.project_memory import (
     SECTION_NAME,
     build_project_memory_section,
@@ -59,10 +62,11 @@ class ProjectMemoryRail(DeepAgentRail):
         "rename_file",
     })
 
-    # Higher than MEMORY(85) / TOOLS(~100); lower than RUNTIME (see
+    # Higher than the regular workspace/runtime sections; lower than the
+    # host-specific context sections (see
     # agent-core ``prompts/sections/__init__.py`` SectionName for the
     # conventional range).
-    SECTION_PRIORITY = 120
+    SECTION_PRIORITY = SystemPromptPriority.PROJECT_MEMORY
 
     def __init__(
         self,

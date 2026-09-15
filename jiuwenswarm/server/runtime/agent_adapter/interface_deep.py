@@ -270,6 +270,9 @@ from jiuwenswarm.agents.harness.common.tools.command_execution_context import ( 
     reset_command_execution,
 )
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SYSTEM_PROMPT_PRIORITY_REGISTRY,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     BrowserTaskPromptRail,
     JiuSwarmStreamEventRail,
@@ -9854,6 +9857,16 @@ class JiuWenSwarmDeepAdapter:
             ).get("enabled", False),
             completion_timeout=resolve_task_loop_completion_timeout(config),
         )
+
+        # The code- and team-mode adapters have their own prompt policies. Opt
+        # only canonical single-agent modes into the centralized registry,
+        # after DeepAgent has created its shared builder and before any
+        # pending or user rails are initialized.
+        if _deprecated_mode in (NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN):
+            prompt_builder = getattr(self._instance, "system_prompt_builder", None)
+            set_priority_registry = getattr(prompt_builder, "set_priority_registry", None)
+            if callable(set_priority_registry):
+                set_priority_registry(SYSTEM_PROMPT_PRIORITY_REGISTRY)
 
         if self._enable_auto_permission:
             initial_runtime_workspace = str(self._permission_workspace_root)

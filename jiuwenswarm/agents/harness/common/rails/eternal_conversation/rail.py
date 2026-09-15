@@ -13,6 +13,9 @@ from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.common.utils import get_agent_sessions_dir
 
 from .coordinator import SessionCoordinator
@@ -37,7 +40,7 @@ class EternalConversationRail(DeepAgentRail):
 
     priority = 80
     SECTION_NAME = "eternal_conversation"
-    SECTION_PRIORITY = 90
+    SECTION_PRIORITY = SystemPromptPriority.ETERNAL_CONVERSATION
     TOOL_NAME = "search_long_term_memory"
 
     def __init__(self) -> None:

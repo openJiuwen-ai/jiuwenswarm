@@ -17,6 +17,9 @@ from openjiuwen.core.single_agent.rail.base import (
 from openjiuwen.harness.prompts import PromptSection
 from openjiuwen.harness.rails.base import DeepAgentRail
 
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     bind_request_llm_config,
@@ -66,7 +69,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
     priority = 98
     SECTION_NAME = "symphony_orchestration"
-    SECTION_PRIORITY = 42
+    SECTION_PRIORITY = SystemPromptPriority.SYMPHONY
     COMPOSE_TOOL_NAME = "symphony_compose_graph"
 
     def __init__(self, *, config_base: _ConfigBaseProvider = None) -> None:
