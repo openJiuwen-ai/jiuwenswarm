@@ -357,6 +357,43 @@ class SendFileToolkit:
                 msg["metadata"] = merged_meta
             await server.send_push(msg)
             _mark_files_sent(self.session_id, valid_files)
+            # 交付成功后收齐清单：pending/in_progress → completed，并推 todo.updated，
+            # 避免「文件已发出、任务清单仍显示进行中/未开始」。
+            try:
+                from jiuwenswarm.common.todo_snapshot import (
+                    complete_open_todos_for_session,
+                )
+
+                todos, todo_changed = complete_open_todos_for_session(self.session_id)
+                if todo_changed > 0:
+                    await server.send_push(
+                        {
+                            "request_id": self.request_id,
+                            "channel_id": self.channel_id,
+                            "session_id": self.session_id,
+                            "payload": {
+                                "event_type": "todo.updated",
+                                "todos": todos,
+                                "session_id": self.session_id,
+                            },
+                            "is_complete": False,
+                            **(
+                                {"metadata": dict(self._request_metadata)}
+                                if self._request_metadata
+                                else {}
+                            ),
+                        }
+                    )
+                    logger.info(
+                        "[SendFileToolkit] 交付后同步 TODO session_id=%s changed=%s",
+                        self.session_id,
+                        todo_changed,
+                    )
+            except Exception as todo_err:
+                logger.warning(
+                    "[SendFileToolkit] 交付后同步 TODO 失败（不阻断发文件）: %s",
+                    todo_err,
+                )
             result_parts = [f"Sent {len(valid_files)} files"]
             if skipped_files:
                 result_parts.append("The following files were already sent in this session and were skipped:")

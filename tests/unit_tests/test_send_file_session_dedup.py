@@ -138,3 +138,45 @@ def test_send_file_push_error_uses_failure_envelope(tmp_path):
     assert "data=None" not in result
     assert "Failed to submit files:" in result
     assert "pipe down" in result
+
+
+def test_send_file_success_completes_open_todos_and_pushes_update(tmp_path, monkeypatch):
+    file_path = tmp_path / "handoff.md"
+    file_path.write_text("hello", encoding="utf-8")
+    todo_root = tmp_path / "todo"
+    session_dir = todo_root / "sess-deliver"
+    session_dir.mkdir(parents=True)
+    (session_dir / "todo.json").write_text(
+        '[{"id":"gen","content":"生成","activeForm":"生成","status":"in_progress"},'
+        '{"id":"deliver","content":"交付","activeForm":"交付","status":"pending"}]',
+        encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.todo_snapshot.get_deepagent_todo_dir",
+        lambda: todo_root,
+    )
+
+    toolkit = sfu.SendFileToolkit(
+        request_id="r1",
+        session_id="sess-deliver",
+        channel_id="desktop",
+    )
+    mock_server = MagicMock()
+    mock_server.send_push = AsyncMock()
+
+    with patch(
+        "jiuwenswarm.server.agent_ws_server.AgentWebSocketServer.get_instance",
+        return_value=mock_server,
+    ), patch(
+        "jiuwenswarm.server.runtime.session.session_history.append_history_record",
+    ):
+        result = asyncio.run(toolkit.send_file(str(file_path)))
+
+    assert "Sent" in result
+    assert mock_server.send_push.await_count == 2
+    todo_payload = mock_server.send_push.await_args_list[1].args[0]["payload"]
+    assert todo_payload["event_type"] == "todo.updated"
+    assert {t["id"]: t["status"] for t in todo_payload["todos"]} == {
+        "gen": "completed",
+        "deliver": "completed",
+    }
