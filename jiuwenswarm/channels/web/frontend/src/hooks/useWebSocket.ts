@@ -3849,6 +3849,33 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           timestamp: new Date().toISOString(),
         });
       }),
+      webClient.on('chat.message_updated', ({ payload }) => {
+        // before_chat_request 钩子改写 query/model_name 后的实时回推（issue #2792）。
+        // 事件在请求进入 Agent 前发出，最后一条用户消息即本次发送的气泡；
+        // 改写结果与刷新后从历史拉到的内容一致，原地替换避免闪烁。
+        const sessionId = resolveEventSessionId(payload);
+        if (!sessionId) return;
+
+        const updates = payload.updates;
+        if (!isRecord(updates)) return;
+
+        if (typeof updates.query === 'string') {
+          const messages = useChatStore.getState().getRuntime(sessionId)?.messages ?? [];
+          for (let i = messages.length - 1; i >= 0; i -= 1) {
+            if (messages[i].role === 'user') {
+              useChatStore.getState().updateMessage(sessionId, messages[i].id, {
+                content: updates.query,
+                hookRewritten: true,
+              });
+              break;
+            }
+          }
+        }
+
+        if (typeof updates.model_name === 'string' && updates.model_name) {
+          useSessionStore.getState().setSelectedModelName(sessionId, updates.model_name);
+        }
+      }),
       webClient.on('security.alert', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;

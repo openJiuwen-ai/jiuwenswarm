@@ -110,6 +110,9 @@ _INTERRUPT_RESUME_SOURCES = frozenset({
     "evolution_interrupt",
 })
 _A2UI_OPEN_TAG_MARKER = "<a2ui-json>"
+# before_chat_request 钩子可改写的用户可见参数：变更时实时回推前端
+# （chat.message_updated），避免前端气泡/模型显示停留在改写前的值。
+_BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS = ("query", "model_name")
 # Shown when a channel with streaming disabled asks for a team round. The team
 # runtime streams member events as they happen and has no non-streaming entry
 # point, so the request is refused rather than silently downgraded.
@@ -3707,6 +3710,62 @@ class MessageHandler(ABC):
         await ExtensionRegistry.get_instance().trigger(GatewayHookEvents.BEFORE_CHAT_REQUEST, ctx)
 
     @staticmethod
+    def _snapshot_hook_watch_params(msg: "Message") -> dict[str, Any]:
+        """钩子触发前拍下用户可见参数快照，用于事后 diff。"""
+        params = msg.params if isinstance(msg.params, dict) else {}
+        return {k: params.get(k) for k in _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS}
+
+    async def _publish_hook_params_update_if_changed(
+        self,
+        msg: "Message",
+        pre_params: dict[str, Any],
+    ) -> None:
+        """before_chat_request 钩子改写 params 后，将变更实时回推前端。
+
+        Agent 侧收到的本就是改写后的值，且会随请求落入会话元数据/历史；
+        但 Gateway 此前没有任何实时通知，前端要手动刷新才能看到改写结果
+        （issue #2792）。这里检测 query/model_name 是否被钩子改写，改了就
+        发一条 chat.message_updated 事件，前端按 request_id 原地更新。
+        """
+        from jiuwenswarm.common.schema.message import EventType, Message
+
+        params = msg.params if isinstance(msg.params, dict) else {}
+        changed = {
+            k: params.get(k)
+            for k in _BEFORE_CHAT_HOOK_WATCH_PARAM_KEYS
+            if params.get(k) != pre_params.get(k)
+        }
+        if not changed:
+            return
+
+        update_msg = Message(
+            id=msg.id,
+            type="event",
+            channel_id=msg.channel_id,
+            app_id=msg.app_id or "",
+            session_id=msg.session_id,
+            params={},
+            timestamp=time.time(),
+            ok=True,
+            payload={
+                "event_type": "chat.message_updated",
+                "request_id": msg.id,
+                "session_id": msg.session_id,
+                "updates": changed,
+            },
+            event_type=EventType.CHAT_MESSAGE_UPDATED,
+            metadata=msg.metadata,
+        )
+        await self.publish_robot_messages(update_msg)
+        logger.info(
+            "[MessageHandler] before_chat hook modified params, update pushed: "
+            "request_id=%s session_id=%s keys=%s",
+            msg.id,
+            msg.session_id,
+            sorted(changed),
+        )
+
+    @staticmethod
     def _is_evolution_approval_request_id(request_id: Any) -> bool:
         return is_evolution_approval_request_id(request_id)
 
@@ -4458,7 +4517,9 @@ class MessageHandler(ABC):
                         )
                         continue
                 agent_msg = await self._prepare_agent_dispatch_message(msg)
+                pre_hook_params = self._snapshot_hook_watch_params(agent_msg)
                 await self._trigger_before_chat_request_hook(agent_msg)
+                await self._publish_hook_params_update_if_changed(agent_msg, pre_hook_params)
                 env = self.message_to_e2a(agent_msg)
                 stream_rid = env.request_id or msg.id
                 # Keep this for both streaming and unary requests: cron tools

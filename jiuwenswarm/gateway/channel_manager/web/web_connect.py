@@ -76,6 +76,7 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.subagent_activity",
         "chat.symphony_status",
         "chat.notice",
+        "chat.message_updated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
