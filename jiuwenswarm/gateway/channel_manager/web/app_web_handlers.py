@@ -687,6 +687,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "team.list",
+    "org.snapshot",
     # Agent configuration
     "agents.list",
     "agents.get",
@@ -726,6 +728,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "team.snapshot",
     "team.history.get",
     "team.mq.publish",
+    "team.list",
+    "org.snapshot",
     "skills.marketplace.list",
     "skills.list",
     "skills.installed",

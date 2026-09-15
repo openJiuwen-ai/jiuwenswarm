@@ -33,6 +33,41 @@ import { parseTimestampToMs } from '../utils/timestamp';
 const TOOL_TIMEOUT_MS = 12_000_000;
 const EVOLUTION_STATUS_END_VISIBLE_MS = 3_000;
 
+/**
+ * 会话视图键。
+ *
+ * 一个 session 可以同时挂多个 team（后端 TeamRuntimePool 以 team_name 为键、按
+ * current_session_id 归属）。左栏对话要「切 team 就换一条思考过程」，那 messages /
+ * reasoningSegments / 流的中间态就不能只按 session 存一份——那样所有 team 的流会
+ * 汇进同一条对话，切换时看到的是同一段内容。
+ *
+ * 所以运行态按 conversationKey 存：`sessionId` 是这一轮的主视图（也是老数据的键，
+ * 不传 teamId 时行为与改造前完全一致），`sessionId::teamId` 是某个 team 自己的视图。
+ * 两边都是完整的 ChatRuntime，各自独立累积流、推理段和工具执行。
+ */
+const CONVERSATION_KEY_SEPARATOR = '::';
+
+export function conversationKey(sessionId: string, teamId?: string | null): string {
+  const team = typeof teamId === 'string' ? teamId.trim() : '';
+  if (!team) return sessionId;
+  return `${sessionId}${CONVERSATION_KEY_SEPARATOR}${team}`;
+}
+
+/** 从会话视图键拆回 (sessionId, teamId)；主视图的 teamId 为 null。 */
+export function parseConversationKey(key: string): { sessionId: string; teamId: string | null } {
+  const index = key.indexOf(CONVERSATION_KEY_SEPARATOR);
+  if (index < 0) return { sessionId: key, teamId: null };
+  return {
+    sessionId: key.slice(0, index),
+    teamId: key.slice(index + CONVERSATION_KEY_SEPARATOR.length) || null,
+  };
+}
+
+/** 会话视图键是否属于某个 session（含它名下的所有 team 视图）。 */
+export function isConversationKeyOfSession(key: string, sessionId: string): boolean {
+  return key === sessionId || key.startsWith(`${sessionId}${CONVERSATION_KEY_SEPARATOR}`);
+}
+
 let reasoningSegmentSeq = 0;
 
 function createReasoningSegmentId(): string {
@@ -197,12 +232,28 @@ function assignMessageRenderKeys(
 interface ChatState {
   runtimes: Record<string, ChatRuntime>;
   activeSessionId: string | null;
+  /**
+   * 当前左栏正在展示的 team 视图；null 表示展示这一轮的主视图（key = sessionId）。
+   *
+   * 它只影响「看哪条对话」：发送、任务队列、会话级元数据仍以 activeSessionId 为准，
+   * 所以这个字段为空时，整套读写与改造前完全等价。
+   */
+  activeTeamId: string | null;
   /** Gateway broadcasts this status without a session id, so it is intentionally app-wide. */
   globalTaskRunning: boolean;
 
   ensureRuntime: (sessionId: string) => ChatRuntime;
   getRuntime: (sessionId: string | null) => ChatRuntime | undefined;
   setActiveSessionId: (sessionId: string | null) => void;
+  /** 切换左栏展示的 team 视图。会按需为这个 team 建一份空运行态。 */
+  setActiveTeamId: (teamId: string | null) => void;
+  /**
+   * 取某个 team 视图的运行态。teamId 为空时退回主视图，因此调用方不必先判空。
+   * 视图不存在时返回 undefined（不隐式创建，避免读操作产生副作用）。
+   */
+  getTeamRuntime: (sessionId: string | null, teamId: string | null | undefined) => ChatRuntime | undefined;
+  /** 取得（必要时创建）某个 team 视图的运行态，供事件写入路径使用。 */
+  ensureTeamRuntime: (sessionId: string, teamId: string | null | undefined) => ChatRuntime;
   setGlobalTaskRunning: (running: boolean) => void;
   removeRuntime: (sessionId: string) => void;
 
@@ -269,6 +320,7 @@ interface ChatState {
 export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get) => ({
   runtimes: {},
   activeSessionId: null,
+  activeTeamId: null,
   globalTaskRunning: false,
 
   ensureRuntime: (sessionId) => {
@@ -283,11 +335,48 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
 
   getRuntime: (sessionId) => {
     if (!sessionId) return undefined;
+    // 只认主视图。未迁移的读点（会话列表、历史分页、导出等）拿到的仍是改造前那一份，
+    // 所以切 team 不会让它们读到别的视图。要看 team 视图的调用方走 getTeamRuntime。
     return get().runtimes[sessionId];
   },
 
+  /**
+   * 某个 team 视图的运行态；teamId 为空时退回主视图。
+   *
+   * 这里**不**回退到主视图的另一层含义：team 视图尚未建立（还没收到这个 team 的
+   * 任何一帧）时返回 undefined，让调用方用 `?? []` 之类的默认值渲染空对话，而不是
+   * 把主视图的内容借过来——后者正是「切了 team 但看到同一段对话」的来源。
+   */
+  getTeamRuntime: (sessionId, teamId) => {
+    if (!sessionId) return undefined;
+    const key = conversationKey(sessionId, teamId);
+    return get().runtimes[key];
+  },
+
+  ensureTeamRuntime: (sessionId, teamId) => {
+    const key = conversationKey(sessionId, teamId);
+    const existing = get().runtimes[key];
+    if (existing) return existing;
+    const runtime = createEmptyRuntime();
+    set((state) => ({
+      runtimes: { ...state.runtimes, [key]: runtime },
+    }));
+    return runtime;
+  },
+
   setActiveSessionId: (sessionId) => {
-    set({ activeSessionId: sessionId });
+    // 换会话时左栏回到该会话的主视图：team 视图是会话内的选择，不该跨会话保留。
+    set({ activeSessionId: sessionId, activeTeamId: null });
+  },
+
+  setActiveTeamId: (teamId) => {
+    const { activeSessionId } = get();
+    const normalized = teamId || null;
+    if (activeSessionId && normalized) {
+      // 先为该 team 建好运行态，右栏/左栏读到的是同一份空视图而不是 undefined。
+      get().ensureTeamRuntime(activeSessionId, normalized);
+    }
+    set({ activeTeamId: normalized });
   },
 
   setGlobalTaskRunning: (running) => {
@@ -296,16 +385,21 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
 
   removeRuntime: (sessionId) => {
     set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (runtime) {
+      // 连同这个 session 名下所有 team 视图一起清掉，否则删会话后 team 视图会
+      // 留在 runtimes 里变成孤儿（键前缀匹配，主视图 key 恰好等于 sessionId）。
+      const next: Record<string, ChatRuntime> = {};
+      for (const [key, runtime] of Object.entries(state.runtimes)) {
+        if (!isConversationKeyOfSession(key, sessionId)) {
+          next[key] = runtime;
+          continue;
+        }
         if (runtime.evolutionStatusClearTimer) clearTimeout(runtime.evolutionStatusClearTimer);
         if (runtime.interruptResultClearTimer) clearTimeout(runtime.interruptResultClearTimer);
       }
-      const next = { ...state.runtimes };
-      delete next[sessionId];
       return {
         runtimes: next,
         activeSessionId: state.activeSessionId === sessionId ? null : state.activeSessionId,
+        activeTeamId: state.activeSessionId === sessionId ? null : state.activeTeamId,
       };
     });
   },

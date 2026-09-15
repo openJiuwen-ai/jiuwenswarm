@@ -59,6 +59,7 @@ import {
 } from '../../features/workspace/localFilePicker';
 import { useDesktopLocalFilePickerReady } from '../../hooks';
 import { getInputProjectOptions, isDefaultInputProject } from './projectSelection';
+import { TeamSelector } from './TeamSelector';
 
 const MENU_GAP = 10;
 
@@ -2633,6 +2634,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               document.body
             )}
           </div>
+          {isTeamMode && <TeamSelector sessionId={activeSessionId} isProcessing={isProcessing} />}
           <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
 
           {!isTeamMode && <SkillSelector
