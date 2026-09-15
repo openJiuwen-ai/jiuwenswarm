@@ -104,7 +104,7 @@ def _field(key: str, language: str = "cn") -> str:
 _ACTION_DESCS: dict[str, dict[str, str]] = {
     "status": {"cn": "任务数概览", "en": "job count summary (no params)"},
     "list": {"cn": "列任务（可选 include_disabled 含停用）", "en": "list jobs (optional include_disabled)"},
-    "add": {"cn": "创建定时任务（需 name+schedule+description）", "en": "create a job (requires name+schedule+description)"},
+    "add": {"cn": "创建定时任务（需 name+schedule+description；可选 id 自定义任务ID，不带则系统生成）", "en": "create a job (requires name+schedule+description; optional id for a custom job id, auto-generated if absent)"},
     "get": {"cn": "按 job_id 查询单个任务", "en": "lookup one job by job_id"},
     "update": {
         "cn": "修改定时任务（必填 job_id，其余字段只传要改的，不可改 id）",
@@ -147,7 +147,7 @@ def _merged_cron_params_description(language: str = "cn", style: str = "descript
     if style == "description":
         label = "Job object fields: " if language == "en" else "job 对象字段："
         separator = ". " if language == "en" else "。"
-        return f"{label}{_job_fields_prose(language, with_id=True)}{separator}{_expr_desc(language)}"
+        return f"{label}{_job_fields_prose(language, with_id=False)}{separator}{_expr_desc(language)}"
     return "Provide exactly one operation object." if language == "en" else "每次必须且只能填写一个操作对象。"
 
 
