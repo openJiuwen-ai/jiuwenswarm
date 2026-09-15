@@ -482,3 +482,51 @@ async def test_stdio_discovery_still_marks_client_type(monkeypatch: pytest.Monke
 
     assert [t["name"] for t in tool_defs] == ["stdio_tool"]
     assert params["_mcp_client_type"] == "stdio"
+
+
+@pytest.mark.asyncio
+async def test_missing_type_command_args_discovery_defaults_to_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺 type 的 command+args 配置默认走 stdio 发现（方案 §5.2）。"""
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+
+    fake_session = MagicMock()
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(
+        return_value=SimpleNamespace(tools=[_FakeTool("legacy_tool")])
+    )
+
+    class _StdioCtx:
+        async def __aenter__(self):
+            return MagicMock(), MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("mcp.client.stdio.stdio_client", lambda _p: _StdioCtx())
+    monkeypatch.setattr(mcp_config, "_stdio_server_parameters", lambda params: None)
+
+    import mcp as _mcp_mod
+
+    class _SessionCtx:
+        def __init__(self, session) -> None:
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(_mcp_mod, "ClientSession", lambda *a, **k: _SessionCtx(fake_session))
+
+    config = {
+        "name": "legacy-stdio",
+        "command": "npx",
+        "args": ["-y", "some-mcp"],
+    }
+    tool_defs, params = await list_request_mcp_server_tools("legacy-stdio", config)
+
+    assert [t["name"] for t in tool_defs] == ["legacy_tool"]
+    assert params["_mcp_client_type"] == "stdio"

@@ -1032,7 +1032,9 @@ async def test_shutdown_member_wrapper_schedules_cleanup_when_all_teammates_clos
     monkeypatch.setattr(
         _mod,
         "".join(["_schedule", "_shutdown_cleanup"]),
-        lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
+        lambda session_id, channel_id, sessions_root=None: scheduled.append(
+            (session_id, channel_id)
+        ),
     )
 
     team_agent = SimpleNamespace(
@@ -1089,7 +1091,9 @@ async def test_shutdown_member_wrapper_skips_delete_for_temporary_lifecycle(monk
     monkeypatch.setattr(
         _mod,
         "".join(["_schedule", "_shutdown_cleanup"]),
-        lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
+        lambda session_id, channel_id, sessions_root=None: scheduled.append(
+            (session_id, channel_id)
+        ),
     )
 
     team_agent = SimpleNamespace(
@@ -1143,7 +1147,9 @@ async def test_shutdown_member_wrapper_waits_until_every_teammate_is_closed(monk
     monkeypatch.setattr(
         _mod,
         "".join(["_schedule", "_shutdown_cleanup"]),
-        lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
+        lambda session_id, channel_id, sessions_root=None: scheduled.append(
+            (session_id, channel_id)
+        ),
     )
 
     team_agent = SimpleNamespace(
@@ -1370,7 +1376,9 @@ async def test_temporary_teardown_shutdown_then_clean_team_sequence(monkeypatch)
     monkeypatch.setattr(
         _mod,
         "".join(["_schedule", "_shutdown_cleanup"]),
-        lambda session_id, channel_id: scheduled.append((session_id, channel_id)),
+        lambda session_id, channel_id, sessions_root=None: scheduled.append(
+            (session_id, channel_id)
+        ),
     )
 
     async def fake_release(session_id: str, *, team_agent=None) -> None:

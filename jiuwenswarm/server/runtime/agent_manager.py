@@ -1558,7 +1558,9 @@ class AgentManager:
                         get_session_metadata,
                     )
                     sessions_root = resolve_tenant_sessions_dir(
-                        getattr(self, "_workspace_key", None) or "default",
+                        self._workspace_key,
+                        service_id=self._env_service_id,
+                        agent_id=self._env_agent_id,
                     )
                     meta = get_session_metadata(
                         sid, cache_bust=True, enable_writeback=False,
@@ -1620,7 +1622,9 @@ class AgentManager:
                     )
 
                     sessions_root = resolve_tenant_sessions_dir(
-                        getattr(self, "_workspace_key", None) or "default",
+                        self._workspace_key,
+                        service_id=self._env_service_id,
+                        agent_id=self._env_agent_id,
                     )
                     meta = get_session_metadata(
                         sid,

@@ -174,8 +174,9 @@ declare -A DEPLOY_VARS=(
     ["MANAGER_SERVER_REPLICAS"]="1"
     ["MANAGER_WEB_NAME"]="jiuwenclaw-manager-web"
     ["MANAGER_WEB_PORT"]="5273"
-    # nginx 动态上游 DNS；多数集群为 kube-dns / CoreDNS 此 Service 名
-    ["MANAGER_WEB_RESOLVER"]="kube-dns.kube-system.svc.cluster.local"
+    # nginx 动态上游 DNS；auto=部署渲染时解析为 kube-dns/coredns ClusterIP
+    # 也可显式写集群DNS的ClusterIP或完整服务名
+    ["MANAGER_WEB_RESOLVER"]="auto"
     ["MANAGER_WS_PORT"]="8766"
     ["MINIO_IMAGE"]="minio/minio-arm64:RELEASE.2024-12-18T13-15-44Z"
     ["MINIO_NAME"]="minio"

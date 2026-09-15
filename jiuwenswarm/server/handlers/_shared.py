@@ -212,15 +212,23 @@ def _is_team_metadata_mode(metadata: dict[str, Any]) -> bool:
 
 
 def _sessions_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``workspace_{key}/agent/sessions`` for an AgentRequest."""
-    _agent_id, _service_id, workspace_key = TenantAgentPool.extract_ids(request)
-    return resolve_tenant_sessions_dir(workspace_key)
+    """Resolve tenant ``<tenant_root>/agent/sessions`` for an AgentRequest."""
+    agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
+    return resolve_tenant_sessions_dir(
+        workspace_key,
+        service_id=service_id,
+        agent_id=agent_id,
+    )
 
 
 def _agent_workspace_dir_for_request(request: AgentRequest) -> Path:
-    """Resolve tenant ``workspace_{key}/agent/jiuwenclaw_workspace`` for a request."""
-    _agent_id, _service_id, workspace_key = TenantAgentPool.extract_ids(request)
-    return resolve_tenant_agent_workspace_dir(workspace_key)
+    """Resolve tenant ``<tenant_root>/agent/jiuwenclaw_workspace`` for a request."""
+    agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
+    return resolve_tenant_agent_workspace_dir(
+        workspace_key,
+        service_id=service_id,
+        agent_id=agent_id,
+    )
 
 
 def _effective_config_for_request(request: AgentRequest) -> Any:

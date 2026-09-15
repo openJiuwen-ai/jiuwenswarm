@@ -63,6 +63,36 @@ def extract_enabled_mcp_server_entries(
     return result
 
 
+def _coerce_str_dict(raw: Any) -> dict[str, str] | None:
+    """将 JSON 对象规范为 ``dict[str, str]``；非 dict 返回 ``None``。"""
+    if not isinstance(raw, dict):
+        return None
+    return {str(k): str(v) for k, v in raw.items()}
+
+
+def _resolve_remote_mcp_auth(
+    entry: dict[str, Any],
+) -> tuple[dict[str, str], dict[str, str]]:
+    """把配置条目里的鉴权字段映射到 SDK ``McpServerConfig`` 顶层字段。
+
+    openjiuwen 的 SSE / Streamable HTTP 客户端只读 ``auth_headers`` /
+    ``auth_query_params``，不读 ``params.headers``。
+
+    字段别名（后者为兼容名）：
+    - headers ←→ auth_headers（企业 MCP 模板 / config.yaml 多用 ``headers``）
+    - query_params ←→ auth_query_params
+
+    同组两个键都有时，以 SDK 标准名（``auth_*``）为准。
+    """
+    auth_headers = _coerce_str_dict(entry.get("auth_headers"))
+    if not auth_headers:
+        auth_headers = _coerce_str_dict(entry.get("headers"))
+    auth_query = _coerce_str_dict(entry.get("auth_query_params"))
+    if not auth_query:
+        auth_query = _coerce_str_dict(entry.get("query_params"))
+    return auth_headers or {}, auth_query or {}
+
+
 def build_mcp_server_config(
     entry: dict[str, Any],
     *,
@@ -74,13 +104,25 @@ def build_mcp_server_config(
         entry: One config entry under ``mcp.servers``.
         server_id_scope: Optional scope used to derive a stable ``server_id``.
             When omitted, openjiuwen's default random id behavior is preserved.
+
+    Note:
+        Remote MCP 的 Bearer 等鉴权必须进 ``auth_headers``（SDK 建连字段），
+        不能只塞进 ``params.headers``——否则客户端不带凭证，服务端会 401。
     """
     name = str(entry.get("name", "")).strip()
     if not name:
         return None
-    transport = str(entry.get("transport", "")).strip().lower()
-    if transport not in {"stdio", "sse", "http", "streamable-http", "streamable_http"}:
+    raw_transport = str(entry.get("transport", "")).strip().lower()
+    if raw_transport not in {
+        "stdio",
+        "sse",
+        "http",
+        "streamable-http",
+        "streamable_http",
+    }:
         return None
+    # 别名归一后再交给 SDK（http → streamable-http），避免 Unsupported MCP client type
+    transport = _normalize_mcp_client_type(raw_transport)
 
     payload: dict[str, Any] = {
         "server_name": name,
@@ -105,22 +147,26 @@ def build_mcp_server_config(
         if isinstance(env, dict):
             params["env"] = {str(k): str(v) for k, v in env.items()}
         timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-            params["timeout_s"] = int(timeout_s)
+        if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
+            params["timeout_s"] = float(timeout_s)
         payload["server_path"] = f"stdio://{name}"
         payload["params"] = params
     else:
+        if transport not in {"sse", "streamable-http"}:
+            return None
         url = str(entry.get("url", "")).strip()
         if not url:
             return None
         payload["server_path"] = url
-        params: dict[str, Any] = {}
-        headers = entry.get("headers")
-        if isinstance(headers, dict):
-            params["headers"] = {str(k): str(v) for k, v in headers.items()}
+        auth_headers, auth_query = _resolve_remote_mcp_auth(entry)
+        if auth_headers:
+            payload["auth_headers"] = auth_headers
+        if auth_query:
+            payload["auth_query_params"] = auth_query
+        params = {}
         timeout_s = entry.get("timeout_s")
-        if isinstance(timeout_s, (int, float)) and int(timeout_s) > 0:
-            params["timeout_s"] = int(timeout_s)
+        if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
+            params["timeout_s"] = float(timeout_s)
         if params:
             payload["params"] = params
 
@@ -256,16 +302,24 @@ def _normalize_stdio_command_kind(command: str) -> str:
 
 
 def _normalize_mcp_client_type(raw_type: object) -> str:
+    """归一 MCP transport / client_type 到 SDK 注册名。
+
+    Gateway 模板与 config.yaml 允许别名 ``http`` / ``streamable_http``；
+    openjiuwen ResourceMgr 只认 ``streamable-http``（见 StreamableHttpClient.__client_name__）。
+    缺省 type 仍为 ``stdio``（方案 §5.2 用户连接器）。
+    """
     if raw_type is None:
         return "stdio"
     s = str(raw_type).strip().lower().replace("_", "-")
-    if "streamable" in s:
+    if not s:
+        return "stdio"
+    if s in {"http", "streamable-http", "streamablehttp"} or "streamable" in s:
         return "streamable-http"
     if s == "sse":
         return "sse"
     if s == "stdio":
         return "stdio"
-    return s if s else "stdio"
+    return s
 
 
 def _pick_mcp_url(tool_config: dict) -> str:
@@ -522,55 +576,9 @@ def _validate_request_scoped_remote_mcp(tool_name: str, cfg: dict) -> None:
 def create_mcp_tool(config_str: str) -> McpServerConfig:
     """从 JSON 字符串解析并构造 ``McpServerConfig``。
 
-    Args:
-        1.stdio类型:
-        config_str: JSON 格式配置字符串，格式为：
-            {
-                "name": "tool_name",
-                "command": "node" | "python" | "npx" | "uvx",
-                "args": ["xxx.js"] | ["xxx.py"] | ["-y", "@scope/pkg"] | ["pkg"]
-            }
-
-        2.streamable-http类型:
-            {
-                "type": "streamableHttp",
-                "url": "http://127.0.0.1:3002/mcp",
-                "env": {},
-                "auth_headers": {
-                    "Authorization": "Bearer xxx"
-                },
-                "auth_query_params": {
-                    "token": "yyy"
-                }
-            }
-
-        3.sse类型:
-            {
-                "name": "my-sse-mcp",
-                "type": "sse",
-                "url": "http://127.0.0.1:3001/sse",
-                "env": {},
-                "auth_headers": {
-                    "Authorization": "Bearer xxx"
-                },
-                "auth_query_params": {
-                    "token": "yyy"
-                }
-            }
-        4.playwright类型:
-            {
-                "name": "my-playwright-mcp",
-                "description": "可选说明",
-                "type": "playwright",
-                "url": "http://127.0.0.1:3003/sse",
-                "env": {}
-            }
-
-    Returns:
-        ``McpServerConfig``，由调用方通过 ``Runner.resource_mgr.add_mcp_server(..., tag=...)`` 注册。
-
-    Raises:
-        ValueError: JSON 解析失败或配置不合法时
+    用户连接器支持 stdio（node/python/npx/uvx 白名单）以及远程
+    sse / streamable-http / playwright / openapi（方案 §5.2 / §10.1）。
+    远程鉴权经 ``_resolve_remote_mcp_auth`` 写入 SDK ``auth_headers``。
     """
     try:
         config = json.loads(config_str)
@@ -620,8 +628,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     if client_type == "sse":
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
-        headers = _optional_auth_dict(tool_config, "auth_headers")
-        query = _optional_auth_dict(tool_config, "auth_query_params")
+        headers, query = _resolve_remote_mcp_auth(tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,
@@ -635,8 +642,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     if client_type == "streamable-http":
         if not url:
             raise ValueError(f"工具 '{tool_name}'（'{client_type}'）需要 url")
-        headers = _optional_auth_dict(tool_config, "auth_headers")
-        query = _optional_auth_dict(tool_config, "auth_query_params")
+        headers, query = _resolve_remote_mcp_auth(tool_config)
         return McpServerConfig(
             server_id=server_id or tool_name,
             server_name=tool_name,
@@ -900,6 +906,7 @@ async def _run_mcp_worker(
 
     按 ``params["_mcp_client_type"]`` 分派：
     - stdio（默认/缺省）：起 ``stdio_client`` + ``ClientSession`` 进程。
+      仅供 OfficeClaw Relay 身份 pin 后的 worker 使用；用户可配连接器入口已切断。
     - sse / streamable-http：复用 openjiuwen 的 ``SseClient`` / ``StreamableHttpClient``，
       connect 后长连接复用（自带 owner-task/cancel-scope/超时/重连 + auth 注入）。
 
@@ -2284,14 +2291,14 @@ __all__ = [
     "revoke_live_office_claw_allowlist",
     "unregister_live_office_claw_tool_instance",
     "validate_office_claw_mcp_config",
-    "_check_dangerous_args",
     "_is_blocked_host",
     "_loopback_mcp_allowed",
     "_normalize_mcp_client_type",
     "_normalize_stdio_command_kind",
     "_optional_auth_dict",
-    "_path_is_under_trusted_root",
     "_pick_mcp_url",
+    "_check_dangerous_args",
+    "_path_is_under_trusted_root",
     "_trusted_cat_cafe_stdio_roots",
     "_validate_cat_cafe_request_scoped_stdio",
     "_validate_request_scoped_remote_mcp",

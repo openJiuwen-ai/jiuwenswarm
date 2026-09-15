@@ -1047,7 +1047,15 @@ async def test_send_request_stream_cancel_drops_trailing_chunks():
 
 
 @pytest.mark.asyncio
-async def test_new_stream_supersedes_old_stream_trailing_chunks():
+@pytest.mark.parametrize(
+    "old_user,new_session,new_user,superseded",
+    [("alice", "s1", "alice", True), ("alice", "s2", "alice", False),
+     ("alice", "s1", "bob", False), ("alice", None, "alice", False),
+     (None, "s1", None, False), ("", "s1", "", False)],
+)
+async def test_new_stream_supersedes_only_same_session(
+    old_user, new_session, new_user, superseded
+):
     server, port, first_sent, release_trailing = await _start_trailing_sse_stub()
     base = f"http://127.0.0.1:{port}"
     client = HttpSseAgentServerClient()
@@ -1062,6 +1070,7 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
             request_id="chat-old",
             channel_id="web",
             session_id="s1",
+            user_id=old_user,
             req_method=ReqMethod.CHAT_SEND,
             params={"query": "old"},
             is_stream=True,
@@ -1069,7 +1078,8 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
         new_env = e2a_from_agent_fields(
             request_id="chat-new",
             channel_id="web",
-            session_id="s1",
+            session_id=new_session,
+            user_id=new_user,
             req_method=ReqMethod.CHAT_SEND,
             params={"query": "new"},
             is_stream=True,
@@ -1102,7 +1112,7 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
         release_trailing.set()
         await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
         assert "first" in old_yielded
-        assert "STALE_TAIL" not in old_yielded
+        assert ("STALE_TAIL" not in old_yielded) is superseded
         assert new_yielded == ["first", "STALE_TAIL"]
     finally:
         release_trailing.set()
@@ -1112,3 +1122,64 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
         await client.disconnect()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_three_sessions_continue_independently_while_bob_first_stream_waits():
+    """Transport regression: Carol's second request overlaps Bob's first SSE."""
+    bob_started = asyncio.Event()
+    carol_second = asyncio.Event()
+    received = {}
+
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self, rid):
+            self.rid = rid
+
+        async def __aiter__(self):
+            if self.rid == "bob-1":
+                bob_started.set()
+                await asyncio.wait_for(carol_second.wait(), 5)
+            else:
+                await asyncio.wait_for(bob_started.wait(), 5)
+            if self.rid == "carol-2":
+                carol_second.set()
+            for sequence, event in enumerate(("chat.delta", "chat.final")):
+                yield _sse_blob(encode_agent_chunk_for_wire(
+                    AgentResponseChunk(
+                        request_id=self.rid, channel_id="web",
+                        payload={"event_type": event, "content": self.rid.split("-")[0]},
+                        is_complete=event == "chat.final",
+                    ), response_id=self.rid, sequence=sequence,
+                ))
+
+    def handler(request):
+        return httpx.Response(200, stream=Stream(request.headers["X-Request-Id"]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = HttpSseAgentServerClient(http_client=http)
+
+        async def conversation(user):
+            for turn in (1, 2):
+                rid = f"{user}-{turn}"
+                env = e2a_from_agent_fields(
+                    request_id=rid, channel_id="web", user_id=user,
+                    session_id=f"session-{user}", req_method=ReqMethod.CHAT_SEND,
+                    params={"query": "code"}, is_stream=True,
+                )
+                received[rid] = [chunk async for chunk in client.send_request_stream(
+                    env, base_url="http://as.test:8080"
+                )]
+                assert [c.payload["event_type"] for c in received[rid]] == [
+                    "chat.delta", "chat.final"
+                ]
+                assert all(c.request_id == rid and c.payload["content"] == user
+                           for c in received[rid])
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(
+                conversation(user) for user in ("alice", "bob", "carol")
+            )), 10)
+            assert len(received) == 6
+            assert not client._inflight_stream_ids
+        finally:
+            await client.disconnect()
