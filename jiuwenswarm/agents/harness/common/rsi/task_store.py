@@ -121,7 +121,7 @@ class RsiTaskStore:
             try:
                 shutil.rmtree(task_dir, ignore_errors=True)
             except Exception:
-                pass
+                return
 
     # -- 状态机 --
 
