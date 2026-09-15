@@ -485,6 +485,11 @@ async def run_rewrite_fast_path(
 
     model_started = time.perf_counter()
     model_kwargs = {"temperature": 0.2} if request.action == "polish" else {}
+    # Disable thinking models' reasoning phase: long rewrites otherwise spend
+    # the whole 180s cap emitting reasoning_content while content never starts.
+    # Structured rewrite output needs no deep reasoning. Matches Node-side
+    # LightweightCompletionService (thinking:{type:disabled} for huawei_maas).
+    model_kwargs["extra_body"] = {"thinking": {"type": "disabled"}}
     usage_metadata = None
     model_calls = 0
     structured_result = None
