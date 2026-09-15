@@ -1311,18 +1311,38 @@ def _ensure_progressive_meta_tools(eager_tools: list[str]) -> list[str]:
     return eager_tools
 
 
+def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
+
+    Same merge used by TTSERail mount and ``ttse_consult`` eager gating so a
+    sparse runtime cache (OfficeAce sync snapshot omitting ``ttse``) still
+    inherits the on-disk default. An explicit runtime ``enabled: false`` wins.
+    """
+    merged: dict[str, Any] = {}
+    try:
+        yaml_ttse = _get_ttse_config(get_config())
+    except Exception:
+        yaml_ttse = {}
+    if isinstance(yaml_ttse, dict):
+        merged.update(yaml_ttse)
+    runtime = _get_ttse_config(runtime_config)
+    if isinstance(runtime, dict):
+        merged.update(runtime)
+    return merged
+
+
 def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
     """True when TTSE is opted in and inject is on, so ``ttse_consult`` stays in schema.
 
-    Master switch uses :func:`get_ttse_enabled` (missing ``enabled`` is False) so
-    eager gating cannot diverge from TTSERail mount.
+    Master switch uses :func:`_merge_ttse_config` then :func:`get_ttse_enabled`
+    so eager gating cannot diverge from TTSERail mount.
     """
     if not isinstance(react_config, dict):
         return False
-    if not get_ttse_enabled(react_config):
+    merged = _merge_ttse_config(react_config)
+    if not get_ttse_enabled({"ttse": merged}):
         return False
-    ttse = _get_ttse_config(react_config)
-    return coerce_config_bool(ttse.get("inject_enabled"), True)
+    return coerce_config_bool(merged.get("inject_enabled"), True)
 
 
 def _ensure_ttse_consult_eager_tool(
@@ -1526,8 +1546,8 @@ def _resolve_instance_config_base(config_base: dict[str, Any] | None) -> dict[st
     if not isinstance(config_base, dict):
         raise TypeError("config_base must be a dict when provided")
     # 外部传入的 config_base（如企业同步的稀疏 override）与 shipped 模板做补缺型
-    # 合并：模板补全缺失键（如 react.subagents），外部显式键与独有键全部保留，
-    # 保证与 config_base=None 时 get_config() 的模板合并语义一致。
+    # 合并：模板补全缺失键（如 react.ttse / react.subagents），外部显式键与独有
+    # 键全部保留。create_instance 与 reload 共用，避免热更丢掉模板默认值。
     template = load_yaml_dict(resolve_shipped_template_config_path())
     return resolve_env_vars(fill_template_defaults(config_base, template))
 
@@ -7144,10 +7164,16 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
-    @staticmethod
-    def _ttse_bank_path() -> str:
-        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
-        return str(get_agent_workspace_dir() / ".ttse" / "bank.json")
+    def _ttse_bank_path(self) -> str:
+        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob.
+
+        Uses ``self._workspace_dir`` (same tenant root as memory rails). Sync
+        and reload do not bind ``_TENANT_JIUWENCLAW_WS_CV``, so
+        :func:`get_agent_workspace_dir` would fall back to the default-tenant
+        shared workspace and mix FACT/TIP banks across tenants.
+        """
+        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
+        return str(root / ".ttse" / "bank.json")
 
     def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
         """User yaml ``react.ttse`` plus adapter cache (runtime cache wins).
@@ -7157,17 +7183,7 @@ class JiuWenSwarmDeepAdapter:
         default. ``store_path`` is not a user setting; the bank is always under
         workspace. FACT/TIP disclosure is always catalog + ``ttse_consult``.
         """
-        merged: dict[str, Any] = {}
-        try:
-            yaml_ttse = _get_ttse_config(get_config())
-        except Exception:
-            yaml_ttse = {}
-        if isinstance(yaml_ttse, dict):
-            merged.update(yaml_ttse)
-        runtime = _get_ttse_config(config if config is not None else self._config_cache)
-        if isinstance(runtime, dict):
-            merged.update(runtime)
-        return merged
+        return _merge_ttse_config(config if config is not None else self._config_cache)
 
     def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
         """Build TTSERail for FACT/TIP dual-track self-evolution.
@@ -7304,6 +7320,16 @@ class JiuWenSwarmDeepAdapter:
         if cfg_obj is not None:
             cfg_obj.trajectory_export_enabled = trajectory_export_enabled
             cfg_obj.trajectory_export_path = trajectory_export_path
+            if not callable(apply_config):
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] TTSERail.apply_runtime_config unavailable; "
+                    "synced trajectory export via private _ttse_config"
+                )
+        else:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] TTSERail._ttse_config missing; "
+                "trajectory export flags not synced"
+            )
         logger.info(
             "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
             "store_path=%s evolve_enabled=%s inject_enabled=%s "
@@ -9735,7 +9761,9 @@ class JiuWenSwarmDeepAdapter:
         elif not isinstance(config_base, dict):
             raise TypeError("config_base must be a dict when provided")
         else:
-            config_base = resolve_env_vars(config_base)
+            # Sparse officeclaw snapshots omit template keys (e.g. react.ttse).
+            # Match create_instance so _config_cache keeps the same defaults.
+            config_base = _resolve_instance_config_base(config_base)
 
         live_skill_envs = (
             self._skill_credential_injection_rail.get_skill_envs()
