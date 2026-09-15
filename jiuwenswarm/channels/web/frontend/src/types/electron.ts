@@ -25,7 +25,27 @@ export interface JiuwenElectronDesktopApi {
   downloadFile: (url: string, filename: string) => Promise<boolean>;
   installUpdate: (installerPath: string) => Promise<boolean>;
   saveDataUrl: (dataUrl: string, filename: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
+  beginBlobSave: (
+    filename: string,
+    mimeType: string,
+    totalSize: number,
+  ) => Promise<{ ok: boolean; cancelled?: boolean; transfer_id?: string }>;
+  appendBlobSave: (transferId: string, encodedChunk: string) => Promise<boolean>;
+  finishBlobSave: (transferId: string) => Promise<{ ok: boolean; cancelled?: boolean }>;
+  abortBlobSave: (transferId: string) => Promise<boolean>;
   selectProjectDirectory: () => Promise<string | null>;
+  selectLocalFiles: (
+    allowMultiple?: boolean,
+    initialDir?: string | null,
+  ) => Promise<Array<Record<string, unknown>>>;
+  selectLocalFilePath: (
+    initialPath?: string | null,
+    title?: string | null,
+  ) => Promise<string | null>;
+  describeLocalFiles: (
+    paths: string[],
+  ) => Promise<Array<Record<string, unknown>>>;
+  getClipboardFiles: () => Promise<Array<Record<string, unknown>>>;
   onLayoutInvalidated: (callback: () => void) => () => void;
   browser: {
     navigate: (url: string, sessionId: string) => Promise<ElectronBrowserState>;

@@ -1,5 +1,5 @@
 #!/bin/bash
-# JiuwenSwarm Electron macOS Build Script
+# WorkSwarm Electron macOS Build Script
 # Usage:
 #   Release:    ./scripts/build-electron-exe.sh
 #   Test:       ./scripts/build-electron-exe.sh --test
@@ -34,11 +34,11 @@ PROJECT_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 FRONTEND_DIR="$PROJECT_ROOT/jiuwenswarm/channels/web/frontend"
 DESKTOP_DIR="$PROJECT_ROOT/jiuwenswarm/channels/desktop/electron"
 DIST_DIR="$PROJECT_ROOT/dist"
-ELECTRON_APP_DIR="$DIST_DIR/JiuwenSwarm-Electron"
+# ELECTRON_APP_DIR 依赖 build_config 的显示名，在下方 build_config 解析后定义。
 
 cd "$PROJECT_ROOT"
 
-echo "=== JiuwenSwarm Electron Build (macOS) ==="
+echo "=== WorkSwarm Electron Build (macOS) ==="
 echo "Project root: $PROJECT_ROOT"
 echo "Test: $TEST  FrontendOnly: $FRONTEND_ONLY"
 echo ""
@@ -116,10 +116,12 @@ BUILD_DIST_DIR_NAME="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_DIST_DIR
 BUILD_EXECUTABLE_NAME="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_EXECUTABLE_NAME=//p')"
 BUILD_VERSION="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_VERSION=//p')"
 BUILD_BUNDLE_IDENTIFIER="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_BUNDLE_IDENTIFIER=//p')"
-if [ -z "$BUILD_VERSION" ] || [ -z "$BUILD_BUNDLE_IDENTIFIER" ]; then
+BUILD_DISPLAY_NAME="$(printf '%s\n' "$BUILD_VALUES" | sed -n 's/^BUILD_DISPLAY_NAME=//p')"
+if [ -z "$BUILD_VERSION" ] || [ -z "$BUILD_BUNDLE_IDENTIFIER" ] || [ -z "$BUILD_DISPLAY_NAME" ]; then
     echo "ERROR: failed to resolve build config from build_config.py"
     exit 1
 fi
+ELECTRON_APP_DIR="$DIST_DIR/$BUILD_DISPLAY_NAME-Electron"
 
 if [ "$FRONTEND_ONLY" = false ]; then
     echo ""
@@ -205,14 +207,14 @@ if [ -f "$ICON_PATH" ]; then
     echo "  Set app icon to logo.icns"
 fi
 
-# Rename Electron.app to JiuwenSwarm.app
-mv "$ELECTRON_APP_DIR/Electron.app" "$ELECTRON_APP_DIR/JiuwenSwarm.app"
+# Rename Electron.app to the product bundle (WorkSwarm.app, from build_config)
+mv "$ELECTRON_APP_DIR/Electron.app" "$ELECTRON_APP_DIR/$BUILD_DISPLAY_NAME.app"
 
 # Update Info.plist
-PLIST="$ELECTRON_APP_DIR/JiuwenSwarm.app/Contents/Info.plist"
+PLIST="$ELECTRON_APP_DIR/$BUILD_DISPLAY_NAME.app/Contents/Info.plist"
 if [ -f "$PLIST" ]; then
-    /usr/libexec/PlistBuddy -c "Set :CFBundleName JiuwenSwarm" "$PLIST" 2>/dev/null || true
-    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName JiuwenSwarm" "$PLIST" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Set :CFBundleName $BUILD_DISPLAY_NAME" "$PLIST" 2>/dev/null || true
+    /usr/libexec/PlistBuddy -c "Set :CFBundleDisplayName $BUILD_DISPLAY_NAME" "$PLIST" 2>/dev/null || true
     # 捆绑标识与版本号来自 build_config：默认的 Electron 标识会与其他
     # 未改名 Electron 应用冲突（同标识无法共存于 /Applications）。
     /usr/libexec/PlistBuddy -c "Set :CFBundleIdentifier $BUILD_BUNDLE_IDENTIFIER" "$PLIST" 2>/dev/null || true
@@ -229,16 +231,16 @@ echo "  Assembled app size: $APP_SIZE"
 echo ""
 echo "[6/6] Building .dmg..."
 
-APP_BUNDLE="$ELECTRON_APP_DIR/JiuwenSwarm.app"
+APP_BUNDLE="$ELECTRON_APP_DIR/$BUILD_DISPLAY_NAME.app"
 DMG_DIR="$DIST_DIR"
 VERSION="$BUILD_VERSION"
 
 if [ "$FRONTEND_ONLY" = true ]; then
-    DMG_NAME="JiuwenSwarm-frontend-test-$VERSION.dmg"
+    DMG_NAME="$BUILD_DISPLAY_NAME-frontend-test-$VERSION.dmg"
 elif [ "$TEST" = true ]; then
-    DMG_NAME="JiuwenSwarm-test-$VERSION.dmg"
+    DMG_NAME="$BUILD_DISPLAY_NAME-test-$VERSION.dmg"
 else
-    DMG_NAME="JiuwenSwarm-setup-$VERSION.dmg"
+    DMG_NAME="$BUILD_DISPLAY_NAME-setup-$VERSION.dmg"
 fi
 
 DMG_PATH="$DMG_DIR/$DMG_NAME"
@@ -256,7 +258,7 @@ ln -s /Applications "$DMG_STAGING/Applications"
 
 # Create DMG
 rm -f "$DMG_PATH"
-hdiutil create -volname "JiuwenSwarm" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
+hdiutil create -volname "$BUILD_DISPLAY_NAME" -srcfolder "$DMG_STAGING" -ov -format UDZO "$DMG_PATH"
 rm -rf "$DMG_STAGING"
 
 DMG_SIZE=$(du -h "$DMG_PATH" | awk '{print $1}')

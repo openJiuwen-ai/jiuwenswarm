@@ -10,7 +10,8 @@
 # 3. 安装 Electron 桌面端依赖 (npm install in channels/desktop/electron)
 # 4. PyInstaller 打包后端 (jiuwenswarm.spec)           [跳过: FrontendOnly]
 # 5. 组装最终产物: Electron shell + 前端 dist + 后端 exe + resources
-# 6. Inno Setup 打成单个安装包 JiuwenSwarm-setup-*.exe
+# 6. Inno Setup 打成单个安装包 WorkSwarm-setup-*.exe
+#    （应用名 / exe 名 / 版本号均来自 build_config，与 Python 打包一致）
 
 param(
     [string]$ElectronDir = $(if ($env:ELECTRON_DIR) { $env:ELECTRON_DIR } else { "" }),
@@ -48,7 +49,7 @@ if (-not $ElectronDir -or -not (Test-Path (Join-Path $ElectronDir "electron.exe"
 
 $ElectronExe = Join-Path $ElectronDir "electron.exe"
 
-Write-Host "=== JiuwenSwarm Electron Build ===" -ForegroundColor Cyan
+Write-Host "=== WorkSwarm Electron Build ===" -ForegroundColor Cyan
 Write-Host "Project root: $ProjectRoot" -ForegroundColor Gray
 Write-Host "Electron: $ElectronExe" -ForegroundColor Gray
 Write-Host "Test: $Test  FrontendOnly: $FrontendOnly`n" -ForegroundColor Gray
@@ -109,6 +110,11 @@ $BuildDistDirName = [string]$BuildConfig.dist_dir_name
 $BuildExecutableNameWindows = [string]$BuildConfig.executable_name_windows
 $BuildVersion = [string]$BuildConfig.version
 $BuildErrorLogName = [string]$BuildConfig.error_log_name
+# 显示名同样来自 build_config（与 installer.iss / Python 打包单一来源）；
+# 壳 exe 用显示名派生（WorkSwarm.exe），与后端 exe（workswarm.exe，小写）
+# 在任务管理器中可区分，同时保持产品名一致。
+$BuildDisplayName = [string]$BuildConfig.display_name
+$ShellExeName = "$BuildDisplayName.exe"
 
 if (-not $FrontendOnly) {
     Write-Host "`n[4/6] Running PyInstaller (backend)..." -ForegroundColor Yellow
@@ -139,7 +145,7 @@ if (-not $FrontendOnly) {
 # ── 5. Assemble final Electron app ────────────────────────────────────────────
 Write-Host "`n[5/6] Assembling Electron desktop app..." -ForegroundColor Yellow
 
-$ElectronAppDir = Join-Path $ProjectRoot "dist\JiuwenSwarm-Electron"
+$ElectronAppDir = Join-Path $ProjectRoot "dist\$BuildDisplayName-Electron"
 if (Test-Path $ElectronAppDir) {
     Remove-Item $ElectronAppDir -Recurse -Force
 }
@@ -151,8 +157,8 @@ Copy-Item -Path (Join-Path $ElectronDir "*") -Destination $ElectronAppDir -Recur
 # Remove default_app.asar so our main.cjs is used instead
 Remove-Item (Join-Path $ElectronAppDir "resources\default_app.asar") -Force -ErrorAction SilentlyContinue
 
-# Rename electron.exe to JiuwenSwarm.exe
-Rename-Item (Join-Path $ElectronAppDir "electron.exe") "JiuwenSwarm.exe" -Force
+# Rename electron.exe to the product shell exe (WorkSwarm.exe, from build_config)
+Rename-Item (Join-Path $ElectronAppDir "electron.exe") $ShellExeName -Force
 
 # Set exe icon via rcedit so the title bar / taskbar / file explorer shows logo.ico
 $LogoIco = Join-Path $FrontendDir "public\logo.ico"
@@ -168,7 +174,7 @@ if (-not $Rcedit) {
 }
 if ($Rcedit) {
     Write-Host "  Setting exe icon via rcedit..." -ForegroundColor Gray
-    & $Rcedit (Join-Path $ElectronAppDir "JiuwenSwarm.exe") --set-icon $LogoIco
+    & $Rcedit (Join-Path $ElectronAppDir $ShellExeName) --set-icon $LogoIco
 } else {
     Write-Host "  WARNING: rcedit not found, exe icon will use Electron default" -ForegroundColor Yellow
 }
@@ -278,32 +284,32 @@ if (-not $Iscc) {
 Write-Host "Using ISCC: $Iscc" -ForegroundColor Gray
 
 # Test/FrontendOnly build uses a different installer filename to distinguish from release
-# 版本号与后端 exe 名经 /D 传入，iss 内不再硬编码（与 build_config 单一来源；
-# 后端 exe 名供卸载时的 --desktop-reset-external-cli-config 使用）
+# 应用名 / 壳 exe 名 / 版本号 / 后端 exe 名经 /D 传入，iss 内不再硬编码
+# （与 build_config 单一来源；后端 exe 名供卸载时的 --desktop-reset-external-cli-config 使用）
 if ($FrontendOnly) {
-    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows" /DELECTRON_FRONTEND_ONLY
+    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppName=$BuildDisplayName" "/DMyAppExeName=$ShellExeName" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows" /DELECTRON_FRONTEND_ONLY
 } elseif ($Test) {
-    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows" /DELECTRON_TEST_BUILD
+    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppName=$BuildDisplayName" "/DMyAppExeName=$ShellExeName" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows" /DELECTRON_TEST_BUILD
 } else {
-    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows"
+    & $Iscc "$ProjectRoot\scripts\installer-electron.iss" "/DMyAppName=$BuildDisplayName" "/DMyAppExeName=$ShellExeName" "/DMyAppVersion=$BuildVersion" "/DBackendExecutableName=$BuildExecutableNameWindows"
 }
 if ($LASTEXITCODE -ne 0) { exit $LASTEXITCODE }
 
 if ($FrontendOnly) {
     $InstallerPath = (
-        Get-ChildItem "$ProjectRoot\dist\JiuwenSwarm-frontend-test-*.exe" |
+        Get-ChildItem "$ProjectRoot\dist\$BuildDisplayName-frontend-test-*.exe" |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     ).FullName
 } elseif ($Test) {
     $InstallerPath = (
-        Get-ChildItem "$ProjectRoot\dist\JiuwenSwarm-test-*.exe" |
+        Get-ChildItem "$ProjectRoot\dist\$BuildDisplayName-test-*.exe" |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     ).FullName
 } else {
     $InstallerPath = (
-        Get-ChildItem "$ProjectRoot\dist\JiuwenSwarm-setup-*.exe" |
+        Get-ChildItem "$ProjectRoot\dist\$BuildDisplayName-setup-*.exe" |
         Sort-Object LastWriteTime -Descending |
         Select-Object -First 1
     ).FullName

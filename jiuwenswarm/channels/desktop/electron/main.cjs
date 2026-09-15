@@ -1,10 +1,12 @@
-const { app, BrowserWindow, dialog, ipcMain, net, session, shell, WebContentsView } = require('electron');
-const { spawn } = require('node:child_process');
+const { app, BrowserWindow, clipboard, dialog, ipcMain, net, session, shell, WebContentsView } = require('electron');
+const { spawn, execFile } = require('node:child_process');
+const { randomBytes, randomUUID } = require('node:crypto');
 const { inspect } = require('node:util');
 const fs = require('node:fs/promises');
 const fsSync = require('node:fs');
 const nodeHttp = require('node:http');
 const nodeNet = require('node:net');
+const os = require('node:os');
 const path = require('node:path');
 const { Readable } = require('node:stream');
 const { pipeline } = require('node:stream/promises');
@@ -14,7 +16,9 @@ const FRONTEND_HOST = '127.0.0.1';
 // Port-group layout mirrors jiuwenswarm.instance_manager.config.BASE_PORTS:
 // one instance index occupies all four ports (+ index * 1000).
 const BASE_PORTS = { agentServer: 18092, gatewayApi: 19000, gatewayInternal: 19001, frontend: 5173 };
-const STARTUP_TIMEOUT_MS = 45_000;
+// Aligned with desktop_app.STARTUP_TIMEOUT_SECONDS: gateway binds the API port only
+// after its ~60s agent-connect budget, so this must stay above that.
+const STARTUP_TIMEOUT_MS = 120_000;
 const isFrontendOnly = process.env.JIUWENSWARM_ELECTRON_FRONTEND_ONLY === '1' || (() => {
   try { return fsSync.existsSync(path.join(__dirname, '.frontend-only')); } catch { return false; }
 })();
@@ -33,6 +37,13 @@ const DEFAULT_BROWSER_URL = 'https://cn.bing.com/';
 const PLAYWRIGHT_MCP_PACKAGE = '@playwright/mcp@0.0.78';
 const TARGET_MCP_WRAPPER_PATH = path.join(__dirname, 'target_mcp_wrapper.cjs');
 const PNG_DATA_URL_PREFIX = 'data:image/png;base64,';
+const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+const DESKTOP_BLOB_CHUNK_SIZE = 1024 * 1024;
+const MAX_JAVASCRIPT_SAFE_INTEGER = 9_007_199_254_740_991;
+// 桌面锁定: 每次启动生成一次性 token(对齐 desktop_app 的 token_urlsafe(32)),
+// 仅注入 web 静态服务子进程; 首导航 URL 携带 ?dt=<token> 换取 HttpOnly Cookie,
+// 本机浏览器直开对话页时返回 403。
+const desktopLockToken = randomBytes(32).toString('base64url');
 const VITE_DEV_MODE = process.argv.includes('--vite-dev');
 const ELECTRON_CDP_PORT = Number.parseInt(process.env.JIUWENSWARM_ELECTRON_CDP_PORT || '', 10);
 let cdpPort = Number.isInteger(ELECTRON_CDP_PORT) && ELECTRON_CDP_PORT >= 1 && ELECTRON_CDP_PORT <= 65535
@@ -50,7 +61,8 @@ function isPortAvailable(port) {
   });
 }
 
-async function findAvailablePorts(scanRange = 20) {
+// 对齐 desktop_app.DESKTOP_PORT_SCAN_RANGE = 10: base + index*1000 最多扫 10 组。
+async function findAvailablePorts(scanRange = 10) {
   for (let i = 0; i < scanRange; i++) {
     const offset = i * 1000;
     const ports = Object.fromEntries(
@@ -309,6 +321,18 @@ function spawnService(name, ports, extraArgs = []) {
   // inject the full session port group so agent/gateway/web agree, and let the
   // children skip workspace preparation because the launcher did it once.
   env.JIUWENSWARM_RUNTIME_WORKSPACE_READY = '1';
+  // 桌面锁定契约(desktop_app._build_child_env): 仅 web 静态服务注入 token,
+  // 其他子进程不携带; Vite dev 模式的 web 子进程是 Vite 而非 app_web, 同样不注入。
+  if (name === 'web' && !VITE_DEV_MODE) {
+    env.JIUWENSWARM_DESKTOP_TOKEN = desktopLockToken;
+  } else {
+    delete env.JIUWENSWARM_DESKTOP_TOKEN;
+  }
+  // 启动诊断契约(desktop_app._build_child_env): 子进程失败时把 failure-*.json
+  // 写入本会话诊断目录(冻结 exe 入口的 _write_child_error)。
+  if (startupDiagnosticsDir) {
+    env[STARTUP_DIAGNOSTICS_DIR_ENV] = startupDiagnosticsDir;
+  }
   env.WEB_HOST = BACKEND_HOST;
   env.WEB_PORT = String(ports.gatewayApi);
   env.GATEWAY_PORT = String(ports.gatewayInternal);
@@ -357,8 +381,8 @@ function waitForTcp(host, port, child, timeoutMs = STARTUP_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   return new Promise((resolve, reject) => {
     const attempt = () => {
-      if (child.exitCode !== null) {
-        reject(new Error(`Service for ${host}:${port} exited with code ${child.exitCode}`));
+      if (child.exitCode !== null || child.signalCode !== null) {
+        reject(new Error(`Service for ${host}:${port} exited with code ${child.exitCode ?? `signal ${child.signalCode}`}`));
         return;
       }
       const socket = nodeNet.createConnection({ host, port });
@@ -386,12 +410,14 @@ async function waitForHttp(host, port, child, timeoutMs = STARTUP_TIMEOUT_MS) {
   const deadline = Date.now() + timeoutMs;
   const url = `http://${host}:${port}/`;
   for (;;) {
-    if (child && child.exitCode !== null) {
-      throw new Error(`Service for HTTP ${url} exited with code ${child.exitCode}`);
+    if (child && (child.exitCode !== null || child.signalCode !== null)) {
+      throw new Error(`Service for HTTP ${url} exited with code ${child.exitCode ?? `signal ${child.signalCode}`}`);
     }
     try {
       const response = await net.fetch(url);
-      if (response.ok || response.status > 0) return;
+      // 与 desktop_app._wait_for_http 一致: <500 即就绪(403 桌面锁定页等 4xx
+      // 也算服务已起); 5xx 说明服务起来了但内部错误, 继续等待。
+      if (response.status > 0 && response.status < 500) return;
     } catch (error) {
       if (Date.now() >= deadline) {
         throw new Error(`Timed out waiting for HTTP ${url}: ${error?.message || 'unavailable'}`);
@@ -404,9 +430,17 @@ async function waitForHttp(host, port, child, timeoutMs = STARTUP_TIMEOUT_MS) {
 function runToExit(command, args, { cwd } = {}) {
   const name = 'workspace-prepare';
   return new Promise((resolve, reject) => {
+    const env = {
+      ...process.env,
+      JIUWENSWARM_DESKTOP: '1',
+      JIUWENSWARM_ELECTRON: '1',
+    };
+    if (startupDiagnosticsDir) {
+      env[STARTUP_DIAGNOSTICS_DIR_ENV] = startupDiagnosticsDir;
+    }
     const child = spawn(command, args, {
       cwd: cwd ?? serviceWorkingDirectory(),
-      env: { ...process.env, JIUWENSWARM_DESKTOP: '1', JIUWENSWARM_ELECTRON: '1' },
+      env,
       detached: process.platform !== 'win32',
       stdio: app.isPackaged ? ['ignore', logStreamFor(name), logStreamFor(name)] : 'inherit',
       windowsHide: true,
@@ -458,6 +492,87 @@ function watchBackendPair(agentProcess, gatewayProcess) {
     if (agentExited && gatewayProcess.exitCode === null) void terminateService(gatewayProcess);
     if (gatewayExited && agentProcess.exitCode === null) void terminateService(agentProcess);
   }, 250);
+}
+
+// ─── Gateway 单例预检 ────────────────────────────────────────────────────────
+// 对齐 desktop_app._preflight_gateway_singleton: 权威互斥由 Gateway 进程自身的
+// OS 级文件锁(~/.jiuwenswarm/.gateway.lock.lock, portalocker 独占字节锁)保证;
+// 预检只负责提前给出明确报错, 并等待升级重启中正在退出的旧 Gateway 释放
+// (最多 15s, 每 0.5s 轮询)。
+const GATEWAY_LOCK_FILENAME = '.gateway.lock';
+const GATEWAY_PREFLIGHT_WAIT_MS = 15_000;
+
+function userWorkspaceDir() {
+  return path.join(app.getPath('home'), '.jiuwenswarm');
+}
+
+function isPidAlive(pid) {
+  if (!Number.isInteger(pid) || pid <= 0) return false;
+  try {
+    process.kill(pid, 0);
+    return true;
+  } catch (error) {
+    return error?.code === 'EPERM';
+  }
+}
+
+function isGatewayOsLockHeld(workspaceDir) {
+  // 伴生 OS 锁文件被持有方以 [0,0x10000) 独占字节锁锁住(实测 Node readSync
+  // 报 EBUSY)。文件缺失视为无持有者(对齐 Python 探测的 a+ 创建语义);
+  // 其他打开失败按已持有处理(安全默认, 对齐 Python 的 OSError→True)。
+  const osLockPath = path.join(workspaceDir, `${GATEWAY_LOCK_FILENAME}.lock`);
+  let fd;
+  try {
+    fd = fsSync.openSync(osLockPath, 'r+');
+  } catch (error) {
+    return error?.code !== 'ENOENT';
+  }
+  try {
+    fsSync.readSync(fd, Buffer.alloc(1), 0, 1, 0);
+    return false;
+  } catch {
+    return true;
+  } finally {
+    try { fsSync.closeSync(fd); } catch { /* ignore */ }
+  }
+}
+
+function findGatewayLockHolder(workspaceDir) {
+  // 对齐 GatewayLock.find_holder: 元数据 pid 存活且伴生 OS 锁仍被持有才算数
+  // (防 PID 复用误报)。.gateway.lock 元数据文件永不加锁、永远可读。
+  const lockPath = path.join(workspaceDir, GATEWAY_LOCK_FILENAME);
+  let data;
+  try {
+    data = JSON.parse(fsSync.readFileSync(lockPath, 'utf8'));
+  } catch {
+    return null;
+  }
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return null;
+  const pid = Number(data.pid) || 0;
+  if (pid <= 0 || !isPidAlive(pid)) return null;
+  if (!isGatewayOsLockHeld(workspaceDir)) return null;
+  return data;
+}
+
+async function preflightGatewaySingleton() {
+  const workspaceDir = userWorkspaceDir();
+  let holder = findGatewayLockHolder(workspaceDir);
+  if (holder === null) return;
+  const deadline = Date.now() + GATEWAY_PREFLIGHT_WAIT_MS;
+  while (holder !== null && Date.now() < deadline) {
+    await new Promise(resolve => setTimeout(resolve, 500));
+    holder = findGatewayLockHolder(workspaceDir);
+  }
+  if (holder !== null) {
+    console.error('[electron] another Gateway is already serving this workspace', {
+      pid: holder.pid,
+      workspace: holder.workspace,
+    });
+    throw new Error(
+      `Another Gateway instance is running (pid=${holder.pid}, `
+      + `workspace=${holder.workspace}). Stop the existing one first.`,
+    );
+  }
 }
 
 const WARMUP_PACKAGES = [
@@ -521,7 +636,15 @@ function frontendOnlyUrl() {
   return `file://${localIndex.replace(/\\/g, '/')}`;
 }
 
+function desktopEntryUrl(baseUrl) {
+  // 对齐 desktop_app.DesktopRuntime.frontend_url: 首导航带 ?dt=<token>,
+  // web 静态服务据此下发 HttpOnly Cookie 并 302 到去掉 token 的干净 URL。
+  return `${baseUrl}/?dt=${encodeURIComponent(desktopLockToken)}`;
+}
+
 async function startWebService(onWebReady) {
+  // 诊断会话目录必须在首个子进程 spawn 前创建(env 注入)。
+  createStartupDiagnosticsSession();
   const ports = await findAvailablePorts();
   sessionPorts = ports;
   console.log('[electron] Ports:', ports);
@@ -541,8 +664,11 @@ async function startWebService(onWebReady) {
   ]);
   const webReady = waitForHttp(FRONTEND_HOST, ports.frontend, webProcess);
   void webReady.then(() => {
-    console.log(`[electron] web ready, navigating early to http://${FRONTEND_HOST}:${ports.frontend}`);
-    if (typeof onWebReady === 'function') onWebReady(`http://${FRONTEND_HOST}:${ports.frontend}`);
+    const baseUrl = `http://${FRONTEND_HOST}:${ports.frontend}`;
+    // 日志只记不含 token 的展示 URL(desktop_app.frontend_display_url 语义)。
+    console.log(`[electron] web ready, navigating early to ${baseUrl}`);
+    const entryUrl = VITE_DEV_MODE ? baseUrl : desktopEntryUrl(baseUrl);
+    if (typeof onWebReady === 'function') onWebReady(entryUrl);
   }, () => {});
   return { ports, webProcess, webReady };
 }
@@ -573,6 +699,11 @@ async function startBackendServices({ ports, webProcess, webReady }) {
   }
 
   watchBackendPair(agentProcess, gatewayProcess);
+  // 健康启动不产生 failure 记录, 删除空的会话诊断目录避免累积
+  // (对齐 desktop_app; 非空目录保留)。
+  if (startupDiagnosticsDir) {
+    await fs.rmdir(startupDiagnosticsDir).catch(() => {});
+  }
   console.log(`[electron] services ready: http://${FRONTEND_HOST}:${ports.frontend}`);
 }
 
@@ -728,7 +859,7 @@ transition:opacity .4s ease,transform .4s ease}
 <body>
 <div class="root">
 <div class="logo">${logoSvg}</div>
-<div class="app-name">JiuwenSwarm</div>
+<div class="app-name">WorkSwarm</div>
 <div class="spinner"></div>
 <div class="tip-area">
     <div class="tip-label">专业智能AI Agent助理</div>
@@ -1179,11 +1310,15 @@ function escapeHtml(value) {
     .replaceAll('"', '&quot;');
 }
 
-function failureHtml(detail) {
-  // 对齐 Python 桌面失败页（desktop_app._build_loading_html 的 error-panel）：
-  // 深色主题、错误原因可选中复制、日志路径、退出按钮。窗口保留由用户退出，
+function failureHtml(status) {
+  // 对齐 Python 桌面失败页（desktop_app._build_loading_html 的 error-panel +
+  // _build_failed_status 的标题/原因/诊断路径）：深色主题、错误原因可选中复制、
+  // 日志与诊断文件路径、退出按钮。窗口保留由用户退出，
   // 不做"弹原生框即退出"。
   const logoSvg = resolveLogoSvg();
+  const diagnosticMeta = status.diagnosticPath
+    ? `\n诊断文件：${escapeHtml(status.diagnosticPath)}`
+    : '';
   const html = `<!DOCTYPE html>
 <html lang="zh-CN">
 <head>
@@ -1216,13 +1351,13 @@ font-size:14px;cursor:pointer;margin-top:4px}
 <div class="panel">
 <div class="logo">${logoSvg}</div>
 <div class="error-icon">!</div>
-<div class="error-title">JiuwenSwarm 启动失败</div>
-<div class="error-message">${escapeHtml(detail)}</div>
-<div class="error-meta">日志文件：${escapeHtml(mainLogPath())}
+<div class="error-title">${escapeHtml(status.title)}</div>
+<div class="error-message">${escapeHtml(status.message)}</div>
+<div class="error-meta">日志文件：${escapeHtml(mainLogPath())}${diagnosticMeta}
 
-排查时可将上述日志文件提供给支持人员。</div>
+排查时可将上述文件提供给支持人员。</div>
 <div class="hint">若为安装后的首次启动，常见原因是安全软件扫描新文件导致的瞬时故障，重新启动应用通常可恢复。</div>
-<button class="close-button" id="close-button" type="button">退出 JiuwenSwarm</button>
+<button class="close-button" id="close-button" type="button">退出 WorkSwarm</button>
 </div>
 </div>
 <script>
@@ -1239,25 +1374,91 @@ document.getElementById('close-button').addEventListener('click', () => {
   return 'data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf-8').toString('base64');
 }
 
+function diagnosingHtml() {
+  // 对齐 Python 桌面 diagnosing 态（"正在诊断启动失败原因"）：doctor 运行期间
+  // （最长 60s）的过渡页，避免用户面对空白或旧页面。
+  const logoSvg = resolveLogoSvg();
+  const html = `<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+html,body{width:100%;height:100%;overflow:hidden;background:#0f172a;
+font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+color:#e2e8f0;display:flex;align-items:center;justify-content:center}
+.panel{display:flex;flex-direction:column;align-items:center;gap:24px;padding:40px}
+.logo svg{width:64px;height:64px;border-radius:16px}
+.error-icon{width:52px;height:52px;border-radius:50%;display:flex;align-items:center;
+justify-content:center;background:rgba(239,68,68,.14);color:#f87171;font-size:30px;font-weight:700}
+.error-title{font-size:20px;font-weight:700;color:#f8fafc}
+.error-message{color:#cbd5e1;font-size:13px;line-height:1.7}
+.spinner{width:32px;height:32px;border:3px solid rgba(148,163,184,.2);
+border-top-color:#60a5fa;border-radius:50%;animation:spin 1.5s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="panel">
+<div class="logo">${logoSvg}</div>
+<div class="error-icon">!</div>
+<div class="error-title">正在诊断启动失败原因</div>
+<div class="error-message">服务启动失败，正在检查本机运行环境…</div>
+<div class="spinner"></div>
+</div>
+</body>
+</html>`;
+  return 'data:text/html;charset=utf-8;base64,' + Buffer.from(html, 'utf8').toString('base64');
+}
+
 async function showStartupFailure(error) {
-  // 对齐 Python 桌面的失败呈现：诊断信息留在窗口内、用户自行退出；
-  // 残余服务树立即清理（Python 侧呈现失败页后同样调用 shutdown()），
+  // 对齐 Python 桌面的失败呈现链（start_services 异常分支）：读子进程 failure
+  // 记录 → 按需运行 doctor（期间显示 diagnosing 页）→ 构建 failed status →
+  // 失败页呈现诊断信息，用户自行退出；残余服务树立即清理，
   // 但不退出应用。仅当窗口本身不可用时才回退到原生错误框 + 退出。
   console.error('[electron] startup failed', error);
-  const detail = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
   if (!mainWindow || mainWindow.isDestroyed()) {
-    dialog.showErrorBox('JiuwenSwarm failed to start', detail);
+    const detail = error instanceof Error ? `${error.message}\n${error.stack || ''}` : String(error);
+    dialog.showErrorBox('WorkSwarm failed to start', detail);
     requestShutdown(1);
     return;
   }
   void stopServices();
+  let status;
   try {
-    await mainWindow.loadURL(failureHtml(detail));
+    const records = await loadStartupFailures();
+    const childFailure = selectStartupFailure(records);
+    let doctorResult = null;
+    if (shouldRunStartupDoctor(error, childFailure)) {
+      try {
+        await mainWindow.loadURL(diagnosingHtml());
+        mainWindow.show();
+        mainWindow.focus();
+      } catch (loadError) {
+        console.error('[electron] failed to render diagnosing page', loadError);
+      }
+      doctorResult = await runStartupDoctor();
+    } else {
+      console.log('[electron] startup doctor skipped; failure already has a non-native cause');
+    }
+    status = buildStartupFailureStatus(error, doctorResult, childFailure);
+  } catch (diagnosticError) {
+    console.error('[electron] failed to build startup diagnostics', diagnosticError);
+    status = {
+      title: 'WorkSwarm 服务启动失败',
+      message: shortStartupError(error?.message) || '未知启动错误',
+      component: 'desktop-startup',
+      diagnosticPath: startupDiagnosticsDir,
+    };
+  }
+  try {
+    await mainWindow.loadURL(failureHtml(status));
     mainWindow.show();
     mainWindow.focus();
   } catch (loadError) {
     console.error('[electron] failed to render startup failure page', loadError);
-    dialog.showErrorBox('JiuwenSwarm failed to start', detail);
+    dialog.showErrorBox('WorkSwarm failed to start', status.message);
     requestShutdown(1);
   }
 }
@@ -1297,6 +1498,519 @@ async function uniqueDownloadPath(filename) {
   }
 }
 
+// ─── Blob 分块保存事务 ──────────────────────────────────────────────────────
+// 契约对齐 Python 桌面 desktop_app 的 begin/append/finish/abort_blob_save：
+// 元数据白名单、1MiB 分块、校验 PNG 签名、同目录临时文件 + 原子替换。
+const BLOB_EXPORT_SPECS = {
+  'image/png': { suffixes: ['.png'], parameters: [], filter: { name: 'PNG Image', extensions: ['png'] } },
+  'image/svg+xml': { suffixes: ['.svg'], parameters: ['charset=utf-8'], filter: { name: 'SVG Image', extensions: ['svg'] } },
+  'text/plain': { suffixes: ['.mmd'], parameters: ['charset=utf-8'], filter: { name: 'Mermaid Diagram', extensions: ['mmd'] } },
+  'application/json': { suffixes: ['.json'], parameters: ['charset=utf-8'], filter: { name: 'JSON Archive', extensions: ['json'] } },
+};
+const BASE64_CHUNK_PATTERN = /^[A-Za-z0-9+/]+={0,2}$/;
+const blobSaveTransfers = new Map();
+
+function resolveBlobExport(filename, mimeType, totalSize) {
+  const safeName = sanitizeFilename(filename, '');
+  if (!safeName) throw new Error('empty_filename');
+  if (typeof totalSize !== 'number' || !Number.isInteger(totalSize)
+    || totalSize < 0 || totalSize > MAX_JAVASCRIPT_SAFE_INTEGER) {
+    throw new Error('invalid_blob_size');
+  }
+  if (typeof mimeType !== 'string') throw new Error('invalid_blob_mime_type');
+  const metadata = mimeType.split(';').map(part => part.trim().toLowerCase());
+  const spec = BLOB_EXPORT_SPECS[metadata[0]];
+  if (!spec) throw new Error('unsupported_blob_mime_type');
+  const parameters = metadata.slice(1);
+  if (new Set(parameters).size !== parameters.length
+    || parameters.some(parameter => !spec.parameters.includes(parameter))) {
+    throw new Error('unsupported_blob_mime_parameters');
+  }
+  if (!spec.suffixes.includes(path.extname(safeName).toLowerCase())) {
+    throw new Error('blob_filename_extension_mismatch');
+  }
+  return { safeName, mimeType: metadata[0], spec };
+}
+
+async function discardBlobSaveTransfer(transfer) {
+  try {
+    await transfer.handle.close();
+  } catch { /* already closed */ }
+  try {
+    await fs.rm(transfer.tempPath, { force: true });
+  } catch (error) {
+    console.warn('[electron] failed to remove partial blob export', transfer.tempPath, error);
+  }
+}
+
+async function abortAllBlobSaves() {
+  const transfers = [...blobSaveTransfers.values()];
+  blobSaveTransfers.clear();
+  for (const transfer of transfers) {
+    await discardBlobSaveTransfer(transfer);
+  }
+}
+
+// ─── 本机文件选择 / 附件元数据 ───────────────────────────────────────────────
+// 契约对齐 desktop_app 的四个 pywebview API(select_local_files /
+// select_local_file_path / describe_local_files / get_clipboard_files):
+// 白名单对话框过滤、图片内联 base64(≤10MiB)、黑名单扩展名返回 error 字段、
+// 上次选择目录记忆(~/.jiuwenswarm/last_file_picker_dir.txt, 与 Python 桌面
+// 及 web 通道共享该状态文件)。
+const ATTACHMENT_DIALOG_EXTENSIONS = [
+  '.png', '.jpg', '.jpeg', '.webp', '.gif', '.bmp', '.svg', '.ico', '.jfif',
+  '.pdf', '.doc', '.docx', '.xls', '.xlsx', '.ppt', '.pptx',
+  '.txt', '.md', '.markdown', '.csv', '.tsv', '.rtf',
+  '.odt', '.ods', '.odp', '.json', '.xml', '.yaml', '.yml',
+  '.html', '.htm', '.css', '.js', '.ts', '.tsx', '.jsx',
+  '.py', '.java', '.c', '.cpp', '.h', '.go', '.rs', '.rb', '.php', '.sql',
+  '.ipynb', '.toml', '.ini', '.log',
+  '.zip', '.rar', '.7z', '.tar', '.gz',
+  '.mp3', '.wav', '.flac', '.aac', '.ogg', '.m4a', '.wma',
+  '.mp4', '.avi', '.mov', '.mkv', '.webm', '.wmv', '.flv',
+];
+// 与 file_picker.ATTACHMENT_DIALOG_EXTENSIONS 保持同步: 故意不含黑名单扩展名,
+// 也不提供 All files 项。
+const ATTACHMENT_DIALOG_FILTER = [{
+  name: 'Allowed files',
+  extensions: ATTACHMENT_DIALOG_EXTENSIONS.map(ext => ext.slice(1)),
+}];
+const IMAGE_PICK_EXTENSIONS = new Set(['.png', '.jpg', '.jpeg', '.webp', '.gif', '.jfif']);
+const MAX_IMAGE_PICK_BYTES = 10 * 1024 * 1024;
+const FORBIDDEN_PICK_EXTENSIONS = new Set([
+  '.exe', '.dll', '.msi', '.scr', '.bat', '.cmd', '.ps1', '.vbs', '.wsf', '.hta',
+  '.jar', '.lnk', '.bin', '.so', '.dylib', '.app', '.dmg', '.pkg', '.command',
+  '.scpt', '.scptd', '.workflow', '.xpc', '.bundle', '.framework', '.kext',
+  '.prefpane', '.saver', '.component',
+]);
+const MIME_BY_EXTENSION = new Map(Object.entries({
+  '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp',
+  '.gif': 'image/gif', '.bmp': 'image/bmp', '.svg': 'image/svg+xml',
+  '.ico': 'image/vnd.microsoft.icon', '.jfif': 'image/jpeg',
+  '.pdf': 'application/pdf', '.doc': 'application/msword',
+  '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+  '.xls': 'application/vnd.ms-excel',
+  '.xlsx': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+  '.ppt': 'application/vnd.ms-powerpoint',
+  '.pptx': 'application/vnd.openxmlformats-officedocument.presentationml.presentation',
+  '.txt': 'text/plain', '.md': 'text/markdown', '.markdown': 'text/markdown',
+  '.csv': 'text/csv', '.tsv': 'text/tab-separated-values', '.rtf': 'application/rtf',
+  '.odt': 'application/vnd.oasis.opendocument.text',
+  '.ods': 'application/vnd.oasis.opendocument.spreadsheet',
+  '.odp': 'application/vnd.oasis.opendocument.presentation',
+  '.json': 'application/json', '.xml': 'text/xml', '.yaml': 'text/yaml', '.yml': 'text/yaml',
+  '.html': 'text/html', '.htm': 'text/html', '.css': 'text/css', '.js': 'text/javascript',
+  '.ts': 'video/mp2t', '.py': 'text/x-python', '.java': 'text/x-java-source',
+  '.c': 'text/x-c', '.cpp': 'text/x-c++', '.h': 'text/x-chdr', '.go': 'text/x-go',
+  '.rs': 'text/rust', '.rb': 'text/x-ruby', '.php': 'application/x-httpd-php',
+  '.sql': 'text/x-sql', '.ipynb': 'application/x-ipynb+json', '.toml': 'application/toml',
+  '.log': 'text/plain', '.zip': 'application/zip', '.rar': 'application/vnd.rar',
+  '.7z': 'application/x-7z-compressed', '.tar': 'application/x-tar', '.gz': 'application/gzip',
+  '.mp3': 'audio/mpeg', '.wav': 'audio/wav', '.flac': 'audio/flac', '.aac': 'audio/aac',
+  '.ogg': 'audio/ogg', '.m4a': 'audio/mp4', '.wma': 'audio/x-ms-wma',
+  '.mp4': 'video/mp4', '.avi': 'video/x-msvideo', '.mov': 'video/quicktime',
+  '.mkv': 'video/x-matroska', '.webm': 'video/webm', '.wmv': 'video/x-ms-wmv',
+  '.flv': 'video/x-flv',
+}));
+const LAST_FILE_PICKER_DIR_FILENAME = 'last_file_picker_dir.txt';
+
+function lastFilePickerDirPath() {
+  return path.join(app.getPath('home'), '.jiuwenswarm', LAST_FILE_PICKER_DIR_FILENAME);
+}
+
+function expandHomePath(input) {
+  const trimmed = String(input ?? '').trim();
+  if (trimmed === '~' || trimmed.startsWith('~/') || trimmed.startsWith('~\\')) {
+    return path.join(app.getPath('home'), trimmed.slice(1));
+  }
+  return trimmed;
+}
+
+async function readRememberedPickerDir() {
+  // 与 file_picker.get_last_file_picker_dir 一致: 目录不存在时返回 null。
+  try {
+    const raw = (await fs.readFile(lastFilePickerDirPath(), 'utf8')).trim();
+    if (!raw) return null;
+    const stat = await fs.stat(raw).catch(() => null);
+    if (!stat?.isDirectory()) return null;
+    return raw;
+  } catch {
+    return null;
+  }
+}
+
+async function rememberPickerDir(filePath) {
+  // 与 file_picker.remember_file_picker_dir 一致: 记住所选文件的父目录。
+  try {
+    const directory = path.dirname(String(filePath || ''));
+    if (!directory) return;
+    const stat = await fs.stat(directory).catch(() => null);
+    if (!stat?.isDirectory()) return;
+    await fs.mkdir(path.dirname(lastFilePickerDirPath()), { recursive: true });
+    await fs.writeFile(lastFilePickerDirPath(), `${directory}\n`, 'utf8');
+  } catch { /* best effort */ }
+}
+
+async function resolveFilePickerInitialDir(initialDir) {
+  // explicit → remembered → home(file_picker.resolve_file_picker_initial_dir)。
+  for (const raw of [initialDir, await readRememberedPickerDir()]) {
+    const expanded = expandHomePath(raw);
+    if (!expanded) continue;
+    const stat = await fs.stat(expanded).catch(() => null);
+    if (stat?.isDirectory()) return expanded;
+  }
+  return app.getPath('home');
+}
+
+async function describeLocalFile(rawPath) {
+  // 与 desktop_app._describe_local_file 同形: 非文件跳过; 图片内联 base64,
+  // 超限/读失败/黑名单扩展名返回 error 字段, 其余为 document。
+  const input = expandHomePath(rawPath);
+  if (!input) return null;
+  let absolute;
+  try {
+    absolute = await fs.realpath(input);
+  } catch {
+    absolute = path.resolve(input);
+  }
+  const stat = await fs.stat(absolute).catch(() => null);
+  if (!stat?.isFile()) {
+    console.warn(`[electron] picked path is not a file: ${absolute}`);
+    return null;
+  }
+  const ext = path.extname(absolute).toLowerCase();
+  const base = {
+    path: absolute,
+    filename: path.basename(absolute),
+    size: stat.size,
+    mime_type: MIME_BY_EXTENSION.get(ext) || 'application/octet-stream',
+  };
+  if (IMAGE_PICK_EXTENSIONS.has(ext)) {
+    if (base.size > MAX_IMAGE_PICK_BYTES) {
+      return { ...base, kind: 'image', error: 'image_too_large' };
+    }
+    try {
+      const payload = await fs.readFile(absolute);
+      return { ...base, kind: 'image', base64: payload.toString('base64') };
+    } catch (error) {
+      console.warn(`[electron] failed to read image ${absolute}:`, error?.message || error);
+      return { ...base, kind: 'image', error: 'read_failed' };
+    }
+  }
+  if (FORBIDDEN_PICK_EXTENSIONS.has(ext)) {
+    return { ...base, kind: 'document', error: 'forbidden' };
+  }
+  return { ...base, kind: 'document' };
+}
+
+async function describeLocalPaths(paths) {
+  const results = [];
+  for (const raw of paths) {
+    const item = await describeLocalFile(raw);
+    if (item) results.push(item);
+  }
+  return results;
+}
+
+function clipboardFileNameW() {
+  // Explorer 复制文件时写 FileNameW(宽字符、仅单个路径)。
+  try {
+    if (!clipboard.has('FileNameW')) return null;
+    const first = clipboard.readBuffer('FileNameW').toString('ucs2').split('\0', 1)[0];
+    const trimmed = first.trim();
+    return trimmed || null;
+  } catch {
+    return null;
+  }
+}
+
+function readClipboardFileDropList() {
+  // Electron clipboard 无法按名读取 CF_HDROP(标准格式, 不经 RegisterClipboardFormat
+  // 解析, 已实测 has('CF_HDROP')=false), 多文件列表经 PowerShell GetFileDropList
+  // 读取, 与 desktop_app._clipboard_file_paths_windows 的 CF_HDROP 语义一致。
+  // 仅在 FileNameW 门控命中(剪贴板确实有文件)后调用; 文本粘贴不触发。
+  return new Promise(resolve => {
+    const script = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; '
+      + 'Add-Type -AssemblyName System.Windows.Forms; '
+      + '[System.Windows.Forms.Clipboard]::GetFileDropList() | ForEach-Object { $_ }';
+    execFile(
+      'powershell.exe',
+      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', script],
+      { windowsHide: true, timeout: 8000, maxBuffer: 1024 * 1024, encoding: 'utf8' },
+      (error, stdout) => {
+        if (error) {
+          console.warn('[electron] clipboard FileDropList read failed', error?.message || error);
+          resolve([]);
+          return;
+        }
+        resolve(stdout.split(/\r?\n/).map(item => item.trim()).filter(Boolean));
+      },
+    );
+  });
+}
+
+function clipboardFilePathsMacos() {
+  // best effort: NSFilenamesPboardType 是 plist XML, 提取 <string> 路径项。
+  try {
+    const raw = clipboard.read('NSFilenamesPboardType');
+    if (!raw || !raw.includes('<string>')) return [];
+    return [...raw.matchAll(/<string>([^<]*)<\/string>/g)]
+      .map(match => match[1]
+        .replaceAll('&lt;', '<')
+        .replaceAll('&gt;', '>')
+        .replaceAll('&quot;', '"')
+        .replaceAll('&apos;', "'")
+        .replaceAll('&amp;', '&')
+        .trim())
+      .filter(Boolean);
+  } catch {
+    return [];
+  }
+}
+
+async function clipboardFilePaths() {
+  // 对齐 desktop_app._clipboard_file_paths: Windows 多文件、macOS 尽力、Linux 空。
+  if (process.platform === 'win32') {
+    if (!clipboard.has('FileNameW')) return [];
+    const multi = await readClipboardFileDropList();
+    if (multi.length) return multi;
+    const single = clipboardFileNameW();
+    return single ? [single] : [];
+  }
+  if (process.platform === 'darwin') return clipboardFilePathsMacos();
+  return [];
+}
+
+// ─── 启动诊断 / doctor ───────────────────────────────────────────────────────
+// 对齐 desktop_app 的启动诊断链: 每次启动创建会话诊断目录并注入子进程
+// (JIUWENSWARM_STARTUP_DIAGNOSTICS_DIR), 冻结 exe 子进程失败时把 failure-*.json
+// 写入该目录; 启动失败后按需运行后端 --doctor 自检, 用 child failure + doctor
+// 结果构建明确的失败页信息(_build_failed_status 同形契约)。
+const STARTUP_DIAGNOSTICS_DIR_ENV = 'JIUWENSWARM_STARTUP_DIAGNOSTICS_DIR';
+// desktop_app.STARTUP_DOCTOR_TIMEOUT_SECONDS = DOCTOR_TIMEOUT_SECONDS(45) + 15
+const STARTUP_DOCTOR_TIMEOUT_MS = 60_000;
+const FAILURE_MESSAGE_MAX_CHARS = 700;
+const NATIVE_FAILURE_MARKERS = [
+  'dll load failed',
+  '.pyd',
+  'dynamic module',
+  'native extension',
+  'cannot open shared object file',
+  'failed to load shared library',
+  'mach-o',
+];
+// startup_diagnostics._NATIVE_SYSTEM_DEPENDENCIES: 扩展与其已知系统级前置库,
+// 两者同时失败时优先报系统库为根因。
+const NATIVE_SYSTEM_DEPENDENCIES = new Map([
+  ['grpc._cython.cygrpc', ['dbghelp.dll']],
+]);
+let startupDiagnosticsDir = null;
+let doctorOutputPath = null;
+
+function createStartupDiagnosticsSession() {
+  // 对齐 DesktopRuntime.__init__: ~/.jiuwenswarm/agent/.logs/startup/<id>,
+  // 创建失败时回退到系统临时目录。
+  const startupId = randomUUID().replaceAll('-', '');
+  const preferred = path.join(
+    app.getPath('home'), '.jiuwenswarm', 'agent', '.logs', 'startup', startupId,
+  );
+  try {
+    fsSync.mkdirSync(preferred, { recursive: true });
+    startupDiagnosticsDir = preferred;
+  } catch (error) {
+    console.warn('[electron] failed to create startup diagnostics dir', error);
+    const fallback = path.join(os.tmpdir(), 'jiuwenswarm-startup', startupId);
+    fsSync.mkdirSync(fallback, { recursive: true });
+    startupDiagnosticsDir = fallback;
+  }
+  doctorOutputPath = path.join(startupDiagnosticsDir, 'doctor.json');
+}
+
+async function loadStartupFailures() {
+  // 对齐 load_startup_failures: 只读本会话目录, 按时间升序。
+  const records = [];
+  if (!startupDiagnosticsDir) return records;
+  let entries;
+  try {
+    entries = await fs.readdir(startupDiagnosticsDir);
+  } catch {
+    return records;
+  }
+  for (const name of entries) {
+    if (!name.startsWith('failure-') || !name.endsWith('.json')) continue;
+    try {
+      const payload = JSON.parse(await fs.readFile(path.join(startupDiagnosticsDir, name), 'utf8'));
+      if (payload && typeof payload === 'object' && payload.type === 'startup_failure') {
+        payload.diagnostic_path = path.join(startupDiagnosticsDir, name);
+        records.push(payload);
+      }
+    } catch { /* unreadable record: skip */ }
+  }
+  records.sort((a, b) => String(a.timestamp_utc || '').localeCompare(String(b.timestamp_utc || '')));
+  return records;
+}
+
+function isNativeStartupFailure(record) {
+  // 对齐 is_native_startup_failure: import 错误或 native 加载特征。
+  if (!record) return false;
+  const errorType = String(record.error_type || '');
+  if (errorType === 'ImportError' || errorType === 'ModuleNotFoundError') return true;
+  const details = `${record.message || ''}\n${record.traceback || ''}`.toLowerCase();
+  return NATIVE_FAILURE_MARKERS.some(marker => details.includes(marker));
+}
+
+function selectStartupFailure(records) {
+  // 对齐 select_startup_failure: 优先可操作的 native/import 错误
+  // (×10), 其次非 SystemExit(×1), 同分取时间序最早的(与 Python max 一致)。
+  let best = null;
+  let bestScore = -1;
+  for (const record of records) {
+    const score = (isNativeStartupFailure(record) ? 10 : 0)
+      + (String(record.error_type || '') !== 'SystemExit' ? 1 : 0);
+    if (score > bestScore) {
+      bestScore = score;
+      best = record;
+    }
+  }
+  return best;
+}
+
+function shouldRunStartupDoctor(error, childFailure) {
+  // 对齐 _should_run_startup_doctor: 仅打包版; native 失败必跑;
+  // 无失败记录/SystemExit 且错误文本含子进程退出码时跑(诊断未知退出)。
+  if (!app.isPackaged) return false;
+  if (isNativeStartupFailure(childFailure)) return true;
+  const childErrorType = String((childFailure || {}).error_type || '');
+  const unexplainedChildExit = childFailure == null || childErrorType === 'SystemExit';
+  return unexplainedChildExit && String(error?.message || '').includes('exited with code');
+}
+
+function runStartupDoctor() {
+  // 对齐 _run_doctor_after_failure: 后端 exe --doctor(自带 45s supervisor 超时),
+  // 结果写 doctor.json; 外层 60s 硬超时, 超时杀树。
+  if (!app.isPackaged) return Promise.resolve(null);
+  console.log('[electron] running startup doctor after service failure');
+  return new Promise(resolve => {
+    let child;
+    try {
+      const env = {
+        ...process.env,
+        JIUWENSWARM_DESKTOP: '1',
+        JIUWENSWARM_ELECTRON: '1',
+      };
+      if (startupDiagnosticsDir) env[STARTUP_DIAGNOSTICS_DIR_ENV] = startupDiagnosticsDir;
+      child = spawn(backendExecutable(), ['--doctor', '--doctor-output', doctorOutputPath], {
+        cwd: serviceWorkingDirectory(),
+        env,
+        detached: process.platform !== 'win32',
+        stdio: app.isPackaged ? ['ignore', logStreamFor('doctor'), logStreamFor('doctor')] : 'inherit',
+        windowsHide: true,
+        shell: false,
+      });
+    } catch (error) {
+      console.warn('[electron] startup doctor failed to run', error);
+      resolve(null);
+      return;
+    }
+    serviceProcesses.set('doctor', child);
+    const finish = () => {
+      clearTimeout(timer);
+      serviceProcesses.delete('doctor');
+      resolve(loadDoctorResult());
+    };
+    const timer = setTimeout(() => {
+      console.warn('[electron] startup doctor timed out');
+      void terminateService(child);
+    }, STARTUP_DOCTOR_TIMEOUT_MS);
+    child.once('exit', finish);
+    child.once('error', error => {
+      console.warn('[electron] startup doctor failed to run', error);
+      finish();
+    });
+  });
+}
+
+async function loadDoctorResult() {
+  try {
+    const payload = JSON.parse(await fs.readFile(doctorOutputPath, 'utf8'));
+    if (payload && typeof payload === 'object' && payload.type === 'doctor_result') return payload;
+  } catch { /* absent or invalid */ }
+  return null;
+}
+
+function selectBlockingDoctorCheck(doctorResult, startupFailure) {
+  // 对齐 select_blocking_doctor_check: 仅当 doctor 失败项能解释启动阻塞时
+  // 上报(匹配失败记录中的 native 组件名; 系统库前置依赖优先报根因)。
+  if (!doctorResult || doctorResult.status !== 'environment_error') return null;
+  const checks = Array.isArray(doctorResult.checks) ? doctorResult.checks : [];
+  const failedChecks = checks.filter(check => check && typeof check === 'object' && check.status === 'failed');
+  if (!failedChecks.length) return null;
+  if (startupFailure != null && !isNativeStartupFailure(startupFailure)) return null;
+  const failureText = startupFailure
+    ? `${startupFailure.message || ''}\n${startupFailure.traceback || ''}`.toLowerCase()
+    : '';
+  const nameAppears = (name, leafName) => failureText.includes(name)
+    || (leafName.length >= 4 && failureText.includes(leafName));
+  const matchedNativeChecks = [];
+  for (const check of failedChecks) {
+    if (check.kind !== 'native_import') continue;
+    const name = String(check.name || '').toLowerCase();
+    if (failureText && nameAppears(name, name.split('.').pop())) matchedNativeChecks.push(check);
+  }
+  const dependencyCandidates = startupFailure == null
+    ? failedChecks.filter(check => check.kind === 'native_import')
+    : matchedNativeChecks;
+  const failedByName = new Map(failedChecks.map(check => [String(check.name || '').toLowerCase(), check]));
+  for (const nativeCheck of dependencyCandidates) {
+    const dependencies = NATIVE_SYSTEM_DEPENDENCIES.get(String(nativeCheck.name || '').toLowerCase()) || [];
+    for (const dependency of dependencies) {
+      const rootCheck = failedByName.get(dependency.toLowerCase());
+      if (rootCheck) return rootCheck;
+    }
+  }
+  if (matchedNativeChecks.length) return matchedNativeChecks[0];
+  if (startupFailure == null && failedChecks.length === 1) return failedChecks[0];
+  return null;
+}
+
+function shortStartupError(value, maxChars = FAILURE_MESSAGE_MAX_CHARS) {
+  // 对齐 desktop_app._short_error。
+  const message = String(value ?? '').trim();
+  if (message.length <= maxChars) return message;
+  return message.slice(0, maxChars - 3) + '...';
+}
+
+function buildStartupFailureStatus(error, doctorResult, childFailure) {
+  // 对齐 _build_failed_status: doctor 阻塞项 > 子进程失败记录 > 原始异常。
+  const blockingCheck = selectBlockingDoctorCheck(doctorResult, childFailure);
+  if (blockingCheck != null) {
+    const component = String(blockingCheck.name || 'unknown');
+    const displayName = String(blockingCheck.display_name || component);
+    return {
+      title: '运行环境缺少必要组件',
+      message: `${displayName} 无法加载：${shortStartupError(blockingCheck.message || '加载失败')}`,
+      component,
+      diagnosticPath: doctorOutputPath,
+    };
+  }
+  if (childFailure != null) {
+    const role = String(childFailure.process_role || 'service');
+    const errorType = String(childFailure.error_type || 'Error');
+    return {
+      title: 'WorkSwarm 服务启动失败',
+      message: `${role}: ${errorType}: ${shortStartupError(childFailure.message || error?.message)}`,
+      component: role,
+      diagnosticPath: childFailure.diagnostic_path || startupDiagnosticsDir,
+    };
+  }
+  return {
+    title: 'WorkSwarm 服务启动失败',
+    message: shortStartupError(error?.message) || '未知启动错误',
+    component: 'desktop-startup',
+    diagnosticPath: startupDiagnosticsDir,
+  };
+}
+
 function canUseBackendUpdateHelper() {
   if (process.platform !== 'win32' || !app.isPackaged || isFrontendOnly || !sessionPorts) {
     return false;
@@ -1334,6 +2048,50 @@ function registerIpcHandlers() {
     });
     return result.canceled ? null : result.filePaths[0] || null;
   });
+  registerHandler('desktop:select-local-files', async (allowMultiple, initialDir) => {
+    const startDir = await resolveFilePickerInitialDir(initialDir);
+    let result;
+    try {
+      result = await dialog.showOpenDialog(mainWindow, {
+        defaultPath: startDir,
+        properties: allowMultiple === false ? ['openFile'] : ['openFile', 'multiSelections'],
+        filters: ATTACHMENT_DIALOG_FILTER,
+      });
+    } catch (error) {
+      console.error('[electron] local file picker failed', error);
+      return [];
+    }
+    if (result.canceled || !result.filePaths.length) return [];
+    const picks = await describeLocalPaths(result.filePaths);
+    if (picks.length) await rememberPickerDir(picks[0].path || result.filePaths[0]);
+    return picks;
+  });
+  registerHandler('desktop:select-local-file-path', async (initialPath, title) => {
+    const options = {
+      defaultPath: expandHomePath(initialPath) || app.getPath('home'),
+      properties: ['openFile'],
+    };
+    if (typeof title === 'string' && title.trim()) options.title = title.trim();
+    if (process.platform === 'win32') {
+      options.filters = [
+        { name: 'Executable files', extensions: ['exe'] },
+        { name: 'All files', extensions: ['*'] },
+      ];
+    }
+    const result = await dialog.showOpenDialog(mainWindow, options);
+    if (result.canceled || !result.filePaths.length) return null;
+    return path.resolve(result.filePaths[0]);
+  });
+  registerHandler('desktop:describe-local-files', async paths => {
+    const list = typeof paths === 'string' ? [paths]
+      : Array.isArray(paths) ? paths.filter(item => typeof item === 'string' && item.trim())
+        : [];
+    return describeLocalPaths(list);
+  });
+  registerHandler('desktop:get-clipboard-files', async () => {
+    const paths = await clipboardFilePaths();
+    return describeLocalPaths(paths);
+  });
   registerHandler('desktop:save-data-url', async (dataUrl, filename) => {
     if (typeof dataUrl !== 'string' || !dataUrl.startsWith(PNG_DATA_URL_PREFIX)) {
       return { ok: false, cancelled: false };
@@ -1344,11 +2102,119 @@ function registerIpcHandlers() {
     });
     if (result.canceled || !result.filePath) return { ok: false, cancelled: true };
     const bytes = Buffer.from(dataUrl.slice(PNG_DATA_URL_PREFIX.length), 'base64');
-    if (!bytes.subarray(0, 8).equals(Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]))) {
+    if (!bytes.subarray(0, 8).equals(PNG_SIGNATURE)) {
       return { ok: false, cancelled: false };
     }
     await fs.writeFile(result.filePath, bytes);
     return { ok: true, cancelled: false };
+  });
+  registerHandler('desktop:begin-blob-save', async (filename, mimeType, totalSize) => {
+    let resolved;
+    try {
+      resolved = resolveBlobExport(filename, mimeType, totalSize);
+    } catch (error) {
+      console.error('[electron] invalid blob export metadata', error);
+      return { ok: false, cancelled: false };
+    }
+    let targetPath = null;
+    try {
+      const result = await dialog.showSaveDialog(mainWindow, {
+        defaultPath: path.join(app.getPath('downloads'), resolved.safeName),
+        filters: [resolved.spec.filter],
+      });
+      if (!result.canceled && result.filePath) targetPath = result.filePath;
+    } catch (error) {
+      console.error('[electron] failed to begin blob export', error);
+      return { ok: false, cancelled: false };
+    }
+    if (targetPath === null) return { ok: false, cancelled: true };
+    const tempPath = path.join(
+      path.dirname(targetPath),
+      `.${path.basename(targetPath)}.${randomUUID().replaceAll('-', '')}.part`,
+    );
+    let handle;
+    try {
+      handle = await fs.open(tempPath, 'wx');
+    } catch (error) {
+      console.error('[electron] failed to create blob export transaction', error);
+      return { ok: false, cancelled: false };
+    }
+    const transferId = randomUUID().replaceAll('-', '');
+    blobSaveTransfers.set(transferId, {
+      expectedSize: totalSize,
+      mimeType: resolved.mimeType,
+      targetPath,
+      tempPath,
+      handle,
+      bytesWritten: 0,
+      signature: Buffer.alloc(0),
+    });
+    return { ok: true, cancelled: false, transfer_id: transferId };
+  });
+  registerHandler('desktop:append-blob-save', async (transferId, encodedChunk) => {
+    if (typeof transferId !== 'string') return false;
+    const transfer = blobSaveTransfers.get(transferId);
+    if (!transfer) return false;
+    const maxEncodedSize = Math.floor((DESKTOP_BLOB_CHUNK_SIZE + 2) / 3) * 4;
+    try {
+      if (typeof encodedChunk !== 'string' || !encodedChunk
+        || encodedChunk.length > maxEncodedSize
+        || encodedChunk.length % 4 !== 0
+        || !BASE64_CHUNK_PATTERN.test(encodedChunk)) {
+        throw new Error('invalid_blob_chunk');
+      }
+      const chunk = Buffer.from(encodedChunk, 'base64');
+      if (chunk.length === 0 || chunk.length > DESKTOP_BLOB_CHUNK_SIZE) {
+        throw new Error('invalid_blob_chunk_size');
+      }
+      if (transfer.bytesWritten + chunk.length > transfer.expectedSize) {
+        throw new Error('blob_size_exceeded');
+      }
+      const { bytesWritten } = await transfer.handle.write(chunk);
+      if (bytesWritten !== chunk.length) throw new Error('incomplete_blob_chunk_write');
+      transfer.bytesWritten += bytesWritten;
+      if (transfer.signature.length < PNG_SIGNATURE.length) {
+        transfer.signature = Buffer.concat([
+          transfer.signature,
+          chunk.subarray(0, PNG_SIGNATURE.length - transfer.signature.length),
+        ]);
+      }
+      return true;
+    } catch (error) {
+      console.error('[electron] failed to append blob export', error);
+      blobSaveTransfers.delete(transferId);
+      await discardBlobSaveTransfer(transfer);
+      return false;
+    }
+  });
+  registerHandler('desktop:finish-blob-save', async transferId => {
+    if (typeof transferId !== 'string') return { ok: false, cancelled: false };
+    const transfer = blobSaveTransfers.get(transferId);
+    if (!transfer) return { ok: false, cancelled: false };
+    blobSaveTransfers.delete(transferId);
+    try {
+      if (transfer.bytesWritten !== transfer.expectedSize) throw new Error('blob_size_mismatch');
+      if (transfer.mimeType === 'image/png' && !transfer.signature.equals(PNG_SIGNATURE)) {
+        throw new Error('invalid_png_signature');
+      }
+      await transfer.handle.sync();
+      await transfer.handle.close();
+      await fs.rename(transfer.tempPath, transfer.targetPath);
+      console.log(`[electron] blob export saved to: ${transfer.targetPath}`);
+      return { ok: true, cancelled: false };
+    } catch (error) {
+      console.error('[electron] failed to finish blob export', error);
+      await discardBlobSaveTransfer(transfer);
+      return { ok: false, cancelled: false };
+    }
+  });
+  registerHandler('desktop:abort-blob-save', async transferId => {
+    if (typeof transferId !== 'string') return false;
+    const transfer = blobSaveTransfers.get(transferId);
+    if (!transfer) return false;
+    blobSaveTransfers.delete(transferId);
+    await discardBlobSaveTransfer(transfer);
+    return true;
   });
   registerHandler('desktop:download-file', async (url, filename) => {
     const targetUrl = new URL(String(url), currentFrontendUrl);
@@ -1457,7 +2323,7 @@ function registerIpcHandlers() {
 
 async function createMainWindow() {
   mainWindow = new BrowserWindow({
-    title: 'JiuwenSwarm',
+    title: 'WorkSwarm',
     width: 1600,
     height: 1000,
     minWidth: 1100,
@@ -1503,8 +2369,9 @@ async function createMainWindow() {
     // frontend skeleton; API/WS are reconnected by the frontend once the
     // gateway is up (same contract as the Python desktop on_web_ready).
     navigated = true;
-    currentFrontendUrl = earlyUrl;
-    console.log('[electron] early loading frontend:', earlyUrl);
+    // currentFrontendUrl 是 download-file 的相对 URL 解析基址, 保持不含 token。
+    currentFrontendUrl = new URL(earlyUrl).origin;
+    console.log('[electron] early loading frontend:', currentFrontendUrl);
     void mainWindow
       .loadURL(earlyUrl)
       .then(() => {
@@ -1528,6 +2395,10 @@ async function createMainWindow() {
       console.error('[electron] loading page load failed', error);
     });
     console.log('[electron] starting web service...');
+    // 对齐 desktop_app.start_services: 任何子进程 spawn 前先做 per-workspace
+    // Gateway 单例预检, 冲突时完全不占用端口组(两个 Gateway = 两套
+    // CronScheduler = cron 重复执行)。
+    await preflightGatewaySingleton();
     webStartup = await startWebService(onWebReady);
   }
 
@@ -1567,11 +2438,12 @@ async function createMainWindow() {
 
   console.log('[electron] starting backend services...');
   await startBackendServices(webStartup);
-  const frontendUrl = `http://${FRONTEND_HOST}:${webStartup.ports.frontend}`;
-  currentFrontendUrl = frontendUrl;
+  const frontendBase = `http://${FRONTEND_HOST}:${webStartup.ports.frontend}`;
+  currentFrontendUrl = frontendBase;
   if (!navigated) {
-    console.log('[electron] loading frontend:', frontendUrl);
-    await mainWindow.loadURL(frontendUrl);
+    const entryUrl = VITE_DEV_MODE ? frontendBase : desktopEntryUrl(frontendBase);
+    console.log('[electron] loading frontend:', frontendBase);
+    await mainWindow.loadURL(entryUrl);
     mainWindow.show();
     mainWindow.focus();
     if (process.platform === 'darwin') app.focus({ steal: true });
@@ -1624,7 +2496,7 @@ app.on('before-quit', event => {
   event.preventDefault();
   // 冲刷待写的会话页面 URL（取消防抖定时器），保证重启还原不丢最后一次导航。
   saveSessionLastUrls();
-  void stopServices().finally(() => {
+  void Promise.all([abortAllBlobSaves(), stopServices()]).finally(() => {
     shutdownComplete = true;
     app.exit(requestedExitCode);
   });

@@ -20,7 +20,15 @@ const desktopApi = Object.freeze({
   downloadFile: (url, filename) => invoke('desktop:download-file', url, filename),
   installUpdate: installerPath => invoke('desktop:install-update', installerPath),
   saveDataUrl: (dataUrl, filename) => invoke('desktop:save-data-url', dataUrl, filename),
+  beginBlobSave: (filename, mimeType, totalSize) => invoke('desktop:begin-blob-save', filename, mimeType, totalSize),
+  appendBlobSave: (transferId, encodedChunk) => invoke('desktop:append-blob-save', transferId, encodedChunk),
+  finishBlobSave: transferId => invoke('desktop:finish-blob-save', transferId),
+  abortBlobSave: transferId => invoke('desktop:abort-blob-save', transferId),
   selectProjectDirectory: () => invoke('desktop:select-project-directory'),
+  selectLocalFiles: (allowMultiple, initialDir) => invoke('desktop:select-local-files', allowMultiple, initialDir),
+  selectLocalFilePath: (initialPath, title) => invoke('desktop:select-local-file-path', initialPath, title),
+  describeLocalFiles: paths => invoke('desktop:describe-local-files', paths),
+  getClipboardFiles: () => invoke('desktop:get-clipboard-files'),
   onLayoutInvalidated: callback => {
     const listener = () => callback();
     ipcRenderer.on('desktop:layout-invalidated', listener);
@@ -56,6 +64,14 @@ contextBridge.exposeInMainWorld('pywebview', {
     download_file: desktopApi.downloadFile,
     install_update: desktopApi.installUpdate,
     save_data_url: desktopApi.saveDataUrl,
+    begin_blob_save: desktopApi.beginBlobSave,
+    append_blob_save: desktopApi.appendBlobSave,
+    finish_blob_save: desktopApi.finishBlobSave,
+    abort_blob_save: desktopApi.abortBlobSave,
     select_project_directory: desktopApi.selectProjectDirectory,
+    select_local_files: desktopApi.selectLocalFiles,
+    select_local_file_path: desktopApi.selectLocalFilePath,
+    describe_local_files: desktopApi.describeLocalFiles,
+    get_clipboard_files: desktopApi.getClipboardFiles,
   },
 });

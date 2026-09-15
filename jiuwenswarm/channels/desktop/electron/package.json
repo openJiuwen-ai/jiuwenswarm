@@ -7,9 +7,12 @@
   "scripts": {
     "build:web": "npm --prefix ../../web/frontend run build",
     "start": "node launch.cjs",
+    "prestart": "npm run check:contract",
     "dev": "node launch.cjs --vite-dev",
+    "predev": "npm run check:contract",
     "dev:build": "npm run build:web && node launch.cjs",
     "check": "node --check launch.cjs && node --check main.cjs && node --check preload.cjs && node --check target_mcp_wrapper.cjs",
+    "check:contract": "uv run --directory ../../../../ pytest tests/unit_tests/test_desktop_electron_contract.py --no-cov -q",
     "electron:build": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1",
     "electron:build:test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test",
     "electron:build:frontend-test": "powershell -ExecutionPolicy Bypass -File ../../../../scripts/build-electron-exe.ps1 -Test -FrontendOnly",
