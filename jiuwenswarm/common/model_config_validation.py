@@ -105,7 +105,6 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
         return ["models.defaults, models.agentos and models.groups must be arrays"]
 
     model_ids: set[str] = set()
-    default_models = 0
     for source, entries in (("defaults", defaults), ("agentos", agentos)):
         for index, entry in enumerate(entries):
             if not isinstance(entry, dict):
@@ -118,14 +117,11 @@ def validate_models_config(models: dict[str, Any]) -> list[str]:
                 errors.append(f"duplicate model_id: {model_id}")
             else:
                 model_ids.add(model_id)
-            if entry.get("is_default") is True:
-                if source == "agentos":
-                    errors.append(f"agentos[{index}] cannot be default")
-                else:
-                    default_models += 1
+            # Legacy defaults are scoped to each model name, not the entire
+            # catalog. Preserve those flags when adding stable IDs.
+            if source == "agentos" and entry.get("is_default") is True:
+                errors.append(f"agentos[{index}] cannot be default")
             _validate_model_detail(entry, f"{source}[{index}]", errors)
-    if default_models > 1:
-        errors.append("at most one default model is allowed")
 
     group_ids: set[str] = set()
     default_groups = 0

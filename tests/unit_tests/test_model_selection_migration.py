@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from copy import deepcopy
+
 import pytest
 
 from jiuwenswarm.common.model_config_validation import validate_models_config
@@ -40,6 +42,60 @@ def test_catalog_is_desensitized():
     catalog = ModelCatalog(_config())
     assert "api_key" not in catalog.list_public_models()[0]
     assert catalog.get_model("mdl_a")["entry"]["model_client_config"]["api_key"] == "secret"
+
+
+@pytest.mark.parametrize("has_group", [False, True])
+def test_multiple_legacy_defaults_remain_valid_with_or_without_groups(has_group):
+    models = _config()["models"]
+    second = deepcopy(models["defaults"][0])
+    second["model_id"] = "mdl_c"
+    second["model_client_config"]["model_name"] = "c"
+    models["defaults"].append(second)
+    if not has_group:
+        models["groups"] = []
+
+    assert validate_models_config(models) == []
+
+
+@pytest.mark.parametrize("with_empty_groups", [False, True])
+def test_legacy_migration_only_adds_stable_ids(monkeypatch, with_empty_groups):
+    from jiuwenswarm.common import config as config_module
+
+    state = _config()
+    models = state["models"]
+    models.pop("groups")
+    if with_empty_groups:
+        models["groups"] = []
+    second = deepcopy(models["defaults"][0])
+    second["model_client_config"]["model_name"] = "c"
+    models["defaults"].append(second)
+    for entry in models["defaults"] + models["agentos"]:
+        entry.pop("model_id")
+    original = deepcopy(state)
+    writes = []
+
+    def update_config(mutator):
+        candidate = deepcopy(state)
+        result = mutator(candidate)
+        if result is not None:
+            state.clear()
+            state.update(result)
+            writes.append(deepcopy(result))
+
+    monkeypatch.setattr(config_module, "update_config", update_config)
+    assert config_module.migrate_model_business_ids() is True
+    migrated = deepcopy(state)
+    entries = state["models"]["defaults"] + state["models"]["agentos"]
+    ids = [entry["model_id"] for entry in entries]
+    assert len(set(ids)) == len(entries)
+    assert all(model_id.startswith("mdl_") for model_id in ids)
+    without_ids = deepcopy(state)
+    for entry in without_ids["models"]["defaults"] + without_ids["models"]["agentos"]:
+        entry.pop("model_id")
+    assert without_ids == original
+    assert config_module.migrate_model_business_ids() is False
+    assert state == migrated
+    assert len(writes) == 1
 
 
 def test_model_detail_is_editable_without_exposing_write_only_values():
