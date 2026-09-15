@@ -44,6 +44,11 @@ start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%"
 if errorlevel 1 exit /b 1
 
 echo.
+echo Verifying frozen GitCode CLI bundle...
+start "" /wait "%cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%" "%cd%\scripts\verify_gitcode_cli_bundle.py"
+if errorlevel 1 exit /b 1
+
+echo.
 echo === Build complete ===
 echo Desktop dir: %cd%\dist\%BUILD_DIST_DIR_NAME%
 echo Main exe:    %cd%\dist\%BUILD_DIST_DIR_NAME%\%BUILD_EXECUTABLE_NAME_WINDOWS%

@@ -235,6 +235,9 @@ fi
 printf 'Verifying frozen A2UI v0.8 bundle...\n'
 "$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
 
+printf 'Verifying frozen GitCode CLI bundle...\n'
+"$APP_PATH/Contents/MacOS/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
+
 if [[ -n "$TUI_BINARY" && -f "$TUI_BINARY" ]]; then
   printf 'Copying TUI binary into app bundle...\n'
   cp "$TUI_BINARY" "$APP_PATH/Contents/MacOS/jiuwenswarm-tui"

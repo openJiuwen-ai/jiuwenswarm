@@ -19,6 +19,34 @@ The browser-free runtime archive contains the following production packages reso
 | playwright-core | 1.62.0-alpha-1783623505000 | Apache-2.0 | npm package `playwright-core` |
 | fsevents (optional; omitted from the cross-platform archive) | 2.3.2 | MIT | npm package `fsevents` |
 
+### Bundled GitCode CLI
+
+The frozen executable bundles the current platform's pre-compiled native binary from the `gitcode-cli` Python distribution (`gc_cli/bin/`), installed as the `gitcode` command.
+
+| Software | Version | License | Provenance |
+|---|---:|---|---|
+| gitcode-cli | 0.12.0 | MIT | PyPI package `gitcode-cli` (`https://gitcode.com/gitcode-cli/cli`) |
+
+**License:** MIT License
+
+Copyright (c) 2026 gitcode-cli contributors
+
+Permission is hereby granted, free of charge, to any person obtaining a copy
+of this software and associated documentation files (the "Software"), to deal
+in the Software without restriction, including without limitation the rights
+to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+copies of the Software, and to permit persons to whom the Software is
+furnished to do so, subject to the following conditions:
+The above copyright notice and this permission notice shall be included in
+all copies or substantial portions of the Software.
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+THE SOFTWARE.
+
 ### Software: Python 3.11.x, 3.12.x, 3.13.x
 
 **License:** Python Software Foundation License V2

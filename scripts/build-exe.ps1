@@ -283,6 +283,17 @@ if ($VerifyProcess.ExitCode -ne 0) {
     throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
 }
 
+$GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
+$GitCodeVerifyProcess = Start-Process `
+    -FilePath $FrozenExe `
+    -ArgumentList @($GitCodeVerifier) `
+    -Wait `
+    -PassThru `
+    -NoNewWindow
+if ($GitCodeVerifyProcess.ExitCode -ne 0) {
+    throw "Frozen GitCode CLI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+}
+
 # 3.5 Bundle Node.js runtime for browser tools
 if (Test-Truthy $BundleNode) {
     Write-Host "`n[3.5/4] Bundling Node.js runtime..." -ForegroundColor Yellow

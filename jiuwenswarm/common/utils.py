@@ -1439,7 +1439,7 @@ def _ensure_mcp_builtins(
             if path.is_dir() and not path.name.startswith(".")
         ]
         packages = iter_mcp_packages(tmp_dir)
-        if not package_dirs or len(packages) != len(package_dirs):
+        if len(packages) != len(package_dirs):
             raise OSError("MCP seed contains an invalid package manifest")
     except (OSError, zipfile.BadZipFile) as exc:
         logger.error("[mcp_builtins] extract %s failed: %s", seed_zip, exc)
