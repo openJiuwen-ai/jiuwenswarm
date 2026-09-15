@@ -946,6 +946,7 @@ def _clipboard_image_pick() -> dict[str, Any] | None:
         "base64": base64.b64encode(raw).decode("ascii"),
     }
 
+
 class DesktopRuntime:
     def __init__(
         self, frontend_host: str, ports: dict[str, int]
