@@ -270,6 +270,8 @@ async def test_real_deep_agent_routes_needs_input_resume_without_shared_extra(
             _tool("skill_tool", skill),
         ],
         rails=[rail, AskUserRail()],
+        # A background image probe would consume a scripted tool response.
+        enable_read_image_multimodal=False,
         auto_create_workspace=False,
         enable_task_loop=False,
         max_iterations=8,
@@ -338,6 +340,8 @@ async def test_real_deep_agent_rekeys_two_needs_input_rounds() -> None:
             _tool("skill_tool", skill),
         ],
         rails=[SymphonyOrchestrationRail(), AskUserRail()],
+        # Keep every scripted response assigned to the interaction sequence.
+        enable_read_image_multimodal=False,
         auto_create_workspace=False,
         enable_task_loop=False,
         max_iterations=12,
