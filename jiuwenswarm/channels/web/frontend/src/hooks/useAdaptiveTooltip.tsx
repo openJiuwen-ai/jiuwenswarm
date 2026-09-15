@@ -45,6 +45,9 @@ interface UseAdaptiveTooltipOptions {
  * offsetX: 相对触发元素宽度的百分比偏移（负值向左），0 = 居中，-50 = 左移半个触发元素宽度。
  * placement: 'top' 显示在触发元素上方，'bottom'（默认）显示在下方。
  *
+ * 自动隐藏时机：hover/focus 离开、点击任意位置、按下任意键、焦点移到其他元素、
+ * 触发元素被卸载（如弹出菜单关闭）或页面滚动/缩放。
+ *
  * 用法：
  *   const { tooltip, handlers } = useAdaptiveTooltip();
  *   const { tooltip, handlers } = useAdaptiveTooltip({ offsetX: -50 });
@@ -63,25 +66,35 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   const [state, setState] = useState<TooltipState | null>(null);
   const [position, setPosition] = useState<{ top: number; left: number; visible: boolean } | null>(null);
   const tooltipRef = useRef<HTMLDivElement>(null);
-
-  const show = useCallback((event: { currentTarget: EventTarget | null }) => {
-    const el = event.currentTarget as HTMLElement | null;
-    const text = el?.getAttribute('data-tooltip') ?? '';
-    if (!el || !text) return;
-    const anchor = anchorRef?.current ?? el;
-    const rect = anchor.getBoundingClientRect();
-    setPosition(null);
-    setState({
-      text,
-      buttonRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
-      placement,
-    });
-  }, [placement, anchorRef]);
+  const triggerRef = useRef<HTMLElement | null>(null);
 
   const hide = useCallback(() => {
+    triggerRef.current = null;
     setState(null);
     setPosition(null);
   }, []);
+
+  const show = useCallback(
+    (event: { currentTarget: EventTarget | null }) => {
+      const el = event.currentTarget as HTMLElement | null;
+      const text = el?.getAttribute('data-tooltip') ?? '';
+      if (!el) return;
+      if (!text) {
+        hide();
+        return;
+      }
+      const anchor = anchorRef?.current ?? el;
+      const rect = anchor.getBoundingClientRect();
+      triggerRef.current = el;
+      setPosition(null);
+      setState({
+        text,
+        buttonRect: { left: rect.left, right: rect.right, top: rect.top, bottom: rect.bottom },
+        placement,
+      });
+    },
+    [placement, anchorRef, hide],
+  );
 
   useLayoutEffect(() => {
     if (!state) {
@@ -129,14 +142,33 @@ export function useAdaptiveTooltip(options?: UseAdaptiveTooltipOptions): { toolt
   useEffect(() => {
     if (!state) return;
     const hideTooltip = () => {
+      triggerRef.current = null;
       setState(null);
       setPosition(null);
     };
+    const onPointerDown = () => hideTooltip();
+    const onKeyDown = () => hideTooltip();
+    const onFocusIn = (event: FocusEvent) => {
+      if (event.target !== triggerRef.current) hideTooltip();
+    };
+    // 触发元素可能在 hover/focus 期间被整体卸载（如弹出菜单关闭），
+    // 此时 mouseleave/blur 永远不会触发，state 会残留并在容器重新挂载时复活旧 tooltip。
+    const observer = new MutationObserver(() => {
+      if (triggerRef.current && !triggerRef.current.isConnected) hideTooltip();
+    });
+    observer.observe(document.body, { childList: true, subtree: true });
     window.addEventListener('resize', hideTooltip);
     window.addEventListener('scroll', hideTooltip, true);
+    document.addEventListener('pointerdown', onPointerDown, true);
+    document.addEventListener('keydown', onKeyDown, true);
+    document.addEventListener('focusin', onFocusIn);
     return () => {
+      observer.disconnect();
       window.removeEventListener('resize', hideTooltip);
       window.removeEventListener('scroll', hideTooltip, true);
+      document.removeEventListener('pointerdown', onPointerDown, true);
+      document.removeEventListener('keydown', onKeyDown, true);
+      document.removeEventListener('focusin', onFocusIn);
     };
   }, [state]);
 

@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
+import { createPortal } from 'react-dom';
 import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
@@ -357,8 +358,29 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
   useClickOutside(createMenuRef, createMenuOpen, () => setCreateMenuOpen(false));
 
   const [rowMenuJobId, setRowMenuJobId] = useState<string | null>(null);
+  const [rowMenuAnchor, setRowMenuAnchor] = useState<DOMRect | null>(null);
+  const [rowMenuDirection, setRowMenuDirection] = useState<'up' | 'down'>('down');
   const rowMenuRef = useRef<HTMLDivElement>(null);
-  useClickOutside(rowMenuRef, rowMenuJobId !== null, () => setRowMenuJobId(null));
+  const rowMenuPortalRef = useRef<HTMLDivElement>(null);
+  const closeRowMenu = useCallback(() => {
+    setRowMenuJobId(null);
+    setRowMenuAnchor(null);
+  }, []);
+  // "更多"菜单 portal 到 body（fixed 定位）才能脱离 table 文档流，否则 absolute 弹层的
+  // 溢出会把 overflow-x-auto 的表格容器撑出滚动条/把行撑高。portal 后不在 rowMenuRef
+  // 子树里，不能再用 useClickOutside（会把"点选项"误判成"点外面"，选项 onClick 还没
+  // 触发菜单就卸载）。这里自己挂 pointerdown，同时判定触发器与 portal 菜单两个 ref，
+  // 与 ModeSelector（CronPanel/ModeSelector.tsx）同一套口径。
+  useEffect(() => {
+    if (rowMenuJobId === null) return;
+    const handlePointerDown = (e: PointerEvent) => {
+      if (!rowMenuRef.current?.contains(e.target as Node) && !rowMenuPortalRef.current?.contains(e.target as Node)) {
+        closeRowMenu();
+      }
+    };
+    document.addEventListener('pointerdown', handlePointerDown);
+    return () => document.removeEventListener('pointerdown', handlePointerDown);
+  }, [rowMenuJobId, closeRowMenu]);
 
   // "触发的会话"弹层：跟"更多"菜单同一套开合逻辑，但单独维护 ref/开关，因为触发的会话
   // 弹层是从"更多"菜单里的一个按钮打开的，不共用同一个 ref（点击弹层内部会话行不应该被
@@ -1082,75 +1104,105 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
                   {t('cron.table.start')}
                 </button>
               )}
-              <div className="relative" ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
+              <div ref={rowMenuJobId === job.id ? rowMenuRef : undefined}>
                 <button
-                  onClick={() => setRowMenuJobId(rowMenuJobId === job.id ? null : job.id)}
+                  onClick={(e) => {
+                    if (rowMenuJobId === job.id) {
+                      closeRowMenu();
+                      return;
+                    }
+                    const rect = e.currentTarget.getBoundingClientRect();
+                    setRowMenuDirection(window.innerHeight - rect.bottom >= 150 ? 'down' : 'up');
+                    setRowMenuAnchor(rect);
+                    setRowMenuJobId(job.id);
+                  }}
                   data-testid="cron-job-more-btn"
                   className="flex items-center gap-0.5 text-sm text-cron-action-link hover:opacity-80"
                 >
                   {t('cron.table.more')} <ChevronDown size={13} />
                 </button>
-                {rowMenuJobId === job.id && (
-                  <div
-                    className="absolute right-0 top-[calc(100%+4px)] z-20 w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
-                    data-testid="cron-job-more-menu"
-                  >
-                    <button
-                      onClick={() => {
-                        setRowMenuJobId(null);
-                        void toggleSessionsPopover(job);
-                      }}
-                      data-testid="cron-job-more-triggered-sessions-btn"
-                      className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                {rowMenuJobId === job.id &&
+                  rowMenuAnchor &&
+                  createPortal(
+                    <div
+                      ref={rowMenuPortalRef}
+                      className="w-28 rounded-lg border border-border bg-card py-1.5 shadow-lg"
+                      style={
+                        rowMenuDirection === 'up'
+                          ? {
+                              position: 'fixed',
+                              bottom: window.innerHeight - rowMenuAnchor.top + 4,
+                              left: rowMenuAnchor.right,
+                              transform: 'translateX(-100%)',
+                              zIndex: 9999,
+                            }
+                          : {
+                              position: 'fixed',
+                              top: rowMenuAnchor.bottom + 4,
+                              left: rowMenuAnchor.right,
+                              transform: 'translateX(-100%)',
+                              zIndex: 9999,
+                            }
+                      }
+                      data-testid="cron-job-more-menu"
                     >
-                      {t('cron.table.triggeredSessions')}
-                    </button>
-                    <button
-                      onClick={() => {
-                        setRowMenuJobId(null);
-                        void togglePreviewPopover(job);
-                      }}
-                      data-testid="cron-job-more-preview-btn"
-                      className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
-                    >
-                      {t('cron.previewAction')}
-                    </button>
-                    {isProactive ? (
-                      <span
-                        className="block w-full px-3 py-2 text-left text-sm text-text-muted/50 cursor-not-allowed"
-                        title={t('cron.autoManagedToggleDisabled') ?? undefined}
-                        data-testid="cron-job-more-delete-btn"
-                        data-variant="disabled"
-                      >
-                        {t('cron.delete')}
-                      </span>
-                    ) : (
                       <button
                         onClick={() => {
-                          setRowMenuJobId(null);
-                          setConfirmState({ type: 'delete', job });
+                          closeRowMenu();
+                          void toggleSessionsPopover(job);
                         }}
-                        data-testid="cron-job-more-delete-btn"
-                        data-variant="enabled"
-                        className="block w-full px-3 py-2 text-left text-sm text-danger hover:bg-bg-hover"
-                      >
-                        {t('cron.delete')}
-                      </button>
-                    )}
-                    {CRON_HISTORY_UI_ENABLED && (
-                      <button
-                        onClick={() => {
-                          setRowMenuJobId(null);
-                          setSuccess(t('cron.history.comingSoon'));
-                        }}
-                        data-testid="cron-job-more-history-btn"
+                        data-testid="cron-job-more-triggered-sessions-btn"
                         className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
                       >
-                        {t('cron.table.history')}
+                        {t('cron.table.triggeredSessions')}
                       </button>
-                    )}
-                  </div>
-                )}
+                      <button
+                        onClick={() => {
+                          closeRowMenu();
+                          void togglePreviewPopover(job);
+                        }}
+                        data-testid="cron-job-more-preview-btn"
+                        className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                      >
+                        {t('cron.previewAction')}
+                      </button>
+                      {isProactive ? (
+                        <span
+                          className="block w-full px-3 py-2 text-left text-sm text-text-muted/50 cursor-not-allowed"
+                          title={t('cron.autoManagedToggleDisabled') ?? undefined}
+                          data-testid="cron-job-more-delete-btn"
+                          data-variant="disabled"
+                        >
+                          {t('cron.delete')}
+                        </span>
+                      ) : (
+                        <button
+                          onClick={() => {
+                            closeRowMenu();
+                            setConfirmState({ type: 'delete', job });
+                          }}
+                          data-testid="cron-job-more-delete-btn"
+                          data-variant="enabled"
+                          className="block w-full px-3 py-2 text-left text-sm text-danger hover:bg-bg-hover"
+                        >
+                          {t('cron.delete')}
+                        </button>
+                      )}
+                      {CRON_HISTORY_UI_ENABLED && (
+                        <button
+                          onClick={() => {
+                            closeRowMenu();
+                            setSuccess(t('cron.history.comingSoon'));
+                          }}
+                          data-testid="cron-job-more-history-btn"
+                          className="block w-full px-3 py-2 text-left text-sm text-cron-action-link hover:bg-bg-hover"
+                        >
+                          {t('cron.table.history')}
+                        </button>
+                      )}
+                    </div>,
+                    document.body,
+                  )}
               </div>
             </div>
             {sessionsPopoverJobId === job.id && (
@@ -1252,6 +1304,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
     // 翻转 → 高度又变 → 在临界宽度附近来回抖动（x 滚动条快速切换闪烁的根源）
     <div
       className="flex-1 min-h-0 relative overflow-y-auto [scrollbar-gutter:stable]"
+      onScroll={closeRowMenu}
       data-testid="cron-panel"
       data-session-id={sessionId}
     >
@@ -1537,6 +1590,7 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             <div
               ref={tableWrapperRef}
               className="overflow-x-auto rounded-lg border border-[var(--color-border-default)]"
+              onScroll={closeRowMenu}
               data-testid="cron-jobs-table"
             >
               <table ref={tableRef} className="w-full border-collapse text-sm" style={{ tableLayout: 'fixed' }}>

@@ -13,6 +13,7 @@ import { DefinitionUploadDialog } from './AgentGroupUploadDialog';
 import { GroupCatalogPage, GROUP_PAGE_SIZE } from './GroupCatalogPage';
 import { PendingConnectorModals, usePendingConnectorFlow } from '../ConnectorMarket/usePendingConnectorFlow';
 import { useConnectorStore } from '../../stores/connectorStore';
+import { seedAgentCatalog } from '../../stores/agentCatalogStore';
 import {
   AgentInstallPendingError,
   AgentManagementError,
@@ -352,6 +353,8 @@ export function AgentManagementPanel({
       if (revision !== catalogRevisionRef.current) return;
       withCatalogCache(catalog, marketplaceCatalog.cache);
       catalogRef.current = catalog;
+      // 回填共享目录缓存：聊天输入区的专家 tag 依赖它首帧解析 displayName/头像。
+      seedAgentCatalog(catalog);
       dispatch({ type: 'catalog.loaded', catalog });
     } catch (error) {
       if (revision !== catalogRevisionRef.current) return;

@@ -1970,6 +1970,7 @@
       "install": "Install",
       "installing": "Installing...",
       "uninstall": "Uninstall",
+      "uninstalling": "Uninstalling...",
       "importLocal": "Import Local Skill",
       "sourceManager": "Source Manager",
       "create": "Create",

@@ -202,7 +202,7 @@ export function SkillDetailView(props: SkillDetailViewProps) {
             style={{ width: '96px', height: '32px' }}
             data-testid="skill-panel-hub-detail-install-btn"
           >
-            {installing ? t('common.processing') : t('skills.actions.install')}
+            {installing ? t('skills.actions.installing') : t('skills.actions.install')}
           </button>
         )}
       </div>,
@@ -265,6 +265,8 @@ export function SkillDetailView(props: SkillDetailViewProps) {
     onGoToChat,
   } = props;
   const skillAvatar = getSkillAvatar(selectedSkill.name);
+  const uninstallPluginName = installedSkillMap.get(selectedSkill.name)?.plugin_name || selectedSkill.name;
+  const uninstalling = actionTarget === `uninstall:${uninstallPluginName}`;
   return renderShell(
     {
       avatar: skillAvatar,
@@ -336,15 +338,19 @@ export function SkillDetailView(props: SkillDetailViewProps) {
                 {t('skills.actions.edit')}
               </button>
               <button
-                onClick={() => {
-                  setDetailMenuOpen(false);
-                  const plugin = installedSkillMap.get(selectedSkill.name);
-                  onUninstall(plugin?.plugin_name || selectedSkill.name);
-                }}
-                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary"
+                onClick={
+                  uninstalling
+                    ? undefined
+                    : () => {
+                        setDetailMenuOpen(false);
+                        onUninstall(uninstallPluginName);
+                      }
+                }
+                disabled={uninstalling}
+                className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                 data-testid="skill-panel-my-detail-menu-uninstall"
               >
-                {t('skills.actions.uninstall')}
+                {t(uninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
               </button>
             </div>
           </>

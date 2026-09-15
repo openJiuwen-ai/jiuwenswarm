@@ -1951,6 +1951,7 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "uninstalling": "卸载中...",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",

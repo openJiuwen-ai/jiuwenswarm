@@ -31,6 +31,7 @@ import {
   useWorkspaceStore,
   usePersonalContextStore,
 } from '../../stores';
+import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
@@ -121,6 +122,17 @@ const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
 const AGENT_PICKER_ROW_HEIGHT = 40;
 const GROUP_PICKER_ROW_HEIGHT = 40;
+
+/**
+ * 专家选择 id 既可能是目录项 id（chat 面板 picker 路径），也可能是 runtimePackageName
+ * （AgentManagementPanel"使用/快捷输入"路径，见 AgentManagementPanel/index.tsx 的
+ * onUseAgent 与 DefinitionDetailPage 的 onUsePrompt）。两条入口必须等价——否则从详情页
+ * 跳转后，下面按 id 查找的守卫会把刚选上的专家 tag 立刻清掉。后端
+ * resolve_equipment_runtime_id 对两种标识都能解析，wire 层不受影响。
+ */
+function isSameAgentOption(item: AgentCatalogItem, selectedId: string | null): boolean {
+  return selectedId !== null && (item.id === selectedId || item.runtimePackageName === selectedId);
+}
 
 function resolveMenuDirection(anchorBottom: number, menuHeight: number) {
   const spaceBelow = window.innerHeight - anchorBottom - MENU_GAP;
@@ -677,7 +689,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const { tooltip: attachTooltipNode, handlers: attachTooltipHandlers } = useAdaptiveTooltip();
   const [hoveredOptionDesc, setHoveredOptionDesc] = useState<string | null>(null);
   const [hoveredOptionRect, setHoveredOptionRect] = useState<DOMRect | null>(null);
-  const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>([]);
+  // 初始值从共享目录缓存播种：详情页"使用/快捷输入"跳转过来时，tag 首帧就能解析出
+  // displayName/头像，而不是先显示原始 runtimePackageName、等目录请求回来再跳变。
+  const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>(
+    () => useAgentCatalogStore.getState().catalog ?? [],
+  );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
   const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
@@ -753,8 +769,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const setAgentGroupSelectionIntent = useSessionStore((s) => s.setAgentGroupSelectionIntent);
   const clearAgentGroupSelectionIntent = useSessionStore((s) => s.clearAgentGroupSelectionIntent);
   const clearSelectedSkills = useSessionStore((s) => s.clearSelectedSkills);
-  const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId || item.runtimePackageName === selectedAgentId) ?? null;
-
+  const selectedAgent = agentOptions.find((item) => isSameAgentOption(item, selectedAgentId)) ?? null;
   const installedAgentOptions = useMemo(
     () =>
       agentOptions.filter((item) => item.installed && item.connectionState === 'connected' && item.enabled !== false),
@@ -803,11 +818,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     void agentManagementClient.listCatalog({ filter: 'mine' })
       .then((items) => {
         if (cancelled) return;
-        const selectedItem = selectedAgentId ? items.find((item) => item.id === selectedAgentId || item.runtimePackageName === selectedAgentId) : null;
-        if (selectedItem && (selectedItem.enabled === false || selectedItem.connectionState !== 'connected')) {
+        const selectedItem = selectedAgentId ? items.find((item) => isSameAgentOption(item, selectedAgentId)) : null;
+        // 'connecting' 是连接器建立中的瞬态，随后大概率回到 'connected'；用它清空选择
+        // 会造成刚选上的专家 tag 过一会儿自己消失。filter:'mine' 下已选专家可能不在
+        // 列表内，查不到时保留选择；仅在明确禁用或已断连（含连接失败）时清。
+        if (
+          selectedItem &&
+          (selectedItem.enabled === false ||
+            (selectedItem.connectionState !== 'connected' && selectedItem.connectionState !== 'connecting'))
+        ) {
           setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
         }
         setAgentOptions(items);
+        seedAgentCatalog(items);
         setAgentOptionsStatus('success');
       })
       .catch(() => {
@@ -3298,7 +3321,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   ) : pickerTab === 'agent' ? (
                                     filteredAgentOptions.map((item) => {
                                       const avatarUrl = getAgentAvatarUrl(item);
-                                      const isSelected = selectedAgentId === item.id || selectedAgentId === item.runtimePackageName;
+                                      const isSelected = isSameAgentOption(item, selectedAgentId);
                                       return (
                                         <button
                                           key={item.id}

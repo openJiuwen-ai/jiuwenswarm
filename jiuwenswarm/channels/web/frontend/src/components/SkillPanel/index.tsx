@@ -838,7 +838,7 @@ export function SkillPanel({
       const confirmed = window.confirm(t('skills.uninstallConfirm', { pluginName }));
       if (!confirmed) return;
 
-      setActionTarget(pluginName);
+      setActionTarget(`uninstall:${pluginName}`);
       setMessage(null);
       setMessageType(null);
       try {
@@ -948,6 +948,7 @@ export function SkillPanel({
     const displayName = skill.display_name || skill.name;
     const isDisabled = skill.enabled === false;
     const isToggling = actionTarget === `toggle:${skill.name}`;
+    const isUninstalling = actionTarget === `uninstall:${installedSkillMap.get(skill.name)?.plugin_name || skill.name}`;
     const isPackage = isSkillPackage(skill);
     const listKey = skill.path || `${skill.source || 'local'}:${skill.name}`;
 
@@ -1025,15 +1026,20 @@ export function SkillPanel({
                   </button>
                 ) : null}
                 <button
-                  onClick={(e) => {
-                    e.stopPropagation();
-                    const plugin = installedSkillMap.get(skill.name);
-                    handleUninstall(plugin?.plugin_name || skill.name);
-                  }}
-                  className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary"
+                  onClick={
+                    isUninstalling
+                      ? undefined
+                      : (e) => {
+                          e.stopPropagation();
+                          const plugin = installedSkillMap.get(skill.name);
+                          handleUninstall(plugin?.plugin_name || skill.name);
+                        }
+                  }
+                  disabled={isUninstalling}
+                  className="flex items-center w-full px-3 py-2 text-sm text-left text-text hover:bg-secondary disabled:opacity-40 disabled:cursor-not-allowed"
                   data-testid="skill-panel-my-skill-card-menu-uninstall"
                 >
-                  {t('skills.actions.uninstall')}
+                  {t(isUninstalling ? 'skills.actions.uninstalling' : 'skills.actions.uninstall')}
                 </button>
               </div>
             </div>
