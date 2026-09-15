@@ -229,6 +229,17 @@ class _FakeRegistryTransport(httpx.AsyncBaseTransport):
 
         if method == "DELETE" and "/api/instances/" in path:
             sid = path.rstrip("/").split("/")[-1]
+            expected = str(params.get("instance_id") or "").strip()
+            row = self._instances.get(sid)
+            if (
+                expected
+                and row is not None
+                and str(row.get("instance_id") or "").strip() not in ("", expected)
+            ):
+                return httpx.Response(
+                    409,
+                    json={"detail": "instance_id mismatch", "service_id": sid},
+                )
             existed = sid in self._instances
             self._instances.pop(sid, None)
             return httpx.Response(
@@ -471,6 +482,63 @@ async def test_unregister_instance_missing_is_success() -> None:
     )
     result = await client.unregister_instance("generic_deadbeef")
     assert result["deleted"] is False
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_instance_cas_skips_when_instance_id_changed() -> None:
+    transport = _FakeRegistryTransport()
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=transport,
+        timeout=5.0,
+    )
+    sid = instance_service_id("user-01", "opencode")
+    await client.register_instance(
+        service_id=sid,
+        kind="三方",
+        framework="opencode",
+        framework_version="v0.2.0",
+        node="192.168.0.12",
+        address="10.244.1.7:4096",
+        instance_id="sbx-new",
+        user="user-01",
+    )
+    result = await client.unregister_instance(sid, expected_instance_id="sbx-old")
+    assert result["deleted"] is False
+    assert result["reason"] == "instance_id_mismatch"
+    listed = await client.list_instances(include_unhealthy=True)
+    assert [row.instance_id for row in listed] == ["sbx-new"]
+    delete_calls = [call for call in transport.calls if call[0] == "DELETE"]
+    assert delete_calls
+    assert (delete_calls[-1][3] or {}).get("instance_id") == "sbx-old"
+    await client.close()
+
+
+@pytest.mark.asyncio
+async def test_unregister_instance_cas_deletes_when_instance_id_matches() -> None:
+    transport = _FakeRegistryTransport()
+    client = RegistryClient(RegistryConfig(endpoint="http://registry.test"))
+    client._http = httpx.AsyncClient(  # noqa: SLF001
+        base_url="http://registry.test/",
+        transport=transport,
+        timeout=5.0,
+    )
+    sid = instance_service_id("user-01", "opencode")
+    await client.register_instance(
+        service_id=sid,
+        kind="三方",
+        framework="opencode",
+        framework_version="v0.2.0",
+        node="192.168.0.12",
+        address="10.244.1.7:4096",
+        instance_id="sbx-old",
+        user="user-01",
+    )
+    result = await client.unregister_instance(sid, expected_instance_id="sbx-old")
+    assert result["deleted"] is True
+    assert await client.list_instances(include_unhealthy=True) == []
     await client.close()
 
 

@@ -541,20 +541,50 @@ class RegistryClient:
             if isinstance(item, dict)
         ]
 
-    async def unregister_instance(self, service_id: str) -> dict[str, Any]:
-        """``DELETE /api/instances/{service_id}`` (idempotent; missing is success)."""
+    async def unregister_instance(
+        self,
+        service_id: str,
+        *,
+        expected_instance_id: str = "",
+    ) -> dict[str, Any]:
+        """``DELETE /api/instances/{service_id}`` (idempotent; missing is success).
+
+        When *expected_instance_id* is set, pass ``?instance_id=`` so the
+        registry can CAS: ``DELETE WHERE service_id=? AND instance_id=?``.
+        The match is instance identity, not a local time window, so a
+        concurrent or sibling-worker upsert that retargets the row is kept.
+        A mismatch is ``409`` (or ``deleted=false``).
+        """
         sid = str(service_id or "").strip()
         if not sid:
             raise RegistryValidationError(
                 "service_id is required", status_code=400, payload=None
             )
+        expected = str(expected_instance_id or "").strip()
         if not self.enabled:
             return {"service_id": sid, "dataset": "default", "deleted": True}
+        params: dict[str, Any] | None = {"instance_id": expected} if expected else None
         try:
-            data = await self._request_json("DELETE", f"api/instances/{_encode(sid)}")
+            data = await self._request_json(
+                "DELETE",
+                f"api/instances/{_encode(sid)}",
+                params=params,
+            )
         except RegistryNotFoundError:
             return {"service_id": sid, "deleted": False}
-        return data if isinstance(data, dict) else {"service_id": sid, "deleted": True}
+        except RegistryConflictError:
+            return {
+                "service_id": sid,
+                "deleted": False,
+                "reason": "instance_id_mismatch",
+            }
+        if not isinstance(data, dict):
+            return {"service_id": sid, "deleted": True}
+        if expected and data.get("deleted") is False and data.get("reason"):
+            return data
+        if expected and data.get("deleted") is False:
+            return {**data, "reason": data.get("reason") or "instance_id_mismatch"}
+        return data
 
     # ── Compatibility helpers used by AgentOSRouterClient ─────────────────
 
