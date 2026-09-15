@@ -47,7 +47,7 @@ function getPresetStatusKey(
   options: readonly string[],
 ): string | undefined {
   if (!preset) return undefined;
-  if (!apiKey.trim()) return 'settingsPanel.models.noPresetModelsApiKeyRequired';
+  if (preset.models_needs_key && !apiKey.trim()) return 'settingsPanel.models.noPresetModelsApiKeyRequired';
   if (!preset.models_endpoint)
     return options.length > 0
       ? 'settingsPanel.models.fetchReasons.noEndpoint'
@@ -267,7 +267,7 @@ export function ModelDialog({
     const currentValues = form.getValues();
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset || fetching) return;
-    if (!currentPreset.models_endpoint || !currentValues.api_key.trim()) {
+    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
       updateModelOptions([]);
       setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
       return;
@@ -321,7 +321,7 @@ export function ModelDialog({
     const currentValues = form.getValues();
     const currentPreset = findVendorPreset(catalog, currentValues.vendor_selection);
     if (!currentPreset) return;
-    if (!currentPreset.models_endpoint || !currentValues.api_key.trim()) {
+    if (!currentPreset.models_endpoint || (currentPreset.models_needs_key && !currentValues.api_key.trim())) {
       updateModelOptions([]);
       setFetchStatus(describePresetStatus(currentPreset, currentValues.api_key, []));
       return;
@@ -429,6 +429,7 @@ export function ModelDialog({
         id={id}
         value={String(value ?? '')}
         mode={values.model_input_mode}
+        allowCustomValue={Boolean(preset)}
         options={account ? openAIAccount.modelOptions : modelOptions}
         disabled={disabled || (account ? !openAIAccount.authenticated : !model && !values.vendor_selection)}
         invalid={Boolean(error)}
@@ -446,7 +447,7 @@ export function ModelDialog({
               saving
             : !isConnected ||
               !preset?.models_endpoint ||
-              !values.api_key.trim() ||
+              (Boolean(preset?.models_needs_key) && !values.api_key.trim()) ||
               testing ||
               fetching ||
               submitting ||
