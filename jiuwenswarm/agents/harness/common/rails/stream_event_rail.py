@@ -66,7 +66,8 @@ from jiuwenswarm.common.tool_display import (
 )
 from jiuwenswarm.common.utils import fix_json_arguments, logger
 
-_TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify"])
+# "todo"：flash 统一工具（单卡 action 分发，覆盖同一组引擎操作）
+_TODO_TOOL_NAMES = frozenset(["todo_create", "todo_get", "todo_list", "todo_modify", "todo"])
 _EARLY_CHECKPOINT_EXTRA_KEY = "_jiuwenswarm_early_checkpoint_done"
 _EARLY_CHECKPOINT_ENV = "JIUWENCLAW_EARLY_CHECKPOINT"
 

@@ -1317,8 +1317,9 @@ class TaskExecutionRail(DeepAgentRail):
     # missing from history.json after a general-purpose subagent ran in stage3).
     inherit_to_subagents = False
 
+    # "todo"：flash 统一工具（单卡 action 分发，覆盖同一组引擎操作）
     TODO_TOOLS = frozenset({
-        "todo_create", "todo_get", "todo_list", "todo_modify",
+        "todo_create", "todo_get", "todo_list", "todo_modify", "todo",
     })
     SKILL_COMPLETE_TOOLS = frozenset({"skill_complete"})
     # 触发产物后处理 hook 的工具（共享常量，见模块级定义）
