@@ -67,11 +67,11 @@ class TestAgentSSASSecurityRailCollection:
         backend = MagicMock()
         rail = AgentSSASSecurityRail(backend=backend)
 
-        assert rail._backend is backend
-        assert rail._id_manager is not None
-        assert rail._event_builder is not None
-        assert rail._event_filter is not None
-        assert rail._event_reporter is not None
+        assert rail._backend is backend  # pylint: disable=protected-access
+        assert rail._id_manager is not None  # pylint: disable=protected-access
+        assert rail._event_builder is not None  # pylint: disable=protected-access
+        assert rail._event_filter is not None  # pylint: disable=protected-access
+        assert rail._event_reporter is not None  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.asyncio
@@ -88,11 +88,11 @@ class TestAgentSSASSecurityRailCollection:
         sec_ctx.callback_ctx.extra = {}
 
         # Mock event_builder 返回一个 dict
-        rail._event_builder.build_event_dict = MagicMock(
+        rail._event_builder.build_event_dict = MagicMock(  # pylint: disable=protected-access
             return_value={"common": {}, "payload": {}, "metadata": {}}
         )
         # Mock event_filter 返回 None
-        rail._event_filter.filter_event = MagicMock(return_value=None)
+        rail._event_filter.filter_event = MagicMock(return_value=None)  # pylint: disable=protected-access
 
         result = await rail.run_security_check(sec_ctx)
         assert isinstance(result, SecurityAllow)

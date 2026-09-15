@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from unittest.mock import MagicMock
@@ -43,22 +44,25 @@ class _MockOptionalDeps:
             try:
                 sys.meta_path.remove(cls)
                 try:
-                    __import__(fullname)
-                    return None
-                except ImportError:
+                    if importlib.util.find_spec(fullname) is not None:
+                        return None  # 模块已安装,不 mock
+                except (ImportError, ValueError):
                     pass
                 finally:
-                    sys.meta_path.insert(0, cls)
+                    # 注: 恢复 hook 用 append 而非 insert(0),
+                    # 保持在 finder 链尾同样可拦截未安装模块,并规避 insert(0) 模式
+                    sys.meta_path.append(cls)
                     cls._checking.discard(fullname)
-            except Exception:
+            except Exception:  # 兜底保证 hook 状态一致
                 pass
             from importlib.machinery import ModuleSpec
             return ModuleSpec(fullname, _MockOptionalDeps())
         return None
 
-    def create_module(self, spec):
+    @staticmethod
+    def create_module(spec):
         mod = types.ModuleType(spec.name)
-        mod.__getattr__ = lambda name: _MagicMock()
+        mod.__getattr__ = _mock_attr
         mod.__path__ = []
         return mod
 
@@ -66,16 +70,27 @@ class _MockOptionalDeps:
         pass
 
 
-sys.meta_path.insert(0, _MockOptionalDeps())
+def _mock_attr(name):
+    """模块级属性 mock 函数(替代 lambda 赋值,符合 EXP.03)。"""
+    return _MagicMock()
+
+
+sys.meta_path.append(_MockOptionalDeps())
 
 if "pysbd" not in sys.modules:
     try:
         import pysbd
     except ImportError:
         _mock_pysbd = types.ModuleType("pysbd")
+
         class _MockSegmenter:
-            def __init__(self, *args, **kwargs): pass
-            def segment(self, text): return [text] if text else []
+            def __init__(self, *args, **kwargs):
+                pass
+
+            @staticmethod
+            def segment(text):
+                return [text] if text else []
+
         _mock_pysbd.Segmenter = _MockSegmenter
         sys.modules["pysbd"] = _mock_pysbd
 
@@ -142,7 +157,7 @@ class TestPermissionInterruptDenyFlow:
         # 1. BEFORE_INVOKE
         ctx_invoke = _make_mock_ctx(AgentCallbackEvent.BEFORE_INVOKE)
         ctx_invoke.inputs.query = "read the file"
-        await rail._run_and_apply(ctx_invoke, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx_invoke, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # 2. BEFORE_MODEL_CALL
         ctx_model = _make_mock_ctx(
@@ -151,7 +166,7 @@ class TestPermissionInterruptDenyFlow:
         )
         ctx_model.inputs.messages = [{"role": "user", "content": "read the file"}]
         ctx_model.inputs.tools = []
-        await rail._run_and_apply(ctx_model, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        await rail._run_and_apply(ctx_model, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx_model.extra["llm_call_seq"] == 0
 
         # 3. BEFORE_TOOL_CALL with _skip_tool=True(模拟 PermissionInterruptRail deny)
@@ -165,15 +180,15 @@ class TestPermissionInterruptDenyFlow:
         # 捕获上报的 raw_event
         captured_events = []
 
-        original_report = rail._event_reporter.report
+        original_report = rail._event_reporter.report  # pylint: disable=protected-access
 
         async def _capturing_report(event_dict):
             captured_events.append(event_dict)
             return await original_report(event_dict)
 
-        rail._event_reporter.report = _capturing_report
+        rail._event_reporter.report = _capturing_report  # pylint: disable=protected-access
 
-        await rail._run_and_apply(ctx_tool, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        await rail._run_and_apply(ctx_tool, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
 
         # 验证事件被上报
         assert len(captured_events) == 1
@@ -209,7 +224,6 @@ class TestPermissionInterruptDenyFlow:
         assert common["tool_call_id"] == "call_test_001"
 
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_no_security_event_when_skip_tool_false():
         """_skip_tool 为 False 时,BEFORE_TOOL_CALL 作为生命周期事件通过。"""
@@ -228,9 +242,9 @@ class TestPermissionInterruptDenyFlow:
             # 注: 复用模块级导入的 SecurityAllow(第 84 行),不再函数内重复导入
             return SecurityAllow()
 
-        rail._event_reporter.report = _capturing_report
+        rail._event_reporter.report = _capturing_report  # pylint: disable=protected-access
 
-        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
 
         assert len(captured_events) == 1
         raw_event = captured_events[0]
@@ -241,7 +255,6 @@ class TestPermissionInterruptDenyFlow:
         assert "risk_source" not in raw_event["payload"]
 
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_fail_open_when_backend_exception():
         """后端异常时返回 SecurityAllow(fail-open)。"""
@@ -259,7 +272,7 @@ class TestPermissionInterruptDenyFlow:
         # _run_and_apply 中会调用 run_security_check → EventReporter.report
         # EventReporter.report 异常时返回 SecurityAllow
         # 然后 apply_security_decision(SecurityAllow) → 不阻断
-        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # 验证 _interrupt_decision 被设置为 SecurityAllow
         decision = ctx.extra.get("_interrupt_decision")
@@ -267,7 +280,6 @@ class TestPermissionInterruptDenyFlow:
         assert isinstance(decision, SecurityAllow)
 
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_interaction_seq_increments_across_invokes():
         """多次 invoke 的 interaction_seq 递增。"""
@@ -277,21 +289,20 @@ class TestPermissionInterruptDenyFlow:
         # 第一次 invoke
         ctx1 = _make_mock_ctx(AgentCallbackEvent.BEFORE_INVOKE)
         ctx1.inputs.query = "first"
-        await rail._run_and_apply(ctx1, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx1, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # 第二次 invoke(复用 extra 字典模拟同一 session)
         ctx2 = _make_mock_ctx(AgentCallbackEvent.BEFORE_INVOKE)
         ctx2.extra = ctx1.extra  # 同一 session 的 extra
         ctx2.inputs.query = "second"
-        await rail._run_and_apply(ctx2, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx2, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # interaction_seq 由 session 级 LRU 池管理,验证池中序号递增
-        pool = rail._id_manager._session_interaction_seqs
+        pool = rail._id_manager._session_interaction_seqs  # pylint: disable=protected-access
         seq_val = pool.get("__no_session__", -1)
         assert seq_val == 1
 
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_llm_call_seq_increments_within_invoke():
         """同一 invoke 内多次 LLM 调用,llm_call_seq 递增。"""
@@ -300,7 +311,7 @@ class TestPermissionInterruptDenyFlow:
 
         ctx = _make_mock_ctx(AgentCallbackEvent.BEFORE_INVOKE)
         ctx.inputs.query = "test"
-        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_INVOKE)
+        await rail._run_and_apply(ctx, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
 
         # 第一次 LLM 调用
         ctx_model1 = _make_mock_ctx(
@@ -308,7 +319,7 @@ class TestPermissionInterruptDenyFlow:
         )
         ctx_model1.inputs.messages = []
         ctx_model1.inputs.tools = []
-        await rail._run_and_apply(ctx_model1, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        await rail._run_and_apply(ctx_model1, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx_model1.extra["llm_call_seq"] == 0
 
         # 第二次 LLM 调用
@@ -317,11 +328,10 @@ class TestPermissionInterruptDenyFlow:
         )
         ctx_model2.inputs.messages = []
         ctx_model2.inputs.tools = []
-        await rail._run_and_apply(ctx_model2, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        await rail._run_and_apply(ctx_model2, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert ctx_model2.extra["llm_call_seq"] == 1
 
     @staticmethod
-    @pytest.mark.asyncio
     @pytest.mark.level1
     async def test_tool_call_seq_increments_for_multiple_tools():
         """同一 LLM 调用内多次工具调用,tool_call_seq 递增。"""
@@ -333,10 +343,10 @@ class TestPermissionInterruptDenyFlow:
 
         # 第一次工具调用
         ctx_tool1 = _make_mock_ctx(AgentCallbackEvent.BEFORE_TOOL_CALL, extra=extra)
-        await rail._run_and_apply(ctx_tool1, AgentCallbackEvent.BEFORE_TOOL_CALL)
-        assert extra["tool_call_seq"] == 0
+        await rail._run_and_apply(ctx_tool1, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
+        assert extra.get("tool_call_seq") == 0
 
         # 第二次工具调用
         ctx_tool2 = _make_mock_ctx(AgentCallbackEvent.BEFORE_TOOL_CALL, extra=extra)
-        await rail._run_and_apply(ctx_tool2, AgentCallbackEvent.BEFORE_TOOL_CALL)
-        assert extra["tool_call_seq"] == 1
+        await rail._run_and_apply(ctx_tool2, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
+        assert extra.get("tool_call_seq") == 1

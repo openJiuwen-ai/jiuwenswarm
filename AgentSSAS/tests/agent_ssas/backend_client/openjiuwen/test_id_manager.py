@@ -27,12 +27,12 @@ class TestIDManager:
         idm = IDManager()
 
         # 第一次 BEFORE_INVOKE:-1 自增为 0
-        seq0 = idm._ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)
+        seq0 = idm.ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
         assert seq0 == 0
         assert isinstance(seq0, int)
 
         # 第二次 BEFORE_INVOKE:0 自增为 1
-        seq1 = idm._ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)
+        seq1 = idm.ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
         assert seq1 == 1
         assert isinstance(seq1, int)
 
@@ -47,9 +47,9 @@ class TestIDManager:
         idm = IDManager()
 
         # BEFORE_INVOKE 生成(-1 自增为 0)
-        idm._ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)
+        idm.ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_INVOKE)  # pylint: disable=protected-access
         # 后续事件复用(非 BEFORE_INVOKE,从 LRU 池读取当前值)
-        seq = idm._ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        seq = idm.ensure_interaction_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert seq == 0
 
     @staticmethod
@@ -61,17 +61,17 @@ class TestIDManager:
         idm = IDManager()
 
         # BEFORE_MODEL_CALL 生成(-1 自增为 0)
-        llm_seq_1 = idm._ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        llm_seq_1 = idm.ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert llm_seq_1 == 0
         assert isinstance(llm_seq_1, int)
         assert ctx.extra["llm_call_seq"] == 0
 
         # AFTER_MODEL_CALL 复用(读取当前值)
-        llm_seq_2 = idm._ensure_llm_call_seq(ctx, AgentCallbackEvent.AFTER_MODEL_CALL)
+        llm_seq_2 = idm.ensure_llm_call_seq(ctx, AgentCallbackEvent.AFTER_MODEL_CALL)  # pylint: disable=protected-access
         assert llm_seq_2 == llm_seq_1 == 0
 
         # 第二次 BEFORE_MODEL_CALL(0 自增为 1)
-        llm_seq_3 = idm._ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)
+        llm_seq_3 = idm.ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL)  # pylint: disable=protected-access
         assert llm_seq_3 == 1
         assert ctx.extra["llm_call_seq"] == 1
 
@@ -84,17 +84,17 @@ class TestIDManager:
         idm = IDManager()
 
         # 第一次 BEFORE_TOOL_CALL(-1 自增为 0)
-        seq0 = idm._ensure_tool_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        seq0 = idm.ensure_tool_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
         assert seq0 == 0
         assert isinstance(seq0, int)
         assert ctx.extra["tool_call_seq"] == 0
 
         # AFTER_TOOL_CALL 复用(读取当前值)
-        seq_after = idm._ensure_tool_call_seq(ctx, AgentCallbackEvent.AFTER_TOOL_CALL)
+        seq_after = idm.ensure_tool_call_seq(ctx, AgentCallbackEvent.AFTER_TOOL_CALL)  # pylint: disable=protected-access
         assert seq_after == seq0 == 0
 
         # 第二次 BEFORE_TOOL_CALL(0 自增为 1)
-        seq1 = idm._ensure_tool_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        seq1 = idm.ensure_tool_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
         assert seq1 == 1
         assert ctx.extra["tool_call_seq"] == 1
 
@@ -107,7 +107,7 @@ class TestIDManager:
         idm = IDManager()
 
         # tool_call 事件(BEFORE_TOOL_CALL)的 llm_call_seq 直接读取当前值
-        llm_seq = idm._ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)
+        llm_seq = idm.ensure_llm_call_seq(ctx, AgentCallbackEvent.BEFORE_TOOL_CALL)  # pylint: disable=protected-access
         assert llm_seq == 3
         assert isinstance(llm_seq, int)
 
@@ -119,7 +119,7 @@ class TestIDManager:
         ctx.extra = {}
         idm = IDManager()
 
-        llm_seq = idm._ensure_llm_call_seq(ctx, AgentCallbackEvent.AFTER_MODEL_CALL)
+        llm_seq = idm.ensure_llm_call_seq(ctx, AgentCallbackEvent.AFTER_MODEL_CALL)  # pylint: disable=protected-access
         assert llm_seq == -1
 
     @staticmethod
@@ -131,7 +131,7 @@ class TestIDManager:
         ctx.inputs.parent_session_id = None
         idm = IDManager()
 
-        assert idm._resolve_subsession_id(ctx) == ""
+        assert idm.resolve_subsession_id(ctx) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -142,7 +142,7 @@ class TestIDManager:
         ctx.inputs.parent_session_id = "parent-session-001"
         idm = IDManager()
 
-        assert idm._resolve_subsession_id(ctx) == "parent-session-001"
+        assert idm.resolve_subsession_id(ctx) == "parent-session-001"  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -151,7 +151,7 @@ class TestIDManager:
         ctx = MagicMock()
         ctx.session = None
         idm = IDManager()
-        assert idm._resolve_session_id(ctx) == ""
+        assert idm.resolve_session_id(ctx) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -160,7 +160,7 @@ class TestIDManager:
         ctx = MagicMock()
         ctx.agent = None
         idm = IDManager()
-        assert idm._resolve_agent_id(ctx) == ""
+        assert idm.resolve_agent_id(ctx) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -169,7 +169,7 @@ class TestIDManager:
         ctx = MagicMock()
         ctx.session = None
         idm = IDManager()
-        assert idm._resolve_trace_id(ctx) == ""
+        assert idm.resolve_trace_id(ctx) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -178,7 +178,7 @@ class TestIDManager:
         ctx = MagicMock()
         ctx.context = None
         idm = IDManager()
-        assert idm._resolve_context_id(ctx) == ""
+        assert idm.resolve_context_id(ctx) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
@@ -186,28 +186,28 @@ class TestIDManager:
         """非 TOOL 事件 tool_name 为空字符串。"""
         ctx = MagicMock()
         idm = IDManager()
-        assert idm._resolve_tool_name(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL) == ""
+        assert idm.resolve_tool_name(ctx, AgentCallbackEvent.BEFORE_MODEL_CALL) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
     def test_resolve_tool_call_id_empty_for_none():
         """tool_call 为 None 时返回空字符串。"""
         idm = IDManager()
-        assert idm._resolve_tool_call_id(None) == ""
+        assert idm.resolve_tool_call_id(None) == ""  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
     def test_event_class_for_lifecycle():
         """生命周期事件 event_class 为 lifecycle。"""
         idm = IDManager()
-        assert idm._event_class_for(AgentCallbackEvent.BEFORE_INVOKE, "invoke_start") == "lifecycle"
-        assert idm._event_class_for(AgentCallbackEvent.BEFORE_MODEL_CALL, "llm_input") == "lifecycle"
+        assert idm.event_class_for(AgentCallbackEvent.BEFORE_INVOKE, "invoke_start") == "lifecycle"  # pylint: disable=protected-access
+        assert idm.event_class_for(AgentCallbackEvent.BEFORE_MODEL_CALL, "llm_input") == "lifecycle"  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1
     def test_event_class_for_security():
         """安全检测事件 event_class 为 security。"""
         idm = IDManager()
-        assert idm._event_class_for(
+        assert idm.event_class_for(  # pylint: disable=protected-access
             AgentCallbackEvent.BEFORE_TOOL_CALL, "permission_interrupt_tool"
         ) == "security"

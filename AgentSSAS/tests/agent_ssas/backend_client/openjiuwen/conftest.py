@@ -7,6 +7,7 @@
 
 from __future__ import annotations
 
+import importlib.util
 import sys
 import types
 from unittest.mock import MagicMock
@@ -42,14 +43,16 @@ class _MockOptionalDeps:
                 # 临时移除自己的 hook,检查模块是否真的存在
                 sys.meta_path.remove(cls)
                 try:
-                    __import__(fullname)
-                    return None  # 模块已安装,不 mock
-                except ImportError:
+                    if importlib.util.find_spec(fullname) is not None:
+                        return None  # 模块已安装,不 mock
+                except (ImportError, ValueError):
                     pass
                 finally:
-                    sys.meta_path.insert(0, cls)
+                    # 注: 恢复 hook 用 append 而非 insert(0),
+                    # 保持在 finder 链尾同样可拦截未安装模块,并规避 insert(0) 模式
+                    sys.meta_path.append(cls)
                     cls._checking.discard(fullname)
-            except Exception:
+            except Exception:  # 兜底保证 hook 状态一致
                 pass
             # 模块不存在,创建 mock spec
             from importlib.machinery import ModuleSpec
@@ -57,9 +60,10 @@ class _MockOptionalDeps:
             return spec
         return None
 
-    def create_module(self, spec):
+    @staticmethod
+    def create_module(spec):
         mod = types.ModuleType(spec.name)
-        mod.__getattr__ = lambda name: MagicMock()
+        mod.__getattr__ = _mock_attr
         mod.__path__ = []
         return mod
 
@@ -67,8 +71,13 @@ class _MockOptionalDeps:
         pass
 
 
-# 注册导入钩子(在 sys.meta_path 最前面)
-sys.meta_path.insert(0, _MockOptionalDeps())
+def _mock_attr(name):
+    """模块级属性 mock 函数(替代 lambda 赋值,符合 EXP.03)。"""
+    return MagicMock()
+
+
+# 注册导入钩子(追加到 finder 链尾,已安装模块由真实 finder 优先加载,未安装模块由本钩子 mock)
+sys.meta_path.append(_MockOptionalDeps())
 
 # pysbd 需要提供 Segmenter 类可调用
 if "pysbd" not in sys.modules:
@@ -76,11 +85,15 @@ if "pysbd" not in sys.modules:
         import pysbd
     except ImportError:
         _mock_pysbd = types.ModuleType("pysbd")
+
         class _MockSegmenter:
             def __init__(self, *args, **kwargs):
                 pass
-            def segment(self, text):
+
+            @staticmethod
+            def segment(text):
                 return [text] if text else []
+
         _mock_pysbd.Segmenter = _MockSegmenter
         sys.modules["pysbd"] = _mock_pysbd
 

@@ -28,6 +28,9 @@ from agent_ssas.core.framework.access_adapter.agent_backend import AgentSSASBack
 from agent_ssas.core.framework.config.settings import AgentSSASConfig
 from agent_ssas.core.framework.core_types.assessment import RiskAssessment, RiskLevel
 from tests.fixtures.event_factory import (
+    CallInfo,
+    EventIds,
+    RiskInfo,
     create_raw_event,
     generate_event_sequence,
     generate_permission_interrupt_event,
@@ -81,12 +84,10 @@ class TestFuncVerify:
         await backend.initialize()
 
         raw_event = generate_permission_interrupt_event(
-            session_id="fv-sec-session",
-            agent_id="fv-sec-agent",
-            trace_id="fv-sec-trace",
-            interaction_seq=0,
+            ids=EventIds(session_id="fv-sec-session", agent_id="fv-sec-agent", trace_id="fv-sec-trace"),
             tool_call_seq=0,
-            risk_level="high",
+            interaction_seq=0,
+            risk=RiskInfo(risk_level="high"),
         )
         assessment = await backend.report_event(raw_event)
         assert isinstance(assessment, RiskAssessment)
@@ -109,13 +110,11 @@ class TestFuncVerify:
 
         raw_event = create_raw_event(
             "tool_input",
-            session_id="fv-persist-session",
-            agent_id="fv-persist-agent",
-            trace_id="fv-persist-trace",
+            ids=EventIds(session_id="fv-persist-session", agent_id="fv-persist-agent", trace_id="fv-persist-trace"),
         )
         await backend.report_event(raw_event)
 
-        events = await backend._storage.get_events_by_trace_id(
+        events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
             "fv-persist-trace"
         )
         assert len(events) >= 1
@@ -137,12 +136,10 @@ class TestFuncVerify:
         await backend.initialize()
 
         raw_event = generate_permission_interrupt_event(
-            session_id="fv-log-session",
-            agent_id="fv-log-agent",
-            trace_id="fv-log-trace",
-            interaction_seq=0,
+            ids=EventIds(session_id="fv-log-session", agent_id="fv-log-agent", trace_id="fv-log-trace"),
             tool_call_seq=0,
-            risk_level="high",
+            interaction_seq=0,
+            risk=RiskInfo(risk_level="high"),
         )
         await backend.report_event(raw_event)
         # notify 模式后台异步执行,等待后台任务完成写入威胁日志
@@ -178,16 +175,13 @@ class TestFuncVerify:
         await backend.initialize()
 
         raw_event = create_raw_event(
-            "tool_input",
-            session_id="fv-mod-session",
-            agent_id="fv-mod-agent",
-            trace_id="fv-mod-trace",
+            "tool_input", ids=EventIds(session_id="fv-mod-session", agent_id="fv-mod-agent", trace_id="fv-mod-trace")
         )
         await backend.report_event(raw_event)
         # 等待 notify 模式异步任务完成写入
         await asyncio.sleep(0.1)
 
-        module = backend._module_manager.get_module("test_detection")
+        module = backend._module_manager.get_module("test_detection")  # pylint: disable=protected-access
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=10)
         assert len(reports) >= 1
@@ -207,16 +201,14 @@ class TestFuncVerify:
         config = AgentSSASConfig(ssas_home=str(ssas_home))
         backend = AgentSSASBackend(config)
         # mock preprocessor.parse 抛出异常
-        backend._preprocessor = MagicMock()
-        backend._preprocessor.parse = AsyncMock(
+        backend._preprocessor = MagicMock()  # pylint: disable=protected-access
+        backend._preprocessor.parse = AsyncMock(  # pylint: disable=protected-access
             side_effect=RuntimeError("engine failed")
         )
-        backend._pipeline = MagicMock()
-        backend._pipeline.run = AsyncMock(
+        backend._pipeline = MagicMock()  # pylint: disable=protected-access
+        backend._pipeline.run = AsyncMock(  # pylint: disable=protected-access
             return_value=RiskAssessment(has_risk=False, risk_level=RiskLevel.SAFE)
         )
-        assessment = await backend.report_event(
-            {"common": {}, "payload": {}, "metadata": {}}
-        )
+        assessment = await backend.report_event({"common": {}, "payload": {}, "metadata": {}})
         assert isinstance(assessment, RiskAssessment)
         assert assessment.risk_level == RiskLevel.SAFE

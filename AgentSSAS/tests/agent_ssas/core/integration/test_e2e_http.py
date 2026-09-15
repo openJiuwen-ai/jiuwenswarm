@@ -55,7 +55,7 @@ async def client(app):
 async def backend(ssas_config, client):
     """创建 AgentSSASRemoteBackend,注入模拟服务端客户端。"""
     b = AgentSSASRemoteBackend(ssas_config)
-    b._client = client
+    b._client = client  # pylint: disable=protected-access
     return b
 
 

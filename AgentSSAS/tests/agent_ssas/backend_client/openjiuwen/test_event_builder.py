@@ -93,12 +93,12 @@ class TestEventBuilder:
         idm = IDManager()
         builder = EventBuilder(idm)
 
-        assert builder._event_type_for(AgentCallbackEvent.BEFORE_INVOKE) == "invoke_start"
-        assert builder._event_type_for(AgentCallbackEvent.AFTER_INVOKE) == "invoke_end"
-        assert builder._event_type_for(AgentCallbackEvent.BEFORE_MODEL_CALL) == "llm_input"
-        assert builder._event_type_for(AgentCallbackEvent.AFTER_MODEL_CALL) == "llm_output"
-        assert builder._event_type_for(AgentCallbackEvent.BEFORE_TOOL_CALL) == "tool_input"
-        assert builder._event_type_for(AgentCallbackEvent.AFTER_TOOL_CALL) == "tool_output"
+        assert builder._event_type_for(AgentCallbackEvent.BEFORE_INVOKE) == "invoke_start"  # pylint: disable=protected-access
+        assert builder._event_type_for(AgentCallbackEvent.AFTER_INVOKE) == "invoke_end"  # pylint: disable=protected-access
+        assert builder._event_type_for(AgentCallbackEvent.BEFORE_MODEL_CALL) == "llm_input"  # pylint: disable=protected-access
+        assert builder._event_type_for(AgentCallbackEvent.AFTER_MODEL_CALL) == "llm_output"  # pylint: disable=protected-access
+        assert builder._event_type_for(AgentCallbackEvent.BEFORE_TOOL_CALL) == "tool_input"  # pylint: disable=protected-access
+        assert builder._event_type_for(AgentCallbackEvent.AFTER_TOOL_CALL) == "tool_output"  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.level1

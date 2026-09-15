@@ -1,4 +1,5 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
+# remote backend integration tests (gate-recheck)
 
 # tests/agent_ssas/core/integration/test_remote_backend.py
 """AgentSSASRemoteBackend 测试。
@@ -47,7 +48,7 @@ async def backend(ssas_config, server_client):
     """创建 AgentSSASRemoteBackend,注入模拟的 httpx 客户端。"""
     b = AgentSSASRemoteBackend(ssas_config)
     # 替换内部 client 为模拟服务端的 client
-    b._client = server_client
+    b._client = server_client  # pylint: disable=protected-access
     return b
 
 
