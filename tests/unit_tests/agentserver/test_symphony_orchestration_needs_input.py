@@ -475,7 +475,9 @@ async def test_cross_session_cannot_claim_and_sensitive_only_answer_stays_safe()
 
     await rail.before_invoke(_outer_ctx(answer, session_id="s-a"))
     state = next(
-        state for state in rail._active_states.values() if state.session_id == "s-a"
+        state
+        for state in rail._active_states.values()
+        if state.scope.session_id == "s-a"
     )
     assert state.answered and not state.answers
     assert "leak" not in rail._resume_query(state)

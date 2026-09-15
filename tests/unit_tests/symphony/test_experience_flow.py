@@ -6,6 +6,7 @@ import asyncio
 import json
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock, Mock
 
 import openjiuwen.symphony as core_symphony
 import pytest
@@ -61,7 +62,7 @@ def _candidate() -> core_symphony.CombinationCandidate:
     )
 
 
-def _enable_evolution_config(monkeypatch, tmp_path: Path) -> None:
+def _enable_evolution_config(monkeypatch, tmp_path: Path):
     config = symphony_config_from_dict(
         {
             "enabled": True,
@@ -72,6 +73,93 @@ def _enable_evolution_config(monkeypatch, tmp_path: Path) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
     )
+    return config
+
+
+def _install_service(monkeypatch, flow):
+    service = SwarmSymphonyService()
+    service._runtime = SimpleNamespace(flow_engine=flow)
+    monkeypatch.setattr(service, "runtime", lambda: service._runtime)
+    return service
+
+
+def _review_flow(tmp_path, *, package=None, verdict="approved", artifact=None):
+    return SimpleNamespace(
+        store=SimpleNamespace(
+            root=tmp_path,
+            artifact_dir=lambda package_id, target_kind: (
+                tmp_path / "packages" / package_id / target_kind
+            ),
+        ),
+        review_and_prepare_install=AsyncMock(
+            return_value=SimpleNamespace(
+                verdict=verdict,
+                package=package,
+                artifact_dir=str(artifact) if artifact is not None else None,
+                reasons=[] if verdict == "approved" else ["manual review required"],
+            )
+        ),
+    )
+
+
+def _server_package(monkeypatch, package_id, integrity="sha256:value"):
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
+        lambda _package: True,
+    )
+    return {"package_id": package_id, "integrity": integrity, "materials": {}}
+
+
+def _reject_install_manager(message):
+    def reject(*args, **kwargs):
+        pytest.fail(message)
+
+    return SimpleNamespace(install_symphony_skill_artifact=Mock(side_effect=reject))
+
+
+def _patch_runtime_construction(monkeypatch, flow, runtime, model):
+    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyFlowEngine", flow)
+    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyRuntime", runtime)
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.model_from_config", lambda _: model
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.model_response_observer_from_config",
+        lambda _: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
+        lambda: LLMConfig(model="default"),
+    )
+
+
+@pytest.fixture
+def rail_capture(monkeypatch):
+    submissions = []
+    captured = {}
+
+    async def submit(planned_graph, execution_graph, **kwargs):
+        submissions.append(kwargs)
+
+    service = SimpleNamespace(
+        runtime=lambda: SimpleNamespace(
+            capture_graph_snapshot=lambda: {"static_revision": "r"}
+        ),
+        submit_evolution_and_notify=submit,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.get_swarm_symphony_service", lambda: service
+    )
+
+    def rail_factory(**kwargs):
+        captured.update(kwargs)
+        return SimpleNamespace()
+
+    def install(name):
+        monkeypatch.setattr(f"openjiuwen.harness.rails.evolution.{name}", rail_factory)
+        return captured, submissions
+
+    return install
 
 
 def test_evolution_is_the_only_core_experience_switch(tmp_path: Path) -> None:
@@ -257,24 +345,11 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
         def __init__(self, **kwargs) -> None:
             created["runtime"] = kwargs
 
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_from_config", lambda _: model
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_response_observer_from_config",
-        lambda _: None,
-    )
+    _patch_runtime_construction(monkeypatch, Flow, Runtime, model)
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.LLMPackageReviewAgent", ReviewAgent
     )
     monkeypatch.setattr("jiuwenswarm.symphony.service.PackageReviewGate", Gate)
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyFlowEngine", Flow)
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyRuntime", Runtime)
-
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
-        lambda: LLMConfig(model="test-model"),
-    )
     runtime = service._runtime_for(config)
 
     assert runtime is service._runtime
@@ -290,13 +365,7 @@ def test_core_flow_ignores_legacy_distill_switch(monkeypatch, tmp_path: Path) ->
 async def test_service_start_recovers_candidates_when_flow_is_enabled(
     monkeypatch, tmp_path: Path
 ) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True},
-        }
-    )
+    _enable_evolution_config(monkeypatch, tmp_path)
     service = SwarmSymphonyService()
     starts = 0
 
@@ -307,9 +376,6 @@ async def test_service_start_recovers_candidates_when_flow_is_enabled(
             return (_candidate(),)
 
     runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
     monkeypatch.setattr(service, "_runtime_for", lambda _config: runtime)
 
     await service.start()
@@ -388,13 +454,7 @@ async def test_successful_candidate_push_stays_deduplicated_when_ack_fails(
 async def test_deferred_candidate_can_be_listed_and_requested_again(
     monkeypatch, tmp_path: Path
 ) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True},
-        }
-    )
+    _enable_evolution_config(monkeypatch, tmp_path)
     candidate = _candidate()
 
     class Flow:
@@ -413,9 +473,6 @@ async def test_deferred_candidate_can_be_listed_and_requested_again(
     service = SwarmSymphonyService()
     service._runtime = SimpleNamespace(flow_engine=Flow())
     service._runtime_key = ("stable",)
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
     monkeypatch.setattr(service, "_runtime_for", lambda _config: service._runtime)
     pushes: list[dict] = []
 
@@ -511,41 +568,13 @@ async def test_install_requires_approved_server_artifact(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
-    service = SwarmSymphonyService()
-    package = {
-        "package_id": "cap-123",
-        "integrity": "sha256:value",
-        "materials": {},
-    }
+    package = _server_package(monkeypatch, "cap-123")
     artifact = tmp_path / "packages" / "cap-123" / "skill"
     artifact.mkdir(parents=True)
     (artifact / "SKILL.md").write_text("MALICIOUS CACHE", encoding="utf-8")
 
-    class Store:
-        root = tmp_path
-
-        @staticmethod
-        def artifact_dir(package_id: str, target_kind: str) -> Path:
-            return tmp_path / "packages" / package_id / target_kind
-
-    class Flow:
-        store = Store()
-
-        async def review_and_prepare_install(
-            self, recipe_id: str, *, recipe_version: int
-        ):
-            return SimpleNamespace(
-                verdict="approved",
-                package=package,
-                artifact_dir=str(artifact),
-                reasons=[],
-            )
-
-    service._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
-        lambda _package: True,
-    )
+    flow = _review_flow(tmp_path, package=package, artifact=artifact)
+    service = _install_service(monkeypatch, flow)
     calls: list[Path] = []
 
     class Manager:
@@ -556,7 +585,6 @@ async def test_install_requires_approved_server_artifact(
             calls.append(Path(artifact_dir))
             return {"success": True, "skill": {"name": "combo"}}
 
-    monkeypatch.setattr(service, "runtime", lambda: service._runtime)
     request_id = experience_request_id("recipe-1", 2)
     receipt = await service.install_candidate(
         request_id=request_id,
@@ -582,9 +610,9 @@ async def test_install_requires_approved_server_artifact(
     assert calls[0].name.startswith(".symphony-install-")
     assert not calls[0].exists()
 
-    restarted = SwarmSymphonyService()
-    restarted._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(restarted, "runtime", lambda: restarted._runtime)
+    restarted = _install_service(
+        monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
+    )
     persisted = await restarted.install_candidate(
         request_id=request_id,
         recipe_id="recipe-1",
@@ -602,33 +630,11 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
     monkeypatch, tmp_path: Path, allow_macos_pytest_temp_sources
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
-    package = {
-        "package_id": "cap-crash",
-        "integrity": "sha256:value",
-        "materials": {},
-    }
-
-    class Flow:
-        store = SimpleNamespace(root=tmp_path)
-
-        async def review_and_prepare_install(self, recipe_id, *, recipe_version):
-            return SimpleNamespace(
-                verdict="approved",
-                package=package,
-                artifact_dir=None,
-                reasons=[],
-            )
-
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
-        lambda _package: True,
-    )
+    package = _server_package(monkeypatch, "cap-crash")
     from jiuwenswarm.symphony import service as service_module
 
     real_save = service_module._save_install_receipt
-    first = SwarmSymphonyService()
-    first._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(first, "runtime", lambda: first._runtime)
+    first = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
     manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
     monkeypatch.setattr(
         service_module,
@@ -648,9 +654,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
         )
 
     monkeypatch.setattr(service_module, "_save_install_receipt", real_save)
-    restarted = SwarmSymphonyService()
-    restarted._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(restarted, "runtime", lambda: restarted._runtime)
+    restarted = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
     restarted_manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
     monkeypatch.setattr(
         restarted_manager,
@@ -680,30 +684,9 @@ async def test_non_approved_review_is_persistently_idempotent(
     monkeypatch, tmp_path: Path, verdict: str
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
-    service = SwarmSymphonyService()
-    reviews = 0
-
-    class Flow:
-        store = SimpleNamespace(root=tmp_path)
-
-        async def review_and_prepare_install(
-            self, recipe_id: str, *, recipe_version: int
-        ):
-            nonlocal reviews
-            reviews += 1
-            return SimpleNamespace(
-                verdict=verdict,
-                package=None,
-                artifact_dir=None,
-                reasons=["manual review required"],
-            )
-
-    service._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(service, "runtime", lambda: service._runtime)
-
-    class Manager:
-        def install_symphony_skill_artifact(self, *args, **kwargs):
-            pytest.fail("non-approved package must not be installed")
+    flow = _review_flow(tmp_path, verdict=verdict)
+    service = _install_service(monkeypatch, flow)
+    manager = _reject_install_manager("non-approved package must not be installed")
 
     result = await service.install_candidate(
         request_id=experience_request_id("recipe-1", 2),
@@ -711,7 +694,7 @@ async def test_non_approved_review_is_persistently_idempotent(
         recipe_version=2,
         package_id=None,
         integrity=None,
-        skill_manager=Manager(),
+        skill_manager=manager,
     )
     duplicate = await service.install_candidate(
         request_id=experience_request_id("recipe-1", 2),
@@ -719,26 +702,26 @@ async def test_non_approved_review_is_persistently_idempotent(
         recipe_version=2,
         package_id=None,
         integrity=None,
-        skill_manager=Manager(),
+        skill_manager=manager,
     )
 
-    restarted = SwarmSymphonyService()
-    restarted._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(restarted, "runtime", lambda: restarted._runtime)
+    restarted_flow = _review_flow(tmp_path, verdict=verdict)
+    restarted = _install_service(monkeypatch, restarted_flow)
     persisted = await restarted.install_candidate(
         request_id=experience_request_id("recipe-1", 2),
         recipe_id="recipe-1",
         recipe_version=2,
         package_id=None,
         integrity=None,
-        skill_manager=Manager(),
+        skill_manager=manager,
     )
 
     assert result["installed"] is False
     assert result["reason"] == verdict
     assert duplicate == {**result, "replayed": True}
     assert persisted == {**result, "replayed": True}
-    assert reviews == 1
+    assert flow.review_and_prepare_install.await_count == 1
+    restarted_flow.review_and_prepare_install.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -746,38 +729,12 @@ async def test_client_package_credentials_must_match_server_package(
     monkeypatch, tmp_path: Path
 ) -> None:
     _enable_evolution_config(monkeypatch, tmp_path)
-    service = SwarmSymphonyService()
-    package = {"package_id": "server-package", "integrity": "sha256:server"}
+    package = _server_package(monkeypatch, "server-package", "sha256:server")
     artifact = tmp_path / "packages" / "server-package" / "skill"
     artifact.mkdir(parents=True)
 
-    class Store:
-        root = tmp_path
-
-        @staticmethod
-        def artifact_dir(package_id: str, target_kind: str) -> Path:
-            return tmp_path / "packages" / package_id / target_kind
-
-    class Flow:
-        store = Store()
-
-        async def review_and_prepare_install(self, recipe_id, *, recipe_version):
-            return SimpleNamespace(
-                verdict="approved",
-                package=package,
-                artifact_dir=str(artifact),
-                reasons=[],
-            )
-
-    class Manager:
-        def install_symphony_skill_artifact(self, *args, **kwargs):
-            pytest.fail("mismatched client package credentials must not install")
-
-    service._runtime = SimpleNamespace(flow_engine=Flow())
-    monkeypatch.setattr(service, "runtime", lambda: service._runtime)
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
-        lambda _package: True,
+    service = _install_service(
+        monkeypatch, _review_flow(tmp_path, package=package, artifact=artifact)
     )
 
     result = await service.install_candidate(
@@ -786,7 +743,9 @@ async def test_client_package_credentials_must_match_server_package(
         recipe_version=2,
         package_id="client-package",
         integrity="sha256:client",
-        skill_manager=Manager(),
+        skill_manager=_reject_install_manager(
+            "mismatched client package credentials must not install"
+        ),
     )
 
     assert result == {"installed": False, "reason": "package_id_mismatch"}
@@ -1024,13 +983,7 @@ async def test_evolution_disabled_gates_flow_service_operations(
 async def test_flow_start_failure_does_not_block_graph_submission(
     monkeypatch, tmp_path: Path
 ) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True},
-        }
-    )
+    _enable_evolution_config(monkeypatch, tmp_path)
     service = SwarmSymphonyService()
     calls: list[str] = []
 
@@ -1045,9 +998,6 @@ async def test_flow_start_failure_does_not_block_graph_submission(
         calls.append("flow_start")
         raise OSError("broken recovery")
 
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
     monkeypatch.setattr(service, "_runtime_for", lambda _config: Runtime())
     monkeypatch.setattr(service, "_start_flow", fail_start)
 
@@ -1083,13 +1033,7 @@ async def test_agent_server_symphony_recovery_is_fail_soft(monkeypatch) -> None:
 async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
     monkeypatch, tmp_path: Path
 ) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True},
-        }
-    )
+    _enable_evolution_config(monkeypatch, tmp_path)
     flow_instances: list[object] = []
     runtimes: list[object] = []
     submitted: list[object] = []
@@ -1128,22 +1072,7 @@ async def test_request_model_plan_keeps_rail_runtime_and_single_flow_owner(
             self.closed = True
 
     service = SwarmSymphonyService()
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyFlowEngine", Flow)
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyRuntime", Runtime)
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_from_config", lambda _: Model()
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_response_observer_from_config",
-        lambda _: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
-        lambda: LLMConfig(model="default"),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
+    _patch_runtime_construction(monkeypatch, Flow, Runtime, Model())
     monkeypatch.setattr(
         service,
         "graph_status",
@@ -1215,13 +1144,7 @@ async def test_service_close_drains_retired_runtime_when_current_close_fails() -
 async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
     monkeypatch, tmp_path: Path
 ) -> None:
-    config = symphony_config_from_dict(
-        {
-            "enabled": True,
-            "paths": {"graph_dir": str(tmp_path / "graph")},
-            "evolution": {"enabled": True},
-        }
-    )
+    config = _enable_evolution_config(monkeypatch, tmp_path)
     changed = symphony_config_from_dict(
         {
             "enabled": True,
@@ -1252,22 +1175,7 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
             await release.wait()
 
     service = SwarmSymphonyService()
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyFlowEngine", Flow)
-    monkeypatch.setattr("jiuwenswarm.symphony.service.SymphonyRuntime", Runtime)
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_from_config", lambda _: Model()
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.model_response_observer_from_config",
-        lambda _: None,
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.LLMConfig.from_default_model",
-        lambda: LLMConfig(model="default"),
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
-    )
+    _patch_runtime_construction(monkeypatch, Flow, Runtime, Model())
     first = service._runtime_for(config)
 
     assert service._runtime_for(changed) is first
@@ -1281,7 +1189,9 @@ async def test_flow_owner_is_not_replaced_and_close_blocks_runtime_creation(
 
 
 @pytest.mark.asyncio
-async def test_single_agent_rail_forwards_agent_capture(monkeypatch) -> None:
+async def test_single_agent_rail_forwards_agent_capture(
+    monkeypatch, rail_capture
+) -> None:
     adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
     adapter._config_base_cache = {
         "symphony": {
@@ -1291,36 +1201,10 @@ async def test_single_agent_rail_forwards_agent_capture(monkeypatch) -> None:
     }
     adapter._model = object()
     adapter._channel_id = "web"
-    submissions: list[dict] = []
-
-    class Service:
-        @staticmethod
-        def runtime():
-            return SimpleNamespace(
-                capture_graph_snapshot=lambda: {"static_revision": "r"}
-            )
-
-        @staticmethod
-        async def submit_evolution_and_notify(planned_graph, execution_graph, **kwargs):
-            submissions.append(kwargs)
-
-    captured: dict = {}
-
-    def rail_factory(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
-        lambda: Service(),
-    )
+    captured, submissions = rail_capture("SymphonyGraphEvolutionRail")
     monkeypatch.setattr(
         "openjiuwen.extensions.observability.demand.get_trajectory_span_processor",
         lambda: "processor",
-    )
-    monkeypatch.setattr(
-        "openjiuwen.harness.rails.evolution.SymphonyGraphEvolutionRail",
-        rail_factory,
     )
 
     rail = adapter._build_symphony_graph_evolution_rail()
@@ -1338,10 +1222,21 @@ async def test_single_agent_rail_forwards_agent_capture(monkeypatch) -> None:
     assert submissions == [
         {"session_id": "session-1", "capture_mode": "agent", "channel_id": "web"}
     ]
+    adapter._channel_id = "new-channel"
+    await captured["submit_evolution"](
+        None, {"graph": {}}, session_id="session-2", capture_mode="forged"
+    )
+    assert submissions[-1] == {
+        "session_id": "session-2",
+        "capture_mode": "agent",
+        "channel_id": "new-channel",
+    }
 
 
 @pytest.mark.asyncio
-async def test_team_leader_rail_forwards_team_capture(monkeypatch) -> None:
+async def test_team_leader_rail_forwards_team_capture(
+    monkeypatch, rail_capture
+) -> None:
     context = SimpleNamespace(
         role="leader",
         channel_id="web",
@@ -1353,29 +1248,7 @@ async def test_team_leader_rail_forwards_team_capture(monkeypatch) -> None:
             }
         },
     )
-    submissions: list[dict] = []
-
-    class Service:
-        @staticmethod
-        def runtime():
-            return SimpleNamespace(
-                capture_graph_snapshot=lambda: {"static_revision": "r"}
-            )
-
-        @staticmethod
-        async def submit_evolution_and_notify(planned_graph, execution_graph, **kwargs):
-            submissions.append(kwargs)
-
-    captured: dict = {}
-
-    def rail_factory(**kwargs):
-        captured.update(kwargs)
-        return SimpleNamespace()
-
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
-        lambda: Service(),
-    )
+    captured, submissions = rail_capture("TeamSymphonyGraphEvolutionRail")
     monkeypatch.setattr(
         "jiuwenswarm.symphony.llm.LLMConfig.from_default_model",
         lambda: object(),
@@ -1383,10 +1256,6 @@ async def test_team_leader_rail_forwards_team_capture(monkeypatch) -> None:
     monkeypatch.setattr(
         "jiuwenswarm.symphony.adapter.model_from_config",
         lambda _config: "model",
-    )
-    monkeypatch.setattr(
-        "openjiuwen.harness.rails.evolution.TeamSymphonyGraphEvolutionRail",
-        rail_factory,
     )
 
     rail = evolution_rails.build_symphony_graph_evolution_rail({}, context)

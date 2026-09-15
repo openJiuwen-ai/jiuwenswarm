@@ -76,16 +76,6 @@ _INVOKE_ROUTE_KEY = "_symphony_orchestration_route"
 
 
 @dataclass(frozen=True)
-class _PausedInvokeKey:
-    """Exact identity for a paused compose; no query or clock fallbacks."""
-
-    session_id: str
-    capture_mode: str
-    owner_id: str
-    component_id: str
-
-
-@dataclass(frozen=True)
 class _InvokeScope:
     """Route shared by the outer DeepAgent and its inner ReActAgent."""
 
@@ -94,17 +84,22 @@ class _InvokeScope:
     owner_id: str
 
 
+@dataclass(frozen=True)
+class _PausedInvokeKey:
+    """Exact identity for a paused compose; no query or clock fallbacks."""
+
+    scope: _InvokeScope
+    component_id: str
+
+
 @dataclass
 class _SymphonyInvokeState:
     """Only the minimum non-secret state needed for a HITL recompose."""
 
-    session_id: str
-    capture_mode: str
-    owner_id: str
+    scope: _InvokeScope
     original_query: str
     candidate_skill_ids: list[str] = field(default_factory=list)
     answers: list[str] = field(default_factory=list)
-    missing_inputs: Any = None
     awaiting_input: bool = False
     pending_recompose: bool = False
     answered: bool = False
@@ -182,9 +177,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         with self._paused_states_lock:
             if self._begin_conflict_quarantine_locked(scope, id(ctx)):
                 state = _SymphonyInvokeState(
-                    session_id=scope.session_id,
-                    capture_mode=scope.capture_mode,
-                    owner_id=scope.owner_id,
+                    scope=scope,
                     original_query=query if isinstance(query, str) else "",
                     valid=False,
                     route_token=route_token,
@@ -193,9 +186,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 return
             generation = self._invalidate_scope_locked(scope)
             state = _SymphonyInvokeState(
-                session_id=scope.session_id,
-                capture_mode=scope.capture_mode,
-                owner_id=scope.owner_id,
+                scope=scope,
                 original_query=query if isinstance(query, str) else "",
                 generation=generation,
                 route_token=route_token,
@@ -212,7 +203,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             state = self._outer_states.pop(outer_context_id, None)
         if state is None:
             return
-        scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
+        scope = state.scope
         try:
             result = getattr(getattr(ctx, "inputs", None), "result", None)
             if self._is_cancelled_or_error_result(result):
@@ -302,12 +293,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         if state is None or not isinstance(ctx.inputs, ToolCallInputs):
             return
         result = ctx.inputs.tool_result
-        status, metadata = self._planned_graph_status(result)
+        status, _ = self._planned_graph_status(result)
         if status == "needs_input":
             state.candidate_skill_ids = self._candidate_skill_ids(ctx.inputs)
-            state.missing_inputs = self._safe_json_value(
-                metadata.get("missing_inputs") if metadata is not None else None
-            )
             state.awaiting_input = True
             state.pending_recompose = False
             return
@@ -485,8 +473,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         with self._paused_states_lock:
             matches: list[tuple[_PausedInvokeKey, _SymphonyInvokeState]] = []
             for key, state in self._paused_states.items():
-                key_scope = _InvokeScope(key.session_id, key.capture_mode, key.owner_id)
-                if key_scope == scope and key.component_id in component_ids:
+                if key.scope == scope and key.component_id in component_ids:
                     matches.append((key, state))
             if len(component_ids) != 1 or len(matches) != 1:
                 self._invalidate_scope_locked(scope)
@@ -522,8 +509,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return True
         outstanding: set[int] = set()
         for context_id, state in self._outer_states.items():
-            state_scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
-            if state_scope == scope:
+            if state.scope == scope:
                 outstanding.add(context_id)
         if not outstanding:
             return False
@@ -547,19 +533,9 @@ class SymphonyOrchestrationRail(DeepAgentRail):
 
         if scope in self._active_states or scope in self._quarantined_scopes:
             return
-        if any(
-            key.session_id == scope.session_id
-            and key.capture_mode == scope.capture_mode
-            and key.owner_id == scope.owner_id
-            for key in self._paused_states
-        ):
+        if any(key.scope == scope for key in self._paused_states):
             return
-        if any(
-            state.session_id == scope.session_id
-            and state.capture_mode == scope.capture_mode
-            and state.owner_id == scope.owner_id
-            for state in self._outer_states.values()
-        ):
+        if any(state.scope == scope for state in self._outer_states.values()):
             return
         self._scope_generations.pop(scope, None)
 
@@ -567,13 +543,11 @@ class SymphonyOrchestrationRail(DeepAgentRail):
         self, state: _SymphonyInvokeState, component_ids: tuple[str, ...]
     ) -> None:
         keys = tuple(
-            _PausedInvokeKey(
-                state.session_id, state.capture_mode, state.owner_id, component_id
-            )
+            _PausedInvokeKey(state.scope, component_id)
             for component_id in component_ids
         )
         with self._paused_states_lock:
-            scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
+            scope = state.scope
             current = self._active_states.get(scope)
             if (
                 not state.valid
@@ -594,7 +568,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
                 self._paused_states[key] = state
 
     def _invalidate_state_scope(self, state: _SymphonyInvokeState) -> None:
-        scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
+        scope = state.scope
         with self._paused_states_lock:
             is_current = self._active_states.get(scope) is state or any(
                 paused is state for paused in self._paused_states.values()
@@ -616,19 +590,11 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             current.valid = False
             self._active_route_states.pop(current.route_token, None)
         for state in self._outer_states.values():
-            if (
-                state.session_id == scope.session_id
-                and state.capture_mode == scope.capture_mode
-                and state.owner_id == scope.owner_id
-            ):
+            if state.scope == scope:
                 state.valid = False
                 self._active_route_states.pop(state.route_token, None)
         for key in tuple(self._paused_states):
-            if (
-                key.session_id == scope.session_id
-                and key.capture_mode == scope.capture_mode
-                and key.owner_id == scope.owner_id
-            ):
+            if key.scope == scope:
                 state = self._paused_states.pop(key)
                 state.valid = False
         return generation
@@ -658,7 +624,7 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             return state
 
     def _remove_active_state(self, state: _SymphonyInvokeState) -> None:
-        scope = _InvokeScope(state.session_id, state.capture_mode, state.owner_id)
+        scope = state.scope
         with self._paused_states_lock:
             if self._active_states.get(scope) is state:
                 self._active_states.pop(scope, None)
@@ -756,47 +722,14 @@ class SymphonyOrchestrationRail(DeepAgentRail):
             if normalized is not None:
                 state.answers.append(normalized)
 
-    def _normalized_answer(self, question: Any, answer: Any) -> str | None:
+    def _normalized_answer(self, question: str, answer: str) -> str | None:
         label = str(question or "").strip()
         if not label or _SENSITIVE_INPUT_NAME.search(label):
             return None
-        safe_value = self._safe_json_value(answer)
-        if safe_value is None or self._contains_sensitive_key(safe_value):
-            return None
-        serialized = json.dumps(safe_value, ensure_ascii=False, separators=(",", ":"))
+        serialized = json.dumps(answer, ensure_ascii=False, separators=(",", ":"))
         if len(serialized) > _MAX_RESUME_ANSWER_CHARS:
             serialized = '"[truncated]"'
         return f"{label[:256]}: {serialized}"
-
-    def _safe_json_value(self, value: Any) -> Any:
-        if value is None or isinstance(value, (str, bool, int)):
-            return value
-        if isinstance(value, float):
-            return (
-                value
-                if value == value and value not in {float("inf"), float("-inf")}
-                else None
-            )
-        if isinstance(value, list):
-            return [self._safe_json_value(item) for item in value[:32]]
-        if isinstance(value, Mapping):
-            return {
-                str(key)[:128]: self._safe_json_value(item)
-                for key, item in list(value.items())[:32]
-                if isinstance(key, (str, int, float, bool))
-            }
-        return None
-
-    def _contains_sensitive_key(self, value: Any) -> bool:
-        if isinstance(value, Mapping):
-            return any(
-                _SENSITIVE_INPUT_NAME.search(str(key))
-                or self._contains_sensitive_key(item)
-                for key, item in value.items()
-            )
-        if isinstance(value, list):
-            return any(self._contains_sensitive_key(item) for item in value)
-        return False
 
     @staticmethod
     def _resume_query(state: _SymphonyInvokeState) -> str:

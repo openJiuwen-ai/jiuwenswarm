@@ -1763,6 +1763,7 @@ class SkillManager:
 
     async def handle_skills_experience_request(self, params: dict) -> dict:
         """Re-open one retained candidate through the normal approval prompt."""
+        from jiuwenswarm.symphony.experience import _parse_recipe_reference
         from jiuwenswarm.symphony.service import get_swarm_symphony_service
 
         allowed = {
@@ -1773,16 +1774,12 @@ class SkillManager:
         }
         if any(key not in allowed for key in params):
             return {"success": False, "reason": "invalid_parameters"}
-        recipe_id = str(params.get("recipe_id") or "").strip()
-        raw_version = params.get("recipe_version")
-        if isinstance(raw_version, bool) or not isinstance(raw_version, (int, str)):
-            return {"success": False, "reason": "invalid_recipe_version"}
         try:
-            recipe_version = int(raw_version)
-        except (TypeError, ValueError):
-            return {"success": False, "reason": "invalid_recipe_version"}
-        if not recipe_id or recipe_version < 1:
-            return {"success": False, "reason": "invalid_recipe"}
+            recipe_id, recipe_version = _parse_recipe_reference(
+                params.get("recipe_id"), params.get("recipe_version")
+            )
+        except ValueError as exc:
+            return {"success": False, "reason": str(exc)}
         return await get_swarm_symphony_service().request_experience_candidate(
             recipe_id=recipe_id,
             recipe_version=recipe_version,

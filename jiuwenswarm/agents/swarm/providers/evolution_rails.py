@@ -76,46 +76,16 @@ def build_symphony_graph_evolution_rail(
     if not core_evolution_enabled:
         return None
     try:
-        from openjiuwen.extensions.observability.demand import (
-            get_trajectory_span_processor,
-        )
-        from openjiuwen.harness.rails.evolution import TeamSymphonyGraphEvolutionRail
         from jiuwenswarm.symphony.adapter import model_from_config
-        from jiuwenswarm.symphony.experience import (
-            PublishedCapabilitySnapshotProvider,
-        )
+        from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
         from jiuwenswarm.symphony.llm import LLMConfig
-        from jiuwenswarm.symphony.service import get_swarm_symphony_service
 
-        service = get_swarm_symphony_service()
-        runtime = service.runtime()
-
-        async def submit_evolution(
-            planned_graph: dict[str, Any] | None,
-            execution_graph: dict[str, Any],
-            *,
-            session_id: str,
-            capture_mode: str,
-        ) -> None:
-            del capture_mode
-            await service.submit_evolution_and_notify(
-                planned_graph,
-                execution_graph,
-                session_id=session_id,
-                capture_mode="team",
-                channel_id=ctx.channel_id,
-            )
-
-        return TeamSymphonyGraphEvolutionRail(
-            trajectory_span_processor=(
-                ctx.trajectory_span_processor or get_trajectory_span_processor()
-            ),
-            graph_snapshot_provider=runtime.capture_graph_snapshot,
-            capability_snapshot_provider=PublishedCapabilitySnapshotProvider(
-                config.paths.graph_dir
-            ),
-            edge_evaluator_llm=model_from_config(LLMConfig.from_default_model()),
-            submit_evolution=submit_evolution,
+        return _build_graph_evolution_rail(
+            config.paths.graph_dir,
+            capture_mode="team",
+            model=model_from_config(LLMConfig.from_default_model()),
+            channel_id=lambda: ctx.channel_id,
+            trajectory_span_processor=ctx.trajectory_span_processor,
         )
     except Exception as exc:
         logger.warning(

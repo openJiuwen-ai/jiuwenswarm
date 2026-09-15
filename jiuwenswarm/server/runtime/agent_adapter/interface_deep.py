@@ -8356,42 +8356,13 @@ class JiuWenSwarmDeepAdapter:
         if not config.enabled or not config.evolution.enabled:
             return None
         try:
-            from openjiuwen.extensions.observability.demand import (
-                get_trajectory_span_processor,
-            )
-            from openjiuwen.harness.rails.evolution import SymphonyGraphEvolutionRail
-            from jiuwenswarm.symphony.experience import (
-                PublishedCapabilitySnapshotProvider,
-            )
-            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+            from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
 
-            service = get_swarm_symphony_service()
-            runtime = service.runtime()
-
-            async def submit_evolution(
-                planned_graph: dict[str, Any] | None,
-                execution_graph: dict[str, Any],
-                *,
-                session_id: str,
-                capture_mode: str,
-            ) -> None:
-                del capture_mode
-                await service.submit_evolution_and_notify(
-                    planned_graph,
-                    execution_graph,
-                    session_id=session_id,
-                    capture_mode="agent",
-                    channel_id=getattr(self, "_channel_id", None),
-                )
-
-            return SymphonyGraphEvolutionRail(
-                trajectory_span_processor=get_trajectory_span_processor(),
-                graph_snapshot_provider=runtime.capture_graph_snapshot,
-                capability_snapshot_provider=PublishedCapabilitySnapshotProvider(
-                    config.paths.graph_dir
-                ),
-                edge_evaluator_llm=self._model,
-                submit_evolution=submit_evolution,
+            return _build_graph_evolution_rail(
+                config.paths.graph_dir,
+                capture_mode="agent",
+                model=self._model,
+                channel_id=lambda: getattr(self, "_channel_id", None),
             )
         except Exception as exc:
             logger.warning(
@@ -13136,24 +13107,15 @@ class JiuWenSwarmDeepAdapter:
                 "resolved": False,
                 "reason": "client_path_rejected",
             }
-        recipe_id = str(meta.get("recipe_id") or params.get("recipe_id") or "").strip()
-        raw_version = meta.get("recipe_version", params.get("recipe_version"))
-        if isinstance(raw_version, bool) or not isinstance(raw_version, (int, str)):
-            return {
-                "accepted": False,
-                "resolved": False,
-                "reason": "invalid_recipe_version",
-            }
+        from jiuwenswarm.symphony.experience import _parse_recipe_reference
+
         try:
-            recipe_version = int(raw_version)
-        except (TypeError, ValueError):
-            return {
-                "accepted": False,
-                "resolved": False,
-                "reason": "invalid_recipe_version",
-            }
-        if not recipe_id or recipe_version < 1:
-            return {"accepted": False, "resolved": False, "reason": "invalid_recipe"}
+            recipe_id, recipe_version = _parse_recipe_reference(
+                meta.get("recipe_id") or params.get("recipe_id"),
+                meta.get("recipe_version", params.get("recipe_version")),
+            )
+        except ValueError as exc:
+            return {"accepted": False, "resolved": False, "reason": str(exc)}
         if not answers_select_option(answers, ("安装", "install")):
             return {
                 "accepted": True,
