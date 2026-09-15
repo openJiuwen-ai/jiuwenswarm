@@ -24,6 +24,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _RailBuildInfo,
 )
+from jiuwenswarm.server.runtime.agent_adapter import interface_flash
 from jiuwenswarm.server.runtime.agent_adapter.interface_flash import (
     JiuwenSwarmFlashAdapter,
 )
@@ -128,18 +129,31 @@ def test_react_override_replaces_eager_tools_and_keeps_siblings() -> None:
     assert react["evolution"]["extra_key"] == "keep_me"
 
 
-def test_evolution_env_bypass_warns(
-    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
-) -> None:
+def test_evolution_env_bypass_warns(monkeypatch: pytest.MonkeyPatch) -> None:
     """env 级开关翻回 true 时必须告警（task_loop 有被 force-revive 的风险）。"""
     adapter = _bare_adapter(JiuwenSwarmFlashAdapter)
     monkeypatch.setattr(
         "jiuwenswarm.server.runtime.agent_adapter.interface_flash.get_skill_create_enabled",
         lambda config: True,
     )
-    with caplog.at_level(logging.WARNING):
+
+    # 仓库的 setup_logger()（common/utils.py 模块级调用）把 jiuwenswarm 命名空间
+    # logger 置为 propagate=False，告警到不了 root；caplog 只挂 root，旧版
+    # pytest 不补挂非传播 logger。直接在模块 logger 上捕获，不依赖传播行为。
+    captured: list[str] = []
+
+    class _CaptureHandler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _CaptureHandler()
+    interface_flash.logger.addHandler(handler)
+    try:
         adapter._apply_flash_react_override({"react": {}})
-    assert "SKILL_CREATE" in caplog.text
+    finally:
+        interface_flash.logger.removeHandler(handler)
+
+    assert any("SKILL_CREATE" in message for message in captured)
 
 
 # ── 技能模式 / 工具卡裁剪 ────────────────────────────────────────────
