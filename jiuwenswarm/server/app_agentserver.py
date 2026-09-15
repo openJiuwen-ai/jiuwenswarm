@@ -62,6 +62,12 @@ from jiuwenswarm.common.utils import (
     get_root_dir,
     logger,
 )
+# Persist missing model/model-group/route IDs before any session or agent is
+# restored. Validation happens against the complete candidate before writing.
+from jiuwenswarm.common.config import migrate_model_business_ids
+migrate_model_business_ids()
+from jiuwenswarm.common.model_migration import migrate_legacy_model_selections
+migrate_legacy_model_selections()
 _mark_startup_import_phase("core_runtime_imports_loaded")
 
 _logging_yaml = get_root_dir() / "config" / "logging.yaml"

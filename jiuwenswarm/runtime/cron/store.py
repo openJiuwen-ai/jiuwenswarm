@@ -250,6 +250,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
         mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
@@ -313,6 +314,7 @@ class CronJobStore:
             timeout_seconds=timeout,
             project_id=pid,
             model_name=model_name_val,
+            model_selection=model_selection,
             mcp=normalize_cron_job_mcp(mcp),
             app_id=str(app_id or "").strip(),
             work_mode=normalize_work_mode(work_mode, default=DEFAULT_WEB_WORK_MODE),
@@ -340,6 +342,7 @@ class CronJobStore:
         timeout_seconds: int | None = None,
         project_id: str = "",
         model_name: str | None = None,
+        model_selection: dict[str, str] | None = None,
         mcp: list[str] | None = None,
         app_id: str = "",
         work_mode: str = DEFAULT_WEB_WORK_MODE,
@@ -361,6 +364,7 @@ class CronJobStore:
             timeout_seconds=timeout_seconds,
             project_id=project_id,
             model_name=model_name,
+            model_selection=model_selection,
             mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
@@ -496,6 +500,16 @@ class CronJobStore:
                 else None
             )
             updated = replace(updated, model_name=new_model_name)
+        if "model_selection" in patch:
+            raw_selection = patch.get("model_selection")
+            if raw_selection is None:
+                updated = replace(updated, model_selection=None)
+            else:
+                from jiuwenswarm.common.model_selection import ModelSelection
+                selection = ModelSelection.model_validate(raw_selection)
+                from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+                ModelSelectionResolver().resolve(selection)
+                updated = replace(updated, model_selection=selection.model_dump())
         if "mcp" in patch:
             # 显式传 null/[] 归 None（不注入）；非字符串元素被过滤。
             updated = replace(

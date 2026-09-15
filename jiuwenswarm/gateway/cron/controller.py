@@ -227,6 +227,13 @@ class CronController:
         else:
             mode = None
         model_name = validate_cron_model(params.get("model_name"))
+        model_selection = params.get("model_selection")
+        if model_selection is not None:
+            from jiuwenswarm.common.model_selection import ModelSelection
+            from jiuwenswarm.server.runtime.model_routing_registry import ModelSelectionResolver
+            selection = ModelSelection.model_validate(model_selection)
+            ModelSelectionResolver().resolve(selection)
+            model_selection = selection.model_dump()
         # mcp：会话级 MCP 选择，随 job 落库；调度执行时注入 chat.send 的
         # ``mcp`` 字段走 AgentServer 的 reconcile_session_mcp。只做类型
         # 规范化（strip/去空/去重），不校验存在性（断连后 job 应降级运行）。
@@ -315,6 +322,7 @@ class CronController:
             timeout_seconds=timeout_seconds,
             project_id=resolved_project_id,
             model_name=model_name,
+            model_selection=model_selection,
             mcp=mcp,
             app_id=app_id,
             work_mode=work_mode,
