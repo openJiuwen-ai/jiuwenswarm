@@ -36,7 +36,6 @@ import {
   isSettlingForStreak,
   streakMapFingerprint,
   formatStreakSummaryLabel,
-  messageHasDeliverable,
   filterDeliverableExecutions,
   completedWorkDurationMs,
   turnElapsedRangeMs,
@@ -1140,69 +1139,7 @@ export function ChatTimelineList({
       ) : null}
       {visibleRenderItems.map((item) => {
         if (item.type === 'message') {
-          const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
-          const meta = item.turnId >= 0 ? turnWorkMeta.get(item.turnId) : undefined;
-          const turnFoldable = Boolean(meta?.completed && meta.hasWork && item.hideMeta);
-          const turnOpen = !turnFoldable || Boolean(expandedTurns[turnKey]);
-          const isFoldAnchor = turnFoldAnchorKeys.get(item.turnId) === item.key;
-
-          if (turnFoldable) {
-            const hasDeliverable = messageHasDeliverable(item.message);
-            return (
-              <Fragment key={`${timelineScope}/${item.key}`}>
-                {/* 工具前的开场白若可折叠，折叠条锚在这里，展开后不会跑到「已完成」上面 */}
-                {isFoldAnchor && meta ? (
-                  <CompletedWorkChip
-                    key={`${timelineScope}/completed-work-${turnKey}`}
-                    variant="turn"
-                    outcomeTone={meta.outcomeTone}
-                    expanded={turnOpen}
-                    onToggle={() => toggleTurn(turnKey)}
-                    elapsedMs={completedWorkDurationMs(meta)}
-                    showAvatar
-                    teamLayout={isTeamMode}
-                    agentTemplateName={item.message.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
-                    teamLeaderIdentity={teamLeaderIdentity}
-                    teamGroupIdentity={teamGroupIdentity}
-                  />
-                ) : null}
-                {/* 折叠态：交付物与代码变更卡需留在文档流内，不能放进被 absolute 隐藏的 collapse */}
-                {!turnOpen && hasDeliverable ? (
-                  <>
-                    <MessageItem
-                      message={{ ...item.message, content: '' }}
-                      showAvatar={false}
-                      hideMeta
-                      disableA2UIInteraction={disableA2UIInteraction}
-                      enableAssistantAvatar={!isTeamMode}
-                      teamLeaderIdentityOverride={teamLeaderIdentity}
-                      teamGroupIdentityOverride={teamGroupIdentity}
-                    />
-                    {renderAfterMessage?.(item.message)}
-                  </>
-                ) : null}
-                <div
-                  className={clsx('timeline-collapse', turnOpen && 'is-open')}
-                  data-testid="chat-panel-timeline-collapse"
-                  data-variant={turnOpen ? 'open' : 'closed'}
-                >
-                  <div className="timeline-collapse-inner">
-                    <MessageItem
-                      message={item.message}
-                      showAvatar={item.showAvatar}
-                      hideMeta={item.hideMeta}
-                      disableA2UIInteraction={disableA2UIInteraction}
-                      enableAssistantAvatar={!isTeamMode}
-                      teamLeaderIdentityOverride={teamLeaderIdentity}
-                      teamGroupIdentityOverride={teamGroupIdentity}
-                    />
-                    {turnOpen ? renderAfterMessage?.(item.message) : null}
-                  </div>
-                </div>
-              </Fragment>
-            );
-          }
-
+          // 正文始终展示；hideMeta 只控制时间与操作栏，不参与思考/工具折叠。
           return (
             <Fragment key={`${timelineScope}/${item.key}`}>
               <MessageItem
