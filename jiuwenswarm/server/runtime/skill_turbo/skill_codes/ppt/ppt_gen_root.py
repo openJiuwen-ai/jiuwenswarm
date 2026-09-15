@@ -79,31 +79,6 @@ def _result_status(result: Any) -> str:
     return "ok"
 
 
-_PPT_TURBO_FAIL_MESSAGE = "PPT生成任务流执行失败：PPTX 导出或交付未成功。"
-_PPT_TURBO_FALLBACK_BUBBLE = "接下来改用 pptx-craft 标准技能流继续。"
-_PPT_TURBO_FAIL_WITH_FALLBACK = (
-    f"{_PPT_TURBO_FAIL_MESSAGE}{_PPT_TURBO_FALLBACK_BUBBLE}"
-)
-
-
-def _delivery_failure_result(
-    node: str,
-    inputs: dict[str, Any],
-    results: list[dict[str, Any]],
-) -> dict[str, Any]:
-    """加速 14 步已经发生，失败收口后在同一气泡续写标准技能流。"""
-    return {
-        "node": node,
-        "status": "error",
-        "message": _PPT_TURBO_FAIL_WITH_FALLBACK,
-        "result": inputs,
-        "steps": results,
-        # 与 stage 横幅同一通道，留在左下主气泡，不进右侧任务槽。
-        "_bubble_progress": True,
-        "_bubble_progress_done": True,
-    }
-
-
 def _append_subplan_step(
     results: list[dict[str, Any]],
     subplan: PlanNode,
@@ -214,7 +189,13 @@ class PPTGenRootNode(PlanNode):
 
         # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
         if str(inputs.get("delivery_status") or "").strip() == "failed":
-            return _delivery_failure_result(self.plan_name, inputs, results)
+            return {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
 
         return {
             "node": self.plan_name,
@@ -320,10 +301,7 @@ class PPTGenRootNode(PlanNode):
         _merge_subplan_result(inputs, last_chunk)
         _append_subplan_step(results, subplan, last_chunk)
         yield self._stage_progress_banner(
-            subplan,
-            index=index,
-            total_steps=total_steps,
-            done=True,
+            subplan, index=index, total_steps=total_steps, done=True
         )
 
     async def _skip_p3_subplan_stream(
@@ -449,10 +427,16 @@ class PPTGenRootNode(PlanNode):
         # SkillTurboDeliverySummaryRail 在外层 tool_result 之后再发 llm_output。
         # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
         # 与 skill_turbo_tools.visible_ppt_turbo_finish_text 的失败路径对齐。
-        # 加速 14 步横幅已经发给左下气泡，此处只补失败收口 + 改走标准技能流，
-        # 不撤掉已执行 stage。message 用固定中性文案，不透传 summary 等动态内容。
+        # message 用固定中性文案（与非流式路径一致）：该消息会进入任务列表/主气泡
+        # 等用户可见链路，不透传 summary 等动态内容，避免暴露内部执行细节。
         if str(inputs.get("delivery_status") or "").strip() == "failed":
-            yield _delivery_failure_result(self.plan_name, inputs, results)
+            yield {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
             return
         yield {
             "node": self.plan_name,

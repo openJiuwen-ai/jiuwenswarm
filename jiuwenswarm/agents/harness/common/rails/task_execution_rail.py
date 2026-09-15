@@ -51,13 +51,6 @@ from jiuwenswarm.agents.harness.common.tools.todo_resume import (
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
     "active_task_id", default=None
 )
-# 不能用 ContextVar：skill_acceleration_exec 在 asyncio.gather 拷贝的
-# context 里 set，父任务读到的仍是默认 False，todo 的 task.start 照发，
-# 后续标准流横幅就被前端任务栈吞进右侧。
-_PPT_TURBO_KEEP_BUBBLE_LOCK = threading.Lock()
-_PPT_TURBO_KEEP_BUBBLE_TEXT = False
-_PPT_TURBO_KEEP_BUBBLE_SESSION = ""
-_PPT_TURBO_LAST_BUBBLE_STEP = ""
 SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
     "_jiuwenswarm_skill_turbo_outer_todo_active"
 )
@@ -68,99 +61,66 @@ def get_current_task_id() -> str | None:
     return _ACTIVE_TASK_ID.get()
 
 
-def set_ppt_turbo_keep_bubble_text(
-    enabled: bool,
-    *,
-    session_id: str | None = None,
-) -> None:
-    """PPT 加速失败降级后，标准流进度继续写在左下正文，不要被 todo 任务栈吞掉。"""
-    global _PPT_TURBO_KEEP_BUBBLE_TEXT, _PPT_TURBO_KEEP_BUBBLE_SESSION, _PPT_TURBO_LAST_BUBBLE_STEP
-    with _PPT_TURBO_KEEP_BUBBLE_LOCK:
-        _PPT_TURBO_KEEP_BUBBLE_TEXT = bool(enabled)
-        if enabled:
-            sid = str(session_id or "").strip()
-            if sid:
-                _PPT_TURBO_KEEP_BUBBLE_SESSION = sid
-        else:
-            _PPT_TURBO_KEEP_BUBBLE_SESSION = ""
-            _PPT_TURBO_LAST_BUBBLE_STEP = ""
+def _inputs_is_scheduled_tick(inputs: Any) -> bool:
+    for meth_name in ("is_heartbeat", "is_cron"):
+        meth = getattr(inputs, meth_name, None)
+        if not callable(meth):
+            continue
+        try:
+            if meth():
+                return True
+        except Exception:
+            logger.debug(
+                "[TaskExecutionRail] %s check failed",
+                meth_name,
+                exc_info=True,
+            )
+    return False
 
 
-def ppt_turbo_keep_bubble_text(session_id: str | None = None) -> bool:
-    with _PPT_TURBO_KEEP_BUBBLE_LOCK:
-        if not _PPT_TURBO_KEEP_BUBBLE_TEXT:
-            return False
-        bound = _PPT_TURBO_KEEP_BUBBLE_SESSION
-        sid = str(session_id or "").strip()
-        if bound and sid and bound != sid:
-            return False
-        return True
+def _query_is_interactive_input(query: Any) -> bool:
+    try:
+        from openjiuwen.core.session.interaction.interactive_input import (
+            InteractiveInput,
+        )
+    except Exception:
+        logger.debug(
+            "[TaskExecutionRail] InteractiveInput import/check failed",
+            exc_info=True,
+        )
+        return False
+    return isinstance(query, InteractiveInput)
 
 
-def _ppt_turbo_keep_bubble_is_continuation(
+def _is_hitl_or_resume_continuation(
     ctx: AgentCallbackContext,
     skip_invoke: bool,
 ) -> bool:
-    """True when this invoke is still the same user turn after turbo fail.
+    """True when this invoke continues the same user turn.
 
     Permission / ask-user / confirm resume arrives as a new ``chat.send`` with
     ``skip_invoke=False`` and ``query`` rebuilt as ``InteractiveInput``. Treating
-    that as a fresh user request would clear the keep-bubble flag, emit
-    ``task.start``, and the frontend would swallow later standard-flow banners.
+    that as a fresh user request would wipe ``_todo_started`` and re-emit
+    ``task.start`` for the same in_progress item.
     """
     if skip_invoke or ctx.session is None:
         return True
     inputs = getattr(ctx, "inputs", None)
     if inputs is None:
         return True
-    for meth_name in ("is_heartbeat", "is_cron"):
-        meth = getattr(inputs, meth_name, None)
-        if callable(meth):
-            try:
-                if meth():
-                    return True
-            except Exception:
-                logger.debug(
-                    "[TaskExecutionRail] %s check failed",
-                    meth_name,
-                    exc_info=True,
-                )
+    if _inputs_is_scheduled_tick(inputs):
+        return True
     query = getattr(inputs, "query", None)
     if query is None:
         return True
-    try:
-        from openjiuwen.core.session.interaction.interactive_input import (
-            InteractiveInput,
-        )
-
-        if isinstance(query, InteractiveInput):
-            return True
-    except Exception:
-        logger.debug(
-            "[TaskExecutionRail] InteractiveInput import/check failed",
-            exc_info=True,
-        )
+    if _query_is_interactive_input(query):
+        return True
     if not isinstance(query, str):
         return True
     text = query.strip()
     if not text:
         return True
     return is_resume_user_query(text)
-
-
-def _keep_bubble_banner(task_content: str, *, done: bool) -> str:
-    """Append-only 开始/完成横幅；不要用 ``[当前步骤: …]``（Markdown 会吞掉）。"""
-    global _PPT_TURBO_LAST_BUBBLE_STEP
-    content = str(task_content or "").strip()
-    if not content:
-        return ""
-    verb = "完成执行" if done else "开始执行"
-    banner = f"{verb} {content}"
-    with _PPT_TURBO_KEEP_BUBBLE_LOCK:
-        if banner == _PPT_TURBO_LAST_BUBBLE_STEP:
-            return ""
-        _PPT_TURBO_LAST_BUBBLE_STEP = banner
-    return f"\n{banner}\n"
 
 
 _SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
@@ -1552,16 +1512,12 @@ class TaskExecutionRail(DeepAgentRail):
             list(self._active_tasks.keys()),
             skip_invoke,
         )
-        # 新用户请求清掉上一轮加速失败的「正文续写」标记。权限卡「本次允许」
-        # 会再开一条 skip_invoke=False 的 chat.send，query 是 InteractiveInput，
-        # 不能当新任务清标记，否则随后 todo task.start 会把标准流横幅吞进右侧。
-        # 子代理 before_invoke 没有 session，也不能清。
-        keep_bubble_continuation = _ppt_turbo_keep_bubble_is_continuation(
-            ctx, skip_invoke
-        )
+        # 权限卡 / 空 query / 「继续」是同一轮续跑，不能当新任务清
+        # _todo_started，否则 lazy_start 会给同一条 in_progress 再发 task.start。
+        resume_continuation = _is_hitl_or_resume_continuation(ctx, skip_invoke)
         preserved_started: set[str] = set()
         preserved_active: dict[str, TaskExecutionContext] = {}
-        if keep_bubble_continuation:
+        if resume_continuation:
             preserved_started = set(self._todo_started)
             preserved_active = dict(self._active_tasks)
             if ctx.session is not None:
@@ -1578,9 +1534,7 @@ class TaskExecutionRail(DeepAgentRail):
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
         self._tool_start_times = {}
-        if keep_bubble_continuation:
-            # Permission resume must not re-open the same in_progress todo.
-            # Clearing _todo_started here made lazy_start emit another task.start.
+        if resume_continuation:
             self._todo_started = preserved_started
             self._active_tasks = preserved_active
             if ctx.session is not None:
@@ -1598,25 +1552,6 @@ class TaskExecutionRail(DeepAgentRail):
                         exc_info=True,
                     )
             _ACTIVE_TASK_ID.set(None)
-        if not keep_bubble_continuation:
-            if ppt_turbo_keep_bubble_text():
-                logger.info(
-                    "[TaskExecutionRail] clear ppt turbo keep-bubble on "
-                    "fresh user turn session_id=%s skip_invoke=%s "
-                    "query_type=%s",
-                    session_id,
-                    skip_invoke,
-                    type(getattr(ctx.inputs, "query", None)).__name__,
-                )
-            set_ppt_turbo_keep_bubble_text(False)
-        elif ppt_turbo_keep_bubble_text(session_id or None):
-            logger.info(
-                "[TaskExecutionRail] keep ppt turbo bubble text across "
-                "continuation session_id=%s skip_invoke=%s query_type=%s",
-                session_id,
-                skip_invoke,
-                type(getattr(ctx.inputs, "query", None)).__name__,
-            )
         if isinstance(ctx.inputs, InvokeInputs):
             await self._init_task_tracking(ctx.session)
             # 跨请求时实例上的 deferred 已被清空；从磁盘快照重建，
@@ -2241,18 +2176,6 @@ class TaskExecutionRail(DeepAgentRail):
                         task_id,
                         session_id,
                     )
-                    # Banner before the closing task.update so RelayClaw's
-                    # reconcileTaskProgress stack is still empty and the line
-                    # lands in the main bubble instead of the collapsible task panel.
-                    if ppt_turbo_keep_bubble_text(
-                        str(session_id or "").strip() or None
-                    ):
-                        await self._emit_keep_bubble_step(
-                            ctx.session,
-                            str(current.get("content", "")),
-                            done=False,
-                            request_id=parent_request_id,
-                        )
                 elif blocked:
                     self._todo_start_deferred.add(task_id)
                     logger.info(
@@ -2411,22 +2334,6 @@ class TaskExecutionRail(DeepAgentRail):
         self._active_tasks[full_task_id] = context
         _ACTIVE_TASK_ID.set(full_task_id)
 
-        keep_sid = ""
-        try:
-            keep_sid = str(session.get_session_id() or "").strip()
-        except Exception:
-            keep_sid = ""
-        if ppt_turbo_keep_bubble_text(keep_sid or None):
-            # Same order as SkillTurbo stage banners: body text first, then
-            # task.start. Otherwise RelayClaw buckets the line into taskRuns
-            # and hides it when the execution panel collapses at turn end.
-            await self._emit_keep_bubble_step(
-                session,
-                context.task_content,
-                done=False,
-                request_id=context.parent_request_id,
-            )
-
         logger.info(
             "[TaskExecutionRail] task.start: %s - %s",
             full_task_id,
@@ -2452,71 +2359,6 @@ class TaskExecutionRail(DeepAgentRail):
         except Exception:
             logger.debug(
                 "[TaskExecutionRail] task.start emit failed",
-                exc_info=True,
-            )
-
-    async def _emit_keep_bubble_step(
-        self,
-        session: Session,
-        task_content: str,
-        *,
-        done: bool,
-        request_id: str = "",
-    ) -> None:
-        """Live banner via content_chunk; persist chat.final so turn-end rebuild keeps it.
-
-        Do not write type=answer: ReAct treats that as the round result and stops.
-        """
-        text = _keep_bubble_banner(task_content, done=done)
-        if not text:
-            return
-        try:
-            await session.write_stream(
-                OutputSchema(
-                    type="content_chunk",
-                    index=0,
-                    payload={"content": text},
-                )
-            )
-            logger.info(
-                "[TaskExecutionRail] keep-bubble step: %s",
-                text.strip(),
-            )
-        except Exception:
-            logger.debug(
-                "[TaskExecutionRail] keep-bubble step emit failed",
-                exc_info=True,
-            )
-        try:
-            from jiuwenswarm.perf.context import get_request_context
-            from jiuwenswarm.server.runtime.session.session_history import (
-                append_history_record,
-            )
-
-            sid = str(session.get_session_id() or "").strip()
-            if not sid:
-                return
-            channel_id = "officeclaw"
-            try:
-                req_ctx = get_request_context(session_id=sid)
-                cid = str((req_ctx or {}).get("channel_id") or "").strip()
-                if cid:
-                    channel_id = cid
-            except Exception:
-                pass
-            append_history_record(
-                session_id=sid,
-                request_id=str(request_id or "").strip(),
-                channel_id=channel_id,
-                role="assistant",
-                event_type="chat.final",
-                content=text,
-                timestamp=time.time(),
-                extra={"keep_bubble_progress": True},
-            )
-        except Exception:
-            logger.debug(
-                "[TaskExecutionRail] keep-bubble history persist failed",
                 exc_info=True,
             )
 
@@ -2578,21 +2420,6 @@ class TaskExecutionRail(DeepAgentRail):
             logger.debug(
                 "[TaskExecutionRail] task.complete emit failed",
                 exc_info=True,
-            )
-
-        keep_sid = ""
-        try:
-            keep_sid = str(session.get_session_id() or "").strip()
-        except Exception:
-            keep_sid = ""
-        if ppt_turbo_keep_bubble_text(keep_sid or None):
-            # After task.complete the task stack is popped, so this line stays
-            # in the main bubble (SkillTurbo: banner after complete).
-            await self._emit_keep_bubble_step(
-                session,
-                task_content,
-                done=True,
-                request_id=parent_request_id,
             )
 
     async def _emit_task_update_event(

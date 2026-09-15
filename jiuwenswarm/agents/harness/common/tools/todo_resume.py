@@ -188,13 +188,16 @@ def set_todo_started_ids(session: Any, ids: list[str] | set[str]) -> None:
 def get_todo_started_ids(session: Any) -> set[str]:
     """Todos that already emitted task.start; empty set when unset."""
     value = session.get_state(TODO_STARTED_SESSION_KEY)
-    if isinstance(value, list):
-        return {
-            str(item)
-            for item in value
-            if item is not None and not isinstance(item, (dict, list, tuple)) and str(item).strip()
-        }
-    return set()
+    if not isinstance(value, list):
+        return set()
+    started: set[str] = set()
+    for item in value:
+        if item is None or isinstance(item, (dict, list, tuple)):
+            continue
+        text = str(item).strip()
+        if text:
+            started.add(text)
+    return started
 
 
 def clear_todo_started_ids(session: Any) -> None:

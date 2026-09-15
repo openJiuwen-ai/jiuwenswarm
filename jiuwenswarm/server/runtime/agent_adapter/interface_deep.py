@@ -12211,8 +12211,8 @@ class JiuWenSwarmDeepAdapter:
     ) -> bool:
         """Idle session + leftover permission card, with no paused tool.
 
-        Hosted subagent cards keep arriving as ``permission_interrupt`` after
-        PPT delivery. If DeepAgent is idle and INTERRUPTION_KEY is empty,
+        Hosted subagent cards can still arrive as ``permission_interrupt`` after
+        the paused tool already finished. If DeepAgent is idle and INTERRUPTION_KEY is empty,
         sending that as a new round makes the model spam 「收到 / 任务已完成」.
         Busy sessions (attach_output is None) still inject into the live round.
         """
@@ -17188,7 +17188,7 @@ class JiuWenSwarmDeepAdapter:
             )
             # RelayClaw consumeFrames treats a 2-frame empty run (accepted +
             # complete, no chat.delta) as jiuwen_session_busy / OA.05000090
-            # and can interrupt the parent PPT turn. Keepalive is a non-business
+            # and can interrupt the parent turn. Keepalive is a non-business
             # frame that raises frameCount above that heuristic.
             yield AgentResponseChunk(
                 request_id=request.request_id,
@@ -20123,9 +20123,6 @@ class JiuWenSwarmDeepAdapter:
                     # Goal-completed cards are UI-only history facts; never feed them
                     # back into model recap context.
                     if rec.get("is_goal_completed_message"):
-                        continue
-                    # Runtime PPT keep-bubble banners are UI progress, not replies.
-                    if rec.get("keep_bubble_progress"):
                         continue
                     event_type = rec.get("event_type")
                     # 只包含 assistant 的最终回复和 compact summary

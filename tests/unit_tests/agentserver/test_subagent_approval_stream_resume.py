@@ -208,7 +208,6 @@ def test_resolve_subagent_approval_works_without_agent_scope_id(monkeypatch):
     from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
         SubagentApprovalKind,
         SubagentApprovalRequest,
-        SubagentApprovalRegistry,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
         resolve_subagent_approval,

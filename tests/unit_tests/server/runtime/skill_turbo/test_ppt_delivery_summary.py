@@ -375,13 +375,7 @@ def test_ppt_delivery_failed_error_detects_p10_failed() -> None:
     assert "PPT 生成失败" in err
     assert "不要告知用户已经生成成功" in err
     assert "skill_tool" in err
-    assert "pptx-craft" in err
-    assert "回复正文" in err or "横幅由运行时写入正文" in err
-    assert "开始执行" in err
-    assert "完成执行" in err
-    assert "不要自己输出 [当前步骤:" in err
-    assert "task_tool" in err
-    assert "pages/page-*.pptx.html" in err
+    assert "大文件" in err
 
 
 def test_wrap_skill_turbo_result_marks_failure_when_p10_delivery_failed() -> None:
