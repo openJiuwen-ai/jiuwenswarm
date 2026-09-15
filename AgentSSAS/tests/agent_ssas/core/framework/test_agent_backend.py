@@ -74,11 +74,11 @@ class TestAgentSSASBackend:
         config = AgentSSASConfig(ssas_home=str(ssas_home))
         backend = AgentSSASBackend(config)
         # mock preprocessor.parse 返回事件列表
-        backend._preprocessor = MagicMock()
-        backend._preprocessor.parse = AsyncMock(return_value=[MagicMock()])
+        backend._preprocessor = MagicMock()  # pylint: disable=protected-access
+        backend._preprocessor.parse = AsyncMock(return_value=[MagicMock()])  # pylint: disable=protected-access
         # mock pipeline.run 返回无风险 RiskAssessment
-        backend._pipeline = MagicMock()
-        backend._pipeline.run = AsyncMock(
+        backend._pipeline = MagicMock()  # pylint: disable=protected-access
+        backend._pipeline.run = AsyncMock(  # pylint: disable=protected-access
             return_value=RiskAssessment(has_risk=False, risk_level=RiskLevel.SAFE)
         )
         assessment = await backend.report_event(
@@ -95,12 +95,12 @@ class TestAgentSSASBackend:
         config = AgentSSASConfig(ssas_home=str(ssas_home))
         backend = AgentSSASBackend(config)
         # mock preprocessor.parse 抛出异常
-        backend._preprocessor = MagicMock()
-        backend._preprocessor.parse = AsyncMock(
+        backend._preprocessor = MagicMock()  # pylint: disable=protected-access
+        backend._preprocessor.parse = AsyncMock(  # pylint: disable=protected-access
             side_effect=RuntimeError("engine failed")
         )
-        backend._pipeline = MagicMock()
-        backend._pipeline.run = AsyncMock(
+        backend._pipeline = MagicMock()  # pylint: disable=protected-access
+        backend._pipeline.run = AsyncMock(  # pylint: disable=protected-access
             return_value=RiskAssessment(has_risk=False, risk_level=RiskLevel.SAFE)
         )
         assessment = await backend.report_event(
@@ -121,7 +121,7 @@ class TestAgentSSASBackend:
         await backend.initialize()
         # initialize 后检测模块管理器应已加载内置模块
         # test_detection 默认 disabled,security_rail_detection 默认 enabled
-        module = backend._module_manager.get_module("security_rail_detection")
+        module = backend._module_manager.get_module("security_rail_detection")  # pylint: disable=protected-access
         assert module is not None
 
     @staticmethod
@@ -133,8 +133,8 @@ class TestAgentSSASBackend:
         backend = AgentSSASBackend(config)
         await backend.initialize()
         await backend.initialize()  # 重复调用应安全返回
-        assert backend._initialized is True
-        module = backend._module_manager.get_module("security_rail_detection")
+        assert backend._initialized is True  # pylint: disable=protected-access
+        module = backend._module_manager.get_module("security_rail_detection")  # pylint: disable=protected-access
         assert module is not None
 
     @staticmethod
@@ -150,8 +150,8 @@ class TestAgentSSASBackend:
         assessment = await backend.report_event(_make_raw_event())
         assert isinstance(assessment, RiskAssessment)
         # 初始化已被自动触发并完成,检测模块可用
-        assert backend._initialized is True
-        module = backend._module_manager.get_module("security_rail_detection")
+        assert backend._initialized is True  # pylint: disable=protected-access
+        module = backend._module_manager.get_module("security_rail_detection")  # pylint: disable=protected-access
         assert module is not None
 
     @staticmethod
@@ -167,13 +167,13 @@ class TestAgentSSASBackend:
         backend = AgentSSASBackend(config)
         # 模拟 patch 的 ensure_future(backend.initialize())
         init_task = asyncio.ensure_future(backend.initialize())
-        backend._init_task = init_task
+        backend._init_task = init_task  # pylint: disable=protected-access
         # 未等待初始化完成直接上报事件
         assessment = await backend.report_event(_make_raw_event())
         assert isinstance(assessment, RiskAssessment)
         # 在途任务完成后初始化标志置位
         await init_task
-        assert backend._initialized is True
+        assert backend._initialized is True  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.unit
@@ -206,9 +206,9 @@ class TestAgentSSASBackend:
         assert assessment.risk_level == RiskLevel.SAFE
         # 等待 notify 后台任务完成(含告警落库)
         await asyncio.gather(
-            *backend._pipeline._background_tasks, return_exceptions=True
+            *backend._pipeline._background_tasks, return_exceptions=True  # pylint: disable=protected-access
         )
-        alerts = await backend._storage.get_alerts()
+        alerts = await backend._storage.get_alerts()  # pylint: disable=protected-access
         assert len(alerts) == 1
         alert = alerts[0]
         # alert_id 含 module_name,可追溯产生告警的检测模块
@@ -217,7 +217,7 @@ class TestAgentSSASBackend:
         assert alert["risk_level"] == "high"
         assert alert["risk_type"] == "tool_permission_denied"
         # timestamp_text 列为本地时区可读格式(直接查表列验证)
-        row = backend._storage._conn.execute(
+        row = backend._storage._conn.execute(  # pylint: disable=protected-access
             "SELECT timestamp_text FROM alerts WHERE alert_id = ?",
             (alert["alert_id"],),
         ).fetchone()
@@ -256,17 +256,14 @@ class TestAgentSSASBackend:
                 }
             }
         )
-        pre_store._conn.close()
+        pre_store._conn.close()  # pylint: disable=protected-access
 
         backend = AgentSSASBackend(config)
         await backend.initialize()  # 启动清理应删除过期事件
 
-        events = await backend._storage.get_events()
-        raw_events = [
-            r
-            for r in backend._storage._conn.execute(
-                "SELECT data FROM raw_events"
-            ).fetchall()
-        ]
+        events = await backend._storage.get_events()  # pylint: disable=protected-access
+        raw_events = backend._storage._conn.execute(  # pylint: disable=protected-access
+            "SELECT data FROM raw_events"
+        ).fetchall()
         assert all(e["event_id"] != "stale_event" for e in events)
         assert len(raw_events) == 0

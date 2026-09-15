@@ -115,15 +115,15 @@ class TestLRUPoolConcurrency:
     def test_lru_pool_size_never_exceeds_max(id_manager_cls):
         """验证 LRU 池大小永远不超过 _MAX_SESSIONS。"""
         idm = id_manager_cls()
-        original_max = id_manager_cls._MAX_SESSIONS
-        id_manager_cls._MAX_SESSIONS = 10
+        original_max = id_manager_cls._MAX_SESSIONS  # pylint: disable=protected-access
+        id_manager_cls._MAX_SESSIONS = 10  # pylint: disable=protected-access
 
         try:
             for i in range(50):
-                idm._increment_interaction_seq_in_pool(f"session-{i:03d}")
-            assert len(idm._session_interaction_seqs) <= 10
+                idm._increment_interaction_seq_in_pool(f"session-{i:03d}")  # pylint: disable=protected-access
+            assert len(idm._session_interaction_seqs) <= 10  # pylint: disable=protected-access
         finally:
-            id_manager_cls._MAX_SESSIONS = original_max
+            id_manager_cls._MAX_SESSIONS = original_max  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.unit
@@ -131,26 +131,26 @@ class TestLRUPoolConcurrency:
     def test_lru_evicts_oldest_first(id_manager_cls):
         """验证 LRU 淘汰最久未使用的 session。"""
         idm = id_manager_cls()
-        id_manager_cls._MAX_SESSIONS = 3
+        id_manager_cls._MAX_SESSIONS = 3  # pylint: disable=protected-access
 
         try:
             # 插入 3 个 session
             for sid in ["s1", "s2", "s3"]:
-                idm._increment_interaction_seq_in_pool(sid)
-            assert len(idm._session_interaction_seqs) == 3
+                idm._increment_interaction_seq_in_pool(sid)  # pylint: disable=protected-access
+            assert len(idm._session_interaction_seqs) == 3  # pylint: disable=protected-access
 
             # 访问 s1,使其成为最近使用
-            idm._get_interaction_seq_from_pool("s1")
+            idm._get_interaction_seq_from_pool("s1")  # pylint: disable=protected-access
 
             # 插入 s4,应淘汰最久未使用的 s2
-            idm._increment_interaction_seq_in_pool("s4")
+            idm._increment_interaction_seq_in_pool("s4")  # pylint: disable=protected-access
 
-            assert "s2" not in idm._session_interaction_seqs
-            assert "s1" in idm._session_interaction_seqs
-            assert "s3" in idm._session_interaction_seqs
-            assert "s4" in idm._session_interaction_seqs
+            assert "s2" not in idm._session_interaction_seqs  # pylint: disable=protected-access
+            assert "s1" in idm._session_interaction_seqs  # pylint: disable=protected-access
+            assert "s3" in idm._session_interaction_seqs  # pylint: disable=protected-access
+            assert "s4" in idm._session_interaction_seqs  # pylint: disable=protected-access
         finally:
-            id_manager_cls._MAX_SESSIONS = 100
+            id_manager_cls._MAX_SESSIONS = 100  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.unit
@@ -170,7 +170,7 @@ class TestLRUPoolConcurrency:
         def worker():
             local_results: list[int] = []
             for _ in range(increments_per_thread):
-                seq = idm._increment_interaction_seq_in_pool("concurrent-session")
+                seq = idm._increment_interaction_seq_in_pool("concurrent-session")  # pylint: disable=protected-access
                 local_results.append(seq)
             with results_lock:
                 results.extend(local_results)
@@ -203,7 +203,7 @@ class TestLRUPoolConcurrency:
         def worker(session_id: str):
             last_seq = -1
             for _ in range(increments_per_session):
-                seq = idm._increment_interaction_seq_in_pool(session_id)
+                seq = idm._increment_interaction_seq_in_pool(session_id)  # pylint: disable=protected-access
                 assert seq > last_seq, (
                     f"session {session_id} 序号非递增: {last_seq} -> {seq}"
                 )
@@ -244,11 +244,11 @@ class TestLRUPoolConcurrency:
 
         def writer():
             for _ in range(writes_per_writer):
-                idm._increment_interaction_seq_in_pool(session_id)
+                idm._increment_interaction_seq_in_pool(session_id)  # pylint: disable=protected-access
 
         def reader():
             while not stop_flag.is_set():
-                seq = idm._get_interaction_seq_from_pool(session_id)
+                seq = idm._get_interaction_seq_from_pool(session_id)  # pylint: disable=protected-access
                 if not isinstance(seq, int) or seq < -1:
                     with errors_lock:
                         read_errors.append(f"读到异常值: {seq}")
@@ -269,7 +269,7 @@ class TestLRUPoolConcurrency:
 
         assert len(read_errors) == 0, f"读取线程发现异常: {read_errors}"
 
-        final_seq = idm._get_interaction_seq_from_pool(session_id)
+        final_seq = idm._get_interaction_seq_from_pool(session_id)  # pylint: disable=protected-access
         assert final_seq == num_writers * writes_per_writer - 1
 
     @staticmethod
@@ -287,7 +287,7 @@ class TestLRUPoolConcurrency:
         连续自增(不被淘汰打断)时序号正确递增,以及池大小不超限。
         """
         idm = id_manager_cls()
-        id_manager_cls._MAX_SESSIONS = 20
+        id_manager_cls._MAX_SESSIONS = 20  # pylint: disable=protected-access
 
         try:
             num_threads = 15
@@ -301,7 +301,7 @@ class TestLRUPoolConcurrency:
                     sid = f"t{thread_id}-s{s}"
                     prev = -1
                     for _ in range(increments_per_session):
-                        seq = idm._increment_interaction_seq_in_pool(sid)
+                        seq = idm._increment_interaction_seq_in_pool(sid)  # pylint: disable=protected-access
                         # 同一 session 连续自增期间序号应递增。
                         # 如果 session 在自增过程中被其他线程淘汰,
                         # 重新创建后从 0 开始,这是 LRU 的预期行为,
@@ -322,10 +322,10 @@ class TestLRUPoolConcurrency:
             for t in threads:
                 t.join()
 
-            assert len(idm._session_interaction_seqs) <= 20
+            assert len(idm._session_interaction_seqs) <= 20  # pylint: disable=protected-access
             assert len(errors) == 0, f"发现数据不一致: {errors}"
         finally:
-            id_manager_cls._MAX_SESSIONS = 100
+            id_manager_cls._MAX_SESSIONS = 100  # pylint: disable=protected-access
 
     @staticmethod
     @pytest.mark.unit
@@ -334,19 +334,19 @@ class TestLRUPoolConcurrency:
         """验证 session_id 为空时使用特殊 key,不与其他 session 冲突。"""
         idm = id_manager_cls()
 
-        seq_empty = idm._increment_interaction_seq_in_pool("")
+        seq_empty = idm._increment_interaction_seq_in_pool("")  # pylint: disable=protected-access
         assert seq_empty == 0
 
-        seq_real = idm._increment_interaction_seq_in_pool("real-session")
+        seq_real = idm._increment_interaction_seq_in_pool("real-session")  # pylint: disable=protected-access
         assert seq_real == 0
 
         # 两者互不干扰
-        assert idm._get_interaction_seq_from_pool("") == 0
-        assert idm._get_interaction_seq_from_pool("real-session") == 0
+        assert idm._get_interaction_seq_from_pool("") == 0  # pylint: disable=protected-access
+        assert idm._get_interaction_seq_from_pool("real-session") == 0  # pylint: disable=protected-access
 
         # 空 session 再次自增
-        seq_empty_2 = idm._increment_interaction_seq_in_pool("")
+        seq_empty_2 = idm._increment_interaction_seq_in_pool("")  # pylint: disable=protected-access
         assert seq_empty_2 == 1
 
         # 真 session 不受影响
-        assert idm._get_interaction_seq_from_pool("real-session") == 0
+        assert idm._get_interaction_seq_from_pool("real-session") == 0  # pylint: disable=protected-access

@@ -122,10 +122,10 @@ class TestSecurityRailDetection:
     @pytest.mark.level1
     def test_level_to_score_mapping() -> None:
         """验证 _level_to_score 风险等级到分数的映射。"""
-        assert SecurityRailAnalyzer._level_to_score("safe") == 0.0
-        assert SecurityRailAnalyzer._level_to_score("low") == 25.0
-        assert SecurityRailAnalyzer._level_to_score("medium") == 50.0
-        assert SecurityRailAnalyzer._level_to_score("high") == 75.0
-        assert SecurityRailAnalyzer._level_to_score("critical") == 100.0
+        assert SecurityRailAnalyzer._level_to_score("safe") == 0.0  # pylint: disable=protected-access
+        assert SecurityRailAnalyzer._level_to_score("low") == 25.0  # pylint: disable=protected-access
+        assert SecurityRailAnalyzer._level_to_score("medium") == 50.0  # pylint: disable=protected-access
+        assert SecurityRailAnalyzer._level_to_score("high") == 75.0  # pylint: disable=protected-access
+        assert SecurityRailAnalyzer._level_to_score("critical") == 100.0  # pylint: disable=protected-access
         # 未知等级回退 50.0
-        assert SecurityRailAnalyzer._level_to_score("unknown") == 50.0
+        assert SecurityRailAnalyzer._level_to_score("unknown") == 50.0  # pylint: disable=protected-access
