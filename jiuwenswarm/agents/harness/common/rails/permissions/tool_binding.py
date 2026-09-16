@@ -18,8 +18,6 @@ def resolve_tool_binding(agent, tool_name: str, expected_type: type):
     """Return the exact registered implementation; callers own lookup failures."""
     card = agent.ability_manager.get(tool_name)
     resource = Runner.resource_mgr.get_tool(card.id, session=None) if card else None
-    # Subclasses can replace execution; this is implementation identity, not assignability.
-    exact_type = type(resource) is expected_type  # pylint: disable=huawei-unidiomatic-typecheck
-    if exact_type and resource.card is card:
+    if type(resource) is expected_type and resource.card is card:
         return resource
     return None
