@@ -299,9 +299,8 @@ models:
         # 公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
         # （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
         # jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
-        # 不填 = core 按模型名查表 / 兜底 200000。
-        # 如需覆盖 core 的自动识别结果，可在 model_config_obj 下配置：
-        # context_window: 131072
+        # 未显式填写时，JiuwenSwarm 使用固定的 256K 上下文默认值。
+        # 如需覆盖默认值，可在 model_config_obj 下配置 context_window。
       is_default: true
   video:
       model_client_config:
@@ -372,7 +371,7 @@ models:
   #   公共出口对 context_window 统一 pop 防发厂商；core 加正式字段后
   #   （届时 core 自行 exclude 不发厂商、self.model_config.context_window 可读），
   #   jiuwenswarm 自动停止 pop，把值留给 core。无需人工同步。
-  #   不填 = core 按模型名查表 / 兜底 200000。
+  #   不填 = JiuwenSwarm 使用固定的 256K 上下文默认值。
   # agentos:
   #   - model_client_config:
   #       api_base: ""
@@ -383,7 +382,7 @@ models:
   #       timeout: 1800
   #     model_config_obj:
   #       temperature: 0.95
-  #       context_window: 131072
+  #       context_window: 262144
 
 # 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
 acp_agents:
@@ -623,7 +622,7 @@ react:
   # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
   context_engine_config:
     enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
-    enable_openrouter_model_context_window_tokens: true # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
+    enable_openrouter_model_context_window_tokens: false # 已停用模型上下文自动获取；上下文窗口由模型配置或固定默认值决定
     # 是否预下载/使用模型词表进行精确 token 计算；关闭时使用字符串长度兜底，默认不联网。
     enable_tiktoken_counter: false
     # 词表统一缓存目录；相对路径相对于 ~/.jiuwenswarm（可由 JIUWENSWARM_DATA_DIR 改变）。
@@ -643,11 +642,11 @@ react:
     #     model: qwen-max
     #     source: modelscope
     #     id: Qwen/Qwen2.5-72B-Instruct
-    # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
-    # context_window_tokens: 131072
-    # 可选的模型名到上下文窗口映射；优先级低于全局值和当前模型的 context_window
+    # 显式覆盖上下文窗口 token 上限（正整数）；不填写则使用当前模型配置或 256K 默认值
+    # context_window_tokens: 262144
+    # 可选的手工模型名到上下文窗口映射；不会自动补全或联网获取。
     # model_context_window_tokens:
-    #   some-model: 131072
+    #   some-model: 262144
     enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
 
     # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，

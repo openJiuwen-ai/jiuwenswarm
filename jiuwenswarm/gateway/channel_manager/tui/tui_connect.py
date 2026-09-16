@@ -44,7 +44,10 @@ from jiuwenswarm.common.reasoning_config import (
     validate_reasoning_level_for_model,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
-from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.context_window import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    parse_positive_int,
+)
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -3425,18 +3428,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             for entry in models:
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
-                model_name = mcc.get("model_name", "")
-                # 解析模型的上下文窗口大小
-                try:
-                    context_window_tokens = resolve_context_window_tokens(
-                        model_name=model_name,
-                        context_engine_config=(config.get("react", {}) or {}),
-                        model_config_obj=mco,
-                    )
-                except Exception:
-                    context_window_tokens = 0
-                    logger.debug("Failed to resolve context_window_tokens for model %s", model_name, exc_info=True)
-                result.append({
+                model_name = str(mcc.get("model_name", "") or "").strip()
+                result_entry = {
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
                     "api_key": mcc.get("api_key", ""),
@@ -3444,8 +3437,13 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                     "temperature": mco.get("temperature"),
                     "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
                     "alias": entry.get("alias", ""),
-                    "context_window_tokens": context_window_tokens,
-                })
+                }
+                if model_name:
+                    result_entry["context_window_tokens"] = (
+                        parse_positive_int(mco.get("context_window"))
+                        or DEFAULT_CONTEXT_WINDOW_TOKENS
+                    )
+                result.append(result_entry)
             active_model = result[0]["model_name"] if result else ""
             await channel.send_response(ws, req_id, ok=True, payload={
                 "models": result,

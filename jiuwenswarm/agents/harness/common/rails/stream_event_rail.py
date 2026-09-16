@@ -16,7 +16,6 @@ import re
 from collections.abc import Mapping
 from typing import Any, List, Optional
 
-from openjiuwen.core.context_engine.context.context_utils import ContextUtils
 from openjiuwen.core.foundation.llm import (
     AssistantMessage,
     ToolMessage,
@@ -70,6 +69,7 @@ from jiuwenswarm.common.tool_display import (
     extract_call_goal,
     inject_call_goal_schema,
 )
+from jiuwenswarm.common.context_window import resolve_context_window_tokens
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.common.todo_snapshot import format_todos_for_frontend
 
@@ -1369,15 +1369,23 @@ class JiuSwarmStreamEventRail(DeepAgentRail):
             logger.debug("Failed to get model_name from ctx.agent", exc_info=True)
 
         try:
-            # raw_total_tokens: model max context window — use agent-core's resolver
-            # with built-in dict + 200000 fallback (never returns 0)
-            raw_total_tokens = ContextUtils.resolve_context_max(
+            # raw_total_tokens: resolve only explicit runtime values and the
+            # fixed JiuwenSwarm fallback; never fetch model metadata here.
+            raw_total_tokens = resolve_context_window_tokens(
                 model_name=model_name,
-                fallback_context_window_tokens=(
-                    getattr(context, "_context_window_tokens", None)
-                    or getattr(context, "_model_context_window_tokens_override", None)
+                context_engine_config={
+                    "context_window_tokens": getattr(
+                        context,
+                        "_global_context_window_tokens",
+                        getattr(context, "_context_window_tokens", None),
+                    ),
+                    "model_context_window_tokens": getattr(
+                        context, "_model_context_window_tokens", None
+                    ),
+                },
+                model_context_window_override=getattr(
+                    context, "_model_context_window_tokens_override", None
                 ),
-                model_context_window_tokens=getattr(context, "_model_context_window_tokens", None),
             )
 
             # The context window contains model input, not the generated reply.

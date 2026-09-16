@@ -31,6 +31,7 @@ type FormItemBase<TValues extends FormValues, TName extends keyof TValues> = {
   labelAction?: ReactNode;
   required?: boolean;
   helpTips?: string;
+  description?: ReactNode;
   disabled?: boolean;
   beforeValueChange?: readonly FormBeforeValueChange<TValues, TName>[];
   onChange?: (value: TValues[TName], values: Readonly<TValues>) => void;
