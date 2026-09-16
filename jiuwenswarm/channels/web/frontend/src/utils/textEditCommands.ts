@@ -23,6 +23,9 @@ const NON_TEXT_INPUT_TYPES = new Set([
   'submit',
 ]);
 
+/** WHATWG: selectionStart/End apply only to these input types (+ textarea). */
+const SELECTION_INPUT_TYPES = new Set(['text', 'search', 'tel', 'url', 'password']);
+
 export type TextEditTarget = HTMLInputElement | HTMLTextAreaElement | HTMLElement;
 
 export function isTextInputElement(el: Element): el is HTMLInputElement | HTMLTextAreaElement {
@@ -77,10 +80,36 @@ export function isChatComposerTarget(target: TextEditTarget): boolean {
   );
 }
 
+export function supportsTextSelection(el: HTMLInputElement | HTMLTextAreaElement): boolean {
+  if (el instanceof HTMLTextAreaElement) return true;
+  const type = (el.type || 'text').toLowerCase();
+  return SELECTION_INPUT_TYPES.has(type);
+}
+
+/**
+ * Resolve the replace range for cut/paste.
+ * Types without selection APIs (e.g. number) expose selectionStart/End as null in Chromium;
+ * treat the full value as the range so paste replaces instead of prefixing at 0.
+ */
+export function getInputSelectionBounds(el: HTMLInputElement | HTMLTextAreaElement): {
+  start: number;
+  end: number;
+  selectionApi: boolean;
+} {
+  if (!supportsTextSelection(el)) {
+    return { start: 0, end: el.value.length, selectionApi: false };
+  }
+  const start = el.selectionStart;
+  const end = el.selectionEnd;
+  if (start == null || end == null) {
+    return { start: 0, end: el.value.length, selectionApi: false };
+  }
+  return { start, end, selectionApi: true };
+}
+
 export function getSelectedText(target: TextEditTarget): string {
   if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-    const start = target.selectionStart ?? 0;
-    const end = target.selectionEnd ?? 0;
+    const { start, end } = getInputSelectionBounds(target);
     if (end <= start) return '';
     return target.value.slice(start, end);
   }
@@ -91,6 +120,30 @@ export function getSelectedText(target: TextEditTarget): string {
   return selection.toString();
 }
 
+function getMaxLengthBudget(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  start: number,
+  end: number,
+): number | null {
+  const max = el.maxLength;
+  // HTML default when unset is -1 (no limit).
+  if (max == null || max < 0) return null;
+  return max - (el.value.length - (end - start));
+}
+
+/** Truncate paste text so the result respects maxLength (native paste semantics). */
+export function clampPasteText(
+  el: HTMLInputElement | HTMLTextAreaElement,
+  start: number,
+  end: number,
+  replacement: string,
+): string {
+  const budget = getMaxLengthBudget(el, start, end);
+  if (budget == null) return replacement;
+  if (budget <= 0) return '';
+  return replacement.slice(0, budget);
+}
+
 function setNativeInputValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   const descriptor = Object.getOwnPropertyDescriptor(proto, 'value');
@@ -98,14 +151,48 @@ function setNativeInputValue(el: HTMLInputElement | HTMLTextAreaElement, value: 
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-function replaceInputSelection(el: HTMLInputElement | HTMLTextAreaElement, replacement: string): void {
-  const start = el.selectionStart ?? 0;
-  const end = el.selectionEnd ?? 0;
-  const next = el.value.slice(0, start) + replacement + el.value.slice(end);
-  setNativeInputValue(el, next);
-  const caret = start + replacement.length;
+function tryExecCommand(command: string, value?: string): boolean {
   try {
-    el.setSelectionRange(caret, caret);
+    if (value === undefined) return Boolean(document.execCommand(command));
+    return Boolean(document.execCommand(command, false, value));
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Prefer insertText so Chromium records an undo entry and enforces maxLength.
+ * Fall back to a maxLength-aware manual replace when execCommand is unavailable.
+ */
+function replaceInputSelection(el: HTMLInputElement | HTMLTextAreaElement, replacement: string): void {
+  el.focus();
+
+  // Keep the browser's real selection when possible (incl. type=number visual selection).
+  if (tryExecCommand('insertText', replacement)) return;
+
+  const { start, end, selectionApi } = getInputSelectionBounds(el);
+  // Types without a selection API: replace the whole value (select-all semantics).
+  const from = selectionApi ? start : 0;
+  const to = selectionApi ? end : el.value.length;
+  const text = clampPasteText(el, from, to, replacement);
+  const next = el.value.slice(0, from) + text + el.value.slice(to);
+  setNativeInputValue(el, next);
+  try {
+    el.setSelectionRange(from + text.length, from + text.length);
+  } catch {
+    // Some input types reject setSelectionRange.
+  }
+}
+
+function deleteInputSelection(el: HTMLInputElement | HTMLTextAreaElement): void {
+  el.focus();
+  if (tryExecCommand('delete')) return;
+  const { start, end, selectionApi } = getInputSelectionBounds(el);
+  const from = selectionApi ? start : 0;
+  const to = selectionApi ? end : el.value.length;
+  setNativeInputValue(el, el.value.slice(0, from) + el.value.slice(to));
+  try {
+    el.setSelectionRange(from, from);
   } catch {
     // Some input types reject setSelectionRange.
   }
@@ -235,12 +322,10 @@ export async function runTextEditAction(target: TextEditTarget, action: TextEdit
     const ok = await writeClipboardText(text);
     if (!ok) return;
     if (target instanceof HTMLInputElement || target instanceof HTMLTextAreaElement) {
-      replaceInputSelection(target, '');
+      deleteInputSelection(target);
       return;
     }
-    try {
-      document.execCommand('delete');
-    } catch {
+    if (!tryExecCommand('delete')) {
       const selection = target.ownerDocument.getSelection();
       if (selection && selection.rangeCount > 0) {
         selection.getRangeAt(0).deleteContents();
