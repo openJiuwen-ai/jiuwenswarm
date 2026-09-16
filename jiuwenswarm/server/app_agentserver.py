@@ -171,6 +171,12 @@ from jiuwenswarm.agents.harness.common.tools.bash_tool_safety import (
 
 install_shell_tool_safety_hooks()
 
+from jiuwenswarm.agents.harness.common.tools.command_tools import (
+    apply_shell_output_env_defaults,
+)
+
+apply_shell_output_env_defaults()
+
 # Normalize known provider compatibility gaps before any runtime Model is built.
 from jiuwenswarm.llm_provider_compat_patch import apply_provider_compat_patches
 
