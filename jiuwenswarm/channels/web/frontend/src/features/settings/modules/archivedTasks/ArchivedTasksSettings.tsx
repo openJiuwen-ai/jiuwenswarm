@@ -80,7 +80,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     });
   }, []);
 
-  const isResourcePending = (id: string) => pendingActions[id] !== undefined;
+  const isResourcePending = (id: string) => pendingActions[`session:${id}`] !== undefined;
 
   const handleRestoreSession = async (session: ArchivedSession) => {
     const actionKey = `session:${session.session_id}`;
