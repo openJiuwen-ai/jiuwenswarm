@@ -85,3 +85,45 @@ async def test_root_stream_reports_delivery_failure(
     # 固定中性文案，不透传 summary（含路径）等动态内容
     assert chunks[-1]["message"] == "PPT生成任务流执行失败：PPTX 导出或交付未成功"
     assert "/x" not in chunks[-1]["message"]
+
+
+def test_business_failure_still_collects_artifact() -> None:
+    """P10 业务失败时仍收集 __artifact__，否则 wrap 看不到 delivery_status=failed。"""
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.runtime.skill_turbo.executor import SkillTurboExecutor
+
+    ex = SkillTurboExecutor.__new__(SkillTurboExecutor)
+    ex._node_artifacts_holder = {}
+    result = {
+        "status": "error",
+        "delivery_status": "failed",
+        "__artifact__": {
+            "info": {"delivery_status": "failed", "task_completed": False},
+            "files": [],
+            "delivery_summary": "PPT 生成失败，HTML 页面目录：/x",
+        },
+    }
+    ex._collect_node_artifact(
+        SimpleNamespace(plan_name="p10_delivery"),
+        result,
+        "task-p10",
+        1.0,
+        True,
+    )
+
+    held = ex._node_artifacts_holder["p10_delivery"]
+    assert held["status"] == "failed"
+    assert held["info"]["delivery_status"] == "failed"
+    assert "__artifact__" not in result
+
+
+def test_subplan_business_failure_includes_delivery_status() -> None:
+    from jiuwenswarm.server.runtime.skill_turbo.executor import (
+        _is_subplan_business_failure,
+    )
+
+    assert _is_subplan_business_failure({"delivery_status": "failed"}) is True
+    assert _is_subplan_business_failure({"export_status": "failed"}) is True
+    assert _is_subplan_business_failure({"status": "error"}) is True
+    assert _is_subplan_business_failure({"status": "ok"}) is False
