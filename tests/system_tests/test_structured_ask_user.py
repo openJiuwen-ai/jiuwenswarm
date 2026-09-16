@@ -144,13 +144,24 @@ class TestStructuredAskUserToolSchema:
         options_schema = props["options"]
         # Moonshot/Kimi flavored schema：type 必须落在 anyOf 分支内，父级不得
         # 同置 type；数量约束（0 个或 2-4 个）由两个分支各自声明。
-        assert options_schema["anyOf"] == [
-            {"type": "array", "maxItems": 0},
-            {"type": "array", "minItems": 2, "maxItems": 4},
+        # Gemini（issue #5514）还要求每个 array 分支自带 items，否则报
+        # "...options.any_of[i].items: missing field"。
+        assert "type" not in options_schema
+        branches = options_schema["anyOf"]
+        assert [
+            (b.get("type"), b.get("minItems"), b.get("maxItems")) for b in branches
+        ] == [
+            ("array", None, 0),
+            ("array", 2, 4),
         ]
+        for branch in branches:
+            assert branch["items"]["type"] == "object"
+            assert branch["items"]["required"] == ["label"]
         option_schema = options_schema["items"]
         assert option_schema["required"] == ["label"]
         assert option_schema["properties"]["label"]["minLength"] == 1
+        # 三处引用同一 schema dict，避免漂移。
+        assert all(branch["items"] is option_schema for branch in branches)
 
     @staticmethod
     def test_tool_card_name_is_ask_user():

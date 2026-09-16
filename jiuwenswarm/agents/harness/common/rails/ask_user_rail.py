@@ -74,6 +74,36 @@ def _is_saved_pending_tool_call(
 # Extended input schema
 # ---------------------------------------------------------------------------
 
+# Shared schema for one selectable option. Referenced from the parent `items`
+# and from every `anyOf` branch below so the copies cannot drift apart.
+_OPTION_SCHEMA: dict[str, Any] = {
+    "type": "object",
+    "properties": {
+        "label": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Display text for this option (1-5 words).",
+        },
+        "description": {
+            "type": "string",
+            "description": "Explanation of what this option means.",
+        },
+        "preview": {
+            "type": "string",
+            "description": (
+                "Optional preview content rendered beside this option when "
+                "comparing concrete artifacts the user should visually compare "
+                "(e.g. ASCII mockups, code snippets). Markdown is supported; "
+                "use fenced code blocks for monospace mockups so alignment is "
+                "preserved. Only rendered for single-select questions; ignored "
+                "for multi-select."
+            ),
+        },
+    },
+    "required": ["label"],
+}
+
+
 _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
     "type": "object",
     "properties": {
@@ -93,36 +123,21 @@ _QUESTIONS_ITEM_SCHEMA: dict[str, Any] = {
             # （报错 "type should be defined in anyOf items instead of the parent
             # schema"）。语义不变：数组元素由 items 约束（object + required label），
             # 数量由 anyOf 约束（0 个，或 2-4 个）。
+            # Google Gemini（经 OpenRouter，issue #5514）则进一步要求：声明了
+            # `"type": "array"` 的每个 anyOf 分支必须自带 `items`
+            # （报错 "...options.any_of[i].items: missing field"），因此每个分支
+            # 都复用同一份 _OPTION_SCHEMA；parent 级 items 为兼容其他 provider 保留，
+            # 三处引用同一 dict，不会漂移。
             "anyOf": [
-                {"type": "array", "maxItems": 0},
-                {"type": "array", "minItems": 2, "maxItems": 4},
-            ],
-            "items": {
-                "type": "object",
-                "properties": {
-                    "label": {
-                        "type": "string",
-                        "minLength": 1,
-                        "description": "Display text for this option (1-5 words).",
-                    },
-                    "description": {
-                        "type": "string",
-                        "description": "Explanation of what this option means.",
-                    },
-                    "preview": {
-                        "type": "string",
-                        "description": (
-                            "Optional preview content rendered beside this option when "
-                            "comparing concrete artifacts the user should visually compare "
-                            "(e.g. ASCII mockups, code snippets). Markdown is supported; "
-                            "use fenced code blocks for monospace mockups so alignment is "
-                            "preserved. Only rendered for single-select questions; ignored "
-                            "for multi-select."
-                        ),
-                    },
+                {"type": "array", "maxItems": 0, "items": _OPTION_SCHEMA},
+                {
+                    "type": "array",
+                    "minItems": 2,
+                    "maxItems": 4,
+                    "items": _OPTION_SCHEMA,
                 },
-                "required": ["label"],
-            },
+            ],
+            "items": _OPTION_SCHEMA,
         },
         "multi_select": {
             "type": "boolean",
