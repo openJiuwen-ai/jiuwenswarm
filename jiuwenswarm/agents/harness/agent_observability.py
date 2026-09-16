@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import logging
 import threading
+from typing import Any
 
 from openjiuwen.harness.observability import (
     acquire_observability,
@@ -61,12 +62,50 @@ _agent_observability_active: bool = False
 # unless force was ever used.
 _force_ever_enabled: bool = False
 
+# The last ObservabilityConfig this runtime applied; drift against it (not
+# against the provider's live config) triggers the provider rebuild above.
+_last_applied_config: Any | None = None
+
 # Serializes the two flags above and the runtime toggle they guard. Callers hand
 # this module's entry points to a worker thread so a trajectory-runtime restart
 # never blocks the event loop, which means the single-threaded ordering they used
 # to rely on is no longer implied. Reentrant because the sync path calls the
 # shutdown path.
 _state_lock = threading.RLock()
+
+
+def _apply_agent_observability_config(obs_cfg: Any) -> bool:
+    """Bring the active provider onto *obs_cfg*, rebuilding it on config drift.
+
+    Drift is measured against this runtime's last applied config, NOT the
+    provider's live config: another runtime (team / trajectory_ui / evolution)
+    may hold the provider, in which case release is a no-op and acquire
+    re-attaches to it with its config left authoritative. Comparing against
+    the live config would thrash the provider across alternating requests.
+
+    After a rebuild the OTel global tracer still points at the shut-down
+    provider (``set_tracer_provider`` runs once per process). Harmless here:
+    all span paths resolve tracers through the SDK-internal provider.
+
+    Returns:
+        Whether a provider already existed, i.e. this runtime reuses one
+        owned by another subsystem and its settings were not applied.
+    """
+    global _agent_observability_active, _last_applied_config
+    if _agent_observability_active:
+        if _last_applied_config is not None and _last_applied_config == obs_cfg:
+            return True
+        logger.info(
+            "[AgentObservability] config changed, rebuilding provider: "
+            "exporter=%s endpoint=%s",
+            obs_cfg.exporter,
+            obs_cfg.endpoint,
+        )
+        release_observability()
+        _agent_observability_active = False
+    provider_existed = acquire_observability(obs_cfg)
+    _last_applied_config = obs_cfg
+    return provider_existed
 
 
 def sync_agent_observability(*, force: bool = False) -> None:
@@ -131,8 +170,8 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
             default_backend="otlp",
             traces_dir=traces_dir,
         )
-        provider_existed = acquire_observability(obs_cfg)
         was_active = _agent_observability_active
+        provider_existed = _apply_agent_observability_config(obs_cfg)
         _agent_observability_active = True
         try:
             sync_trajectory_runtime(trajectory_settings, demand="agent")
@@ -160,6 +199,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
                 )
     except Exception as exc:
         _agent_observability_active = False
+        _last_applied_config = None
         if evolution_requested:
             raise RuntimeError(
                 "Agent evolution observability initialization failed"
@@ -169,7 +209,7 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
 
 def shutdown_agent_observability() -> None:
     """Shutdown single-agent observability (on disable or process exit)."""
-    global _agent_observability_active
+    global _agent_observability_active, _last_applied_config
     with _state_lock:
         try:
             if not shutdown_trajectory_runtime(demand="agent"):
@@ -181,6 +221,9 @@ def shutdown_agent_observability() -> None:
         try:
             release_observability()
             _agent_observability_active = False
+            _last_applied_config = None
             logger.info("[AgentObservability] disabled")
         except Exception as exc:
+            # Clear the fast-path memory so the next sync retries acquire.
+            _last_applied_config = None
             logger.warning("[AgentObservability] shutdown failed: %s", exc)
