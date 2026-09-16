@@ -64,9 +64,10 @@ def build_report(
     findings: list[Finding],
     content_hash: str,
     escalated: bool = False,
+    grade: str | None = None,
 ) -> VetReport:
     return VetReport(
-        grade=grade_from_findings(findings),
+        grade=grade if grade is not None else grade_from_findings(findings),
         content_hash=content_hash,
         findings=[_finding_to_dict(f) for f in findings],
         escalated=escalated,
@@ -79,5 +80,21 @@ def run_vet(skill_dir: Path, *, reviewer=None) -> VetReport:
 
     content_hash = compute_content_hash(skill_dir)
     findings = scan_skill(skill_dir)
+
+    # INTENTIONAL DEVIATION from the plan's verbatim Task 4 code (review fix).
+    # The deterministic grade is a FLOOR for gating; LLM escalation is advisory.
+    # The reviewer's findings still REPLACE the array, but a less-severe reviewer
+    # result must never lower the reported grade below the scan's grade. We
+    # therefore take the higher-severity of the two via _severity_order().
+    # Do NOT "correct" this back to grading the post-escalation findings.
+    deterministic_grade = grade_from_findings(findings)
+
     findings, escalated = review_findings(findings, skill_dir, reviewer=reviewer)
-    return build_report(skill_dir, findings, content_hash, escalated=escalated)
+
+    escalated_grade = grade_from_findings(findings)
+    if _severity_order(escalated_grade) > _severity_order(deterministic_grade):
+        grade = escalated_grade
+    else:
+        grade = deterministic_grade
+
+    return build_report(skill_dir, findings, content_hash, escalated=escalated, grade=grade)
