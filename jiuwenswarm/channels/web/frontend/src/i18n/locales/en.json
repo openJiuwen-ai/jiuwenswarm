@@ -2673,7 +2673,9 @@
       "blockedBody": "This skill was graded {{grade}} by the security scanner. Review the findings before enabling.",
       "approve": "Approve & enable",
       "cancel": "Cancel",
-      "badge": "{{grade}}"
+      "badge": "{{grade}}",
+      "findingsTitle": "Findings",
+      "noFindings": "No findings reported."
     },
     "mySkillsTabs": {
       "all": "All",

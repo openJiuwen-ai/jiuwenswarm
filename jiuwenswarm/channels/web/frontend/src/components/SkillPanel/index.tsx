@@ -82,7 +82,28 @@ const MY_SKILLS_EMPTY_KEY: Record<'all' | 'enabled' | 'disabled' | 'builtin', st
   builtin: 'skills.noBuiltinSkills',
 };
 
-type PendingVet = { name: string; grade: string; contentHash: string };
+export type VetFinding = {
+  category: string;
+  severity: string;
+  file: string;
+  line: number;
+  evidence: string;
+  rule_id: string;
+};
+
+type PendingVet = {
+  name: string;
+  grade: string;
+  contentHash: string;
+  token: string;
+  findings: VetFinding[];
+};
+
+const VET_EVIDENCE_MAX_LENGTH = 280;
+
+function truncateVetEvidence(evidence: string): string {
+  return evidence.length > VET_EVIDENCE_MAX_LENGTH ? `${evidence.slice(0, VET_EVIDENCE_MAX_LENGTH)}…` : evidence;
+}
 
 function vetGradeBadgeVariant(grade: string): TagVariant {
   switch (grade.toUpperCase()) {
@@ -1026,12 +1047,19 @@ export function SkillPanel({
           code?: string;
           grade?: string;
           content_hash?: string;
-          findings?: unknown[];
+          token?: string;
+          findings?: VetFinding[];
         }>('skills.toggle', withSession({ name: skillName, enabled: newEnabled }));
 
         if (!result.success) {
           if (result.code === 'SKILL_VET_BLOCKED') {
-            setPendingVet({ name: skillName, grade: result.grade ?? 'HIGH', contentHash: result.content_hash ?? '' });
+            setPendingVet({
+              name: skillName,
+              grade: result.grade ?? 'HIGH',
+              contentHash: result.content_hash ?? '',
+              token: result.token ?? '',
+              findings: result.findings ?? [],
+            });
             return;
           }
           throw new Error(result.detail || 'Failed to toggle skill');
@@ -1067,13 +1095,13 @@ export function SkillPanel({
   }, []);
 
   const handleApproveVet = useCallback(async () => {
-    if (!pendingVet) return;
-    const { name, contentHash } = pendingVet;
+    if (!pendingVet || vetApproving) return;
+    const { name, contentHash, token } = pendingVet;
     setVetApproving(true);
     try {
       const approveResult = await webRequest<{ success: boolean; detail?: string }>(
         'skills.vet-approve',
-        withSession({ name, content_hash: contentHash }),
+        withSession({ name, content_hash: contentHash, token }),
       );
       if (!approveResult.success) {
         throw new Error(approveResult.detail || t('skills.setEnabledError'));
@@ -1100,7 +1128,7 @@ export function SkillPanel({
     } finally {
       setVetApproving(false);
     }
-  }, [pendingVet, selectedSkill, withSession, showMessage, t]);
+  }, [pendingVet, vetApproving, selectedSkill, withSession, showMessage, t]);
 
   const renderMySkillCard = (skill: SkillItem) => {
     const displayName = skill.display_name || skill.name;
@@ -1515,6 +1543,37 @@ export function SkillPanel({
             <p className="text-sm text-text-muted mb-5" data-testid="skill-panel-vet-blocked-body">
               {t('skills.vet.blockedBody', { grade: pendingVet.grade })}
             </p>
+            <div className="mb-5">
+              <div className="mb-2 text-sm font-medium text-text-strong">{t('skills.vet.findingsTitle')}</div>
+              {pendingVet.findings.length === 0 ? (
+                <p className="text-sm text-text-muted" data-testid="skill-panel-vet-no-findings">
+                  {t('skills.vet.noFindings')}
+                </p>
+              ) : (
+                <ul
+                  className="max-h-64 overflow-y-auto rounded-md border border-border bg-panel"
+                  data-testid="skill-panel-vet-findings"
+                >
+                  {pendingVet.findings.map((finding, index) => (
+                    <li
+                      key={`${finding.rule_id}-${finding.file}-${finding.line}-${index}`}
+                      className="border-b border-border p-2 text-sm last:border-b-0"
+                      data-testid="skill-panel-vet-finding"
+                      data-variant={finding.rule_id}
+                    >
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Tag variant={vetGradeBadgeVariant(finding.severity)}>{finding.severity}</Tag>
+                        <span className="font-mono text-xs text-text-muted">
+                          {finding.file}:{finding.line}
+                        </span>
+                        <span className="font-mono text-xs text-text-muted">{finding.rule_id}</span>
+                      </div>
+                      <p className="mt-1 break-words text-text">{truncateVetEvidence(finding.evidence)}</p>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
             <div className="flex justify-end gap-3">
               <Button
                 size="sm"
