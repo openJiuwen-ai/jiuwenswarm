@@ -456,12 +456,11 @@ def apply() -> None:
         else:
             _diag.append("CARGO=NOT_FOUND")
     else:
-        _diag.append("RUSTC=NOT_FOUND")
-        # 即使 RUSTC 没找到，也尝试找 cargo
-        cargo = _real_executable(os.environ.get("CARGO")) or _find_tool("cargo")
-        if cargo:
-            os.environ["CARGO"] = cargo
-            _diag.append(f"CARGO={cargo} (without RUSTC)")
+        # 信息性诊断：运行时全部依赖预编译 wheel，无需 rust 工具链。措辞必须
+        # 明确"非错误"，避免 LLM 代理读到 stderr 后误判为环境故障（2026-09-15
+        # 深度研究曾因旧措辞 RUSTC=NOT_FOUND 被误报"缺少 Rust 工具链依赖，
+        # 无法启动"）。仅当真正触发本地构建（pip build / maturin）时才缺它。
+        _diag.append("rust toolchain absent (informational; not required at runtime)")
 
     maturin = _real_executable(os.environ.get("MATURIN")) or _find_tool("maturin")
     if maturin:
@@ -484,7 +483,9 @@ def apply() -> None:
         _patch_setuptools_rust_module(sr_mod)
         _diag.append("setuptools_rust patched")
     except ImportError:
-        _diag.append("setuptools_rust NOT importable")
+        # 同上：信息性诊断，非错误。预编译 wheel 环境下 setuptools_rust 缺失
+        # 完全正常，只有触发源码构建才需要它。
+        _diag.append("setuptools_rust absent (informational; only needed for source builds)")
 
     # 输出诊断到 stderr
     _sys.stderr.write("[ohos_build_env] " + " | ".join(_diag) + "\n")
