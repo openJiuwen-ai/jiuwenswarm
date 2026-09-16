@@ -5,6 +5,8 @@ import json
 from pathlib import Path
 from unittest.mock import patch
 
+import pytest
+
 
 # ---------------------------------------------------------------------------
 # Helpers
@@ -206,3 +208,37 @@ class TestForkSessionChannelMetadata:
         )
         assert source_meta_reread["channel_metadata"]["project_dir"] == "/Users/test/deep-project"
         assert source_meta_reread["channel_metadata"]["custom_field"] == "custom_value"
+
+    def test_rejects_traversal_ids_before_filesystem_access(self, tmp_path, monkeypatch):
+        """A fork must never read or create paths outside the sessions root."""
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id = "safe_source_001"
+        _write_source_meta(
+            sessions_dir,
+            source_id,
+            {"session_id": source_id, "channel_id": "tui", "title": "Source"},
+        )
+
+        from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+        outside_source = tmp_path / "outside-source"
+        outside_source.mkdir()
+        (outside_source / "metadata.json").write_text(
+            '{"session_id":"outside"}', encoding="utf-8"
+        )
+
+        with pytest.raises(ValueError, match="invalid session_id"):
+            fork_session(
+                source_session_id="../outside-source",
+                target_session_id="safe_target_001",
+                channel_id="tui",
+            )
+
+        outside_target = tmp_path / "outside-target"
+        with pytest.raises(ValueError, match="invalid session_id"):
+            fork_session(
+                source_session_id=source_id,
+                target_session_id="../outside-target",
+                channel_id="tui",
+            )
+        assert not outside_target.exists()
