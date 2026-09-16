@@ -6923,12 +6923,11 @@ class AgentWebSocketServer:
                 team_agent = get_team_manager(channel_id).get_team_agent(session_id)
                 if team_agent is not None:
                     execution_subject = team_agent.observability_execution_subject(session_id)
-            # A manual /compact is a turn of its own: the compaction
-            # instruction goes in, the model is asked once for a summary, and
-            # the rewritten context is what the next turn starts from. It
-            # takes the next turn number so the viewer places it between its
-            # neighbours; a run span stating no turn at all was sorted after
-            # every numbered turn instead.
+            # No turn id: manual /compact runs outside any ReAct loop, so it
+            # belongs to no turn. Claiming one (the request id used to stand in
+            # for it) split the session's turn numbering with a span that is
+            # not a turn at all. The viewer places a run that names no turn
+            # between the turns it happened between.
             #
             # The run span's mode must be the canonical three-segment value
             # (``agent.work.normal`` ...), the same the chat path stamps. The
@@ -6938,14 +6937,11 @@ class AgentWebSocketServer:
             # event vanished, and the next context commit was reported as a
             # sequence gap.
             _trajectory_mode = deprecate_mode(canonical_mode)
-            _turn = await agent.resolve_trajectory_turn(session_id)
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,
                 request_id=request.request_id,
                 run_id=request.request_id,
-                turn_id=_turn.turn_id,
-                turn_number=_turn.turn_number,
                 execution_subject=execution_subject,
             )
             try:

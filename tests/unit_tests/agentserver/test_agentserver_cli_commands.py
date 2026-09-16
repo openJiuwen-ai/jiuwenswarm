@@ -16,7 +16,6 @@ from jiuwenswarm.server.runtime.mcp import state_store as state_store_mod
 from jiuwenswarm.server.runtime.mcp import registry as registry_mod
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.observability.turn import TurnIdentity
 
 
 class FakeWebSocket:
@@ -443,10 +442,6 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
-        async def resolve_trajectory_turn(self, session_id):
-            return TurnIdentity(turn_id="turn-compact", turn_number=3)
-
         async def compress_context(self, session_id, *, return_state=False):
             return {
                 "result": "compressed",
@@ -506,10 +501,6 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
         async def ensure_instance(self):
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
-
-        async def resolve_trajectory_turn(self, session_id):
-            return TurnIdentity(turn_id="turn-compact", turn_number=3)
-
         async def compress_context(self, session_id, *, return_state=False):
             return {
                 "result": "compressed",
@@ -571,10 +562,6 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
 
         async def compress_context(self, session_id, *, return_state=False):
             return {"result": "noop", "stats": None}
-
-        async def resolve_trajectory_turn(self, session_id):
-            return TurnIdentity(turn_id="turn-compact", turn_number=3)
-
     subject = SimpleNamespace(
         subject_id="team-member:session-team:demo:leader",
         display_name="Leader",
@@ -604,9 +591,6 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
 
     assert captured["execution_subject"] is subject
     assert captured["mode"] == "team.work.normal"
-    # A manual compaction is a turn of its own and is stamped as one.
-    assert captured["turn_id"] == "turn-compact"
-    assert captured["turn_number"] == 3
 
 
 @pytest.mark.asyncio
@@ -645,10 +629,6 @@ async def test_handle_command_compact_opens_run_span_with_canonical_mode(
 
         async def compress_context(self, session_id, *, return_state=False):
             return {"result": "noop", "stats": None}
-
-        async def resolve_trajectory_turn(self, session_id):
-            return TurnIdentity(turn_id="turn-compact", turn_number=3)
-
     captured = {}
 
     monkeypatch.setattr(
@@ -667,8 +647,10 @@ async def test_handle_command_compact_opens_run_span_with_canonical_mode(
     await server.handle_command_compact_for_test(fake_ws, request, asyncio.Lock())
 
     assert captured["mode"] == expected_trajectory_mode
-    assert captured["turn_id"] == "turn-compact"
-    assert captured["turn_number"] == 3
+    # A manual compaction runs outside every turn and names none; the viewer
+    # shows it between the turns it happened between.
+    assert "turn_id" not in captured
+    assert "turn_number" not in captured
 
 
 @pytest.mark.asyncio

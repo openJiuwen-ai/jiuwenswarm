@@ -1097,11 +1097,12 @@ test('model-free compaction remains visible without a physical model request', (
   )));
 });
 
-test('a compaction commits its own output window, anchored by its model request', () => {
-  // A compaction is a turn of its own: its commit hangs off the live agent
-  // span (its model call has ended by then) and names that call through
-  // model_requests, the way the compaction.completed event does. The next
-  // request is a plain delta on top of the window it states.
+test('a compaction window shows its new context at the next request that reads it', () => {
+  // A compaction commits the window it produced: the commit hangs off the
+  // live agent span (its model call has ended by then) and names that call
+  // through model_requests, the way the compaction.completed event does. The
+  // reader sees the rewrite where the model does, in the next request's
+  // input, and never sees the messages the compaction removed.
   const system = contextMessage('openjiuwen:request-system-slot:0', 'system', 'rules', 'harness_internal');
   const original = contextMessage('message-original-user', 'user', 'research the bash tool');
   const answer = contextMessage('message-answer', 'assistant', 'done', 'harness_internal');
@@ -1163,10 +1164,13 @@ test('a compaction commits its own output window, anchored by its model request'
 
   assert.deepEqual(main.diagnostics, []);
   const outputEvent = main.events.find(event => event.sequence === 3);
-  assert.deepEqual(outputEvent.cells.map(cell => [cell.kind, cell.text]), [
+  assert.deepEqual(outputEvent.cells, []);
+  const followingEvent = main.events.find(event => event.sequence === 4);
+  assert.deepEqual(followingEvent.cells.map(cell => [cell.kind, cell.text]), [
     ['context', '<memory_block_round>compressed work</memory_block_round>'],
+    ['user', 'continue'],
   ]);
-  assert.ok(outputEvent.cells.every(cell => cell.physicalInferenceId === 'inference-compaction'));
+  assert.ok(followingEvent.cells.every(cell => cell.physicalInferenceId === 'inference-4'));
   assert.ok(main.handledInferenceIds.has('inference-compaction'));
   assert.ok(!main.handledInferenceIds.has('agent-run-span'));
   const cells = cellsOf(projectOtelTrajectory([following, output, compacted, before]));
@@ -1212,15 +1216,24 @@ test('a model-free compaction commits its output window without any model reques
     },
   });
 
-  const reduction = createTrajectoryV2Reducer().apply([output, compacted, before]);
+  const following = v2Record({
+    eventId: 'event-after-model-free-output',
+    sequence: 4,
+    payload: contextCommit('window-next-trim', 'window-after-trim', [trimmed], []),
+  });
+
+  const reduction = createTrajectoryV2Reducer().apply([following, output, compacted, before]);
   const main = reduction.subjects.get('main');
 
   assert.deepEqual(main.diagnostics, []);
-  const outputEvent = main.events.find(event => event.sequence === 3);
-  assert.deepEqual(outputEvent.cells.map(cell => [cell.kind, cell.physicalInferenceId]), [
-    ['user', undefined],
+  assert.deepEqual(main.events.find(event => event.sequence === 3).cells, []);
+  // The trimmed message is shown once, as the next request reads it.
+  const followingEvent = main.events.find(event => event.sequence === 4);
+  assert.deepEqual(followingEvent.cells.map(cell => [cell.kind, cell.text, cell.physicalInferenceId]), [
+    ['user', 'long tool output trimmed', 'inference-4'],
   ]);
   assert.ok(!main.handledInferenceIds.has('agent-run-span'));
+  assert.ok(!main.handledInferenceIds.has(undefined));
 });
 
 test('v2 request context keeps logical input order when its event timestamp follows inference start', async () => {
@@ -2771,16 +2784,24 @@ test('every attempt of one compaction is shown under its own numbered group', ()
   assert.ok(groups[0].cells[4].text.includes('Attempt 5'));
 });
 
-test('a manual compaction is a turn whose attempts open it, ahead of the window it committed', () => {
+function withoutTurn(record) {
+  for (const span of spansOf([record])) {
+    span.attributes = span.attributes.filter(attribute => (
+      attribute.key !== 'openjiuwen.turn.number' && attribute.key !== 'openjiuwen.turn.id'
+    ));
+  }
+  return record;
+}
+
+test('a manual compaction shows between the turns it ran between, and its context opens the next turn', () => {
   // The real shape of a manual /compact between two chat turns: its run
-  // claims the next turn number, makes no conversational model call, and
-  // commits the window its summary produced. It used to trail its turn as a
-  // group between turns, so the summary request read as coming after its
-  // own outcome.
+  // names no turn, makes no conversational model call, and commits the window
+  // its summary produced. It takes no turn number: its attempts and outcome
+  // show between the turns, and the checkpoint it inserted shows at the start
+  // of the next turn, where the model first reads it.
   const chatTrace = 'abababababababababababababababab';
   const compactTrace = '77777777777777777777777777777777';
   const nextTrace = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';
-  const compactTurnId = 'turn-manual-compaction';
   const user = contextMessage('message-user-1', 'user', 'first question');
   const memory = contextMessage(
     'message-memory',
@@ -2807,22 +2828,18 @@ test('a manual compaction is a turn whose attempts open it, ahead of the window 
     turn: 1,
     payload: contextCommit('window-1', null, [user], []),
   });
-  const attempt = compactionAttemptRecord({
+  const attempt = withoutTurn(compactionAttemptRecord({
     sequence: 2,
     compactionNumber: 1,
     failed: false,
     traceId: compactTrace,
-    turnId: compactTurnId,
-  });
-  setIntAttribute(spansOf([attempt])[0], 'openjiuwen.turn.number', 2);
-  const completed = v2Record({
+  }));
+  const completed = withoutTurn(v2Record({
     eventId: 'event-manual-compaction',
     eventKind: 'compaction.completed',
     sequence: 2,
     time: 3_000_000,
     traceId: compactTrace,
-    turn: 2,
-    turnId: compactTurnId,
     payload: {
       operation_id: 'operation-1',
       status: 'completed',
@@ -2830,15 +2847,13 @@ test('a manual compaction is a turn whose attempts open it, ahead of the window 
       summary: 'Compressed 2 -> 1 messages',
       compact_summary: '<memory_block_round>summary</memory_block_round>',
     },
-  });
-  const compactionCommit = v2Record({
+  }));
+  const compactionCommit = withoutTurn(v2Record({
     eventId: 'event-manual-compaction-window',
     sequence: 3,
     time: 3_000_001,
     traceId: compactTrace,
     inferenceId: 'agent-run-span',
-    turn: 2,
-    turnId: compactTurnId,
     payload: {
       ...contextCommit('window-2', 'window-1', [memory], [
         { op: 'remove', message_id: user.message_id, index: 0 },
@@ -2851,23 +2866,23 @@ test('a manual compaction is a turn whose attempts open it, ahead of the window 
       output_window_id: 'window-2',
       model_requests: modelRequests,
     },
-  });
+  }));
   const nextInference = legacyInferenceRecord({
     output: 'next answer',
     requestNumber: 3,
     spanId: 'c'.repeat(16),
     startTimeUnixNano: 4_000_000,
-    stepId: 'step-chat-3',
+    stepId: 'step-chat-2',
     stepNumber: 1,
   });
   spansOf([nextInference])[0].traceId = nextTrace;
-  setIntAttribute(spansOf([nextInference])[0], 'openjiuwen.turn.number', 3);
+  setIntAttribute(spansOf([nextInference])[0], 'openjiuwen.turn.number', 2);
   const nextCommit = v2Record({
-    eventId: 'event-chat-3',
+    eventId: 'event-chat-2',
     sequence: 4,
     traceId: nextTrace,
     inferenceId: 'c'.repeat(16),
-    turn: 3,
+    turn: 2,
     payload: contextCommit('window-3', 'window-2', [memory, next], [
       { op: 'insert', message_id: next.message_id, index: 1, message: next },
     ]),
@@ -2877,13 +2892,21 @@ test('a manual compaction is a turn whose attempts open it, ahead of the window 
     nextCommit, nextInference, compactionCommit, completed, attempt, firstCommit, firstInference,
   ]);
 
-  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2, 3]);
-  const compactionTurn = snapshot.turns[1];
-  assert.deepEqual(compactionTurn.groups.map(group => group.title), ['Compaction #1']);
-  assert.deepEqual(compactionTurn.groups[0].cells.map(cell => cell.kind), [
-    'message', 'compacted', 'context',
+  assert.deepEqual(snapshot.diagnostics ?? [], []);
+  // The chat turns keep their own numbering; the compaction takes none.
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, null, 2]);
+  const between = snapshot.turns[1];
+  assert.deepEqual(between.groups.map(group => group.title), ['Compaction #1']);
+  assert.deepEqual(between.groups[0].cells.map(cell => cell.kind), ['message', 'compacted']);
+  assert.ok(between.groups[0].cells[0].text.includes('Attempt 1'));
+  const nextTurnInputs = snapshot.turns[2].groups
+    .flatMap(group => group.cells)
+    .filter(cell => cell.kind !== 'message')
+    .map(cell => [cell.kind, cell.text]);
+  assert.deepEqual(nextTurnInputs, [
+    ['context', '<memory_block_round>summary</memory_block_round>'],
+    ['user', 'next question'],
   ]);
-  assert.ok(compactionTurn.groups[0].cells[0].text.includes('Attempt 1'));
 });
 
 test('a compaction inside a conversation turn still follows that turn between turns', () => {

@@ -47,6 +47,15 @@ interface ContextCommitPayload {
   output_window_id?: string
 }
 
+// What a compaction put into the context window, held for the model request
+// that first reads the rewritten window.
+interface HeldCompactionContext {
+  // The window the last model request read, before any held compaction.
+  base: readonly ContextMessage[]
+  // Insertions and replacements the compactions made, oldest first.
+  operations: readonly ContextDelta[]
+}
+
 interface ParsedEvent {
   eventId: string
   eventKind: string
@@ -498,12 +507,73 @@ function systemSlotFingerprint(message: ContextMessage): string {
 
 const EPOCH_INPUT_SOURCE_KINDS = new Set(['query', 'resume', 'steering'])
 
+/**
+ * Hold what a compaction commit put into the window.
+ *
+ * A compaction rewrites the window between model requests, and a reader sees
+ * that rewrite where the model does: in the input of the next request, the
+ * way a checkpoint message shows at the start of the turn that follows the
+ * compaction. What the compaction removed is never shown; the COMPACTED cell
+ * of its compaction.completed event stands for it.
+ */
+function holdCompactionContext(
+  held: HeldCompactionContext | undefined,
+  payload: ContextCommitPayload,
+  window: readonly ContextMessage[],
+  base: readonly ContextMessage[],
+): HeldCompactionContext {
+  const stated = payload.delta.length > 0 || payload.base_window_id !== null
+    ? payload.delta
+    : window.map((message, index): ContextDelta => ({
+        op: 'insert',
+        message_id: message.message_id,
+        index,
+        message,
+      }))
+  const operations = stated.filter(operation => (
+    operation.op === 'insert' || operation.op === 'replace'
+  ))
+  const restated = new Set(operations.map(operation => operation.message_id))
+  const earlier = (held?.operations ?? []).filter(operation => !restated.has(operation.message_id))
+  return {
+    base: held?.base ?? base,
+    operations: [...earlier, ...operations],
+  }
+}
+
+/**
+ * Put held compaction context ahead of what a model request itself changed.
+ *
+ * Held messages are restated as the request reads them, and one the request
+ * no longer carries (a later compaction replaced it) is dropped. The request's
+ * own operations on a held message are dropped too: the reader never saw that
+ * message before, so it is shown once, as it now reads.
+ */
+function withHeldCompactionContext(
+  held: HeldCompactionContext | undefined,
+  operations: readonly ContextDelta[],
+  window: readonly ContextMessage[],
+): ContextDelta[] {
+  if (held === undefined) return [...operations]
+  const current = new Map(window.map(message => [message.message_id, message]))
+  const restated = held.operations.flatMap((operation): ContextDelta[] => {
+    const message = current.get(operation.message_id)
+    return message === undefined ? [] : [{ ...operation, message }]
+  })
+  const heldIds = new Set(restated.map(operation => operation.message_id))
+  return [
+    ...restated,
+    ...operations.filter(operation => !heldIds.has(operation.message_id)),
+  ]
+}
+
 function epochBaselineCells(
   event: ParsedEvent,
   payload: ContextCommitPayload,
   messages: readonly ContextMessage[],
   previous: readonly ContextMessage[],
   behaviorOrder: number,
+  held: HeldCompactionContext | undefined,
 ): TrajectoryCell[] {
   const previousSlots = new Map(logicalSystemSlots(previous).map(slot => [slot.key, slot]))
   // What the epoch before this one already carried. A baseline restates its
@@ -540,9 +610,9 @@ function epochBaselineCells(
   })
   return contextCells(
     event,
-    { ...payload, delta: operations },
+    { ...payload, delta: withHeldCompactionContext(held, operations, messages) },
     messages,
-    previous,
+    held?.base ?? previous,
     undefined,
     behaviorOrder,
   )
@@ -1042,6 +1112,7 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
   let activeEpoch: string | undefined
   let epochBaselineBase: readonly ContextMessage[] | undefined
   let lastWindow: readonly ContextMessage[] | undefined
+  let heldCompactionContext: HeldCompactionContext | undefined
   let subjectOrder = 0
   for (const event of orderedEpochEvents(events)) {
     subjectOrder += 1
@@ -1182,7 +1253,9 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
       }
       accumulator.windows.set(payload.window_id, window)
       lastWindow = window
-      accumulator.handledInferenceIds.add(event.inferenceIds[0])
+      for (const inferenceId of event.inferenceIds) {
+        accumulator.handledInferenceIds.add(inferenceId)
+      }
       const referencedOperationId = payload.caused_by_operation_id?.trim()
       if (referencedOperationId) {
         referencedCompactionOperationIds.add(referencedOperationId)
@@ -1201,6 +1274,38 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
           event.sequence,
         ))
       }
+      let cells: TrajectoryCell[]
+      if (compactionCommit) {
+        heldCompactionContext = holdCompactionContext(
+          heldCompactionContext,
+          payload,
+          window,
+          base ?? [],
+        )
+        cells = []
+      } else {
+        cells = epochBaseline && epochBaselineBase !== undefined
+          ? epochBaselineCells(
+              event,
+              payload,
+              window,
+              epochBaselineBase,
+              subjectOrder,
+              heldCompactionContext,
+            )
+          : contextCells(
+              event,
+              {
+                ...payload,
+                delta: withHeldCompactionContext(heldCompactionContext, payload.delta, window),
+              },
+              window,
+              heldCompactionContext?.base ?? base,
+              correlation.operationId,
+              subjectOrder,
+            )
+        heldCompactionContext = undefined
+      }
       accumulator.events.push({
         eventId: event.eventId,
         eventKind: event.eventKind,
@@ -1211,22 +1316,7 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
         stepId: event.stepId,
         traceId: event.traceId,
         turnId: event.turnId,
-        cells: epochBaseline && epochBaselineBase !== undefined
-          ? epochBaselineCells(
-              event,
-              payload,
-              window,
-              epochBaselineBase,
-              subjectOrder,
-            )
-          : contextCells(
-              event,
-              payload,
-              window,
-              base,
-              correlation.operationId,
-              subjectOrder,
-            ),
+        cells,
       })
       continue
     }

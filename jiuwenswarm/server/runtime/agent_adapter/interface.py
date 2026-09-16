@@ -86,7 +86,6 @@ from jiuwenswarm.common.context_keys import (
     JIUWENSWARM_SKIP_A2UI_CONTEXT_KEY,
 )
 from jiuwenswarm.extensions.registry import ExtensionRegistry
-from jiuwenswarm.observability.turn import TurnIdentity
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.chat_final import ensure_final_mode_inplace
 from jiuwenswarm.extensions.hook_event import AgentServerHookEvents
@@ -4440,20 +4439,6 @@ class JiuWenSwarm:
             session=session,
             return_state=return_state,
         )
-
-    async def resolve_trajectory_turn(self, session_id: str) -> TurnIdentity:
-        """Open a new trajectory turn for a standalone run such as a manual compaction.
-
-        Args:
-            session_id: Session whose turn sequence the run joins.
-
-        Returns:
-            The turn identity to stamp on the run's root span.
-        """
-        adapter = self._adapter
-        if adapter is None:
-            raise ValueError("Agent adapter not available")
-        return await adapter.resolve_standalone_trajectory_turn(session_id)
 
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:
         """获取当前上下文窗口占用统计。

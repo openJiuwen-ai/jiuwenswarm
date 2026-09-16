@@ -118,6 +118,18 @@ interface MutableTurn {
 interface TurnFact {
   key: string
   number: number
+  // Whether the turn's traces named it by id or number. A trace naming
+  // neither ran outside every turn, such as a manual /compact.
+  stated: boolean
+  // When the earliest trace of the turn began.
+  startedAt: bigint
+}
+
+// One rendered turn entry and when its turn began, so a run outside every
+// turn can be placed between the turns it happened between.
+interface TimedTurnEntry {
+  model: TrajectoryTurnModel
+  startedAt: bigint
 }
 
 interface InferenceInputProjection {
@@ -1469,7 +1481,12 @@ function turnFactByTrace(
   }
   return new Map([...traceStarts.keys()].map((traceId): [string, TurnFact] => {
     const key = keyByTrace.get(traceId) ?? `trace:${traceId}`
-    return [traceId, { key, number: numberByKey.get(key) ?? 1 }]
+    return [traceId, {
+      key,
+      number: numberByKey.get(key) ?? 1,
+      stated: !key.startsWith('trace:'),
+      startedAt: startByKey.get(key) ?? 0n,
+    }]
   }))
 }
 
@@ -1752,8 +1769,8 @@ export function projectOtelTrajectory(
   }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
   const compactions = new Map<string, ProjectedSpan>()
-  // Turns that made a conversational model call. A turn with compaction
-  // attempts but none of these is a compaction run on its own.
+  // Turns that made a conversational model call. A run that names no turn and
+  // made none of these ran outside every turn.
   const conversationTurnKeys = new Set<string>()
   const toolSchemaByTurnAndName = new Map<string, string>()
   const inferenceById = new Map(spans.filter(isInference).flatMap((span): Array<[
@@ -1929,9 +1946,14 @@ export function projectOtelTrajectory(
   }
 
   const turns: TrajectoryTurnModel[] = []
+  const factByTurnKey = new Map([...turnByTrace.values()].map(fact => [fact.key, fact] as const))
+  const turnEntries: TimedTurnEntry[] = []
+  const betweenTurnEntries: TimedTurnEntry[] = []
   const orderedTurns = [...mutableTurns.entries()]
     .sort((left, right) => left[1].turn - right[1].turn || left[0].localeCompare(right[0]))
   for (const [turnKey, turn] of orderedTurns) {
+    const fact = factByTurnKey.get(turnKey)
+    const startedAt = fact?.startedAt ?? 0n
     const groups = [...turn.groups.entries()]
       .sort((left, right) => left[1].order - right[1].order
         || left[1].step - right[1].step
@@ -1944,40 +1966,54 @@ export function projectOtelTrajectory(
       .filter(value => value.cells.length > 0)
     const compaction = compactions.get(turnKey)
     const attempts = compactionInferences.get(turnKey) ?? []
-    if (compaction === undefined && attempts.length === 0) {
-      if (groups.length > 0) turns.push({ turn: turn.turn, groups })
-      continue
-    }
     const ordered = [...attempts].sort(comparePhysicalInference)
     // The attempts come first and the outcome last, so the group reads as
     // what the compaction actually did rather than only how it ended.
-    const compactionGroup = {
-      title: compactionGroupTitle(ordered),
-      cells: [
-        ...ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
-        ...(compaction === undefined
-          ? []
-          : [compactionCell(compaction, ordered[ordered.length - 1])]),
-      ],
-    }
-    if (!conversationTurnKeys.has(turnKey)) {
-      // A turn that made no conversational model call is a compaction run on
-      // its own, such as a manual /compact: a turn whose model calls are the
-      // summary attempts and whose outcome is the window it committed. The
-      // attempts open that turn, ahead of the window they produced, instead
-      // of trailing it as a group between turns.
-      turns.push({
-        turn: turn.turn,
-        groups: [{
-          ...compactionGroup,
-          cells: [...compactionGroup.cells, ...groups.flatMap(value => value.cells)],
-        }],
-      })
+    const compactionGroup = compaction === undefined && attempts.length === 0
+      ? undefined
+      : {
+          title: compactionGroupTitle(ordered),
+          cells: [
+            ...ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
+            ...(compaction === undefined
+              ? []
+              : [compactionCell(compaction, ordered[ordered.length - 1])]),
+          ],
+        }
+    if (fact?.stated === false && !conversationTurnKeys.has(turnKey)) {
+      // A run that names no turn and made no conversational model call ran
+      // outside every turn, such as a manual /compact. It takes no turn
+      // number of its own: it shows between the turns it happened between,
+      // and the context it rewrote shows at the next request that reads it.
+      const betweenGroups = compactionGroup === undefined
+        ? groups
+        : [{
+            ...compactionGroup,
+            cells: [...compactionGroup.cells, ...groups.flatMap(value => value.cells)],
+          }]
+      if (betweenGroups.length > 0) {
+        betweenTurnEntries.push({ startedAt, model: { turn: null, groups: betweenGroups } })
+      }
       continue
     }
-    if (groups.length > 0) turns.push({ turn: turn.turn, groups })
-    turns.push({ turn: null, groups: [compactionGroup] })
+    if (groups.length > 0) turnEntries.push({ startedAt, model: { turn: turn.turn, groups } })
+    if (compactionGroup !== undefined) {
+      turnEntries.push({ startedAt, model: { turn: null, groups: [compactionGroup] } })
+    }
   }
+  // Turns keep their numbered order. A run outside every turn goes ahead of
+  // the first turn that began after it.
+  betweenTurnEntries.sort((left, right) => compareBigint(left.startedAt, right.startedAt))
+  let nextBetweenTurnEntry = 0
+  for (const entry of turnEntries) {
+    while (nextBetweenTurnEntry < betweenTurnEntries.length
+      && betweenTurnEntries[nextBetweenTurnEntry].startedAt < entry.startedAt) {
+      turns.push(betweenTurnEntries[nextBetweenTurnEntry].model)
+      nextBetweenTurnEntry += 1
+    }
+    turns.push(entry.model)
+  }
+  turns.push(...betweenTurnEntries.slice(nextBetweenTurnEntry).map(entry => entry.model))
   for (const event of v2CompactionEvents) {
     if (event.cells.length === 0) continue
     turns.push({
