@@ -522,11 +522,11 @@ jiuwenswarm-tui --session "$(printf 'a%.0s' {1..200})"  # 超 128 → 长度超�
 - 调用 `hooks.list` RPC 从 Gateway 获取 `config.yaml` 中 `hooks` 段的摘要。
 - 展示：
   - **事件列表**：按 hook 数量降序排列，每行显示事件名、hook 数量、matcher 分布。
-  - **状态面板**：配置来源（`config.yaml`）、全局开关（`enabled` / `DISABLED`）、Total Hooks、Active Events（有配置的事件数 / 17）。
+  - **状态面板**：配置来源（`config.yaml`）、全局开关（`enabled` / `DISABLED`）、Total Hooks、Active Events（有配置的事件数 / 18）。
   - **Hook 详情卡片**：每个 hook 按 Type、Command/Prompt、Timeout、Shell、Status 展示。
 - 无配置时：显示 `No hooks configured.`，提示通过 `/config edit` 编辑配置。
 - Hooks 概念：
-  - **17 种触发事件**：Agent Rail 层（`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`PermissionRequest`、`PermissionDenied`、`SubagentStart`、`SubagentStop`、`BeforeModelCall`、`AfterModelCall`）和 Gateway 层（`UserPromptSubmit`、`SessionStart`、`SessionEnd`、`Notification`、`ConfigChange`、`InstructionsLoaded`、`Setup`）。
+  - **18 种触发事件**：Agent Rail 层（`PreToolUse`、`PostToolUse`、`PostToolUseFailure`、`Stop`、`PermissionRequest`、`PermissionDenied`、`SubagentStart`、`SubagentStop`、`BeforeModelCall`、`AfterModelCall`）、Gateway 层（`UserPromptSubmit`、`SessionStart`、`SessionEnd`、`Notification`、`ConfigChange`、`InstructionsLoaded`、`Setup`）和 Agent Server 层（`PreCompact`）。
   - **2 种 Hook 类型**：`command`（执行 shell 命令，退出码 0 = 成功、2 = 阻断）和 `prompt`（LLM 审查，响应 JSON `decision: "block"` 阻断）。
   - **阻断行为**：PreToolUse 阻断可跳过工具调用并将原因反馈给模型。
   - **输入修改**：PreToolUse hook 可通过 stdout JSON 的 `modifiedInput` 修改工具参数。
