@@ -202,7 +202,6 @@ interface SelectedRequest {
   recordId: string
   turn: number | null
   group: string
-  seq?: number
 }
 
 interface DetailsResizeDrag {
@@ -1918,9 +1917,9 @@ export function TrajectoryTable({
     : requestNumbers.get(selectedRequest.recordId)
   const selectedRequestInfo = selectedRequest === null
     ? undefined
-    : sessionRequestNumbers?.find(request => selectedRequest.seq === undefined
-      ? (request.recordId ?? requestKey(request.turn, request.group)) === selectedRequest.recordId
-      : request.seq === selectedRequest.seq)
+    : sessionRequestNumbers?.find(request => (
+      (request.recordId ?? requestKey(request.turn, request.group)) === selectedRequest.recordId
+    ))
   const selectedRequestState: RecordState | undefined = selectedRequest === null
     ? undefined
     : selectedRequestInfo?.status
@@ -1936,9 +1935,7 @@ export function TrajectoryTable({
   const selectedRequestSubtoolCalls = selectedRequestRecords.filter(
     record => record.cell.kind === 'subtool',
   ).length
-  const selectedRequestResultTemplate = selectedRequestInfo?.resultSeq === undefined
-    ? selectedRequestAssistant
-    : allRecords.find(record => record.cell.sourceSeq === selectedRequestInfo.resultSeq)
+  const selectedRequestResultTemplate = selectedRequestAssistant
   const selectedRequestResult = selectedRequestResultTemplate === undefined
     ? undefined
     : currentRecord(selectedRequestResultTemplate)
@@ -1987,20 +1984,12 @@ export function TrajectoryTable({
   const selectedAssistantRequest = selected?.cell.kind === 'message'
     ? requestNumbers.get(recordRequestKey(selected))
     : undefined
-  const selectedAssistantRequestInfo = selectedAssistantRequest === undefined
-    ? undefined
-    : sessionRequestNumbers?.find(request => (
-      request.recordId ?? requestKey(request.turn, request.group)
-    ) === (selected === undefined ? '' : recordRequestKey(selected)))
   const selectedAssistantRequestTarget: SelectedRequest | undefined =
     selected !== undefined && selectedAssistantRequest !== undefined
       ? {
         recordId: recordRequestKey(selected),
         turn: selected.turn,
         group: selected.group,
-        ...(selectedAssistantRequestInfo?.seq === undefined
-          ? {}
-          : { seq: selectedAssistantRequestInfo.seq }),
       }
       : undefined
   const hasSelectedHierarchy = selectedAssistantRequestTarget !== undefined
@@ -2477,7 +2466,6 @@ export function TrajectoryTable({
                                 recordId: key,
                                 turn: record.turn,
                                 group: record.group,
-                                ...(requestInfo?.seq === undefined ? {} : { seq: requestInfo.seq }),
                               })
                             }}
                             onDoubleClick={(event) => { event.stopPropagation() }}
@@ -2840,23 +2828,6 @@ export function TrajectoryTable({
                     <div>
                       <dt>Error</dt>
                       <dd className={css.error}>{selectedRequestInfo.error}</dd>
-                    </div>
-                  )}
-                  {selectedRequestInfo?.retry !== undefined && (
-                    <div>
-                      <dt>Retry</dt>
-                      <dd>
-                        Scheduled {selectedRequestInfo.retry}
-                        {selectedRequestInfo.maxRetries === undefined
-                          ? ''
-                          : ` of ${selectedRequestInfo.maxRetries}`}
-                      </dd>
-                    </div>
-                  )}
-                  {selectedRequestInfo?.retryDelayMs !== undefined && (
-                    <div>
-                      <dt>Retry delay</dt>
-                      <dd>{formatDurationMs(selectedRequestInfo.retryDelayMs)}</dd>
                     </div>
                   )}
                   {selectedRequestResult !== undefined && (

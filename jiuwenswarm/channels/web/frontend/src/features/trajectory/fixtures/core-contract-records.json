@@ -95,15 +95,6 @@
           ],
           "events": [
             {
-              "timeUnixNano": "2500000000",
-              "name": "dsh.stream.chunk",
-              "attributes": [
-                { "key": "dsh.event.sequence", "value": { "intValue": "0" } },
-                { "key": "dsh.stream.kind", "value": { "stringValue": "text-delta" } },
-                { "key": "dsh.stream.text", "value": { "stringValue": "DSH conflict" } }
-              ]
-            },
-            {
               "timeUnixNano": "2500000001",
               "name": "openjiuwen.stream.chunk",
               "attributes": [

@@ -1,6 +1,6 @@
 // Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-/** Per-field semantic normalization for standard, OpenJiuwen, and legacy spans. */
+/** Per-field semantic normalization for standard and OpenJiuwen spans. */
 
 import {
   exactAttributeMap,
@@ -12,13 +12,11 @@ import {
   structuredOtlpValue,
 } from '../semconv/attributes.ts'
 import {
-  DSH_ATTRIBUTES,
-  DSH_EVENTS,
-  DSH_REQUEST_PURPOSES,
-  DSH_STREAM_KINDS,
   OPENJIUWEN_ATTRIBUTES,
   OPENJIUWEN_EVENTS,
+  REQUEST_PURPOSES as REQUEST_PURPOSE_VALUES,
   STANDARD_ATTRIBUTES,
+  STREAM_FRAME_KINDS,
   TRAJECTORY_RECORD_KINDS,
 } from '../semconv/constants.ts'
 import type { OtlpAttributeMap } from '../semconv/attributes.ts'
@@ -93,7 +91,6 @@ export interface NormalizedTrajectoryAttributes {
   toolAuthoritative?: boolean
   toolCallArguments?: unknown
   toolCallResult?: unknown
-  sourceSequence?: bigint
   turnNumber?: bigint
   stepId?: string
   stepNumber?: bigint
@@ -101,20 +98,13 @@ export interface NormalizedTrajectoryAttributes {
   trajectoryKind?: string
   requestPurpose?: string
   requestNumber?: bigint
-  requestRetryCount?: bigint
-  requestMaxRetries?: bigint
-  messageSourceKind?: string
-  messageSourcePlugin?: string
-  compactionInputTokens?: bigint
-  compactionSummary?: string
   compactionNumber?: bigint
   contextOperationId?: string
   langfuseObservationType?: string
   errorType?: string
-  errorMessage?: string
 }
 
-/** One replayable stream event after OpenJiuwen/DSH compatibility resolution. */
+/** One replayable stream event read from the OpenJiuwen stream-chunk events. */
 export interface NormalizedTrajectoryStreamEvent {
   sequence: number
   kind: string
@@ -162,8 +152,8 @@ const COMPATIBILITY = {
 } as const
 
 const TRAJECTORY_KINDS = new Set<string>(TRAJECTORY_RECORD_KINDS)
-const REQUEST_PURPOSES = new Set<string>(DSH_REQUEST_PURPOSES)
-const STREAM_KINDS = new Set<string>(DSH_STREAM_KINDS)
+const REQUEST_PURPOSES = new Set<string>(REQUEST_PURPOSE_VALUES)
+const STREAM_KINDS = new Set<string>(STREAM_FRAME_KINDS)
 
 function parsedJson(value: string): unknown {
   try {
@@ -732,48 +722,20 @@ export function normalizeTrajectoryAttributes(
     STANDARD_ATTRIBUTES.toolCallResult,
   ]))
 
-  assign(target, 'sourceSequence', resolveNonNegativeInt64(raw, [
-    DSH_ATTRIBUTES.sessionSourceSequence,
-  ]))
   assign(target, 'turnNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.turnNumber,
-    DSH_ATTRIBUTES.turnNumber,
   ]))
   assign(target, 'stepNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.stepNumber,
-    DSH_ATTRIBUTES.stepNumber,
   ]))
   assign(target, 'trajectoryKind', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.trajectoryKind,
-    DSH_ATTRIBUTES.trajectoryKind,
   ], TRAJECTORY_KINDS))
   assign(target, 'requestPurpose', resolveClosedString(raw, [
     OPENJIUWEN_ATTRIBUTES.requestPurpose,
-    DSH_ATTRIBUTES.requestPurpose,
   ], REQUEST_PURPOSES))
   assign(target, 'requestNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.requestNumber,
-    DSH_ATTRIBUTES.requestNumber,
-  ]))
-  assign(target, 'requestRetryCount', resolveNonNegativeInt64(raw, [
-    OPENJIUWEN_ATTRIBUTES.requestRetryCount,
-    DSH_ATTRIBUTES.requestRetryCount,
-  ]))
-  assign(target, 'requestMaxRetries', resolveNonNegativeInt64(raw, [
-    OPENJIUWEN_ATTRIBUTES.requestMaxRetries,
-    DSH_ATTRIBUTES.requestMaxRetries,
-  ]))
-  assign(target, 'messageSourceKind', resolveString(raw, [
-    DSH_ATTRIBUTES.messageSourceKind,
-  ]))
-  assign(target, 'messageSourcePlugin', resolveString(raw, [
-    DSH_ATTRIBUTES.messageSourcePlugin,
-  ]))
-  assign(target, 'compactionInputTokens', resolveNonNegativeInt64(raw, [
-    DSH_ATTRIBUTES.compactionInputTokens,
-  ]))
-  assign(target, 'compactionSummary', resolveString(raw, [
-    DSH_ATTRIBUTES.compactionSummary,
   ]))
   assign(target, 'compactionNumber', resolvePositiveInt64(raw, [
     OPENJIUWEN_ATTRIBUTES.compactionNumber,
@@ -802,44 +764,28 @@ export function normalizeTrajectoryStreamEvents(
 ): readonly NormalizedTrajectoryStreamEvent[] {
   const normalized: Array<NormalizedTrajectoryStreamEvent & { order: number }> = []
   for (const [order, event] of (events ?? []).entries()) {
-    if (event.name === OPENJIUWEN_EVENTS.legacyStreamChunk) {
-      normalized.push({
-        sequence: order,
-        kind: 'lifecycle',
-        source: event.name,
-        order,
-      })
-      continue
-    }
-    if (event.name !== OPENJIUWEN_EVENTS.streamChunk && event.name !== DSH_EVENTS.streamChunk) continue
+    if (event.name !== OPENJIUWEN_EVENTS.streamChunk) continue
     const attributes = exactAttributeMap(event.attributes)
     const sequence = safeEventSequence(
       resolveNonNegativeInt64(attributes, [
         OPENJIUWEN_ATTRIBUTES.eventSequence,
-        DSH_ATTRIBUTES.eventSequence,
-        DSH_ATTRIBUTES.streamSequence,
       ])?.value,
       order,
     )
     const kind = resolveClosedString(attributes, [
       OPENJIUWEN_ATTRIBUTES.streamKind,
-      DSH_ATTRIBUTES.streamKind,
     ], STREAM_KINDS)?.value ?? 'lifecycle'
     const textValue = resolveString(attributes, [
       OPENJIUWEN_ATTRIBUTES.streamText,
-      DSH_ATTRIBUTES.streamText,
     ])?.value
     const toolCallId = resolveString(attributes, [
       STANDARD_ATTRIBUTES.toolCallId,
-      DSH_ATTRIBUTES.streamToolCallId,
     ])?.value
     const toolName = resolveString(attributes, [
       STANDARD_ATTRIBUTES.toolName,
-      DSH_ATTRIBUTES.streamToolName,
     ])?.value
     const argumentsDelta = resolveString(attributes, [
       OPENJIUWEN_ATTRIBUTES.streamArgumentsDelta,
-      DSH_ATTRIBUTES.streamArgumentsDelta,
     ])?.value
     normalized.push({
       sequence,
@@ -856,9 +802,6 @@ export function normalizeTrajectoryStreamEvents(
     .sort((left, right) => left.sequence - right.sequence || left.order - right.order)
   const hasReplayableEvent = ordered.some(event => event.kind !== 'lifecycle')
   const selected = new Map<string, typeof ordered[number]>()
-  const priority = (source: string): number => source === OPENJIUWEN_EVENTS.streamChunk
-    ? 0
-    : source === DSH_EVENTS.streamChunk ? 1 : 2
   for (const event of ordered) {
     if (hasReplayableEvent && event.kind === 'lifecycle') continue
     const identity = [
@@ -867,10 +810,7 @@ export function normalizeTrajectoryStreamEvents(
       event.toolCallId ?? '',
       event.toolName ?? '',
     ].join('\u0000')
-    const existing = selected.get(identity)
-    if (existing === undefined || priority(event.source) < priority(existing.source)) {
-      selected.set(identity, event)
-    }
+    if (!selected.has(identity)) selected.set(identity, event)
   }
   return [...selected.values()]
     .sort((left, right) => left.sequence - right.sequence || left.order - right.order)

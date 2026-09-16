@@ -50,7 +50,6 @@ interface ProjectedSpan {
   endTimeUnixNano: bigint | undefined
   parentSpanId: string | undefined
   request: OtlpExportTraceServiceRequest
-  sourceSequence: number | undefined
   identityRequestNumber: number | undefined
   requestNumber: number | undefined
   streamEvents: readonly NormalizedTrajectoryStreamEvent[]
@@ -205,9 +204,6 @@ function compareBigint(left: bigint, right: bigint): number {
 }
 
 function compareSpans(left: ProjectedSpan, right: ProjectedSpan): number {
-  if (left.sourceSequence !== undefined && right.sourceSequence !== undefined) {
-    return left.sourceSequence - right.sourceSequence
-  }
   return compareBigint(left.startTimeUnixNano, right.startTimeUnixNano)
     || left.traceId.localeCompare(right.traceId)
     || left.span.spanId.localeCompare(right.span.spanId)
@@ -619,7 +615,6 @@ function statusError(projected: ProjectedSpan): string | undefined {
   const forcedClose = projected.attributes.spanForcedClose === true
   if (!statusIsError && !forcedClose && projected.lifecycle !== 'error') return undefined
   return validErrorText(statusIsError ? projected.span.status?.message : undefined)
-    ?? validErrorText(statusIsError ? projected.attributes.errorMessage : undefined)
     ?? firstExceptionReason(projected.span.events)
     ?? validErrorText(statusIsError ? projected.attributes.errorType : undefined)
     ?? (forcedClose
@@ -703,10 +698,6 @@ function isRoutedAskUserResult(
     && sameRootOwner
 }
 
-function isCompaction(span: ProjectedSpan): boolean {
-  return recordKind(span) === 'compaction'
-}
-
 function spanCellBase(span: ProjectedSpan, suffix: string): Pick<
   TrajectoryCell,
   'index' | 'recordId' | 'sourceSeq' | 'startedAt' | 'status' | 'timeSeconds' | 'traceDetail'
@@ -714,7 +705,6 @@ function spanCellBase(span: ProjectedSpan, suffix: string): Pick<
   return {
     index: cellIndex(span, suffix),
     recordId: recordIdentity(span, suffix),
-    ...(span.sourceSequence === undefined ? {} : { sourceSeq: span.sourceSequence }),
     startedAt: startedAt(span),
     timeSeconds: durationSeconds(span),
     status: status(span),
@@ -766,10 +756,7 @@ function inputCells(
       sourceBlocks: blocks,
       messageSource: {
         role: message.role,
-        kind: attachment
-          ? 'prompt_attachment'
-          : span.attributes.messageSourceKind ?? message.role,
-        plugin: span.attributes.messageSourcePlugin,
+        kind: attachment ? 'prompt_attachment' : message.role,
         inputIndex: message.inputIndex ?? index,
         ...(attachment ? { scope: 'request' } : {}),
       },
@@ -1023,7 +1010,6 @@ function behaviorSessionKey(span: ProjectedSpan, lineage: readonly string[]): st
 function compareInferenceBehavior(left: ProjectedSpan, right: ProjectedSpan): number {
   return compareBigint(left.startTimeUnixNano, right.startTimeUnixNano)
     || (left.requestNumber ?? 0) - (right.requestNumber ?? 0)
-    || (left.sourceSequence ?? 0) - (right.sourceSequence ?? 0)
     || left.traceId.localeCompare(right.traceId)
     || left.span.spanId.localeCompare(right.span.spanId)
 }
@@ -1364,26 +1350,6 @@ function compactionGroupTitle(attempts: readonly ProjectedSpan[]): string {
   return numbered === undefined ? 'Compaction' : `Compaction #${numbered}`
 }
 
-function compactionCell(span: ProjectedSpan, inference: ProjectedSpan | undefined): TrajectoryCell {
-  const summary = span.attributes.compactionSummary
-    ?? (inference === undefined
-      ? undefined
-      : structuredMessages(inference.attributes.outputMessages).flatMap(message => message.parts)
-        .flatMap(part => part.type === 'compaction' && part.content !== undefined ? [part.content] : [])
-        .join('\n\n'))
-    ?? ''
-  const inputTokens = nonNegativeSafeInteger(span.attributes.compactionInputTokens)
-  const error = statusError(span)
-  return {
-    ...spanCellBase(span, 'compaction'),
-    kind: 'compacted',
-    text: summary === '' ? 'Context compaction' : summary,
-    outputDetail: summary,
-    ...(inputTokens === undefined ? {} : { input: inputTokens }),
-    ...(error === undefined ? {} : { isError: true, result: error }),
-  }
-}
-
 function requestFor(
   span: ProjectedSpan,
   purpose: 'assistant' | 'compaction',
@@ -1396,7 +1362,6 @@ function requestFor(
   const facts = recordedFacts(span.attributes, rootAttributes)
   const base = {
     recordId: requestRecordIdentity(span),
-    seq: span.sourceSequence,
     group: purpose === 'compaction' ? 'Compaction' : `Step ${step}`,
     number: requestNumber,
     status: status(span),
@@ -1405,8 +1370,6 @@ function requestFor(
       ? null
       : Number(span.endTimeUnixNano / NANOSECONDS_PER_MILLISECOND),
     ...(statusError(span) === undefined ? {} : { error: statusError(span) }),
-    retry: nonNegativeSafeInteger(span.attributes.requestRetryCount),
-    maxRetries: nonNegativeSafeInteger(span.attributes.requestMaxRetries),
     provider: span.attributes.providerName,
     model: knownModel(span.attributes.requestModel, span.attributes.responseModel),
     requestConfig: requestConfig(span.attributes),
@@ -1526,7 +1489,6 @@ function normalize(
       endTimeUnixNano: lifecycle === 'running' || span.endTimeUnixNano === undefined
         ? undefined
         : BigInt(span.endTimeUnixNano),
-      sourceSequence: nonNegativeSafeInteger(attributes.sourceSequence),
       identityRequestNumber: positiveSafeInteger(attributes.requestNumber),
       requestNumber: undefined,
       streamEvents: normalizeTrajectoryStreamEvents(span.events),
@@ -1770,7 +1732,6 @@ export function projectOtelTrajectory(
     ) rootByTrace.set(span.traceId, span)
   }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
-  const compactions = new Map<string, ProjectedSpan>()
   // Turns that made a conversational model call. A run that names no turn and
   // made none of these ran outside every turn.
   const conversationTurnKeys = new Set<string>()
@@ -1871,7 +1832,6 @@ export function projectOtelTrajectory(
       ))
       continue
     }
-    if (isCompaction(span)) compactions.set(span.turnKey, span)
   }
 
   const v2CompactionEvents: TrajectoryV2EventProjection[] = []
@@ -1966,21 +1926,15 @@ export function projectOtelTrajectory(
         cells: [...value.cells].sort(compareTrajectoryCells),
       }))
       .filter(value => value.cells.length > 0)
-    const compaction = compactions.get(turnKey)
     const attempts = compactionInferences.get(turnKey) ?? []
     const ordered = [...attempts].sort(comparePhysicalInference)
     // The attempts come first and the outcome last, so the group reads as
     // what the compaction actually did rather than only how it ended.
-    const compactionGroup = compaction === undefined && attempts.length === 0
+    const compactionGroup = attempts.length === 0
       ? undefined
       : {
           title: compactionGroupTitle(ordered),
-          cells: [
-            ...ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
-            ...(compaction === undefined
-              ? []
-              : [compactionCell(compaction, ordered[ordered.length - 1])]),
-          ],
+          cells: ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
         }
     if (fact?.stated === false && !conversationTurnKeys.has(turnKey)) {
       // A run that names no turn and made no conversational model call ran

@@ -112,17 +112,12 @@ export interface TrajectoryUsage {
 interface TrajectoryRequestBase {
   /** Stable identity of one physical model request, independent from its Step group. */
   recordId?: string
-  seq?: number
   group: string
   number: number
   status?: 'complete' | 'running' | 'error'
   startedAt?: number
   completedAt?: number | null
   error?: string
-  retry?: number
-  maxRetries?: number
-  retryDelayMs?: number
-  resultSeq?: number
   provider?: string
   model?: string
   requestConfig?: TrajectoryRequestConfig
