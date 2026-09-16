@@ -123,6 +123,7 @@ ERROR_SKILL_UNSAFE_PATH = "SKILL_UNSAFE_PATH"
 ERROR_SKILL_FILE_TOO_LARGE = "SKILL_FILE_TOO_LARGE"
 ERROR_SKILL_KNOWLEDGE_INPUT_CONFLICT = "SKILL_KNOWLEDGE_INPUT_CONFLICT"
 ERROR_SKILL_PUBLISH_VERSION_CONFLICT = "SKILL_PUBLISH_VERSION_CONFLICT"
+ERROR_SKILL_VET_BLOCKED = "SKILL_VET_BLOCKED"
 ERROR_SKILLHUB_INSTALL_FAILED = "SKILLHUB_INSTALL_FAILED"
 ERROR_SKILLHUB_PUBLISH_FAILED = "SKILLHUB_PUBLISH_FAILED"
 ERROR_SKILLHUB_DETAIL_NOT_FOUND = "SKILLHUB_DETAIL_NOT_FOUND"
@@ -1357,6 +1358,12 @@ class SkillManager:
             )
             if blocked_detail:
                 return {"success": False, "detail": blocked_detail}
+
+        if enabled:
+            gate = self._vet_gate_for_enable(name)
+            if gate is not None:
+                return gate
+
         self.set_skill_enabled(name, enabled)
         result: dict[str, Any] = {
             "success": True,
@@ -9024,6 +9031,30 @@ class SkillManager:
         set_vet_report(self._state, report.to_dict())
         self._save_state()
         return report
+
+    def _vet_gate_for_enable(self, skill_name: str) -> dict[str, Any] | None:
+        """Return a blocking payload when enabling a HIGH/EXTREME skill without approval."""
+        skill_dir = self._resolve_local_skill_dir(skill_name)
+        if skill_dir is None:
+            return None
+        # Intentional correction of the plan's verbatim 1-arg snippet: the real
+        # contract is _is_builtin_skill(skill_name, installed_plugins, skill_path).
+        # Do NOT "restore" self._is_builtin_skill(skill_name) — it raises TypeError.
+        if self._is_builtin_skill(skill_name, self._get_installed_plugins(), skill_dir):
+            return None
+        report = self._ensure_vet_report(skill_dir)
+        if report.grade not in ("high", "extreme"):
+            return None
+        if get_vet_approval(self._state, report.content_hash) is not None:
+            return None
+        return {
+            "success": False,
+            "code": ERROR_SKILL_VET_BLOCKED,
+            "detail": "该技能安全审计等级为 HIGH/EXTREME，需经 skills.vet-approve 批准后才能启用。",
+            "grade": report.grade,
+            "findings": report.findings,
+            "content_hash": report.content_hash,
+        }
 
     def remove_skill_config(self, skill_name: str) -> None:
         if remove_skill_config(self._state, skill_name):
