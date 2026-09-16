@@ -57,13 +57,8 @@ export type SubjectRefreshWindow = {
 
 export interface TrajectoryOperationCoordinator {
   currentGeneration: () => number;
-  invalidate: (restoreBusy: () => void) => number;
+  invalidate: () => number;
   isCurrent: (generation: number) => boolean;
-  pendingLoadEarlier: (generation: number) => Promise<boolean> | null;
-  runLoadEarlier: (
-    operation: (generation: number) => Promise<boolean>,
-    setBusy: (busy: boolean) => void,
-  ) => Promise<boolean>;
 }
 
 export interface TrajectoryTraceHintCoordinator {
@@ -175,45 +170,13 @@ export function resetTrajectoryWindowState(state: TrajectoryWindowState): void {
 
 export function createTrajectoryOperationCoordinator(): TrajectoryOperationCoordinator {
   let generation = 0;
-  let earlier: { generation: number; promise: Promise<boolean> } | null = null;
   return {
     currentGeneration: () => generation,
-    invalidate: (restoreBusy) => {
+    invalidate: () => {
       generation += 1;
-      earlier = null;
-      restoreBusy();
       return generation;
     },
     isCurrent: candidate => candidate === generation,
-    pendingLoadEarlier: candidate => (
-      candidate === generation && earlier?.generation === generation
-        ? earlier.promise
-        : null
-    ),
-    runLoadEarlier: (operation, setBusy) => {
-      if (earlier?.generation === generation) return earlier.promise;
-      const operationGeneration = generation;
-      setBusy(true);
-      let start: () => void = () => {};
-      const source = new Promise<boolean>((resolve, reject) => {
-        start = () => {
-          try {
-            void operation(operationGeneration).then(resolve, reject);
-          } catch (error) {
-            reject(error);
-          }
-        };
-      });
-      let promise: Promise<boolean>;
-      promise = source.finally(() => {
-        if (earlier?.promise !== promise) return;
-        earlier = null;
-        if (operationGeneration === generation) setBusy(false);
-      });
-      earlier = { generation: operationGeneration, promise };
-      start();
-      return promise;
-    },
   };
 }
 

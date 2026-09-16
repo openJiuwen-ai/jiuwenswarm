@@ -55,18 +55,8 @@ export interface TrajectoryExplorerProps {
   requests?: readonly TrajectoryRequest[]
   /** Whether the initial tail has not reached the browser yet. */
   loading?: boolean
-  /** Whether one older page request is pending. */
-  loadingEarlier?: boolean
-  /** Whether an earlier page exists. */
-  hasEarlier?: boolean
-  /** Prepend one earlier page. */
-  loadEarlier?: () => Promise<boolean>
   /** Retryable store or transport failure shown without hiding loaded records. */
   error?: string | null
-  /** Optional inspector handoff using the projected tool call id. */
-  inspectCallId?: string | null
-  /** Called after an inspect handoff is consumed or cannot be resolved. */
-  onInspectApplied?: () => void
   /** Override individual toolbar labels. */
   messages?: Partial<Record<TrajectoryKey, string>>
   /** Full custom translator; takes precedence over `messages`. */
@@ -88,17 +78,6 @@ export interface TrajectoryExplorerProps {
   /** Expand an overview-only host after a timeline record is activated. */
   onOverviewActivate?: () => void
   className?: string
-}
-
-function firstSourceSeq(turns: readonly TrajectoryTurnModel[]): number | undefined {
-  for (const turn of turns) {
-    for (const group of turn.groups) {
-      for (const cell of group.cells) {
-        if (cell.sourceSeq !== undefined) return cell.sourceSeq
-      }
-    }
-  }
-  return undefined
 }
 
 function searchIndexes(
@@ -127,12 +106,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
   turns: staticTurns = [],
   requests: staticRequests,
   loading = false,
-  loadingEarlier = false,
-  hasEarlier = false,
-  loadEarlier,
   error = null,
-  inspectCallId = null,
-  onInspectApplied,
   messages,
   translate,
   bottomInset = 0,
@@ -147,7 +121,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
 }: TrajectoryExplorerProps) {
   const turns = snapshot?.turns ?? staticTurns
   const requests = snapshot?.requests ?? staticRequests
-  const streamingCells = snapshot?.streamingCells
   const hasRunningCells = useMemo(() => turns.some(turn => (
     turn.groups.some(group => group.cells.some(cell => cell.status === 'running'))
   )), [turns])
@@ -335,9 +308,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
             turns={turns}
             mode={timelineMode}
             range={timelineRange}
-            olderHistoryLoading={loadingEarlier}
-            hasEarlierRecords={hasEarlier}
-            {...(loadEarlier === undefined ? {} : { onLoadEarlier: loadEarlier })}
             selectedIndex={selectedTimelineIndex}
             searchMatchIndexes={searchMatchIndexes}
             onRangeChange={setTimelineRange}
@@ -363,7 +333,6 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           turns={turns}
           scrollToEndSignal={scrollToEndSignal}
           {...(requests === undefined ? {} : { requestNumbers: requests })}
-          {...(streamingCells === undefined ? {} : { streamingCells })}
           timelineFocusIndexes={timelineFocusIndexes}
           searchMatchIndexes={searchMatchIndexes}
           onSelectedIndexChange={setSelectedTimelineIndex}
@@ -375,18 +344,12 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
           recordSelection={recordSelection}
           recordFocus={recordFocus}
           historyLoading={loading}
-          olderHistoryLoading={loadingEarlier}
-          historyStartSeq={firstSourceSeq(turns)}
-          hasOlderRecords={hasEarlier}
-          {...(loadEarlier === undefined ? {} : { onLoadOlder: loadEarlier })}
           onClearSelection={() => { setTimelineRange(null) }}
           collapsedTurns={displayedCollapsedTurns}
           onToggleTurn={toggleTurn}
           collapsedAssistants={displayedCollapsedAssistants}
           onToggleAssistant={toggleAssistant}
-          inspectCallId={inspectCallId}
           nowMilliseconds={liveNowMilliseconds}
-          {...(onInspectApplied === undefined ? {} : { onInspectApplied })}
         />
       </div> : null}
       </div>

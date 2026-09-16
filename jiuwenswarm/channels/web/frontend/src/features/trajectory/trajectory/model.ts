@@ -136,7 +136,6 @@ export type TrajectoryRequest = TrajectoryRequestBase & (
 export interface TrajectorySnapshot {
   turns: readonly TrajectoryTurnModel[]
   requests?: readonly TrajectoryRequest[]
-  streamingCells?: readonly TrajectoryCell[]
   diagnostics?: readonly TrajectoryDiagnostic[]
 }
 

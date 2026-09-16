@@ -648,70 +648,15 @@ test('an eligible-to-mixed epoch change yields reset and removes old trace state
 
 
 
-test('load-earlier has one panel-level flight for two synchronous entry points', async () => {
+test('generation invalidation marks earlier operations stale', () => {
   const coordinator = createTrajectoryOperationCoordinator();
-  const busy = [];
-  let calls = 0;
-  let resolveRequest;
-  const request = new Promise(resolve => {
-    resolveRequest = resolve;
-  });
-  const operation = async () => {
-    calls += 1;
-    return request;
-  };
+  const before = coordinator.currentGeneration();
 
-  const timelinePromise = coordinator.runLoadEarlier(operation, value => busy.push(value));
-  const tablePromise = coordinator.runLoadEarlier(operation, value => busy.push(value));
+  const after = coordinator.invalidate();
 
-  assert.equal(timelinePromise, tablePromise);
-  assert.equal(calls, 1);
-  assert.deepEqual(busy, [true]);
-  resolveRequest(true);
-  assert.equal(await timelinePromise, true);
-  assert.deepEqual(busy, [true, false]);
-});
-
-
-test('generation invalidation restores busy and rejects stale load-earlier writes', async () => {
-  const coordinator = createTrajectoryOperationCoordinator();
-  const busy = [];
-  const state = populatedWindowState();
-  const controller = new AbortController();
-  let resolveOldRequest;
-  const oldRequest = new Promise(resolve => {
-    resolveOldRequest = resolve;
-  });
-  const oldPromise = coordinator.runLoadEarlier(async (generation) => {
-    const nextWatermark = await oldRequest;
-    if (controller.signal.aborted || !coordinator.isCurrent(generation)) return false;
-    state.watermark = nextWatermark;
-    return true;
-  }, value => busy.push(value));
-
-  controller.abort();
-  coordinator.invalidate(() => busy.push(false));
-  resetTrajectoryWindowState(state);
-  assert.deepEqual(busy, [true, false]);
-
-  let resolveNewRequest;
-  const newRequest = new Promise(resolve => {
-    resolveNewRequest = resolve;
-  });
-  const newPromise = coordinator.runLoadEarlier(
-    async () => newRequest,
-    value => busy.push(value),
-  );
-  assert.deepEqual(busy, [true, false, true]);
-
-  resolveOldRequest(99);
-  assert.equal(await oldPromise, false);
-  assert.equal(state.watermark, 0);
-  assert.deepEqual(busy, [true, false, true]);
-
-  resolveNewRequest(true);
-  assert.equal(await newPromise, true);
-  assert.deepEqual(busy, [true, false, true, false]);
+  assert.equal(coordinator.isCurrent(before), false);
+  assert.equal(coordinator.isCurrent(after), true);
+  assert.equal(coordinator.currentGeneration(), after);
 });
 
 

@@ -565,7 +565,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const rebuildFromHead = useCallback((signal: AbortSignal): Promise<boolean> => {
     if (rebuildPromiseRef.current !== null) return rebuildPromiseRef.current;
     const coordinator = operationCoordinatorRef.current;
-    const generation = coordinator.invalidate(() => {});
+    const generation = coordinator.invalidate();
     clearPublishedWindow();
     setLoading(true);
     const operation = (async () => {
@@ -614,8 +614,6 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       try {
         const coordinator = operationCoordinatorRef.current;
         const generation = coordinator.currentGeneration();
-        const earlier = coordinator.pendingLoadEarlier(generation);
-        if (earlier !== null) await earlier;
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         const expectedStoreEpoch = windowStateRef.current.storeEpoch;
         if (expectedStoreEpoch === null) {
@@ -731,7 +729,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       terminalSettleTimerRef.current = null;
     }
     rebuildPromiseRef.current = null;
-    operationCoordinatorRef.current.invalidate(() => {});
+    operationCoordinatorRef.current.invalidate();
     const controller = new AbortController();
     requestControllerRef.current = controller;
     setRawLoading(false);
