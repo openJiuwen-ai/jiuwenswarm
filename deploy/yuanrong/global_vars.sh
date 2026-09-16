@@ -32,6 +32,9 @@ declare -A DEPLOY_VARS=(
     ["GATEWAY_CONCURRENCY"]="1"
     ["GATEWAY_INVOKE_TIMEOUT"]="60"
     ["GATEWAY_SESSION_MAP_SCOPE"]="per_chat_bot_user"
+    # Cron 作业持久化：file（默认）| etcd（一体机主备）
+    ["CRON_STORE_BACKEND"]="file"
+    ["ETCD_ENDPOINTS"]=""
     ["MODEL_PROVIDER"]=""
     ["MODEL_NAME"]=""
     ["API_BASE"]=""

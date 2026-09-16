@@ -443,6 +443,13 @@ gateway:
   # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
   session_map_scope: <<GATEWAY_SESSION_MAP_SCOPE>>
 
+  # Cron 作业定义持久化。与 agent_client.type 无关，不随 agentos_router 自动切换。
+  # 一体机主备设 CRON_STORE_BACKEND=etcd 并填写 ETCD_ENDPOINTS。
+  cron:
+    store_backend: <<CRON_STORE_BACKEND>>
+    etcd_endpoints: <<ETCD_ENDPOINTS>>
+    etcd_prefix: /jiuwenswarm/cron/jobs/
+
   # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
   # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
   agent_client:
