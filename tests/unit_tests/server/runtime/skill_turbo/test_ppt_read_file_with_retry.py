@@ -24,6 +24,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+import jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common as ppt_common
 
 
 class _FakeNode:
@@ -143,7 +144,7 @@ async def test_failed_result_parsed_as_empty():
 
 @pytest.mark.asyncio
 async def test_transient_result_failure_retries_and_recovers(monkeypatch):
-    monkeypatch.setattr(PptCommon, "_TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(ppt_common, "TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
     node = _FakeNode(
         script=[
             _ToolOutputLike(success=False, error=_LOCK_ERROR),
@@ -157,7 +158,7 @@ async def test_transient_result_failure_retries_and_recovers(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_transient_result_failure_exhausts_retries(monkeypatch):
-    monkeypatch.setattr(PptCommon, "_TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    monkeypatch.setattr(ppt_common, "TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
     node = _FakeNode(
         script=[
             _ToolOutputLike(success=False, error=_LOCK_ERROR),
@@ -176,7 +177,8 @@ async def test_non_transient_result_failure_not_retried():
     node = _FakeNode(
         script=[
             _ToolOutputLike(
-                success=False, error="[Errno 2] No such file or directory: 'a/missing.md'"
+                success=False,
+                error="[Errno 2] No such file or directory: 'a/missing.md'",
             ),
         ]
     )
