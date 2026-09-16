@@ -14,6 +14,7 @@ from jiuwenswarm.observability.config import (
 )
 from jiuwenswarm.observability.gateway_hints import trajectory_gateway_hint_bridge
 from jiuwenswarm.observability.session_delete import (
+    set_trajectory_session_database_root,
     set_trajectory_session_delete_backend,
 )
 from jiuwenswarm.observability.sink import (
@@ -109,6 +110,7 @@ def start_trajectory_runtime(
                 logger.exception("Trajectory runtime startup cleanup failed")
             raise
         set_trajectory_session_delete_backend(sink)
+        set_trajectory_session_database_root(resolved.database_path)
         _runtime_sink = sink
         _runtime_processor = processor
         _runtime_settings = resolved
