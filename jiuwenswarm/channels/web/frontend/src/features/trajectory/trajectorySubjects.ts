@@ -51,6 +51,12 @@ export interface TrajectorySubjectViewCache<TSnapshot> {
     project: (group: TrajectorySubjectGroup) => TSnapshot,
   ) => TrajectorySubjectView<TSnapshot>;
   clear: () => void;
+  /**
+   * Drop the cached projection of every subject the predicate selects, for an
+   * input the cache does not compare (session usage) that changed for some
+   * subjects only. The next update re-projects those and reuses the rest.
+   */
+  invalidate: (predicate: (group: TrajectorySubjectGroup) => boolean) => void;
 }
 
 const mainSubject: TrajectorySubject = {
@@ -267,6 +273,12 @@ export function createTrajectorySubjectViewCache<TSnapshot>(): TrajectorySubject
     clear: () => {
       previousGroups = null;
       previousSnapshots = new Map();
+    },
+    invalidate: (predicate) => {
+      if (previousGroups === null) return;
+      for (const group of previousGroups.groups) {
+        if (predicate(group)) previousSnapshots.delete(group.subject.id);
+      }
     },
   };
 }

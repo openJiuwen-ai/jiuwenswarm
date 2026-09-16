@@ -216,6 +216,51 @@ test('schema-v2 team leader events remain in the leader lane', () => {
   assert.equal(group.records.length, 1);
 });
 
+test('replacing one streaming record re-projects only its subject', () => {
+  const records = [
+    record('0000000000000030', 'main request', '100', main),
+    record('0000000000000031', 'subagent one request', '200', subagentOne),
+  ];
+  const rawRecords = records.map(detail);
+  const lifecycle = new Map(rawRecords.map(item => [item.record_id, 'completed']));
+  const cache = createTrajectorySubjectViewCache();
+  const projected = [];
+  const project = (group) => {
+    projected.push(group.subject.id);
+    return { subjectId: group.subject.id };
+  };
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+  projected.length = 0;
+
+  // Overlaying frames swaps in a new object for the streaming record only.
+  const framed = [records[0], structuredClone(records[1])];
+  cache.update(groupTrajectorySubjects(framed, rawRecords, lifecycle), project);
+
+  assert.deepEqual(projected, [subagentOne.id]);
+});
+
+test('invalidating a subject re-projects it while the others stay cached', () => {
+  const records = [
+    record('0000000000000040', 'main request', '100', main),
+    record('0000000000000041', 'subagent one request', '200', subagentOne),
+  ];
+  const rawRecords = records.map(detail);
+  const lifecycle = new Map(rawRecords.map(item => [item.record_id, 'completed']));
+  const cache = createTrajectorySubjectViewCache();
+  const projected = [];
+  const project = (group) => {
+    projected.push(group.subject.id);
+    return { subjectId: group.subject.id };
+  };
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+  projected.length = 0;
+
+  cache.invalidate(group => group.subject.id === main.id);
+  cache.update(groupTrajectorySubjects(records, rawRecords, lifecycle), project);
+
+  assert.deepEqual(projected, [main.id]);
+});
+
 test('subject view cache reuses every unchanged group and projection', () => {
   const records = [
     record('0000000000000020', 'main request', '100', main),

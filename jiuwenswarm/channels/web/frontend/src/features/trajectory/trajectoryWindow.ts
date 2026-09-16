@@ -98,6 +98,28 @@ function sameUsage(left: TrajectoryUsage, right: TrajectoryUsage): boolean {
 }
 
 /** Report whether a cumulative-usage refresh changes any projected request fact. */
+/**
+ * Trace ids whose request usage differs between two session usage maps.
+ *
+ * Usage is keyed `traceId\u0000inferenceId`; a trace appears when any of its
+ * requests gained, lost or changed a cumulative figure.
+ */
+export function changedTrajectoryUsageTraceIds(
+  left: ReadonlyMap<string, TrajectoryUsage>,
+  right: ReadonlyMap<string, TrajectoryUsage>,
+): Set<string> {
+  const traceIds = new Set<string>();
+  const traceOf = (identity: string) => identity.slice(0, identity.indexOf('\u0000'));
+  for (const [identity, usage] of left) {
+    const candidate = right.get(identity);
+    if (candidate === undefined || !sameUsage(usage, candidate)) traceIds.add(traceOf(identity));
+  }
+  for (const identity of right.keys()) {
+    if (!left.has(identity)) traceIds.add(traceOf(identity));
+  }
+  return traceIds;
+}
+
 export function sameTrajectoryUsageMap(
   left: ReadonlyMap<string, TrajectoryUsage>,
   right: ReadonlyMap<string, TrajectoryUsage>,

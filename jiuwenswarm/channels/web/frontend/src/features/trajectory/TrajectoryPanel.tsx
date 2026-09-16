@@ -56,6 +56,7 @@ import {
   type TrajectoryArchive,
 } from './trajectoryArchive';
 import {
+  changedTrajectoryUsageTraceIds,
   collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
@@ -401,8 +402,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       [`${item.trace_id}\u0000${item.inference_id}`, item.cumulative_usage]
     )));
     if (sameTrajectoryUsageMap(sessionCumulativeUsageRef.current, nextUsage)) return;
+    const changedTraceIds = changedTrajectoryUsageTraceIds(
+      sessionCumulativeUsageRef.current,
+      nextUsage,
+    );
     sessionCumulativeUsageRef.current = nextUsage;
-    subjectViewCacheRef.current.clear();
+    // The view cache does not compare usage, so it would keep a stale figure;
+    // only subjects with a record in a changed trace need projecting again.
+    subjectViewCacheRef.current.invalidate(group => group.records.some(record => (
+      spansOf(record).some(span => changedTraceIds.has(span.traceId))
+    )));
     publish(generation);
   }, [publish, sessionId]);
 
@@ -434,7 +443,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (!page.has_more) break;
     }
     if (!changed) return;
-    subjectViewCacheRef.current.clear();
+    // No cache reset: overlaying frames replaces only the records of spans
+    // that have them, and the view cache compares records by identity, so it
+    // re-projects just the subjects that are streaming.
     publish(generation);
   }, [publish, sessionId]);
 

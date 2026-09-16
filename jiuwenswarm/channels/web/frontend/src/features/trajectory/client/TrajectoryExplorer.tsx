@@ -82,11 +82,17 @@ export interface TrajectoryExplorerProps {
 
 function searchIndexes(
   index: TrajectorySearchIndex,
-  turns: readonly TrajectoryTurnModel[],
+  layouts: readonly (readonly TrajectoryTurnModel[])[],
   query: string,
 ): ReadonlySet<number> | null {
-  index.update([turns])
+  // Without a query nothing is filtered, so the index is left to catch up on
+  // the first keystroke instead of reindexing every published window.
+  if (query.trim() === '') return null
+  // `layouts` is memoized on `turns`, which lets the index skip the walk when
+  // only the query changed.
+  index.update(layouts)
   const ids = index.search(query)
+  const turns = layouts[0] ?? []
   if (ids === null) return null
   const matches = new Set<number>()
   for (const turn of turns) {
@@ -147,6 +153,7 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     useState<ReadonlySet<string>>(EMPTY_RECORD_IDS)
   const [searchQuery, setSearchQuery] = useState('')
   const [searchIndex] = useState(() => new TrajectorySearchIndex())
+  const searchLayouts = useMemo(() => [turns], [turns])
   const [timelineRange, setTimelineRange] = useState<TrajectoryTimeRange | null>(null)
   const [selectedTimelineIndex, setSelectedTimelineIndex] = useState<number | null>(null)
   const [recordSelection, setRecordSelection] = useState<{ readonly index: number } | null>(null)
@@ -179,8 +186,8 @@ export const TrajectoryExplorer = memo(function TrajectoryExplorer({
     setTimelineRange(null)
   }, [timelineMode])
   const searchMatchIndexes = useMemo(
-    () => searchIndexes(searchIndex, turns, searchQuery),
-    [searchIndex, searchQuery, turns],
+    () => searchIndexes(searchIndex, searchLayouts, searchQuery),
+    [searchIndex, searchLayouts, searchQuery],
   )
   const timelineFocusIndexes = useMemo(
     () => timelineRange === null

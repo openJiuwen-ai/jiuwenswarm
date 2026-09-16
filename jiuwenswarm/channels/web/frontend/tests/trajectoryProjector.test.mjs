@@ -379,9 +379,12 @@ test('ownerless ask_user result remains one routed TOOL while other ownerless to
   assert.equal(askUserCells[0].requestless, true);
 
   assert.equal(cellsOf(projectOtelTrajectory([askUserRecord])).length, 0);
-  setStringAttribute(askUser, 'gen_ai.tool.name', 'bash');
-  askUser.name = 'tool.bash';
-  assert.equal(cellsOf(projectOtelTrajectory([routedRootRecord, askUserRecord])).length, 0);
+  // Received records are immutable, so a changed tool is a new record.
+  const bashRecord = structuredClone(askUserRecord);
+  const bash = spansOf([bashRecord])[0];
+  setStringAttribute(bash, 'gen_ai.tool.name', 'bash');
+  bash.name = 'tool.bash';
+  assert.equal(cellsOf(projectOtelTrajectory([routedRootRecord, bashRecord])).length, 0);
 });
 
 test('system and external user lead pre-model tools while generated context follows them', async () => {
@@ -1301,6 +1304,33 @@ test('schema-v2 subject state stays isolated when concurrent subagents reuse seq
 
   assert.deepEqual(cellsOf(firstSnapshot).map(cell => cell.text), ['first subagent']);
   assert.deepEqual(cellsOf(secondSnapshot).map(cell => cell.text), ['second subagent']);
+});
+
+test('the v2 reducer rebuilds only subjects whose events changed', () => {
+  const commit = (subjectId, eventId, sequence, text) => {
+    const message = contextMessage(`${eventId}-message`, 'user', text);
+    return v2Record({
+      eventId,
+      sequence,
+      subjectId,
+      time: sequence * 1_000_000,
+      payload: contextCommit(`${eventId}-window`, null, [message], [
+        { op: 'insert', message_id: message.message_id, index: 0, message },
+      ]),
+    });
+  };
+  const first = commit('subagent:first', 'first-1', 1, 'first');
+  const second = commit('subagent:second', 'second-1', 1, 'second');
+  const reducer = createTrajectoryV2Reducer();
+
+  const initial = reducer.apply([first, second]);
+  const repeated = reducer.apply([first, second]);
+  const grown = reducer.apply([first, second, commit('subagent:second', 'second-2', 2, 'more')]);
+
+  assert.equal(repeated.subjects.get('subagent:first'), initial.subjects.get('subagent:first'));
+  assert.equal(repeated.subjects.get('subagent:second'), initial.subjects.get('subagent:second'));
+  assert.equal(grown.subjects.get('subagent:first'), initial.subjects.get('subagent:first'));
+  assert.notEqual(grown.subjects.get('subagent:second'), initial.subjects.get('subagent:second'));
 });
 
 test('schema-v2 sequence validation is isolated across runtime epochs', () => {

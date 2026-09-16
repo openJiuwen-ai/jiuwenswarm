@@ -1433,6 +1433,11 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
 export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
   const eventsBySubject = new Map<string, Map<string, ParsedEvent>>()
   const globalDiagnostics: TrajectoryDiagnostic[] = []
+  // Each publish applies the whole window again, but a live update touches one
+  // or two subjects. A subject's projection is a pure function of its events,
+  // so it is rebuilt only when one of them was added or replaced.
+  const projections = new Map<string, TrajectoryV2SubjectProjection>()
+  const dirtySubjects = new Set<string>()
   return {
     apply(records) {
       for (const record of records) {
@@ -1447,9 +1452,11 @@ export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
           if (existing === undefined) {
             subjectEvents.set(parsed.eventId, parsed)
             eventsBySubject.set(parsed.subjectId, subjectEvents)
+            dirtySubjects.add(parsed.subjectId)
           } else if (eventFingerprint(existing) !== eventFingerprint(parsed)) {
             if (existing.traceId === parsed.traceId && existing.span.spanId === parsed.span.spanId) {
               subjectEvents.set(parsed.eventId, parsed)
+              dirtySubjects.add(parsed.subjectId)
             } else {
               appendUniqueDiagnostic(globalDiagnostics, diagnostic(
                 'v2.event_id_conflict',
@@ -1462,14 +1469,18 @@ export function createTrajectoryV2Reducer(): TrajectoryV2Reducer {
           }
         }
       }
-      const subjects = new Map([...eventsBySubject].map(([subjectId, events]) => (
-        [subjectId, rebuildSubject(subjectId, [...events.values()])] as const
-      )))
-      return { diagnostics: globalDiagnostics, subjects }
+      for (const [subjectId, events] of eventsBySubject) {
+        if (!dirtySubjects.has(subjectId) && projections.has(subjectId)) continue
+        projections.set(subjectId, rebuildSubject(subjectId, [...events.values()]))
+      }
+      dirtySubjects.clear()
+      return { diagnostics: globalDiagnostics, subjects: new Map(projections) }
     },
     clear() {
       eventsBySubject.clear()
       globalDiagnostics.length = 0
+      projections.clear()
+      dirtySubjects.clear()
     },
   }
 }

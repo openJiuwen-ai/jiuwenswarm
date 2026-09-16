@@ -5,6 +5,7 @@ import test from 'node:test';
 
 import {
   applyTrajectoryDetailRecords,
+  changedTrajectoryUsageTraceIds,
   collectSubjectRefreshWindow,
   createTrajectoryOperationCoordinator,
   createTrajectoryTraceHintCoordinator,
@@ -32,6 +33,25 @@ test('unchanged cumulative usage does not require another trajectory publish', (
   assert.equal(sameTrajectoryUsageMap(previous, same), true);
   assert.equal(sameTrajectoryUsageMap(previous, changed), false);
   assert.equal(sameTrajectoryUsageMap(previous, new Map()), false);
+});
+
+test('changed usage names the traces whose projections it affects', () => {
+  const usage = total => ({ input: 10, cacheRead: 0, output: total - 10, reasoning: 0, total });
+  const previous = new Map([
+    ['trace-a\0inference-1', usage(13)],
+    ['trace-b\0inference-1', usage(20)],
+    ['trace-c\0inference-1', usage(30)],
+  ]);
+  const next = new Map([
+    ['trace-a\0inference-1', usage(13)],
+    ['trace-b\0inference-1', usage(21)],
+    ['trace-d\0inference-1', usage(40)],
+  ]);
+
+  assert.deepEqual(
+    [...changedTrajectoryUsageTraceIds(previous, next)].sort(),
+    ['trace-b', 'trace-c', 'trace-d'],
+  );
 });
 
 test('one hint flight chases the highest revision that arrives while loading', async () => {

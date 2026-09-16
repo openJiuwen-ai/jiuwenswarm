@@ -475,8 +475,25 @@ function withoutSystemMessages(value: unknown): unknown {
   return value.filter((candidate) => object(candidate)?.role !== 'system')
 }
 
+// Records are immutable once received and a projection pass reads each span's
+// attributes more than once (turn assignment, then span building), across
+// every publish that re-projects the subject. Normalization is pure, so one
+// result per attribute array is enough.
+const normalizedByEntries = new WeakMap<readonly OtlpKeyValue[], NormalizedTrajectoryAttributes>()
+
 /** Resolve each fact independently, preserving the winning physical key. */
 export function normalizeTrajectoryAttributes(
+  entries: readonly OtlpKeyValue[] | undefined,
+): NormalizedTrajectoryAttributes {
+  if (entries === undefined) return normalizeAttributeEntries(entries)
+  const cached = normalizedByEntries.get(entries)
+  if (cached !== undefined) return cached
+  const normalized = normalizeAttributeEntries(entries)
+  normalizedByEntries.set(entries, normalized)
+  return normalized
+}
+
+function normalizeAttributeEntries(
   entries: readonly OtlpKeyValue[] | undefined,
 ): NormalizedTrajectoryAttributes {
   const raw = exactAttributeMap(entries)
