@@ -66,7 +66,7 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.gateway.hooks.handler import GatewayHookHandler
 from jiuwenswarm.gateway.routing.keys import RoutingKey, AgentRef, make_delivery_target
 from jiuwenswarm.gateway.routing.session_sharing import SessionSharingRegistry, SubRole
-
+from jiuwenswarm.gateway.message_handler.delivery import get_default_registry, map_incoming_reply
 logger = logging.getLogger(__name__)
 
 _ACP_CHANNEL_ID = "acp"
@@ -483,6 +483,7 @@ class MessageHandler(ABC):
     async def handle_message(self, msg: "Message") -> None:
         """Channel 同步回调：将消息放入 user_messages 队列，由转发循环发给 AgentServer."""
         # 非控制指令: 反查发送者身份
+        msg = map_incoming_reply(msg, get_default_registry())
         result = self._session_sharing.resolve_member_by_user(
             msg.channel_id,
             MessageHandler.resolve_app_id(msg),
