@@ -38,6 +38,7 @@ import {
 } from './trajectoryClient';
 import {
   applyStreamFrames,
+  forgetStreamFrames,
   withStreamFrames,
 } from './trajectoryFrames';
 import {
@@ -191,6 +192,11 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const { i18n } = useTranslation();
   const chinese = (i18n.resolvedLanguage ?? i18n.language).toLowerCase().startsWith('zh');
   const teamMode = mode === 'team';
+  // The panel is not remounted when the session or its mode changes, so the
+  // stable callbacks below read the mode through a ref instead of closing
+  // over the value they were first created with.
+  const teamModeRef = useRef(teamMode);
+  teamModeRef.current = teamMode;
   const windowStateRef = useRef(createTrajectoryWindowState());
   const operationCoordinatorRef = useRef(createTrajectoryOperationCoordinator());
   const loadedSessionRef = useRef<string | null>(null);
@@ -442,7 +448,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
-    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setInvalidRecordSeen(false);
     setError(null);
     setRawSelection('');
@@ -488,6 +494,12 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (current !== undefined && current.revision >= targetRevision) return;
     const publishPage = (staged: StagedTrajectoryChain) => {
       if (signal.aborted || !operationCoordinatorRef.current.isCurrent(generation)) return;
+      // A finished span is final whichever page carries it, so its frames go
+      // even when a newer concurrent page already holds the bucket.
+      windowStateRef.current.frames = forgetStreamFrames(
+        windowStateRef.current.frames,
+        staged.finishedSpanKeys,
+      );
       const latest = windowStateRef.current.buckets.get(subjectId);
       // A consumed revision uniquely identifies the trace state visible to
       // this coalesced detail feed. Equal or older concurrent pages cannot add
@@ -768,6 +780,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     if (sessionChanged) {
       loadedSessionRef.current = sessionId;
       clearPublishedWindow();
+      // Content hashes stay valid across epochs of one session, but another
+      // session's content is only memory this reader will not use again.
+      sequenceCacheRef.current = createSequenceCache();
     }
     if (sessionId === 'new') {
       setLoading(false);
@@ -932,6 +947,17 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setRawSelection(rawSelectionBySubjectRef.current.get(subjectId) ?? '');
   }, [rawSelection, selectedSubjectId]);
 
+  // A session's mode can resolve after the panel opened it ('agent' until the
+  // runtime reports 'team'). The single-agent default selection is 'main',
+  // which is also a valid Team leader lane id, so the repair below would keep
+  // it; reset to the mode's own default instead.
+  const selectionModeRef = useRef(teamMode);
+  useEffect(() => {
+    if (selectionModeRef.current === teamMode) return;
+    selectionModeRef.current = teamMode;
+    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+  }, [teamMode]);
+
   useEffect(() => {
     if (!teamMode) {
       if (!subjectGroups.byId.has(selectedSubjectId ?? '')) {
@@ -1067,7 +1093,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       const archive = parseTrajectoryArchive(text);
       replayArchiveTextRef.current = text;
       setReplayArchive(archive);
-      setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+      setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
       setRawSelection('');
       setFetchedRaw(null);
       setRawError(null);
@@ -1080,7 +1106,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const transition = exitTrajectoryReplay(replayArchive);
     replayArchiveTextRef.current = null;
     setReplayArchive(transition.archive);
-    setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
+    setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);
     setArchiveNotice(null);
     setRawSelection('');

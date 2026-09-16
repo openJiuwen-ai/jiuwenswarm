@@ -72,6 +72,11 @@ export interface TrajectoryTraceHintCoordinator {
 export interface StagedTrajectoryChain {
   bucket: TrajectoryChainBucket;
   invalidRecordSeen: boolean;
+  /**
+   * `traceId:spanId` of every record this page brought to a terminal state.
+   * Such a span states its own output, so its stream frames can be released.
+   */
+  finishedSpanKeys: readonly string[];
 }
 
 export type TrajectoryContentMode = 'new' | 'loading' | 'blocking-error' | 'empty' | 'data';
@@ -264,6 +269,7 @@ export function applyTrajectoryDetailRecords(
   let rawRecords = new Map<string, TrajectoryDetailRecord>(current?.rawRecords ?? []);
   let versions = new Map<string, TrajectoryRecordVersion>(current?.versions ?? []);
   let invalidRecordSeen = false;
+  const finishedSpanKeys: string[] = [];
   if (detail.reset) {
     records = new Map();
     rawRecords = new Map();
@@ -296,6 +302,7 @@ export function applyTrajectoryDetailRecords(
     }
     versions.set(identity, incoming);
     rawRecords.set(identity, item);
+    if (terminal(incoming.lifecycle)) finishedSpanKeys.push(identity);
     if (!item.raw_valid || item.otlp === null) {
       invalidRecordSeen = true;
       records.delete(identity);
@@ -316,6 +323,7 @@ export function applyTrajectoryDetailRecords(
       versions,
     },
     invalidRecordSeen,
+    finishedSpanKeys,
   };
 }
 
@@ -441,6 +449,7 @@ export async function stageTrajectoryChainPages(
         versions: stagedVersions,
       },
       invalidRecordSeen,
+      finishedSpanKeys: applied.finishedSpanKeys,
     };
     publishPage?.(progress);
     if (!detail.has_more) return progress;

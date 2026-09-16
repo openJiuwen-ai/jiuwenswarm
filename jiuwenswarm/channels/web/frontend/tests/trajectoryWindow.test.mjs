@@ -968,6 +968,9 @@ test('versioned upsert replaces one running identity with its terminal record', 
     recordRevision: 3,
   });
   assert.equal(completed.bucket.rawRecords.get(running.record_id).change_seq, 12);
+  // Only the page that finished the span names it for frame release.
+  assert.deepEqual(started.finishedSpanKeys, []);
+  assert.deepEqual(completed.finishedSpanKeys, [running.record_id]);
 });
 
 test('late running revisions cannot downgrade a terminal trajectory identity', () => {
