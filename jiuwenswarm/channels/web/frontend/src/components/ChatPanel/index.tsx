@@ -26,7 +26,7 @@ import {
 import type { TFunction } from 'i18next';
 import { useTranslation } from 'react-i18next';
 import { useChatStore, useHarnessStore, useSessionStore, useTodoStore } from '../../stores';
-import { AgentMode, MediaItem, Message, UserAnswer, type ProjectInfo } from '../../types';
+import { AgentMode, MediaItem, Message, UserAnswer, type Permission, type ProjectInfo } from '../../types';
 import type { HumanShareCommand } from '../../stores/sessionStore';
 import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { MessageList } from './MessageList';
@@ -138,11 +138,11 @@ interface ChatPanelProps {
   onToggleTeamArea?: (expanded: boolean | null) => void;
   /** 打开右侧面板并切换到代码审核 Tab */
   onOpenCodeReview?: (target: CodeReviewTarget) => void;
-  permissionsEnabled: boolean;
   /** 心跳面板展开状态：由 App.tsx 统一管理，跟团队/代码审核面板一样占用右侧工作区一栏 */
   heartbeatPanelOpen?: boolean;
   /** 切换心跳面板展开状态 */
   onToggleHeartbeatPanel?: () => void;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** Goal（持续目标）控制，见 GoalBar 组件 */
   onSetGoal?: (sessionId: string, objective: string) => void;
@@ -953,7 +953,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   onOpenCodeReview,
   heartbeatPanelOpen = false,
   onToggleHeartbeatPanel,
-  permissionsEnabled,
+  permissionProfile,
   onSavePermission,
   onSetGoal,
   onPauseGoal,
@@ -1801,7 +1801,7 @@ export const ChatPanel = React.memo(function ChatPanel({
                   onNavigateToSkills={onNavigateToSkills}
                   onNavigateToAgents={onNavigateToAgents}
                   onAgentGroupIdentityChange={setTeamGroupIdentity}
-                  permissionsEnabled={permissionsEnabled}
+                  permissionProfile={permissionProfile}
                   onSavePermission={onSavePermission}
                   onSetGoal={onSetGoal}
                   onClearGoal={onClearGoal}
@@ -1871,7 +1871,7 @@ export const ChatPanel = React.memo(function ChatPanel({
             onNavigateToSkills={onNavigateToSkills}
             onNavigateToAgents={onNavigateToAgents}
             onAgentGroupIdentityChange={setTeamGroupIdentity}
-            permissionsEnabled={permissionsEnabled}
+            permissionProfile={permissionProfile}
             onSavePermission={onSavePermission}
             onSetGoal={onSetGoal}
             onClearGoal={onClearGoal}

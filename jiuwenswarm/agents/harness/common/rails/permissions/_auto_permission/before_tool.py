@@ -6,7 +6,6 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
-from openjiuwen.core.runner import Runner
 from openjiuwen.harness.tools.subagent.subagent_tools import (
     SubagentCloseTool,
     SubagentListTool,
@@ -46,6 +45,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     ToolInvocation,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
+from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import (
+    trusted_readonly_binding,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
 )
@@ -98,6 +101,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     optional_root_permission_queue,
+    consume_permission_wrapper_resume,
     root_nonpermission_resume_from_context,
     root_permission_resume_from_context,
     tool_invocation_key_from_context,
@@ -156,12 +160,10 @@ def _trusted_subagent_runtime_control_binding(invocation: ToolInvocation) -> boo
     try:
         callback_agent = invocation.ctx.agent
         manager = callback_agent.ability_manager
-        card = manager.get(invocation.tool_name)
-        resource = Runner.resource_mgr.get_tool(card.id, session=None)
+        resource = resolve_tool_binding(callback_agent, invocation.tool_name, expected_type)
         outer_agent = _subagent_tool_parent(resource)
         return bool(
-            resource.__class__ is expected_type
-            and resource.card is card
+            resource is not None
             and outer_agent.react_agent is callback_agent
             and outer_agent.ability_manager is manager
         )
@@ -194,6 +196,7 @@ class AutoPermissionBeforeToolMixin:
         clear_send_file_execution_grant()
         clear_trusted_search_producer()
         invocation = _extract_invocation(args, kwargs)
+        wrapper_resume = consume_permission_wrapper_resume(invocation.ctx)
         context_extra = getattr(invocation.ctx, "extra", None)
         if invocation.ctx is not None and invocation.tool_name == "mcp_fetch_webpage":
             setattr(invocation.ctx, PUBLIC_HTTPS_FETCH_CONTEXT_ATTR, True)
@@ -417,6 +420,10 @@ class AutoPermissionBeforeToolMixin:
             facts.capability.operation_family == "subagent_runtime_control"
             and _trusted_subagent_runtime_control_binding(invocation)
         )
+        readonly_binding_verified = bool(
+            facts.capability.operation_family == "internal_readonly"
+            and trusted_readonly_binding(invocation, session_id)
+        )
 
         if trusted_send_resolution is not None:
             if (
@@ -561,6 +568,8 @@ class AutoPermissionBeforeToolMixin:
                 "subagent_runtime_control_binding_unverified",
                 "manual_only",
             )
+        if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
+            domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_binding_unverified", "manual_only")
 
         if _is_rejection_confirmation(user_input):
             if invocation_resume is None:
@@ -591,6 +600,11 @@ class AutoPermissionBeforeToolMixin:
                 build_rejected_permission_response("user_rejected"),
                 decision_source="manual_approval",
             )
+
+        if wrapper_resume:
+            # Core re-enters this exact dispatcher to reach the pending inner
+            # call. Static guards above still apply; the inner runs all rails.
+            return runtime_result(None, decision_source="permission_wrapper_resume")
 
         override_result: PermissionHandlingResult = (
             await self._consume_reviewer_override(
@@ -779,6 +793,7 @@ class AutoPermissionBeforeToolMixin:
         if terminal_internal_route(
             facts,
             subagent_runtime_control_verified=subagent_runtime_control_verified,
+            readonly_binding_verified=readonly_binding_verified,
         ) is not None:
             self._record_reviewer_success_metadata(
                 invocation.ctx,

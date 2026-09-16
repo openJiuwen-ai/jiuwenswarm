@@ -1645,6 +1645,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           formatted_args: n.formatted_args,
           display_name: n.display_name,
           memberName: n.memberName,
+          reviewer: n.reviewer,
         },
         // 与实时一致：先 pending，等 tool_result 再落终态；无 result 的孤儿在循环末尾结算。
         status: 'pending',
@@ -1673,6 +1674,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       ...(n.mermaid ? { mermaid: n.mermaid } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+      reviewer: n.reviewer,
     };
     const resultStatus: ToolExecution['status'] = n.pending
       ? 'pending'

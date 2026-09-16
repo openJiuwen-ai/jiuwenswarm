@@ -62,7 +62,8 @@ class TestResolveAtFileReferences:
             os.unlink(fname)
 
     @staticmethod
-    def test_home_directory_expansion():
+    def test_home_directory_expansion(monkeypatch, tmp_path):
+        monkeypatch.setenv("HOME", str(tmp_path))
         home = os.path.expanduser("~")
         rel_path = ".jiuwenswarm_test_at_ref.txt"
         abs_path = os.path.join(home, rel_path)

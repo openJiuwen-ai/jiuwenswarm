@@ -71,7 +71,7 @@ export type AgentMode =
   | 'team.code.normal'
   | 'team.code.plan';
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
-export type Permission = 'default' | 'full_access';
+export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
 

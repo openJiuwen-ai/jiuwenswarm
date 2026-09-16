@@ -1306,6 +1306,7 @@ function AppContent({
             formatted_args: n.formatted_args,
             display_name: n.display_name,
             memberName: n.memberName,
+            reviewer: n.reviewer,
           },
           {
             startedAt: item.at,
@@ -1328,6 +1329,7 @@ function AppContent({
             ...(n.mermaid ? { mermaid: n.mermaid } : {}),
             ...(n.timedOut ? { timedOut: true } : {}),
             ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+            reviewer: n.reviewer,
           },
           { updatedAt: item.at }
         );
@@ -1872,10 +1874,11 @@ function AppContent({
 
   const savePermissionSilent = useCallback(async (updates: Record<string, string>) => {
     try {
-      await request<{ updated?: string[]; applied_without_restart?: boolean }>('config.set', updates);
+      const payload = await request<{ canonical_config?: Record<string, string> }>('config.set', updates);
       setServerConfig((prev) => {
-        if (!prev) return updates;
-        return { ...prev, ...updates };
+        const canonical = payload?.canonical_config ?? {};
+        if (!prev) return { ...updates, ...canonical };
+        return { ...prev, ...updates, ...canonical };
       });
     } catch (error) {
       console.error('Failed to save permission:', error);
@@ -2198,6 +2201,7 @@ function AppContent({
                 formatted_args: n.formatted_args,
                 display_name: n.display_name,
                 memberName: n.memberName,
+                reviewer: n.reviewer,
               },
               {
                 startedAt: item.at,
@@ -2220,6 +2224,7 @@ function AppContent({
                 ...(n.mermaid ? { mermaid: n.mermaid } : {}),
                 ...(n.timedOut ? { timedOut: true } : {}),
                 ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+                reviewer: n.reviewer,
               },
               { updatedAt: item.at }
             );
@@ -3527,7 +3532,13 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                         onNavigateToAgents={() => handleNavigate('agents')}
                         onToggleTeamArea={handleToggleDetailPanel}
                         onOpenCodeReview={handleOpenCodeReview}
-                        permissionsEnabled={serverConfig?.permissions_enabled !== 'false'}
+                        permissionProfile={
+                          serverConfig?.permissions_profile === 'automatic'
+                            ? 'automatic'
+                            : serverConfig?.permissions_enabled === 'false'
+                              ? 'full_access'
+                              : 'default'
+                        }
                         heartbeatPanelOpen={heartbeatPanelOpen}
                         onToggleHeartbeatPanel={handleToggleHeartbeatPanel}
                         onSavePermission={savePermissionSilent}
