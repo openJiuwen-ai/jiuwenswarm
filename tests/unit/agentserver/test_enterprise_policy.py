@@ -63,6 +63,19 @@ substitute_template = expressions.substitute_template
 _FALLBACK_TEMPLATE_ID = "11111111-1111-4111-8111-111111111111"
 
 
+@pytest.fixture(autouse=True)
+def _reset_policy_snapshot_cache():
+    """清进程级 policy 快照缓存(loader 层, 跨租户单例).
+
+    每个用例都重灌 mock 的 list_records 数据, 但快照缓存命中后走内存匹配、
+    不再查库 —— 不清会用上一用例(或错误恢复空表)的旧快照, 表现为读到
+    兜底恢复配置(global_policy_id=99)而非本用例数据.
+    """
+    loader._policy_snapshot_cache.invalidate()
+    yield
+    loader._policy_snapshot_cache.invalidate()
+
+
 def _mapping_scope_matches(
     table: str,
     filters: dict | None,

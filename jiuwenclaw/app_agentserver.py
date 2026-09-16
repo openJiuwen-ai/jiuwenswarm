@@ -180,6 +180,9 @@ async def _run(host: str, port: int) -> None:
         port=port,
         ping_interval=20.0,
         ping_timeout=300.0,
+        # 单帧上限默认 64 MiB（websockets 默认 1 MiB 会拒收大请求），
+        # 与 gateway 侧 WSServiceMessageChannel 的 ws_max_size 保持一致。
+        max_size=int(os.getenv("AGENTSERVER_WS_MAX_SIZE", str(64 * 2**20))),
     )
     await server.start()
 
