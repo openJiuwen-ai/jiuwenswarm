@@ -12673,6 +12673,20 @@ class JiuWenSwarmDeepAdapter:
             return False
         return getattr(self._instance, "active_round", None) is not None
 
+    def resolve_standalone_trajectory_turn(self) -> TurnIdentity:
+        """Open a new trajectory turn for work that runs outside the ReAct loop.
+
+        A manual compaction is a turn of its own: an instruction goes in, the
+        model is asked once for a summary, and the rewritten context is what
+        the next turn starts from. It takes the next turn number like a user
+        message would, so it sits between its neighbours on the timeline
+        instead of standing outside every turn.
+
+        Returns:
+            The turn identity to stamp on the run's root span.
+        """
+        return self._turn_tracker.resolve(self._active_loop_session(), continues_turn=False)
+
     def _resolve_trajectory_turn(self, params: Any) -> TurnIdentity:
         """Resolve the trajectory turn this request's root span belongs to.
 

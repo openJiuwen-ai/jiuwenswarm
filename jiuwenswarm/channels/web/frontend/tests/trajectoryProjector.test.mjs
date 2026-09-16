@@ -1097,6 +1097,132 @@ test('model-free compaction remains visible without a physical model request', (
   )));
 });
 
+test('a compaction commits its own output window, anchored by its model request', () => {
+  // A compaction is a turn of its own: its commit hangs off the live agent
+  // span (its model call has ended by then) and names that call through
+  // model_requests, the way the compaction.completed event does. The next
+  // request is a plain delta on top of the window it states.
+  const system = contextMessage('openjiuwen:request-system-slot:0', 'system', 'rules', 'harness_internal');
+  const original = contextMessage('message-original-user', 'user', 'research the bash tool');
+  const answer = contextMessage('message-answer', 'assistant', 'done', 'harness_internal');
+  const memory = contextMessage(
+    'message-compacted-memory',
+    'user',
+    '<memory_block_round>compressed work</memory_block_round>',
+    'harness_internal',
+  );
+  const next = contextMessage('message-next-user', 'user', 'continue');
+  const before = v2Record({
+    eventId: 'event-before-own-compaction',
+    sequence: 1,
+    payload: contextCommit('window-before', null, [system, original, answer], []),
+  });
+  const compacted = v2Record({
+    eventId: 'event-own-compaction-completed',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    payload: {
+      type: 'context.compression_state',
+      operation_id: 'operation-own-compaction',
+      status: 'completed',
+      processor: 'RoundLevelCompressor',
+      model: 'GLM-5.3',
+      model_requests: [{ request_id: 'physical-compaction-request', inference_id: 'inference-compaction' }],
+      summary: 'Compressed 3 -> 2 messages',
+      compact_summary: '# Compacted context',
+    },
+  });
+  const output = v2Record({
+    eventId: 'event-own-compaction-output',
+    sequence: 3,
+    inferenceId: 'agent-run-span',
+    payload: {
+      ...contextCommit('window-after', 'window-before', [system, memory], [
+        { op: 'remove', message_id: original.message_id, index: 1 },
+        { op: 'remove', message_id: answer.message_id, index: 2 },
+        { op: 'insert', message_id: memory.message_id, index: 1, message: memory },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-own-compaction',
+      input_window_id: 'window-before',
+      output_window_id: 'window-after',
+      model_requests: [{ request_id: 'physical-compaction-request', inference_id: 'inference-compaction' }],
+    },
+  });
+  const following = v2Record({
+    eventId: 'event-after-own-compaction',
+    sequence: 4,
+    payload: contextCommit('window-next', 'window-after', [system, memory, next], [
+      { op: 'insert', message_id: next.message_id, index: 2, message: next },
+    ]),
+  });
+
+  const reduction = createTrajectoryV2Reducer().apply([following, output, compacted, before]);
+  const main = reduction.subjects.get('main');
+
+  assert.deepEqual(main.diagnostics, []);
+  const outputEvent = main.events.find(event => event.sequence === 3);
+  assert.deepEqual(outputEvent.cells.map(cell => [cell.kind, cell.text]), [
+    ['context', '<memory_block_round>compressed work</memory_block_round>'],
+  ]);
+  assert.ok(outputEvent.cells.every(cell => cell.physicalInferenceId === 'inference-compaction'));
+  assert.ok(main.handledInferenceIds.has('inference-compaction'));
+  assert.ok(!main.handledInferenceIds.has('agent-run-span'));
+  const cells = cellsOf(projectOtelTrajectory([following, output, compacted, before]));
+  assert.deepEqual(cells.map(cell => cell.kind), ['system', 'user', 'compacted', 'context', 'user']);
+});
+
+test('a model-free compaction commits its output window without any model request', () => {
+  const original = contextMessage('message-trimmed-user', 'user', 'long tool output follows');
+  const before = v2Record({
+    eventId: 'event-before-model-free-output',
+    sequence: 1,
+    payload: contextCommit('window-before-trim', null, [original], []),
+  });
+  const compacted = v2Record({
+    eventId: 'event-model-free-compaction-with-output',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    payload: {
+      operation_id: 'operation-model-free-output',
+      status: 'completed',
+      processor: 'ToolResultWindowProcessor',
+      model: '',
+      model_requests: [],
+      summary: 'Compressed 1 -> 1 messages, saved 5.9k tokens',
+      compact_summary: '',
+    },
+  });
+  const trimmed = { ...original, content: 'long tool output trimmed' };
+  const output = v2Record({
+    eventId: 'event-model-free-output',
+    sequence: 3,
+    inferenceId: 'agent-run-span',
+    payload: {
+      ...contextCommit('window-after-trim', 'window-before-trim', [trimmed], [
+        { op: 'replace', message_id: original.message_id, index: 0, message: trimmed },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-model-free-output',
+      input_window_id: 'window-before-trim',
+      output_window_id: 'window-after-trim',
+      model_requests: [],
+    },
+  });
+
+  const reduction = createTrajectoryV2Reducer().apply([output, compacted, before]);
+  const main = reduction.subjects.get('main');
+
+  assert.deepEqual(main.diagnostics, []);
+  const outputEvent = main.events.find(event => event.sequence === 3);
+  assert.deepEqual(outputEvent.cells.map(cell => [cell.kind, cell.physicalInferenceId]), [
+    ['user', undefined],
+  ]);
+  assert.ok(!main.handledInferenceIds.has('agent-run-span'));
+});
+
 test('v2 request context keeps logical input order when its event timestamp follows inference start', async () => {
   const records = structuredClone(await fixtureRecords('core-contract-records.json'));
   const inferenceRecord = records[1];

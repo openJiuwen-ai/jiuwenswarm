@@ -161,13 +161,23 @@ function physicalInferenceIds(
   payload: Readonly<Record<string, unknown>>,
   span: OtlpSpan,
 ): string[] {
-  if (eventKind === 'context.window.commit') {
+  // A commit normally states the input of the model call it hangs off, so
+  // that call is its physical request. The commit a compaction makes states
+  // the window the compaction produced: its model call has ended by then, so
+  // the commit hangs off the live agent span and names the call the way the
+  // compaction.completed event does, through model_requests.
+  const compactionCommit = eventKind === 'context.window.commit'
+    && (payload.transition_kind === 'compaction' || payload.correlation_kind === 'compaction')
+    && Array.isArray(payload.model_requests)
+  if (eventKind === 'context.window.commit' && !compactionCommit) {
     return typeof span.parentSpanId === 'string' && span.parentSpanId.trim() !== ''
       ? [span.parentSpanId.trim()]
       : []
   }
-  if (eventKind !== 'compaction.completed' || !Array.isArray(payload.model_requests)
-    || payload.model_requests.length === 0) return []
+  if (!compactionCommit
+    && (eventKind !== 'compaction.completed' || !Array.isArray(payload.model_requests)
+      || payload.model_requests.length === 0)) return []
+  if (!Array.isArray(payload.model_requests) || payload.model_requests.length === 0) return []
   const inferenceIds = payload.model_requests.flatMap((value): string[] => {
     const request = object(value)
     return request === undefined || typeof request.inference_id !== 'string'
@@ -1099,7 +1109,12 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
     }
     expectedByEpoch.set(event.sequenceEpoch, event.sequence + 1)
     if (event.eventKind === 'context.window.commit') {
-      if (event.inferenceIds.length !== 1) {
+      // A compaction's commit is anchored by its compaction event rather than
+      // by a model call of its own: a model-free compaction states none.
+      const compactionCommit = (event.payload.transition_kind === 'compaction'
+        || event.payload.correlation_kind === 'compaction')
+        && Array.isArray(event.payload.model_requests)
+      if (!compactionCommit && event.inferenceIds.length !== 1) {
         accumulator.diagnostics.push(diagnostic(
           'v2.missing_physical_request',
           'Context commit is missing its physical inference parent.',
