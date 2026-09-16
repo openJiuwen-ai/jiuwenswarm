@@ -26,7 +26,7 @@ def compile_model_selection(resolved: ResolvedSelection) -> tuple[Any, Any]:
             enabled=r.enabled, request_overrides=r.request_overrides,
             tpm=r.tpm, rpm=r.rpm, timeout=r.timeout) for r in resolved.routes]
         core = CoreGroup(model_group_id=resolved.model_group_id, routes=routes,
-            request_config=resolved.request_config, routing=resolved.routing)
+            request_config=resolved.request_config)
     compiled = compile_core(core)
     return compiled.model_client_config, compiled.model_request_config
 

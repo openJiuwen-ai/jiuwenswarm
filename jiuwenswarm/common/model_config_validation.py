@@ -79,9 +79,9 @@ def _validate_routing(value: Any, location: str, errors: list[str]) -> None:
     if not isinstance(value, dict):
         errors.append(f"{location} must be an object")
         return
-    strategy = value.get("strategy", "ordered-failover")
-    if not isinstance(strategy, str) or not strategy.strip():
-        errors.append(f"{location}.strategy must be a non-empty string")
+    strategy = value.get("strategy")
+    if strategy not in (None, "ordered-failover", "tag-filtered"):
+        errors.append(f"{location}.strategy is invalid")
     retries = value.get("num_retries")
     if retries is not None:
         invalid_type = not isinstance(retries, int) or isinstance(retries, bool)
@@ -90,10 +90,8 @@ def _validate_routing(value: Any, location: str, errors: list[str]) -> None:
     strategy_kwargs = value.get("strategy_kwargs")
     if strategy_kwargs is not None and not isinstance(strategy_kwargs, dict):
         errors.append(f"{location}.strategy_kwargs must be an object")
-    if strategy == "tag-filtered":
-        fallback_tag = strategy_kwargs.get("fallback_tag") if isinstance(strategy_kwargs, dict) else None
-        if not isinstance(fallback_tag, str) or not fallback_tag.strip():
-            errors.append(f"{location}.strategy_kwargs.fallback_tag must be a non-empty string")
+    # Recognized legacy strategies are accepted for upgrade compatibility,
+    # but are neither executed nor forwarded to Core in model-pool mode.
 
 
 def validate_models_config(models: dict[str, Any]) -> list[str]:

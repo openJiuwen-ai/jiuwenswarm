@@ -75,7 +75,7 @@ class ModelSelectionResolver:
             raise ModelSelectionError(MODEL_SELECTION_DISABLED, f"model {model_id!r} is disabled")
         excluded_client_options = {"model_name", "client_provider", "api_base", "api_key"}
         options = {key: value for key, value in mcc.items() if key not in excluded_client_options}
-        defaults = {k: v for k, v in mco.items() if k not in {"context_window", "_source"}}
+        defaults = {k: v for k, v in mco.items() if k != "_source"}
         return ResolvedModel(
             model_id=model_id,
             source=source,
@@ -132,19 +132,10 @@ class ModelSelectionResolver:
         ]
         if not routes:
             raise ModelSelectionError(MODEL_GROUP_INVALID, f"model group {selected.id!r} has no routes")
-        routing = dict(group.get("routing") or {})
-        if selected.route_id is not None:
-            # Manual selection has already narrowed the group to one route.
-            # Group-level tag filters must not reject that explicit choice.
-            routing["strategy"] = "ordered-failover"
-            routing.pop("strategy_kwargs", None)
-        # A model group selects one route for the request. Retrying another
-        # route is disabled because models may have different context windows.
-        routing["num_retries"] = 0
         return ResolvedModelGroup(
             model_group_id=selected.id,
             routes=routes,
             request_config=group.get("request_config") or {},
-            routing=routing,
+            routing={},
         )
 

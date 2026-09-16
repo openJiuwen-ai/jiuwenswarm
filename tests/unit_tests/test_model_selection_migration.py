@@ -154,8 +154,8 @@ def test_default_group_wins_and_keeps_route_order():
     assert resolved.routes[0].model.endpoint_profile == "deepseek"
     assert resolved.routes[0].model.fallback_tag == "chat"
     assert resolved.routes[0].model.model_description == "primary model"
-    assert resolved.routing["num_retries"] == 0
-    assert "num_retries" not in catalog.list_public_groups()[0]["routing"]
+    assert resolved.routing == {}
+    assert "routing" not in catalog.list_public_groups()[0]
 
 
 def test_explicit_disabled_group_does_not_fall_back():
@@ -175,7 +175,7 @@ def test_explicit_group_route_resolves_only_that_route():
     assert isinstance(resolved, ResolvedModelGroup)
     assert resolved.model_group_id == "mgp_a"
     assert [route.route_id for route in resolved.routes] == ["primary"]
-    assert resolved.routing["num_retries"] == 0
+    assert resolved.routing == {}
 
 
 def test_explicit_group_route_rejects_unknown_or_disabled_route():
@@ -219,17 +219,17 @@ def test_manual_route_overrides_tag_filter_and_compiles_selected_member():
     resolver = ModelSelectionResolver(ModelCatalog(config))
     for route_id, model_id in [("primary", "mdl_a"), ("backup", "mdl_b")]:
         resolved = resolver.resolve(ModelSelection(type="model_group", id="mgp_a", route_id=route_id))
-        assert resolved.routing["strategy"] == "ordered-failover"
-        assert "strategy_kwargs" not in resolved.routing
+        assert resolved.routing == {}
         try:
-            client, _ = compile_model_selection(resolved)
+            client, request = compile_model_selection(resolved)
         except ModelSelectionError as exc:
             assert exc.code == "MODEL_RUNTIME_UNAVAILABLE"
             pytest.skip("agent-core compiler unavailable")
-        router = client.intelli_router
-        assert router.model_group_id == "mgp_a"
-        assert router.num_retries == 0
-        assert [(route.route_id, route.model_id) for route in router.deployments] == [(route_id, model_id)]
+        assert resolved.model_group_id == "mgp_a"
+        assert resolved.routes[0].model.model_id == model_id
+        assert client.client_provider == resolved.routes[0].model.provider
+        assert request.model_name == resolved.routes[0].model.model_name
+        assert getattr(client, "intelli_router", None) is None
     assert group["routing"]["strategy"] == "tag-filtered"
 
 
@@ -254,12 +254,12 @@ def test_validation_rejects_invalid_routing_contract():
     models = _config()["models"]
     group = models["groups"][0]
     group["routes"][0]["enabled"] = "yes"
-    group["routing"] = {"strategy": "tag-filtered", "strategy_kwargs": {}}
+    group["routing"] = {"strategy": "invalid", "strategy_kwargs": {}}
 
     errors = validate_models_config(models)
 
     assert any("enabled must be a boolean" in error for error in errors)
-    assert any("fallback_tag must be a non-empty string" in error for error in errors)
+    assert any("strategy is invalid" in error for error in errors)
 
 
 def test_compiler_adapter_matches_final_core_dto():
@@ -282,15 +282,32 @@ def test_compiler_adapter_matches_final_core_dto():
         pytest.skip("agent-core compiler unavailable; skipping real integration")
         return
 
-    # 真实编译成功：client_cfg 是 ModelClientConfig，且组路由进入 intelli_router
-    assert getattr(client_cfg, "client_provider", None) == "intelli_router"
-    router = getattr(client_cfg, "intelli_router", None)
-    assert router is not None
-    assert router.model_group_id == "mgp_a"
-    assert [route.route_id for route in router.deployments] == ["primary"]
-    # 第 2 条路由 enabled=False，被 core 过滤，只留下 primary
-    assert router.deployments[0].model_id == "mdl_a"
-    assert router.deployments[0].provider == "deepseek"
-    assert router.deployments[0].model_name == "a"
-    assert router.num_retries == 0
-    assert request_cfg is not None
+    assert client_cfg.client_provider == resolved.routes[0].model.provider
+    assert getattr(client_cfg, "intelli_router", None) is None
+    assert request_cfg.model_name == "a"
+    assert request_cfg.temperature == .5
+    assert request_cfg.context_window == 100
+
+
+@pytest.mark.parametrize("routing", [{}, {"strategy": None}, {"strategy": "tag-filtered"}])
+def test_pool_accepts_absent_null_and_legacy_strategy(routing):
+    config = _config()
+    config["models"]["groups"][0]["routing"] = routing
+    assert validate_models_config(config["models"]) == []
+    resolved = ModelSelectionResolver(ModelCatalog(config)).resolve(None)
+    assert resolved.routing == {}
+
+
+def test_pool_uses_first_enabled_route_and_route_parameter_overrides():
+    from jiuwenswarm.server.runtime.model_compiler_adapter import compile_model_selection
+
+    config = _config()
+    group = config["models"]["groups"][0]
+    group["routes"][0]["enabled"] = False
+    group["routes"][1].update(enabled=True, request_overrides={"temperature": .2, "context_window": 200})
+    resolved = ModelSelectionResolver(ModelCatalog(config)).resolve(None)
+    client, request = compile_model_selection(resolved)
+    assert client.client_provider == "OpenAI"
+    assert request.model_name == "b"
+    assert request.temperature == .2
+    assert request.context_window == 200

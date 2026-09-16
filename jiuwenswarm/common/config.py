@@ -1595,9 +1595,8 @@ def upsert_model_group_resource(group: dict[str, Any]) -> dict[str, Any]:
     groups = candidate.setdefault("groups", [])
     saved = deepcopy(group)
     saved.setdefault("model_group_id", _new_business_id("mgp"))
-    routing = saved.get("routing")
-    if isinstance(routing, dict):
-        routing.pop("num_retries", None)
+    # Legacy routing settings are inactive in model-pool mode.
+    saved.pop("routing", None)
     for route in saved.get("routes") or []:
         if isinstance(route, dict):
             route.setdefault("route_id", _new_business_id("rte"))
