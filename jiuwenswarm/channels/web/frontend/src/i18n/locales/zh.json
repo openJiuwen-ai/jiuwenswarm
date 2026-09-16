@@ -2799,7 +2799,7 @@
         "uploadKindLabel": "类别",
         "uploadGroupTab": "专家团",
         "uploadAgentTab": "专家",
-        "uploadHint": "支持 .zip、.tar 和 .tar.gz 文件，解压后的文件夹需要至少包含 manifest.json 文件、agents 目录和 README.md，.json 文件需包含 package_type 声明包类型。",
+        "uploadHint": "支持上传 .zip、.tar 格式的专家团包。解压后的包根目录须包含 manifest.json，声明 package_type: \"agent_group\"，并配置专家团名称、Leader 及专家成员。包内须包含配置引用的成员定义、人设等文件；推荐提供 README.md 说明文档。",
         "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
         "errors": {
           "nameRequired": "请输入专家团名称",

@@ -170,6 +170,7 @@ export function CatalogPage({
                 return (
                   <PageCard
                     key={item.id}
+                    className="agent-management-page-card agent-definition-card"
                     testId="agent-card"
                     className="agent-management-catalog-card"
                     variant={item.id}
