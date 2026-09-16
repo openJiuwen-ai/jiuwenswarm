@@ -30,6 +30,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, 
 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
+    from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
 
 import yaml
 from pydantic import ValidationError
@@ -280,6 +281,9 @@ from jiuwenswarm.agents.harness.common.tools.command_execution_context import ( 
     reset_command_execution,
 )
 from jiuwenswarm.agents.harness.common.prompt.prompt_builder import build_agent_identity_prompt
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SYSTEM_PROMPT_PRIORITY_REGISTRY,
+)
 from jiuwenswarm.agents.harness.common.rails import (
     BrowserTaskPromptRail,
     JiuSwarmStreamEventRail,
@@ -745,6 +749,44 @@ _SLOW_RAIL_BUILD_MS = 0.0
 # above are tuned to stay quiet on a healthy run, which is the wrong setting
 # when the question is "where did this un-slow half second go".
 _STAGE_LOG_THRESHOLD_ENV = "JIUWENSWARM_SLOW_STAGE_MS"
+
+
+_SYMPHONY_FORBIDDEN_ARTIFACT_FIELDS = frozenset(
+    {
+        "path",
+        "file_path",
+        "artifact_dir",
+        "artifact_path",
+        "artifact_root",
+        "target_dir",
+        "target_path",
+        "output_dir",
+        "output_path",
+        "output_root",
+        "package_dir",
+        "package_path",
+    }
+)
+
+
+def _contains_client_artifact_field(params: dict[str, Any]) -> bool:
+    """Reject only artifact/install paths, not trusted transport context."""
+
+    transport_context = {"project_dir", "cwd", "trusted_dirs"}
+
+    def contains(value: Any, *, top_level: bool = False) -> bool:
+        if isinstance(value, dict):
+            for raw_key, item in value.items():
+                key = str(raw_key).strip().lower().replace("-", "_")
+                if top_level and key in transport_context:
+                    continue
+                if key in _SYMPHONY_FORBIDDEN_ARTIFACT_FIELDS or contains(item):
+                    return True
+        elif isinstance(value, (list, tuple)):
+            return any(contains(item) for item in value)
+        return False
+
+    return contains(params, top_level=True)
 
 
 def _stage_breakdown_logger(total_ms: float, threshold_ms: float) -> Callable[..., None]:
@@ -1683,6 +1725,7 @@ class JiuWenSwarmDeepAdapter:
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
         self._instance: DeepAgent | None = None
+        self._interaction_output_handoff: OutputHandoff | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -1774,6 +1817,7 @@ class JiuWenSwarmDeepAdapter:
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
         self._skill_create_rail: SkillCreateRail | None = None
+        self._symphony_graph_evolution_rail: Any = None
         self._subagent_rail: SubagentRail | None = None
         self._general_purpose_rail_snapshot: tuple[Any, ...] = ()
         self._root_permission_queue = RootPermissionQueue()
@@ -8325,6 +8369,28 @@ class JiuWenSwarmDeepAdapter:
             )
             return None
 
+    def _build_symphony_graph_evolution_rail(self) -> Any | None:
+        """Build the single-Agent execution-graph producer."""
+
+        config = load_symphony_config(self._config_base_cache)
+        if not config.enabled or not config.evolution.enabled:
+            return None
+        try:
+            from jiuwenswarm.symphony.experience import _build_graph_evolution_rail
+
+            return _build_graph_evolution_rail(
+                config.paths.graph_dir,
+                capture_mode="agent",
+                model=self._model,
+                channel_id=lambda: getattr(self, "_channel_id", None),
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] SymphonyGraphEvolutionRail create failed: %s",
+                exc,
+            )
+            return None
+
     def _instantiate_rails(
         self,
         rail_infos: list[_RailBuildInfo],
@@ -8583,6 +8649,13 @@ class JiuWenSwarmDeepAdapter:
             _RailBuildInfo(
                 "_symphony_orchestration_rail",
                 self._build_symphony_orchestration_rail,
+            ),
+        )
+        rail_infos.insert(
+            5 if self._filesystem_rail_enabled_for_profile() else 4,
+            _RailBuildInfo(
+                "_symphony_graph_evolution_rail",
+                self._build_symphony_graph_evolution_rail,
             ),
         )
         if isinstance(mode, str) and mode.startswith("agent"):
@@ -9889,6 +9962,16 @@ class JiuWenSwarmDeepAdapter:
             ).get("enabled", False),
             completion_timeout=resolve_task_loop_completion_timeout(config),
         )
+
+        # The code- and team-mode adapters have their own prompt policies. Opt
+        # only canonical single-agent modes into the centralized registry,
+        # after DeepAgent has created its shared builder and before any
+        # pending or user rails are initialized.
+        if _deprecated_mode in (NEW_AGENT_WORK_NORMAL, NEW_AGENT_WORK_PLAN):
+            prompt_builder = getattr(self._instance, "system_prompt_builder", None)
+            set_priority_registry = getattr(prompt_builder, "set_priority_registry", None)
+            if callable(set_priority_registry):
+                set_priority_registry(SYSTEM_PROMPT_PRIORITY_REGISTRY)
 
         if self._enable_auto_permission:
             initial_runtime_workspace = str(self._permission_workspace_root)
@@ -12311,11 +12394,28 @@ class JiuWenSwarmDeepAdapter:
             raise RootPermissionQueueError("permission_dispatch_handoff_missing")
         stream = None
         try:
+            # Plain interrupt rounds finish their output before a resume starts.
+            # An ACK-only inject into a lease with EOF already queued can lose
+            # all resumed output. Goal readers and permission-queue callbacks
+            # remain live owners and must keep their existing injection path.
+            previous = getattr(self, "_interaction_output_handoff", None)
+            if previous is not None and previous.owner is self._instance:
+                if (
+                    self._is_interrupt_resume_dispatch(request.params)
+                    and answer is None
+                    and not self._goal_record_is_active()
+                ):
+                    await previous.wait()
             stream = await self._instance.attach_output()
             if stream is None and (answer is not None or not send_without_output):
                 if answer is not None:
                     raise RootPermissionQueueError("permission_queue_output_unavailable")
                 return None, False
+            if stream is not None:
+                from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
+
+                stream = OutputHandoff(self._instance, stream)
+                self._interaction_output_handoff = stream
             mode = self._resolve_input_dispatch_mode(request.params)
             dispatched = await self._send_input_with_permission_resume_guard(
                 SendInputRequest(
@@ -12991,7 +13091,15 @@ class JiuWenSwarmDeepAdapter:
         answers = request.params.get("answers", []) if isinstance(request.params, dict) else []
         session_id = request.session_id
         resolved = False
-        if request_id.startswith("team_skill_evolve_"):
+        response_payload: dict[str, Any] | None = None
+        if request_id.startswith("symphony_experience_"):
+            response_payload = await self._handle_symphony_experience_answer(
+                request_id,
+                answers,
+                request.params,
+            )
+            resolved = bool(response_payload.get("resolved"))
+        elif request_id.startswith("team_skill_evolve_"):
             resolved = await self.handle_team_skill_evolve_approval(
                 request_id,
                 answers,
@@ -13021,9 +13129,98 @@ class JiuWenSwarmDeepAdapter:
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"accepted": True, "resolved": resolved},
+            payload=response_payload or {"accepted": True, "resolved": resolved},
             metadata=request.metadata,
         )
+
+    async def _handle_symphony_experience_answer(
+        self,
+        request_id: str,
+        answers: list[Any],
+        params: Any,
+    ) -> dict[str, Any]:
+        """Resolve a Symphony candidate without accepting a client path."""
+
+        if not isinstance(params, dict):
+            return {
+                "accepted": False,
+                "resolved": False,
+                "reason": "client_path_rejected",
+            }
+        meta = evolution_meta_from_params(params)
+        if _contains_client_artifact_field(params):
+            return {
+                "accepted": False,
+                "resolved": False,
+                "reason": "client_path_rejected",
+            }
+        from jiuwenswarm.symphony.experience import _parse_recipe_reference
+
+        try:
+            recipe_id, recipe_version = _parse_recipe_reference(
+                meta.get("recipe_id") or params.get("recipe_id"),
+                meta.get("recipe_version", params.get("recipe_version")),
+            )
+        except ValueError as exc:
+            return {"accepted": False, "resolved": False, "reason": str(exc)}
+        if not answers_select_option(answers, ("安装", "install")):
+            return {
+                "accepted": True,
+                "resolved": True,
+                "installed": False,
+                "deferred": True,
+                "recipe_id": recipe_id,
+                "recipe_version": recipe_version,
+                "request_id": request_id,
+            }
+        from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+        service = get_swarm_symphony_service()
+        receipt = await service.install_candidate(
+            request_id=request_id,
+            recipe_id=recipe_id,
+            recipe_version=recipe_version,
+            package_id=(str(params.get("package_id") or "").strip() or None),
+            integrity=(str(params.get("integrity") or "").strip() or None),
+            skill_manager=self._skill_manager,
+        )
+        if receipt.get("installed") and receipt.get("newly_installed"):
+            refresh_warnings: list[str] = []
+            try:
+                await self.refresh_skill_rails()
+            except Exception as exc:  # noqa: BLE001
+                refresh_warnings.append("agent_skill_rails")
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] Agent Skill rail refresh failed: %s",
+                    exc,
+                )
+            from jiuwenswarm.agents.harness.team.team_manager import (
+                reload_team_skill_views_across_managers,
+            )
+
+            try:
+                await reload_team_skill_views_across_managers()
+            except Exception as exc:  # noqa: BLE001
+                refresh_warnings.append("team_skill_views")
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] Team Skill view refresh failed: %s",
+                    exc,
+                )
+            try:
+                await service.start_refresh_graph(force=False)
+            except Exception as exc:  # noqa: BLE001
+                refresh_warnings.append("static_skill_graph")
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] Skill Graph refresh failed: %s",
+                    exc,
+                )
+            if refresh_warnings:
+                receipt = {**receipt, "refresh_warnings": refresh_warnings}
+        return {
+            "accepted": True,
+            "resolved": True,
+            **receipt,
+        }
 
     async def handle_swarmflow_reply(self, request: AgentRequest) -> AgentResponse:
         """Handle chat.swarmflow_reply — deliver a person's reply to a human turn.
@@ -15803,6 +16000,9 @@ class JiuWenSwarmDeepAdapter:
                         "content": "",
                     }),
                     is_complete=False,
+                    runtime_completion=self._stream_completion_state(
+                        had_interaction=bool(emitted_ask_user_events),
+                    ),
                 )
 
             if (
@@ -15990,6 +16190,14 @@ class JiuWenSwarmDeepAdapter:
             payload=None,
             is_complete=True,
         )
+
+    def _stream_completion_state(self, *, had_interaction: bool) -> str:
+        """Distinguish an interrupt flush from a text-free completed round."""
+        loop_session = getattr(self._instance, "loop_session", None)
+        if loop_session is None:
+            return "suspended" if had_interaction else "completed"
+        state = loop_session.get_state(INTERRUPTION_KEY)
+        return "suspended" if getattr(state, "interrupted_tools", None) else "completed"
 
     @staticmethod
     def _stream_text_payload(

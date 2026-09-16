@@ -154,7 +154,7 @@ def _build_project_lookup() -> tuple[
         for p in list_projects(include_hidden=True, cache_bust=True):
             if p.project_id:
                 id_to_work_mode[p.project_id] = p.work_mode
-            if not p.project_dir or p.hidden:
+            if not p.project_dir:
                 continue
             dir_to_projects.setdefault(
                 _normalize_path_for_match(p.project_dir), []
@@ -223,6 +223,8 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
+    metadata.setdefault("ephemeral", False)
+    metadata.setdefault("side_parent_session_id", "")
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
@@ -1780,6 +1782,8 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
 
+        if metadata.get("ephemeral") is True:
+            continue
         from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
         if visible(metadata):
             metadata.update(projection("session", session_id, project_id=project_id_for(metadata)))
@@ -1871,6 +1875,8 @@ def collect_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
+        if meta.get("ephemeral") is True:
+            continue
         from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
         if visible(meta):
             meta.update(projection("session", sid, project_id=project_id_for(meta)))

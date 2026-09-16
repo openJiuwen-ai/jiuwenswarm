@@ -726,6 +726,7 @@ def _install_default_builtin_skills(
     - huawei-cloud-maas-setup: 华为云MaaS购买与配置引导
     - rsi-program-dataset-creator: 程序演进任务设计与评测编排
     - agent-creator: Agent 模板包创建助手
+    - agent-group-creator: 专家团包创建助手
     - plugin-creator: 插件能力扩展包创建助手
     - baoyu-image-gen: AI 图像生成（多平台 API，文生图/参考图/批量生成）
     - docx-pro: Word 富格式文档生成/Markdown 互转/目录水印
@@ -749,6 +750,7 @@ def _install_default_builtin_skills(
         "huawei-cloud-maas-setup",
         "rsi-program-dataset-creator",
         "agent-creator",
+        "agent-group-creator",
         "plugin-creator",
         "baoyu-image-gen",
         "docx-pro",
@@ -824,6 +826,7 @@ def ensure_default_builtin_skills() -> None:
         "huawei-cloud-maas-setup",
         "rsi-program-dataset-creator",
         "agent-creator",
+        "agent-group-creator",
         "plugin-creator",
         "baoyu-image-gen",
         "docx-pro",
@@ -1439,7 +1442,7 @@ def _ensure_mcp_builtins(
             if path.is_dir() and not path.name.startswith(".")
         ]
         packages = iter_mcp_packages(tmp_dir)
-        if not package_dirs or len(packages) != len(package_dirs):
+        if len(packages) != len(package_dirs):
             raise OSError("MCP seed contains an invalid package manifest")
     except (OSError, zipfile.BadZipFile) as exc:
         logger.error("[mcp_builtins] extract %s failed: %s", seed_zip, exc)
@@ -2492,6 +2495,9 @@ _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
 _SENSITIVE_PII_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[-3:])
 # 凭证类 prefix pattern：掩码并附指纹（同 key 指纹一致可关联、不可逆）。
 _SENSITIVE_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[:4])
+_SAFE_AUTHORIZATION_OUTCOME_PATTERN = re.compile(
+    r'"authorization_outcome":"(?:allow|deny|block|cancel)"'
+)
 
 
 def _fingerprint(value: str) -> str:
@@ -2542,7 +2548,18 @@ def _sanitize_log_text(text: str) -> str:
     if not text:
         return text
 
-    masked = text
+    protected = text
+    replacements: list[tuple[str, str]] = []
+    for index, match in enumerate(
+        tuple(_SAFE_AUTHORIZATION_OUTCOME_PATTERN.finditer(text))
+    ):
+        marker = f"__JIUWEN_SAFE_OUTCOME_{index}__"
+        while marker in text:
+            marker += "_"
+        protected = protected.replace(match.group(0), marker, 1)
+        replacements.append((marker, match.group(0)))
+
+    masked = protected
     masked = _DATA_IMAGE_PATTERN.sub("data:image/*;base64,******", masked)
     # _KV_SENSITIVE_PATTERN: 组1=键名, 组2=分隔符, 组4=值（组3/5 为可选引号）。
     masked = _KV_SENSITIVE_PATTERN.sub(
@@ -2566,6 +2583,8 @@ def _sanitize_log_text(text: str) -> str:
     # PII（邮箱/手机/身份证）：纯掩码，不附指纹。
     for pattern in _SENSITIVE_PII_PATTERNS:
         masked = pattern.sub(_SENSITIVE_MASK, masked)
+    for marker, original in replacements:
+        masked = masked.replace(marker, original)
     return masked
 
 

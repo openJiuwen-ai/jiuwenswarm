@@ -7,6 +7,7 @@ interface DialogShellProps { title: string; children: ReactNode; onCancel: () =>
 interface DeleteDialogProps {
   title: string;
   dialogTitle?: string;
+  confirmLabel?: string;
   descriptionKey?: string;
   descriptionValues?: Record<string, string>;
   deleting: boolean;
@@ -44,6 +45,7 @@ function DialogActions({ busy, danger = false, confirmLabel, onCancel, onConfirm
 export function DeleteDialog({
   title,
   dialogTitle,
+  confirmLabel,
   descriptionKey = 'multiSession.deleteDialog.description',
   descriptionValues = { title },
   deleting,
@@ -64,7 +66,7 @@ export function DeleteDialog({
         />
       </p>
       {error && <div className="conversation-dialog__error" data-testid="multi-session-dialog-error">{error}</div>}
-      <DialogActions busy={deleting} danger confirmLabel={t('multiSession.delete')} onCancel={onCancel} onConfirm={onDelete} />
+      <DialogActions busy={deleting} danger confirmLabel={confirmLabel ?? t('multiSession.delete')} onCancel={onCancel} onConfirm={onDelete} />
     </DialogShell>
   );
 }

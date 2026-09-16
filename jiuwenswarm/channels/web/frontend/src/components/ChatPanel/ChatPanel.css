@@ -12,6 +12,45 @@
   container-type: inline-size;
 }
 
+.chat-fork-origin {
+  display: flex;
+  width: 100%;
+  align-items: center;
+  gap: 12px;
+  padding: 16px 0;
+  border: 0;
+  background: transparent;
+  color: var(--color-text-link);
+  cursor: pointer;
+  font-size: 13px;
+  line-height: 20px;
+}
+
+.chat-fork-origin::before,
+.chat-fork-origin::after {
+  height: 1px;
+  flex: 1 1 auto;
+  background: var(--color-border-default);
+  content: '';
+}
+
+.chat-fork-origin__label {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 6px;
+}
+
+.chat-fork-origin:hover .chat-fork-origin__label {
+  text-decoration: underline;
+}
+
+.chat-fork-origin:focus-visible {
+  border-radius: 4px;
+  outline: 2px solid var(--color-border-strong);
+  outline-offset: 4px;
+}
+
 /* ===========================
    ChatPanel - Input Area
    =========================== */
@@ -302,10 +341,7 @@
 }
 
 .team-event-group.team-event-group--context-compression {
-  margin: 0 12px;
-  border: 1px solid var(--color-chat-active-group-border);
   border-bottom: none;
-  border-radius: 18px 18px 0 0;
 }
 
 .team-event-group-summary.team-event-group-summary--context-compression {
@@ -1472,8 +1508,7 @@
    容器内覆盖，不影响会话界面本体的 .chat-mode-select 尺寸。 */
 .cron-drawer-mode-model-row .chat-mode-select__trigger {
   min-height: 26px;
-  padding: 0 8px;
-  gap: 6px;
+  gap: 4px;
 }
 
 .chat-mode-select__trigger:hover {

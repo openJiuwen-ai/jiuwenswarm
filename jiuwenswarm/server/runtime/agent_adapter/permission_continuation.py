@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 import logging
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from typing import Any
 
 from openjiuwen.core.foundation.llm import ToolMessage
@@ -15,13 +15,61 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_ask_user import (
     ASK_USER_TOOL_NAME, ask_user_continuation, prepare_ask_user_resume,
     put_ask_user_resume_in_inputs,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import RootPermissionQueueError
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionAnswer, RootPermissionQueue, RootPermissionQueueError,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
-    RootNonPermissionResume, put_root_nonpermission_resume_in_inputs,
+    RootNonPermissionResume, RootPermissionWrapperResume, put_root_nonpermission_resume_in_inputs,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_invocation_key import ToolInvocationKeyV1
 
 logger = logging.getLogger(__name__)
+
+
+def _permission_entries(state: Any) -> Iterator[tuple[Any, ToolInvocationKeyV1]]:
+    """Read inner identities from Core, retaining outer calls for context cleanup."""
+    interrupted = getattr(state, "interrupted_tools", None)
+    if not isinstance(interrupted, Mapping) or not interrupted:
+        raise RootPermissionQueueError("permission_continuation_state_missing")
+    for outer_id, entry in interrupted.items():
+        call = getattr(entry, "tool_call", None)
+        requests = getattr(entry, "interrupt_requests", None)
+        if (
+            not isinstance(requests, Mapping) or len(requests) != 1
+            or getattr(call, "id", None) != outer_id
+        ):
+            raise RootPermissionQueueError("permission_continuation_state_invalid")
+        inner_id, request = next(iter(requests.items()))
+        metadata = getattr(request, "metadata", None)
+        key = ToolInvocationKeyV1.from_wire(
+            metadata.get("tool_invocation_key") if isinstance(metadata, Mapping) else None
+        )
+        if key.tool_call_id != inner_id or (inner_id != outer_id and call.name != "tool_call"):
+            raise RootPermissionQueueError("permission_continuation_identity_mismatch")
+        yield call, key
+
+
+def prepare_permission_wrappers(
+    loop_session: Any, queue: RootPermissionQueue, answer: RootPermissionAnswer,
+) -> tuple[RootPermissionWrapperResume, ...]:
+    """Carry one-shot references for Core's replay batch, not a second state map."""
+    state = loop_session.get_state(INTERRUPTION_KEY) if loop_session is not None else None
+    if state is None:
+        return ()
+    wrappers, keys = [], []
+    for call, key in _permission_entries(state):
+        card = queue.get(key)
+        if (
+            card is None or card.state not in {"pending", "resuming"}
+            or key.root_session_id != answer.card.key.root_session_id
+        ):
+            raise RootPermissionQueueError("permission_continuation_card_mismatch")
+        keys.append(key)
+        if call.id != key.tool_call_id:
+            wrappers.append(RootPermissionWrapperResume(call, card))
+    if answer.card.key not in keys or len(set(keys)) != len(keys):
+        raise RootPermissionQueueError("permission_continuation_answer_mismatch")
+    return tuple(wrappers)
 
 
 async def discard_permission_continuation(
@@ -50,28 +98,11 @@ async def discard_permission_continuation(
             return False
         pending: dict[str, ToolInvocationKeyV1] = {}
         pending_tool_ids: list[str] = []
-        for entry in interrupted_tools.values():
-            tool_call = getattr(entry, "tool_call", None)
-            tool_call_id = str(getattr(tool_call, "id", "") or "").strip()
-            requests = getattr(entry, "interrupt_requests", None)
-            if (
-                not tool_call_id
-                or not isinstance(requests, Mapping)
-                or len(requests) != 1
-            ):
-                return False
-            interrupt_request = next(iter(requests.values()))
-            metadata = getattr(interrupt_request, "metadata", None)
-            wire_key = (
-                metadata.get("tool_invocation_key")
-                if isinstance(metadata, Mapping)
-                else None
-            )
-            key = ToolInvocationKeyV1.from_wire(wire_key)
+        for tool_call, key in _permission_entries(state):
+            tool_call_id = tool_call.id
             if (
                 key.invocation_id in pending
                 or key.root_session_id != target_sid
-                or key.tool_call_id != tool_call_id
             ):
                 return False
             pending[key.invocation_id] = key

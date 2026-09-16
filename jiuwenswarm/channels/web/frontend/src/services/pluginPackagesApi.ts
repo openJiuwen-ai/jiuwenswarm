@@ -1,3 +1,4 @@
+import { withCatalogCache, type CatalogItems, type CatalogCacheMetadata } from '../features/catalogCache';
 import { webRequest } from './webClient';
 import type { WebError } from '../types/websocket';
 import type {
@@ -58,6 +59,7 @@ interface RawPluginPackageSummary {
   displayName: LocalizedText;
   displayDescription: LocalizedText;
   category?: string;
+  tags?: LocalizedText[];
   source?: PluginPackageSource;
   avatar?: string;
   installed?: boolean;
@@ -73,6 +75,7 @@ function fromRawSummary(raw: RawPluginPackageSummary): PluginPackageSummary {
     displayName: raw.displayName,
     displayDescription: raw.displayDescription,
     category: raw.category ?? '',
+    tags: raw.tags ?? [],
     source: normalizeEquipmentSource(raw.source, 'local'),
     avatar: raw.avatar,
     installed: raw.installed ?? false,
@@ -130,16 +133,16 @@ function extractPendingConnectors(error: unknown): string[] | undefined {
 export const pluginPackagesApi = {
   // v2 §3.1：filter 值跟 mcp.list 保持一致用无连字符的 'builtin'（不是文档原文的 'built-in'，
   // 见文件头注释）；缺省/非法值后端按全量处理。
-  list: async (filter?: 'builtin+hub' | 'mine'): Promise<PluginPackageSummary[]> => {
-    const payload = await requestEquipmentList<{ packages: RawPluginPackageSummary[] }>(
+  list: async (filter?: 'builtin+hub' | 'mine'): Promise<CatalogItems<PluginPackageSummary>> => {
+    const payload = await requestEquipmentList<{ packages: RawPluginPackageSummary[]; cache?: CatalogCacheMetadata }>(
       webRequest,
       'plugin_packages.list',
       { ...(filter ? { filter } : {}) },
     );
-    return payload.packages.map(fromRawSummary);
+    return withCatalogCache(payload.packages.map(fromRawSummary), payload.cache);
   },
   show: async (id: string): Promise<PluginPackageDetail> => {
-    const payload = await webRequest<{ package: RawPluginPackageDetail }>('plugin_packages.show', { id });
+    const payload = await webRequest<{ package: RawPluginPackageDetail }>('plugin_packages.show', { id }, { timeoutMs: 90000 });
     return fromRawDetail(payload.package);
   },
   // 2026-08-21：后端 create_plugin_package（extension_package_manager.py）新增了 mcps 参数
@@ -154,7 +157,7 @@ export const pluginPackagesApi = {
   // 续跑；不带 pending_connectors 的纯硬失败原样上抛。
   install: async (id: string): Promise<void> => {
     try {
-      await webRequest<void>('plugin_packages.install', { id });
+      await webRequest<void>('plugin_packages.install', { id }, { timeoutMs: 180000 });
     } catch (error) {
       const pendingConnectors = extractPendingConnectors(error);
       if (pendingConnectors) {

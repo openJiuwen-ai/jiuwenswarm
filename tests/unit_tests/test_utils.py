@@ -2,6 +2,9 @@
 
 """Unit tests for utils module."""
 
+# TEST ONLY: credential-shaped values are constructed synthetic fixtures and
+# URL literals use RFC-reserved domains; no external request is performed.
+
 import importlib
 import json
 import os
@@ -127,6 +130,43 @@ class TestLoggerSetup:
         assert "StreamHandler" in handler_types
         assert handler_types.count("SafeRotatingFileHandler") == 5
 
+    @staticmethod
+    @pytest.mark.parametrize("outcome", ["allow", "deny", "block", "cancel"])
+    def test_log_sanitizer_preserves_only_safe_authorization_outcome(outcome: str):
+        """Keep terminal enums observable without exposing authorization data."""
+        raw = (
+            '{"authorization":"Bearer live-token",'
+            f'"authorization_outcome":"{outcome}",'
+            '"other_authorization_outcome":"live-secret"}'
+        )
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert f'"authorization_outcome":"{outcome}"' in sanitized
+        assert "live-token" not in sanitized
+        assert "live-secret" not in sanitized
+        assert sanitized.count("******(fp:") == 2
+
+    @staticmethod
+    def test_log_sanitizer_does_not_unmask_embedded_outcome_field():
+        """An outcome-shaped substring inside a secret remains protected."""
+        raw = (
+            '{"authorization":"secretprefix '
+            '\"authorization_outcome\":\"allow\" secretsuffix",'
+            '"token":"tokenprefix '
+            '\"authorization_outcome\":\"deny\" tokensuffix"}'
+        )
+
+        sanitized = utils._sanitize_log_text(raw)
+
+        assert "secretprefix" not in sanitized
+        assert "secretsuffix" not in sanitized
+        assert "tokenprefix" not in sanitized
+        assert "tokensuffix" not in sanitized
+        assert '\"authorization_outcome\":\"allow\"' not in sanitized
+        assert '\"authorization_outcome\":\"deny\"' not in sanitized
+        assert sanitized.count("******(fp:") == 2
+
 
 class TestSourceRecordMasking:
     """Test install_source_record_masking (source-level LogRecord factory masking).
@@ -138,7 +178,7 @@ class TestSourceRecordMasking:
     - idempotency.
     """
 
-    PLAINTEXT_KEY = "sk-epignnbeppwjigp932ngefebnof"
+    PLAINTEXT_KEY = "sk-" + ("T" * 28)
 
     @staticmethod
     def _capture_logger(name):
@@ -191,11 +231,13 @@ class TestSourceRecordMasking:
 
             lg, buf = self._capture_logger("openjiuwen.harness.security")
             key = self.PLAINTEXT_KEY
-            lg.info("config: api_key=%s, base=https://x.com", key)
+            lg.info("config: api_key=%s, base=https://log.example.invalid", key)
             out = buf.getvalue()
             assert key not in out, "plaintext api_key leaked from third-party logger"
             assert "******" in out, "api_key not masked"
-            assert "https://x.com" in out, "non-sensitive api_base should be preserved"
+            assert "https://log.example.invalid" in out, (
+                "non-sensitive api_base should be preserved"
+            )
         finally:
             self._restore_state(state)
 
@@ -356,17 +398,19 @@ def test_prepare_workspace_copies_rsi_program_dataset_creator(
     ).is_file()
 
 
+@pytest.mark.parametrize("skill_name", ["rsi-program-dataset-creator", "agent-group-creator"])
 def test_ensure_default_builtin_skills_installs_program_evolution_design(
     tmp_path: Path,
     monkeypatch,
+    skill_name,
 ) -> None:
     """New built-in skills are copied into an existing workspace on startup."""
     builtin_dir = tmp_path / "builtin-skills"
     user_skills_dir = tmp_path / "user-skills"
-    source_skill = builtin_dir / "rsi-program-dataset-creator"
+    source_skill = builtin_dir / skill_name
     source_skill.mkdir(parents=True)
     (source_skill / "SKILL.md").write_text(
-        "---\nname: rsi-program-dataset-creator\ndescription: test\n---\n",
+        f"---\nname: {skill_name}\ndescription: test\n---\n",
         encoding="utf-8",
     )
     monkeypatch.setattr(utils, "get_builtin_skills_dir", lambda: builtin_dir)
@@ -374,7 +418,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
 
     utils.ensure_default_builtin_skills()
 
-    installed_skill = user_skills_dir / "rsi-program-dataset-creator"
+    installed_skill = user_skills_dir / skill_name
     assert (installed_skill / "SKILL.md").read_text(encoding="utf-8") == (
         source_skill / "SKILL.md"
     ).read_text(encoding="utf-8")
@@ -382,7 +426,7 @@ def test_ensure_default_builtin_skills_installs_program_evolution_design(
         (user_skills_dir / "skills_state.json").read_text(encoding="utf-8")
     )
     assert any(
-        item.get("name") == "rsi-program-dataset-creator"
+        item.get("name") == skill_name
         and item.get("source") == "builtin"
         for item in state["installed_plugins"]
     )
@@ -402,8 +446,11 @@ class TestConstants:
         assert isinstance(utils.get_user_home(), Path)
 
     @staticmethod
-    def test_get_user_workspace_dir_defined():
+    def test_get_user_workspace_dir_defined(monkeypatch):
         """Test get_user_workspace_dir is defined."""
+        monkeypatch.delenv("JIUWENSWARM_DATA_DIR", raising=False)
+        monkeypatch.setattr(utils, "_workspace_base_dir", None)
+        monkeypatch.setattr(utils, "_user_home", None)
         assert hasattr(utils, "get_user_workspace_dir")
         assert isinstance(utils.get_user_workspace_dir(), Path)
         assert ".jiuwenswarm" in str(utils.get_user_workspace_dir())

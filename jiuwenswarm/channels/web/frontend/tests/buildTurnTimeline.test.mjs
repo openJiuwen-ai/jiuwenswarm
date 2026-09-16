@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+import { readFileSync } from 'node:fs';
 
-import { buildRenderItems } from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
+import {
+  buildLiveCompletedStreaks,
+  buildRenderItems,
+  buildTurnWorkMeta,
+  buildTurnFoldAnchorKeys,
+} from '../node_modules/.cache/build-turn-timeline/buildTurnTimeline.js';
 
 const U = 1_700_000_000_000; // 用户消息时刻
 const S = 1_700_000_005_000; // reasoning 首帧
@@ -25,7 +31,7 @@ test('全双工简短确认和后续发言在运行中及完成后均保持展�
   }
 });
 
-test('完整工具结果在后续简报到来后仍独立显示，普通中间回应保持折叠', () => {
+test('完整工具结果在后续简报到来后仍独立显示，普通中间回应隐藏元信息', () => {
   for (const isTeam of [false, true]) {
     for (const isProcessing of [false, true]) {
       const first = assistantMessage(U + 2_000, U + 2_000, 'result-1');
@@ -120,6 +126,10 @@ function commandOutputMessage(ms, id = 'cmd1') {
 
 function turnSummaryOf(items) {
   return items.find((item) => item.type === 'turnSummary');
+}
+
+function turnSummaryKeys(items) {
+  return items.filter((item) => item.type === 'turnSummary').map((item) => item.key);
 }
 
 function execution({ status, startedAt, updatedAt, agentTemplateName }) {
@@ -284,4 +294,106 @@ test('slash 命令结果自成时间线块，不把上一轮任务用时排到�
     1,
     '命令卡片自身不应新增任务用时',
   );
+});
+
+test('历史前插完整回合时，既有任务用时行保持原有 key', () => {
+  const current = [
+    userMessage(U, 'u10'),
+    assistantMessage(U + 1_000, U + 2_000, 'a10'),
+    userMessage(U + 10_000, 'u11'),
+    assistantMessage(U + 11_000, U + 12_000, 'a11'),
+  ];
+  const before = buildRenderItems(current, false, false);
+  const after = buildRenderItems(
+    [
+      userMessage(U - 10_000, 'u9'),
+      assistantMessage(U - 9_000, U - 8_000, 'a9'),
+      ...current,
+    ],
+    false,
+    false,
+  );
+
+  assert.deepEqual(turnSummaryKeys(before), ['turn-summary-a10', 'turn-summary-a11']);
+  assert.deepEqual(
+    turnSummaryKeys(after),
+    ['turn-summary-a9', 'turn-summary-a10', 'turn-summary-a11'],
+    '前插只能新增旧回合 key，既有回合 key 不得整体改号',
+  );
+});
+
+test('历史补齐首个半回合时，边界回合的任务用时 key 也保持不变', () => {
+  const knownTail = [
+    assistantMessage(U + 1_000, U + 2_000, 'a10'),
+    userMessage(U + 10_000, 'u11'),
+    assistantMessage(U + 11_000, U + 12_000, 'a11'),
+  ];
+  const before = buildRenderItems(knownTail, false, false);
+  const after = buildRenderItems([userMessage(U, 'u10'), ...knownTail], false, false);
+
+  assert.deepEqual(turnSummaryKeys(before), ['turn-summary-a10', 'turn-summary-a11']);
+  assert.deepEqual(
+    turnSummaryKeys(after),
+    ['turn-summary-a10', 'turn-summary-a11'],
+    '补齐边界回合后，所有既有 key 都必须保持不变',
+  );
+});
+
+test('只有用户消息的进行中回合仍显示任务用时，并锚定该用户消息', () => {
+  const out = buildRenderItems([userMessage(U, 'u-running')], false, true);
+  const summary = turnSummaryOf(out);
+
+  assert.ok(summary, '进行中回合仍应显示任务用时');
+  assert.equal(summary.key, 'turn-summary-u-running');
+});
+
+test('历史前插扩展同一 streak 时，展开态 key 锚定末项并保持不变', () => {
+  const now = 1_800_000_000_000;
+  const workItem = key => ({
+    type: 'reasoning',
+    key,
+    showAvatar: false,
+    turnId: 7,
+    segment: {
+      id: key,
+      text: key,
+      startedAt: now - 20_000,
+      updatedAt: now - 15_000,
+      closedAt: now - 10_000,
+      closed: true,
+    },
+  });
+  const before = [...buildLiveCompletedStreaks([workItem('r2'), workItem('r3')], now).values()];
+  const after = [
+    ...buildLiveCompletedStreaks([workItem('r1'), workItem('r2'), workItem('r3')], now).values(),
+  ];
+
+  assert.equal(before[0].firstKey, 'r2');
+  assert.equal(after[0].firstKey, 'r1');
+  assert.equal(before[0].id, 'streak-r3');
+  assert.equal(after[0].id, 'streak-r3');
+});
+
+
+test('正文不参与工作折叠，后续总结不会把澄清问题收起', () => {
+  for (const isTeam of [false, true]) {
+    for (const isProcessing of [false, true]) {
+      const question = assistantMessage(U + 1_000, U + 1_000, 'questions');
+      question.message.content = '请补充岗位方向、背景和面试时间。';
+      const items = buildRenderItems([
+        userMessage(U), question,
+        reasoningItem({ id: 'reasoning', text: '等待用户回复', startedAt: S, closed: true }),
+        assistantMessage(A, A, 'summary'),
+      ], isTeam, isProcessing);
+      const anchors = buildTurnFoldAnchorKeys(items, buildTurnWorkMeta(items, isProcessing));
+      assert.equal(anchors.get(1), isProcessing ? undefined : 'reasoning');
+      assert.equal(items.find((item) => item.key === 'questions').message.content, question.message.content);
+    }
+  }
+  // 渲染层不得再用 hideMeta 将正文放进折叠容器。
+  const source = readFileSync(new URL('../src/components/ChatPanel/MessageList.tsx', import.meta.url), 'utf8');
+  const messageBranch = source.split("if (item.type === 'message') {").at(-1).split("if (item.type === 'reasoning' || item.type === 'toolGroup') {")[0];
+  assert.ok(messageBranch.includes('<MessageItem'));
+  assert.ok(messageBranch.includes('renderAfterMessage?.(item.message)'));
+  assert.doesNotMatch(messageBranch, /timeline-collapse|turnFoldable/);
 });

@@ -293,9 +293,13 @@ async def _execute(
         credentials = params.get("credentials")
         if credentials is not None and not isinstance(credentials, dict):
             raise ValueError("credentials must be an object")
+        reauthorize = params.get("reauthorize", False)
+        if not isinstance(reauthorize, bool):
+            raise ValueError("reauthorize must be a boolean")
         return await host.authorize_provider(
             _text(params, "provider"),
             credentials=cast(dict[str, object] | None, credentials),
+            reauthorize=reauthorize,
         )
     if method == ReqMethod.PERSONAL_CONTEXT_CONTEXT_SEARCH_PAGES:
         return await host.search_graph(_text(params, "query"))

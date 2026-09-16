@@ -3,9 +3,11 @@
 from __future__ import annotations
 
 from copy import deepcopy
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
 import pytest
+from openjiuwen.core.sys_operation.cwd import get_cwd, get_workspace
 from openjiuwen.core.foundation.llm import Model, ModelClientConfig, ModelRequestConfig
 from openjiuwen.core.foundation.tool import Tool, ToolCard
 from openjiuwen.core.runner import Runner
@@ -294,3 +296,128 @@ async def test_cold_failure_removes_owned_tool_and_real_callbacks(cold, monkeypa
         assert h.callbacks(instance) == []
     if failure != "ensure":
         assert h.adapter._instance is None and not h.instances
+
+
+@pytest.mark.parametrize("explicit", [False, True])
+async def test_smart_prewarm_binds_workspace_before_real_child_build(cold, monkeypatch, explicit):
+    h = cold
+    stages = []
+    original_bind = interface_deep.bind_session_runtime_workspace
+    original_capture, original_tools = h.adapter._capture_permission_version, h.adapter._get_tool_cards
+
+    def bind(**kwargs):
+        stages.append("bind")
+        return original_bind(**kwargs)
+
+    def capture():
+        assert stages and stages[0] == "bind"
+        stages.append("capture")
+        return original_capture()
+
+    async def tools(*args):
+        assert stages == ["bind"]
+        stages.append("tools")
+        return await original_tools(*args)
+
+    monkeypatch.setattr(interface_deep, "bind_session_runtime_workspace", bind)
+    monkeypatch.setattr(h.adapter, "_capture_permission_version", capture)
+    monkeypatch.setattr(h.adapter, "_get_tool_cards", tools)
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(h.root / "tasks"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(h.root / "registry"))
+    project = h.root / "project"
+    project.mkdir()
+    parent = interface_deep.JiuWenSwarmDeepAdapter()
+    parent._session_instance_config = {"channel_id": "web"}
+    monkeypatch.setattr(parent, "_new_session_scoped_adapter", lambda _sid: h.adapter)
+    monkeypatch.setattr(parent, "_load_skill_retrieval_session_profile", lambda _sid: None)
+    monkeypatch.setattr(h.adapter, "persist_skill_retrieval_session_profile", Mock())
+    # No model loop is needed for a prewarm; keep actual child construction,
+    # SDK initialization/registration and configure_session_runtime intact.
+    monkeypatch.setattr(h.adapter, "start_interaction", AsyncMock())
+    sid = h.adapter._parent_session_id
+    await parent.prepare_session(session_id=sid, channel_id="web", mode="agent",
+                                 project_dir=str(project) if explicit else None)
+    paths = h.adapter._permission_runtime_paths
+    assert paths is not None
+    assert paths.is_projectless is not explicit
+    assert paths.internal_workspace_dir == h.root
+    assert paths.runtime_workspace_root == (project if explicit else paths.cwd.parent)
+    if not explicit:
+        assert paths.cwd == paths.runtime_workspace_root / "work"
+        assert paths.outputs_dir == paths.runtime_workspace_root / "outputs"
+        assert paths.work_dir.is_dir() and paths.outputs_dir.is_dir()
+        assert h.adapter._project_dir is None
+    assert h.helper_calls[0]["workspace_root"] == paths.runtime_workspace_root
+    assert h.adapter._permission_workspace_root == paths.runtime_workspace_root
+    assert h.adapter._permission_rail.workspace_root == paths.runtime_workspace_root
+    assert h.adapter._permission_rail.base_rail._host.resolve_workspace_dir() == paths.runtime_workspace_root
+    assert h.adapter._instance.deep_config.cwd == str(paths.cwd)
+    assert get_workspace() == str(paths.runtime_workspace_root)
+    assert get_cwd() == str(paths.cwd)
+    await h.adapter.configure_session_runtime(session_id=sid, channel_id="web", mode="agent")
+    assert h.adapter._permission_runtime_paths is paths
+    assert get_cwd() == str(paths.cwd)
+    before = (h.adapter._instance.deep_config.cwd, get_cwd(), get_workspace())
+    with pytest.raises(interface_deep.RootPermissionQueueError, match="workspace_changed"):
+        await h.adapter.configure_session_runtime(session_id=sid, channel_id="web", mode="agent",
+                                                  project_dir=str(h.root / "different"))
+    assert (h.adapter._instance.deep_config.cwd, get_cwd(), get_workspace()) == before
+    assert stages.count("bind") == 1
+
+    # A broken consumer must fail, not silently recreate a binding or alter cwd.
+    h.adapter._permission_runtime_paths = None
+    with pytest.raises(RuntimeError, match="permission_workspace_binding_unprepared"):
+        await h.adapter.configure_session_runtime(session_id=sid, channel_id="web", mode="agent")
+    assert stages.count("bind") == 1
+    assert (h.adapter._instance.deep_config.cwd, get_cwd(), get_workspace()) == before
+    h.adapter._permission_runtime_paths = paths
+
+
+async def test_projectless_binding_survives_cold_registry_restore(cold, monkeypatch):
+    from jiuwenswarm.common.projectless_workspace import get_projectless_task_workspace
+    h = cold
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(h.root / "tasks"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(h.root / "registry"))
+    sid = h.adapter._parent_session_id
+    existing = get_projectless_task_workspace(sid, "existing task")
+    await h.adapter.create_instance({"channel_id": "web"}, mode="agent")
+    assert h.adapter._permission_workspace_root == existing.root_dir
+    assert h.adapter._permission_runtime_paths.cwd == existing.work_dir
+    assert h.adapter._permission_runtime_paths.outputs_dir == existing.outputs_dir
+
+
+@pytest.mark.parametrize("declaration", ["project_dir", "workspace_dir", None])
+async def test_manager_canonicalizes_first_workspace_before_real_child_build(cold, monkeypatch, declaration):
+    from jiuwenswarm.server.runtime import agent_manager as manager_module
+    from jiuwenswarm.server.runtime.session import session_metadata
+
+    h = cold
+    monkeypatch.setenv("JIUWENSWARM_TASKS_DIR", str(h.root / "tasks"))
+    monkeypatch.setenv("JIUWENSWARM_TASK_REGISTRY_DIR", str(h.root / "registry"))
+    monkeypatch.setattr(manager_module, "get_config", lambda: deepcopy(h.raw))
+    monkeypatch.setattr(session_metadata, "get_session_metadata", lambda *_args, **_kwargs: {})
+    parent = interface_deep.JiuWenSwarmDeepAdapter()
+    parent._session_instance_config = {"channel_id": "web"}
+    monkeypatch.setattr(parent, "_new_session_scoped_adapter", lambda _sid: h.adapter)
+    monkeypatch.setattr(parent, "_load_skill_retrieval_session_profile", lambda _sid: None)
+    monkeypatch.setattr(h.adapter, "persist_skill_retrieval_session_profile", Mock())
+    monkeypatch.setattr(h.adapter, "start_interaction", AsyncMock())
+    project = h.root / "selected"
+    project.mkdir()
+    params = {"mode": "agent"}
+    if declaration:
+        params[declaration] = str(project)
+    request = SimpleNamespace(channel_id="web", session_id=h.adapter._parent_session_id,
+                              params=params, metadata={})
+    manager = manager_module.AgentManager()
+    monkeypatch.setattr(manager, "get_agent", AsyncMock(return_value=parent))
+    assert await manager.get_agent_for_request(request) is parent
+    paths = h.adapter._permission_runtime_paths
+    assert paths is not None
+    assert paths.is_projectless is (declaration is None)
+    if declaration:
+        assert paths.runtime_workspace_root == project
+        assert h.adapter._project_dir == str(project)
+    assert h.helper_calls[0]["workspace_root"] == paths.runtime_workspace_root
+    assert h.adapter._permission_rail.workspace_root == paths.runtime_workspace_root
+    assert get_workspace() == str(paths.runtime_workspace_root)

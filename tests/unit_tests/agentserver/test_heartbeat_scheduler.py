@@ -43,6 +43,20 @@ from jiuwenswarm.agents.harness.code.rails.heartbeat.store import (
 )
 
 
+class _ManagedHeartbeatServer:
+    def get_runtime(self):
+        return self
+
+    async def run_heartbeat(self, _request, operation, *, timeout_seconds):
+        try:
+            async with asyncio.timeout(timeout_seconds):
+                await operation()
+        except TimeoutError as exc:
+            raise TimeoutError(
+                f"heartbeat execution timed out after {timeout_seconds:g} seconds"
+            ) from exc
+
+
 class _FakeExecution:
     """Record AgentServer-local dispatches without a Gateway dependency."""
 
@@ -532,6 +546,99 @@ async def test_concurrency_queue_keeps_one_pending_and_consumes_it(setup) -> Non
     assert len(mh.messages) == 2
 
 
+async def test_queued_dispatch_failure_is_recorded_without_losing_run(setup) -> None:
+    store, mh, sched = setup
+    job = await store.create_job(
+        name="n", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="agent_tool", concurrency_policy="queue",
+    )
+    first = await sched.trigger_run_now(job.id)
+    second = await sched.trigger_run_now(job.id)
+
+    async def fail_dispatch(*_args, **_kwargs):
+        raise OSError("dispatch unavailable")
+
+    mh.dispatch = fail_dispatch
+    await sched.on_run_finished(job.id, first["run_id"], outcome="succeeded")
+
+    persisted = await store.get_job(job.id)
+    assert second["run_id"] not in sched._active_runs
+    assert persisted.run_state.current_run_id is None
+    assert persisted.run_state.queued_run_id is None
+    assert persisted.run_state.last_run_status == "failed"
+    assert persisted.run_state.last_error == "dispatch unavailable"
+
+
+async def test_reload_promotes_queued_only_reservation(setup) -> None:
+    store, mh, sched = setup
+    job = await store.create_job(
+        name="n", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="agent_tool", concurrency_policy="queue",
+    )
+    first = await sched.trigger_run_now(job.id)
+    second = await sched.trigger_run_now(job.id)
+    await store.finish_run(
+        job.id,
+        first["run_id"],
+        10.0,
+        outcome="succeeded",
+        error=None,
+        next_run_at=job.next_run_at,
+        terminal=False,
+    )
+    mh.active_runs.discard(first["run_id"])
+    sched._active_runs.pop(first["run_id"], None)
+
+    await sched.reload()
+
+    persisted = await store.get_job(job.id)
+    assert persisted.run_state.current_run_id == second["run_id"]
+    assert persisted.run_state.queued_run_id is None
+    assert mh.messages[-1].id == second["run_id"]
+
+
+async def test_queued_dispatch_race_preserves_exact_reservation(setup) -> None:
+    store, mh, sched = setup
+    job = await store.create_job(
+        name="n", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="agent_tool", concurrency_policy="queue",
+    )
+    first = await sched.trigger_run_now(job.id)
+    second = await sched.trigger_run_now(job.id)
+    await store.finish_run(
+        job.id,
+        first["run_id"],
+        10.0,
+        outcome="succeeded",
+        error=None,
+        next_run_at=job.next_run_at,
+        terminal=False,
+    )
+    mh.active_runs.discard(first["run_id"])
+    sched._active_runs.pop(first["run_id"], None)
+    mh.busy_sessions.add("s1")
+
+    await sched._consume_queued_run(job.id)
+
+    waiting = await store.get_job(job.id)
+    assert waiting.run_state.current_run_id is None
+    assert waiting.run_state.queued_run_id == second["run_id"]
+    mh.busy_sessions.clear()
+    await sched._tick_once()
+    running = await store.get_job(job.id)
+    assert running.run_state.current_run_id == second["run_id"]
+    assert mh.messages[-1].id == second["run_id"]
+
+
 async def test_due_heartbeat_waits_until_bound_session_is_idle(setup) -> None:
     store, mh, sched = setup
     mh.busy_sessions.add("s1")
@@ -655,7 +762,7 @@ async def test_two_real_heartbeats_share_sixty_second_busy_deadline(
     release_first = asyncio.Event()
     requests = []
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             requests.append(request)
             await release_first.wait()
@@ -712,7 +819,7 @@ async def test_real_execution_timeout_finishes_persisted_run(
 ) -> None:
     cancelled = asyncio.Event()
 
-    class Server:
+    class Server(_ManagedHeartbeatServer):
         async def execute_internal_heartbeat(self, request) -> None:  # noqa: ANN001
             try:
                 await asyncio.Event().wait()
@@ -923,10 +1030,13 @@ async def test_reload_clears_ghost_runs(setup) -> None:
     )
     # 模拟一个活跃 run 在内存中
     sched._active_runs["ghost_run"] = (job.id, 1000.0)
+    mh.active_runs.add("ghost_run")
     # 删除 job → reload 应清理 ghost run
     await store.delete_job(job.id)
     await sched.reload()
     assert "ghost_run" not in sched._active_runs
+    assert "ghost_run" in mh.cancelled_request_ids
+    assert "ghost_run" not in mh.active_runs
 
 
 # ---------------------------------------------------------------------------
@@ -1132,7 +1242,7 @@ async def test_cancel_consumed_once_with_real_execution(tmp_path: Path) -> None:
     """Exercise the actual task cancellation, admission release and finally callback."""
     entered = asyncio.Event()
 
-    class Server:  # pylint: disable=too-few-public-methods
+    class Server(_ManagedHeartbeatServer):
         """Keep execution active until its real task receives cancellation."""
 
         async def execute_internal_heartbeat(self, _request) -> None:
@@ -1507,6 +1617,36 @@ async def test_reload_recovers_orphan_run_immediately(tmp_path: Path) -> None:
     assert recovered.status == STATUS_SCHEDULED
     assert recovered.run_state.current_run_id is None
     assert recovered.run_state.last_run_status == "failed"
+
+
+async def test_reload_reconciles_stale_active_run_marker(tmp_path: Path) -> None:
+    store = HeartbeatJobStore(path=tmp_path / "stale-active.json")
+    mh = _FakeExecution()
+    sched = HeartbeatSchedulerService(store=store, execution_service=mh)
+    sched._session_resolver = _FakeResolver()
+    job = await store.create_job(
+        name="n", channel_id="web", session_id="s1", prompt="p",
+        schedule=HeartbeatSchedule.from_dict(
+            {"type": "interval", "interval_seconds": 120}
+        ),
+        source="agent_tool", now=1.0,
+    )
+    await store.claim_run(
+        job.id,
+        "stale-run",
+        2.0,
+        trigger="scheduler",
+        reschedule=True,
+        next_run_at_after_claim=122.0,
+    )
+    sched._active_runs["stale-run"] = (job.id, 2.0)
+
+    await sched.reload()
+
+    recovered = await store.get_job(job.id)
+    assert recovered.run_state.current_run_id is None
+    assert recovered.run_state.last_run_status == "failed"
+    assert "stale-run" not in sched._active_runs
 
 
 async def test_reload_reattaches_exact_live_stream(tmp_path: Path) -> None:

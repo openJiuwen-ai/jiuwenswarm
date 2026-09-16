@@ -80,7 +80,8 @@ def _request_id(value: dict[str, Any]) -> str | None:
     return None
 
 
-def _decode_document(document: str) -> dict[str, Any]:
+def decode_machine_document(document: str) -> dict[str, Any]:
+    """Decode a strict machine JSON object without echoing unsafe values."""
     if not document.strip():
         raise MachineInputError("run input must not be empty")
     duplicate_key = False
@@ -142,7 +143,9 @@ def _safe_schema_reason(error: Exception) -> str:
     return "run input does not match the schema"
 
 
-def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInput:
+def read_run_input(
+    source: str, *, stdin: BinaryIO | TextIO | None = None
+) -> OneShotRunInput:
     """Read one strict UTF-8 JSON document from a file or stdin through EOF.
 
     ``source='-'`` uses the supplied stdin, or the process stdin. A binary
@@ -164,7 +167,7 @@ def read_run_input(source: str, *, stdin: TextIO | None = None) -> OneShotRunInp
         raise MachineInputError("run input must be valid UTF-8") from None
     except (OSError, ValueError):
         raise MachineInputError("run input could not be read") from None
-    value = _decode_document(document)
+    value = decode_machine_document(document)
     try:
         return OneShotRunInput.from_dict(value)
     except (TypeError, ValueError, OverflowError, RecursionError) as error:
@@ -243,5 +246,6 @@ __all__ = [
     "MAX_RUN_INPUT_BYTES",
     "MachineInputError",
     "OneShotWriter",
+    "decode_machine_document",
     "read_run_input",
 ]

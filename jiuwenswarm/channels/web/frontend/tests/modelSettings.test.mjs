@@ -90,7 +90,7 @@ test('preset protocol mapping uses only the exact server fields', () => {
     vendorSelectionKey('token_plan', 'alibaba'),
     catalog,
   );
-  assert.equal(draft.model_name, 'qwen-default');
+  assert.equal(draft.model_name, '');
   assert.equal(createModelDraft(undefined, catalog).protocol, 'openai');
   const openAi = modelDraftToEntry({ ...draft, alias: 'qwen-main', api_key: 'secret' }, undefined, catalog, true);
   assert.equal(openAi.model_provider, 'OpenAI');
@@ -650,7 +650,7 @@ test('model dialog uses provider terminology and validates as part of confirmati
   assert.match(dialog, /fetchedModelLists\.current\.has\(fetchKey\)/);
   assert.match(dialog, /fetchedModelLists\.current\.clear\(\)/);
   assert.match(dialog, /setFetchStatus\(t\('settingsPanel\.models\.fetchModelsLoading'\)\)/);
-  assert.match(dialog, /result\.source === 'preset'[\s\S]{0,180}updateModelOptions\(nextOptions\)/);
+  assert.match(dialog, /result\.source === 'preset'[\s\S]{0,180}updateModelOptions\(\[\]\)/);
   assert.match(dialog, /const updateModelOptions = \(options: readonly string\[\]\)[\s\S]{0,160}setModelOptions/);
   assert.doesNotMatch(dialog, /const updateModelOptions[\s\S]{0,220}form\.setFieldValue\('model_name'/);
   assert.doesNotMatch(dialog, /aliasManuallyEdited|syncAliasWithModel|form\.validate\('alias'\)/);

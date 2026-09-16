@@ -5,17 +5,21 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
 import os
-import signal
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 from jiuwenswarm.channels.process_cli.machine_result import RunSummary
+from jiuwenswarm.channels.process_cli.machine_signals import (
+    command_signals,
+    defer_command_signals,
+)
 from jiuwenswarm.channels.process_cli.protocol import (
     OneShotRunInput,
     OneShotRunResult,
@@ -25,6 +29,9 @@ from jiuwenswarm.channels.process_cli.protocol import (
 from jiuwenswarm.common.schema.agent import AgentRequest
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
+
+if TYPE_CHECKING:
+    from jiuwenswarm.channels.process_cli.duplex_control import DuplexController
 
 logger = logging.getLogger(__name__)
 CHANNEL_ID = "process_cli"
@@ -60,7 +67,9 @@ def _exception_info(error: Exception) -> RuntimeErrorInfo:
     )
 
 
-def _cancel_request(request: AgentRequest) -> AgentRequest:
+def _cancel_request(
+    request: AgentRequest, *, session_scope: bool = False
+) -> AgentRequest:
     params = request.params or {}
     return AgentRequest(
         request_id=request.request_id,
@@ -71,7 +80,7 @@ def _cancel_request(request: AgentRequest) -> AgentRequest:
         timestamp=time.time(),
         params={
             "intent": "cancel",
-            "target_request_id": request.request_id,
+            "target_request_id": "" if session_scope else request.request_id,
             "mode": params.get("mode"),
             "work_mode": params.get("work_mode"),
             "project_dir": params.get("project_dir"),
@@ -109,7 +118,13 @@ def _workspace_params(run_input: OneShotRunInput, *, resumed: bool) -> dict[str,
 class _MachineRun:
     """Own only the process's public client, request and stream handles."""
 
-    def __init__(self, run_input: OneShotRunInput, writer: OneShotWriter) -> None:
+    def __init__(
+        self,
+        run_input: OneShotRunInput,
+        writer: OneShotWriter,
+        *,
+        control: DuplexController | None = None,
+    ) -> None:
         self.run_input = run_input
         self.writer = writer
         self.client: InProcessRuntimeClient | None = None
@@ -120,6 +135,7 @@ class _MachineRun:
         self.status = RunStatus.COMPLETED
         self.exit_code = 0
         self.cleanup_errors: list[str] = []
+        self.control = control
 
     def fail(
         self,
@@ -168,7 +184,7 @@ class _MachineRun:
                 "content": self.run_input.input,
                 "mode": mode.mode,
                 "work_mode": mode.work_mode,
-                "supports_user_interaction": False,
+                "supports_user_interaction": self.control is not None,
             }
         )
         self.request = AgentRequest(
@@ -186,19 +202,15 @@ class _MachineRun:
             self.stream = self.client.stream_agent(
                 self.request, self.run_input.agent.to_dict()
             )
-        completed = False
-        async for event in self.stream:
-            self.writer.write_event(event)
-            self.summary.observe(event)
-            if self.summary.error is not None:
-                self.fail(self.summary.error)
-            if event.ok and (event.is_complete or event.event_type == "chat.final"):
-                completed = True
-            if event.event_type in _INTERACTION_EVENTS:
-                raise MachineRunError(
-                    "This command cannot answer interactions; no approval was granted.",
-                    code="INTERACTION_REQUIRED",
-                )
+        if self.control is not None:
+            completed = await self.control.consume(
+                self.stream,
+                client=self.client,
+                request=self.request,
+                observe=self.observe,
+            )
+        else:
+            completed = await self.consume_noninteractive()
         if self.summary.error is not None:
             self.fail(self.summary.error)
         elif not completed:
@@ -206,6 +218,30 @@ class _MachineRun:
                 "Runtime stream ended without a completion event.",
                 code="INCOMPLETE_RUN",
             )
+
+    def observe(self, event: RuntimeEvent) -> None:
+        self.writer.write_event(event)
+        self.summary.observe(event)
+        if self.summary.error is not None:
+            self.fail(self.summary.error)
+
+    async def consume_noninteractive(self) -> bool:
+        completed = False
+        stream = self.stream
+        if stream is None:
+            return False
+        async for event in stream:
+            self.observe(event)
+            if self.summary.error is not None:
+                return False
+            if event.ok and (event.is_complete or event.event_type == "chat.final"):
+                completed = True
+            if event.event_type in _INTERACTION_EVENTS:
+                raise MachineRunError(
+                    "This command cannot answer interactions; no approval was granted.",
+                    code="INTERACTION_REQUIRED",
+                )
+        return completed
 
     async def cleanup_step(
         self, name: str, operation: Callable[[], Awaitable[Any]]
@@ -215,7 +251,7 @@ class _MachineRun:
             # safely be reset by wait_for's separate task.
             async with asyncio.timeout(SHUTDOWN_TIMEOUT_SECONDS):
                 await operation()
-        except (Exception, asyncio.CancelledError) as error:
+        except (Exception, asyncio.CancelledError, builtins.SystemExit) as error:
             self.cleanup_errors.append(name)
             logger.warning("one-shot %s failed (%s)", name, type(error).__name__)
             if isinstance(error, asyncio.CancelledError) and self.error is None:
@@ -226,36 +262,49 @@ class _MachineRun:
                 )
 
     async def cleanup(self) -> None:
-        if self.client is None:
+        if self.control is not None:
+            await self.cleanup_step("control_input", self.control.stop_input)
+        client = self.client
+        request = self.request
+        session_id = self.writer.session_id
+        if client is None:
+            self._record_cleanup_errors()
             return
-        if self.error is not None and self.request is not None:
+        if self.error is not None and request is not None:
             await self.cleanup_step(
-                "cancel", lambda: self.client.cancel(_cancel_request(self.request))
+                "cancel",
+                lambda: client.cancel(
+                    _cancel_request(request, session_scope=self.control is not None)
+                ),
             )
+        if self.control is not None:
+            await self.cleanup_step("control_streams", self.control.close_streams)
         close_stream = getattr(self.stream, "aclose", None)
         if close_stream is not None:
             await self.cleanup_step("stream_close", close_stream)
-        if self.writer.session_id is not None:
+        if session_id is not None:
             await self.cleanup_step(
                 "cleanup_session",
-                lambda: self.client.cleanup_session(
+                lambda: client.cleanup_session(
                     channel_id=CHANNEL_ID,
-                    session_id=self.writer.session_id,
+                    session_id=session_id,
                 ),
             )
-        await self.cleanup_step("runtime_close", self.client.close)
+        await self.cleanup_step("runtime_close", client.close)
+        self._record_cleanup_errors()
+
+    def _record_cleanup_errors(self) -> None:
         if self.cleanup_errors:
+            error = self.error or RuntimeErrorInfo(
+                code="SHUTDOWN_FAILED", message="Runtime cleanup failed."
+            )
             if self.error is None:
-                self.fail(
-                    RuntimeErrorInfo(
-                        code="SHUTDOWN_FAILED", message="Runtime cleanup failed."
-                    )
-                )
+                self.fail(error)
             self.error = replace(
-                self.error,
+                error,
                 details={
-                    **dict(self.error.details),
-                    "cleanup_errors": self.cleanup_errors,
+                    **dict(error.details),
+                    "cleanup_errors": tuple(self.cleanup_errors),
                 },
             )
 
@@ -277,15 +326,18 @@ async def run_machine(
     writer: OneShotWriter,
     *,
     client_factory: Callable[[], InProcessRuntimeClient] = InProcessRuntimeClient,
+    control: DuplexController | None = None,
 ) -> OneShotRunResult:
     """Return the sole outcome only after cancelling/releasing owned resources.
 
     The caller writes it after asyncio's own shutdown, not while Runtime is
     still active. A broken pipe is a failed run whose cleanup still happens.
     """
-    run = _MachineRun(run_input, writer)
+    run = _MachineRun(run_input, writer, control=control)
     deadline = asyncio.timeout(run_input.timeout_seconds)
     try:
+        if control is not None:
+            control.start()
         async with deadline:
             await run.execute(client_factory)
     except TimeoutError as error:
@@ -298,40 +350,43 @@ async def run_machine(
         else:
             run.fail(_exception_info(error))
     except asyncio.CancelledError:
-        run.fail(
-            RuntimeErrorInfo(code="CANCELLED", message="Command interrupted."),
-            status=RunStatus.CANCELLED,
-            exit_code=130,
-        )
+        if control is not None and control.failure is not None:
+            run.fail(
+                control.failure,
+                status=control.failure_status,
+                exit_code=control.failure_exit_code,
+            )
+        else:
+            run.fail(
+                RuntimeErrorInfo(code="CANCELLED", message="Command interrupted."),
+                status=RunStatus.CANCELLED,
+                exit_code=130,
+            )
     except OSError as error:
         code = "OUTPUT_CLOSED" if writer.broken else "RUNTIME_FAILED"
         run.fail(RuntimeErrorInfo(code=code, message="Command I/O failed."))
         logger.warning("one-shot I/O failed (%s)", type(error).__name__)
+    except builtins.SystemExit:
+        run.fail(
+            RuntimeErrorInfo(
+                code="RUNTIME_FAILED", message="Runtime exited unexpectedly."
+            )
+        )
     except Exception as error:  # noqa: BLE001 - machine execution boundary
         run.fail(_exception_info(error))
         logger.warning("one-shot execution failed (%s)", type(error).__name__)
     finally:
+        defer_command_signals()
         await run.cleanup()
     return run.result()
 
 
 async def run_with_signals(
-    run_input: OneShotRunInput, writer: OneShotWriter
+    run_input: OneShotRunInput,
+    writer: OneShotWriter,
+    *,
+    control: DuplexController | None = None,
 ) -> OneShotRunResult:
     """Route OS termination to the same bounded cancellation/cleanup path."""
-    task = asyncio.current_task()
-    previous: dict[int, Any] = {}
-
-    def interrupt(_signum: int, _frame: Any) -> None:
-        if task is not None:
-            task.cancel()
-
-    try:
-        for name in ("SIGTERM", "SIGBREAK"):
-            signum = getattr(signal, name, None)
-            if signum is not None:
-                previous[signum] = signal.signal(signum, interrupt)
-        return await run_machine(run_input, writer)
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+    with command_signals() as signals:
+        return await signals.run(run_machine(run_input, writer, control=control))

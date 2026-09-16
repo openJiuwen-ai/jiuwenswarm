@@ -60,12 +60,12 @@ from jiuwenswarm.agents.harness.team.distributed_runtime import (
     try_start_pg_cluster,
 )
 from jiuwenswarm.agents.harness.team.handlers.team_monitor_handler import TeamMonitorHandler
-from jiuwenswarm.agents.harness.team import kv_cache_team_delete_guard
 from jiuwenswarm.agents.harness.team.remote_member_bootstrap import release_a2x_reservations_for_session
 from jiuwenswarm.common.config import (
     get_config,
     get_evolution_auto_save_enabled,
     get_skill_evolution_enabled,
+    get_symphony_evolution_enabled,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
@@ -148,7 +148,9 @@ def sync_team_observability() -> None:
     config = get_config()
     cfg = config.get("team_observability", {}) or {}
     trajectory_settings = load_trajectory_store_settings(config)
-    evolution_requested = get_skill_evolution_enabled(config)
+    evolution_requested = get_skill_evolution_enabled(
+        config
+    ) or get_symphony_evolution_enabled(config)
     # The Web trajectory store needs the provider exactly like single-Agent
     # does: spans must be exported so the record processor can fan them out to
     # the SQLite sink. ``trajectory_ui.enabled`` therefore also pulls the
@@ -382,6 +384,12 @@ class TeamManager:
         self._pending_team_evolution_watcher_sessions: set[str] = set()
         # session_id → workflow handler instance
         self._workflow_handlers: dict[str, Any] = {}
+        # Permanent-delete admission fence. It remains set after destructive
+        # cleanup and is cleared only when the Runtime delete commits/aborts.
+        self._terminal_delete_sessions: set[str] = set()
+        self._session_inactive_reporter: (
+            Callable[[str], Awaitable[None]] | None
+        ) = None
 
     def has_stream_task(self, session_id: str) -> bool:
         return session_id in self._stream_tasks
@@ -657,6 +665,7 @@ class TeamManager:
         terminal_armed: bool = False,
     ) -> None:
         """Bind the one admitted interaction round to its request."""
+        self._assert_session_not_deleting(session_id)
         current = self._active_rounds.get(session_id)
         if current is not None:
             raise RuntimeError(
@@ -1192,6 +1201,7 @@ class TeamManager:
                 object.__setattr__(spec, "enable_team_plan", True)
 
     async def prepare_runtime_activation(self, session_id: str, team_name: str) -> None:
+        self._assert_session_not_deleting(session_id)
         if self._is_distributed_mode(get_config()):
             async with self._distributed_switch_lock:
                 await self._wait_same_session_runner_runtime_released(session_id)
@@ -1287,27 +1297,17 @@ class TeamManager:
                 reason=reason,
             )
 
-    async def offload_session_kv_cache(self, session_id: str) -> bool:
-        """Offload a Team Session without changing its product runtime state."""
-        from openjiuwen.core.session.agent_team import create_agent_team_session
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import get_kv_cache_runtime
+    def set_session_inactive_reporter(
+        self,
+        reporter: Callable[[str], Awaitable[None]] | None,
+    ) -> None:
+        """Inject the Runtime-owned, KVC-neutral inactivity event sink."""
+        self._session_inactive_reporter = reporter
 
-        session = create_agent_team_session(
-            session_id=session_id,
-            kv_cache_runtime=get_kv_cache_runtime(),
-        )
-        return await session.suspend_kvc()
-
-    async def prefetch_session_kv_cache(self, session_id: str) -> bool:
-        """Prefetch a historical Team Session without resuming its runtime."""
-        from openjiuwen.core.session.agent_team import create_agent_team_session
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import get_kv_cache_runtime
-
-        session = create_agent_team_session(
-            session_id=session_id,
-            kv_cache_runtime=get_kv_cache_runtime(),
-        )
-        return await session.prepare_kvc()
+    async def _report_session_inactive(self, session_id: str) -> None:
+        reporter = self._session_inactive_reporter
+        if reporter is not None:
+            await reporter(session_id)
 
     async def _stop_stale_distributed_sessions(
         self,
@@ -1816,6 +1816,11 @@ class TeamManager:
         self.clear_session_initialized(session_id)
         self.pop_cron_completion(session_id)
         self._pending_team_evolution_watcher_sessions.discard(session_id)
+
+    def _assert_session_not_deleting(self, session_id: str) -> None:
+        """Reject execution admission after permanent-delete quiesce starts."""
+        if session_id in self._terminal_delete_sessions:
+            raise RuntimeError(f"session is being permanently deleted: {session_id}")
 
     async def _cancel_team_evolution_watcher(self, session_id: str) -> None:
         watcher_task = self._team_evolution_watchers.pop(session_id, None)
@@ -2520,7 +2525,7 @@ class TeamManager:
             # Resolve team_name early before cleanup, from active/pending/metadata
             team_name = self._resolve_session_team_name(session_id)
 
-            await self.offload_session_kv_cache(session_id)
+            await self._report_session_inactive(session_id)
 
             # Stop Runner-owned runtime first before cleaning locals
             # to avoid gate/teardown races
@@ -2748,6 +2753,65 @@ class TeamManager:
         )
         return True
 
+    async def quiesce_for_delete(
+        self,
+        target: Any,
+        *,
+        reason: str,
+    ) -> None:
+        """Stop Team execution while retaining TeamAgent/Model/Runner objects."""
+        session_id = target.descriptor.session_id
+        async with self._get_lifecycle_lock(session_id):
+            self._terminal_delete_sessions.add(session_id)
+            try:
+                await self._dispatch_swarmflow_controller(session_id, action="stop")
+                await self._cleanup_runtime_locals(session_id)
+            except BaseException:
+                # Nothing destructive has started yet.  Let a later request
+                # cold-recover the stopped runtime when delete quiesce fails or
+                # is cancelled before resource release/disposal.
+                self._terminal_delete_sessions.discard(session_id)
+                raise
+
+    async def dispose_after_resource_release(
+        self,
+        target: Any,
+        *,
+        reason: str,
+    ) -> None:
+        """Dispose local Team resources after derived resources were released."""
+        session_id = target.descriptor.session_id
+        async with self._get_lifecycle_lock(session_id):
+            team_agent = self._team_agents.pop(session_id, None)
+            if team_agent is not None:
+                await self._stop_local_team_runtime(session_id, team_agent)
+            runner_team_agent = self._runner_team_agents.pop(session_id, None)
+            if runner_team_agent is not None:
+                try:
+                    await release_a2x_reservations_for_session(
+                        session_id,
+                        team_agent=runner_team_agent,
+                    )
+                except Exception as exc:
+                    logger.warning(
+                        "[TeamManager] release A2X reservations failed during "
+                        "delete: session_id=%s error=%s",
+                        session_id,
+                        exc,
+                    )
+            self.clear_active_runtime(session_id)
+            self.clear_pending_runtime(session_id)
+            await self.release_current_round(session_id)
+            self._clear_terminal_session_markers(session_id)
+
+    def delete_aborted(self, target: Any) -> None:
+        """Reopen execution admission when deletion stops before disposal."""
+        self._terminal_delete_sessions.discard(target.descriptor.session_id)
+
+    def delete_committed(self, target: Any) -> None:
+        """Release the admission fence after permanent deletion commits."""
+        self._terminal_delete_sessions.discard(target.descriptor.session_id)
+
     @staticmethod
     async def _find_paused_runner_team_name(session_id: str) -> str | None:
         """Return the paused Runner team name for a session using the public facade."""
@@ -2797,7 +2861,7 @@ class TeamManager:
                 return False
 
             if offload:
-                await self.offload_session_kv_cache(session_id)
+                await self._report_session_inactive(session_id)
 
             logger.info(
                 "[TeamManager] %sstop paused team session runtime: session_id=%s team_name=%s",
@@ -2948,62 +3012,6 @@ class TeamManager:
             runner_paused,
         )
         return True
-
-    async def delete_session_runtime(self, session_id: str, reason: str = "") -> bool:
-        """Delete a team-mode session and its session-scoped team data.
-
-        Jiuwenswarm scopes team names by session id, so deleting a
-        team-mode session should delete the corresponding Agent Team
-        before the caller removes the local session directory. If the
-        team name cannot be resolved from session metadata, fall back to
-        releasing only the session checkpoint.
-        """
-        team_name = self._resolve_delete_session_team_name(session_id)
-        affinity_enabled = kv_cache_team_delete_guard.is_enabled()
-        if affinity_enabled:
-            await self.stop_session_runtime(
-                session_id,
-                reason=reason,
-                stop_runner=False,
-            )
-        else:
-            await self.stop_session_runtime(session_id, reason=reason)
-
-        try:
-            if affinity_enabled:
-                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                    release_session_kvc,
-                )
-
-                await release_session_kvc(session_id=session_id, is_team=True)
-            if team_name:
-                await Runner.delete_agent_team(
-                    team_name=team_name,
-                    session_ids=[session_id],
-                    force=True,
-                )
-            else:
-                logger.warning(
-                    "[TeamManager] delete session runtime fell back to session release: "
-                    "session_id=%s reason=missing_team_name",
-                    session_id,
-                )
-                await Runner.release(session_id)
-            logger.info(
-                "[TeamManager] %steam session deleted: session_id=%s team_name=%s",
-                reason,
-                session_id,
-                team_name,
-            )
-            return True
-        except Exception as exc:
-            logger.warning(
-                "[TeamManager] failed to delete team session runtime: session_id=%s team_name=%s error=%s",
-                session_id,
-                team_name,
-                exc,
-            )
-            return False
 
     async def _cancel_stream_task(self, session_id: str, reason: str) -> None:
         """Cancel one stream task while serializing its lifecycle operations."""

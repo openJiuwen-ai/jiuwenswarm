@@ -61,4 +61,7 @@ class AutoPermissionReviewerOverrideGateMixin:
                 extra=metadata,
             )
             return True, build_denied_permission_response(route.reason)
+        # Resume manual-only routes through the existing human allow-once path.
+        if domain_route is not None and domain_route.requires_manual:
+            return False, None
         return True, None

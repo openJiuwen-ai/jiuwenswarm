@@ -52,9 +52,10 @@ symphony:
     min_edge_confidence: 0.5
 
   evolution:
-    enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+    enabled: false  # true = 由 Core Graph-Evolution Rail 学习动态图并沉淀经验
+    # 以下 flow 参数仅供旧 Session-history 蒸馏接口兼容；Core 经验沉淀随 enabled 同步启停。
     flow:
-      enabled: false            # true = 任务结束后蒸馏 skill pack
+      enabled: false            # legacy 路径是否在任务结束后蒸馏 skill pack
       min_edge_support: 1      # 边至少出现几次（调试=1，正式=2-3）
       min_edge_success_rate: 0.5  # 边成功率阈值（调试=0.5，正式=0.8）
       min_successes_candidate: 2  # 至少成功几次产出 candidate pack

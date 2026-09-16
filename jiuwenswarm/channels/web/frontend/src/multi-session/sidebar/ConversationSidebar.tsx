@@ -2,6 +2,7 @@ import { useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 're
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, CircleAlert, Code2, LoaderCircle, Workflow } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
+import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import { useChatStore, type ChatRuntime } from '../../stores/chatStore';
 import { webClient } from '../../services/webClient';
 import { DeleteDialog } from '../dialogs/Dialogs';
@@ -27,6 +28,7 @@ import {
 } from './sidebarModel';
 import { ProjectCreateMenu } from './ProjectCreateMenu';
 import { projectCreateErrorKey } from './projectCreateErrors';
+import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import {
   isLikelyAbsolutePath,
   isProjectDirectoryPickerSupported,
@@ -158,6 +160,8 @@ const menuIconByAction: Record<SidebarMenuAction, React.ComponentType<React.SVGP
   pin: PinIcon,
   rename: EditIcon,
   delete: DeleteIcon,
+  'archive-sessions': FolderIcon,
+  'delete-archived-sessions': DeleteIcon,
 };
 
 function getMenuIcon(item: SidebarMenuItem): React.ComponentType<React.SVGProps<SVGSVGElement>> {
@@ -224,7 +228,29 @@ function ConversationListItem({
   const { t, i18n } = useTranslation();
   const itemRef = useRef<HTMLDivElement>(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const { tooltip: itemTooltip, handlers: itemTooltipHandlers } = useAdaptiveTooltip();
+  const { tooltip: truncationTooltip, handlers: truncationTooltipHandlers } = useAdaptiveTooltip({ anchorRef: itemRef, offsetY: 2, align: 'left' });
   const title = getSessionTitle(session, t('multiSession.untitled'));
+  const titleTooltipHandlers = {
+    onMouseEnter: (event: React.MouseEvent<HTMLSpanElement>) => {
+      const el = event.currentTarget;
+      el.setAttribute('data-tooltip', el.scrollWidth > el.clientWidth ? title : '');
+      truncationTooltipHandlers.onMouseEnter(event);
+    },
+    onMouseLeave: (event: React.MouseEvent<HTMLSpanElement>) => {
+      event.currentTarget.setAttribute('data-tooltip', '');
+      truncationTooltipHandlers.onMouseLeave();
+    },
+    onFocus: (event: React.FocusEvent<HTMLSpanElement>) => {
+      const el = event.currentTarget;
+      el.setAttribute('data-tooltip', el.scrollWidth > el.clientWidth ? title : '');
+      truncationTooltipHandlers.onFocus(event);
+    },
+    onBlur: (event: React.FocusEvent<HTMLSpanElement>) => {
+      event.currentTarget.setAttribute('data-tooltip', '');
+      truncationTooltipHandlers.onBlur();
+    },
+  };
   const errorMessage = runtime?.error || runtime?.executionError || null;
   const indicator = getSessionIndicator(runtime, unread, session.is_processing === true, Boolean(errorMessage));
   const deleteDisabled =
@@ -284,9 +310,9 @@ function ConversationListItem({
   }, [menuOpen]);
 
   return (
-    <div ref={itemRef} className={`conversation-list-item${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${nested ? ' conversation-list-item--nested' : ''}`} data-testid="multi-session-conversation-list-item" data-variant={session.session_id}>
-      <button type="button" className="conversation-list-item__main" onClick={onSelect} title={title} data-testid="multi-session-conversation-list-item-main">
-        <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title">{title}</span>
+    <div ref={itemRef} className={`conversation-list-item conversation-sidebar__row-el${active ? ' is-active' : ''}${menuOpen ? ' is-menu-open' : ''}${nested ? ' conversation-list-item--nested' : ''}`} data-testid="multi-session-conversation-list-item" data-variant={session.session_id}>
+      <button type="button" className="conversation-list-item__main" onClick={onSelect} data-testid="multi-session-conversation-list-item-main">
+        <span className="conversation-list-item__title" data-testid="multi-session-conversation-list-item-title" data-tooltip="" {...titleTooltipHandlers}>{title}</span>
         <span className="conversation-list-item__meta" data-testid="multi-session-conversation-list-item-status" data-variant={indicator}>{status}</span>
       </button>
       <button
@@ -296,11 +322,12 @@ function ConversationListItem({
           event.stopPropagation();
           setMenuOpen((open) => !open);
         }}
-        title={t('multiSession.moreActions')}
         aria-label={t('multiSession.moreActions')}
         aria-haspopup="menu"
         aria-expanded={menuOpen}
+        data-tooltip={t('multiSession.moreActions')}
         data-testid="multi-session-conversation-list-item-more"
+        {...(menuOpen ? {} : itemTooltipHandlers)}
       >
         <MoreIcon aria-hidden />
       </button>
@@ -311,10 +338,10 @@ function ConversationListItem({
           event.stopPropagation();
           onPin();
         }}
-        title={session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')}
         aria-label={session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')}
         data-tooltip={session.pinned ? t('multiSession.project.unpinConversation') : t('multiSession.project.pinConversation')}
         data-testid="multi-session-conversation-list-item-pin"
+        {...itemTooltipHandlers}
       >
         {session.pinned ? <UnpinIcon aria-hidden /> : <PinIcon aria-hidden />}
       </button>
@@ -338,22 +365,23 @@ function ConversationListItem({
           }}
         />
         ) : null}
+      {itemTooltip}
+      {truncationTooltip}
       </div>
   );
-}
-
-function ProjectEntityRow({
+}function ProjectEntityRow({
   title,
   path,
   isExpanded,
   isPinned,
   hasUnreadCronResult = false,
-  hideActions = false,
+  defaultProject = false,
   onToggle,
   onNew,
   onPin,
   onRename,
   onRemove,
+  onBatch,
   newLabel,
   projectId,
 }: {
@@ -362,12 +390,13 @@ function ProjectEntityRow({
   isExpanded: boolean;
   isPinned?: boolean;
   hasUnreadCronResult?: boolean;
-  hideActions?: boolean;
+  defaultProject?: boolean;
   onToggle: () => void;
   onNew: () => void;
   onPin: () => void;
   onRename: () => void;
   onRemove: () => void;
+  onBatch: (action: 'archive' | 'delete_archived') => void;
   newLabel?: string;
   projectId?: string;
 }) {
@@ -376,6 +405,7 @@ function ProjectEntityRow({
   const mainRef = useRef<HTMLButtonElement>(null);
   const tooltipId = useId();
   const [menuOpen, setMenuOpen] = useState(false);
+  const { tooltip: rowTooltip, handlers: rowTooltipHandlers } = useAdaptiveTooltip();
   const [tooltipPos, setTooltipPos] = useState<{ left: number; top: number } | null>(null);
   // 分别跟踪 hover 与 focus 状态：任一活跃即保持 tooltip，避免 mouseleave/blur 互相误清
   const hoverRef = useRef(false);
@@ -413,7 +443,7 @@ function ProjectEntityRow({
   };
 
   return (
-    <div ref={rowRef} className={`conversation-entity-row${menuOpen ? ' is-menu-open' : ''}`} data-testid="multi-session-project-row" data-variant={projectId}>
+    <div ref={rowRef} className={`conversation-entity-row conversation-sidebar__row-el${menuOpen ? ' is-menu-open' : ''}`} data-testid="multi-session-project-row" data-variant={projectId}>
       <button
         type="button"
         ref={mainRef}
@@ -461,33 +491,35 @@ function ProjectEntityRow({
           event.stopPropagation();
           onNew();
         }}
-        title={newLabel || t('multiSession.project.newConversation')}
         aria-label={newLabel || t('multiSession.project.newConversation')}
         data-tooltip={newLabel || t('multiSession.project.newConversation')}
         data-testid="multi-session-project-row-new-conversation"
+        {...rowTooltipHandlers}
       >
         <PlusIcon aria-hidden />
       </button>
-      {hideActions ? null : (
+      {(
         <button
           type="button"
           className="conversation-list-item__actions"
           onClick={(event) => {
             event.stopPropagation();
+            rowTooltipHandlers.onMouseLeave();
             setMenuOpen((open) => !open);
           }}
-          title={t('multiSession.moreActions')}
           aria-label={t('multiSession.moreActions')}
           aria-haspopup="menu"
           aria-expanded={menuOpen}
+          data-tooltip={t('multiSession.moreActions')}
           data-testid="multi-session-project-row-more"
+          {...(menuOpen ? {} : rowTooltipHandlers)}
         >
           <MoreIcon aria-hidden />
         </button>
       )}
-      {!hideActions && menuOpen ? (
+      {menuOpen ? (
         <SidebarMenu
-          items={getProjectMenuItems(Boolean(isPinned), t)}
+          items={getProjectMenuItems(Boolean(isPinned), t, defaultProject)}
           onAction={(action) => {
             setMenuOpen(false);
             switch (action) {
@@ -500,6 +532,12 @@ function ProjectEntityRow({
               case 'delete':
                 onRemove();
                 break;
+              case 'archive-sessions':
+                onBatch('archive');
+                break;
+              case 'delete-archived-sessions':
+                onBatch('delete_archived');
+                break;
             }
           }}
         />
@@ -510,6 +548,7 @@ function ProjectEntityRow({
             document.body,
           )
         : null}
+      {rowTooltip}
     </div>
   );
 }
@@ -740,12 +779,14 @@ function ProjectCreateDialog({
 
 function ProjectDeleteDialog({
   project,
+  action,
   error,
   deleting,
   onCancel,
   onDelete,
 }: {
   project: ProjectInfo;
+  action: 'delete' | 'archive' | 'delete_archived';
   error?: string | null;
   deleting: boolean;
   onCancel: () => void;
@@ -755,8 +796,9 @@ function ProjectDeleteDialog({
   return (
     <DeleteDialog
       title={project.name}
-      dialogTitle={t('multiSession.project.deleteProject')}
-      descriptionKey="multiSession.project.deleteProjectDescription"
+      dialogTitle={t(`multiSession.project.${action === 'delete' ? 'deleteProject' : action === 'archive' ? 'archiveSessions' : 'deleteArchivedSessions'}`)}
+      confirmLabel={t(action === 'archive' ? 'multiSession.project.confirm' : 'common.delete')}
+      descriptionKey={`multiSession.project.${action === 'delete' ? 'deleteProjectDescription' : action === 'archive' ? 'archiveSessionsDescription' : 'deleteArchivedSessionsDescription'}`}
       descriptionValues={{ projectName: project.name }}
       deleting={deleting}
       error={error ?? null}
@@ -770,6 +812,58 @@ type RenameTarget =
   | { kind: 'project'; id: string; value: string }
   | { kind: 'session'; id: string; value: string };
 
+function CronJobRow({
+  job,
+  cronExpanded,
+  isCronUnread,
+  onRowClick,
+}: {
+  job: SidebarCronJob;
+  cronExpanded: boolean;
+  isCronUnread: boolean;
+  onRowClick: () => void;
+}) {
+  const rowRef = useRef<HTMLDivElement>(null);
+  const { tooltip, handlers } = useAdaptiveTooltip({ anchorRef: rowRef, offsetY: 2, align: 'left' });
+  const nameTooltipHandlers = {
+    onMouseEnter: (event: React.MouseEvent<HTMLSpanElement>) => {
+      const el = event.currentTarget;
+      el.setAttribute('data-tooltip', el.scrollWidth > el.clientWidth ? job.name : '');
+      handlers.onMouseEnter(event);
+    },
+    onMouseLeave: (event: React.MouseEvent<HTMLSpanElement>) => {
+      event.currentTarget.setAttribute('data-tooltip', '');
+      handlers.onMouseLeave();
+    },
+    onFocus: (event: React.FocusEvent<HTMLSpanElement>) => {
+      const el = event.currentTarget;
+      el.setAttribute('data-tooltip', el.scrollWidth > el.clientWidth ? job.name : '');
+      handlers.onFocus(event);
+    },
+    onBlur: (event: React.FocusEvent<HTMLSpanElement>) => {
+      event.currentTarget.setAttribute('data-tooltip', '');
+      handlers.onBlur();
+    },
+  };
+  return (
+    <>
+      <div
+        ref={rowRef}
+        className={`conversation-sidebar__cron-row conversation-sidebar__row-el${cronExpanded ? ' is-expanded' : ''}`}
+        onClick={onRowClick}
+        data-testid="multi-session-cron-job-row"
+        data-variant={job.id}
+      >
+        <CronIcon className="conversation-sidebar__cron-row-icon" aria-hidden />
+        <span className="conversation-sidebar__cron-row-name" data-tooltip="" data-testid="multi-session-cron-job-row-name" {...nameTooltipHandlers}>{job.name}</span>
+        {isCronUnread && <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-cron-job-row-unread" />}
+        {cronExpanded ? <CollapseIcon className="conversation-sidebar__cron-row-chevron" aria-hidden /> : <ArrowRightIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />}
+      </div>
+      {tooltip}
+    </>
+  );
+}
+
 export function ConversationSidebar({
   activeSessionId,
   onNew,
@@ -782,6 +876,7 @@ export function ConversationSidebar({
   onToggleCollapse,
 }: ConversationSidebarProps) {
   const { t } = useTranslation();
+  const { tooltip: conversationsTooltip, handlers: conversationsTooltipHandlers } = useAdaptiveTooltip();
   const runtimes = useChatStore((state) => state.runtimes);
   const [relativeTimeNow, setRelativeTimeNow] = useState(Date.now);
   const [unreadSessions, setUnreadSessions] = useState(loadUnreadSessions);
@@ -793,6 +888,7 @@ export function ConversationSidebar({
   const [renameError, setRenameError] = useState<string | null>(null);
   const [pinError, setPinError] = useState<string | null>(null);
   const [deleteProjectTarget, setDeleteProjectTarget] = useState<ProjectInfo | null>(null);
+  const [projectAction, setProjectAction] = useState<'delete' | 'archive' | 'delete_archived'>('delete');
   const [deleteProjectBusy, setDeleteProjectBusy] = useState(false);
   const [deleteProjectError, setDeleteProjectError] = useState<string | null>(null);
   const [projectAddMenuOpen, setProjectAddMenuOpen] = useState(false);
@@ -1082,11 +1178,27 @@ export function ConversationSidebar({
   }
 
   async function handleRemoveProject() {
-    if (!deleteProjectTarget || isDefaultProject(deleteProjectTarget)) return;
+    if (!deleteProjectTarget || (projectAction === 'delete' && isDefaultProject(deleteProjectTarget))) return;
     setDeleteProjectBusy(true);
     setDeleteProjectError(null);
     try {
-      await removeProject(deleteProjectTarget.project_id);
+      const projectId = deleteProjectTarget.project_id;
+      if (projectAction === 'delete') {
+        await removeProject(projectId);
+        await loadCronJobs();
+      } else {
+        const result = await (projectAction === 'archive'
+          ? projectRegistryClient.archiveSessions(projectId)
+          : projectRegistryClient.deleteArchivedSessions(projectId));
+        const workspace = useWorkspaceStore.getState();
+        workspace.removeSessions(result.results.filter((item) => item.ok).map((item) => item.session_id));
+        await Promise.all([workspace.loadProjects(), workspace.loadProjectSessions(projectId), workspace.loadPinnedSessions()]);
+        if (result.failed_count) {
+          setDeleteProjectError(t('multiSession.project.batchPartialFailure', { succeeded: result.succeeded_count, failed: result.failed_count })
+            + ' ' + result.results.filter((item) => !item.ok).map((item) => `${item.session_id}: ${item.error || item.code}`).join('; '));
+          return;
+        }
+      }
       setDeleteProjectTarget(null);
     } catch (error) {
       setDeleteProjectError(error instanceof Error ? error.message : String(error));
@@ -1130,24 +1242,18 @@ export function ConversationSidebar({
     const isCronUnread = Boolean(unreadCronJobs[job.id]);
     return (
       <div key={`cron-wrapper-${job.id}`} className={`conversation-sidebar__session-wrapper${nested ? ' conversation-sidebar__session-wrapper--nested' : ''}`}>
-        <div
-          className={`conversation-sidebar__cron-row${cronExpanded ? ' is-expanded' : ''}`}
-          onClick={() => {
+        <CronJobRow
+          job={job}
+          cronExpanded={cronExpanded}
+          isCronUnread={isCronUnread}
+          onRowClick={() => {
             toggleCronGroup(cronGroupId);
             if (isCronUnread) clearCronJobUnread(job.id);
             if (!cronExpanded) {
               void loadCronSessions(projectId, job.id);
             }
           }}
-          title={job.name}
-          data-testid="multi-session-cron-job-row"
-          data-variant={job.id}
-        >
-          <CronIcon className="conversation-sidebar__cron-row-icon" aria-hidden />
-          <span className="conversation-sidebar__cron-row-name" data-testid="multi-session-cron-job-row-name">{job.name}</span>
-          {isCronUnread && <span className="conversation-list-item__status-dot" aria-hidden="true" data-testid="multi-session-cron-job-row-unread" />}
-          {cronExpanded ? <CollapseIcon className="conversation-sidebar__cron-row-chevron" aria-hidden /> : <ArrowRightIcon className="conversation-sidebar__cron-row-chevron" aria-hidden />}
-        </div>
+        />
         {cronExpanded ? (
           <div className="conversation-sidebar__cron-sessions" data-testid="multi-session-cron-job-sessions">
             {isCronSessionsLoading ? (
@@ -1239,7 +1345,7 @@ export function ConversationSidebar({
           isExpanded={expanded}
           isPinned={project.pinned}
           hasUnreadCronResult={hasUnreadCronResult}
-          hideActions={isDefaultProject(project)}
+          defaultProject={isDefaultProject(project)}
           newLabel={getProjectNewLabel(project.name, t)}
           projectId={project.project_id}
           onToggle={() => toggleProjectExpanded(project.project_id)}
@@ -1258,6 +1364,12 @@ export function ConversationSidebar({
           }}
           onRemove={() => {
             if (isDefaultProject(project)) return;
+            setProjectAction('delete');
+            setDeleteProjectError(null);
+            setDeleteProjectTarget(project);
+          }}
+          onBatch={(action) => {
+            setProjectAction(action);
             setDeleteProjectError(null);
             setDeleteProjectTarget(project);
           }}
@@ -1444,10 +1556,10 @@ export function ConversationSidebar({
                 setPinError(null);
                 onNew();
               }}
-              title={t('multiSession.project.newConversation')}
               aria-label={t('multiSession.project.newConversation')}
               data-tooltip={t('multiSession.project.newConversation')}
               data-testid="multi-session-conversations-new-button"
+              {...conversationsTooltipHandlers}
             >
               <PlusIcon aria-hidden />
             </button>
@@ -1492,15 +1604,18 @@ export function ConversationSidebar({
       {deleteProjectTarget ? (
         <ProjectDeleteDialog
           project={deleteProjectTarget}
+          action={projectAction}
           deleting={deleteProjectBusy}
           error={deleteProjectError}
           onCancel={() => {
+            if (deleteProjectBusy) return;
             setDeleteProjectError(null);
             setDeleteProjectTarget(null);
           }}
           onDelete={() => { void handleRemoveProject(); }}
         />
       ) : null}
+      {conversationsTooltip}
     </aside>
     </>
   );

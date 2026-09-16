@@ -478,7 +478,7 @@ export interface HistoryCompactionReplay {
 interface BeginHistoryRestoreOptions {
   sessionId: string;
   subagentId?: string;
-  onReady: (messages: Message[], totalPages: number | null) => void;
+  onReady: (messages: Message[], cursor: HistoryCursorMeta) => void;
   /** 与消息同一时间线顺序，用于恢复 ToolGroupDisplay */
   onToolReplay?: (items: HistoryToolReplayItem[]) => void;
   /** 与消息同一时间线顺序，用于恢复 HarnessProgressBar */
@@ -493,9 +493,23 @@ interface BeginHistoryRestoreOptions {
   onCompactionReplay?: (info: HistoryCompactionReplay) => void;
   /** 恢复最新的完整 context.usage 快照，供刷新/续接后恢复上下文用量指示器 */
   onContextUsage?: (payload: Record<string, unknown>) => void;
-  /** 无消息且无工具回放时调用；`totalPages` 来自流中最后一帧（若有） */
-  onEmpty?: (totalPages: number | null) => void;
+  /** 无消息且无工具回放时调用；游标元数据仍决定是否存在更早记录。 */
+  onEmpty?: (cursor: HistoryCursorMeta) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
+}
+
+export interface HistoryCursorMeta {
+  requestCursor: string | null;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+}
+
+export interface HistoryRestoreFailure {
+  code: string;
+  message: string;
 }
 
 export interface HistoryRestoreHandle {
@@ -510,10 +524,11 @@ function makeHistoryRestoreKey(sessionId: string, subagentId?: string): string {
   return subagentId ? `${sessionId}:subagent:${subagentId}:restore` : `${sessionId}:restore`;
 }
 
-function makeHistoryPageKey(sessionId: string, pageIdx: number, subagentId?: string): string {
+function makeHistoryCursorKey(sessionId: string, cursor: string | null, subagentId?: string): string {
+  const cursorKey = cursor ?? 'initial';
   return subagentId
-    ? `${sessionId}:subagent:${subagentId}:page:${pageIdx}`
-    : `${sessionId}:page:${pageIdx}`;
+    ? `${sessionId}:subagent:${subagentId}:cursor:${cursorKey}`
+    : `${sessionId}:cursor:${cursorKey}`;
 }
 
 function replaceActiveHistoryRequest(key: string): void {
@@ -707,16 +722,36 @@ function readHistoryAgentTemplateName(record: Record<string, unknown>): string |
   return readAgentTemplateName(payload) ?? readAgentTemplateName(record);
 }
 
-function hasMismatchedHistoryBoundary(value: unknown, sessionId: string): boolean {
+function readForkSourceSessionId(value: Record<string, unknown>): string {
+  const marker = value.forked_from ?? value.forkedFrom;
+  if (typeof marker === 'string') return marker.trim();
+  if (!isRecord(marker)) return '';
+  return pickFirstString(marker, ['session_id', 'sessionId']) ?? '';
+}
+
+function hasMismatchedHistoryBoundary(
+  value: unknown,
+  sessionId: string,
+  inheritedForkSourceSessionId = '',
+): boolean {
   if (Array.isArray(value)) {
-    return value.some((item) => hasMismatchedHistoryBoundary(item, sessionId));
+    return value.some((item) => hasMismatchedHistoryBoundary(item, sessionId, inheritedForkSourceSessionId));
   }
   if (!isRecord(value)) return false;
-  if (['session_id', 'parent_session_id', 'sessionId', 'parentSessionId'].some((key) => {
-    const boundary = pickFirstString(value, [key]);
-    return Boolean(boundary && boundary !== sessionId);
-  })) return true;
-  return Object.values(value).some((nested) => hasMismatchedHistoryBoundary(nested, sessionId));
+  const forkSourceSessionId = readForkSourceSessionId(value) || inheritedForkSourceSessionId;
+  if (
+    ['session_id', 'parent_session_id', 'sessionId', 'parentSessionId'].some((key) => {
+      const boundary = pickFirstString(value, [key]);
+      return Boolean(boundary && boundary !== sessionId && boundary !== forkSourceSessionId);
+    })
+  )
+    return true;
+  return Object.entries(value).some(
+    ([key, nested]) =>
+      key !== 'forked_from' &&
+      key !== 'forkedFrom' &&
+      hasMismatchedHistoryBoundary(nested, sessionId, forkSourceSessionId),
+  );
 }
 
 export function parseSubagentHistoryReplay(
@@ -724,6 +759,7 @@ export function parseSubagentHistoryReplay(
   sessionId: string,
   subagentId: string,
 ): HistorySubagentReplayItem | null {
+  const forkSourceSessionId = readForkSourceSessionId(record);
   if (hasMismatchedHistoryBoundary(record, sessionId)) return null;
 
   const eventType = typeof record.event_type === 'string' ? record.event_type.trim() : '';
@@ -733,11 +769,9 @@ export function parseSubagentHistoryReplay(
   if (eventType === 'chat.subtask_update' && typeof record.role === 'string' && payload.role == null) {
     payload.role = record.role;
   }
-  if (hasMismatchedHistoryBoundary(payload, sessionId)) return null;
+  if (hasMismatchedHistoryBoundary(payload, sessionId, forkSourceSessionId)) return null;
 
   if (eventType === 'chat.final') {
-    const finalParentSessionId = pickFirstString(payload, ['parent_session_id', 'parentSessionId']);
-    if (finalParentSessionId && finalParentSessionId !== sessionId) return null;
     const content = typeof payload.content === 'string' ? payload.content : '';
     return content.trim() ? { kind: 'message', at, payload } : null;
   }
@@ -749,7 +783,7 @@ export function parseSubagentHistoryReplay(
 
   if (eventType !== 'chat.subagent_activity') return null;
   const activity = isRecord(payload.subagent_activity) ? payload.subagent_activity : payload;
-  if (hasMismatchedHistoryBoundary(activity, sessionId)) return null;
+  if (hasMismatchedHistoryBoundary(activity, sessionId, forkSourceSessionId)) return null;
   const activitySubagentId = pickFirstString(activity, ['subagent_id', 'subagentId']);
   if (!activitySubagentId || activitySubagentId !== subagentId) return null;
   return { kind: 'activity', at, payload: activity };
@@ -931,6 +965,7 @@ function parseHistoryTimelineEntry(
 ): HistoryTimelineEntry | null {
   const role = normalizeHistoryRole(record.role);
   const at = recordTimestampIso(record) ?? '';
+  const forkedFromSessionId = readForkSourceSessionId(record);
 
   if (role === 'user') {
     const rawContent = record.content ?? record.text ?? record.body;
@@ -968,6 +1003,7 @@ function parseHistoryTimelineEntry(
         role: 'user',
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(mediaItems.length > 0 ? { mediaItems } : {}),
         ...(isGoalObjectiveMessage ? { isGoalObjectiveMessage: true } : {}),
         ...(skills && skills.length > 0 ? { skills } : {}),
@@ -1018,8 +1054,9 @@ function parseHistoryTimelineEntry(
       message: {
         id,
         role: 'system',
-        content: `team.event:${JSON.stringify(teamPayload)}`,
-        timestamp: at,
+          content: `team.event:${JSON.stringify(teamPayload)}`,
+          timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
       },
     };
   }
@@ -1084,6 +1121,7 @@ function parseHistoryTimelineEntry(
             timestamp: safeTimestampMs(at),
           })}`,
           timestamp: at,
+          ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         },
       };
     }
@@ -1117,6 +1155,7 @@ function parseHistoryTimelineEntry(
         role: 'assistant',
         content,
         timestamp: at,
+        ...(forkedFromSessionId ? { forkedFromSessionId } : {}),
         ...(payload.presentation === 'tool_result' || record.presentation === 'tool_result'
           ? { presentation: 'tool_result' as const }
           : {}),
@@ -1630,6 +1669,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
           formatted_args: n.formatted_args,
           display_name: n.display_name,
           memberName: n.memberName,
+          reviewer: n.reviewer,
         },
         // 与实时一致：先 pending，等 tool_result 再落终态；无 result 的孤儿在循环末尾结算。
         status: 'pending',
@@ -1658,6 +1698,7 @@ function buildToolExecutionsFromReplay(toolReplay: HistoryToolReplayItem[]): Too
       ...(n.mermaid ? { mermaid: n.mermaid } : {}),
       ...(n.timedOut ? { timedOut: true as const } : {}),
       ...(n.beamSearch ? { beamSearch: n.beamSearch } : {}),
+      reviewer: n.reviewer,
     };
     const resultStatus: ToolExecution['status'] = n.pending
       ? 'pending'
@@ -1747,6 +1788,7 @@ export function shouldProcessHistoryPayload(
   expectedPageIdx?: number,
   allowLegacyNoSession = false,
   expectedSubagentId?: string,
+  expectedCursor?: string | null,
 ): boolean {
   if (hasMismatchedHistoryBoundary(payload, expectedSessionId)) return false;
   const sid = pickFirstString(payload, ['session_id', 'sessionId']) ?? '';
@@ -1754,20 +1796,49 @@ export function shouldProcessHistoryPayload(
     return false;
   }
   const subagentId = pickFirstString(payload, ['subagent_id', 'subagentId']) ?? '';
-  if (expectedSubagentId) {
-    if (subagentId !== expectedSubagentId) {
-      return false;
-    }
-  } else if (subagentId) {
+  if (subagentId !== (expectedSubagentId ?? '')) {
     return false;
   }
   if (expectedPageIdx !== undefined && payload.page_idx !== expectedPageIdx) {
+    return false;
+  }
+  if (expectedCursor !== undefined && payload.cursor !== expectedCursor) {
     return false;
   }
   if (!sid) {
     return allowLegacyNoSession && (isHistoryRestoreDonePayload(payload) || isHistoryBatchEnd(payload));
   }
   return true;
+}
+
+function readHistoryCursorMeta(
+  payload: Record<string, unknown>,
+  requestCursor: string | null,
+): HistoryCursorMeta | null {
+  const hasMore = payload.has_more;
+  const nextCursor = payload.next_cursor;
+  const snapshotId = payload.snapshot_id;
+  const snapshotEnd = payload.snapshot_end;
+  if (typeof hasMore !== 'boolean') return null;
+
+  let normalizedNextCursor: string | null = null;
+  if (hasMore) {
+    if (typeof nextCursor !== 'string' || !nextCursor) return null;
+    normalizedNextCursor = nextCursor;
+  } else if (nextCursor !== null) {
+    return null;
+  }
+
+  if (snapshotId !== null && typeof snapshotId !== 'string') return null;
+  if (typeof snapshotEnd !== 'number' || !Number.isFinite(snapshotEnd) || snapshotEnd < 0) return null;
+
+  return {
+    requestCursor,
+    nextCursor: normalizedNextCursor,
+    hasMore,
+    snapshotId,
+    snapshotEnd,
+  };
 }
 
 export function beginHistoryRestore(options: BeginHistoryRestoreOptions): HistoryRestoreHandle {
@@ -1779,7 +1850,7 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
@@ -1795,14 +1866,24 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
       payload,
       options.sessionId,
       undefined,
-      activeHistoryRequests.size === 1,
+      false,
       options.subagentId,
+      null,
     )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
+    const nextMeta = readHistoryCursorMeta(payload, null);
+    if (nextMeta) {
+      cursorMeta = nextMeta;
+    }
+
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
     }
 
     if (isHistoryRestoreDonePayload(payload)) {
@@ -1856,23 +1937,62 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
     releaseLiveEvents();
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    stopListening();
+    try {
+      options.onFailure?.(failure);
+    } finally {
+      releaseLiveEvents();
+    }
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
 
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
-      materializeHistoryTimeline(entries);
+    if (!cursorMeta) {
+      stopListening();
+      try {
+        options.onFailure?.({
+          code: 'INVALID_HISTORY_RESPONSE',
+          message: 'history response did not include cursor metadata',
+        });
+      } finally {
+        releaseLiveEvents();
+      }
+      return;
+    }
+
+    const {
+      messages,
+      toolReplay,
+      harnessReplay,
+      teamReplay,
+      subagentReplay,
+      reasoningReplay,
+      contextUsageReplay,
+    } = materializeHistoryTimeline(entries);
     const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
 
     stopListening();
 
     try {
-      if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
-        options.onEmpty?.(totalPages);
+      const isEmpty = (
+        messages.length === 0
+        && toolReplay.length === 0
+        && harnessReplay.length === 0
+        && teamReplay.length === 0
+        && subagentReplay.length === 0
+        && !latestContextUsage
+      );
+      if (isEmpty) {
+        options.onEmpty?.(cursorMeta);
         return;
       }
-      options.onReady(messages, totalPages);
+      options.onReady(messages, cursorMeta);
       if (latestContextUsage) {
         options.onContextUsage?.(latestContextUsage);
       }
@@ -1886,9 +2006,9 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
         options.onTeamReplay?.(teamReplay);
       }
       if (subagentReplay.length > 0) {
-      options.onSubagentReplay?.(subagentReplay);
-    }
-    if (reasoningReplay.length > 0) {
+        options.onSubagentReplay?.(subagentReplay);
+      }
+      if (reasoningReplay.length > 0) {
         options.onReasoningReplay?.(reasoningReplay);
       }
       const compactionCount = entries.reduce((n, e) => (e.kind === 'compaction' ? n + 1 : n), 0);
@@ -1905,17 +2025,15 @@ export function beginHistoryRestore(options: BeginHistoryRestoreOptions): Histor
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 兜底：后端 history.get 流超时（faas 旧 session runtime 过 TTL 被
-  // 回收、init 60s 超时）时不发结束帧，强制 finalize 恢复 isLoadingHistory，
-  // 避免前端永久转圈、吞掉后续 chat.processing_status(is_processing=false)。
+  // 超时是一次明确失败，不能把不完整批次当作成功历史发布。
   restoreTimer = setTimeout(() => {
     if (disposed || finalized) return;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }
 
-export interface FetchHistoryPageResult {
+export interface FetchHistoryCursorBatchResult {
   messages: Message[];
   toolReplay: HistoryToolReplayItem[];
   harnessReplay: HistoryHarnessReplayItem[];
@@ -1923,58 +2041,59 @@ export interface FetchHistoryPageResult {
   subagentReplay: HistorySubagentReplayItem[];
   reasoningReplay: HistoryReasoningReplayItem[];
   contextUsageSnapshot: Record<string, unknown> | null;
-  totalPages: number | null;
+  cursor: HistoryCursorMeta;
 }
 
-export interface FetchHistoryPageOptions {
+export interface FetchHistoryCursorBatchOptions {
   sessionId: string;
-  pageIdx: number;
+  cursor: string | null;
   subagentId?: string;
-  onReady: (result: FetchHistoryPageResult) => void;
-  onEmpty?: (totalPages: number | null) => void;
-  onTimeout?: () => void;
+  onReady: (result: FetchHistoryCursorBatchResult) => void;
+  onFailure?: (failure: HistoryRestoreFailure) => void;
   onError?: (message: string) => void;
 }
 
-/**
- * 拉取单页历史（用于「加载更早」）。
- * 调用方需在订阅建立后再发 `history.get`（含对应 `page_idx`）。
- */
-export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryRestoreHandle {
-  const requestKey = makeHistoryPageKey(options.sessionId, options.pageIdx, options.subagentId);
+/** Subscribe before sending the matching cursor-based ``history.get`` request. */
+export function fetchHistoryCursorBatch(
+  options: FetchHistoryCursorBatchOptions,
+): HistoryRestoreHandle {
+  const requestKey = makeHistoryCursorKey(options.sessionId, options.cursor, options.subagentId);
   replaceActiveHistoryRequest(requestKey);
 
   const generation = restoreGeneration + 1;
   restoreGeneration = generation;
 
   const entries: HistoryTimelineEntry[] = [];
-  let totalPages: number | null = null;
+  let cursorMeta: HistoryCursorMeta | null = null;
   let disposed = false;
   let finalized = false;
-  let timedOut = false;
   let restoreTimer: ReturnType<typeof setTimeout> | null = null;
   const reassembler = new HistoryRecordReassembler();
 
   const unsubscribe = webClient.on(HISTORY_MESSAGE_EVENT, (event: WsEvent) => {
-    if (disposed) {
-      return;
-    }
-
+    if (disposed) return;
     const payload = event.payload;
     if (!shouldProcessHistoryPayload(
       payload,
       options.sessionId,
-      options.pageIdx,
-      activeHistoryRequests.size === 1,
+      undefined,
+      false,
       options.subagentId,
+      options.cursor,
     )) {
       return;
     }
 
-    if (typeof payload.total_pages === 'number' && Number.isFinite(payload.total_pages)) {
-      totalPages = payload.total_pages;
-    }
+    const nextMeta = readHistoryCursorMeta(payload, options.cursor);
+    if (nextMeta) cursorMeta = nextMeta;
 
+    if (payload.status === 'error') {
+      fail({
+        code: typeof payload.code === 'string' ? payload.code : 'HISTORY_RESTORE_FAILED',
+        message: typeof payload.error === 'string' ? payload.error : 'history restore failed',
+      });
+      return;
+    }
     if (isHistoryRestoreDonePayload(payload)) {
       finalize();
       return;
@@ -1984,13 +2103,9 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     const record = normalizeHistoryContent(raw, options.onError);
     if (record) {
       const full = reassembler.feed(record);
-      if (!full) {
-        return;
-      }
+      if (!full) return;
       const entry = parseHistoryTimelineEntry(full, options.sessionId, options.subagentId);
-      if (entry) {
-        entries.unshift(entry);
-      }
+      if (entry) entries.unshift(entry);
       const reasoningText = extractHistoryReasoningText(full);
       if (reasoningText) {
         entries.unshift({
@@ -2002,10 +2117,7 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
         });
       }
     }
-
-    if (isHistoryBatchEnd(payload)) {
-      finalize();
-    }
+    if (isHistoryBatchEnd(payload)) finalize();
   });
 
   function dispose(): void {
@@ -2021,46 +2133,35 @@ export function fetchHistoryPage(options: FetchHistoryPageOptions): HistoryResto
     }
   }
 
+  function fail(failure: HistoryRestoreFailure): void {
+    if (disposed || finalized) return;
+    finalized = true;
+    dispose();
+    options.onFailure?.(failure);
+  }
+
   function finalize(): void {
     if (disposed || finalized) return;
     finalized = true;
     reassembler.flush();
-
-    if (timedOut) {
+    if (!cursorMeta) {
       dispose();
-      options.onTimeout?.();
+      options.onFailure?.({
+        code: 'INVALID_HISTORY_RESPONSE',
+        message: 'history response did not include cursor metadata',
+      });
       return;
     }
-
-    const { messages, toolReplay, harnessReplay, teamReplay, subagentReplay, reasoningReplay, contextUsageReplay } =
-      materializeHistoryTimeline(entries);
-    const latestContextUsage = selectLatestContextUsagePayload(contextUsageReplay);
-
+    const materialized = materializeHistoryTimeline(entries);
+    const contextUsageSnapshot = selectLatestContextUsagePayload(materialized.contextUsageReplay);
     dispose();
-
-    if (messages.length === 0 && toolReplay.length === 0 && harnessReplay.length === 0 && teamReplay.length === 0 && subagentReplay.length === 0 && !latestContextUsage) {
-      options.onEmpty?.(totalPages);
-      return;
-    }
-    options.onReady({
-      messages,
-      toolReplay,
-      harnessReplay,
-      teamReplay,
-      subagentReplay,
-      reasoningReplay,
-      contextUsageSnapshot: latestContextUsage,
-      totalPages,
-    });
+    options.onReady({ ...materialized, contextUsageSnapshot, cursor: cursorMeta });
   }
 
   const handle: HistoryRestoreHandle = { generation, dispose };
   activeHistoryRequests.set(requestKey, handle);
-  // 同 beginHistoryRestore：兜底超时，避免分页 history.get 流卡死。
   restoreTimer = setTimeout(() => {
-    if (disposed || finalized) return;
-    timedOut = true;
-    finalize();
+    fail({ code: 'HISTORY_RESTORE_TIMEOUT', message: 'history restore timed out' });
   }, HISTORY_RESTORE_TIMEOUT_MS);
   return handle;
 }

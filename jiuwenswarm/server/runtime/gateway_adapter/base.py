@@ -57,7 +57,7 @@ def build_error_response(
 ) -> AgentResponse:
     """异常/失败映射为统一的失败 AgentResponse。
 
-    ``extra`` 追加结构化错误明细（如 ``PROJECT_ARCHIVED`` 携带 ``project_id``），
+    ``extra`` 追加结构化错误明细（如生命周期失败携带 ``project_id``），
     供 Gateway 以 ``preserve_error_payload`` 透传给前端。
     """
     payload: dict[str, Any] = {"error": str(error), "code": code}

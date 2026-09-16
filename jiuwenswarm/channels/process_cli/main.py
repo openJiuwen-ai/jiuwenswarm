@@ -139,6 +139,11 @@ def build_parser() -> argparse.ArgumentParser:
         metavar="FILE|-",
         help="执行一份机器 JSON 请求并输出版本化 JSONL；- 从标准输入读取至 EOF。",
     )
+    parser.add_argument(
+        "--run-jsonl",
+        action="store_true",
+        help="一次进程内按行接收 run、answer、cancel；任务结束即退出。",
+    )
     parser.add_argument("--cwd", help="工作目录；默认为当前目录。")
     parser.add_argument("--project-dir", help="稳定的项目目录；默认与工作目录相同。")
     parser.add_argument(
@@ -219,6 +224,16 @@ def _activate_requested_cwd(
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if args.run_jsonl:
+        from jiuwenswarm.channels.process_cli.machine_entry import execute_source
+
+        sys.exit(
+            execute_source(
+                "-",
+                json_lines=True,
+                conflicting_arguments=sys.argv[1:] != ["--run-jsonl"],
+            )
+        )
     if args.run_json is not None:
         from jiuwenswarm.channels.process_cli.machine_entry import execute_source
 

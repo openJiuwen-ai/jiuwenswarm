@@ -75,7 +75,7 @@ export function agentManagementReducer(
     case 'catalog.loaded':
       return { ...state, catalog: action.catalog, catalogStatus: 'success', catalogError: null };
     case 'catalog.error':
-      return { ...state, catalog: [], catalogStatus: 'error', catalogError: action.message };
+      return { ...state, catalogStatus: state.catalog.length ? 'success' : 'error', catalogError: action.message };
     case 'detail.loading':
       return {
         ...state,

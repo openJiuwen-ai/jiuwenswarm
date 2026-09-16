@@ -11,5 +11,5 @@ export function requestEquipmentList<T>(
   method: string,
   params: Record<string, unknown>,
 ): Promise<T> {
-  return request<T>(method, params, { timeoutMs: EQUIPMENT_LIST_TIMEOUT_MS });
+  return request<T>(method, { ...params, cache_mode: 'prefer_cache' }, { timeoutMs: EQUIPMENT_LIST_TIMEOUT_MS });
 }

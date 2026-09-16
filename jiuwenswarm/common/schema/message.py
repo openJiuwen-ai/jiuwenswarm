@@ -117,11 +117,10 @@ class ReqMethod(Enum):
     SESSION_ARCHIVE = "session.archive"
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
-    PROJECT_ARCHIVED_LIST = "project.archived.list"
     PROJECT_DELETE = "project.delete"
     PROJECT_LIFECYCLE = "project.lifecycle"
-    PROJECT_ARCHIVE = "project.archive"
-    PROJECT_UNARCHIVE = "project.unarchive"
+    PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"
+    PROJECT_SESSIONS_DELETE_ARCHIVED = "project.sessions.delete_archived"
     PROJECT_GIT_STATUS = "project.git.status"
     PROJECT_GIT_PROBE = "project.git.probe"
     PROJECT_GIT_INIT = "project.git.init"
@@ -181,6 +180,14 @@ class ReqMethod(Enum):
     AGENTS_TOOLS_LIST = "agents.tools_list"
     AGENT_SWITCH = "3rdagent.switch"
     AGENT_LIST = "3rdagent.list"
+
+    # Unified asset publishing; dispatched by AgentServer independently of chats.
+    ASSETS_PUBLISH_DESCRIBE = "assets.publish.describe"
+    ASSETS_PUBLISH_PREPARE = "assets.publish.prepare"
+    ASSETS_PUBLISH_COMMIT = "assets.publish.commit"
+    ASSETS_PUBLISH_STATUS = "assets.publish.status"
+    ASSETS_PUBLISH_RECORDS = "assets.publish.records"
+    ASSETS_PUBLISH_LOCAL_STATUS = "assets.publish.local_status"
 
     # mcp management.
     MCP_LIST = "mcp.list"
@@ -252,6 +259,8 @@ class ReqMethod(Enum):
     SKILLS_GRAPH_STATUS = "skills.graph.status"
     SKILLS_GRAPH_GET = "skills.graph.get"
     SKILLS_GRAPH_CANCEL = "skills.graph.cancel"
+    SKILLS_EXPERIENCE_LIST = "skills.experience.list"
+    SKILLS_EXPERIENCE_REQUEST = "skills.experience.request"
 
     PERSONAL_CONTEXT_RUNTIME_STATUS = "personal_context.runtime.status"
     PERSONAL_CONTEXT_RUNTIME_START_COLLECTION = (
@@ -435,8 +444,6 @@ class EventType(Enum):
     SESSION_ARCHIVED = "session.archived"
     SESSION_UNARCHIVED = "session.unarchived"
     SESSION_DELETED = "session.deleted"
-    PROJECT_ARCHIVED = "project.archived"
-    PROJECT_UNARCHIVED = "project.unarchived"
     PROJECT_DELETED = "project.deleted"
     SESSION_LIFECYCLE_UPDATED = "session.lifecycle.updated"
     PROJECT_LIFECYCLE_UPDATED = "project.lifecycle.updated"

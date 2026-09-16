@@ -85,7 +85,6 @@ def _project_info_payload(
             "pinned": False,
             "pin_order": 0,
             "is_default": True,
-            "hidden": False,
             "lifecycle_operation": None,
             "execution_blocked": False,
             "stop_pending": False,
@@ -108,8 +107,6 @@ def _project_info_payload(
         "pinned": project.pinned,
         "pin_order": project.pin_order,
         "is_default": False,
-        "hidden": project.hidden,
-        "archived_at": getattr(project, "archived_at", 0),
         **lifecycle_projection("project", project.project_id),
         "work_mode": getattr(project, "work_mode", "") or DEFAULT_WEB_WORK_MODE,
         "git": git,
@@ -127,7 +124,7 @@ def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, s
         return None, "project_id is required", "BAD_REQUEST"
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
+    visible_project_ids = {project.project_id for project in all_projects}
     stats: dict[str, Any] = {
         "session_count": 0,
         "last_message_at": None,
@@ -149,9 +146,8 @@ def _load_project_info(params: dict[str, Any]) -> tuple[dict[str, Any] | None, s
         info = _project_info_payload(None, default_id=project_id, stats=stats)
         return {"project": info, **info}, None, None
 
-    include_hidden = bool(params.get("include_hidden"))
     project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None or (project.hidden and not include_hidden):
+    if project is None:
         return None, "project not found", "NOT_FOUND"
     info = _project_info_payload(project, stats=stats)
     return {"project": info, **info}, None, None
@@ -216,10 +212,10 @@ def _load_project_sessions(
         return None, "project_id is required", "BAD_REQUEST"
     limit, offset = _parse_page(params)
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
+    visible_project_ids = {project.project_id for project in all_projects}
     if not is_default_project_id(project_id):
         project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None or project.hidden:
+        if project is None:
             return None, "project not found", "NOT_FOUND"
 
     matched: list[dict[str, Any]] = []
@@ -256,10 +252,10 @@ def _load_project_cron_sessions(
     cron_id = str(params.get("cron_id") or "").strip()
     limit, offset = _parse_page(params)
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
+    visible_project_ids = {project.project_id for project in all_projects}
     if not is_default_project_id(project_id):
         project = project_store.get_project_by_id(project_id, cache_bust=True)
-        if project is None or project.hidden:
+        if project is None:
             return None, "project not found", "NOT_FOUND"
     matched: list[dict[str, Any]] = []
     for session in collect_all_sessions_metadata():
@@ -294,7 +290,6 @@ def _load_project_list(
     filter_value = str(params.get("filter") or "all").strip() or "all"
     if filter_value not in {"all", "pinned", "unpinned"}:
         filter_value = "all"
-    include_hidden = bool(params.get("include_hidden", False))
     raw_work_mode = params.get("work_mode")
     work_mode: str | None = None
     if isinstance(raw_work_mode, str) and raw_work_mode.strip():
@@ -305,7 +300,7 @@ def _load_project_list(
 
     all_projects = project_store.list_projects(include_hidden=True, cache_bust=True)
     projects = [p for p in all_projects if work_mode is None or (p.work_mode or DEFAULT_WEB_WORK_MODE) == work_mode]
-    visible_project_ids = {project.project_id for project in all_projects if not project.hidden}
+    visible_project_ids = {project.project_id for project in all_projects}
     stats: dict[str, dict[str, Any]] = {}
 
     def stats_for(project_id: str) -> dict[str, Any]:
@@ -332,7 +327,7 @@ def _load_project_list(
             return _project_info_payload(None, default_id=default_id, stats=stats.get(default_id, zero))
         return _project_info_payload(
             project,
-            stats=zero if project.hidden else stats.get(project.project_id, zero),
+            stats=stats.get(project.project_id, zero),
         )
 
     default_ids: list[str] = []
@@ -353,13 +348,13 @@ def _load_project_list(
         result = [item(project) for project in projects if project.pinned]
         result.sort(key=lambda info: info["pin_order"])
     elif filter_value == "unpinned":
-        result = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
+        result = [item(p) for p in projects if not p.pinned]
         result.sort(key=user_sort, reverse=True)
         result.extend(default_items)
     else:
         pinned = [item(project) for project in projects if project.pinned]
         pinned.sort(key=lambda info: info["pin_order"])
-        unpinned = [item(p) for p in projects if not p.pinned and (include_hidden or not p.hidden)]
+        unpinned = [item(p) for p in projects if not p.pinned]
         unpinned.sort(key=user_sort, reverse=True)
         result = pinned + unpinned + default_items
     return {"projects": result}, None, None
@@ -403,7 +398,7 @@ def _pin_project(
     if is_default_project_id(project_id):
         return None, "default project cannot be pinned", "FORBIDDEN"
     project = project_store.get_project_by_id(project_id, cache_bust=True)
-    if project is None or project.hidden:
+    if project is None:
         return None, "project not found", "NOT_FOUND"
     project.pinned = pinned
     if not pinned:
@@ -444,7 +439,7 @@ def _create_project(
             return None, f"failed to create project directory: {exc}", "INTERNAL_ERROR"
 
     try:
-        project, restored = project_store.create_or_restore_project(
+        project, restored = project_store.create_project_checked(
             name, project_dir, work_mode
         )
     except project_store.ProjectDirConflict:

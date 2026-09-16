@@ -164,6 +164,7 @@
   --effect-shadow-md: 0 4px 12px rgba(0, 0, 0, 0.08), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-lg: 0 12px 28px rgba(0, 0, 0, 0.12), 0 0 0 1px rgba(0, 0, 0, 0.04);
   --effect-shadow-xl: 0 24px 48px rgba(0, 0, 0, 0.15), 0 0 0 1px rgba(0, 0, 0, 0.04);
+  --effect-card-hover: 0 8px 24px rgba(0, 0, 0, 0.16);
   --effect-shadow-glow: 0 0 24px var(--color-action-primary-glow);
   --effect-page-background: var(--color-surface-page);
   --effect-content-background: var(--color-surface-shell);
