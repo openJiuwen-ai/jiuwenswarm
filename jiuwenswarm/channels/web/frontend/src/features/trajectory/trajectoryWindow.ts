@@ -332,6 +332,25 @@ export function dedupeSubjectSummaries(
   return [...bySubjectId.values()];
 }
 
+/** Which frame catch-up a refresh performs. */
+export type StreamFrameRefresh = 'always' | 'ifBehind';
+
+/**
+ * Whether a refresh should page stream frames.
+ *
+ * A trace hint states the frame watermark it was committed at. When the frames
+ * this reader already holds reach it, paging would only confirm there is
+ * nothing new -- one round trip per hint while an answer streams. Reconnects,
+ * terminal events and rebuilds pass 'always': they cannot trust a hint.
+ */
+export function shouldCatchUpStreamFrames(
+  mode: StreamFrameRefresh,
+  heldFrameSeq: number,
+  hintedFrameSeq: number,
+): boolean {
+  return mode === 'always' || heldFrameSeq < hintedFrameSeq;
+}
+
 export function selectSummariesNeedingLoad(
   loadedRevisions: ReadonlyMap<string, number>,
   ...summaryGroups: Array<readonly TrajectorySubjectSummary[]>

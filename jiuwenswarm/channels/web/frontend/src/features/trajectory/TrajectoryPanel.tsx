@@ -64,10 +64,12 @@ import {
   sameTrajectoryUsageMap,
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
+  shouldCatchUpStreamFrames,
   spansOf,
   stageTrajectoryChainPages,
   trajectoryContentMode,
   type StagedTrajectoryChain,
+  type StreamFrameRefresh,
   type TrajectoryTerminalEventName,
 } from './trajectoryWindow';
 import {
@@ -101,7 +103,7 @@ interface TraceUpdatedPayload {
   session_id?: unknown;
   trace_id?: unknown;
   revision?: unknown;
-  change_seq?: unknown;
+  frame_seq?: unknown;
   store_epoch?: unknown;
   lifecycle?: unknown;
 }
@@ -217,6 +219,8 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   );
   const trajectoryV2ReducerRef = useRef(createTrajectoryV2Reducer());
   const sessionCumulativeUsageRef = useRef(new Map<string, TrajectoryUsage>());
+  // Highest frame watermark any trace hint has stated for this session.
+  const hintedFrameSeqRef = useRef(0);
   const [publishedWindow, setPublishedWindow] = useState<PublishedTrajectoryWindow>(
     EMPTY_PUBLISHED_WINDOW,
   );
@@ -434,6 +438,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     subjectViewCacheRef.current.clear();
     trajectoryV2ReducerRef.current.clear();
     sessionCumulativeUsageRef.current.clear();
+    hintedFrameSeqRef.current = 0;
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
     initialLoadProgressRef.current = null;
     setInitialLoadProgress(null);
@@ -581,7 +586,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         windowState.storeEpoch = page.store_epoch;
         windowState.watermark = page.watermark;
         windowState.listWindowInitialized = true;
-        await refreshSessionUsage(signal, generation);
+        // Resetting the window zeroed the frame cursor, so a page opened while
+        // an answer streams must page the frames too, or its running spans wait
+        // for the next hint before showing any text.
+        await Promise.all([
+          refreshSessionUsage(signal, generation),
+          catchUpStreamFrames(signal, generation),
+        ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
         setError(null);
         return true;
@@ -603,9 +614,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       if (rebuildPromiseRef.current === operation) rebuildPromiseRef.current = null;
     });
     return operation;
-  }, [chinese, clearPublishedWindow, loadSummaries, refreshSessionUsage, sessionId]);
+  }, [
+    catchUpStreamFrames,
+    chinese,
+    clearPublishedWindow,
+    loadSummaries,
+    refreshSessionUsage,
+    sessionId,
+  ]);
 
-  const refreshLatest = useCallback(async () => {
+  const refreshLatest = useCallback(async (frames: StreamFrameRefresh = 'always') => {
     if (sessionId === 'new' || requestControllerRef.current?.signal.aborted) return;
     if (refreshPromiseRef.current !== null) return refreshPromiseRef.current;
     const signal = requestControllerRef.current?.signal;
@@ -663,7 +681,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             windowStateRef.current.watermark = subjectWindow.watermark;
           })(),
           refreshSessionUsage(signal, generation),
-          catchUpStreamFrames(signal, generation),
+          shouldCatchUpStreamFrames(
+            frames,
+            windowStateRef.current.frames.frameSeq,
+            hintedFrameSeqRef.current,
+          )
+            ? catchUpStreamFrames(signal, generation)
+            : undefined,
         ]);
         if (signal.aborted || !coordinator.isCurrent(generation)) return;
         setError(null);
@@ -679,7 +703,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         refreshPromiseRef.current = null;
       }
     }
-  }, [chinese, loadSummaries, rebuildFromHead, refreshSessionUsage, sessionId]);
+  }, [
+    catchUpStreamFrames,
+    chinese,
+    loadSummaries,
+    rebuildFromHead,
+    refreshSessionUsage,
+    sessionId,
+  ]);
 
   const catchUpAfterTerminalEvent = useCallback((): Promise<void> => {
     terminalCatchUpAgainRef.current = true;
@@ -706,18 +737,16 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const flushTraceHints = useCallback(async () => {
     const signal = requestControllerRef.current?.signal;
     if (signal === undefined || signal.aborted) return;
-    const coordinator = operationCoordinatorRef.current;
-    const generation = coordinator.currentGeneration();
     await hintCoordinatorRef.current.drain(async () => {
       // A hint names a trace, which no longer maps onto one chain: a trace can
       // carry records for several subjects. It is enough as a signal that
-      // something advanced - the listing decides which chains to reload.
-      await refreshLatest();
-      await refreshSessionUsage(signal, generation);
+      // something advanced - the listing decides which chains to reload. The
+      // refresh already pulls usage; frames only when a hint is ahead of them.
+      await refreshLatest('ifBehind');
     }, () => new Promise<void>((resolve) => {
       window.setTimeout(resolve, LIVE_HINT_PULL_INTERVAL_MS);
     }));
-  }, [refreshLatest, refreshSessionUsage]);
+  }, [refreshLatest]);
 
   useEffect(() => {
     requestControllerRef.current?.abort();
@@ -762,7 +791,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const unsubscribe = webClient.on<TraceUpdatedPayload>('trace.updated', (event) => {
       if (event.payload.session_id !== sessionId) return;
       const traceId = event.payload.trace_id;
-      const revisionValue = event.payload.revision ?? event.payload.change_seq;
+      const frameSeq = event.payload.frame_seq;
+      if (typeof frameSeq === 'number'
+        && Number.isSafeInteger(frameSeq)
+        && frameSeq > hintedFrameSeqRef.current) {
+        hintedFrameSeqRef.current = frameSeq;
+      }
+      const revisionValue = event.payload.revision;
       const revision = typeof revisionValue === 'number'
         ? revisionValue
         : typeof revisionValue === 'string' && /^\d+$/.test(revisionValue)

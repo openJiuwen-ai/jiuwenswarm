@@ -13,6 +13,7 @@ import {
   sameTrajectoryUsageMap,
   selectSummariesNeedingLoad,
   shouldCatchUpAfterTrajectoryTerminalEvent,
+  shouldCatchUpStreamFrames,
   stageTrajectoryChainPages,
   trajectoryContentMode,
 } from '../node_modules/.cache/trajectory-window/trajectoryWindow.mjs';
@@ -647,6 +648,14 @@ test('an eligible-to-mixed epoch change yields reset and removes old trace state
 });
 
 
+
+test('a hinted refresh pages frames only when the hint is ahead of what is held', () => {
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 40, 41), true);
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 41, 41), false);
+  assert.equal(shouldCatchUpStreamFrames('ifBehind', 50, 41), false);
+  // Rebuilds, reconnects and terminal events cannot trust a hint.
+  assert.equal(shouldCatchUpStreamFrames('always', 50, 41), true);
+});
 
 test('generation invalidation marks earlier operations stale', () => {
   const coordinator = createTrajectoryOperationCoordinator();
