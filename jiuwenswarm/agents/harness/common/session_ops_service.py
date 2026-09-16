@@ -110,14 +110,15 @@ def _mark_fork_context(
     """Add model-visible fork provenance without duplicating ancestor markers."""
     from openjiuwen.core.foundation.llm.schema.message import SystemMessage
 
-    inherited_messages = [
-        message
-        for message in messages
-        if not (
-            isinstance(getattr(message, "metadata", None), dict)
-            and message.metadata.get(_FORK_CONTEXT_MARKER_METADATA_KEY)
+    inherited_messages: list[Any] = []
+    for message in messages:
+        metadata = getattr(message, "metadata", None)
+        has_marker = (
+            isinstance(metadata, dict)
+            and bool(metadata.get(_FORK_CONTEXT_MARKER_METADATA_KEY))
         )
-    ]
+        if not has_marker:
+            inherited_messages.append(message)
     marker = SystemMessage(
         content=(
             (
@@ -269,12 +270,11 @@ def _fork_history_prefix(
 ) -> tuple[list[dict[str, Any]], dict[str, Any]]:
     """Return history through the selected visible message, inclusive."""
     normalized_role = role.strip().lower()
-    candidates = [
-        (index, record)
-        for index, record in enumerate(records)
-        if not normalized_role
-        or str(record.get("role") or "").strip().lower() == normalized_role
-    ]
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for index, record in enumerate(records):
+        record_role = str(record.get("role") or "").strip().lower()
+        if not normalized_role or record_role == normalized_role:
+            candidates.append((index, record))
 
     normalized_message_id = message_id.strip()
     if normalized_message_id:
@@ -293,8 +293,7 @@ def _fork_history_prefix(
             exact_final = [
                 item
                 for item in exact
-                if str(item[1].get("event_type") or "").strip()
-                in {"", "chat.final"}
+                if str(item[1].get("event_type") or "").strip() in {"", "chat.final"}
             ]
             if exact_final:
                 exact = exact_final
@@ -322,16 +321,14 @@ def _fork_history_prefix(
 
     cutoff_seconds = _fork_timestamp_seconds(timestamp)
     if cutoff_seconds is not None and candidates:
-        timestamp_matches = [
-            (
-                abs(record_seconds - cutoff_seconds),
-                index,
-                record,
+        timestamp_matches: list[tuple[float, int, dict[str, Any]]] = []
+        for index, record in candidates:
+            record_seconds = _fork_timestamp_seconds(record.get("timestamp"))
+            if record_seconds is None:
+                continue
+            timestamp_matches.append(
+                (abs(record_seconds - cutoff_seconds), index, record)
             )
-            for index, record in candidates
-            if (record_seconds := _fork_timestamp_seconds(record.get("timestamp")))
-            is not None
-        ]
         if timestamp_matches:
             distance, index, selected = min(timestamp_matches, key=lambda item: item[0])
             if distance <= 30:
