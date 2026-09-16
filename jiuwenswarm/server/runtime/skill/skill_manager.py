@@ -431,8 +431,11 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (  # noqa: E40
 from jiuwenswarm.server.runtime.skill.skill_vetter.report import VetReport, run_vet  # noqa: E402
 from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import compute_content_hash  # noqa: E402
 from jiuwenswarm.server.runtime.skill.skill_vetter.store import (  # noqa: E402
+    consume_vet_token,
     get_vet_approval,  # noqa: F401
     get_vet_report,
+    invalidate_vet_tokens,
+    issue_vet_token,
     remove_skill_hash,
     set_vet_approval,
     set_vet_report,
@@ -1439,7 +1442,7 @@ class SkillManager:
         if skill_dir is None:
             return {"success": False, "detail": f"未找到本地 skill: {name}"}
         report = self._ensure_vet_report(skill_dir)
-        return {
+        payload: dict[str, Any] = {
             "success": True,
             "name": name,
             "grade": report.grade,
@@ -1447,11 +1450,27 @@ class SkillManager:
             "content_hash": report.content_hash,
             "escalated": report.escalated,
         }
+        if (
+            report.grade in ("high", "extreme")
+            and get_vet_approval(self._state, report.content_hash) is None
+        ):
+            payload["token"] = issue_vet_token(
+                self._state, name, report.content_hash
+            )
+            self._save_state()
+        return payload
 
     async def handle_skills_vet_approve(self, params: dict) -> dict:
-        """记录对某个 content hash 的显式批准，解锁 HIGH/EXTREME 启用。"""
+        """记录对某个 content hash 的显式批准，解锁 HIGH/EXTREME 启用。
+
+        要求命中的 ``(skill_name, content_hash)`` 单次审批令牌；缺失、错误、
+        hash 不匹配或已被消费都失败关闭。该令牌是"确实看过审查结果"的证据绑定，
+        不是基于角色的授权（当前 RPC 层没有任何权限机制）；真正的 RPC 权限层
+        属于本分支之外的后续工作。
+        """
         name = params.get("name", "")
         content_hash = str(params.get("content_hash") or "").strip()
+        token = str(params.get("token") or "").strip()
         try:
             name = _safe_path_name(name, "skill")
         except ValueError as exc:
@@ -1459,6 +1478,12 @@ class SkillManager:
             return {"success": False, "detail": str(exc)}
         if not content_hash:
             return {"success": False, "detail": "缺少参数: content_hash"}
+        if not token:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "缺少或无效的审批令牌，请重新触发安全审查后再批准。",
+            }
         skill_dir = self._resolve_local_skill_dir(name)
         if skill_dir is None:
             return {"success": False, "detail": f"未找到本地 skill: {name}"}
@@ -1468,6 +1493,12 @@ class SkillManager:
                 "success": False,
                 "code": ERROR_SKILL_VET_BLOCKED,
                 "detail": "content_hash 与当前技能内容不匹配，请重新审计后再批准。",
+            }
+        if not consume_vet_token(self._state, name, content_hash, token):
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "缺少或无效的审批令牌，请重新触发安全审查后再批准。",
             }
         set_vet_approval(self._state, content_hash, approved_by=params.get("approved_by") or "user")
         self._save_state()
@@ -9120,6 +9151,8 @@ class SkillManager:
             section["skill_hashes"] = hashes
         old_hash = hashes.get(skill_name)
         report = self._ensure_vet_report(skill_dir)
+        if old_hash is not None and old_hash != new_hash:
+            invalidate_vet_tokens(self._state, skill_name)
         if (
             old_hash is not None
             and old_hash != new_hash
@@ -9152,6 +9185,8 @@ class SkillManager:
             return None
         if get_vet_approval(self._state, report.content_hash) is not None:
             return None
+        token = issue_vet_token(self._state, skill_name, report.content_hash)
+        self._save_state()
         return {
             "success": False,
             "code": ERROR_SKILL_VET_BLOCKED,
@@ -9159,6 +9194,7 @@ class SkillManager:
             "grade": report.grade,
             "findings": report.findings,
             "content_hash": report.content_hash,
+            "token": token,
         }
 
     def remove_skill_config(self, skill_name: str) -> None:

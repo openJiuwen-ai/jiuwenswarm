@@ -46,9 +46,15 @@ async def test_handle_skills_vet_missing_name(skill_dir, tmp_path):
 async def test_handle_skills_vet_approve_records_approval(skill_dir, tmp_path):
     mgr = _make_mgr(tmp_path, skill_dir)
     report = mgr._ensure_vet_report(skill_dir)
+    from jiuwenswarm.server.runtime.skill.skill_vetter.store import (
+        get_vet_approval,
+        issue_vet_token,
+    )
+
+    token = issue_vet_token(mgr._state, "s", report.content_hash)
     out = await SkillManager.handle_skills_vet_approve(
-        mgr, {"name": "s", "content_hash": report.content_hash}
+        mgr,
+        {"name": "s", "content_hash": report.content_hash, "token": token},
     )
     assert out["success"] is True
-    from jiuwenswarm.server.runtime.skill.skill_vetter.store import get_vet_approval
     assert get_vet_approval(mgr._state, report.content_hash) is not None
