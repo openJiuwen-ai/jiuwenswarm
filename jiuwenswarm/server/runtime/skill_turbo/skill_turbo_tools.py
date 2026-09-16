@@ -587,6 +587,7 @@ def _wrap_skill_turbo_result(
         "当前 skill 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
         "此排除规则为临时措施，待 skill 加速器适配模板功能后移除。"
     ),
+    stateless=True,
 )
 async def skill_turbo(query: str) -> dict[str, Any] | str:
     """执行 SkillAccelerationExec 任务。

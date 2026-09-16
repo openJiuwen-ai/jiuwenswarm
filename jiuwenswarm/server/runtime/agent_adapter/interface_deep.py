@@ -11730,17 +11730,11 @@ class JiuWenSwarmDeepAdapter:
                 logger.info("[JiuWenSwarmDeepAdapter] SkillTurbo disabled, skipping tool registration")
                 return
 
-            from openjiuwen.core.runner import Runner as RunnerClass
             from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import get_skill_turbo_tools
 
             for tool in get_skill_turbo_tools():
-                try:
-                    RunnerClass.resource_mgr.add_tool(tool)
-                except Exception as e:
-                    if "already exist" not in str(e):
-                        logger.warning("[JiuWenSwarmDeepAdapter] Failed to register skill_turbo tool: %s", e)
-                        continue
-                self._instance.ability_manager.add(tool.card)
+                registered = self._register_shared_tool(tool)
+                self._instance.ability_manager.add(registered.card)
 
             # 注入 adapter 到 StreamEventRail
             if self._stream_event_rail is not None:

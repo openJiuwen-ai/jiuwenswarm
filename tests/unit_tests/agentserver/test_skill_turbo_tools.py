@@ -46,6 +46,7 @@ def _skill_turbo_runtime():
 
 def test_skill_acceleration_exec_defers_timeout_to_pipeline() -> None:
     assert skill_turbo.card.name == "skill_acceleration_exec"
+    assert skill_turbo.card.stateless is True
     assert skill_turbo.card.properties["resilience"]["timeout_s"] is None
 
 
