@@ -3981,7 +3981,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
 
                 <ChatModelSelector
                   disabled={
-                    isProcessing || composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
+                    composerDisabled || (!isAgentMode && activeSessionId !== NEW_CONVERSATION_ID)
                   }
                 />
 
