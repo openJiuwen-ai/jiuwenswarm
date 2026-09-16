@@ -80,8 +80,10 @@ from openjiuwen.harness.factory import (
 from openjiuwen.harness.image_modality_probe import get_cached_image_support
 from openjiuwen.harness.prompts import resolve_language
 from openjiuwen.harness.rails import (
+    BudgetNoticeRail,
     ModelAnomalyDetectionRail,
     SkillUseRail,
+    TaskCompletionRail,
     TaskPlanningRail,
     SecurityRail,
     SubagentRail,
@@ -306,6 +308,7 @@ from jiuwenswarm.symphony.llm import (
     register_request_model,
 )
 
+from jiuwenswarm.common.config import get_model_names
 from jiuwenswarm.common.hooks_config import load_hooks_config
 from jiuwenswarm.common.log_preview import preview_text
 from jiuwenswarm.common.stage_timer import StageTimer
@@ -1074,6 +1077,16 @@ def parse_int(value: Any, default: int) -> int:
         return default
 
 
+def parse_float(value: Any, default: float | None) -> float | None:
+    """Parse float-like values safely, preserving ``None`` as "unset"."""
+    try:
+        if value is None or value == "":
+            return default
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 def _parse_bool(value: Any, default: bool = False) -> bool:
     """Parse persisted YAML/API boolean values without truthiness surprises."""
     if isinstance(value, bool):
@@ -1775,6 +1788,7 @@ class JiuWenSwarmDeepAdapter:
         self._mcp_prewarm_task: asyncio.Task | None = None
         self._model_anomaly_detection_rail: ModelAnomalyDetectionRail | None = None
         self._heartbeat_rail: HeartbeatRail | None = None
+        self._budget_notice_rail: BudgetNoticeRail | None = None
         self._heartbeat_service: Any | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
@@ -4561,7 +4575,48 @@ class JiuWenSwarmDeepAdapter:
                 exc_info=True,
             )
 
+        # Custom subagents run their own outer task loop
+        # (``_agent_def_to_subagent_config`` sets ``enable_task_loop=True``).
+        # Give each the same budget rails as the main agent so its loop is
+        # capped and warns before exhaustion.
+        self._ensure_subagent_budget_rails(subagents, react_cfg)
+
         return subagents or None, should_add_general_purpose
+
+    @classmethod
+    def _ensure_subagent_budget_rails(
+        cls, subagents: list[Any], react_cfg: dict[str, Any],
+    ) -> None:
+        """Attach task-loop budget rails to task-loop subagent specs in place.
+
+        A fresh rail instance is built per spec: rail state (prompt builder,
+        edge-trigger memory) is per agent, so instances must never be shared
+        across subagents. Rounds are capped at the subagent's own
+        ``max_iterations`` (falling back to the parent config). Token /
+        wall-clock caps stay opt-in, exactly as for the main agent.
+        """
+        parent_max_rounds = parse_int(react_cfg.get("max_iterations"), 15)
+        max_tokens = parse_int(react_cfg.get("max_tokens"), None)
+        timeout_seconds = parse_float(react_cfg.get("timeout_seconds"), None)
+        for spec in subagents:
+            if not isinstance(spec, SubAgentConfig) or not getattr(
+                spec, "enable_task_loop", False
+            ):
+                continue
+            existing = list(spec.rails or [])
+            if not any(isinstance(r, TaskCompletionRail) for r in existing):
+                existing.append(
+                    TaskCompletionRail(
+                        max_rounds=parse_int(
+                            getattr(spec, "max_iterations", None), parent_max_rounds
+                        ),
+                        max_tokens=max_tokens,
+                        timeout_seconds=timeout_seconds,
+                    )
+                )
+            if not any(isinstance(r, BudgetNoticeRail) for r in existing):
+                existing.append(cls._build_budget_notice_rail(react_cfg))
+            spec.rails = [r for r in existing if r is not None]
 
     @staticmethod
     def _build_mcp_server_config(entry: dict[str, Any]) -> McpServerConfig | None:
@@ -8491,6 +8546,65 @@ class JiuWenSwarmDeepAdapter:
             if getattr(self, attr_name, None) is not expected_rail:
                 raise RuntimeError(f"required_agent_rail_attr_identity_mismatch:{attr_name}")
 
+    @staticmethod
+    def _build_budget_notice_rail(config: dict[str, Any]) -> BudgetNoticeRail | None:
+        """Build BudgetNoticeRail: warn the agent as task-loop budgets run low.
+
+        The loop's actual budget limits (rounds / tokens / wall-clock) live on
+        the stop-condition evaluators and are read by the rail itself through
+        ``LoopCoordinator.budget_limits()`` — this builder deliberately does
+        **not** carry a parallel copy of ``max_iterations``, so the warning can
+        never drift from the limit that really stops the loop. Only the
+        warning thresholds come from host config:
+
+        - ``budget_warning_ratio`` (default ``0.20``): fraction of the rounds
+          budget remaining that triggers the notice.
+        - ``budget_warning_threshold`` (optional): absolute remaining rounds;
+          when set it overrides ``budget_warning_ratio``.
+        - ``budget_warning_token_ratio`` / ``budget_warning_time_ratio``
+          (default ``0.15``): the token / wall-clock equivalents.
+
+        Parsing is lenient so a null/empty value falls back instead of crashing.
+        """
+        try:
+            round_remaining = parse_int(config.get("budget_warning_threshold"), None)
+            round_ratio = parse_float(config.get("budget_warning_ratio"), 0.20)
+            token_ratio = parse_float(config.get("budget_warning_token_ratio"), 0.15)
+            time_ratio = parse_float(config.get("budget_warning_time_ratio"), 0.15)
+            rail = BudgetNoticeRail(
+                round_remaining=round_remaining,
+                round_ratio=round_ratio,
+                token_ratio=token_ratio,
+                time_ratio=time_ratio,
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] BudgetNoticeRail attached "
+                "(round_remaining=%s, round_ratio=%s, token_ratio=%s, time_ratio=%s)",
+                round_remaining,
+                round_ratio,
+                token_ratio,
+                time_ratio,
+            )
+            return rail
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] Failed to attach BudgetNoticeRail: %s", exc)
+            return None
+
+    @staticmethod
+    def _build_task_completion_rail(config: dict[str, Any]) -> TaskCompletionRail:
+        """Build the task-loop budget rail from host config.
+
+        Rounds are the default-on budget (``react.max_iterations``). The token
+        and wall-clock caps are opt-in: ``react.max_tokens`` / ``react.timeout_seconds``
+        are only wired when present, so a silent token/time cap cannot truncate
+        a long production run by accident.
+        """
+        return TaskCompletionRail(
+            max_rounds=parse_int(config.get("max_iterations"), 15),
+            max_tokens=parse_int(config.get("max_tokens"), None),
+            timeout_seconds=parse_float(config.get("timeout_seconds"), None),
+        )
+
     def _build_agent_rails(
         self,
         config: dict[str, Any],
@@ -8559,6 +8673,11 @@ class JiuWenSwarmDeepAdapter:
             ),
             _RailBuildInfo(
                 "_eternal_conversation_rail", self._build_eternal_conversation_rail
+            ),
+            _RailBuildInfo(
+                "_budget_notice_rail",
+                self._build_budget_notice_rail,
+                {"config": config},
             ),
         ]
 
@@ -8635,6 +8754,16 @@ class JiuWenSwarmDeepAdapter:
                 root_context_rail=group["_root_context_rail"],
                 stream_event_rail=group["_stream_event_rail"], permission_rail=group["_permission_rail"],
             )
+        # Make the outer task-loop budgets real: cap rounds at the configured
+        # ``max_iterations`` and (when configured) wire the optional token /
+        # wall-clock caps, giving BudgetNoticeRail budgets to read via
+        # ``LoopCoordinator.budget_limits()``. Agent-core only auto-injects a
+        # default TaskCompletionRail when the caller supplies none, so passing
+        # ours also avoids a parallel host-side limit. ``max_tokens`` and
+        # ``timeout_seconds`` stay unset by default — a silent token/time cap is
+        # more dangerous than no cap, round is the default-on budget.
+        if not any(isinstance(rail, TaskCompletionRail) for rail in rails):
+            rails.append(self._build_task_completion_rail(config))
         return rails
 
     def _permission_interrupt_rail_infos(
@@ -9263,6 +9392,15 @@ class JiuWenSwarmDeepAdapter:
             rails_list.append(self._permission_rail)
         if self._heartbeat_rail is not None:
             rails_list.append(self._heartbeat_rail)
+
+        # Budget thresholds and caps are config-derived; rebuild them so a
+        # reloaded ``max_iterations`` / ``max_tokens`` / ``timeout_seconds`` /
+        # ``budget_warning_*`` takes effect. ``configure`` replaces by type, so
+        # only these two rails are cycled; every other rail is retained.
+        self._budget_notice_rail = self._build_budget_notice_rail(config)
+        if self._budget_notice_rail is not None:
+            rails_list.append(self._budget_notice_rail)
+        rails_list.append(self._build_task_completion_rail(config))
         return rails_list
 
     def _tool_owner_id(self) -> str:
