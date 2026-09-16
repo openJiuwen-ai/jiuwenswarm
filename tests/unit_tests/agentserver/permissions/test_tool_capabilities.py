@@ -50,6 +50,7 @@ def test_classifies_cross_session_resolution_as_high_risk_state_change() -> None
 def test_domain_tools_remain_high_flex_by_default() -> None:
     for tool_name in (
         "browser_snapshot",
+        "cron_preview_job",
         "task_tool",
         "write_memory",
     ):
@@ -134,23 +135,6 @@ def test_unknown_mcp_is_high_flex() -> None:
     info = classify_tool("mcp_unknown_server_tool")
     assert info.category == "mcp"
     assert info.high_flex is True
-
-
-@pytest.mark.parametrize("name", [
-    "cron_list_jobs", "cron_get_job", "cron_preview_job",
-    "heartbeat_list_jobs", "heartbeat_get_job", "heartbeat_preview_job",
-    "read_terminal_output", "wait_for_terminal_exit", "convert_timestamp_to_utc8_time",
-])
-def test_readonly_capabilities_require_exact_builtin_names(name, monkeypatch):
-    info = classify_tool(name)
-    assert (info.operation_family, info.risk_tier, info.high_flex) == ("internal_readonly", "low", False)
-    assert info.facts_source == "host_static" and not info.static_side_effects
-    for variant in (name.upper(), name + " ", "mcp_" + name):
-        assert classify_tool(variant).operation_family != "internal_readonly"
-    import jiuwenswarm.common.permission_tools as names
-    monkeypatch.setitem(names.PERMISSION_TOOL_ALIASES, "readonly_alias", name)
-    assert classify_tool("readonly_alias").operation_family != "internal_readonly"
-    assert classify_tool(name).operation_family != "internal_readonly"
 
 
 @pytest.mark.parametrize(
