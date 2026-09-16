@@ -69,13 +69,11 @@ from jiuwenswarm.server.runtime.skill.skill_type import (
     detect_skill_type,
 )
 from jiuwenswarm.server.runtime.skill.skillpack import (
-    SkillPackDefinition,
-    SkillPackStatus,
+    SkillPackOperationUnsupportedError,
+    SkillPackService,
     SkillPackValidationError,
-    compute_skillpack_status,
     is_skillpack,
     load_skillpack,
-    project_skillpack,
     referencing_skillpacks,
     unavailable_skillpacks,
 )
@@ -726,6 +724,11 @@ class SkillManager:
             self._state_file = _get_state_file()
         self._skills_dir.mkdir(parents=True, exist_ok=True)
         self._state: dict[str, Any] = self._load_state()
+        self._skillpacks = SkillPackService(
+            self._skills_dir,
+            enabled_for=self.get_skill_enabled,
+            resolve_skill_dir=self._resolve_local_skill_dir,
+        )
         # 把手动拷入 skills 目录、未经任何安装流程登记的本地技能，自动补登记到
         # local_skills，使其与"导入本地技能"完全等价（可展示/卸载/查看详情/禁用）。
         self._register_unmanaged_local_skills()
@@ -914,7 +917,7 @@ class SkillManager:
         meta["skill_type"] = detect_skill_type(skill_dir if version_requested is None else read_root)
         if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
             try:
-                self._apply_skillpack_projection(
+                self._skillpacks.apply_projection(
                     meta,
                     read_root,
                     include_members=True,
@@ -1139,7 +1142,7 @@ class SkillManager:
         }
         if is_pack and skill_dir is not None:
             try:
-                self._apply_skillpack_projection(
+                self._skillpacks.apply_projection(
                     result,
                     skill_dir,
                     include_members=False,
@@ -1151,7 +1154,7 @@ class SkillManager:
             logger.info(
                 "[SkillPack] member state changed: member=%s affected=%s",
                 name,
-                self._skillpack_impacts(affected),
+                self._skillpacks.impacts(affected),
             )
         return result
 
@@ -4317,7 +4320,7 @@ class SkillManager:
             logger.info(
                 "[SkillPack] member uninstalled: member=%s affected=%s",
                 name,
-                self._skillpack_impacts(affected_skillpacks),
+                self._skillpacks.impacts(affected_skillpacks),
             )
         return {"success": True}
 
@@ -5066,12 +5069,7 @@ class SkillManager:
                 "Symphony Skill 产物凭据无效",
             )
         try:
-            definition = load_skillpack(source)
-            status = compute_skillpack_status(
-                definition,
-                skills_dir=self._skills_dir,
-                enabled_for=self.get_skill_enabled,
-            )
+            _, status = self._skillpacks.definition_status(source)
         except SkillPackValidationError as exc:
             raise SkillRpcError(ERROR_SKILL_INVALID_METADATA, str(exc)) from exc
         hard_blockers = [
@@ -5111,12 +5109,7 @@ class SkillManager:
                 source_trusted=False,
                 allow_skillpack=True,
             )
-            definition = load_skillpack(source)
-            status = compute_skillpack_status(
-                definition,
-                skills_dir=self._skills_dir,
-                enabled_for=self.get_skill_enabled,
-            )
+            _, status = self._skillpacks.definition_status(source)
             if any(
                 item.get("reason") in {"missing", "invalid"}
                 for item in status.blocked_members
@@ -5840,7 +5833,7 @@ class SkillManager:
         self.apply_archive_version_and_type(meta, child)
         if meta["skill_type"] == SKILL_TYPE_SKILLPACK:
             try:
-                self._apply_skillpack_projection(
+                self._skillpacks.apply_projection(
                     meta,
                     child,
                     include_members=False,
@@ -8308,80 +8301,18 @@ class SkillManager:
         payload["enabled"] = enabled
         payload["config"] = {"enabled": enabled}
 
-    def _skillpack_definition_status(
-        self,
-        skill_dir: Path,
-        *,
-        expected_name: str | None = None,
-    ) -> tuple[SkillPackDefinition, SkillPackStatus]:
-        definition = load_skillpack(skill_dir, expected_name=expected_name)
-        status = compute_skillpack_status(
-            definition,
-            skills_dir=self._skills_dir,
-            enabled_for=self.get_skill_enabled,
-        )
-        return definition, status
-
-    def _apply_skillpack_projection(
-        self,
-        payload: dict[str, Any],
-        skill_dir: Path,
-        *,
-        include_members: bool,
-        expected_name: str | None = None,
-    ) -> None:
-        definition, status = self._skillpack_definition_status(
-            skill_dir,
-            expected_name=expected_name,
-        )
-        payload.update(
-            project_skillpack(
-                definition,
-                status,
-                include_members=include_members,
-            )
-        )
-
     def _ensure_skillpack_operation_supported(
         self,
         skill_name: str,
         operation: str,
     ) -> None:
-        skill_dir = self._resolve_local_skill_dir(skill_name)
-        if is_skillpack(skill_dir):
+        try:
+            self._skillpacks.ensure_operation_supported(skill_name, operation)
+        except SkillPackOperationUnsupportedError as exc:
             raise SkillRpcError(
                 ERROR_SKILL_OPERATION_UNSUPPORTED,
-                f"SkillPack 暂不支持 {operation}: {skill_name}",
-            )
-
-    def _skillpack_impacts(self, skillpack_names: list[str]) -> list[dict[str, Any]]:
-        impacts: list[dict[str, Any]] = []
-        for skillpack_name in skillpack_names:
-            skillpack_dir = self._resolve_local_skill_dir(skillpack_name)
-            if skillpack_dir is None:
-                continue
-            try:
-                _, status = self._skillpack_definition_status(
-                    skillpack_dir,
-                    expected_name=skillpack_name,
-                )
-            except SkillPackValidationError:
-                impacts.append(
-                    {
-                        "name": skillpack_name,
-                        "blocked_members": [
-                            {"name": skillpack_name, "reason": "invalid"}
-                        ],
-                    }
-                )
-                continue
-            impacts.append(
-                {
-                    "name": skillpack_name,
-                    "blocked_members": [dict(item) for item in status.blocked_members],
-                }
-            )
-        return impacts
+                str(exc),
+            ) from exc
 
     def get_skill_enabled(self, skill_name: str) -> bool:
         return get_skill_enabled(self._state, skill_name)

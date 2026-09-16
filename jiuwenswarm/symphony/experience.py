@@ -234,6 +234,15 @@ class JiuwenSwarmSkillAdapter:
 def _skill_chain(
     structure: dict[str, Any],
 ) -> tuple[list[str], list[dict[str, str]]]:
+    """Validate an experience recipe's Skill chain for SkillPack rendering.
+
+    Private helper for ``JiuwenSwarmSkillAdapter.render`` that consumes the
+    Core recipe's ``combination_structure``; it does not generate experiences.
+    Return member IDs in execution order and normalized ``can_feed`` edges
+    for the SkillPack's ``skills`` frontmatter and display-only Workflow Graph.
+    Raise ``SkillPackNotInstallableError`` for malformed structures, non-Skill
+    nodes, or graphs that are not a single linear chain (e.g. branches or cycles).
+    """
     nodes = structure.get("nodes")
     raw_edges = structure.get("edges")
     if not isinstance(nodes, dict) or len(nodes) < 2 or not isinstance(raw_edges, list):

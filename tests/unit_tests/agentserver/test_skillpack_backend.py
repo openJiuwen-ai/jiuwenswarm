@@ -26,6 +26,8 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     load_execution_disabled_skills,
 )
 from jiuwenswarm.server.runtime.skill.skillpack import (
+    SkillPackOperationUnsupportedError,
+    SkillPackService,
     SkillPackValidationError,
     load_skillpack,
 )
@@ -180,6 +182,57 @@ def _install_demo_pack(manager: SkillManager, *, graph: bool = True) -> None:
         manager._skills_dir / "demo-pack",
         workflow_graph=_workflow() if graph else None,
     )
+
+
+def test_skillpack_service_reads_current_enabled_state(manager: SkillManager) -> None:
+    _install_demo_pack(manager)
+    pack_dir = manager._skills_dir / "demo-pack"
+    enabled: dict[str, bool] = {}
+    service = SkillPackService(
+        manager._skills_dir,
+        enabled_for=lambda name: enabled.get(name, True),
+        resolve_skill_dir=manager._resolve_local_skill_dir,
+    )
+
+    _, initial = service.definition_status(pack_dir, expected_name="demo-pack")
+    assert initial.enabled is True
+    enabled["first-skill"] = False
+    payload: dict[str, object] = {"name": "demo-pack"}
+    service.apply_projection(payload, pack_dir, include_members=True)
+    assert payload["enabled"] is False
+    assert payload["requested_enabled"] is True
+    assert payload["blocked_members"] == [{"name": "first-skill", "reason": "disabled"}]
+    enabled["first-skill"] = True
+    assert service.impacts(["demo-pack"]) == [
+        {"name": "demo-pack", "blocked_members": []}
+    ]
+
+
+def test_skillpack_service_impacts_preserve_invalid_and_missing_cases(
+    manager: SkillManager,
+) -> None:
+    _write_pack(manager._skills_dir / "demo-pack", members=("first-skill",))
+
+    assert manager._skillpacks.impacts(["missing-pack", "demo-pack"]) == [
+        {
+            "name": "demo-pack",
+            "blocked_members": [{"name": "demo-pack", "reason": "invalid"}],
+        }
+    ]
+
+
+def test_skillpack_service_rejects_only_package_operations(
+    manager: SkillManager,
+) -> None:
+    _install_demo_pack(manager)
+
+    with pytest.raises(
+        SkillPackOperationUnsupportedError,
+        match="SkillPack 暂不支持 skills.rebuild: demo-pack",
+    ):
+        manager._skillpacks.ensure_operation_supported("demo-pack", "skills.rebuild")
+    manager._skillpacks.ensure_operation_supported("first-skill", "skills.rebuild")
+    manager._skillpacks.ensure_operation_supported("missing-skill", "skills.rebuild")
 
 
 @pytest.mark.asyncio

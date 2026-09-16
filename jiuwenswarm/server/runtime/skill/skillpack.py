@@ -44,6 +44,10 @@ class SkillPackValidationError(ValueError):
     """The root document does not satisfy the SDD-0010 contract."""
 
 
+class SkillPackOperationUnsupportedError(ValueError):
+    """An operation is not supported for SkillPacks."""
+
+
 @dataclass(frozen=True)
 class SkillPackDefinition:
     """Validated root metadata and optional display-only workflow graph."""
@@ -62,6 +66,83 @@ class SkillPackStatus:
     enabled: bool
     members: tuple[dict[str, Any], ...]
     blocked_members: tuple[dict[str, str], ...]
+
+
+class SkillPackService:
+    """Coordinate SkillPack status, response projection, and operation checks.
+
+    Directory resolution and enabled-state reads are supplied by the owner;
+    this service does not cache mutable state or depend on RPC error types.
+    """
+
+    def __init__(
+        self,
+        skills_dir: Path,
+        *,
+        enabled_for: Callable[[str], bool],
+        resolve_skill_dir: Callable[[str], Path | None],
+    ) -> None:
+        self._skills_dir = skills_dir
+        self._enabled_for = enabled_for
+        self._resolve_skill_dir = resolve_skill_dir
+
+    def definition_status(
+        self,
+        skill_dir: Path,
+        *,
+        expected_name: str | None = None,
+    ) -> tuple[SkillPackDefinition, SkillPackStatus]:
+        """Load a package definition and evaluate its current member status."""
+        definition = load_skillpack(skill_dir, expected_name=expected_name)
+        status = compute_skillpack_status(
+            definition,
+            skills_dir=self._skills_dir,
+            enabled_for=self._enabled_for,
+        )
+        return definition, status
+
+    def apply_projection(
+        self,
+        payload: dict[str, Any],
+        skill_dir: Path,
+        *,
+        include_members: bool,
+        expected_name: str | None = None,
+    ) -> None:
+        """Add package availability and optional member details to a response."""
+        definition, status = self.definition_status(
+            skill_dir,
+            expected_name=expected_name,
+        )
+        payload.update(
+            project_skillpack(definition, status, include_members=include_members)
+        )
+
+    def ensure_operation_supported(self, skill_name: str, operation: str) -> None:
+        """Reject operations that are currently unavailable for SkillPacks."""
+        if is_skillpack(self._resolve_skill_dir(skill_name)):
+            raise SkillPackOperationUnsupportedError(
+                f"SkillPack 暂不支持 {operation}: {skill_name}"
+            )
+
+    def impacts(self, skillpack_names: list[str]) -> list[dict[str, Any]]:
+        """Recompute blockers for packages affected by a member change."""
+        impacts: list[dict[str, Any]] = []
+        for skillpack_name in skillpack_names:
+            skillpack_dir = self._resolve_skill_dir(skillpack_name)
+            if skillpack_dir is None:
+                continue
+            try:
+                _, status = self.definition_status(
+                    skillpack_dir,
+                    expected_name=skillpack_name,
+                )
+            except SkillPackValidationError:
+                blocked_members = [{"name": skillpack_name, "reason": "invalid"}]
+            else:
+                blocked_members = [dict(item) for item in status.blocked_members]
+            impacts.append({"name": skillpack_name, "blocked_members": blocked_members})
+        return impacts
 
 
 def read_skill_kind(skill_dir: Path | None) -> str:
@@ -405,6 +486,8 @@ __all__ = [
     "SKILLPACK_KIND",
     "SKILLPACK_SKILL_TYPE",
     "SkillPackDefinition",
+    "SkillPackOperationUnsupportedError",
+    "SkillPackService",
     "SkillPackStatus",
     "SkillPackValidationError",
     "compute_skillpack_status",
