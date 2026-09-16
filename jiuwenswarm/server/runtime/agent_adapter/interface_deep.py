@@ -703,12 +703,30 @@ _REASONING_TRACE_LOG_BATCH = 5
 _LLM_IO_TRACE_PATCH_APPLIED = False
 
 
-async def _apply_deferred_interrupt_clear_after_prepare(agent_session: Any) -> None:
-    """Runner ``_prepare_agent``（已含 pre_run）之后，在内存清理挂起的 interrupt。"""
+def _pop_deferred_interrupt_clear_spec() -> dict[str, Any] | None:
+    """取出并清空 ContextVar 中的推迟清理说明；无则返回 None。"""
     spec = _DEFERRED_INTERRUPT_CLEAR.get()
     if not spec:
-        return
+        return None
     _DEFERRED_INTERRUPT_CLEAR.set(None)
+    return spec
+
+
+def _clear_request_agent_perf(request_id: str | None) -> None:
+    """早退路径释放 AgentPerf 进程内时间戳槽，避免 ``_TIMINGS`` 泄漏。"""
+    try:
+        from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
+
+        _perf_clear(request_id)
+    except Exception:
+        logger.debug("[AgentPerf] clear on early exit skipped", exc_info=True)
+
+
+async def _apply_deferred_interrupt_clear_after_prepare(agent_session: Any) -> None:
+    """Runner ``_prepare_agent``（已含 pre_run）之后，在内存清理挂起的 interrupt。"""
+    spec = _pop_deferred_interrupt_clear_spec()
+    if not spec:
+        return
 
     session_id = spec.get("session_id")
     reason = str(spec.get("reason") or "deferred_clear")
@@ -727,6 +745,13 @@ async def _apply_deferred_interrupt_clear_after_prepare(agent_session: Any) -> N
                     "[JiuWenSwarmDeepAdapter] deferred skill_turbo resume clear failed",
                     exc_info=True,
                 )
+        else:
+            outcome = "skipped_no_session"
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] deferred clear after prepare: "
+                "no agent_session session_id=%s (unexpected _prepare_agent result)",
+                session_id,
+            )
     except Exception:
         outcome = "error"
         logger.warning(
@@ -742,7 +767,7 @@ async def _apply_deferred_interrupt_clear_after_prepare(agent_session: Any) -> N
         request_id=current_request_id() or "",
         session_id=session_id or "",
         total_ms=(time.monotonic() - t0) * 1000,
-        cleared="interrupt",
+        cleared="interrupt" if outcome == "merged_runner_prepare" else "none",
         outcome=outcome,
         reason=reason,
     )
@@ -765,12 +790,28 @@ def _apply_runner_perf_patch() -> None:
         return
 
     impl_cls = type(global_runner)
+    if getattr(impl_cls, "_jiuwenswarm_runner_perf_patched", False):
+        _RUNNER_PERF_PATCH_APPLIED = True
+        return
+
     original = getattr(impl_cls, "_prepare_agent", None)
     if not callable(original):
         logger.warning(
             "[AgentPerf] runner_perf patch skipped: %s has no _prepare_agent",
             impl_cls.__name__,
         )
+        return
+    if not asyncio.iscoroutinefunction(original):
+        logger.warning(
+            "[AgentPerf] runner_perf patch skipped: %s._prepare_agent is not async",
+            impl_cls.__name__,
+        )
+        return
+
+    # 已包过一层时不要叠 patch（换 GLOBAL_RUNNER 实例但类相同）。
+    if getattr(original, "_jiuwenswarm_runner_perf_wrapper", False):
+        _RUNNER_PERF_PATCH_APPLIED = True
+        impl_cls._jiuwenswarm_runner_perf_patched = True
         return
 
     async def _traced_prepare(self, agent, inputs, session=None):
@@ -783,9 +824,20 @@ def _apply_runner_perf_patch() -> None:
         t0 = time.monotonic()
         lag0 = await event_loop_lag_ms()
         result = await original(self, agent, inputs, session)
-        agent_session = (
-            result[1] if isinstance(result, tuple) and len(result) >= 2 else None
-        )
+        agent_session = None
+        if isinstance(result, tuple) and len(result) >= 2:
+            agent_session = result[1]
+        elif result is not None and not isinstance(result, tuple):
+            # 兼容上游改成只返回 session 的形态
+            maybe_session = getattr(result, "session_id", None)
+            if maybe_session is not None or hasattr(result, "get_state"):
+                agent_session = result
+            else:
+                logger.warning(
+                    "[AgentPerf] unexpected _prepare_agent return type=%s; "
+                    "deferred interrupt clear may skip",
+                    type(result).__name__,
+                )
         await _apply_deferred_interrupt_clear_after_prepare(agent_session)
         log_event(
             "runner_prepare",
@@ -795,7 +847,10 @@ def _apply_runner_perf_patch() -> None:
         )
         return result
 
+    _traced_prepare._jiuwenswarm_runner_perf_wrapper = True  # type: ignore[attr-defined]
+    _traced_prepare._jiuwenswarm_wrapped_prepare = original  # type: ignore[attr-defined]
     impl_cls._prepare_agent = _traced_prepare  # type: ignore[method-assign]
+    impl_cls._jiuwenswarm_runner_perf_patched = True
     _RUNNER_PERF_PATCH_APPLIED = True
     logger.info(
         "[AgentPerf] runner_perf patch applied on %s._prepare_agent",
@@ -12750,6 +12805,20 @@ class JiuWenSwarmDeepAdapter:
             if ns_token is not None:
                 reset_agent_env_ns(ns_token)
 
+    async def _flush_deferred_interrupt_clear_on_early_exit(self) -> None:
+        """slash / team 等未进 Runner 的早退：把推迟清理落成同步清理。"""
+        spec = _pop_deferred_interrupt_clear_spec()
+        if not spec:
+            return
+        await self._clear_session_persisted_interrupt_state(
+            spec.get("session_id"),
+            reason=f"{spec.get('reason') or 'deferred_clear'}_early_exit_sync",
+            clear_todo_resume_snapshot_pending=bool(
+                spec.get("clear_todo_resume_snapshot_pending")
+            ),
+            defer_to_runner=False,
+        )
+
     async def _clear_session_persisted_interrupt_state(
         self,
         session_id: str | None,
@@ -12762,6 +12831,7 @@ class JiuWenSwarmDeepAdapter:
 
         普通聊天可传 ``defer_to_runner=True``：只挂 ContextVar，立刻返回；真正清理由
         Runner ``_prepare_agent``（已含 pre_run）之后在内存完成。
+        若请求在 Runner 前早退，须调用 ``_flush_deferred_interrupt_clear_on_early_exit``。
         """
         if not session_id:
             return
@@ -12773,7 +12843,6 @@ class JiuWenSwarmDeepAdapter:
                 {
                     "reason": reason,
                     "clear_todo_resume_snapshot_pending": clear_todo_resume_snapshot_pending,
-                    "adapter": self,
                     "session_id": session_id,
                 }
             )
@@ -17751,137 +17820,153 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
-        if self._plain_chat_should_clear_stale_interrupt(request):
-            await self._clear_session_persisted_interrupt_state(
-                session_id,
-                reason="plain_user_message_before_agent_run",
-                clear_todo_resume_snapshot_pending=False,
-                defer_to_runner=True,
+        # defer 之后若 slash 等早退未进 Runner，须在 finally 刷成同步清理并释放 perf 槽。
+        _bypass_runner_after_defer = True
+        try:
+            if self._plain_chat_should_clear_stale_interrupt(request):
+                await self._clear_session_persisted_interrupt_state(
+                    session_id,
+                    reason="plain_user_message_before_agent_run",
+                    clear_todo_resume_snapshot_pending=False,
+                    defer_to_runner=True,
+                )
+
+            # [CRON-CTX] 非流式入口：与流式对称，跨 channel 时强制 recover cron 历史。
+            if str(session_id).startswith("cron_") and self._instance is not None:
+                _cron_sess = getattr(self._instance, "_interaction_session", None)
+                _cron_inner = getattr(_cron_sess, "_inner", None) if _cron_sess is not None else None
+                if _cron_inner is not None and not self._cron_session_has_context(_cron_inner):
+                    try:
+                        await self._get_adapter_checkpointer().pre_agent_execute(
+                            _cron_inner, None
+                        )
+                        logger.info(
+                            "[CRON-CTX] cron session re-recover(non-stream): session_id=%s "
+                            "request_id=%s",
+                            session_id, request.request_id,
+                        )
+                    except Exception as _e:  # noqa: BLE001
+                        logger.warning(
+                            "[CRON-CTX] cron session re-recover(non-stream) failed: "
+                            "session_id=%s error=%s request_id=%s",
+                            session_id, _e, request.request_id,
+                        )
+
+            token_trace_sid = _LLM_TRACE_SESSION_ID.set(session_id)
+            token_trace_rid = _LLM_TRACE_REQUEST_ID.set(request.request_id or "")
+            token_trace_iter = _LLM_TRACE_ITERATION.set(0)
+            token_trace_model = _LLM_TRACE_MODEL_NAME.set(
+                getattr(self, "_model", None) and getattr(self._model, "model_config", None)
+                and getattr(self._model.model_config, "model_name", "") or ""
             )
+            from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
-        # [CRON-CTX] 非流式入口：与流式对称，跨 channel 时强制 recover cron 历史。
-        if str(session_id).startswith("cron_") and self._instance is not None:
-            _cron_sess = getattr(self._instance, "_interaction_session", None)
-            _cron_inner = getattr(_cron_sess, "_inner", None) if _cron_sess is not None else None
-            if _cron_inner is not None and not self._cron_session_has_context(_cron_inner):
-                try:
-                    await self._get_adapter_checkpointer().pre_agent_execute(
-                        _cron_inner, None
+            self._current_request_route = {
+                "session_id": session_id,
+                "request_id": request.request_id or "",
+                "channel_id": request.channel_id or "",
+                "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
+                "output_dir": self._deepresearch_artifact_output_dir(
+                    request.params.get("project_dir")
+                    if isinstance(request.params, dict)
+                    else None
+                ),
+            }
+
+            slash_result = await self._handle_slash_command(
+                query,
+                session_id,
+                mode,
+                channel_id=request.channel_id,
+            )
+            if slash_result is not None:
+                result_type = slash_result.get("result_type")
+                if result_type == "goal_stream":
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=True,
+                        payload={
+                            "event_type": "goal.snapshot",
+                            "action": slash_result.get("action"),
+                            "goal": slash_result.get("goal"),
+                            "message": "Goal is ready to run through a streaming request.",
+                        },
+                        metadata=request.metadata,
                     )
-                    logger.info(
-                        "[CRON-CTX] cron session re-recover(non-stream): session_id=%s "
-                        "request_id=%s",
-                        session_id, request.request_id,
+                elif result_type == "goal_control":
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload={
+                            "event_type": "goal.snapshot",
+                            "action": slash_result.get("action"),
+                            "goal": slash_result.get("goal"),
+                            "cleared_goal": slash_result.get("cleared_goal"),
+                        },
+                        metadata=request.metadata,
                     )
-                except Exception as _e:  # noqa: BLE001
-                    logger.warning(
-                        "[CRON-CTX] cron session re-recover(non-stream) failed: "
-                        "session_id=%s error=%s request_id=%s",
-                        session_id, _e, request.request_id,
+                elif result_type == "goal_confirm_required":
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        payload={
+                            "event_type": "goal.confirm_required",
+                            "existing_goal": slash_result.get("existing_goal"),
+                            "requested_objective": slash_result.get("requested_objective"),
+                        },
+                        metadata=request.metadata,
                     )
-
-        token_trace_sid = _LLM_TRACE_SESSION_ID.set(session_id)
-        token_trace_rid = _LLM_TRACE_REQUEST_ID.set(request.request_id or "")
-        token_trace_iter = _LLM_TRACE_ITERATION.set(0)
-        token_trace_model = _LLM_TRACE_MODEL_NAME.set(
-            getattr(self, "_model", None) and getattr(self._model, "model_config", None)
-            and getattr(self._model.model_config, "model_name", "") or ""
-        )
-        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
-
-        self._current_request_route = {
-            "session_id": session_id,
-            "request_id": request.request_id or "",
-            "channel_id": request.channel_id or "",
-            "resource_id": extract_routing_triple(request.metadata, request.params)[1] or "",
-            "output_dir": self._deepresearch_artifact_output_dir(
-                request.params.get("project_dir")
-                if isinstance(request.params, dict)
-                else None
-            ),
-        }
-
-        slash_result = await self._handle_slash_command(
-            query,
-            session_id,
-            mode,
-            channel_id=request.channel_id,
-        )
-        if slash_result is not None:
-            result_type = slash_result.get("result_type")
-            if result_type == "goal_stream":
-                return AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={
-                        "event_type": "goal.snapshot",
-                        "action": slash_result.get("action"),
-                        "goal": slash_result.get("goal"),
-                        "message": "Goal is ready to run through a streaming request.",
-                    },
-                    metadata=request.metadata,
-                )
-            elif result_type == "goal_control":
-                return AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": "goal.snapshot",
-                        "action": slash_result.get("action"),
-                        "goal": slash_result.get("goal"),
-                        "cleared_goal": slash_result.get("cleared_goal"),
-                    },
-                    metadata=request.metadata,
-                )
-            elif result_type == "goal_confirm_required":
-                return AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    payload={
-                        "event_type": "goal.confirm_required",
-                        "existing_goal": slash_result.get("existing_goal"),
-                        "requested_objective": slash_result.get("requested_objective"),
-                    },
-                    metadata=request.metadata,
-                )
-            elif result_type == "goal_error":
-                return AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=False,
-                    payload={
-                        "event_type": ERROR_EVENT_TYPE,
-                        "code": slash_result.get("error_code", "goal_error"),
-                        "message": slash_result.get("error", "goal operation failed"),
-                        "goal": slash_result.get("goal"),
-                    },
-                    metadata=request.metadata,
-                )
-            followup_prompt = self._extract_followup_prompt(slash_result)
-            if followup_prompt is not None:
-                inputs = dict(inputs)
-                inputs["query"] = followup_prompt
-                inputs["_invoke_turn_id"] = request.request_id
-            else:
-                approval_chunks = slash_result.get("approval_chunks")
-                if approval_chunks:
-                    payload: dict[str, Any] = {"approval_chunks": approval_chunks}
+                elif result_type == "goal_error":
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=False,
+                        payload={
+                            "event_type": ERROR_EVENT_TYPE,
+                            "code": slash_result.get("error_code", "goal_error"),
+                            "message": slash_result.get("error", "goal operation failed"),
+                            "goal": slash_result.get("goal"),
+                        },
+                        metadata=request.metadata,
+                    )
+                followup_prompt = self._extract_followup_prompt(slash_result)
+                if followup_prompt is not None:
+                    inputs = dict(inputs)
+                    inputs["query"] = followup_prompt
+                    inputs["_invoke_turn_id"] = request.request_id
                 else:
-                    content = slash_result.get("output", str(slash_result))
-                    payload = {
-                        "content": content,
-                        "source": slash_result.get("source"),
-                        "slash_command": slash_result.get("slash_command"),
-                        "display_level": slash_result.get("display_level"),
-                    }
-                return AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=slash_result.get("result_type") != "error",
-                    payload=payload,
-                    metadata=request.metadata,
-                )
+                    approval_chunks = slash_result.get("approval_chunks")
+                    if approval_chunks:
+                        payload: dict[str, Any] = {"approval_chunks": approval_chunks}
+                    else:
+                        content = slash_result.get("output", str(slash_result))
+                        payload = {
+                            "content": content,
+                            "source": slash_result.get("source"),
+                            "slash_command": slash_result.get("slash_command"),
+                            "display_level": slash_result.get("display_level"),
+                        }
+                    return AgentResponse(
+                        request_id=request.request_id,
+                        channel_id=request.channel_id,
+                        ok=slash_result.get("result_type") != "error",
+                        payload=payload,
+                        metadata=request.metadata,
+                    )
+            _bypass_runner_after_defer = False
+        finally:
+            if _bypass_runner_after_defer:
+                try:
+                    await self._flush_deferred_interrupt_clear_on_early_exit()
+                except Exception:
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] flush deferred interrupt on "
+                        "non-stream early exit failed session_id=%s",
+                        session_id,
+                        exc_info=True,
+                    )
+                _clear_request_agent_perf(request.request_id)
 
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
@@ -18495,14 +18580,6 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
-        if self._plain_chat_should_clear_stale_interrupt(request):
-            await self._clear_session_persisted_interrupt_state(
-                session_id,
-                reason="plain_user_message_before_agent_run",
-                clear_todo_resume_snapshot_pending=False,
-                defer_to_runner=True,
-            )
-
         # [CRON-CTX] 跨 channel（cron 写 / web 读）恢复：cron 与 web 是不同 channel_key，
         # 各自持有独立 JiuWenSwarm → 独立 adapter → 独立 _session_adapters 缓存。web adapter
         # 的 session 在 cron 执行前 pre_run 过、读的是旧 checkpoint；cron 落盘新 context 后
@@ -18550,8 +18627,21 @@ class JiuWenSwarmDeepAdapter:
             ),
         }
 
+        # Team / auto_harness / slash 早退不会进 Runner：这些路径用同步清理；
+        # 真正进 Runner 前再 defer（见本段末尾）。
+        async def _sync_clear_stale_interrupt_for_bypass() -> None:
+            if self._plain_chat_should_clear_stale_interrupt(request):
+                await self._clear_session_persisted_interrupt_state(
+                    session_id,
+                    reason="plain_user_message_before_agent_run",
+                    clear_todo_resume_snapshot_pending=False,
+                    defer_to_runner=False,
+                )
+            _clear_request_agent_perf(rid)
+
         # Team 模式处理
         if mode in ("team", "team.plan", "code.team"):
+            await _sync_clear_stale_interrupt_for_bypass()
             from jiuwenswarm.server.runtime.agent_adapter.team_helpers import process_team_message_stream
 
             team_context_tokens = self._bind_runtime_cron_context(
@@ -18658,6 +18748,7 @@ class JiuWenSwarmDeepAdapter:
 
         # Auto-Harness 模式处理
         if mode == "auto_harness":
+            await _sync_clear_stale_interrupt_for_bypass()
             set_perf_summary_context(
                 getattr(self, "_request_summary_rail", None),
                 channel_id=request.channel_id or "",
@@ -18783,6 +18874,7 @@ class JiuWenSwarmDeepAdapter:
                     },
                     is_complete=True,
                 )
+                await _sync_clear_stale_interrupt_for_bypass()
                 return
             elif result_type == "goal_confirm_required":
                 yield AgentResponseChunk(
@@ -18795,6 +18887,7 @@ class JiuWenSwarmDeepAdapter:
                     },
                     is_complete=True,
                 )
+                await _sync_clear_stale_interrupt_for_bypass()
                 return
             elif result_type == "goal_error":
                 yield AgentResponseChunk(
@@ -18808,6 +18901,7 @@ class JiuWenSwarmDeepAdapter:
                     },
                     is_complete=True,
                 )
+                await _sync_clear_stale_interrupt_for_bypass()
                 return
             followup_prompt = self._extract_followup_prompt(slash_result)
             if followup_prompt is not None:
@@ -18844,7 +18938,17 @@ class JiuWenSwarmDeepAdapter:
                         },
                         is_complete=True,
                     )
+                await _sync_clear_stale_interrupt_for_bypass()
                 return
+
+        # 确认会进入 Runner 路径后再 defer，避免早退丢清理。
+        if self._plain_chat_should_clear_stale_interrupt(request):
+            await self._clear_session_persisted_interrupt_state(
+                session_id,
+                reason="plain_user_message_before_agent_run",
+                clear_todo_resume_snapshot_pending=False,
+                defer_to_runner=True,
+            )
 
         has_streamed_content = False
         had_reasoning_output = False

@@ -60,3 +60,17 @@ def test_host_init_materialize_when_partial(tmp_path: Path) -> None:
     assert (root / "keep.txt").read_text(encoding="utf-8") == "keep"
     assert (root / ".workspace").is_file()
     assert (root / "agent" / "SOUL.md").is_file()
+
+
+def test_dirs_fingerprint_changes_when_same_length_content_changes() -> None:
+    from jiuwenswarm.server.runtime.agent_adapter.workspace_host_init import (
+        _dirs_fingerprint,
+    )
+
+    base = _sample_dirs()
+    other = _sample_dirs()
+    other[0]["children"][0]["default_content"] = "# Soul\n"  # 同长度不同内容
+    assert len(base[0]["children"][0]["default_content"]) == len(
+        other[0]["children"][0]["default_content"]
+    )
+    assert _dirs_fingerprint(base) != _dirs_fingerprint(other)

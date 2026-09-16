@@ -27,7 +27,7 @@ _TPL_CACHE: dict[str, Path] = {}
 
 
 def _dirs_fingerprint(directories: list[dict[str, Any]]) -> str:
-    """Stable-ish fingerprint of workspace schema (structure + content sizes)."""
+    """Stable-ish fingerprint of workspace schema (structure + content)."""
     h = hashlib.sha1()
 
     def walk(nodes: list[dict[str, Any]]) -> None:
@@ -40,7 +40,8 @@ def _dirs_fingerprint(directories: list[dict[str, Any]]) -> str:
             content = node.get("default_content") or ""
             if not isinstance(content, str):
                 content = str(content)
-            h.update(str(len(content)).encode("ascii"))
+            # 必须哈希正文，否则同长度改文案会命中脏模板。
+            h.update(content.encode("utf-8", errors="replace"))
             h.update(b"\0")
             walk(list(node.get("children") or []))
 

@@ -97,12 +97,32 @@ class _TtlSingleFlightCache:
         self._entries: dict[str, _CacheEntry] = {}
         self._locks: dict[str, asyncio.Lock] = {}
         self._meta_lock: asyncio.Lock | None = None
+        self._ops_since_purge = 0
 
     def invalidate(self) -> None:
         self._entries.clear()
+        self._locks.clear()
 
     def invalidate_key(self, key: str) -> None:
         self._entries.pop(key, None)
+
+    def _purge_expired(self) -> None:
+        """丢掉过期条目，避免 TTL 失效后条目长期占内存。"""
+        now = time.monotonic()
+        expired = [
+            key
+            for key, entry in self._entries.items()
+            if now - entry.fetched_at > self._ttl
+        ]
+        for key in expired:
+            self._entries.pop(key, None)
+
+    def _maybe_purge(self) -> None:
+        self._ops_since_purge += 1
+        if self._ops_since_purge < 32:
+            return
+        self._ops_since_purge = 0
+        self._purge_expired()
 
     async def _lock_for(self, key: str) -> asyncio.Lock:
         if self._meta_lock is None:
@@ -116,11 +136,15 @@ class _TtlSingleFlightCache:
 
     def _fresh(self, key: str) -> Any | None:
         entry = self._entries.get(key)
-        if entry is not None and time.monotonic() - entry.fetched_at <= self._ttl:
-            return entry.value
-        return None
+        if entry is None:
+            return None
+        if time.monotonic() - entry.fetched_at > self._ttl:
+            self._entries.pop(key, None)
+            return None
+        return entry.value
 
     async def get_or_fetch(self, key: str, fetcher) -> Any:
+        self._maybe_purge()
         hit = self._fresh(key)
         if hit is not None:
             return hit
@@ -142,10 +166,29 @@ class TemplateEntityCache:
         self._entries: dict[tuple[str, str], _CacheEntry] = {}
         self._table_locks: dict[str, asyncio.Lock] = {}
         self._meta_lock: asyncio.Lock | None = None
+        self._ops_since_purge = 0
 
     def invalidate(self) -> None:
         self._entries.clear()
+        self._table_locks.clear()
         logger.info("[AgentPerf] template entity cache invalidated")
+
+    def _purge_expired(self) -> None:
+        now = time.monotonic()
+        expired = [
+            key
+            for key, entry in self._entries.items()
+            if now - entry.fetched_at > self._ttl
+        ]
+        for key in expired:
+            self._entries.pop(key, None)
+
+    def _maybe_purge(self) -> None:
+        self._ops_since_purge += 1
+        if self._ops_since_purge < 32:
+            return
+        self._ops_since_purge = 0
+        self._purge_expired()
 
     async def _lock_for(self, table: str) -> asyncio.Lock:
         if self._meta_lock is None:
@@ -159,15 +202,19 @@ class TemplateEntityCache:
 
     def _fresh_row(self, table: str, template_id: str) -> dict[str, Any] | None:
         entry = self._entries.get((table, template_id))
-        if entry is not None and time.monotonic() - entry.fetched_at <= self._ttl:
-            return entry.value
-        return None
+        if entry is None:
+            return None
+        if time.monotonic() - entry.fetched_at > self._ttl:
+            self._entries.pop((table, template_id), None)
+            return None
+        return entry.value
 
     async def get_by_ids(
         self,
         slot: str,
         template_ids: list[str],
     ) -> list[dict[str, Any]]:
+        self._maybe_purge()
         try:
             slot_key = TemplateRefSlot(slot)
         except ValueError as exc:

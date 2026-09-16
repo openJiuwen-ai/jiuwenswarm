@@ -94,6 +94,32 @@ async def test_ttl_expiry_refetches(template_cache) -> None:
 
     await cache.get_by_ids("default_model", ["m1"])
     assert len(fetch_calls) == 2
+    # 过期读路径应丢掉旧条目，避免字典无限增长
+    assert ("model_template", "m1") in cache._entries
+    assert time.monotonic() - cache._entries[("model_template", "m1")].fetched_at < 1
+
+
+@pytest.mark.asyncio
+async def test_purge_expired_removes_stale_entries(template_cache) -> None:
+    mod, _ = template_cache
+    cache = mod._template_entity_cache
+    await cache.get_by_ids("default_model", ["m1"])
+    cache._entries[("model_template", "m1")].fetched_at = (
+        time.monotonic() - (cache._ttl + 1)
+    )
+    cache._purge_expired()
+    assert cache._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_invalidate_clears_table_locks(template_cache) -> None:
+    mod, _ = template_cache
+    cache = mod._template_entity_cache
+    await cache.get_by_ids("default_model", ["m1"])
+    assert cache._table_locks
+    mod.invalidate_template_entity_cache()
+    assert cache._entries == {}
+    assert cache._table_locks == {}
 
 
 @pytest.mark.asyncio

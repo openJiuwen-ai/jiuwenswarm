@@ -104,3 +104,10 @@ async def test_iter_llm_stream_first_token(monkeypatch):
 def test_approx_json_bytes():
     n = ap.approx_json_bytes({"a": "你好"})
     assert n > 0
+
+
+def test_clear_removes_timings_slot():
+    ap.bind_request("req-clear")
+    assert "req-clear" in ap._TIMINGS
+    ap.clear("req-clear")
+    assert "req-clear" not in ap._TIMINGS

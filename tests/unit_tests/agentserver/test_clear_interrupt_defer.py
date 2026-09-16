@@ -73,5 +73,63 @@ async def test_clear_interrupt_defer_sets_contextvar_only() -> None:
     assert spec is not None
     assert spec["session_id"] == "sess-1"
     assert spec["reason"] == "plain_user_message_before_agent_run"
-    assert spec["adapter"] is adapter
+    assert "adapter" not in spec
     deep_mod._DEFERRED_INTERRUPT_CLEAR.set(None)
+
+
+@pytest.mark.asyncio
+async def test_flush_deferred_interrupt_on_early_exit_runs_sync(monkeypatch) -> None:
+    deep_mod._DEFERRED_INTERRUPT_CLEAR.set(
+        {
+            "reason": "plain_user_message_before_agent_run",
+            "clear_todo_resume_snapshot_pending": False,
+            "session_id": "sess-early",
+        }
+    )
+    adapter = MagicMock()
+    adapter._instance = object()
+    calls: list[dict] = []
+
+    async def _fake_clear(
+        self,
+        session_id,
+        *,
+        reason,
+        clear_todo_resume_snapshot_pending=False,
+        defer_to_runner=False,
+    ):
+        calls.append(
+            {
+                "session_id": session_id,
+                "reason": reason,
+                "defer_to_runner": defer_to_runner,
+                "clear_todo_resume_snapshot_pending": clear_todo_resume_snapshot_pending,
+            }
+        )
+
+    monkeypatch.setattr(
+        deep_mod.JiuWenSwarmDeepAdapter,
+        "_clear_session_persisted_interrupt_state",
+        _fake_clear,
+    )
+
+    await deep_mod.JiuWenSwarmDeepAdapter._flush_deferred_interrupt_clear_on_early_exit(
+        adapter
+    )
+
+    assert deep_mod._DEFERRED_INTERRUPT_CLEAR.get() is None
+    assert len(calls) == 1
+    assert calls[0]["session_id"] == "sess-early"
+    assert calls[0]["defer_to_runner"] is False
+    assert calls[0]["reason"].endswith("_early_exit_sync")
+
+
+def test_clear_request_agent_perf_pops_timings() -> None:
+    from jiuwenswarm.server.runtime import agent_perf as ap
+
+    ap.reset_for_tests()
+    ap.bind_request("req-early")
+    assert "req-early" in ap._TIMINGS
+    deep_mod._clear_request_agent_perf("req-early")
+    assert "req-early" not in ap._TIMINGS
+    ap.reset_for_tests()
