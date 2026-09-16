@@ -44,7 +44,7 @@
     "settings": "设置",
     "logs": "日志",
     "update": "更新",
-    "personalContext": "个人\n上下文"
+    "personalContext": "上下文"
   },
   "applicationPlugins": {
     "title": "应用插件",
@@ -64,7 +64,7 @@
       "agent": "智能体",
       "browser": "浏览器",
       "channels": "频道",
-      "personalContext": "个人上下文",
+      "personalContext": "上下文",
       "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },

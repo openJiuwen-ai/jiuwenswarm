@@ -44,7 +44,7 @@
     "settings": "Settings",
     "logs": "Logs",
     "update": "Updates",
-    "personalContext": "Personal\nContext"
+    "personalContext": "Context"
   },
   "applicationPlugins": {
     "title": "Application plugins",
@@ -64,7 +64,7 @@
       "agent": "Agent",
       "browser": "Browser",
       "channels": "Channels",
-      "personalContext": "Personal Context",
+      "personalContext": "Context",
       "archivedTasks": "Archived Tasks",
       "experimental": "Experimental"
     },
