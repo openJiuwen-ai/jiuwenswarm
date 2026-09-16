@@ -625,6 +625,11 @@ class CronTools:
         normalized_patch.pop("session_id", None)
         if "cron_expr" in normalized_patch:
             normalized_patch["cron_expr"] = normalize_cron_expr(str(normalized_patch["cron_expr"]).strip())
+
+        # 提前获取 existing job，供 targets 分支保留钉钉 session_id 引用。
+        existing = await self._view_job(job_id)
+        remote_gateway = self._uses_gateway_command_ack()
+
         if "targets" in normalized_patch:
             normalized_patch["targets"] = self._normalize_targets_param(normalized_patch.get("targets"))
             t = str(normalized_patch.get("targets") or "").strip()
@@ -632,6 +637,13 @@ class CronTools:
                 sid = self._route().session_id
                 if isinstance(sid, str) and sid.strip():
                     normalized_patch["session_id"] = sid.strip()
+            elif t == "dingtalk" or t.startswith("dingtalk:"):
+                # 钉钉：创建时由 _extract_legacy_params 把发起会话编码进
+                # session_id（避免推送误用全局 last_*，见 Issue #2449）。
+                # 更新时若 patch 带 targets 但未显式传 session_id，保留原
+                # job 绑定的 session_id，不要清空导致路由回归。
+                if existing is not None and isinstance(existing.session_id, str) and existing.session_id.strip():
+                    normalized_patch["session_id"] = existing.session_id.strip()
             else:
                 normalized_patch["session_id"] = None
         if "mode" in normalized_patch:
@@ -645,8 +657,6 @@ class CronTools:
         # work_mode / project_id / project_dir 重解析(共享 helper):
         # 与 CronController.update_job 共用同一 ``resolve_cron_job_patch``,
         # 确保 AgentTool 与 Web RPC 两条链路逻辑一致。
-        existing = await self._view_job(job_id)
-        remote_gateway = self._uses_gateway_command_ack()
         if existing is None:
             if not remote_gateway:
                 raise KeyError("job not found")
