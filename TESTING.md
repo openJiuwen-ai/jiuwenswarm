@@ -1,32 +1,40 @@
-# JiuwenClow 单元测试框架配置总结
+# JiuwenSwarm 测试指南
 
-## 📦 已创建的文件
-### 1. 测试配置文件
+本文档介绍 JiuwenSwarm 的测试目录结构、本地测试运行方式和测试编写规范。
+
+## 📦 测试目录结构
 
 ```
 jiuwenswarm/
 ├── pytest.ini                           # Pytest 配置
-├── pyproject.toml                       # 已更新，添加了测试依赖
+├── pyproject.toml                       # 测试依赖（[test] 可选依赖组 / test 依赖组）
 ├── run_tests.sh                         # 测试运行脚本（可执行）
-├── tests/
-│   ├── __init__.py
-│   ├── conftest.py                      # 共享 fixtures
-│   ├── README.md                        # 详细测试指南
-│   └── unit/                            # 单元测试目录
-│       ├── agentserver
-│       ├── channel
-│       ├── evolution
-│           ├── test_schema.py           # 演进模型测试
-│           ├── test_signal_detector.py  # 信号检测器测试
-│           ├── test_message.py          # 消息模型测试
-│       ├── gateway
-│       ├── schema
-│       ├── __init__.py
-│       ├── test_config.py               # 配置模块测试
-│       └── test_utils.py                # 工具函数测试
-└── .gitcode/workflows/
-    ├── ci.yml                           # gitcode Actions 测试工作流
-    └── test.yml                         # gitcode Actions 代码质量检查
+└── tests/
+    ├── __init__.py
+    ├── conftest.py                      # 共享 fixtures
+    ├── README.md                        # 详细测试指南
+    ├── unit_tests/                      # 单元测试主目录
+    │   ├── a2ui/                        # A2UI 协议测试
+    │   ├── acp/                         # ACP 客户端测试
+    │   ├── agents/                      # Agent 编排测试
+    │   ├── agentserver/                 # Agent 服务端测试
+    │   ├── auto_harness/                # Auto Harness 测试
+    │   ├── channel/                     # 频道适配器测试
+    │   ├── cli/                         # CLI 测试
+    │   ├── common/                      # 公共模块测试
+    │   ├── e2a/                         # E2A 协议测试
+    │   ├── evolution/                   # Skill 自演进测试
+    │   ├── extensions/                  # 扩展体系测试
+    │   ├── gateway/                     # 网关测试
+    │   ├── server/                      # 服务端测试
+    │   ├── symphony/                    # Symphony 技能编排测试
+    │   └── test_*.py                    # 顶层单元测试文件
+    ├── unit/                            # 补充单元测试（agentserver / channel / deep_agent）
+    ├── integration/                     # 集成测试
+    ├── symphony/                        # Symphony 子系统测试
+    ├── system_tests/                    # 系统测试
+    ├── ui_e2e/                          # UI 端到端测试
+    └── agents/                          # Agent 相关测试
 ```
 
 ---
@@ -36,7 +44,7 @@ jiuwenswarm/
 ### 方式 1: 使用测试脚本（推荐）
 
 ```bash
-cd /Users/gawa/Desktop/pr/jiuwenswarm
+# 在仓库根目录下执行
 
 # 运行所有测试
 ./run_tests.sh
@@ -47,7 +55,10 @@ cd /Users/gawa/Desktop/pr/jiuwenswarm
 # 只运行单元测试
 ./run_tests.sh -u
 
-# 并行运行测试
+# 只运行集成测试
+./run_tests.sh -i
+
+# 并行运行测试（需要 pytest-xdist）
 ./run_tests.sh -p
 
 # 查看帮助
@@ -57,271 +68,46 @@ cd /Users/gawa/Desktop/pr/jiuwenswarm
 ### 方式 2: 直接使用 pytest
 
 ```bash
-# 首先安装测试依赖
+# 首先安装测试依赖（uv 环境下 test 依赖组默认随 dev 组安装）
+uv sync
+# 或使用 pip
 pip install -e ".[test]"
 
 # 运行所有测试
-pytest -v
+uv run pytest -v
 
-# 运行特定目录
-pytest tests/unit_tests/ -v
+# 运行单元测试目录
+uv run pytest tests/unit_tests/ -v
 
 # 运行特定文件
-pytest tests/unit_tests/test_config.py -v
+uv run pytest tests/unit_tests/test_config.py -v
 
 # 运行特定测试
-pytest tests/unit_tests/test_config.py::TestResolveEnvVars::test_resolve_string_with_env_var -v
+uv run pytest tests/unit_tests/test_config.py::TestResolveEnvVars::test_resolve_string_with_env_var -v
 
 # 生成覆盖率报告
-pytest --cov=jiuwenswarm --cov-report=html --cov-report=term-missing
+uv run pytest --cov=jiuwenswarm --cov-report=html --cov-report=term-missing
 ```
 
 ---
 
-## 🧪 已实现的测试用例
+## 🛠️ 测试框架配置
 
-### 1. `test_config.py` - 配置模块测试
+### pytest.ini 要点
 
-**测试内容**：
-- ✅ 环境变量解析（`resolve_env_vars`）
-- ✅ 字符串中的环境变量替换
-- ✅ 默认值处理
-- ✅ 字典和列表中的环境变量
-- ✅ 嵌套结构解析
-- ✅ 配置文件读取
+完整配置见仓库根目录 [pytest.ini](pytest.ini)，关键项：
 
-**测试数量**: ~15 个测试
+- **测试发现**：`test_*.py` / `*_test.py`，类 `Test*`，函数 `test_*`，测试路径 `tests/`
+- **默认参数**（`addopts`）：`-v --strict-markers --tb=short`，并默认开启覆盖率
+  （`--cov=jiuwenswarm`，输出 term-missing / html / xml 三种报告）
+- **异步测试**：`--asyncio-mode=auto`，`async def` 测试函数无需手动标记
+- **标记**（markers）：`unit` / `integration` / `system` / `slow` / `async`
+- **警告策略**：`filterwarnings = error`（未忽略的警告会导致测试失败），
+  忽略 `DeprecationWarning` 与 `PendingDeprecationWarning`
 
-**关键测试**：
-```python
-test_resolve_string_with_env_var()      # 测试 ${VAR} 解析
-test_resolve_string_with_default()       # 测试 ${VAR:-default}
-test_resolve_dict_with_env_vars()        # 测试字典解析
-test_resolve_nested_structure()          # 测试嵌套结构
-```
+### conftest.py 共享 Fixtures
 
----
-
-### 2. `test_evolution_schema.py` - 演进模型测试
-
-**测试内容**：
-- ✅ `EvolutionType` 枚举
-- ✅ `EvolutionChange` 数据类
-- ✅ `EvolutionEntry` 数据类
-- ✅ `EvolutionFile` 数据类
-- ✅ `EvolutionSignal` 数据类
-- ✅ 序列化/反序列化
-
-**测试数量**: ~30 个测试
-
-**关键测试**：
-```python
-test_evolution_entry_make()               # 测试工厂方法
-test_evolution_entry_is_pending()         # 测试属性
-test_evolution_file_pending_entries()     # 测试属性
-test_evolution_signal_to_dict()           # 测试序列化
-```
-
----
-
-### 3. `test_signal_detector.py` - 信号检测器测试
-
-**测试内容**：
-- ✅ 执行失败信号检测
-- ✅ 用户修正信号检测
-- ✅ 中英文关键词检测
-- ✅ 信号去重
-- ✅ Skill 名称提取
-- ✅ Excerpt 截取
-
-**测试数量**: ~20 个测试
-
-**关键测试**：
-```python
-test_detect_execution_failure()           # 测试错误检测
-test_detect_user_correction_chinese()     # 测试中文修正
-test_detect_multiple_signals()            # 测试多信号
-test_deduplicate_signals()                # 测试去重
-test_detect_with_skill_from_tool_calls()  # 测试 Skill 归因
-```
-
----
-
-### 4. `test_schema.py` - 消息模型测试
-
-**测试内容**：
-- ✅ `ReqMethod` 枚举
-- ✅ `EventType` 枚举
-- ✅ `Mode` 枚举
-- ✅ `AgentRequest` 数据类
-- ✅ `AgentResponse` 数据类
-- ✅ `AgentResponseChunk` 数据类
-- ✅ `Message` 数据类
-
-**测试数量**: ~25 个测试
-
-**关键测试**：
-```python
-test_create_agent_request_minimal()       # 测试最小请求
-test_create_agent_request_full()          # 测试完整请求
-test_create_request_message()             # 测试请求消息
-test_create_event_message()               # 测试事件消息
-test_message_mode()                       # 测试模式字段
-```
-
----
-
-### 5. `test_utils.py` - 工具函数测试
-
-**测试内容**：
-- ✅ 路径解析函数
-- ✅ 包检测函数
-- ✅ Logger 设置
-- ✅ 常量定义
-
-**测试数量**: ~10 个测试
-
-**关键测试**：
-```python
-test_get_root_dir()                       # 测试根目录获取
-test_get_config_dir()                     # 测试配置目录
-test_setup_logger_default()               # 测试 Logger 设置
-test_path_caching()                       # 测试路径缓存
-```
-
----
-
-## 🎯 测试覆盖率目标
-
-| 模块 | 当前覆盖率 | 目标覆盖率 |
-|------|-----------|-----------|
-| `config.py` | ~80% | 90% |
-| `evolution/schema.py` | ~90% | 95% |
-| `evolution/signal_detector.py` | ~75% | 85% |
-| `schema/*.py` | ~70% | 80% |
-| `utils.py` | ~60% | 75% |
-| **总体** | **~70%** | **80%** |
-
----
-
-## 🤖 GitHub Actions CI
-
-### 工作流 1: Tests (`.github/workflows/test.yml`)
-
-**触发条件**：
-- Push to `main` or `develop`
-- Pull requests to `main` or `develop`
-- 手动触发
-
-**测试矩阵**：
-- Python: 3.11, 3.12, 3.13
-- OS: Ubuntu Latest
-
-**步骤**：
-1. ✅ Checkout 代码
-2. ✅ 设置 Python
-3. ✅ 安装依赖
-4. ✅ 运行单元测试
-5. ✅ 上传覆盖率到 Codecov
-
-### 工作流 2: Code Quality (`.github/workflows/lint.yml`)
-
-**检查项目**：
-- ✅ 类型检查 (mypy)
-- ✅ 代码格式 (black)
-- ✅ Linting (ruff)
-- ✅ 安全扫描 (bandit)
-
----
-
-## 📝 使用示例
-
-### 快速开始
-
-```bash
-# 1. 安装依赖
-pip install -e ".[test]"
-
-# 2. 运行所有测试
-./run_tests.sh
-
-# 3. 查看覆盖率报告
-open htmlcov/index.html  # macOS
-```
-
-### 开发新功能时的测试工作流
-
-```bash
-# 1. 编写测试
-# tests/unit_tests/test_new_feature.py
-
-# 2. 运行新测试
-pytest tests/unit_tests/test_new_feature.py -v
-
-# 3. 查看覆盖率
-pytest --cov=jiuwenswarm.new_feature --cov-report=term-missing
-
-# 4. 运行所有测试确保没有破坏
-pytest tests/
-
-# 5. 提交代码
-git add .
-git commit -m "feat: add new feature with tests"
-git push
-```
-
-### CI 失败时的调试
-
-```bash
-# 1. 本地复现 CI 环境
-python -m pytest tests/ -v
-
-# 2. 检查 Python 版本
-python --version  # 应该是 3.11, 3.12, 或 3.13
-
-# 3. 检查依赖
-pip list | grep pytest
-
-# 4. 运行特定失败的测试
-pytest tests/unit_tests/test_config.py::TestResolveEnvVars -vv
-```
-
----
-
-## 🛠️ 测试框架配置详解
-
-### pytest.ini
-
-```ini
-[pytest]
-# 测试发现模式
-python_files = test_*.py *_test.py
-python_classes = Test*
-python_functions = test_*
-
-# 测试路径
-testpaths = tests
-
-# 输出选项
-addopts =
-    -v                              # 详细输出
-    --strict-markers                # 严格标记检查
-    --tb=short                      # 简短的错误堆栈
-    --cov=jiuwenswarm                # 覆盖率
-    --cov-report=term-missing       # 终端报告
-    --cov-report=html               # HTML 报告
-    --cov-report=xml                # XML 报告（CI）
-    --asyncio-mode=auto             # 异步测试模式
-
-# 标记定义
-markers =
-    unit: Unit tests
-    integration: Integration tests
-    slow: Slow running tests
-    async: Async tests
-```
-
-### conftest.py Fixtures
+定义于 [tests/conftest.py](tests/conftest.py)：
 
 ```python
 @pytest.fixture
@@ -329,15 +115,15 @@ def temp_workspace() -> Path:
     """创建临时工作区"""
 
 @pytest.fixture
-def temp_config_file() -> Path:
+def temp_config_file(temp_workspace) -> Path:
     """创建临时配置文件"""
 
 @pytest.fixture
-def mock_env_vars() -> None:
+def mock_env_vars(monkeypatch) -> None:
     """设置模拟环境变量"""
 
 @pytest.fixture
-def sample_skill_md() -> Path:
+def sample_skill_md(temp_workspace) -> Path:
     """创建示例 SKILL.md 文件"""
 
 @pytest.fixture
@@ -347,19 +133,25 @@ def sample_messages() -> List[dict]:
 
 ---
 
-## 📚 扩展测试
-
-### 添加新的测试文件
+## 📝 开发新功能时的测试工作流
 
 ```bash
-# 1. 创建测试文件
-touch tests/unit_tests/test_new_module.py
+# 1. 编写测试（放在对应模块的子目录下）
+# tests/unit_tests/<module>/test_new_feature.py
 
-# 2. 编写测试
-# 参考 tests/README.md 中的模板
+# 2. 运行新测试
+uv run pytest tests/unit_tests/<module>/test_new_feature.py -v
 
-# 3. 运行测试
-pytest tests/unit_tests/test_new_module.py -v
+# 3. 查看覆盖率
+uv run pytest --cov=jiuwenswarm.<module> --cov-report=term-missing
+
+# 4. 运行单元测试确保没有破坏现有功能
+uv run pytest tests/unit_tests/
+
+# 5. 提交代码（遵循 Conventional Commits）
+git add <changed files>
+git commit -m "feat(<scope>): add new feature with tests"
+git push
 ```
 
 ### 添加新的 Fixture
@@ -378,34 +170,23 @@ def my_custom_fixture():
 
 ---
 
-## ✅ 下一步建议
+## 🤖 CI 状态
 
-1. **增加测试覆盖**：
-   - `evolution/evolver.py` - 演进生成器
-   - `evolution/service.py` - 演进服务
-   - `gateway/` - 网关层
-   - `channel/` - 频道适配器
+仓库当前尚未包含 CI 工作流配置文件。PR 的自动化检查与评审流程以
+[贡献指南](docs/zh/贡献指南.md)（[Contributing](docs/en/Contributing.md)）为准：
+PR 提交至 `develop` 分支，经至少两名 Committer 批准后合入。
 
-2. **添加集成测试**：
-   - 端到端测试
-   - API 测试
-   - 性能测试
+提交 PR 前请在本地确保单元测试通过：
 
-3. **提升测试质量**：
-   - 使用 mock 隔离外部依赖
-   - 添加性能基准测试
-   - 实现测试数据工厂
-
-4. **改进 CI/CD**：
-   - 添加性能测试
-   - 集成安全扫描
-   - 自动化发布流程
+```bash
+uv run pytest tests/unit_tests/
+```
 
 ---
 
 ## 📞 需要帮助？
 
-- 查看 `tests/README.md` 获取详细指南
+- 查看 [tests/README.md](tests/README.md) 获取详细指南
 - 运行 `./run_tests.sh -h` 查看测试脚本帮助
 - 查看 pytest 文档: https://docs.pytest.org/
 
