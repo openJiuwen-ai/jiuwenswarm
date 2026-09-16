@@ -415,6 +415,79 @@ test('cursor history accepts only the exact request cursor', () => {
   }, sessionId, undefined, false, undefined, 'cursor-1'), true);
 });
 
+test('history accepts copied fork records while still rejecting unrelated sessions', () => {
+  const forkedRecord = {
+    role: 'assistant',
+    event_type: 'chat.final',
+    content: 'copied answer',
+    session_id: 'source-session',
+    event_payload: { parent_session_id: 'source-session' },
+    forked_from: {
+      session_id: 'source-session',
+      original_id: 'source-answer',
+    },
+  };
+
+  assert.equal(
+    shouldProcessHistoryPayload(
+      {
+        session_id: sessionId,
+        page_idx: 1,
+        message: forkedRecord,
+      },
+      sessionId,
+      1,
+    ),
+    true,
+  );
+  assert.equal(
+    shouldProcessHistoryPayload(
+      {
+        session_id: sessionId,
+        page_idx: 1,
+        message: {
+          ...forkedRecord,
+          event_payload: { parent_session_id: 'unrelated-session' },
+        },
+      },
+      sessionId,
+      1,
+    ),
+    false,
+  );
+});
+
+test('history marks the inherited side of a fork boundary', () => {
+  const messages = parseHistoryJsonFileToPreviewMessages([
+    {
+      id: 'source-user',
+      role: 'user',
+      content: 'source question',
+      timestamp: 1,
+      forked_from: { session_id: 'source-session' },
+    },
+    {
+      id: 'source-assistant',
+      role: 'assistant',
+      event_type: 'chat.final',
+      content: 'source answer',
+      timestamp: 2,
+      forked_from: { session_id: 'source-session' },
+    },
+    {
+      id: 'branch-user',
+      role: 'user',
+      content: 'branch question',
+      timestamp: 3,
+    },
+  ], sessionId);
+
+  assert.deepEqual(
+    messages.map((message) => message.forkedFromSessionId),
+    ['source-session', 'source-session', undefined],
+  );
+});
+
 test('parent tool history recovers roster and structured wait result without tool-result transcript text', () => {
   const recovered = recoverSubagentToolHistory([
     {

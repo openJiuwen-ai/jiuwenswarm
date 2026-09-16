@@ -806,6 +806,18 @@
     },
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "continuedFromChat": "从原会话继续",
+    "openSourceChat": "打开原会话",
+    "sideConversation": {
+      "title": "侧会话",
+      "from": "来自 {{title}}",
+      "empty": "在不离开主会话的情况下提问",
+      "placeholder": "发送消息到侧会话",
+      "send": "发送消息",
+      "working": "处理中…",
+      "sendFailed": "消息发送失败，请重试。",
+      "close": "关闭侧会话"
+    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -922,6 +934,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
@@ -2824,6 +2837,8 @@
     "copied": "已复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
+    "forkFromMessage": "从此消息新建会话分支",
+    "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",

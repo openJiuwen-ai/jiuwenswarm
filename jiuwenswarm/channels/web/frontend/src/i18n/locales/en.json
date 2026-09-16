@@ -824,6 +824,18 @@
     },
     "historyLoading": "Loading conversation history…",
     "historyLoadMore": "Load more history",
+    "continuedFromChat": "Continued from chat",
+    "openSourceChat": "Open source chat",
+    "sideConversation": {
+      "title": "Side chat",
+      "from": "From {{title}}",
+      "empty": "Ask a question without leaving the main chat",
+      "placeholder": "Message side chat",
+      "send": "Send message",
+      "working": "Working…",
+      "sendFailed": "Message could not be sent. Try again.",
+      "close": "Close side chat"
+    },
     "config": {
       "mode": {
         "cluster": "Cluster",
@@ -940,6 +952,7 @@
     "toggleLabel": "Pursue Goal",
     "toolbarUnavailable": "A goal is already in progress. Finish or clear it first.",
     "toolbarUnavailablePlan": "Plan mode is in progress, so Goal isn't available",
+    "overwriteConfirm": "The current goal \"{{currentObjective}}\" is unfinished. Replace it with \"{{requestedObjective}}\"?",
     "closeTag": "Cancel goal",
     "badge": "Goal",
     "status": {
@@ -2843,6 +2856,8 @@
     "copied": "Copied",
     "stopReading": "Stop reading",
     "readMessage": "Read message",
+    "forkFromMessage": "Create a conversation branch from this message",
+    "forkFromMessageFailed": "Failed to create a conversation branch. Try again.",
     "fileExpired": "Expired",
     "agentProcessing": "Agent Processing",
     "thinking": "Thinking...",
