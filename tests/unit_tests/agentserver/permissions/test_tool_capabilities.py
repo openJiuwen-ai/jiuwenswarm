@@ -6,8 +6,13 @@ from __future__ import annotations
 
 import pytest
 
+from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs import (
+    FileToolSpec,
+)
+
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
     classify_tool,
+    install_permission_file_semantics,
     normalize_tool_name,
 )
 
@@ -306,6 +311,40 @@ def test_read_pdf_is_a_static_read_path_tool() -> None:
     assert info.operation_family == "workspace_read"
     assert info.static_side_effects == frozenset()
     assert info.facts_source == "host_static"
+
+
+def test_permission_file_semantics_installer_is_explicit_and_idempotent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities as mod
+
+    state: list[FileToolSpec] = []
+    monkeypatch.setattr(
+        mod,
+        "lookup_file_tool_specs",
+        lambda _tool_name: list(state) or None,
+    )
+    monkeypatch.setattr(mod, "register_file_tool", state.append)
+
+    install_permission_file_semantics()
+    install_permission_file_semantics()
+
+    assert state == [FileToolSpec("read_pdf", "pdf_path", "read")]
+
+
+def test_permission_file_semantics_installer_rejects_collision(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities as mod
+
+    monkeypatch.setattr(
+        mod,
+        "lookup_file_tool_specs",
+        lambda _tool_name: [FileToolSpec("read_pdf", "path", "write")],
+    )
+
+    with pytest.raises(RuntimeError, match="permission_file_semantics_conflict:read_pdf"):
+        install_permission_file_semantics()
 
 
 def test_host_todo_tools_have_static_authority() -> None:

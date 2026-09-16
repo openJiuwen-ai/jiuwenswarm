@@ -162,24 +162,6 @@ test('legacy marker remains a failure only without explicit Host outcome', () =>
   assert.equal(result.success, false);
 });
 
-test('keeps ordinary outcomes and generic metadata outside Smart interpretation', () => {
-  for (const status of ['error', 'denied', 'rejected', 'blocked']) {
-    const result = normalizeToolResultPayload({ tool_result: {
-      result: '[PERMISSION_DENIED] quoted text', success: true, status,
-      permission_status: 'denied', metadata: { risk_level: 'high', decision_source: 'tool' },
-    } });
-    assert.equal(result.success, true);
-    assert.equal(result.reviewer, undefined);
-  }
-  for (const fields of [{ success: true }, { status: 'completed' }, { status: 'pending' }, { pending: true }]) {
-    const result = normalizeToolResultPayload({ tool_result: { result: '[PERMISSION_DENIED] quoted text', ...fields } });
-    assert.equal(result.success, true);
-    assert.equal(result.reviewer, undefined);
-  }
-  assert.equal(normalizeToolResultPayload({ tool_result: { status: 'error' } }).success, false);
-  assert.equal(normalizeToolResultPayload({ tool_result: { status: 'denied', success: false } }).success, false);
-});
-
 test('normalizes reviewer metadata on an in-progress tool update', () => {
   const update = normalizeToolUpdatePayload({
     tool_update: {

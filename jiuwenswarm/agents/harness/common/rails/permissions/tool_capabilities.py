@@ -6,6 +6,12 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from openjiuwen.harness.security.permission_engine.fileguard.file_tool_specs import (
+    FileToolSpec,
+    lookup_file_tool_specs,
+    register_file_tool,
+)
+
 from jiuwenswarm.common.permission_tools import (
     PERMISSION_TOOL_ALIASES,
     PermissionToolNameResolution,
@@ -17,6 +23,20 @@ TOOL_CAPABILITY_FACTS_VERSION = "2"
 HOST_STATIC_FACTS = "host_static"
 NAME_CLASSIFICATION_HINT = "name_classification_hint"
 UNKNOWN_FACTS = "unknown"
+
+_READ_PDF_FILE_SPEC = FileToolSpec("read_pdf", "pdf_path", "read")
+
+
+def install_permission_file_semantics() -> None:
+    """Install JiuwenSwarm file semantics at the Permission composition boundary."""
+
+    specs = lookup_file_tool_specs(_READ_PDF_FILE_SPEC.tool_name)
+    if specs is None:
+        register_file_tool(_READ_PDF_FILE_SPEC)
+        specs = lookup_file_tool_specs(_READ_PDF_FILE_SPEC.tool_name)
+    if specs != [_READ_PDF_FILE_SPEC]:
+        raise RuntimeError("permission_file_semantics_conflict:read_pdf")
+
 
 def _is_exact_subagent_runtime_control(
     tool_name: object,

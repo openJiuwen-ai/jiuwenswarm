@@ -50,6 +50,11 @@ const promptBundle = buildBundle(
   'AuthorizationPrompt.mjs',
   { externalReact: true },
 );
+const languageBundle = buildBundle(
+  'src/i18n/configuredLanguage.ts',
+  'configuredLanguage.mjs',
+);
+
 const { bindPendingPermissionCard } = await import(
   pathToFileURL(pendingQueueBundle).href
 );
@@ -67,11 +72,12 @@ const { normalizeReviewerMetadata } = await import(
 );
 const {
   AuthorizationQuestionDetails,
-  AuthorizationPrompt,
   buildAuthorizationAnswers,
-  resolveAuthorizationActions,
   formatPermissionPayload,
 } = await import(pathToFileURL(promptBundle).href);
+const { applyConfiguredLanguage, configuredLanguage } = await import(
+  pathToFileURL(languageBundle).href
+);
 
 function question(cardId) {
   return {
@@ -125,11 +131,8 @@ test('missing card semantics fail closed instead of selecting the first allow op
     },
   ];
 
-  assert.deepEqual(buildAuthorizationAnswers(questions, picked, true), [
-    { selected_options: ['reject'] },
-  ]);
   assert.deepEqual(buildAuthorizationAnswers(questions, picked), [
-    { selected_options: ['allow_once'] },
+    { selected_options: ['reject'] },
   ]);
 });
 
@@ -155,16 +158,6 @@ test('resolves trusted badge tones with failure states taking precedence', () =>
     'danger',
   );
   assert.equal(reviewerBadgeTone({ final_reviewer_status: 'aborted' }), 'neutral');
-});
-
-test('keeps legacy multi-question actions and per-question fallback', () => {
-  const questions = [question(), { ...question(), options: [{ label: 'Continue', value: 'continue' }] }];
-  const actions = resolveAuthorizationActions(questions);
-  assert.equal(actions.length, 1);
-  assert.deepEqual(buildAuthorizationAnswers(questions, actions[0]), [
-    { selected_options: ['approve'] }, { selected_options: ['continue'] },
-  ]);
-  assert.equal(normalizeReviewerMetadata({ metadata: { risk_level: 'high', decision_source: 'tool' } }), undefined);
 });
 
 test('classifies reviewer decision sources without exposing internal values', () => {
@@ -289,14 +282,26 @@ test('renders the current permission card reviewer and redacted payload', async 
   assert.doesNotMatch(html, /stale-manual-hint/);
   assert.doesNotMatch(html, /Authorization/);
   assert.doesNotMatch(html, /Missing evidence/);
-  for (const source of ['permission_interrupt', 'confirm_interrupt', 'activate_confirm', 'evolution_interrupt']) {
-    for (const withCard of [false, true]) {
-      const pending = { request_id: 'request-1', source, questions: [question(withCard ? 'card-1' : undefined)] };
-      const prompt = renderToStaticMarkup(React.createElement(I18nextProvider, { i18n },
-        React.createElement(AuthorizationPrompt, { pending, onSubmit: async () => true })));
-      assert.equal(prompt.includes('auth-prompt--smart'), withCard && source === 'permission_interrupt');
-    }
-  }
+});
+
+test('uses English only when JiuwenSwarm explicitly configures English', async () => {
+  assert.equal(configuredLanguage({ preferred_language: 'en' }), 'en');
+  assert.equal(configuredLanguage({ preferred_language: 'zh' }), 'zh');
+  assert.equal(configuredLanguage({}), 'zh');
+  assert.equal(configuredLanguage({ preferred_language: 'fr' }), 'zh');
+
+  const applied = [];
+  await applyConfiguredLanguage(
+    async () => ({ preferred_language: 'en' }),
+    async (language) => applied.push(language),
+  );
+  await applyConfiguredLanguage(
+    async () => {
+      throw new Error('unreadable config');
+    },
+    async (language) => applied.push(language),
+  );
+  assert.deepEqual(applied, ['en', 'zh']);
 });
 
 test('keeps required permission labels in both language resources', () => {

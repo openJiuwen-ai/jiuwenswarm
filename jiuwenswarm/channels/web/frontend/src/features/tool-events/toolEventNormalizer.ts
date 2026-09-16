@@ -86,6 +86,25 @@ function isFailureStatus(status: string): boolean {
   return ['error', 'failed', 'failure', 'rejected', 'denied', 'blocked'].includes(status.trim().toLowerCase());
 }
 
+function metadataIndicatesPermissionFailure(payload: UnknownPayload, toolResultPayload: UnknownPayload, reviewer?: AutoReviewerMetadata): boolean {
+  const metadata = asRecord(payload.metadata);
+  const values = [
+    toolResultPayload.permission_decision,
+    toolResultPayload.permission_status,
+    payload.permission_decision,
+    payload.permission_status,
+    metadata?.permission_decision,
+    metadata?.permission_status,
+  ];
+  return (
+    reviewerIndicatesFailure(reviewer) ||
+    values.some(value => {
+      const normalized = typeof value === 'string' ? value.trim().toLowerCase() : '';
+      return ['deny', 'denied', 'reject', 'rejected', 'blocked'].includes(normalized);
+    })
+  );
+}
+
 function resolveToolCallId(payload: UnknownPayload, fallback?: UnknownPayload): string | undefined {
   const candidates = [payload.id, payload.tool_call_id, payload.toolCallId, fallback?.tool_call_id, fallback?.toolCallId];
   for (const item of candidates) {
@@ -325,25 +344,23 @@ export function normalizeToolResultPayload(payload: UnknownPayload): NormalizedT
           : '';
   const pending = status === 'pending';
   const timedOut = status === 'timeout' || status === 'timed_out';
-  const statusFailed = !pending && (timedOut || ['error', 'failed', 'failure'].includes(status));
+  const statusFailed = !pending && (timedOut || isFailureStatus(status));
   const reviewer = normalizeReviewerMetadata(payload) ?? normalizeReviewerMetadata(toolResultPayload);
   const reviewerStatus = effectiveReviewerStatus(reviewer);
   const hasExplicitSuccess = typeof toolResultPayload.success === 'boolean';
   const trustedApproval = reviewerStatus === 'approved' || reviewerStatus === 'deterministic_allow';
-  // Old text-only failures have no approval identity; never infer a reviewer.
   const legacyMarkerFailure =
-    !hasExplicitSuccess && !status && !trustedApproval &&
-    [payload, toolResultPayload, rawOutputRecord, rawOutputData].every(item => item?.pending === undefined) &&
-    isPermissionFailureResult(result);
-  const permissionFailure = reviewerIndicatesFailure(reviewer);
+    !hasExplicitSuccess && !trustedApproval && isPermissionFailureResult(result);
+  const permissionFailure =
+    legacyMarkerFailure || metadataIndicatesPermissionFailure(payload, toolResultPayload, reviewer);
   const effectivePending = pending && !permissionFailure;
-  const baseSuccess = pending
-    ? true
-    : hasExplicitSuccess
-      ? toolResultPayload.success === true && !timedOut
-      : status ? !statusFailed : true;
-  const success = baseSuccess && !permissionFailure && !legacyMarkerFailure &&
-    !(reviewerStatus && !pending && isFailureStatus(status));
+  const success =
+    effectivePending ||
+    (hasExplicitSuccess
+      ? toolResultPayload.success === true && !statusFailed && !permissionFailure
+      : status
+        ? !statusFailed && !permissionFailure
+        : !permissionFailure);
   const toolName =
     (typeof toolResultPayload.tool_name === 'string' && toolResultPayload.tool_name) ||
     (typeof toolResultPayload.name === 'string' && toolResultPayload.name) ||
