@@ -726,6 +726,37 @@ class CronSchedulerService:
             if pending:
                 raise RuntimeError("cron runs are still stopping")
 
+    async def stop_job_runs(self, job_id: str) -> None:
+        matching = [state for state in list(self._runs.values()) if state.job_id == job_id]
+        tasks = []
+        for state in matching:
+            await self._cancel_agent_session(state, reason="cron_delete")
+            task = self._run_tasks.get(state.run_id)
+            if task is not None and not task.done():
+                task.cancel()
+                tasks.append(task)
+        if tasks:
+            _, pending = await asyncio.wait(tasks, timeout=10)
+            if pending:
+                raise RuntimeError("cron runs are still stopping")
+
+    async def delete_cron_sessions(self, job_id: str, user_id: str | None) -> dict[str, Any]:
+        """Delete persisted AgentServer sessions belonging to a cron job."""
+        from jiuwenswarm.gateway.routing.e2a_proxy import fetch_agent_unary
+
+        ok, result = await fetch_agent_unary(
+            agent_client=self._agent_client,
+            req_method=ReqMethod.CRON_SESSIONS_DELETE,
+            params={"cron_id": job_id},
+            session_id=None,
+            user_id=user_id,
+            channel_id="__cron__",
+            timeout_seconds=120,
+        )
+        if not ok or result.get("failed_count"):
+            raise RuntimeError(result.get("error") or "cron sessions could not be deleted")
+        return result
+
     async def trigger_run_now(self, job_id: str) -> str:
         info = await self.trigger_run_now_info(job_id)
         return str(info["run_id"])

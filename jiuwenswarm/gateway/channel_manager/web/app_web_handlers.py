@@ -6614,7 +6614,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST",
             )
             return
-        deleted = await cc.delete_job(job_id)
+        try:
+            deleted = await cc.delete_job(job_id)
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+            )
+            return
         if not deleted:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return

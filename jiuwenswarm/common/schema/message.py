@@ -117,6 +117,7 @@ class ReqMethod(Enum):
     SESSION_ARCHIVE = "session.archive"
     SESSION_UNARCHIVE = "session.unarchive"
     SESSION_ARCHIVED_LIST = "session.archived.list"
+    CRON_SESSIONS_DELETE = "cron.sessions.delete"
     PROJECT_DELETE = "project.delete"
     PROJECT_LIFECYCLE = "project.lifecycle"
     PROJECT_SESSIONS_ARCHIVE = "project.sessions.archive"

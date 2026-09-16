@@ -327,6 +327,10 @@ class TeamManager:
         self._runner_team_agents: dict[str, TeamAgent] = {}
         self._team_monitors: dict[str, TeamMonitorHandler] = {}
         self._stream_tasks: dict[str, asyncio.Task] = {}
+        # session_id → request_ids of Team turns that entered the adapter but
+        # have not reached a released round yet.  Covers the preparation window
+        # (spec assembly, runtime activation) that precedes the round marker.
+        self._inflight_requests: dict[str, set[str]] = {}
         self._held_idle: dict[str, dict[str, Any]] = {}
         self._background_task_controllers: dict[str, BackgroundTaskController] = {}
         self._bootstrap_lock = asyncio.Lock()
@@ -396,6 +400,29 @@ class TeamManager:
 
     def pop_stream_task(self, session_id: str) -> asyncio.Task | None:
         return self._stream_tasks.pop(session_id, None)
+
+    def begin_request(self, session_id: str, request_id: str) -> None:
+        """Mark a Team turn as in flight before its round exists.
+
+        The adapter admits a Team request long before ``begin_round`` runs
+        (spec assembly, MCP preflight, runtime activation).  Without this
+        marker the Session looks idle for that whole window.
+        """
+        self._inflight_requests.setdefault(session_id, set()).add(
+            str(request_id or "")
+        )
+
+    def end_request(self, session_id: str, request_id: str) -> None:
+        """Release one in-flight Team turn.  Idempotent."""
+        requests = self._inflight_requests.get(session_id)
+        if requests is None:
+            return
+        requests.discard(str(request_id or ""))
+        if not requests:
+            self._inflight_requests.pop(session_id, None)
+
+    def has_inflight_request(self, session_id: str) -> bool:
+        return bool(self._inflight_requests.get(session_id))
 
     def is_session_initialized(self, session_id: str) -> bool:
         """Return whether the session has ever initialized a team runtime."""
@@ -692,6 +719,9 @@ class TeamManager:
         if current is None or current.request_id != request_id:
             return False
         self._active_rounds.pop(session_id, None)
+        # The round terminal ends the turn's in-flight window as well, so the
+        # archive guard stops treating a finished Team Session as running.
+        self.end_request(session_id, request_id)
         completion_task = current.completion_task
         if (
             completion_task is not None
@@ -3071,13 +3101,20 @@ _team_manager: TeamManager | None = None
 
 
 def is_team_session_running(session_id: str) -> bool:
-    """Inspect existing team state without creating or stopping a runtime."""
+    """Inspect existing team state without creating or stopping a runtime.
+
+    Only an admitted turn counts: an in-flight request still preparing, or an
+    active interaction round.  The persistent stream task and the pooled
+    runtime deliberately outlive the round, so keying on them kept a finished
+    Session "running" until the runtime was torn down.
+    """
     manager = _team_manager
-    return bool(manager and (
-        manager.has_stream_task(session_id)
-        or manager.is_runtime_active(session_id)
-        or manager.is_runtime_pending(session_id)
-    ))
+    if manager is None:
+        return False
+    return bool(
+        manager.has_inflight_request(session_id)
+        or manager.is_round_active(session_id)
+    )
 
 
 def get_team_manager(channel_id: str | None = None) -> TeamManager:

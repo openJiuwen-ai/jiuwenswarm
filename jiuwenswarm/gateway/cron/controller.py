@@ -184,8 +184,8 @@ class CronController:
         await self._scheduler.reload()
         await self._scheduler.stop_project_runs(project_id, user_id)
         for job in jobs:
-            # Preserve store protection rules; no blanket force deletion.
-            await self.delete_job(job.id)
+            # Project finish deletes its sessions after cron jobs are removed.
+            await self._store.delete_job(job.id)
             if checkpoint:
                 await checkpoint(job.id)
         await self._scheduler.reload()
@@ -398,7 +398,20 @@ class CronController:
         await self._scheduler.reload()
         return job.to_dict()
 
-    async def delete_job(self, job_id: str, *, force: bool = False) -> bool:
+    async def delete_job(
+        self, job_id: str, *, force: bool = False, delete_sessions: bool = True
+    ) -> bool:
+        existing = await self._store.get_job(job_id)
+        if existing is None:
+            return False
+        if not force and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+            return await self._store.delete_job(job_id)
+        if delete_sessions:
+            if existing.enabled:
+                await self._store.update_job(job_id, {"enabled": False})
+                await self._scheduler.reload()
+            await self._scheduler.stop_job_runs(job_id)
+            await self._scheduler.delete_cron_sessions(job_id, existing.user_id)
         deleted = await self._store.delete_job(job_id, force=force)
         if deleted:
             await self._scheduler.reload()

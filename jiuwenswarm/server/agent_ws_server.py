@@ -2245,6 +2245,7 @@ class AgentWebSocketServer:
                 preview_text(_request_query_text(request)),
             )
 
+        pending_chat_request: tuple[AgentRuntime, str, str] | None = None
         try:
             if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
                 await self._handle_asset_publish(ws, request, send_lock)
@@ -2306,6 +2307,13 @@ class AgentWebSocketServer:
 
             if await self._dispatch_gateway_adapter_request(ws, request, send_lock):
                 return
+
+            if request.req_method in {
+                ReqMethod.CHAT_SEND, ReqMethod.CHAT_RESUME, ReqMethod.CHAT_ANSWER,
+            } and request.session_id:
+                runtime = self._execution_runtime()
+                runtime.begin_chat_request(request.session_id, request.request_id)
+                pending_chat_request = (runtime, request.session_id, request.request_id)
 
             # Extensions must observe and may normalize chat input before
             # automatic team binding or any other request-side effect. Runtime
@@ -2744,6 +2752,10 @@ class AgentWebSocketServer:
                 )
                 async with send_lock:
                     await send_wire_payload(ws, wire)
+        finally:
+            if pending_chat_request is not None:
+                runtime, session_id, request_id = pending_chat_request
+                runtime.end_chat_request(session_id, request_id)
 
     @staticmethod
     def _should_trigger_before_chat_request_hook(request: AgentRequest) -> bool:
@@ -5246,6 +5258,7 @@ class AgentWebSocketServer:
         methods = {
             "session.archive", "session.unarchive", "session.archived.list",
             "session.delete",
+            "cron.sessions.delete",
             "project.sessions.archive", "project.sessions.delete_archived",
             "project.delete", "project.lifecycle",
         }
@@ -5259,6 +5272,10 @@ class AgentWebSocketServer:
         try:
             if method == "session.archived.list":
                 payload = service.list_sessions(params)
+            elif method == "cron.sessions.delete":
+                payload = await service.delete_cron_sessions(
+                    params.get("cron_id"), request.channel_id or ""
+                )
             elif method.startswith("project.sessions."):
                 payload = await service.project_batch(
                     params.get("project_id"), method.rsplit(".", 1)[1], request.channel_id or ""
