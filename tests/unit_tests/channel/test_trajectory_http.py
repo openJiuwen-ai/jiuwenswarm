@@ -501,7 +501,7 @@ async def test_http_archive_exports_all_current_records_beyond_list_window(
         'attachment; filename="trajectory-session-1.archive.json"'
     )
     assert payload["format"] == "openjiuwen.trajectory.archive"
-    assert payload["archive_version"] == 1
+    assert payload["archive_version"] == 2
     assert payload["session_id"] == "session-1"
     assert payload["exported_at"].endswith("Z")
     assert isinstance(payload["store_epoch"], str)
@@ -673,7 +673,7 @@ async def test_archive_get_download_preserves_execution_subject_and_access(
     assert current_raw == b""
     payload = response.json()
     assert payload["format"] == "openjiuwen.trajectory.archive"
-    assert payload["archive_version"] == 1
+    assert payload["archive_version"] == 2
     assert len(payload["records"]) == 1
     archived_record = payload["records"][0]
     assert base64.b64decode(
@@ -1007,7 +1007,7 @@ async def test_archive_route_is_export_only_and_cannot_import_into_sqlite(
             f"{TRAJECTORY_API_PREFIX}/sessions/session-1/archive",
             json={
                 "format": "openjiuwen.trajectory.archive",
-                "archive_version": 1,
+                "archive_version": 2,
                 "records": [{"record_id": "attacker:record"}],
             },
         )
