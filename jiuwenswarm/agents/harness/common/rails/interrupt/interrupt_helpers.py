@@ -265,7 +265,6 @@ def build_permission_rail(
             session_id=bound_session_id,
         )
     )
-
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；
         # 这里的 tool_names 仅作为标签展示/日志辅助（尽量覆盖 tools + rules 声明）。

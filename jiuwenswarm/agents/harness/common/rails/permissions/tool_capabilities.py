@@ -18,7 +18,6 @@ HOST_STATIC_FACTS = "host_static"
 NAME_CLASSIFICATION_HINT = "name_classification_hint"
 UNKNOWN_FACTS = "unknown"
 
-
 def _is_exact_subagent_runtime_control(
     tool_name: object,
     resolution: PermissionToolNameResolution,
