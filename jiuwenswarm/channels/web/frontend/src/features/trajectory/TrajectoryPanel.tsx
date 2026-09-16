@@ -229,6 +229,10 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
   const [replayArchive, setReplayArchive] = useState<TrajectoryArchive | null>(null);
+  // The file as imported. Exporting a replay saves these bytes: the parsed
+  // archive has its references resolved, and restating them would undo what
+  // makes the addressed file small.
+  const replayArchiveTextRef = useRef<string | null>(null);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
   const [invalidRecordSeen, setInvalidRecordSeen] = useState(false);
@@ -988,11 +992,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setArchiveError(null);
     setArchiveNotice(null);
     try {
-      const archive = replayArchive ?? parseTrajectoryArchive(
-        await getTrajectoryArchive(sessionId, { signal }),
-      );
+      const text = replayArchive !== null && replayArchiveTextRef.current !== null
+        ? replayArchiveTextRef.current
+        : await getTrajectoryArchive(sessionId, { signal });
+      // Parse before saving so a file this viewer cannot replay is never written.
+      const archive = replayArchive ?? parseTrajectoryArchive(text);
       const safeSession = archive.session_id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'session';
-      const blob = new Blob([`${JSON.stringify(archive, null, 2)}\n`], {
+      const blob = new Blob([text], {
         type: 'application/json;charset=utf-8',
       });
       const result = await saveBlobWithResult(
@@ -1024,7 +1030,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setArchiveNotice(null);
     try {
       if (file.size > MAX_ARCHIVE_BYTES) throw new Error(copy.archiveTooLarge);
-      const archive = parseTrajectoryArchive(await file.text());
+      const text = await file.text();
+      const archive = parseTrajectoryArchive(text);
+      replayArchiveTextRef.current = text;
       setReplayArchive(archive);
       setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
       setRawSelection('');
@@ -1037,6 +1045,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
 
   const exitReplay = useCallback(() => {
     const transition = exitTrajectoryReplay(replayArchive);
+    replayArchiveTextRef.current = null;
     setReplayArchive(transition.archive);
     setSelectedSubjectId(teamMode ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);

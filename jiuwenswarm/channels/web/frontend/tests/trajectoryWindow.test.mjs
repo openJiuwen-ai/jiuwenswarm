@@ -246,19 +246,22 @@ function backendArchiveRecord({
   };
 }
 
-function backendArchive(records) {
+function backendArchive(records, dictionaries = {}) {
   return {
     format: 'openjiuwen.trajectory.archive',
-    archive_version: 1,
+    archive_version: 2,
     session_id: SESSION_ID,
     exported_at: '2026-08-21T00:00:00Z',
     store_epoch: STORE_EPOCH,
     revision: '9007199254740995',
+    content_addressed: true,
+    sequences: dictionaries.sequences ?? {},
+    blobs: dictionaries.blobs ?? {},
     records,
   };
 }
 
-test('frontend parses and replays the real backend Archive v1 wire payload', () => {
+test('frontend parses and replays the real backend Archive v2 wire payload', () => {
   const finalRecord = backendArchiveRecord();
   const invalidRecord = backendArchiveRecord({
     spanId: hexId(2, 16),
@@ -297,6 +300,43 @@ test('archive parser rejects frontend-only draft names and non-string cursors', 
   assert.throws(() => parseTrajectoryArchive(JSON.stringify(numericChangeSeq)), /invalid record/);
 });
 
+test('archive parser refuses version 1 and archives that are not content-addressed', () => {
+  const record = backendArchiveRecord();
+  const versionOne = { ...backendArchive([record]), archive_version: 1 };
+  const inline = { ...backendArchive([record]), content_addressed: undefined };
+
+  assert.throws(
+    () => parseTrajectoryArchive(JSON.stringify(versionOne)),
+    /version 1 is no longer supported/,
+  );
+  assert.throws(() => parseTrajectoryArchive(JSON.stringify(inline)), /not supported/);
+});
+
+test('an addressed archive rebuilds its references from its own dictionaries', () => {
+  const head = 'd'.repeat(64);
+  const record = backendArchiveRecord();
+  const span = record.otlp.resourceSpans[0].scopeSpans[0].spans[0];
+  span.attributes = [
+    ...(span.attributes ?? []),
+    { key: 'gen_ai.input.messages', value: { stringValue: `@oj-seq:1:${head}:2` } },
+  ];
+  const archive = parseTrajectoryArchive(JSON.stringify(backendArchive(
+    [{ ...record, sequences: { 'gen_ai.input.messages': { hash: head, depth: 2 } } }],
+    {
+      sequences: { [head]: ['e1', 'e2'] },
+      blobs: {
+        e1: JSON.stringify({ role: 'user', parts: [] }),
+        e2: JSON.stringify({ role: 'assistant', parts: [] }),
+      },
+    },
+  )));
+  const rebuilt = archive.records[0].otlp.resourceSpans[0].scopeSpans[0].spans[0].attributes
+    .find(attribute => attribute.key === 'gen_ai.input.messages').value.stringValue;
+
+  assert.equal(archive.records[0].incomplete_sequences, undefined);
+  assert.deepEqual(JSON.parse(rebuilt).map(message => message.role), ['user', 'assistant']);
+});
+
 test('archive export client downloads the backend session archive endpoint', async () => {
   const originalFetch = globalThis.fetch;
   const payload = backendArchive([backendArchiveRecord()]);
@@ -308,7 +348,7 @@ test('archive export client downloads the backend session archive endpoint', asy
   try {
     const text = await getTrajectoryArchive('session / one');
     assert.equal(parseTrajectoryArchive(text).records.length, 1);
-    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive$/);
+    assert.match(requestedUrl, /\/sessions\/session%20%2F%20one\/archive\?format=addressed$/);
   } finally {
     globalThis.fetch = originalFetch;
   }

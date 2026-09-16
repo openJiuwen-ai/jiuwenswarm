@@ -375,11 +375,14 @@ test('Archive v1 replay produces the same execution-subject groups as live recor
   });
   const archive = parseTrajectoryArchive(JSON.stringify({
     format: 'openjiuwen.trajectory.archive',
-    archive_version: 1,
+    archive_version: 2,
     session_id: 'session-main',
     store_epoch: 'epoch-1',
     revision: '2',
     exported_at: '2026-08-21T00:00:00Z',
+    content_addressed: true,
+    sequences: {},
+    blobs: {},
     records: archiveRecords,
   }));
   const replay = trajectoryArchiveView(archive);
