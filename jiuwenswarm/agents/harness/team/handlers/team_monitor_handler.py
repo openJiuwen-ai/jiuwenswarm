@@ -11,6 +11,9 @@ import asyncio
 import json
 import logging
 import os
+from datetime import datetime, timezone
+from pathlib import Path
+import time
 from typing import Any
 
 from openjiuwen.agent_teams.monitor import TeamMonitor
@@ -139,12 +142,177 @@ class TeamMonitorHandler(BaseMonitorHandler):
     封装 Monitor 的创建、事件处理和状态查询，提供简化的接口给前端.
     """
 
+    # ------------------------------------------------------------------
+    # Class-level constants (before __init__ per PEP 8 best practice)
+    # ------------------------------------------------------------------
+
+    _CHECKPOINT_FILENAME = "checkpoint.json"
+
+    # Events that trigger a checkpoint save. Defined as a class attribute
+    # (before __init__) for clarity and discoverability.
+    _CHECKPOINT_TRIGGER_EVENTS = frozenset({
+        MonitorEventType.TASK_CREATED,
+        MonitorEventType.TASK_COMPLETED,
+        MonitorEventType.TASK_CANCELLED,
+        MonitorEventType.TASK_CLAIMED,
+        MonitorEventType.TASK_SUBMITTED_FOR_REVIEW,
+        MonitorEventType.TASK_VERIFIED,
+        MonitorEventType.TASK_REVISION_REQUESTED,
+        MonitorEventType.MEMBER_SPAWNED,
+        MonitorEventType.MEMBER_SHUTDOWN,
+    })
+
+    # Minimum interval (seconds) between checkpoint writes to avoid
+    # excessive I/O when multiple lifecycle events fire in rapid
+    # succession (e.g. batch task creation).
+    _CHECKPOINT_DEBOUNCE_SEC: float = 5.0
+
     def __init__(self, monitor: TeamMonitor, session_id: str):
         super().__init__(monitor, session_id)
+        # Track the last checkpoint write time for debouncing.
+        # 0.0 means "never written" — the first checkpoint always goes through.
+        self._last_checkpoint_time: float = 0.0
 
     # ------------------------------------------------------------------
     # Collect loop — consumes monitor.events()
     # ------------------------------------------------------------------
+
+    # ---- Task Checkpoint Persistence ----
+    # Trigger checkpoint save on key task/member lifecycle events so that
+    # team state survives session interruptions (model quota exhaustion,
+    # network failures, process crashes, etc.).
+
+    async def _save_task_checkpoint(self) -> None:
+        """Persist current task board and member roster to disk.
+
+        Writes an atomic JSON snapshot to
+        ``<team_workspace>/checkpoint.json`` so that a new session can
+        restore team state after an interruption.
+
+        **Debouncing**: Writes are throttled to at most once per
+        ``_CHECKPOINT_DEBOUNCE_SEC`` seconds. When multiple lifecycle
+        events fire within the debounce window (e.g. batch task
+        creation), only the first triggers an actual I/O write; the
+        rest are silently skipped. This prevents excessive disk I/O
+        without losing data — the next event after the window expires
+        will capture all accumulated changes.
+        """
+        # Debounce: skip if we wrote recently enough
+        now = time.monotonic()
+        if (now - self._last_checkpoint_time) < self._CHECKPOINT_DEBOUNCE_SEC:
+            logger.debug(
+                "[TeamMonitorHandler] checkpoint debounced: last write %.1fs ago "
+                "(threshold=%.1fs), skipping",
+                now - self._last_checkpoint_time,
+                self._CHECKPOINT_DEBOUNCE_SEC,
+            )
+            return
+
+        if self._monitor is None:
+            return
+        try:
+            from openjiuwen.agent_teams.context import set_session_id, reset_session_id
+            token = set_session_id(self._session_id)
+            try:
+                members = await self._monitor.get_members()
+                tasks = await self._monitor.get_tasks()
+            finally:
+                reset_session_id(token)
+
+            checkpoint = {
+                "version": 1,
+                "timestamp": datetime.now(timezone.utc).isoformat(),
+                "team_name": self._monitor.team_name,
+                "session_id": self._session_id,
+                "members": [
+                    {
+                        "member_name": m.member_name,
+                        "display_name": getattr(m, "display_name", ""),
+                        "desc": getattr(m, "desc", ""),
+                        "role": getattr(m, "role", "teammate"),
+                        "status": getattr(m, "status", "unknown"),
+                    }
+                    for m in (members or [])
+                ],
+                "tasks": [
+                    {
+                        "task_id": t.task_id,
+                        "title": t.title or "",
+                        "content": t.content or "",
+                        "status": t.status or "unknown",
+                        "assignee": getattr(t, "assignee", None),
+                        "depends_on": getattr(t, "depends_on", []) or [],
+                        "blocked_by": getattr(t, "blocked_by", []) or [],
+                    }
+                    for t in (tasks or [])
+                ],
+            }
+
+            workspace_dir = self._resolve_team_workspace_dir()
+            if workspace_dir:
+                checkpoint_path = Path(workspace_dir) / self._CHECKPOINT_FILENAME
+                checkpoint_path.parent.mkdir(parents=True, exist_ok=True)
+                tmp_path = checkpoint_path.with_suffix(".tmp")
+                tmp_path.write_text(
+                    json.dumps(checkpoint, ensure_ascii=False, indent=2),
+                    encoding="utf-8",
+                )
+                tmp_path.replace(checkpoint_path)
+                # Update debounce timestamp after successful write
+                self._last_checkpoint_time = time.monotonic()
+                logger.info(
+                    "[TeamMonitorHandler] checkpoint saved: %s (tasks=%d, members=%d)",
+                    checkpoint_path,
+                    len(checkpoint["tasks"]),
+                    len(checkpoint["members"]),
+                )
+        except Exception as e:
+            logger.warning(
+                "[TeamMonitorHandler] checkpoint save failed: session_id=%s, error=%s",
+                self._session_id,
+                e,
+            )
+
+    def _resolve_team_workspace_dir(self) -> str | None:
+        """Resolve the team workspace directory path."""
+        if self._monitor is None or not self._monitor.team_name:
+            return None
+        try:
+            from openjiuwen.agent_teams.paths import team_home
+            home = team_home(self._monitor.team_name)
+            return str(Path(home) / "team-workspace")
+        except Exception:
+            return None
+
+    @staticmethod
+    def load_task_checkpoint(team_workspace_dir: str) -> dict | None:
+        """Load a task board checkpoint from disk.
+
+        Args:
+            team_workspace_dir: Team workspace directory path.
+
+        Returns:
+            Checkpoint dict, or None if file doesn't exist or is invalid.
+        """
+        checkpoint_path = Path(team_workspace_dir) / TeamMonitorHandler._CHECKPOINT_FILENAME
+        if not checkpoint_path.exists():
+            return None
+        try:
+            data = json.loads(checkpoint_path.read_text(encoding="utf-8"))
+            if data.get("version") != 1:
+                logger.warning(
+                    "[TeamMonitorHandler] checkpoint version mismatch: %s",
+                    data.get("version"),
+                )
+                return None
+            return data
+        except Exception as e:
+            logger.warning(
+                "[TeamMonitorHandler] checkpoint load failed: %s, error=%s",
+                checkpoint_path,
+                e,
+            )
+            return None
 
     async def _collect_events(self) -> None:
         """后台任务：收集 Monitor 事件."""
@@ -155,6 +323,9 @@ class TeamMonitorHandler(BaseMonitorHandler):
                 event_dict = await self._convert_event_to_dict(event)
                 if event_dict:
                     await self._event_queue.put(event_dict)
+                # Save checkpoint on key lifecycle events
+                if event.event_type in self._CHECKPOINT_TRIGGER_EVENTS:
+                    await self._save_task_checkpoint()
         except Exception as e:
             logger.error(
                 "[TeamMonitorHandler] 事件收集失败: session_id=%s, error=%s",
