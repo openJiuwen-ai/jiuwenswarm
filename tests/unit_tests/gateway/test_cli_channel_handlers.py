@@ -1721,3 +1721,34 @@ async def test_agentos_cron_update_project_fields_with_dict_job(monkeypatch) -> 
     assert patch["project_id"] == "user-proj-1"
     assert patch["work_mode"] == "code"
     assert patch["_agentos_project_binding_verified"] is True
+
+
+@pytest.mark.asyncio
+async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch):
+    server = FakeGatewayServer()
+    register_cli_handlers(
+        CliHandlersBindParams(
+            channel=server,
+            agent_client=None,
+            message_handler=None,
+            on_config_saved=None,
+            path="/tui",
+        )
+    )
+    seen = {}
+
+    def fake_available(_config=None):
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        return [{"model_client_config": {"model_name": "m", "api_key": "k"}}]
+
+    monkeypatch.setattr(tui_connect_module, "get_config", lambda: {})
+    monkeypatch.setattr(tui_connect_module, "get_available_models", fake_available)
+
+    await server.local_handlers["/tui"]["models.list"](object(), "req-models", {}, "sess-1")
+
+    assert server.responses[-1]["ok"] is True
+    assert seen["on_event_loop"] is False, "get_available_models 不能在事件循环线程上执行"

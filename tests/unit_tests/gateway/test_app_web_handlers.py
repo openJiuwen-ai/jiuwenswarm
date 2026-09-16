@@ -925,8 +925,8 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "qwen3.8-max",
                 # Reserved test-only endpoint and synthetic credential.
@@ -961,8 +961,8 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "",
                 "api_base": "",
@@ -985,12 +985,38 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_available(config, auth_session=None):
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        seen["auth_session"] = auth_session
+        return [{"model_client_config": {"model_name": "m", "api_key": "k"}, "model_config_obj": {}}]
+
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(app_web_handlers, "get_available_models", fake_available)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    ws = SimpleNamespace(_jiuwen_auth_session="auth-sess-1")
+
+    await channel.methods["models.list"](ws, "req-models", {}, "session-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert seen["on_event_loop"] is False, "get_available_models 不能在事件循环线程上执行"
+    assert seen["auth_session"] == "auth-sess-1", "登录会话仍要按这条连接传进去"
+
+
+@pytest.mark.asyncio
 async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
     """Free models are in-memory entries but must remain selectable in new sessions."""
     from jiuwenswarm.server.runtime import opencode_zen
 
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
-    monkeypatch.setattr(app_web_handlers, "get_default_models", lambda _config: [])
+    monkeypatch.setattr(app_web_handlers, "get_available_models", lambda _config, _auth_session=None: [])
     monkeypatch.setattr(
         opencode_zen,
         "get_zen_free_model_entries",

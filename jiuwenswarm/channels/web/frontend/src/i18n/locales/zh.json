@@ -58,6 +58,15 @@
   },
   "settingsPanel": {
     "title": "设置",
+    "freeModels": {
+      "title": "限时免费模型",
+      "loginTitle": "华为账号登录",
+      "loginDescription": "使用华为账号登录，获取九问限时免费限量模型",
+      "quotaTitle": "免费积分",
+      "quotaLoggedOut": "登录后查看",
+      "signedIn": "已登录",
+      "loggedInDescription": "限时免费模型已可在对话的模型下拉中选用"
+    },
     "categories": {
       "general": "常规",
       "models": "模型",
@@ -688,6 +697,7 @@
   "chat": {
     "placeholder": "需要帮你做些什么？输入“/”快速引用技能及指令",
     "placeholderCompacting": "压缩进行中，暂时无法发送消息",
+    "modelNotConfigured": "还没有配置可用的模型。请在「设置 → 模型」里配置一个模型，或登录获取限时免费模型。",
     "placeholderAwaitingApproval": "请先处理上方待确认项",
     "placeholderProcessing": "处理中，输入新指令可中断...",
     "placeholderProcessingQueue": "处理中，输入新指令将加入等待队列...",
@@ -752,6 +762,8 @@
     "modelSelector": {
       "tooltip": "切换对话使用的模型",
       "configured": "已配置模型",
+      "free": "限时免费模型",
+      "getFreeModels": "获取限时免费模型",
       "addModel": "添加自定义模型",
       "empty": "暂无可用模型，请先在设置中添加模型",
       "placeholder": "选择模型"
@@ -3678,7 +3690,56 @@
     "loginFailed": "登录失败,请稍后重试",
     "authRequired": "需要登录后才能访问",
     "secureHint": "登录后将自动保持登录状态",
-    "logout": "登出"
+    "logout": "登出",
+    "huawei": {
+      "title": "登录华为账号",
+      "subtitle": "登录后即可使用账号提供的模型，无需配置 API Key。",
+      "accountTitle": "华为账号",
+      "reasonModel": "该模型需要登录华为账号后使用。",
+      "reasonExpired": "登录已过期，请重新登录。",
+      "login": "登录",
+      "loggingIn": "登录中…",
+      "logout": "退出登录",
+      "cancel": "取消",
+      "close": "关闭",
+      "done": "完成",
+      "modelsTitle": "账号提供的模型",
+      "modelsWhere": "这些模型在对话框的模型下拉里选用",
+      "browserHint": "将在浏览器中打开华为账号登录页，完成后回到这里即可",
+      "loginSuccessToast": "华为账号登录成功",
+      "statusStarting": "正在准备登录…",
+      "statusWaiting": "已在浏览器中打开登录页，完成后回到这里…",
+      "checkLogin": "我已完成登录",
+      "popupBlocked": "浏览器拦截了新标签页，请复制下面的地址手动打开：",
+      "modelError": {
+        "loginRequired": "免费模型的登录已失效，请重新登录华为账号后重试。",
+        "rateLimited": "免费模型请求太频繁，请稍后再试。",
+        "unavailable": "免费模型服务暂时不可用，请稍后重试，或改用已配置的模型。"
+      },
+      "quota": {
+        "loading": "查询中…",
+        "unknown": "用量未知",
+        "exhausted": "已用完",
+        "remaining": "剩余",
+        "unit": "积分",
+        "used": "已用",
+        "total": "总量",
+        "meteringHint": "按模型实际用量扣减积分",
+        "exhaustedHint": "免费积分已用完，请改用已配置的模型。",
+        "exhaustedUntil": "免费积分已用完，将于 {{date}} 刷新",
+        "lowBalanceHint": "积分所剩不多",
+        "resetDaily": "每天 {{time}} 刷新积分",
+        "resetWeekly": "每{{weekday}} {{time}} 刷新积分",
+        "resetMonthly": "每月 {{day}} {{time}} 刷新积分",
+        "resetEveryDays": "每 {{count}} 天刷新一次积分，下次刷新：{{date}}",
+        "resetEveryDaysPlain": "每 {{count}} 天刷新一次积分",
+        "resetEveryHours": "每 {{count}} 小时刷新一次积分，下次刷新：{{date}}",
+        "resetEveryHoursPlain": "每 {{count}} 小时刷新一次积分",
+        "resetEveryMonths": "每 {{count}} 个月刷新一次积分，下次刷新：{{date}}",
+        "resetEveryMonthsPlain": "每 {{count}} 个月刷新一次积分",
+        "resetNext": "下次刷新积分：{{date}}"
+      }
+    }
   },
   "heartbeat": {
     "status": {

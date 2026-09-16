@@ -99,6 +99,9 @@ E2A_WIRE_SERVER_PUSH_KEY = "_jiuwenswarm_server_push"
 E2A_INTERNAL_CANCEL_SOURCE_KEY = "_jiuwenswarm_cancel_source"
 E2A_CANCEL_SOURCE_CLIENT_DISCONNECT = "client_disconnect"
 
+# Gateway → AgentServer：登录模型的请求级凭据
+E2A_MODEL_AUTH_PARAM_KEY = "_model_auth"
+
 # 仅用于编解码 / 队列语义，不得随业务 channel metadata 下发给 Message.metadata
 E2A_WIRE_INTERNAL_METADATA_KEYS: frozenset[str] = frozenset(
     {

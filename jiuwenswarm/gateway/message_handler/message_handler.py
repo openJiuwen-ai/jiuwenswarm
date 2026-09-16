@@ -447,6 +447,11 @@ class MessageHandler(ABC):
             )
         return cls(agent_client)
 
+    @classmethod
+    def try_get_instance(cls) -> "MessageHandler | None":
+        """已创建则返回单例；尚未初始化返回 ``None``，不抛。"""
+        return cls._instance
+
     @staticmethod
     def extract_session_id_from_ref(session_ref: str | None) -> str | None:
         """从 session_ref 提取 session_id。
@@ -3086,6 +3091,47 @@ class MessageHandler(ABC):
             enable_memory=enable_memory,
         )
 
+    async def _handle_login_credential_refresh_push(self, chunk: Any) -> bool:
+        """AgentServer 请求给在用的登录模型凭据续期。是这类消息返回 ``True``。
+
+        续期是同步 HTTP，放线程里跑；结果用 ``auth.credentials.update`` 推回去。
+        全程失败都只记日志：AgentServer 会按自己的重试间隔再来要。
+        """
+        from jiuwenswarm.common.auth.login_credentials import CREDENTIAL_REFRESH_EVENT
+
+        payload = chunk.payload if isinstance(chunk.payload, dict) else None
+        if payload is None or payload.get("event_type") != CREDENTIAL_REFRESH_EVENT:
+            return False
+        from jiuwenswarm.common.auth.passthrough import refreshed_credential_for_ref
+
+        credential_ref = str(payload.get("credential_ref") or "")
+        try:
+            update = await asyncio.to_thread(refreshed_credential_for_ref, credential_ref)
+        except Exception:  # noqa: BLE001 — 续期失败不能影响 push 通道上的其他消息
+            logger.warning("[MessageHandler] 登录凭据续期失败", exc_info=True)
+            return True
+        if update is not None:
+            await self.push_login_credential_update(update)
+        return True
+
+    async def push_login_credential_update(self, params: dict[str, Any]) -> bool:
+        """把登录凭据的新 token（或撤销）推给 AgentServer。返回是否被接受。"""
+        from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
+        from jiuwenswarm.common.schema.message import ReqMethod
+
+        env = e2a_from_agent_fields(
+            request_id=f"auth-credentials-update-{secrets.token_hex(6)}",
+            req_method=ReqMethod.AUTH_CREDENTIALS_UPDATE,
+            params=dict(params),
+            timestamp=time.time(),
+        )
+        try:
+            resp = await self._send_non_stream_agent_request(env)
+        except Exception:  # noqa: BLE001
+            logger.warning("[MessageHandler] 登录凭据推送失败", exc_info=True)
+            return False
+        return bool(getattr(resp, "ok", False))
+
     async def _handle_agent_server_push(self, wire: dict[str, Any]) -> None:
         """AgentServer ``send_push`` 下行：与 RPC 共用连接但不得占用 unary/stream 等待队列。"""
         from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_chunk
@@ -3096,6 +3142,8 @@ class MessageHandler(ABC):
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
         rid = str(chunk.request_id or "")
+        if await self._handle_login_credential_refresh_push(chunk):
+            return
         sid_raw = wire.get("session_id")
         if sid_raw is not None and str(sid_raw).strip():
             session_id: str | None = str(sid_raw)

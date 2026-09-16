@@ -23,9 +23,11 @@ from openjiuwen.core.foundation.llm.schema.config import (
 )
 from openjiuwen.rsi.harness_rsi.auto_harness.schema import load_auto_harness_config
 
+from jiuwenswarm.common.auth.model_catalog import is_login_model
 from jiuwenswarm.common.config import (
     get_config,
     get_config_raw,
+    get_available_models,
     get_default_models,
     resolve_env_vars,
     update_auto_recap_enabled_in_config,
@@ -3423,7 +3425,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
     async def _models_list(ws, req_id, params, session_id):
         try:
             config = get_config()
-            models = get_default_models(config)
+            # 放到线程池里跑：免费模型目录缓存过期、或凭据要续期时会同步请求 APIG，
+            # 在事件循环上跑会卡住同一个Gateway上的所有连接
+            models = await asyncio.to_thread(get_available_models, config)
             result = []
             for entry in models:
                 mcc = entry.get("model_client_config", {})
@@ -3432,7 +3436,8 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                 result_entry = {
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
-                    "api_key": mcc.get("api_key", ""),
+                    # 登录模型的api_key不下发
+                    "api_key": "" if is_login_model(entry) else mcc.get("api_key", ""),
                     "model_provider": mcc.get("client_provider", ""),
                     "temperature": mco.get("temperature"),
                     "reasoning_level": "off" if mco.get("reasoning_level") is False else mco.get("reasoning_level", ""),
@@ -3443,6 +3448,9 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
                         parse_positive_int(mco.get("context_window"))
                         or DEFAULT_CONTEXT_WINDOW_TOKENS
                     )
+                if is_login_model(entry):
+                    # 登录送的模型：前端据此置灰编辑
+                    result_entry.update(source=entry.get("source"), read_only=True)
                 result.append(result_entry)
             active_model = result[0]["model_name"] if result else ""
             await channel.send_response(ws, req_id, ok=True, payload={
