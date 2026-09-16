@@ -28,7 +28,10 @@ from jiuwenswarm.symphony.adapter import (
     orchestration_config_from_swarm,
 )
 from jiuwenswarm.symphony.llm import LLMConfig, probe_model_connection
-from jiuwenswarm.symphony.experience import JiuwenSwarmSkillAdapter
+from jiuwenswarm.symphony.experience import (
+    JiuwenSwarmSkillAdapter,
+    SkillPackNotInstallableError,
+)
 from jiuwenswarm.symphony.config import SymphonyConfig, load_symphony_config
 from jiuwenswarm.symphony.build import build_graph as service_build_graph
 from jiuwenswarm.symphony.build import graph_status
@@ -926,7 +929,15 @@ class SwarmSymphonyService:
                 prefix=".symphony-install-", dir=flow_root
             ) as staging_value:
                 artifact_dir = Path(staging_value).resolve()
-                JiuwenSwarmSkillAdapter.render(package, artifact_dir)
+                try:
+                    JiuwenSwarmSkillAdapter.render(package, artifact_dir)
+                except SkillPackNotInstallableError as exc:
+                    logger.warning("Symphony SkillPack is not installable: %s", exc)
+                    return {
+                        "installed": False,
+                        "reason": "not_installable",
+                        "details": [str(exc)],
+                    }
                 recover = getattr(skill_manager, "recover_symphony_skill_install", None)
                 installed = (
                     recover(
@@ -950,6 +961,15 @@ class SwarmSymphonyService:
                             "Symphony Skill install failed (%s)",
                             type(exc).__name__,
                         )
+                        if getattr(exc, "code", "") in {
+                            "SKILL_INVALID_METADATA",
+                            "SKILL_INVALID_PACKAGE",
+                        }:
+                            return {
+                                "installed": False,
+                                "reason": "not_installable",
+                                "details": [str(exc)],
+                            }
                         return {"installed": False, "reason": "install_failed"}
             receipt = {
                 "installed": bool(installed.get("success")),
