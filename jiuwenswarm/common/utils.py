@@ -298,6 +298,17 @@ class _ComponentNameFilter(logging.Filter):
         return _log_component_from_logger_name(record.name) == self.component
 
 
+class _ExcludeComponentFilter(logging.Filter):
+    """仅拦截指定组件（由 logger 名判定）的日志记录，其余全部放行。"""
+
+    def __init__(self, component: str) -> None:
+        super().__init__()
+        self.component = component
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        return _log_component_from_logger_name(record.name) != self.component
+
+
 class _CompositeFilter(logging.Filter):
     """组合多个过滤器，任一通过即放行"""
 
@@ -2735,16 +2746,18 @@ def install_source_record_masking() -> None:
 
 
 def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
-    """配置 ``jiuwenswarm`` 根日志：控制台 + 分组件文件 + 汇总 full.log。
+    """配置 ``jiuwenswarm`` 根日志：控制台 + 分组件文件 + 汇总 full.log（不含 gateway）。
 
     各模块应使用 ``logging.getLogger(__name__)``，分文件规则：
     - ``jiuwenswarm.channel.*`` → channel.log
     - ``jiuwenswarm.agents.*`` 或 ``jiuwenswarm.server.*`` → agent_server.log
     - 其余 ``jiuwenswarm.*``（含 ``jiuwenswarm.app``、gateway、evolution、utils 等）→ gateway.log
 
-    所有分类日志同时写入 ``full.log``。输出目录：``~/.jiuwenswarm/agent/.logs/``；
-    gateway.log 默认同目录，可通过环境变量 ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录
-    （如 Linux 部署的 ``/var/log/agentos``；目录不可写时降级回 ``agent/.logs``）。
+    channel / agent_server（含 permissions）日志同时汇总写入 ``full.log``；
+    gateway 日志**不写入** full.log（无论 gateway.log 是否独立目录）。输出目录：
+    ``~/.jiuwenswarm/agent/.logs/``；gateway.log 默认同目录，可通过环境变量
+    ``AGENTOS_GATEWAY_LOG_DIR`` 指定独立目录（如 Linux 部署的 ``/var/log/agentos``；
+    目录不可写时降级回 ``agent/.logs``）。
 
     级别由 ``config.yaml`` 的 ``logging`` 段控制；环境变量 ``LOG_LEVEL`` 仅覆盖**控制台**级别
     （``log_level`` 参数为 ``None`` 时）。若传入 ``log_level``（如单测），则控制台与各文件级别均为该值。
@@ -2770,7 +2783,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     def _add_rotating(
         filename: str,
         level: int,
-        name_filter: Optional[_ComponentNameFilter] = None,
+        name_filter: Optional[logging.Filter] = None,
         custom_formatter: Optional[logging.Formatter] = None,
         target_dir: Optional[Path] = None,
     ) -> None:
@@ -2812,7 +2825,7 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     _add_rotating("channel.log", levels.channel, _ComponentNameFilter("channel"))
     _add_rotating("agent_server.log", levels.agent_server,
         _CompositeFilter([_ComponentNameFilter("agent_server"), _ComponentNameFilter("permissions")]))
-    _add_rotating("full.log", levels.full, None)
+    _add_rotating("full.log", levels.full, _ExcludeComponentFilter("gateway"))
     json_formatter = JsonOnlyFormatter()
     _add_rotating("permissions.log", levels.agent_server, _ComponentNameFilter("permissions"), json_formatter)
 

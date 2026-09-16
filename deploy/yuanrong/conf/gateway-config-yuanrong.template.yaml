@@ -71,7 +71,7 @@ symphony:
 auto_memory_enabled: false
 
 # 日志目录：~/.jiuwenswarm/agent/.logs/
-# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
+# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总（不含 gateway 日志）。
 # level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
 # 环境变量 LOG_LEVEL 仅覆盖控制台级别（不覆盖各日志文件）。
 logging:
