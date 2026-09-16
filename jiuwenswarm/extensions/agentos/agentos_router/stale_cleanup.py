@@ -7,7 +7,9 @@ from the registry and, asynchronously, deletes the YuanRong sandbox (by
 ``instance_id``) then unregisters the row.
 
 Live runtimes created after connect are skipped so a concurrent first request
-cannot have its new sandbox reaped by the startup pass.
+cannot have its new sandbox reaped by the startup pass. ``unregister_instance``
+re-reads the live service-id set *after* ``delete_sandbox`` so an upsert that
+landed during that IO cannot be wiped by a stale snapshot.
 """
 
 from __future__ import annotations
@@ -81,7 +83,7 @@ async def _cleanup_one(
     registry: RegistryClient,
     agent_manager: AgentManager,
 ) -> None:
-    live_sandboxes, live_service_ids = await _live_ids(agent_manager)
+    live_sandboxes, _ = await _live_ids(agent_manager)
     instance_id = str(record.instance_id or "").strip()
     service_id = str(record.service_id or "").strip()
 
@@ -112,16 +114,33 @@ async def _cleanup_one(
             record.framework,
         )
 
-    if service_id and service_id not in live_service_ids:
-        try:
-            await registry.unregister_instance(service_id)
-        except RegistryNotFoundError:
-            pass
-        except Exception:  # noqa: BLE001 - best-effort per record
-            logger.exception(
-                "[AgentOS] sandbox.cleanup.unregister.fail service_id=%s",
-                service_id,
-            )
+    if not service_id:
+        return
+    # delete_sandbox is slow IO. A concurrent first request may create a new
+    # sandbox and upsert this same service_id in that window. The T0 snapshot
+    # must not be reused for unregister (RELPROC-004).
+    _, live_service_ids = await _live_ids(agent_manager)
+    if service_id in live_service_ids:
+        log_agentos(
+            logger,
+            logging.INFO,
+            "sandbox.cleanup.unregister.skip_live",
+            service_id=service_id,
+            user_id=record.user,
+            agent_type=record.framework,
+            sandbox_id=instance_id,
+            instance=instance_id,
+        )
+        return
+    try:
+        await registry.unregister_instance(service_id)
+    except RegistryNotFoundError:
+        pass
+    except Exception:  # noqa: BLE001 - best-effort per record
+        logger.exception(
+            "[AgentOS] sandbox.cleanup.unregister.fail service_id=%s",
+            service_id,
+        )
 
 
 async def _live_ids(agent_manager: AgentManager) -> tuple[set[str], set[str]]:
