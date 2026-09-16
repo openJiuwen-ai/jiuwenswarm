@@ -506,9 +506,7 @@ def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
         return ""
     return (
         "PPT 生成失败：未产出可交付的 pptx 文件。"
-        "请立即调用 skill_tool 加载对应技能走标准流程继续完成用户任务。"
-        "不要告知用户已经生成成功。"
-        "盘点已有产物时只看目录、文件名和大小，不要把加速通道已生成的大文件正文读进父代理。"
+        "请根据流水线失败阶段重试，不要告知用户已经生成成功。"
     )
 
 

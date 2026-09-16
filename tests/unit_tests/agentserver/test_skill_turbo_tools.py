@@ -829,7 +829,6 @@ async def test_skill_turbo_returns_failure_when_p10_delivery_failed(
 
     assert result.get("success") is False
     assert "PPT 生成失败" in str(result.get("error") or "")
-    assert "skill_tool" in str(result.get("error") or "")
     assert "任务已完成" not in str(result.get("result") or "")
     turbo.run_stream.assert_called_once()
 
