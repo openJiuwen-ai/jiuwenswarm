@@ -631,6 +631,18 @@ def _build_deepresearch_child_env(
     # process (vendor tree + HNP site-packages + cwd).
     if is_ohos_runtime():
         child_pythonpath = os.pathsep.join(p for p in sys.path if p)
+        # The vendored jiuwenswarm tree (sidecar cwd) is NOT on sys.path — the
+        # sidecar resolves it via cwd with ``python -m``. The child starts in
+        # script mode where cwd is never on sys.path, so without this entry the
+        # child cannot import jiuwenswarm (deepresearch runner's MaaS auth
+        # backend on OHOS), crashing with ModuleNotFoundError.
+        try:
+            jiuwenswarm_pkg_dir = os.path.dirname(os.path.dirname(__file__))
+            vendor_root = os.path.dirname(jiuwenswarm_pkg_dir)
+            if os.path.isdir(os.path.join(vendor_root, "jiuwenswarm")):
+                child_pythonpath = f"{child_pythonpath}{os.pathsep}{vendor_root}"
+        except Exception:  # pragma: no cover - path resolution must not break spawn
+            pass
         if child_pythonpath:
             inherited = env.get("PYTHONPATH", "")
             env["PYTHONPATH"] = (
