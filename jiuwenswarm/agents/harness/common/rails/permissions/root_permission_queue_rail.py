@@ -39,8 +39,6 @@ ROOT_NON_PERMISSION_RESUME_DTO_KEY = "jiuwenswarm.root_non_permission_resume.v1"
 TOOL_INVOCATION_CONTEXT_ATTRIBUTE = "_jiuwenswarm_tool_invocation_key_v1"
 ROOT_PERMISSION_RESUME_ATTRIBUTE = "_jiuwenswarm_root_permission_resume_v1"
 ROOT_NON_PERMISSION_RESUME_ATTRIBUTE = "_jiuwenswarm_root_non_permission_resume_v1"
-ROOT_PERMISSION_WRAPPERS_KEY = "jiuwenswarm.root_permission_wrappers.v1"
-ROOT_PERMISSION_WRAPPER_ATTRIBUTE = "_jiuwenswarm_permission_wrapper_resume"
 PERMISSION_INTERRUPT_REQUEST_ATTRIBUTE = "_jiuwenswarm_permission_interrupt_request_v1"
 
 _UNBOUND = object()
@@ -88,21 +86,6 @@ class RootNonPermissionResume:
                 name,
                 normalize_tool_invocation_text(name, getattr(self, name)),
             )
-
-
-@dataclass(slots=True)
-class RootPermissionWrapperResume:
-    """Request-local, one-shot reference to an actual Core interrupted entry."""
-
-    tool_call: Any
-    card: RootPermissionCard
-    consumed: bool = False
-
-    def __deepcopy__(self, memo: dict[int, Any]) -> RootPermissionWrapperResume:
-        # Core copies work inputs for each round. Copying this capability would
-        # both detach the live card and replenish its one-shot consumption.
-        memo[id(self)] = self
-        return self
 
 
 _ROOT_BINDING: ContextVar[RootPermissionRequestBinding | None | object] = ContextVar(
@@ -168,9 +151,7 @@ def root_nonpermission_resume_from_context(
 
 
 def put_root_nonpermission_resume_in_inputs(
-    inputs: Mapping[str, Any], prepared: RootNonPermissionResume | None,
-    *,
-    wrappers: tuple[RootPermissionWrapperResume, ...] = (),
+    inputs: Mapping[str, Any], prepared: RootNonPermissionResume | None
 ) -> dict[str, Any]:
     """Install one Host-validated callback marker in shared RunContext state."""
 
@@ -185,22 +166,10 @@ def put_root_nonpermission_resume_in_inputs(
     extra.pop(ROOT_NON_PERMISSION_RESUME_DTO_KEY, None)
     if prepared is not None:
         extra[ROOT_NON_PERMISSION_RESUME_DTO_KEY] = prepared
-    extra.pop(ROOT_PERMISSION_WRAPPERS_KEY, None)
-    if wrappers:
-        extra[ROOT_PERMISSION_WRAPPERS_KEY] = wrappers
     context["extra"] = extra
     run["context"] = context
     result["run"] = run
     return result
-
-
-def consume_permission_wrapper_resume(ctx: Any) -> bool:
-    """Consume only the marker on this callback, never an inherited extra flag."""
-    marker = getattr(ctx, ROOT_PERMISSION_WRAPPER_ATTRIBUTE, None)
-    if marker is None:
-        return False
-    delattr(ctx, ROOT_PERMISSION_WRAPPER_ATTRIBUTE)
-    return isinstance(marker, RootPermissionWrapperResume) and marker.consumed
 
 
 def mark_permission_interrupt_request(ctx: Any, request: Any) -> None:
@@ -252,12 +221,6 @@ class RootPermissionQueueRail(AgentRail):
             raise RootPermissionQueueError("root_execution_session_mismatch")
         tool_call_id = _tool_call_id(inputs)
         tool_name = _tool_name(inputs)
-        try:
-            self._bind_wrapper_resume(ctx, binding)
-        except Exception as exc:
-            # Core logs ordinary callback exceptions and continues the chain.
-            # A failed recovery binding must stop this tool, not execute it.
-            raise AbortError(reason="permission_wrapper_resume_invalid", cause=exc) from exc
         user_input = _resume_input(ctx, tool_call_id)
         marker_present, marker = _pop_nonpermission_resume(ctx)
         if user_input is _UNBOUND:
@@ -325,49 +288,6 @@ class RootPermissionQueueRail(AgentRail):
                 ),
             )
 
-    def _bind_wrapper_resume(
-        self, ctx: AgentCallbackContext, binding: RootPermissionRequestBinding,
-    ) -> None:
-        from openjiuwen.core.runner import Runner
-        from openjiuwen.harness.rails.progressive_tool_rail import ProgressiveToolRail
-        from openjiuwen.harness.tools.tool_discovery.tool_call import ToolCallInput, ToolCallTool
-
-        extra = _run_extra(ctx)
-        markers = extra.get(ROOT_PERMISSION_WRAPPERS_KEY, ()) if isinstance(extra, Mapping) else ()
-        for marker in markers:
-            if not isinstance(marker, RootPermissionWrapperResume) or marker.consumed:
-                continue
-            call = ctx.inputs.tool_call
-            if marker.tool_call.id != call.id:
-                continue
-            # Consume before any await or nested dispatch, including failed validation.
-            marker.consumed = True
-            card = self.queue.get(marker.card.key)
-            manager = ctx.agent.ability_manager
-            registered = manager.get(call.name)
-            resource = (
-                Runner.resource_mgr.get_tool(registered.id, session=None)
-                if registered else None
-            )
-            dispatch = getattr(resource, "_call_tool", None)
-            owner = getattr(dispatch, "__self__", None)
-            parsed = ToolCallInput.model_validate_json(call.arguments)
-            if (
-                card is not marker.card or card.state not in {"pending", "resuming"}
-                or card.key.root_session_id != binding.root_session_id
-                or call != marker.tool_call or ctx.inputs.tool_args != call.arguments
-                or ctx.inputs.tool_name != call.name
-                or parsed.name != card.tool_name
-                or type(resource) is not ToolCallTool or resource.card is not registered
-                or type(owner) is not ProgressiveToolRail
-                or getattr(dispatch, "__func__", None) is not ProgressiveToolRail._call_discovered_tool
-                or owner._tool_search_registry is not manager
-                or owner._owned_tool_cards.get(call.name) is not registered
-            ):
-                raise RootPermissionQueueError("permission_wrapper_resume_mismatch")
-            setattr(ctx, ROOT_PERMISSION_WRAPPER_ATTRIBUTE, marker)
-            return
-
     async def on_tool_exception(self, ctx: AgentCallbackContext) -> None:
         key = tool_invocation_key_from_context(ctx)
         if key is None:
@@ -424,19 +344,15 @@ def _resume_input(ctx: AgentCallbackContext, tool_call_id: str) -> Any:
     return _UNBOUND
 
 
-def _run_extra(ctx: AgentCallbackContext) -> Any:
+def _pop_nonpermission_resume(ctx: AgentCallbackContext) -> tuple[bool, Any]:
     run_context = getattr(getattr(ctx, "inputs", None), "run_context", None)
     if run_context is None and isinstance(getattr(ctx, "extra", None), Mapping):
         run_context = ctx.extra.get("run_context")
-    return (
+    extra = (
         run_context.get("extra")
         if isinstance(run_context, Mapping)
         else getattr(run_context, "extra", None)
     )
-
-
-def _pop_nonpermission_resume(ctx: AgentCallbackContext) -> tuple[bool, Any]:
-    extra = _run_extra(ctx)
     if not isinstance(extra, dict) or ROOT_NON_PERMISSION_RESUME_DTO_KEY not in extra:
         return False, None
     return True, extra.pop(ROOT_NON_PERMISSION_RESUME_DTO_KEY)
