@@ -103,22 +103,21 @@ async def test_auto_memory_keeps_adapter_without_session_cache_accessor(
 
 @pytest.mark.asyncio
 @pytest.mark.parametrize(
-    ("event_type", "payload_kind", "expected_status"),
+    ("event_type", "payload_kind"),
     [
-        ("chat.final", "chunk", "success"),
-        ("chat.error", "chunk", "error"),
-        ("chat.error", "dict", "error"),
+        ("chat.final", "chunk"),
+        ("chat.error", "chunk"),
+        ("chat.error", "dict"),
     ],
 )
 async def test_process_message_stream_uses_bounded_handoff_queue(
     monkeypatch: pytest.MonkeyPatch,
     event_type: str,
     payload_kind: str,
-    expected_status: str,
 ) -> None:
     real_queue = asyncio.Queue
     created_queues: list[asyncio.Queue] = []
-    feedback_statuses: list[str] = []
+    legacy_feedback_calls: list[tuple] = []
 
     def queue_factory(*args, **kwargs):
         queue = real_queue(*args, **kwargs)
@@ -153,11 +152,8 @@ async def test_process_message_stream_uses_bounded_handoff_queue(
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
     monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": feedback_statuses.append(
-            terminal_status
-        ),
+        "jiuwenswarm.symphony.evolution.session_consumer.schedule_session_evolution_consume",
+        lambda *args, **kwargs: legacy_feedback_calls.append((args, kwargs)),
     )
 
     swarm = interface_module.JiuWenSwarm()
@@ -174,30 +170,22 @@ async def test_process_message_stream_uses_bounded_handoff_queue(
     await stream.aclose()
 
     assert final_chunk.payload["event_type"] == event_type
-    assert feedback_statuses == [expected_status]
+    assert legacy_feedback_calls == []
     assert created_queues
     assert created_queues[0].maxsize == swarm.STREAM_QUEUE_MAXSIZE
     assert created_queues[0].maxsize > 0
 
 
 @pytest.mark.asyncio
-async def test_stream_input_error_still_completes_feedback_boundary(
+async def test_stream_input_error_returns_error_chunk(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    feedback_statuses: list[str] = []
     monkeypatch.setattr(
         interface_module.JiuWenSwarm,
         "_ensure_adapter",
         lambda *_args, **_kwargs: object(),
     )
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": feedback_statuses.append(
-            terminal_status
-        ),
-    )
     swarm = interface_module.JiuWenSwarm()
 
     def reject_inputs(_request):
@@ -215,7 +203,6 @@ async def test_stream_input_error_still_completes_feedback_boundary(
     chunks = [chunk async for chunk in swarm.process_message_stream(request)]
 
     assert chunks[0].payload["event_type"] == "chat.error"
-    assert feedback_statuses == ["error"]
 
 
 @pytest.mark.asyncio
@@ -223,7 +210,6 @@ async def test_empty_final_keeps_accumulated_delta_for_post_processing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     finalized_inputs: list[str] = []
-    feedback_statuses: list[str] = []
 
     class FakeAdapter:
         @staticmethod
@@ -258,13 +244,6 @@ async def test_empty_final_keeps_accumulated_delta_for_post_processing(
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
     monkeypatch.setattr(interface_module, "finalize_assistant_response_if_a2ui", fake_finalize)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": feedback_statuses.append(
-            terminal_status
-        ),
-    )
 
     swarm = interface_module.JiuWenSwarm()
     request = AgentRequest(
@@ -282,11 +261,7 @@ async def test_empty_final_keeps_accumulated_delta_for_post_processing(
 
     assert finalized_inputs == ["complete answer"]
     assert repaired_final.payload["content"] == "complete answer repaired"
-    assert feedback_statuses == ["success"]
-    # Closing the client at the repaired-final yield must not overwrite the
-    # already-persisted success boundary with a cancellation boundary.
     await stream.aclose()
-    assert feedback_statuses == ["success"]
 
 
 @pytest.mark.asyncio
@@ -334,11 +309,6 @@ async def test_later_empty_final_keeps_last_nonempty_final_for_post_processing(
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
     monkeypatch.setattr(interface_module, "finalize_assistant_response_if_a2ui", fake_finalize)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, **_kwargs: None,
-    )
 
     swarm = interface_module.JiuWenSwarm()
     request = AgentRequest(
@@ -360,7 +330,6 @@ async def test_closing_consumer_cancels_producer_blocked_on_full_queue(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     producer_finished = asyncio.Event()
-    feedback_statuses: list[str] = []
 
     class FakeAdapter:
         @staticmethod
@@ -390,13 +359,6 @@ async def test_closing_consumer_cancels_producer_blocked_on_full_queue(
     )
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": feedback_statuses.append(
-            terminal_status
-        ),
-    )
 
     swarm = interface_module.JiuWenSwarm()
     swarm.STREAM_QUEUE_MAXSIZE = 1
@@ -414,15 +376,12 @@ async def test_closing_consumer_cancels_producer_blocked_on_full_queue(
     await asyncio.wait_for(stream.aclose(), timeout=1.0)
 
     assert producer_finished.is_set()
-    assert feedback_statuses == ["cancelled"]
 
 
 @pytest.mark.asyncio
 async def test_producer_close_cancellation_does_not_leave_consumer_waiting(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    feedback_statuses: list[str] = []
-
     class CloseCancellingStream:
         def __init__(self) -> None:
             self._yielded = False
@@ -461,13 +420,6 @@ async def test_producer_close_cancellation_does_not_leave_consumer_waiting(
     )
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "disabled")
     monkeypatch.setattr(interface_module, "append_history_record", lambda **_kwargs: None)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, terminal_status="success": feedback_statuses.append(
-            terminal_status
-        ),
-    )
 
     swarm = interface_module.JiuWenSwarm()
     request = AgentRequest(
@@ -484,5 +436,3 @@ async def test_producer_close_cancellation_does_not_leave_consumer_waiting(
 
     with pytest.raises(asyncio.CancelledError):
         await asyncio.wait_for(consume(), timeout=1.0)
-
-    assert feedback_statuses == ["cancelled"]

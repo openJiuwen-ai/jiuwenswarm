@@ -388,7 +388,7 @@ async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
         lambda: {"disabled"},
     )
     monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_dynamic_overlay",
+        "jiuwenswarm.symphony.evolution.service.load_dynamic_overlay",
         lambda _graph_dir: {
             "edges": {"writer->reviewer:can_feed": {"runtime_weight": 0.7}}
         },
@@ -411,7 +411,6 @@ async def test_service_graph_adapts_public_artifact_for_skill_graph_panel(
             "source": "skill:writer",
             "target": "skill:reviewer",
             "type": "can_feed",
-            "runtime_weight": 0.7,
         }
     ]
     skill_node_ids = {item["id"] for item in result["graph"]["nodes"]}
@@ -503,7 +502,7 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
     config = _config(tmp_path)
     captured = {}
 
-    class FakeOrchestration:
+    class FakeGraphEngine:
         async def plan(self, query, candidate_ids=None, **kwargs):
             captured.update(query=query, candidate_ids=candidate_ids, **kwargs)
             return OrchestrationPlan({"planned_graph": _minimal_planned_graph()})
@@ -515,7 +514,7 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
 
     service.graph_status = fresh_status
     service._runtime_for = lambda _config: SimpleNamespace(
-        orchestration=FakeOrchestration()
+        graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
@@ -528,11 +527,6 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
         "jiuwenswarm.symphony.service.load_execution_disabled_skills",
         lambda: {"disabled"},
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_dynamic_overlay",
-        lambda _graph_dir: {"edges": {"writer->reviewer": {}}},
-    )
-
     progress = object()
     result = await service.plan(
         "write",
@@ -547,7 +541,7 @@ async def test_service_plans_through_public_runtime_with_minimal_jgf(
     }
     assert captured["candidate_ids"] == ["writer"]
     assert captured["disabled_capability_ids"] == {"disabled"}
-    assert captured["dynamic_overlay"]["edges"]
+    assert captured["graph_scope_id"] == "scope"
     assert captured["language"] == "cn"
     assert captured["mode"] == "beam"
     assert captured["progress"] is progress
@@ -562,7 +556,7 @@ async def test_service_plan_uses_request_selected_model_instead_of_default(
     selected = LLMConfig(model="selected-model")
     runtime_calls = []
 
-    class FakeOrchestration:
+    class FakeGraphEngine:
         async def plan(self, *args, **kwargs):
             del args, kwargs
             return OrchestrationPlan({"planned_graph": _minimal_planned_graph()})
@@ -574,7 +568,7 @@ async def test_service_plan_uses_request_selected_model_instead_of_default(
 
     def runtime_for(_config, *, llm_config=None):
         runtime_calls.append(llm_config)
-        return SimpleNamespace(orchestration=FakeOrchestration())
+        return SimpleNamespace(graph_engine=FakeGraphEngine(), graph_scope_id="scope")
 
     service.graph_status = fresh_status
     service._runtime_for = runtime_for
@@ -601,7 +595,7 @@ async def test_service_plan_uses_request_selected_model_for_stale_graph_refresh(
     selected = LLMConfig(model="selected-model")
     refresh_calls = []
 
-    class FakeOrchestration:
+    class FakeGraphEngine:
         async def plan(self, *args, **kwargs):
             del args, kwargs
             return OrchestrationPlan({"planned_graph": _minimal_planned_graph()})
@@ -618,7 +612,7 @@ async def test_service_plan_uses_request_selected_model_for_stale_graph_refresh(
     service.graph_status = stale_status
     service.refresh_graph = refresh_graph
     service._runtime_for = lambda _config, **_kwargs: SimpleNamespace(
-        orchestration=FakeOrchestration()
+        graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
@@ -645,7 +639,7 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
     calls = []
     plan_kwargs = {}
 
-    class FakeOrchestration:
+    class FakeGraphEngine:
         async def plan(self, *args, **kwargs):
             del args
             plan_kwargs.update(kwargs)
@@ -665,7 +659,7 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
     service.graph_status = stale_status
     service.refresh_graph = refresh_graph
     service._runtime_for = lambda _config: SimpleNamespace(
-        orchestration=FakeOrchestration()
+        graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
@@ -677,18 +671,13 @@ async def test_service_rebuilds_stale_graph_before_planning(monkeypatch, tmp_pat
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_execution_disabled_skills", set
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.symphony.service.load_dynamic_overlay",
-        lambda _graph_dir: pytest.fail("overlay must stay disabled"),
-    )
-
     progress = object()
     result = await service.plan("write", progress=progress)
 
     assert calls == [(False, progress)]
     assert result["graph_build"]["rebuilt"] is True
     assert result["planned_graph"]["graph"]["metadata"]["status"] == "no_plan"
-    assert plan_kwargs["dynamic_overlay"] is None
+    assert plan_kwargs["graph_scope_id"] == "scope"
 
 
 @pytest.mark.asyncio
@@ -751,7 +740,7 @@ async def test_service_rejects_non_dict_planned_graph(
 ):
     config = _config(tmp_path)
 
-    class FakeOrchestration:
+    class FakeGraphEngine:
         async def plan(self, *args, **kwargs):
             del args, kwargs
             return OrchestrationPlan({"planned_graph": planned_graph})
@@ -763,7 +752,7 @@ async def test_service_rejects_non_dict_planned_graph(
 
     service.graph_status = fresh_status
     service._runtime_for = lambda _config: SimpleNamespace(
-        orchestration=FakeOrchestration()
+        graph_engine=FakeGraphEngine(), graph_scope_id="scope"
     )
     monkeypatch.setattr(
         "jiuwenswarm.symphony.service.load_symphony_config", lambda: config
@@ -1547,7 +1536,7 @@ def test_force_relation_cache_counts_fall_back_for_invalid_metadata(resolved_cou
 
 
 def test_runtime_cache_rebuilds_when_default_llm_changes(monkeypatch, tmp_path):
-    config = _config(tmp_path)
+    config = _config(tmp_path, evolution=False)
     current = {
         "value": LLMConfig(
             model="model-a",
