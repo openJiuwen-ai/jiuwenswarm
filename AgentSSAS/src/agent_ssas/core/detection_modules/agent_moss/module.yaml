@@ -1,0 +1,45 @@
+name: agent_moss
+display_name: "AgentMoss 行为链与 PDG 检测模块"
+enabled: true
+event_version: "1.0"
+subscribed_events:
+  - "invoke_start"
+  - "llm_input"
+  - "llm_output"
+  - "tool_input"
+  - "tool_output"
+  - "invoke_end"
+analytic_type_id: 2
+
+plugins:
+  - type: data_modeling
+    name: AgentMossModeler
+    model_type: agent_behavior_model
+  - type: threat_analysis
+    name: AgentMossAnalyzer
+    expected_model_type: agent_behavior_model
+    config:
+      analysis_methods: [rule, behavior_chain, pdg]
+      risk_threshold: low
+      max_history_events: 200
+      include_pdg_graph: true
+      policy:
+        default_decision: allow
+        # AgentSSAS subscribes in notify mode. Decisions are reported as
+        # recommendations and do not block the JiuwenSwarm runtime.
+        enforcement_scope: behavior_chain
+        ask_threshold: 45
+        block_threshold: 80
+        enforce_behavior_chain: true
+        analyze_behavior_chain: true
+        analyze_pdg_data_leakage: true
+        enforce_pdg_data_leakage: true
+        pdg_max_events: 80
+        pdg_trusted_egress_patterns: []
+        pdg_egress_tool_patterns: []
+        analyze_destructive_shell: true
+        analyze_sensitive_path_access: true
+        analyze_data_exfiltration: true
+        analyze_privileged_account_ops: true
+        analyze_persistence_ops: true
+        analyze_obfuscated_execution: true
