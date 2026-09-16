@@ -130,9 +130,39 @@ def resolve_agent_request_mode(
     ``agent.fast`` 请求都归一到 ``agent``（sub_mode=None）。历史裸 ``plan`` /
     ``fast``（无 ``agent.`` 前缀，如旧 cron job 存量数据）同样归一到 ``agent``，
     与 CLI ``MODE_ALIASES``、记忆配置 ``_resolve_mode_memory`` 的裸 token 处理保持一致。
+
+    ``flash.enabled`` 配置开关：置 true 时，普通 agent 对话请求被归到 ``flash``
+    mode（独立轻量 facade：单轮、裁 rail、无 task loop），配置即触发，无需前端发
+    ``mode=flash``。注入由函数最前面的 guard 完成，只命中 agent 类请求（agent /
+    plan / fast / 空，且 work_mode 非 code）；``code`` / ``team`` / 显式 flash 等
+    其余路径不受影响，下面走原归一化逻辑。置 false（默认）时维持原 ``agent`` 行为。
+
+    注：cron / heartbeat / proactive 等后台流水线若发 agent 类 mode，同样会被
+    归到 flash——flash 保留 filesystem / bash / skill / 子代理能力，仅裁掉
+    memory 巩固与 skill 演进（flash 设计即关），单次执行无破坏性，故不单独排除。
     """
     raw_value = getattr(raw_mode, "value", raw_mode)
     mode_text = raw_value.strip().lower() if isinstance(raw_value, str) else ""
+
+    # ── flash 配置触发 guard（前置；只命中 agent 类请求，其余 mode 不受影响）──
+    # flash.enabled=true 时，普通 agent 对话（agent 族：agent / agent.* / 裸 plan /
+    # fast / 空，work_mode 非 code）直接归到 flash；code/team/显式 flash 不命中，
+    # 走下面的原归一化。用 split 取首段判断（``agent`` 族），避免硬编码子模式枚举——
+    # 新增 agent.* 子模式自动覆盖，无需同步维护枚举（参见 PR6431 review 次要项）。
+    # try/except 兜底：config 不可读时安全降级为不注入，保持原 agent 行为。
+    _guard_head = mode_text.split(".", 1)[0] if mode_text else ""
+    if not mode_text or _guard_head in ("agent", "plan", "fast"):
+        _wm = work_mode.strip().lower() if isinstance(work_mode, str) else ""
+        if _wm != "code":
+            try:
+                if bool((get_config() or {}).get("flash", {}).get("enabled", False)):
+                    return "flash", None, "flash"
+            except Exception:
+                logger.debug(
+                    "[resolve_agent_request_mode] flash config read failed, not injecting",
+                    exc_info=True,
+                )
+
     if not mode_text:
         mode_text = "agent"
     normalized_work_mode = (
@@ -146,6 +176,11 @@ def resolve_agent_request_mode(
 
     parts = mode_text.split(".")
     mode = parts[0] or "agent"
+    if mode == "flash":
+        # flash 是独立 mode（极简单 agent profile），无子模式，不受 work_mode
+        # 影响（flash 不走 code 工作模式）。AgentManager 按 "flash:None:project"
+        # 缓存到独立 facade，与 agent/code/team 并列，同进程共存不重启。
+        return "flash", None, "flash"
     if mode == "agent":
         # 合并模式：忽略历史子模式（plan / fast），统一 canonical "agent"。
         if normalized_work_mode == "code":

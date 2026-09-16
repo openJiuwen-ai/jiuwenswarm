@@ -159,7 +159,7 @@ def create_adapter(
 
     Args:
         sdk: SDK name, if None will resolve from environment.
-        mode: Instance mode, "agent" (default) or "code".
+        mode: Instance mode, "agent" (default), "code", or "flash".
         workspace_dir: Optional workspace directory (enterprise multi-tenant).
         agent_id: Agent ID for multi-tenant isolation (enterprise only).
         service_id: Service ID for multi-tenant isolation (enterprise only).
@@ -182,6 +182,17 @@ def create_adapter(
         if mode == "code":
             from jiuwenswarm.server.runtime.agent_adapter.interface_code import JiuwenSwarmCodeAdapter
             return JiuwenSwarmCodeAdapter()
+        if mode == "flash":
+            # flash 是独立轻量 mode。是否触发由 mode 解析层
+            # (resolve_agent_request_mode 读 flash.enabled) 注入决定，到这里 mode
+            # 已确定要 flash，直接建 FlashAdapter。行为定义硬编码在 FlashAdapter
+            # （rail 白名单 / react 覆盖），工厂只负责分叉。
+            from jiuwenswarm.server.runtime.agent_adapter.interface_flash import JiuwenSwarmFlashAdapter
+            return JiuwenSwarmFlashAdapter(
+                workspace_dir=enterprise_workspace,
+                agent_id=enterprise_agent_id,
+                service_id=enterprise_service_id,
+            )
         from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
         return JiuWenSwarmDeepAdapter(
             workspace_dir=enterprise_workspace,

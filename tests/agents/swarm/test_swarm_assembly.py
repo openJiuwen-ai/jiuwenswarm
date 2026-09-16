@@ -1117,7 +1117,6 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
                     "name": "invalid_tool",
                     "enabled": True,
                     "transport": "stdio",
-                    "command": "python",
                 },
             ],
         },

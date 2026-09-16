@@ -38,6 +38,7 @@ LINK_BINDING_STATE_TABLE_DEF = TableDefinition(
         ColumnDefinition(
             "status", "string", length=32, nullable=False, default="active"
         ),
+        ColumnDefinition("data", "json", nullable=True),
         ColumnDefinition("created_at", "datetime", nullable=False),
         ColumnDefinition("updated_at", "datetime", nullable=False),
     ],

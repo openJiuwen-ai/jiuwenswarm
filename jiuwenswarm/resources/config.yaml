@@ -695,6 +695,23 @@ react:
     auto_save: true           # true = 自演进审批无需用户点击自动通过（内部开关）
     skill_create: false        # true = 注册 SkillCreateRail（单 agent）及 TeamSkillCreateRail（leader）
     skill_base_dir: "agent/skills"  # Skill 根目录
+  # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
+  # 默认开启；agent 模式挂载 TTSERail，并由代码把 ttse_consult 插入首轮
+  # eager schema（不必写进上方 eager_tools）。
+  ttse:
+    enabled: true           # 默认开启；true 才挂载 TTSERail（仅 agent 模式）
+    evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
+    inject_enabled: true    # 是否注入系统 prompt
+    # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
+    dream_enabled: true     # 是否启用静默 Auto-dream
+    dream_interval: 50      # 每 N 次非 follow-up 任务迭代尝试一次 dream
+    dream_min_hours: 24.0   # 距上次成功 dream 的最短间隔（小时）
+    dream_ttl_days: 90      # 超过该天数未注入展示则剪枝
+    # 语义检索 / dedup；变量名与 secret_registry embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
+    embedding:
+      api_key: ${EMBED_API_KEY}
+      base_url: ${EMBED_API_BASE}
+      model: ${EMBED_MODEL}
   a2x_registry:
     base_url: "http://127.0.0.1:8000"
     timeout: 30.0
@@ -1138,6 +1155,8 @@ permissions:
     cron_delete_job: allow
     cron_toggle_job: allow
     cron_preview_job: allow
+    web_flash: allow
+    cron_flash: allow
     acp_chat: ask
     skill_acceleration_exec: ask
 
@@ -1414,6 +1433,15 @@ hooks:
 
 mcp:
   servers: []
+  # 进程内 MCP 注册表（mcp.server.* / chat.send mcp_server_list）。内存态，不持久化（方案 D1）：
+  # 进程重启后清空，调用方收到 unknown mcp server 后重新 add。也可由环境变量覆盖：
+  # MCP_REGISTRY_SCAN_INTERVAL_S / MCP_REGISTRY_SCAN_CONCURRENCY /
+  # MCP_REGISTRY_WORKER_IDLE_TTL_S / MCP_REGISTRY_SCAN_FAIL_THRESHOLD
+  # registry:
+  #   scan_interval_s: 600
+  #   scan_concurrency: 3
+  #   worker_idle_ttl_s: 600
+  #   scan_fail_threshold: 3
   # 示例：
   # servers:
   #   - name: playwright
@@ -1570,3 +1598,15 @@ modes:
         # 控制记忆内容如何注入到每个成员的 system prompt 中：
         #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
         member_memory_prompt_mode: "proactive"
+
+# ── flash 轻量模式开关 ──────────────────────────────────────────
+# flash 是独立 mode（单轮 ReAct、裁剪 rail 白名单、关闭 task loop 与技能自
+# 演进）。行为定义（rail 白名单 / react 覆盖）硬编码在 JiuwenSwarmFlashAdapter
+# 类常量，不在此配置——这里只控制「是否对普通 agent 对话注入 flash」。
+# 触发点在 mode 解析层（resolve_agent_request_mode）：置 true 时，所有归一到
+# agent 的对话请求被改写为 flash mode（无需前端发 mode=flash，配置即触发）；
+# code / team 路径不受影响。置 false（默认）时维持原 agent 行为。
+#   enabled: false（默认）— 普通对话走 DeepAdapter（全量 rail + task loop）。
+#   enabled: true        — 普通对话注入 flash，走 FlashAdapter facade。
+flash:
+  enabled: false

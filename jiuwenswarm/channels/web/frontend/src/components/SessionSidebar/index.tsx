@@ -171,6 +171,7 @@ export function SessionSidebar({
   const [customBotId, setCustomBotId] = useState('');
   const [customGroupId, setCustomGroupId] = useState('');
   const [customUserId, setCustomUserId] = useState('');
+  const [customJiuwenclawId, setCustomJiuwenclawId] = useState('');
   const contextButtonRef = useRef<HTMLButtonElement>(null);
   const contextPanelRef = useRef<HTMLDivElement>(null);
 
@@ -233,6 +234,7 @@ export function SessionSidebar({
     setCustomBotId(enterprise.selected.bot_id);
     setCustomGroupId(enterprise.selected.group_id);
     setCustomUserId(enterprise.selected.user_id);
+    setCustomJiuwenclawId(enterprise.selected.jiuwenclaw_id);
   }, [contextOpen, enterprise?.selected]);
 
   const activeMode: ContextMode = useMemo(() => {
@@ -261,6 +263,7 @@ export function SessionSidebar({
     enterprise?.selected.bot_id,
     enterprise?.selected.group_id,
     enterprise?.selected.user_id,
+    enterprise?.selected.jiuwenclaw_id,
   ]);
 
   const agentContextOptions = useMemo(
@@ -435,6 +438,16 @@ export function SessionSidebar({
                   aria-label={t('sessionSidebar.enterpriseContext.userId')}
                 />
               </label>
+              <label>
+                {t('sessionSidebar.enterpriseContext.jiuwenclawId')}
+                <input
+                  className="enterprise-context-popover__input"
+                  value={customJiuwenclawId}
+                  disabled={enterprise.contextSwitching}
+                  onChange={event => setCustomJiuwenclawId(event.target.value)}
+                  aria-label={t('sessionSidebar.enterpriseContext.jiuwenclawId')}
+                />
+              </label>
               <button
                 type="button"
                 className="enterprise-context-popover__apply"
@@ -444,6 +457,7 @@ export function SessionSidebar({
                     botId: customBotId,
                     groupId: customGroupId,
                     userId: customUserId,
+                    jiuwenclawId: customJiuwenclawId,
                   })
                 }
               >

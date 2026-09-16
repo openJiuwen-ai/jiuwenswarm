@@ -107,7 +107,9 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
     """TaskPlanningRail subclass that checks resource_mgr before add_tool.
 
     Hardens todo↔TaskPlan consistency around permission interrupts:
-    - refresh TaskPlan from disk after todo writes (and before sync)
+    - refresh TaskPlan from disk after todo writes
+    - on each outer iteration: sync plan→disk first, then refresh from disk
+      (so in-memory mark_completed is not wiped by stale PENDING todos)
     - clear TaskPlan on interrupt so stale bridge cannot drive OuterLoop
     - never let ``_sync_todos_from_plan`` downgrade a completed todo
     """
@@ -218,7 +220,14 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
         await self._refresh_task_plan_from_todos(ctx)
 
     async def after_task_iteration(self, ctx: AgentCallbackContext) -> None:
-        """Keep TaskPlan aligned with disk; clear it on interrupt."""
+        """Keep TaskPlan aligned with disk; clear it on interrupt.
+
+        Order matters: OuterLoop may ``mark_completed`` in memory before this
+        hook runs. Sync plan→disk *first* so that completion lands on
+        ``todo.json``; only then refresh TaskPlan from disk. Refreshing first
+        used to overwrite in-memory completions with stale PENDING todos and
+        left the outer loop replaying the same query forever.
+        """
         if self._iteration_interrupted(ctx):
             await self._clear_task_plan(ctx)
             logger.info(
@@ -227,8 +236,8 @@ class ConcurrentSafeTaskPlanningRail(TaskPlanningRail):
             )
             return
 
-        await self._refresh_task_plan_from_todos(ctx)
         await super().after_task_iteration(ctx)
+        await self._refresh_task_plan_from_todos(ctx)
 
     async def _sync_todos_from_plan(self, ctx: AgentCallbackContext) -> None:
         """Sync TaskPlan -> todo.json, but never downgrade completed todos."""

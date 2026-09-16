@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import shutil
+from pathlib import Path
 from typing import Any
 
 from jiuwenswarm.common.config import (
@@ -28,6 +30,13 @@ _MCP_ENTERPRISE_FORBIDDEN = (
     "企业版禁止使用本地 /mcp 命令，请在管理端通过 MCP 模板下发与查看。"
 )
 
+_ALLOWED_MCP_TRANSPORTS = frozenset({
+    "stdio",
+    "sse",
+    "http",
+    "streamable-http",
+    "streamable_http",
+})
 _REMOTE_MCP_TRANSPORTS = frozenset({
     "sse",
     "http",
@@ -45,23 +54,38 @@ def _normalize_mcp_payload(
     transport = str(merged.get("transport", "")).strip().lower()
     if not name:
         raise ValueError("MCP server name is required")
-    if transport not in _REMOTE_MCP_TRANSPORTS:
-        raise ValueError("transport must be one of sse|http")
+    if transport not in _ALLOWED_MCP_TRANSPORTS:
+        raise ValueError("transport must be one of stdio|sse|http")
     payload: dict[str, Any] = {
         "name": name,
         "enabled": bool(merged.get("enabled", True)),
         "transport": transport,
     }
-    url = str(merged.get("url", "")).strip()
-    if not url:
-        raise ValueError(f"{transport} transport requires url")
-    payload["url"] = url
-    headers = merged.get("headers")
-    if isinstance(headers, dict):
-        payload["headers"] = {str(k): str(v) for k, v in headers.items()}
-    timeout_s = merged.get("timeout_s")
-    if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
-        payload["timeout_s"] = float(timeout_s)
+    if transport == "stdio":
+        command = str(merged.get("command", "")).strip()
+        if not command:
+            raise ValueError("stdio transport requires command")
+        payload["command"] = command
+        args = merged.get("args")
+        if isinstance(args, list):
+            payload["args"] = [str(item) for item in args]
+        cwd = merged.get("cwd")
+        if isinstance(cwd, str) and cwd.strip():
+            payload["cwd"] = cwd.strip()
+        env = merged.get("env")
+        if isinstance(env, dict):
+            payload["env"] = {str(k): str(v) for k, v in env.items()}
+    else:
+        url = str(merged.get("url", "")).strip()
+        if not url:
+            raise ValueError(f"{transport} transport requires url")
+        payload["url"] = url
+        headers = merged.get("headers")
+        if isinstance(headers, dict):
+            payload["headers"] = {str(k): str(v) for k, v in headers.items()}
+        timeout_s = merged.get("timeout_s")
+        if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and float(timeout_s) > 0:
+            payload["timeout_s"] = float(timeout_s)
     return payload
 
 
@@ -101,6 +125,20 @@ async def _pre_check_mcp_server(server_payload: dict[str, Any]) -> tuple[bool, s
 
     name = server_payload.get("name", "")
     transport = str(server_payload.get("transport", "")).strip().lower()
+    if transport == "stdio":
+        command = str(server_payload.get("command") or "").strip()
+        if not shutil.which(command):
+            return False, f"{name} (stdio) pre-check failed: command not found in PATH: {command}"
+        args = server_payload.get("args") or []
+        if isinstance(args, list):
+            for arg in args:
+                if not isinstance(arg, str) or arg.startswith("-"):
+                    continue
+                if arg.lower().endswith((".js", ".mjs", ".cjs", ".py")):
+                    path = Path(arg)
+                    if path.is_absolute() and not path.exists():
+                        return False, f"{name} (stdio) pre-check failed: file not found: {arg}"
+        return True, f"{name} (stdio) pre-check passed (static)"
 
     cfg = build_mcp_server_config(server_payload)
     if cfg is None:
@@ -132,7 +170,7 @@ async def _fetch_mcp_tools_from_config(entry: dict[str, Any]) -> list[dict[str, 
 
     name = str(entry.get("name", "")).strip()
     transport = str(entry.get("transport", "")).strip().lower()
-    if not name or transport not in _REMOTE_MCP_TRANSPORTS:
+    if not name or transport not in _ALLOWED_MCP_TRANSPORTS:
         logger.warning("[command.mcp] _fetch skipped: name=%r transport=%r", name, transport)
         return []
     cfg = build_mcp_server_config(entry)
@@ -268,7 +306,7 @@ async def handle_command_mcp(ctx: RequestContext) -> None:
             server_payload = _normalize_mcp_add_payload(ctx, params)
 
             # 远程 MCP：可选连通性预检查失败不阻断写入（历史行为保留为仅记录）。
-            # 此处不再做本地 stdio 静态预检。
+            # stdio 走静态 PATH/文件预检，不 spawn。
             name = server_payload.get("name", "")
             old_item = get_mcp_server_config(name) if name else None
 

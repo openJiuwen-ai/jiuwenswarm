@@ -11,6 +11,7 @@ const DEFAULTS = {
   groupId: 'default',
   groupName: 'Debug Organization',
   gatewayId: 'debug-gateway',
+  gatewayName: 'Debug Cluster',
   botId: 'default',
   agentName: 'Debug Agent',
 } as const;
@@ -24,6 +25,7 @@ function buildContext(search = ''): EnterpriseAgentContext {
     group_id: groupId,
     user_id: preferred.userId || DEFAULTS.userId,
     jiuwenclaw_id: DEFAULTS.gatewayId,
+    jiuwenclaw_name: DEFAULTS.gatewayName,
     agent_name: DEFAULTS.agentName,
     group_name: DEFAULTS.groupName,
   };

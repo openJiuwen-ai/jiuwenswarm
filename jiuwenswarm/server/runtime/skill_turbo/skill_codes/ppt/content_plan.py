@@ -121,11 +121,10 @@ _P43_COMMON_RULES = pipeline_role_boundary("P4.3") + (
     "4. 内容页数（研究需求：✅）：\n"
     "   - 严格模式（用户已指定页数）：必须等于 page_count\n"
     "   - 扩展模式（用户给出维度/结构意图且未指定页数）：必须 ≥ page_count\n"
-    "   封面（cover）、结束页（ending）及用户明确要求的结构页（section/agenda/chapter 等）标 ❌，"
-    "其余页必须标 ✅。\n"
-    "   中间结构页的添加规则见下方「中间结构页」指令（由系统根据用户需求动态注入）。\n"
-    "   **页面顺序**：cover 必须是 P1（首页），ending 必须是末页（P{总页数}）。\n"
-    "   **ending 页约束**：标题优先「感谢聆听」或 ≤16 字简短收束语；全文总结、数据回响、趋势展望必须"
+    "   用户明确要求的中间结构页（section/agenda/chapter 等）标 ❌，其余内容页标 ✅。\n"
+    "   **首尾页与中间结构页规则**见下方动态指令（由系统按 page_structure_mode / "
+    "exclude_cover_ending / structural_page_request 注入；禁止与动态指令矛盾）。\n"
+    "   **ending 页约束**（仅当生成 ending 时）：标题优先感谢语/收束语（≤16 字）；全文总结、数据回响、趋势展望必须"
     "放在最后一个内容页（✅），不得把长总结句写入 ending 页标题；ending 页内容概要只描述结束页展示"
     "（感谢语、可选一句总结语、汇报人/日期），不得复制正文页大纲。\n"
     "   **agenda 页内容**：内容概要只列内容页（✅）章节标题与导航，不得列入 cover/ending/agenda 等"
@@ -872,40 +871,85 @@ def _has_no_image_source(inputs: dict[str, Any]) -> bool:
     return not need_imagegen
 
 
+def _build_cover_ending_directive(inputs: dict[str, Any]) -> str:
+    """按 page_structure_mode / exclude_cover_ending 注入首尾规则（互斥，对齐 outline-planner）。"""
+    mode = str(inputs.get("page_structure_mode") or "default").strip().lower()
+    if mode == "explicit_sequence":
+        return (
+            "- 首尾结构页（page_structure_mode=explicit_sequence）："
+            "按 user_structure 逐页清单逐项一页映射，条目数必须等于 total_pages；"
+            "只把用户明确标为封面/目录/章节/结束的项设为结构页 ❌，其余为内容页 ✅；"
+            "不得自动增加 cover、ending、agenda、section 或 chapter；"
+            "首页/末页不强制为 cover/ending。\n"
+        )
+    exclude = bool(inputs.get("exclude_cover_ending"))
+    if exclude:
+        return (
+            "- 首尾结构页：exclude_cover_ending=true（仅 default 生效）。"
+            "禁止生成任何 cover/intro/ending/conclusion/transition 页面；"
+            "P1 直接是第一个内容页（研究需求 ✅），末页是最后一个内容页（✅）；"
+            "总页数 = page_count + 中间结构页数（无封面/结束页的 +2）。\n"
+        )
+    return (
+        "- 首尾结构页：exclude_cover_ending=false（默认）。"
+        "必须生成 P1 cover 与末页 ending，二者研究需求 ❌；"
+        "总页数 = page_count + 2 + 中间结构页数。"
+        "封面含主题标题、副标题、日期信息；结束页含感谢语/联系方式。"
+        "conclusion/transition 不再支持；如需总结页，并入最后的 ending 页。\n"
+    )
+
+
 def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
     """根据 structural_page_request 构建中间结构页指令，注入 P4.3 prompt。
 
     与 pptx-craft outline-planner 的「中间结构页触发与默认数量规则」对齐：
+    - explicit_sequence: 不适用默认 mid 规则
     - none: 禁止自行添加任何中间结构页
     - agenda/section/chapter: 按指定类型生成，数量由 structural_page_count 或默认规则决定
     - auto: 用户要求章节页但未指定类型，由 LLM 根据语境选择 section 或 chapter
     """
+    mode = str(inputs.get("page_structure_mode") or "default").strip().lower()
+    if mode == "explicit_sequence":
+        return (
+            "- 中间结构页：page_structure_mode=explicit_sequence，禁止按 structural_page_request "
+            "自动插入 agenda/section/chapter；仅清单明确标注的结构页保留。\n"
+        )
+
     spr = str(inputs.get("structural_page_request") or "none").strip().lower()
     spc = inputs.get("structural_page_count")
     page_count = inputs.get("page_count")
+    cover_ending = 0 if bool(inputs.get("exclude_cover_ending")) else 2
+    shell_note = "无封面/结束页" if cover_ending == 0 else "含封面/结束页"
 
     if spr == "none":
         return (
             "- 中间结构页：用户未要求任何中间结构页（目录页/章节页/分隔页）。"
             "禁止自行添加 section/chapter/transition/agenda/conclusion 等结构页。"
             "即使内容有章节结构，也通过内容页标题、页内分组和视觉层级承接，不单独占用一页过渡。"
-            "总页数 = page_count + 2。\n"
+            f"总页数 = page_count + {cover_ending}（{shell_note}）。\n"
         )
 
     if spr == "agenda":
         total_structural = PptCommon.resolve_mid_structural_page_count(
             page_count, spr, spc,
         )
+        order = (
+            "第一个内容页 → agenda → 其余内容页（✅）…"
+            if cover_ending == 0
+            else "cover → agenda → 内容页（✅）… → ending"
+        )
         return (
             "- 中间结构页：用户要求目录页（agenda），固定生成 1 页 agenda。\n"
             "  规则：\n"
-            "  1. 页面顺序：cover → agenda → 内容页（✅）… → ending\n"
+            f"  1. 页面顺序：{order}\n"
             "  2. 禁止生成 section/chapter/transition 等章节分隔页\n"
             "  3. user_dimensions / user_structure 中的条目（除「封面」「目录」「结束页」外）"
             "一律映射为内容页，不得标为 section\n"
-            f"  4. 总页数 = page_count + 2 + {total_structural}（内容页 + 封面/结束页 + agenda）\n"
+            f"  4. 总页数 = page_count + {cover_ending} + {total_structural}"
+            f"（内容页 + 首尾{cover_ending} + agenda）\n"
             "  5. agenda 页内容概要只列后续内容页（✅）的章节标题与导航\n"
-            "  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页\n"
+            "  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页"
+            "（若 exclude_cover_ending=true 则并入末个内容页概要，不得另起 ending）\n"
         )
 
     # section / chapter / auto：章节分隔页规则
@@ -928,28 +972,45 @@ def _build_structural_page_directive(inputs: dict[str, Any]) -> str:
     else:
         count_str = f"{total_structural} 页（无法确定 page_count，默认）"
 
+    order = (
+        "（可选 agenda）-> 结构页 1 -> 内容组 1 -> …"
+        if cover_ending == 0
+        else "cover ->（可选 agenda）-> 结构页 1 -> 内容组 1 -> 结构页 2 -> 内容组 2 -> ... -> ending"
+    )
     return (
         f"- 中间结构页：用户已明确要求中间结构页，类型={type_hint}，数量={count_str}。\n"
         f"  规则：\n"
         f"  1. 中间结构页的「研究需求」标 ❌，不计入 page_count 内容页配额\n"
-        f"  2. 总页数 = page_count + 2 + {total_structural}（内容页 + 封面/结束页 + 结构页）\n"
-        f"  3. 结构页放在每个内容组之前：cover ->（可选 agenda）-> 结构页 1 -> 内容组 1 -> 结构页 2 -> 内容组 2 -> ... -> ending\n"
+        f"  2. 总页数 = page_count + {cover_ending} + {total_structural}"
+        f"（内容页 + 首尾{cover_ending} + 结构页）\n"
+        f"  3. 结构页放在每个内容组之前：{order}\n"
         f"  4. 每组至少含 2 个内容页，最后一组不得仅含 1 页\n"
         f"  5. 结构页必须有明确的章节编号、章节标题或转场目的；不得为了填页数生成空泛页面\n"
-        f"  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页\n"
+        f"  6. conclusion/transition 不再支持；如需总结页，并入最后的 ending 页"
+        f"（若 exclude_cover_ending=true 则并入末个内容页）\n"
     )
 
 
 def _build_agenda_mapping_directive(inputs: dict[str, Any]) -> str:
     """agenda 模式下注入显式页面映射，避免 user_dimensions 被误标为 section。"""
+    if str(inputs.get("page_structure_mode") or "default").strip().lower() == "explicit_sequence":
+        return ""
     spr = str(inputs.get("structural_page_request") or "none").strip().lower()
     if spr != "agenda":
         return ""
 
+    exclude = bool(inputs.get("exclude_cover_ending"))
+    if exclude:
+        shell_line = "  - P1: 第一个内容页；末页: 最后一个内容页（禁止 cover/ending）\n"
+        agenda_line = "  - 紧接首页之后放 1 页 agenda（目录），类型必须为 agenda\n"
+    else:
+        shell_line = "  - P1: cover；末页: ending\n"
+        agenda_line = "  - 紧接 cover 之后放 1 页 agenda（目录），类型必须为 agenda\n"
+
     parts = [
         "- 页面映射（agenda 模式，强制）：\n",
-        "  - P1: cover；末页: ending\n",
-        "  - 紧接 cover 之后放 1 页 agenda（目录），类型必须为 agenda\n",
+        shell_line,
+        agenda_line,
         "  - 禁止生成 section/chapter/transition 章节分隔页\n",
     ]
 
@@ -994,10 +1055,17 @@ def _build_p43_prompt(
     expand_mode = PptCommon.is_expand_page_mode(inputs)
 
     entity = str(inputs.get("p4_search_entity") or "").strip()
+    page_structure_mode = str(inputs.get("page_structure_mode") or "default").strip().lower()
+    exclude_cover_ending = bool(inputs.get("exclude_cover_ending"))
+    target_total_pages = inputs.get("total_pages")
 
     parts = [
         f"请生成 outline.md 正文，主题：「{topic}」\n",
-        f"- page_count: {page_count}（内容页数，不含封面/结束页；默认总页数为 page_count + 2）\n",
+        f"- page_count: {page_count}（内容页数 ✅，不含中间结构页；首尾是否另计见下方指令）\n",
+        f"- page_structure_mode: {page_structure_mode}\n",
+        f"- exclude_cover_ending: {exclude_cover_ending}"
+        f"（仅 page_structure_mode=default 生效）\n",
+        f"- total_pages: {target_total_pages}（P2 已算目标总页；扩展模式允许实际 ≥）\n",
         f"- audience: {audience}\n",
         f"- source_type: {source_type}\n",
         f"- search_mode: {search_mode}\n",
@@ -1062,7 +1130,8 @@ def _build_p43_prompt(
             '- no_search 模式：研究查询与数据需求仍需填写（描述"如有搜索会查询什么"），但标注为「仅参考」。\n'
         )
 
-    # 中间结构页需求注入
+    # 首尾 + 中间结构页：互斥注入（同一轮不得同时出现「必须 cover」与「禁止 cover」）
+    parts.append(_build_cover_ending_directive(inputs))
     parts.append(_build_structural_page_directive(inputs))
     agenda_mapping = _build_agenda_mapping_directive(inputs)
     if agenda_mapping:
@@ -1108,6 +1177,11 @@ def _strip_markdown_fence(text: str) -> str:
     return stripped
 
 
+_COVER_TYPES = frozenset({"cover", "intro"})
+_ENDING_TYPES = frozenset({"ending", "conclusion", "transition"})
+_SHELL_TYPES = _COVER_TYPES | _ENDING_TYPES
+
+
 def _validate_outline_markdown_basic(
     text: str,
     *,
@@ -1116,6 +1190,9 @@ def _validate_outline_markdown_basic(
     structural_page_request: str = "none",
     structural_page_count: Any = None,
     expand_page_mode: bool = False,
+    page_structure_mode: str = "default",
+    exclude_cover_ending: bool = False,
+    total_pages: Any = None,
 ) -> None:
     stripped = text.strip()
     if not stripped:
@@ -1136,10 +1213,13 @@ def _validate_outline_markdown_basic(
     if not page_numbers:
         raise ContentPlanError("P4.3 outline 缺少 `### P{N}:` 页面块")
 
+    mode = str(page_structure_mode or "default").strip().lower()
+    exclude = bool(exclude_cover_ending) if mode != "explicit_sequence" else False
     expected_content_pages = int(page_count) if page_count is not None else None
+    _struct_pages = _split_outline_pages(stripped)
+
     if expected_content_pages is not None:
-        pages = _split_outline_pages(stripped)
-        content_count = sum(1 for _, blk in pages if _is_research_required_page(blk))
+        content_count = sum(1 for _, blk in _struct_pages if _is_research_required_page(blk))
         if expand_page_mode:
             if content_count < expected_content_pages:
                 raise ContentPlanError(
@@ -1152,51 +1232,71 @@ def _validate_outline_markdown_basic(
                 f"实际 {content_count}"
             )
 
-    # 总页数校验：max(page_numbers) 应等于 page_count + 2(封面/结束) + 结构页数
-    # 防止 intent 阶段 page_count 算错导致总页数与用户要求不一致
-    if expected_content_pages is not None:
+    actual_total = max(page_numbers) if page_numbers else 0
+    if mode == "explicit_sequence":
+        # 清单权威：总页 == total_pages；不强制首尾；不按 mid 公式加壳
+        if isinstance(total_pages, int) and total_pages > 0:
+            if expand_page_mode:
+                if actual_total < total_pages:
+                    raise ContentPlanError(
+                        f"P4.3 outline 扩展模式下总页数应 ≥ {total_pages}"
+                        f"（explicit_sequence 清单长），实际最大页码为 {actual_total}"
+                    )
+            elif actual_total != total_pages:
+                raise ContentPlanError(
+                    f"P4.3 outline 总页数应为 {total_pages}"
+                    f"（explicit_sequence 清单长），实际最大页码为 {actual_total}"
+                )
+    elif expected_content_pages is not None:
         structural_num = PptCommon.resolve_mid_structural_page_count(
             expected_content_pages,
             structural_page_request,
             structural_page_count,
         )
-        expected_total = expected_content_pages + 2 + structural_num
-        actual_total = max(page_numbers) if page_numbers else 0
+        cover_ending = 0 if exclude else 2
+        expected_total = expected_content_pages + cover_ending + structural_num
         if expand_page_mode:
             if actual_total < expected_total:
                 raise ContentPlanError(
                     f"P4.3 outline 扩展模式下总页数应 ≥ {expected_total}"
-                    f"（内容页{expected_content_pages} + 封面/结束2 + 结构页{structural_num}），"
-                    f"实际最大页码为 {actual_total}"
+                    f"（内容页{expected_content_pages} + 首尾{cover_ending}"
+                    f" + 结构页{structural_num}），实际最大页码为 {actual_total}"
                 )
         elif actual_total != expected_total:
             raise ContentPlanError(
                 f"P4.3 outline 总页数应为 {expected_total}"
-                f"（内容页{expected_content_pages} + 封面/结束2 + 结构页{structural_num}），"
-                f"实际最大页码为 {actual_total}"
+                f"（内容页{expected_content_pages} + 首尾{cover_ending}"
+                f" + 结构页{structural_num}），实际最大页码为 {actual_total}"
             )
 
-    # 遵从 pptx-craft outline-planner（Phase 2）产物验证：
-    # 首页类型为 cover，末页类型为 ending（conclusion/transition 为别名）
-    _struct_pages = _split_outline_pages(stripped)
-    if _struct_pages:
-        _first_type = _extract_outline_field(_struct_pages[0][1], "类型").strip().lower()
-        if _first_type and _first_type not in ("cover", "intro"):
-            raise ContentPlanError(
-                f"P4.3 outline 首页类型应为 cover，实际为 {_first_type}"
-            )
-        _last_type = _extract_outline_field(_struct_pages[-1][1], "类型").strip().lower()
-        if _last_type and _last_type not in ("ending", "conclusion", "transition"):
-            raise ContentPlanError(
-                f"P4.3 outline 末页类型应为 ending，实际为 {_last_type}"
-            )
+    if _struct_pages and mode != "explicit_sequence":
+        if exclude:
+            for page_num, blk in _struct_pages:
+                ptype = _extract_outline_field(blk, "类型").strip().lower()
+                if ptype in _SHELL_TYPES:
+                    raise ContentPlanError(
+                        f"P4.3 outline exclude_cover_ending=true 时禁止出现"
+                        f" cover/ending，P{page_num} 类型为 {ptype}"
+                    )
+        else:
+            _first_type = _extract_outline_field(_struct_pages[0][1], "类型").strip().lower()
+            if _first_type and _first_type not in _COVER_TYPES:
+                raise ContentPlanError(
+                    f"P4.3 outline 首页类型应为 cover，实际为 {_first_type}"
+                )
+            _last_type = _extract_outline_field(_struct_pages[-1][1], "类型").strip().lower()
+            if _last_type and _last_type not in _ENDING_TYPES:
+                raise ContentPlanError(
+                    f"P4.3 outline 末页类型应为 ending，实际为 {_last_type}"
+                )
 
-    # 中间结构页合法性校验
-    _validate_structural_pages(
-        _struct_pages,
-        structural_page_request=structural_page_request,
-        structural_page_count=structural_page_count,
-    )
+    # explicit：清单权威，跳过 mid 自动插页校验；default：按 structural_page_request
+    if mode != "explicit_sequence":
+        _validate_structural_pages(
+            _struct_pages,
+            structural_page_request=structural_page_request,
+            structural_page_count=structural_page_count,
+        )
 
     required_fields = ("**类型**", "**研究需求**", "**标题**", "**内容概要**", "**研究查询**", "**数据需求**")
     for field in required_fields:
@@ -1325,6 +1425,9 @@ def _validate_outline_markdown_full(
     structural_page_request: str = "none",
     structural_page_count: Any = None,
     expand_page_mode: bool = False,
+    page_structure_mode: str = "default",
+    exclude_cover_ending: bool = False,
+    total_pages: Any = None,
 ) -> None:
     _validate_outline_markdown_basic(
         text,
@@ -1333,6 +1436,9 @@ def _validate_outline_markdown_full(
         structural_page_request=structural_page_request,
         structural_page_count=structural_page_count,
         expand_page_mode=expand_page_mode,
+        page_structure_mode=page_structure_mode,
+        exclude_cover_ending=exclude_cover_ending,
+        total_pages=total_pages,
     )
     _validate_notes_leakage(text)
 
@@ -1365,6 +1471,9 @@ def _outline_validate_kwargs(inputs: dict[str, Any]) -> dict[str, Any]:
         "structural_page_request": str(inputs.get("structural_page_request") or "none"),
         "structural_page_count": inputs.get("structural_page_count"),
         "expand_page_mode": PptCommon.is_expand_page_mode(inputs),
+        "page_structure_mode": str(inputs.get("page_structure_mode") or "default"),
+        "exclude_cover_ending": bool(inputs.get("exclude_cover_ending")),
+        "total_pages": inputs.get("total_pages"),
     }
 
 

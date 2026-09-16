@@ -4,6 +4,7 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 import pytest
@@ -71,7 +72,9 @@ def test_parse_validate_research_output_extracts_invalid_pages():
 
 def test_is_write_protocol_error():
     assert is_write_protocol_error(
-        Exception("File has been modified since read, either by the user or by a linter.")
+        Exception(
+            "File has been modified since read, either by the user or by a linter."
+        )
     )
     assert is_write_protocol_error(
         Exception("File has not been fully read yet. You have read 0 of 0 lines.")
@@ -116,6 +119,121 @@ async def test_safe_overwrite_retries_protocol_error():
     assert node.reads >= 2
 
 
+class _TransientLockNode:
+    """write_file 首次返回 success=False（closed database），重试后成功。"""
+
+    def __init__(self) -> None:
+        self.writes = 0
+        self.fail_transient_count = 1
+        self.tools = {"read_file", "write_file"}
+
+    def has_tool(self, name: str) -> bool:
+        return name in self.tools
+
+    async def call_tool(self, name: str, **kwargs: Any) -> Any:
+        if name == "read_file":
+            return {"content": "<html></html>"}
+        if name == "write_file":
+            self.writes += 1
+            if self.fail_transient_count > 0:
+                self.fail_transient_count -= 1
+                return type(
+                    "R",
+                    (),
+                    {
+                        "success": False,
+                        "data": None,
+                        "error": (
+                            "file system operation execution error, "
+                            "execution: write_file, reason: "
+                            "Cannot operate on a closed database."
+                        ),
+                    },
+                )()
+            return {"ok": True}
+        raise AssertionError(f"unexpected tool {name}")
+
+
+@pytest.mark.asyncio
+async def test_safe_overwrite_retries_transient_lock_failure_result(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """验证 write_file 返回 success=False（closed database）时按退避重试，最终成功。"""
+    import jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common as ppt_common
+
+    delays: list[float] = []
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay: float) -> None:
+        delays.append(delay)
+        await real_sleep(0)
+
+    monkeypatch.setattr(ppt_common.asyncio, "sleep", _fast_sleep)
+
+    node = _TransientLockNode()
+    ok = await safe_overwrite_file_impl(
+        node,
+        r"D:\tmp\page-1.pptx.html",
+        "<html>ok</html>",
+        log_prefix="[test]",
+    )
+    assert ok is True
+    assert node.writes == 2
+    assert 0.5 in delays
+
+
+class _AlwaysTransientLockNode:
+    """write_file 始终返回 success=False（closed database）。"""
+
+    tools = {"read_file", "write_file"}
+
+    def has_tool(self, name: str) -> bool:
+        return name in self.tools
+
+    async def call_tool(self, name: str, **kwargs: Any) -> Any:
+        if name == "read_file":
+            return {"content": "<html></html>"}
+        if name == "write_file":
+            return type(
+                "R",
+                (),
+                {
+                    "success": False,
+                    "data": None,
+                    "error": (
+                        "file system operation execution error, "
+                        "execution: write_file, reason: "
+                        "Cannot operate on a closed database."
+                    ),
+                },
+            )()
+        raise AssertionError(f"unexpected tool {name}")
+
+
+@pytest.mark.asyncio
+async def test_safe_overwrite_transient_lock_failure_exhausted(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """验证 write_file 持续返回 closed database 时重试耗尽后返回 False。"""
+    import jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common as ppt_common
+
+    real_sleep = asyncio.sleep
+
+    async def _fast_sleep(delay: float) -> None:
+        await real_sleep(0)
+
+    monkeypatch.setattr(ppt_common.asyncio, "sleep", _fast_sleep)
+
+    node = _AlwaysTransientLockNode()
+    ok = await safe_overwrite_file_impl(
+        node,
+        r"D:\tmp\page-1.pptx.html",
+        "<html>ok</html>",
+        log_prefix="[test]",
+    )
+    assert ok is False
+
+
 def test_is_slide_exportable_requires_main_in_ppt_slide():
     bad = "<html><body><main>x</main></body></html>"
     good = (
@@ -131,7 +249,7 @@ async def test_reconcile_missing_pages_clears_false_positives(tmp_path):
     pages_dir = tmp_path / "pages"
     pages_dir.mkdir()
     html = (
-        '<!DOCTYPE html><html><body>'
+        "<!DOCTYPE html><html><body>"
         '<div class="ppt-slide h-[720px]">'
         '<main class="flex-1"><section>content</section></main>'
         "</div></body></html>"

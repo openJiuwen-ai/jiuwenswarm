@@ -9,7 +9,7 @@ Covers:
 2. ``_run_mcp_worker`` dispatches by ``params["_mcp_client_type"]`` — the
    remote client's ``call_tool`` is used to drain the request queue, and the
    registered ``disconnect`` callback runs on worker exit.
-3. User-configured stdio connectors are rejected (remote-only discovery).
+3. stdio discovery keeps working and now tags params with ``_mcp_client_type``.
 """
 
 from __future__ import annotations
@@ -28,6 +28,13 @@ from jiuwenswarm.common.mcp_config import (
     list_request_mcp_server_tools,
     _run_mcp_worker,
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_loopback_mcp_in_mocked_remote_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本文件用 127.0.0.1 当假远端 URL；生产 SSRF 默认拦截 loopback，需显式放行。"""
+
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
 
 
 def _sse_config() -> dict:
@@ -510,8 +517,47 @@ async def test_run_mcp_worker_init_failure_drains_queue(
 
 
 @pytest.mark.asyncio
-async def test_stdio_discovery_is_rejected() -> None:
-    """用户可配本地 stdio 连接器不再走发现分支，返回空结果。"""
+async def test_stdio_discovery_still_marks_client_type(monkeypatch: pytest.MonkeyPatch) -> None:
+    """The stdio discovery path must keep working and now tag params with
+    _mcp_client_type='stdio' so the worker dispatch is explicit."""
+    # Loopback must be allowed for the 127.0.0.1-style commands we simulate.
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+
+    fake_session = MagicMock()
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(
+        return_value=SimpleNamespace(tools=[_FakeTool("stdio_tool")])
+    )
+
+    # mcp.client.stdio.stdio_client is an async context manager; patch it to
+    # return dummy read/write streams so no real process is spawned.
+    class _StdioCtx:
+        async def __aenter__(self):
+            return MagicMock(), MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("mcp.client.stdio.stdio_client", lambda _p: _StdioCtx())
+    # stdio_server_parameters is evaluated before stdio_client; stub it so no
+    # StdioServerParameters (which needs cwd/env) is constructed.
+    monkeypatch.setattr(mcp_config, "_stdio_server_parameters", lambda params: None)
+
+    # ClientSession is imported lazily inside the function; patch at the source.
+    import mcp as _mcp_mod
+
+    class _SessionCtx:
+        def __init__(self, session) -> None:
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(_mcp_mod, "ClientSession", lambda *a, **k: _SessionCtx(fake_session))
+
     config = {
         "name": "local-stdio",
         "type": "stdio",
@@ -520,13 +566,47 @@ async def test_stdio_discovery_is_rejected() -> None:
     }
     tool_defs, params = await list_request_mcp_server_tools("local-stdio", config)
 
-    assert tool_defs == []
-    assert params == {}
+    assert [t["name"] for t in tool_defs] == ["stdio_tool"]
+    assert params["_mcp_client_type"] == "stdio"
 
 
 @pytest.mark.asyncio
-async def test_missing_type_command_args_discovery_is_rejected() -> None:
-    """缺 type 的 command+args 配置同样被 create_mcp_tool 拒绝。"""
+async def test_missing_type_command_args_discovery_defaults_to_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺 type 的 command+args 配置默认走 stdio 发现（方案 §5.2）。"""
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+
+    fake_session = MagicMock()
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(
+        return_value=SimpleNamespace(tools=[_FakeTool("legacy_tool")])
+    )
+
+    class _StdioCtx:
+        async def __aenter__(self):
+            return MagicMock(), MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("mcp.client.stdio.stdio_client", lambda _p: _StdioCtx())
+    monkeypatch.setattr(mcp_config, "_stdio_server_parameters", lambda params: None)
+
+    import mcp as _mcp_mod
+
+    class _SessionCtx:
+        def __init__(self, session) -> None:
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(_mcp_mod, "ClientSession", lambda *a, **k: _SessionCtx(fake_session))
+
     config = {
         "name": "legacy-stdio",
         "command": "npx",
@@ -534,5 +614,5 @@ async def test_missing_type_command_args_discovery_is_rejected() -> None:
     }
     tool_defs, params = await list_request_mcp_server_tools("legacy-stdio", config)
 
-    assert tool_defs == []
-    assert params == {}
+    assert [t["name"] for t in tool_defs] == ["legacy_tool"]
+    assert params["_mcp_client_type"] == "stdio"

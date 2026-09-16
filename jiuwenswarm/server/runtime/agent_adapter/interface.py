@@ -1347,6 +1347,8 @@ class JiuWenSwarm:
                 return "code"
             if mode == "code" or mode.startswith("code."):
                 return "code"
+            if mode == "flash" or mode.startswith("flash."):
+                return "flash"
         return "agent"
 
     async def create_instance(

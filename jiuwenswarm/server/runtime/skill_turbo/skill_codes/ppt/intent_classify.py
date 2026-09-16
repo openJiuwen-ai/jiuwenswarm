@@ -75,12 +75,16 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
 第二步：PPT 需求信息提取（仅当没有找到任何文件路径时执行）
 - 只提取用户**明确提到**的信息，不要推断或补充
 - 未提及的字段留空字符串或 null
-- page_count 必须是正整数（内容页数，不含封面/结束页，也不含目录页/章节页等中间结构页；总页数 = page_count + 2 + 中间结构页数）。
+- page_count 必须是正整数（内容页数，不含封面/结束页，也不含目录页/章节页等中间结构页；默认总页数 = page_count + 2 + 中间结构页数；exclude_cover_ending=true 时总页数 = page_count + 中间结构页数）。
   判断规则：①用户说"生成N页PPT"/"做N页汇报"/"PPT共N页"/"总页数N页"/"总共N页"/"一共N页"/"N页"/"做N页PPT"/"N页以内"/"不超过N页"/"最多N页"等未特指内容页的表达 → N 表示总页数：
-    无中间结构或未指定结构数量 → page_count = max(N - 2, 1)；指定结构数量 K → page_count = max(N - 2 - K, 1)；
+    exclude_cover_ending=false（默认）：无中间结构或未指定结构数量 → page_count = max(N - 2, 1)；指定结构数量 K → page_count = max(N - 2 - K, 1)；
+    exclude_cover_ending=true：无中间结构或未指定结构数量 → page_count = N；指定结构数量 K → page_count = max(N - K, 1)；
     未指定结构数量时禁止自行扣减结构页或试算 ceil（下游系统按 outline-planner 反推）。
   ②用户明确说"N个内容页"/"N页正文"，或正在回答"需要多少页内容页"时 → page_count = N（中间结构页另行添加，不占此配额）。
-  示例："10页以内"→8, "总页数8页"→6, "8页"→6, "做8页PPT"→6, "共7页"+要求目录页→4, "8页PPT"+3个章节页→3
+  示例："10页以内"→8, "总页数8页"→6, "8页"→6, "做8页PPT"→6, "共7页"+要求目录页→4, "8页PPT"+3个章节页→3, "做8页PPT不要封面和结束页"→8 + exclude_cover_ending=true
+- page_structure_mode: "default"（默认）或 "explicit_sequence"。用户给出有序逐页清单（如"第1页封面、第2页背景、第3页方案、第4页结束"）时填 explicit_sequence；否则 default。explicit_sequence 时清单即总页数与顺序权威，不得自动加封面/结束/目录/章节。
+- exclude_cover_ending: 是否不生成封面页和结束页。布尔；默认 false。仅 page_structure_mode=default 且用户**明确否定**首尾页（如"不要封面和结束页""不需要首尾页/致谢页"）时为 true；沉默不推断。用户单独否定其中一页并明确保留另一页时仍为 false。explicit_sequence 时本字段不适用，填 false。
+- total_pages: 仅 page_structure_mode=explicit_sequence 时必填（清单条目数，正整数）；default 模式填 null。
 - style_id 可选值：business-classic / tech-minimal / elegant-narrative / industrial-tech / custom / 其他风格名
   用户要求“自由发挥”时填写 custom
   “华为风格/华为/华为红/华为风/华为商务”统一填写 business-classic，不得填 custom
@@ -99,6 +103,7 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
   提取规则：仅当用户明确表达时才提取，例如"加章节页""每章一个章节页""需要目录页""加 PART 页""加章首页"。
   普通章节结构、素材中的标题层级、模型自己觉得需要分节，都不构成触发条件 -> "none"。
   用户指定数量时（如"加 2 页章节页"），数量信息保留在 structural_page_count 中。
+  page_structure_mode=explicit_sequence 时填 "none"（清单权威，不另抽中间结构需求）。
 - structural_page_count: 用户指定的中间结构页数量（整数；未指定或"每章一个"等需自动计算时为 null）。
 
 重要：如果找到了文件路径，slots 各字段留空，不需要提取需求信息；
@@ -107,6 +112,7 @@ _LLM_PATH_AND_SLOTS_SYSTEM_PROMPT = """你是 PPT 任务分析助手。从用户
 必须只输出 JSON，格式：
 {"doc_paths": ["路径1"], "slots": {"topic": "", "page_count": null, "audience": "",
 "presentation_purpose": "", "style_id": "", "pack_dir": "",
+"page_structure_mode": "default", "exclude_cover_ending": false, "total_pages": null,
 "structural_page_request": "none", "structural_page_count": null}}
 （page_count 为正整数或 null，禁止字符串）"""
 
@@ -227,6 +233,10 @@ def _collect_files_paths(inputs: dict[str, Any]) -> list[str]:
 
 
 _SLOT_NAMES = ("topic", "page_count", "audience", "presentation_purpose", "style_id", "pack_dir")
+# 与 requirement_collect._VALID_STRUCTURAL_REQUESTS 同值；本地常量避免交叉 import
+_VALID_STRUCTURAL_REQUESTS = frozenset(
+    {"none", "agenda", "section", "chapter", "auto"}
+)
 
 
 def _build_llm_path_prompt(text: str) -> str:
@@ -324,6 +334,35 @@ def _parse_slots_from_llm_response(raw: str) -> dict[str, Any]:
             result[name] = value
         else:
             result[name] = "" if name != "page_count" else None
+    mode = str(slots_raw.get("page_structure_mode") or "default").strip().lower()
+    if mode not in ("default", "explicit_sequence"):
+        mode = "default"
+    result["page_structure_mode"] = mode
+    exc = slots_raw.get("exclude_cover_ending")
+    if mode == "explicit_sequence":
+        result["exclude_cover_ending"] = False
+    elif isinstance(exc, bool):
+        result["exclude_cover_ending"] = exc
+    elif isinstance(exc, str) and exc.strip().lower() in ("true", "1", "yes"):
+        result["exclude_cover_ending"] = True
+    else:
+        result["exclude_cover_ending"] = False
+    spr = slots_raw.get("structural_page_request")
+    if mode == "explicit_sequence":
+        result["structural_page_request"] = "none"
+    elif isinstance(spr, str) and spr.strip().lower() in _VALID_STRUCTURAL_REQUESTS:
+        result["structural_page_request"] = spr.strip().lower()
+    spc = slots_raw.get("structural_page_count")
+    if isinstance(spc, int) and spc > 0:
+        result["structural_page_count"] = spc
+    elif isinstance(spc, float) and spc > 0 and spc == int(spc):
+        result["structural_page_count"] = int(spc)
+    if mode == "explicit_sequence":
+        tp = slots_raw.get("total_pages")
+        if isinstance(tp, int) and tp > 0:
+            result["total_pages"] = tp
+        elif isinstance(tp, float) and tp > 0 and tp == int(tp):
+            result["total_pages"] = int(tp)
     return result
 
 

@@ -8,6 +8,8 @@ export type EnterpriseAgentContext = {
   group_id: string;
   user_id: string;
   jiuwenclaw_id: string;
+  /** 实例/集群展示名（对应 Manager instance_info.jiuwenclaw_name） */
+  jiuwenclaw_name: string;
   agent_name: string;
   group_name: string;
 };
@@ -22,18 +24,26 @@ export type EnterpriseContextValue = EnterpriseContextSnapshot & {
   contextError: string;
   contextSwitching: boolean;
   onContextChange: (key: string) => void;
-  onCustomContextApply: (input: { botId: string; groupId: string; userId: string }) => void;
+  onCustomContextApply: (input: {
+    botId: string;
+    groupId: string;
+    userId: string;
+    jiuwenclawId: string;
+  }) => void;
   onLogout: () => void;
 };
 
-export function agentContextKey(item: Pick<EnterpriseAgentContext, 'bot_id' | 'group_id' | 'user_id'>): string {
-  return `${item.bot_id}\u0001${item.group_id}\u0001${item.user_id}`;
+export function agentContextKey(
+  item: Pick<EnterpriseAgentContext, 'bot_id' | 'group_id' | 'user_id' | 'jiuwenclaw_id'>,
+): string {
+  return `${item.bot_id}\u0001${item.group_id}\u0001${item.user_id}\u0001${item.jiuwenclaw_id}`;
 }
 
 export function formatAgentContextLabel(item: EnterpriseAgentContext): string {
   const agentName = item.agent_name?.trim() || item.bot_id;
   const groupName = item.group_name?.trim() || item.group_id;
-  return `${agentName}-${groupName}`;
+  const clusterName = item.jiuwenclaw_name?.trim() || item.jiuwenclaw_id;
+  return `${agentName} | ${groupName} | ${clusterName}`;
 }
 
 export const EnterpriseContext = createContext<EnterpriseContextValue | null>(null);

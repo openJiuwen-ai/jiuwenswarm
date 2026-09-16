@@ -35,11 +35,11 @@ from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
 )
 from jiuwenswarm.common.mcp_config import (
     OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG,
-    OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX,
     bind_active_office_claw_mcp_tools,
     bind_office_claw_from_agent,
     get_active_office_claw_mcp_tool_ids,
     is_office_claw_tool_name_live_concurrent,
+    is_request_scoped_mcp_tool_id,
     resolve_active_office_claw_tool_id,
 )
 
@@ -977,9 +977,7 @@ class ProgressiveToolRail(DeepAgentRail):
             return ""
         preferred = []
         for tool_id in matches:
-            if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX) and tool_id.endswith(
-                suffix
-            ):
+            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix):
                 preferred.append(tool_id)
         return preferred[0] if preferred else matches[0]
 
@@ -991,7 +989,7 @@ class ProgressiveToolRail(DeepAgentRail):
         allowed: frozenset[str] | None,
     ) -> bool:
         """True when ``tool_id`` must not be used for this request."""
-        if not tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+        if not is_request_scoped_mcp_tool_id(tool_id):
             return False
         owned = getattr(self, "_office_claw_active_tool_ids", None)
         if owned is not None:
@@ -1013,7 +1011,7 @@ class ProgressiveToolRail(DeepAgentRail):
         owned_id = self._owned_office_claw_tool_id(tool_name)
         if owned_id:
             return self._lookup_tool_instance(owned_id) is not None
-        if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+        if is_request_scoped_mcp_tool_id(tool_id):
             if self._is_foreign_office_claw_tool_id(
                 tool_id, tool_name, allowed=get_active_office_claw_mcp_tool_ids()
             ):
@@ -1287,7 +1285,7 @@ class ProgressiveToolRail(DeepAgentRail):
         )
         active_allowed = get_active_office_claw_mcp_tool_ids()
         is_request_tool_without_binding = (
-            target_tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX)
+            is_request_scoped_mcp_tool_id(target_tool_id)
             and not expected_invocation
             and self._office_claw_active_tool_ids is None
             and active_allowed is None

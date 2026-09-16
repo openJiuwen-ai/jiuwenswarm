@@ -21,8 +21,8 @@ class TestNormalizeMcpClientType:
     @pytest.mark.parametrize(
         "raw, expected",
         [
-            (None, ""),
-            ("", ""),
+            (None, "stdio"),
+            ("", "stdio"),
             ("stdio", "stdio"),
             ("STDIO", "stdio"),
             ("sse", "sse"),
@@ -203,51 +203,55 @@ class TestValidateRequestScopedRemoteMcp:
             _validate_request_scoped_remote_mcp("t", {"url": "http://192.168.1.1/mcp"})
 
 
-class TestCreateMcpToolRejectsStdio:
-    """用户可配 create_mcp_tool 不再接受本地 stdio / 缺 type。"""
+class TestCreateMcpToolStdio:
+    """用户连接器 create_mcp_tool 接受白名单 stdio（方案 §5.2）。"""
 
-    def test_basic_stdio_rejected(self):
+    def test_basic_stdio(self):
         cfg = json.dumps({"name": "my-tool", "command": "node", "args": ["server.js"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "node"
+        assert result.params["args"] == ["server.js"]
 
-    def test_explicit_stdio_type_rejected(self):
+    def test_explicit_stdio_type(self):
         cfg = json.dumps({
             "name": "my-tool",
             "type": "stdio",
             "command": "node",
             "args": ["server.js"],
         })
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
 
-    def test_stdio_with_python_rejected(self):
+    def test_stdio_with_python(self):
         cfg = json.dumps({"name": "py-tool", "command": "python", "args": ["-m", "mymod"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "python"
 
-    def test_npx_config_rejected(self):
+    def test_npx_config(self):
         cfg = json.dumps({
             "name": "npx-tool",
             "command": "npx",
             "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"],
         })
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
+        assert result.params["command"] == "npx"
 
-    def test_uvx_config_rejected(self):
+    def test_uvx_config(self):
         cfg = json.dumps({"name": "uvx-tool", "command": "uvx", "args": ["mcp-server-fetch"]})
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
 
     def test_missing_name_raises(self):
         with pytest.raises(ValueError, match="缺少 'name'"):
             create_mcp_tool(json.dumps({"command": "node", "args": ["s.js"]}))
 
-    def test_array_stdio_config_rejected(self):
+    def test_array_stdio_config(self):
         cfg = json.dumps([{"name": "arr-tool", "command": "node", "args": ["s.js"]}])
-        with pytest.raises(ValueError, match="仅支持|stdio|已禁用"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
 
     def test_empty_array_raises(self):
         with pytest.raises(ValueError, match="不能为空"):
@@ -256,6 +260,11 @@ class TestCreateMcpToolRejectsStdio:
     def test_invalid_json_raises(self):
         with pytest.raises(ValueError, match="无效的 JSON"):
             create_mcp_tool("not-json")
+
+    def test_dangerous_eval_arg_blocked(self):
+        cfg = json.dumps({"name": "bad", "command": "node", "args": ["-e", "1"]})
+        with pytest.raises(ValueError, match="危险"):
+            create_mcp_tool(cfg)
 
 
 class TestCreateMcpToolSse:
@@ -442,18 +451,29 @@ class TestCreateMcpToolTimeoutPassthrough:
 
 
 class TestCreateMcpToolDefaultType:
-    def test_no_type_rejected(self):
+    def test_no_type_defaults_to_stdio(self):
         cfg = json.dumps({
             "name": "default-tool",
             "command": "node",
             "args": ["s.js"],
         })
-        with pytest.raises(ValueError, match="仅支持"):
-            create_mcp_tool(cfg)
+        result = create_mcp_tool(cfg)
+        assert result.client_type == "stdio"
 
 
-class TestBuildMcpServerConfigRejectsStdio:
-    def test_stdio_transport_returns_none(self):
+class TestStdioServerParameters:
+    def test_cwd_and_env_optional(self):
+        from jiuwenswarm.common.mcp_config import _stdio_server_parameters
+
+        params = _stdio_server_parameters({"command": "python", "args": ["echo_mcp.py"]})
+        assert params.command == "python"
+        assert params.args == ["echo_mcp.py"]
+        assert params.cwd is None
+        assert params.env is None
+
+
+class TestBuildMcpServerConfigStdio:
+    def test_stdio_transport_builds(self):
         cfg = build_mcp_server_config(
             {
                 "name": "local",
@@ -462,7 +482,9 @@ class TestBuildMcpServerConfigRejectsStdio:
                 "args": ["s.js"],
             }
         )
-        assert cfg is None
+        assert cfg is not None
+        assert cfg.client_type == "stdio"
+        assert cfg.params["command"] == "node"
 
 
 class TestBuildMcpServerConfigAuthHeaders:

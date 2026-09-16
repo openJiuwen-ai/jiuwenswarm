@@ -15,16 +15,25 @@ import { parseRuntimeScope, setRuntimeScope } from './services/runtimeScope';
 
 type EntryPhase = 'loading' | 'ready' | 'empty' | 'error' | 'redirecting' | 'login-required';
 
-function movePreferredFirst(items: EnterpriseAgentContext[], preferredKey?: string): EnterpriseAgentContext[] {
-  if (!preferredKey) return items;
-  const preferredIndex = items.findIndex(item => agentContextKey(item) === preferredKey);
+function movePreferredFirst(
+  items: EnterpriseAgentContext[],
+  preferred?: { botId?: string; groupId?: string; userId?: string; jiuwenclawId?: string },
+): EnterpriseAgentContext[] {
+  if (!preferred?.botId || !preferred.groupId || !preferred.userId) return items;
+  const preferredIndex = items.findIndex(
+    item =>
+      item.bot_id === preferred.botId &&
+      item.group_id === preferred.groupId &&
+      item.user_id === preferred.userId &&
+      (!preferred.jiuwenclawId || item.jiuwenclaw_id === preferred.jiuwenclawId),
+  );
   if (preferredIndex <= 0) return items;
   return [items[preferredIndex], ...items.slice(0, preferredIndex), ...items.slice(preferredIndex + 1)];
 }
 
 export function chooseAgentContext(
   contexts: EnterpriseAgentContext[],
-  preferred?: { botId?: string; groupId?: string; userId?: string },
+  preferred?: { botId?: string; groupId?: string; userId?: string; jiuwenclawId?: string },
 ): EnterpriseAgentContext | null {
   if (!contexts.length) return null;
   if (preferred?.botId && preferred.groupId && preferred.userId) {
@@ -32,12 +41,17 @@ export function chooseAgentContext(
       item =>
         item.bot_id === preferred.botId &&
         item.group_id === preferred.groupId &&
-        item.user_id === preferred.userId,
+        item.user_id === preferred.userId &&
+        (!preferred.jiuwenclawId || item.jiuwenclaw_id === preferred.jiuwenclawId),
     );
     if (exact) return exact;
   }
   if (preferred?.botId) {
-    const byBot = contexts.find(item => item.bot_id === preferred.botId);
+    const byBot = contexts.find(
+      item =>
+        item.bot_id === preferred.botId &&
+        (!preferred.jiuwenclawId || item.jiuwenclaw_id === preferred.jiuwenclawId),
+    );
     if (byBot) return byBot;
   }
   return contexts[0] ?? null;
@@ -70,6 +84,10 @@ function writeKnownCluster(jiuwenclawId: string): void {
   }
 }
 
+function parsePreferredClusterId(search: string): string {
+  return new URLSearchParams(search).get('jiuwenclaw_id')?.trim() || '';
+}
+
 function contextUrl(
   selected: EnterpriseAgentContext,
   debugContext = false,
@@ -80,6 +98,7 @@ function contextUrl(
     group_id: selected.group_id,
     bot_id: selected.bot_id,
   });
+  if (selected.jiuwenclaw_id) query.set('jiuwenclaw_id', selected.jiuwenclaw_id);
   if (debugContext) query.set('debug_context', '1');
   const path = resetPath
     ? window.location.pathname.startsWith('/chat')
@@ -128,15 +147,17 @@ export function isDebugContext(search: string): boolean {
 }
 
 export function buildCustomContext(
-  preferred: ReturnType<typeof parseRuntimeScope>,
+  preferred: ReturnType<typeof parseRuntimeScope> & { jiuwenclawId?: string },
   fallbackGatewayId = '',
 ): EnterpriseAgentContext | null {
   if (!preferred.groupId || !preferred.botId || !preferred.userId) return null;
+  const jiuwenclawId = preferred.jiuwenclawId?.trim() || fallbackGatewayId;
   return {
     bot_id: preferred.botId,
     group_id: preferred.groupId,
     user_id: preferred.userId,
-    jiuwenclaw_id: fallbackGatewayId,
+    jiuwenclaw_id: jiuwenclawId,
+    jiuwenclaw_name: jiuwenclawId,
     agent_name: preferred.botId,
     group_name: preferred.groupId,
   };
@@ -218,39 +239,47 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
     const bootstrap = async () => {
       try {
         const preferred = parseRuntimeScope(window.location.search);
+        const preferredClusterId =
+          parsePreferredClusterId(window.location.search) || readKnownCluster();
         const [user, contexts] = await Promise.all([provider.getCurrentUser(), provider.listAgentContexts()]);
         if (cancelled) return;
 
         let selected: EnterpriseAgentContext | null = null;
         if (isDebugContext(window.location.search)) {
           const matched = preferred.botId
-            ? contexts.find(item => item.bot_id === preferred.botId)
+            ? contexts.find(
+                item =>
+                  item.bot_id === preferred.botId &&
+                  (!preferredClusterId || item.jiuwenclaw_id === preferredClusterId),
+              )
             : undefined;
           // 旧版 debug URL 可省略 user_id（默认取登录用户），与 chooseAgentContext 对齐。
+          // jiuwenclaw_id 优先取 URL / 上次 active-cluster，避免刷新后按 bot 匹配回旧集群。
           selected = buildCustomContext(
             {
               ...preferred,
               userId: preferred.userId || user.user_id,
+              jiuwenclawId: preferredClusterId || undefined,
             },
             matched?.jiuwenclaw_id || contexts[0]?.jiuwenclaw_id || '',
           );
+          if (selected && matched?.jiuwenclaw_name && selected.jiuwenclaw_id === matched.jiuwenclaw_id) {
+            selected = { ...selected, jiuwenclaw_name: matched.jiuwenclaw_name };
+          }
         }
         if (!selected) {
           selected = chooseAgentContext(
-            movePreferredFirst(
-              contexts,
-              preferred.botId && preferred.groupId && preferred.userId
-                ? agentContextKey({
-                    bot_id: preferred.botId,
-                    group_id: preferred.groupId,
-                    user_id: preferred.userId,
-                  })
-                : undefined,
-            ),
+            movePreferredFirst(contexts, {
+              botId: preferred.botId,
+              groupId: preferred.groupId,
+              userId: preferred.userId,
+              jiuwenclawId: preferredClusterId || undefined,
+            }),
             {
               botId: preferred.botId,
               groupId: preferred.groupId,
               userId: preferred.userId || user.user_id,
+              jiuwenclawId: preferredClusterId || undefined,
             },
           );
         }
@@ -312,28 +341,40 @@ export function EnterpriseEntry({ children }: { children: ReactNode }) {
         })();
       },
       onCustomContextApply: input => {
-        if (contextSwitching) return;
+        if (contextSwitching || !provider) return;
         const botId = input.botId.trim();
         const groupId = input.groupId.trim();
         const userId = input.userId.trim();
-        if (!botId || !groupId || !userId) {
+        const jiuwenclawId = input.jiuwenclawId.trim();
+        if (!botId || !groupId || !userId || !jiuwenclawId) {
           setContextError(t('sessionSidebar.enterpriseContext.customRequired'));
           return;
         }
+        const matched = context.contexts.find(item => item.jiuwenclaw_id === jiuwenclawId);
         setContextSwitching(true);
         setContextError('');
-        activateContext(
-          {
-            bot_id: botId,
-            group_id: groupId,
-            user_id: userId,
-            jiuwenclaw_id: context.selected.jiuwenclaw_id,
-            agent_name: botId,
-            group_name: groupId,
-          },
-          true,
-          true,
-        );
+        void (async () => {
+          try {
+            const clusterChanged = await ensureActiveCluster(provider, jiuwenclawId);
+            activateContext(
+              {
+                bot_id: botId,
+                group_id: groupId,
+                user_id: userId,
+                jiuwenclaw_id: jiuwenclawId,
+                jiuwenclaw_name: matched?.jiuwenclaw_name || jiuwenclawId,
+                agent_name: botId,
+                group_name: groupId,
+              },
+              true,
+              true,
+              clusterChanged,
+            );
+          } catch (switchError) {
+            setContextSwitching(false);
+            setContextError(errorText(switchError));
+          }
+        })();
       },
       onLogout: logout,
     };

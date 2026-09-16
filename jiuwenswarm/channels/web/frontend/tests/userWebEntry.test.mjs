@@ -106,8 +106,8 @@ test('auth entry path guard stops User Web from redirecting /auth to itself', ()
 
 test('agent context selection prefers an exact URL tuple and otherwise falls back', () => {
   const contexts = [
-    { bot_id: 'agent-1', group_id: 'group-1', user_id: 'user-1', jiuwenclaw_id: 'gw-1', agent_name: 'Agent 1', group_name: 'Group 1' },
-    { bot_id: 'agent-2', group_id: 'group-2', user_id: 'user-1', jiuwenclaw_id: 'gw-2', agent_name: 'Agent 2', group_name: 'Group 2' },
+    { bot_id: 'agent-1', group_id: 'group-1', user_id: 'user-1', jiuwenclaw_id: 'gw-1', jiuwenclaw_name: 'Cluster 1', agent_name: 'Agent 1', group_name: 'Group 1' },
+    { bot_id: 'agent-2', group_id: 'group-2', user_id: 'user-1', jiuwenclaw_id: 'gw-2', jiuwenclaw_name: 'Cluster 2', agent_name: 'Agent 2', group_name: 'Group 2' },
   ];
 
   assert.equal(
@@ -121,14 +121,19 @@ test('agent context selection prefers an exact URL tuple and otherwise falls bac
 
 test('debug context preserves explicitly entered routing identifiers', () => {
   const debugContext = buildCustomContext(
-    { userId: 'debug-user', groupId: 'debug-group', botId: 'debug-bot' },
+    {
+      userId: 'debug-user',
+      groupId: 'debug-group',
+      botId: 'debug-bot',
+      jiuwenclawId: 'custom-gateway',
+    },
     'resolved-gateway',
   );
 
   assert.equal(isDebugContext('?debug_context=1'), true);
   assert.equal(isDebugContext('?debug_context=0'), false);
   assert.equal(debugContext?.group_id, 'debug-group');
-  assert.equal(debugContext?.jiuwenclaw_id, 'resolved-gateway');
+  assert.equal(debugContext?.jiuwenclaw_id, 'custom-gateway');
   assert.equal(debugContext?.bot_id, 'debug-bot');
   assert.equal(debugContext?.user_id, 'debug-user');
 });

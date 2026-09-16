@@ -285,17 +285,19 @@ Working tree changes are obtained via `git diff HEAD` (tracked files only). The 
 - Usage:
   - `/mcp list`: List all MCP servers (name, transport, enabled status);
   - `/mcp show [name]`: Show MCP config; without `name` shows enabled items, with `name` shows one server detail;
-  - `/mcp add --name <name> --transport <sse|http> ...`: Add a remote MCP server;
+  - `/mcp add --name <name> --transport <stdio|sse|http> ...`: Add an MCP server;
   - `/mcp update --name <name> ...`: Update MCP server config (transport / params / enabled status);
   - `/mcp enable <name>`: Enable a specific MCP server;
   - `/mcp disable <name>`: Disable a specific MCP server;
   - `/mcp remove <name>`: Remove a specific MCP server.
-- Transport parameters (remote only):
+- Transport parameters:
+  - `stdio`: requires `--command`; optional `--args`, `--cwd`, `--env`;
   - `sse` / `http` (alias of `streamable-http`): requires `--url`; optional `--headers`, `--timeout_s`.
 - Examples:
   - `/mcp list`
   - `/mcp show`
   - `/mcp show playwright`
+  - `/mcp add --name playwright --transport stdio --command python --args "server.py --transport stdio"`
   - `/mcp update --name playwright --transport sse --url http://127.0.0.1:9000/sse --headers "Authorization=Bearer xxx"`
   - `/mcp add --name local-sse --transport sse --url http://127.0.0.1:9000/sse`
   - `/mcp disable playwright`

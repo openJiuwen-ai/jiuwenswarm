@@ -136,6 +136,9 @@ class OutlineReviewNode(PlanNode):
                 structural_page_request=str(inputs.get("structural_page_request") or "none"),
                 structural_page_count=inputs.get("structural_page_count"),
                 expand_page_mode=PptCommon.is_expand_page_mode(inputs),
+                page_structure_mode=str(inputs.get("page_structure_mode") or "default"),
+                exclude_cover_ending=bool(inputs.get("exclude_cover_ending")),
+                total_pages=inputs.get("total_pages"),
             )
             _validate_notes_leakage(text)
             return ""

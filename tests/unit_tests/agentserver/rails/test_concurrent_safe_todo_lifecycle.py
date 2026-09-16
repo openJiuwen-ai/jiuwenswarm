@@ -89,6 +89,55 @@ async def test_checklist_retains_original_outer_execution_plan_bridge():
 
 
 @pytest.mark.asyncio
+async def test_after_task_iteration_persists_memory_completion_before_disk_refresh():
+    """OuterLoop mark_completed must land on disk; refresh must not wipe it.
+
+    Regression for overnight token burn: after_task_iteration used to refresh
+    TaskPlan from disk *before* syncing plan→disk, so in-memory mark_completed
+    was overwritten by stale PENDING todos and the outer loop never advanced.
+    """
+    rail = module.ConcurrentSafeTaskPlanningRail()
+    disk_todos = [
+        TodoItem(id="a", content="Done earlier", status=TodoStatus.COMPLETED),
+        TodoItem(id="b", content="Just finished in memory", status=TodoStatus.PENDING),
+        TodoItem(id="c", content="Still pending", status=TodoStatus.PENDING),
+    ]
+    tool = SimpleNamespace(
+        load_todos=AsyncMock(return_value=disk_todos),
+        save_todos=AsyncMock(),
+    )
+    rail._find_todo_tool = lambda: tool
+    # Executor already marked the current round's task completed in memory.
+    state = SimpleNamespace(task_plan=TaskPlan(tasks=[
+        TodoItem(id="a", content="Done earlier", status=TodoStatus.COMPLETED),
+        TodoItem(id="b", content="Just finished in memory", status=TodoStatus.COMPLETED),
+        TodoItem(id="c", content="Still pending", status=TodoStatus.PENDING),
+    ]))
+    agent = SimpleNamespace(load_state=lambda session: state, save_state=Mock())
+    ctx = AgentCallbackContext(
+        agent=agent,
+        session=SimpleNamespace(get_session_id=lambda: "s"),
+        inputs=SimpleNamespace(result={"result_type": "completed", "output": "ok"}),
+    )
+
+    await rail.after_task_iteration(ctx)
+
+    tool.save_todos.assert_awaited()
+    saved = tool.save_todos.await_args.args[1]
+    assert [t.status for t in saved] == [
+        TodoStatus.COMPLETED,
+        TodoStatus.COMPLETED,
+        TodoStatus.PENDING,
+    ]
+    assert [t.status for t in state.task_plan.tasks] == [
+        TodoStatus.COMPLETED,
+        TodoStatus.COMPLETED,
+        TodoStatus.PENDING,
+    ]
+    assert state.task_plan.get_next_task().id == "c"
+
+
+@pytest.mark.asyncio
 async def test_inner_callback_syncs_owner_plan_without_mutating_context():
     rail = module.ConcurrentSafeTaskPlanningRail()
     todo = TodoItem(id="task", content="Task", status=TodoStatus.COMPLETED)

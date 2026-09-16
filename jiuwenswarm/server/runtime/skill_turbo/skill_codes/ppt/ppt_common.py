@@ -46,6 +46,70 @@ def is_write_protocol_error(exc: BaseException) -> bool:
     return any(marker in text for marker in _WRITE_PROTOCOL_MARKERS)
 
 
+TRANSIENT_LOCK_ERROR_MARKERS: tuple[str, ...] = (
+    "cannot operate on a closed database",
+    "database is locked",
+    "database table is locked",
+)
+
+TRANSIENT_LOCK_RETRY_DELAYS: tuple[float, ...] = (0.5, 1.0, 2.0)
+
+
+def is_transient_lock_failure(failure_text: str) -> bool:
+    lowered = (failure_text or "").lower()
+    return any(marker in lowered for marker in TRANSIENT_LOCK_ERROR_MARKERS)
+
+
+def tool_result_failure_text(result: Any) -> str:
+    if hasattr(result, "success"):
+        if result.success is False:
+            if hasattr(result, "error") and result.error:
+                return str(result.error)
+            return str(result)
+        return ""
+    if isinstance(result, str):
+        text = result.strip()
+        return text if text.startswith(("success=False", "success= False")) else ""
+    if isinstance(result, dict):
+        if result.get("success") is False:
+            error = result.get("error")
+            return str(error) if error else str(result)
+        return ""
+    return ""
+
+
+async def wait_for_transient_retry(
+    log_prefix: str,
+    attempt: int,
+    path: str,
+    failure_text: str,
+    *,
+    action: str = "读取文件",
+) -> bool:
+    """瞬时锁错误按退避间隔等待重试；额度耗尽返回 False。"""
+    if attempt > len(TRANSIENT_LOCK_RETRY_DELAYS):
+        logger.warning(
+            "%s %s瞬时锁错误(重试耗尽) path=%s: %s",
+            log_prefix,
+            action,
+            path,
+            failure_text,
+        )
+        return False
+    delay = TRANSIENT_LOCK_RETRY_DELAYS[attempt - 1]
+    logger.warning(
+        "%s %s瞬时锁错误(第%d次)，%.1fs后重试 path=%s: %s",
+        log_prefix,
+        action,
+        attempt,
+        delay,
+        path,
+        failure_text,
+    )
+    await asyncio.sleep(delay)
+    return True
+
+
 async def get_page_path_lock(path: str) -> asyncio.Lock:
     """Process-wide per-path lock so P8.1 / P8.2 share the same serialization."""
     key = _normalize_page_path_key(path) or str(path or "")
@@ -72,7 +136,7 @@ async def safe_overwrite_file_impl(
     already_locked: bool = False,
     log_prefix: str = "[ppt]",
 ) -> bool:
-    """Read-then-write under path lock; retry once on host write-protocol errors."""
+    """Read-then-write under path lock; retry on protocol errors and transient lock failures."""
     if not path:
         return False
     if not node.has_tool("write_file"):
@@ -80,8 +144,9 @@ async def safe_overwrite_file_impl(
         return False
 
     async def _body() -> bool:
-        last_exc: BaseException | None = None
-        for attempt in range(2):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 if node.has_tool("read_file"):
                     try:
@@ -89,22 +154,19 @@ async def safe_overwrite_file_impl(
                     except Exception as read_exc:
                         if isinstance(read_exc, AbortError):
                             raise
-                        # 文件尚不存在时允许继续覆盖写
                         logger.debug(
                             "%s 覆盖写前 read 跳过 path=%s: %s",
                             log_prefix,
                             path,
                             read_exc,
                         )
-                await node.call_tool("write_file", file_path=path, content=content)
-                # 写盘成功后主动让出事件循环，避免 P8 多页集中收尾时饿死 WS ping/pong。
+                result = await node.call_tool("write_file", file_path=path, content=content)
                 await asyncio.sleep(0)
-                return True
+                failure = tool_result_failure_text(result)
             except Exception as exc:
                 if isinstance(exc, AbortError):
                     raise
-                last_exc = exc
-                if attempt == 0 and is_write_protocol_error(exc):
+                if attempt == 1 and is_write_protocol_error(exc):
                     logger.warning(
                         "%s write_file 协议冲突，同锁重试 path=%s: %s",
                         log_prefix,
@@ -112,11 +174,18 @@ async def safe_overwrite_file_impl(
                         exc,
                     )
                     continue
-                logger.error("%s 写入文件失败 %s: %s", log_prefix, path, exc)
+                failure = str(exc)
+
+            if failure and is_transient_lock_failure(failure):
+                if await wait_for_transient_retry(
+                    log_prefix, attempt, path, failure, action="写入文件",
+                ):
+                    continue
                 return False
-        if last_exc is not None:
-            logger.error("%s 写入文件失败 %s: %s", log_prefix, path, last_exc)
-        return False
+            if failure:
+                logger.error("%s 写入文件失败 %s: %s", log_prefix, path, failure)
+                return False
+            return True
 
     if already_locked:
         return await _body()
@@ -196,6 +265,10 @@ _PHASE1_DEFAULTS: dict[str, Any] = {
     "images_extracted": False,
     "parse_degraded": False,
     "page_count_user_specified": False,
+    # pptx-craft §1.2：default 用默认首尾；explicit_sequence 以清单为准
+    "page_structure_mode": "default",
+    # pptx-craft §1.2/1.4：仅明确否定首尾时为 true；沉默不推断
+    "exclude_cover_ending": False,
     "content_branch": "",
     "thinking_strategy": "accelerated",  # P6/P8 DisableThinkingMixin 节点强制 thinking=off
     "presentation_paths": [],
@@ -416,24 +489,28 @@ class PptCommon:
         *,
         log_prefix: str = "[ppt]",
     ) -> str:
-        """读取文件内容；非 AbortError 异常时重试一次。"""
+        """读取文件内容；瞬时锁错误（异常或失败结果）按退避序列重试，其他异常重试一次。"""
         if not path:
             return ""
         if not node.has_tool("read_file"):
             logger.warning("%s read_file 工具不可用 %s", log_prefix, path)
             return ""
-        for attempt in (1, 2):
+        attempt = 0
+        while True:
+            attempt += 1
             try:
                 result = await node.call_tool("read_file", file_path=path)
-                return cls.parse_tool_file_content(result)
             except Exception as e:
                 if isinstance(e, AbortError):
                     raise
-                if attempt < 2:
+                if is_transient_lock_failure(str(e)):
+                    if await wait_for_transient_retry(log_prefix, attempt, path, str(e)):
+                        continue
+                    return ""
+                if attempt == 1:
                     logger.warning(
-                        "%s 读取文件失败(第%d次)，重试 path=%s: %s",
+                        "%s 读取文件失败(第1次)，重试 path=%s: %s",
                         log_prefix,
-                        attempt,
                         path,
                         e,
                     )
@@ -445,7 +522,15 @@ class PptCommon:
                     e,
                 )
                 return ""
-        return ""
+
+            failure_text = tool_result_failure_text(result)
+            if failure_text and is_transient_lock_failure(failure_text):
+                if await wait_for_transient_retry(
+                    log_prefix, attempt, path, failure_text
+                ):
+                    continue
+                return ""
+            return cls.parse_tool_file_content(result)
 
     @classmethod
     async def write_file(
@@ -678,9 +763,11 @@ class PptCommon:
         outline_pages: dict[int, str] | None = None,
         default_structural_pages: int = 2,
     ) -> int:
-        """从 outline 页码、上下文 total_pages 与 page_count 兜底推算总页数。
+        """推算总页数：大纲最大页码 / 已归一 total_pages 为权威。
 
-        含 agenda 等额外结构页时，``page_count + 2`` 会低估总页数；优先取 outline 最大页码。
+        对齐 pptx-craft：主控与 outline 写准的总页不得再被 ``page_count+2`` 抬高
+        （exclude_cover_ending 时 total==page_count，旧 max(+2) 会把 2 页抬成 4）。
+        仅当二者皆缺时，才用 ``page_count + default_structural_pages`` 作缺省壳页兜底。
         """
         candidates: list[int] = []
         if total_pages is not None:
@@ -699,9 +786,11 @@ class PptCommon:
             ]
             if page_nums:
                 candidates.append(max(page_nums))
+        if candidates:
+            return max(candidates)
         if page_count > 0:
-            candidates.append(page_count + default_structural_pages)
-        return max(candidates) if candidates else 0
+            return page_count + default_structural_pages
+        return 0
 
     @staticmethod
     def default_mid_structural_pages(page_count: int) -> int:

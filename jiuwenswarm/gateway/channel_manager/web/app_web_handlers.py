@@ -724,6 +724,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "agents.enable",
     "agents.disable",
     "agents.tools_list",
+    "mcp.server.add",
+    "mcp.server.remove",
+    "mcp.server.update",
+    "mcp.server.list",
+    "mcp.server.get",
     # Schedule task management
     "schedule.check_config",
     "schedule.update_config",
@@ -828,6 +833,11 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "agents.enable",
     "agents.disable",
     "agents.tools_list",
+    "mcp.server.add",
+    "mcp.server.remove",
+    "mcp.server.update",
+    "mcp.server.list",
+    "mcp.server.get",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
@@ -1645,11 +1655,12 @@ def _ws_identity_scope(ws: Any) -> tuple[str | None, str | None]:
 
 
 def _pg_row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
-    """PG sessions 行 → 会话元数据投影（供 project.get_sessions 复用
-    ``_attribute_session_project`` / ``_to_session_info`` 流水线）。
+    """PG sessions 行 → 会话元数据投影（供 project.get_sessions /
+    project.get_cron_sessions 复用 ``_attribute_session_project`` /
+    ``_to_session_info`` 流水线）。
 
-    PG 行即 web 会话事实源：channel_id 恒为 web、project/cron/work_mode 用行值、
-    last_user_message_at 缺失时以 updated_at 兜底。
+    PG 行即 web 会话目录真源：channel_id 恒为 web、project/cron/work_mode 用行值、
+    last_user_message_at 缺失时以 updated_at 兜底。cron 列表不过滤 channel_id。
     """
     updated = float(row.get("updated_at") or 0)
     lum = row.get("last_user_message_at")
@@ -4352,13 +4363,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "total": total,
         })
 
-    async def _project_get_cron_sessions(ws, req_id, params, session_id):
+    async def _project_get_cron_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的定时任务会话列表(cron_id 非空的非置顶会话),按 last_user_message_at 倒序。
 
         与 ``project.get_sessions`` 互斥分工:本接口仅返回 cron 会话,
         ``project.get_sessions`` 仅返回普通会话。支持按 ``cron_id`` 过滤某任务的历史执行会话。
         归属校验同 ``project.get_sessions``:非默认项目(``default`` / ``default_code``
         视为默认)时校验项目存在且可见。
+        remote 模式与 ``project.get_sessions`` 对齐：优先读 web 库 sessions 行，
+        库不可用再回退 AgentServer session.list。本地模式仍读磁盘 metadata。
         """
         if not isinstance(params, dict):
             params = {}
@@ -4408,23 +4421,44 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return _attribute_session_project(meta, visible_by_id) == project_id
 
         if is_remote_storage():
-            ac = _resolve(agent_client)
-            if ac is None:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="AgentServer is unavailable",
-                    code="SERVICE_UNAVAILABLE",
+            # remote：以 web 库为目录真源（与 project.get_sessions / session.delete 同源）。
+            # 空列表是有效结果，不得回退 pod，否则已删 PG 行会被磁盘条目复活。
+            sessions: list[dict[str, Any]] | None = None
+            _uid = (str(params.get("user_id") or user_id or "").strip() or "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
+            try:
+                from jiuwenswarm.channels.web.history_store.api import list_all_sessions_sync
+
+                rows = await asyncio.to_thread(
+                    list_all_sessions_sync, None, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
                 )
-                return
-            sessions = await _fetch_all_sessions_from_agent(
-                ac,
-                channel_id=channel.channel_id,
-                user_id=str(params.get("user_id") or "").strip() or None,
-                group_id=str(params.get("group_id") or "").strip() or None,
-                bot_id=str(params.get("bot_id") or "").strip() or None,
-            )
+                if rows is not None:
+                    sessions = [_pg_row_to_session_meta(r) for r in rows]
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[project.get_cron_sessions] web 库读取失败，回退 pod 拉取",
+                    exc_info=True,
+                )
+                sessions = None
+            if sessions is None:
+                ac = _resolve(agent_client)
+                if ac is None:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error="AgentServer is unavailable",
+                        code="SERVICE_UNAVAILABLE",
+                    )
+                    return
+                sessions = await _fetch_all_sessions_from_agent(
+                    ac,
+                    channel_id=channel.channel_id,
+                    user_id=str(params.get("user_id") or user_id or "").strip() or None,
+                    group_id=str(params.get("group_id") or "").strip() or None,
+                    bot_id=str(params.get("bot_id") or "").strip() or None,
+                )
         else:
             from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 

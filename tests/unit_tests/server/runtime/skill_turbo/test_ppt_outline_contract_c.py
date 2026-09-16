@@ -72,6 +72,31 @@ def test_intent_and_requirement_prompts_deduct_structural_pages():
     assert "max(N - 2 - 结构页扣减, 1)" not in rc._P21_SLOT_SYSTEM_PROMPT
 
 
+def test_intent_prompt_and_parse_close_explicit_total_pages_gap():
+    """P1 须声明并解析 total_pages；脏 structural_page_request 不得写入。"""
+    prompt = ic._LLM_PATH_AND_SLOTS_SYSTEM_PROMPT
+    assert '"total_pages": null' in prompt
+    assert "仅 page_structure_mode=explicit_sequence 时必填" in prompt
+
+    parsed = ic._parse_slots_from_llm_response(
+        '{"doc_paths":[],"slots":{'
+        '"topic":"T","page_count":2,"audience":"","presentation_purpose":"",'
+        '"style_id":"","pack_dir":"",'
+        '"page_structure_mode":"explicit_sequence","exclude_cover_ending":true,'
+        '"total_pages":4,"structural_page_request":"agenda"}}'
+    )
+    assert parsed["page_structure_mode"] == "explicit_sequence"
+    assert parsed["exclude_cover_ending"] is False
+    assert parsed["structural_page_request"] == "none"
+    assert parsed["total_pages"] == 4
+
+    dirty = ic._parse_slots_from_llm_response(
+        '{"doc_paths":[],"slots":{"topic":"T","page_count":3,'
+        '"page_structure_mode":"default","structural_page_request":"foobar"}}'
+    )
+    assert "structural_page_request" not in dirty
+
+
 def test_resolve_mid_structural_matches_outline_planner_default():
     from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
 
@@ -105,6 +130,233 @@ def test_validate_outline_total_pages_mismatch_raises():
             structural_page_request="none",
             structural_page_count=None,
         )
+
+
+def _outline_without_cover_ending(*, topic: str = "AI 助手", content_n: int = 4) -> str:
+    pages = [
+        _page_block(
+            i + 1,
+            page_type="content",
+            research="✅",
+            title=f"内容{i+1}",
+        )
+        for i in range(content_n)
+    ]
+    body = "\n".join(pages)
+    return f"# 大纲：{topic}\n\n## 页面规划\n\n{body}\n"
+
+
+def test_validate_outline_exclude_cover_ending_ok():
+    text = _outline_without_cover_ending(content_n=4)
+    cp._validate_outline_markdown_basic(
+        text,
+        topic="AI 助手",
+        page_count=4,
+        structural_page_request="none",
+        exclude_cover_ending=True,
+    )
+
+
+def test_validate_outline_exclude_forbids_shell_types():
+    # 页数对齐 exclude 公式，但页类型仍写了 cover/ending → 应拒
+    pages = [
+        _page_block(1, page_type="cover", research="✅", title="误用封面类型"),
+        _page_block(2, page_type="content", research="✅", title="内容2"),
+        _page_block(3, page_type="content", research="✅", title="内容3"),
+        _page_block(4, page_type="ending", research="✅", title="误用结束类型"),
+    ]
+    text = "# 大纲：AI 助手\n\n## 页面规划\n\n" + "\n".join(pages) + "\n"
+    with pytest.raises(cp.ContentPlanError, match="exclude_cover_ending"):
+        cp._validate_outline_markdown_basic(
+            text,
+            topic="AI 助手",
+            page_count=4,
+            structural_page_request="none",
+            exclude_cover_ending=True,
+        )
+
+
+def test_validate_outline_explicit_sequence_uses_total_pages():
+    # 清单：封面 + 2 内容 + 结束 = 4；page_count=2
+    pages = [
+        _page_block(1, page_type="cover", research="❌", title="封面", queries="-", needs="-"),
+        _page_block(2, page_type="content", research="✅", title="背景"),
+        _page_block(3, page_type="content", research="✅", title="方案"),
+        _page_block(4, page_type="ending", research="❌", title="结束", queries="-", needs="-"),
+    ]
+    text = f"# 大纲：清单主题\n\n## 页面规划\n\n" + "\n".join(pages) + "\n"
+    cp._validate_outline_markdown_basic(
+        text,
+        topic="清单主题",
+        page_count=2,
+        page_structure_mode="explicit_sequence",
+        total_pages=4,
+        structural_page_request="none",
+    )
+
+
+def test_validate_outline_explicit_mismatch_total_raises():
+    text = _minimal_outline(with_agenda=False)  # 6 pages
+    with pytest.raises(cp.ContentPlanError, match="清单长"):
+        cp._validate_outline_markdown_basic(
+            text,
+            topic="AI 助手",
+            page_count=4,
+            page_structure_mode="explicit_sequence",
+            total_pages=4,
+        )
+
+
+def test_cover_ending_directive_mutex():
+    default_d = cp._build_cover_ending_directive(
+        {"page_structure_mode": "default", "exclude_cover_ending": False}
+    )
+    exclude_d = cp._build_cover_ending_directive(
+        {"page_structure_mode": "default", "exclude_cover_ending": True}
+    )
+    explicit_d = cp._build_cover_ending_directive(
+        {"page_structure_mode": "explicit_sequence"}
+    )
+    assert "必须生成 P1 cover" in default_d
+    assert "禁止生成任何 cover" in exclude_d
+    assert "不得自动增加 cover" in explicit_d
+    assert "必须生成 P1 cover" not in exclude_d
+    assert "必须生成 P1 cover" not in explicit_d
+
+    prompt = cp._build_p43_prompt(
+        {
+            "topic": "T",
+            "page_count": 4,
+            "page_structure_mode": "default",
+            "exclude_cover_ending": True,
+            "total_pages": 4,
+            "structural_page_request": "none",
+            "source_type": "topic",
+            "search_mode": "no_search",
+        },
+        "",
+        "",
+    )
+    assert "禁止生成任何 cover" in prompt
+    assert "必须生成 P1 cover" not in prompt
+    assert "page_structure_mode: default" in prompt
+    assert "exclude_cover_ending: True" in prompt
+
+
+def test_structural_directive_exclude_zero_shell():
+    d = cp._build_structural_page_directive(
+        {
+            "structural_page_request": "none",
+            "page_count": 4,
+            "exclude_cover_ending": True,
+        }
+    )
+    assert "page_count + 0" in d
+    assert "page_count + 2" not in d
+
+
+def test_merge_slot_syncs_total_pages_for_exclude():
+    inputs: dict = {}
+    rc._merge_slot_payload(
+        inputs,
+        {
+            "topic": "主题",
+            "page_count": 5,
+            "page_count_basis": "content",
+            "exclude_cover_ending": True,
+            "page_structure_mode": "default",
+            "structural_page_request": "none",
+        },
+    )
+    assert inputs["exclude_cover_ending"] is True
+    assert inputs["total_pages"] == 5
+
+
+def test_merge_slot_explicit_preserves_total_pages():
+    inputs: dict = {}
+    rc._merge_slot_payload(
+        inputs,
+        {
+            "topic": "主题",
+            "page_count": 2,
+            "page_count_basis": "content",
+            "page_structure_mode": "explicit_sequence",
+            "exclude_cover_ending": True,  # 应被 guard 打回 false
+            "total_pages": 4,
+            "structural_page_request": "agenda",
+        },
+    )
+    assert inputs["page_structure_mode"] == "explicit_sequence"
+    assert inputs["exclude_cover_ending"] is False
+    assert inputs["structural_page_request"] == "none"
+    assert inputs["total_pages"] == 4
+
+
+def test_p22_answer_resyncs_stale_total_pages_after_p21_guess():
+    """P2.1 预填 total 后，P2.2 用户改 page_count 必须重算 total_pages。"""
+    inputs: dict = {}
+    rc._merge_slot_payload(
+        inputs,
+        {
+            "topic": "主题",
+            "page_count": 8,
+            "page_count_basis": "content",
+            "page_count_user_specified": False,
+            "page_structure_mode": "default",
+            "exclude_cover_ending": False,
+            "structural_page_request": "none",
+        },
+    )
+    assert inputs["total_pages"] == 10
+
+    rc._apply_answer_item(
+        inputs,
+        {
+            "header": "页数",
+            "selected_options": ["5"],
+        },
+    )
+    assert inputs["page_count"] == 5
+    assert inputs["page_count_user_specified"] is True
+    assert inputs["total_pages"] == 7
+
+
+def test_content_pages_from_total_respects_exclude():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+
+    assert PptCommon.content_pages_from_total_pages(8, exclude_cover_ending=False) == 6
+    assert PptCommon.content_pages_from_total_pages(8, exclude_cover_ending=True) == 8
+
+
+def test_resolve_total_pages_does_not_inflate_over_authoritative_total():
+    """G9：已写 total_pages / outline 时不得再用 page_count+2 抬页（exclude 场景）。"""
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+
+    # exclude：page_count==total_pages==2，旧逻辑 max(2, 2+2)=4
+    assert (
+        PptCommon.resolve_total_pages(page_count=2, total_pages=2) == 2
+    )
+    assert (
+        PptCommon.resolve_total_pages(
+            page_count=2,
+            total_pages=2,
+            outline_pages={1: "a", 2: "b"},
+        )
+        == 2
+    )
+    # 默认有首尾：P2/P4 已写 total=page_count+2
+    assert PptCommon.resolve_total_pages(page_count=6, total_pages=8) == 8
+    # agenda 等：大纲最大页码权威
+    assert (
+        PptCommon.resolve_total_pages(
+            page_count=4,
+            total_pages=7,
+            outline_pages={1: "c", 7: "e"},
+        )
+        == 7
+    )
+    # 二者皆缺：才用 page_count+2 缺省兜底
+    assert PptCommon.resolve_total_pages(page_count=6, total_pages=None) == 8
 
 
 def test_normalize_outline_contract_fixes_title_and_sources_and_placeholders():

@@ -10,7 +10,9 @@
 红线（本文件逐条锁定）：
 - AbortError（HITL 中断）必须透传且不重试；
 - CancelledError 必须自然穿透（不吞取消信号）；
-- 重试后仍失败返回 ""，与既有各节点 _read_file 行为一致。
+- 重试后仍失败返回 ""，与既有各节点 _read_file 行为一致；
+- 工具以 success=False 结果返回（不抛异常）的瞬时锁错误必须按退避序列重试；
+- 非瞬时失败结果（如文件不存在）不重试，直接按空内容处理。
 """
 
 from __future__ import annotations
@@ -22,6 +24,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import PptCommon
+import jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common as ppt_common
 
 
 class _FakeNode:
@@ -46,6 +49,26 @@ class _FakeNode:
         if isinstance(action, BaseException):
             raise action
         return action
+
+
+class _ToolOutputLike:
+    """模拟 openjiuwen ToolOutput：失败以结果对象返回而不抛出。"""
+
+    def __init__(
+        self, success: bool, data: Any = None, error: str | None = None
+    ) -> None:
+        self.success = success
+        self.data = data
+        self.error = error
+
+    def __str__(self) -> str:
+        return f"success={self.success} data={self.data} error={self.error!r}"
+
+
+_LOCK_ERROR = (
+    "file system operation execution error, execution: read_file, "
+    "reason: Cannot operate on a closed database."
+)
 
 
 @pytest.mark.asyncio
@@ -117,3 +140,48 @@ async def test_failed_result_parsed_as_empty():
     node = _FakeNode(script=[{"success": False}])
     text = await PptCommon.read_file_with_retry(node, "a.md")
     assert text == ""
+
+
+@pytest.mark.asyncio
+async def test_transient_result_failure_retries_and_recovers(monkeypatch):
+    monkeypatch.setattr(ppt_common, "TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    node = _FakeNode(
+        script=[
+            _ToolOutputLike(success=False, error=_LOCK_ERROR),
+            _ToolOutputLike(success=True, data={"content": "# 大纲"}),
+        ]
+    )
+    text = await PptCommon.read_file_with_retry(node, "a/outline.md", log_prefix="[P5]")
+    assert text == "# 大纲"
+    assert len(node.calls) == 2
+
+
+@pytest.mark.asyncio
+async def test_transient_result_failure_exhausts_retries(monkeypatch):
+    monkeypatch.setattr(ppt_common, "TRANSIENT_LOCK_RETRY_DELAYS", (0.0, 0.0, 0.0))
+    node = _FakeNode(
+        script=[
+            _ToolOutputLike(success=False, error=_LOCK_ERROR),
+            _ToolOutputLike(success=False, error=_LOCK_ERROR),
+            _ToolOutputLike(success=False, error=_LOCK_ERROR),
+            _ToolOutputLike(success=False, error=_LOCK_ERROR),
+        ]
+    )
+    text = await PptCommon.read_file_with_retry(node, "a/outline.md", log_prefix="[P6]")
+    assert text == ""
+    assert len(node.calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_non_transient_result_failure_not_retried():
+    node = _FakeNode(
+        script=[
+            _ToolOutputLike(
+                success=False,
+                error="[Errno 2] No such file or directory: 'a/missing.md'",
+            ),
+        ]
+    )
+    text = await PptCommon.read_file_with_retry(node, "a/missing.md", log_prefix="[P8]")
+    assert text == ""
+    assert len(node.calls) == 1
