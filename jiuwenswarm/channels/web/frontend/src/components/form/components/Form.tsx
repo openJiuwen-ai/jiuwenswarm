@@ -135,6 +135,7 @@ function FormItemRenderer<TValues extends FormValues>({
   return (
     <div
       className="form-item"
+      data-disabled={finalDisabled ? 'true' : undefined}
       data-testid={testIdPrefix ? `${testIdPrefix}-field` : undefined}
       data-variant={testIdPrefix ? String(item.name) : undefined}
     >
@@ -147,6 +148,7 @@ function FormItemRenderer<TValues extends FormValues>({
         label
       )}
       <div className="form-item__control">{control}</div>
+      {item.description ? <div className="form-item__description">{item.description}</div> : null}
       {field.error ? (
         <div className="form-item__error" role="alert">
           {field.error}

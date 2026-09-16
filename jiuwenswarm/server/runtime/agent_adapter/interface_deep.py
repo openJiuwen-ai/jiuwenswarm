@@ -222,7 +222,11 @@ from jiuwenswarm.agents.harness.common.rails.execution_guard import (
     CircuitBreakerRail,
     CircuitBreakerConfig,
 )
-from jiuwenswarm.common.context_window import parse_positive_int, resolve_context_window_tokens
+from jiuwenswarm.common.context_window import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    parse_positive_int,
+    resolve_context_window_tokens,
+)
 from jiuwenswarm.symphony.llm import (
     SYMPHONY_LLM_CONFIG_REF_KEY,
     register_request_model,
@@ -973,8 +977,8 @@ def _build_deep_agent_context_engine_config(
 
     context_window（模型支持的上下文总长度）由 ``_build_model_from_entry`` 放进
     core 的 ``ModelRequestConfig``，再由 ReActAgent 注入当前 ContextEngine 的模型级
-    元数据。本函数只承接全局覆盖和显式模型映射；最终优先级为全局值 > 当前 AgentOS
-    模型值 > 显式映射 > core 按模型名解析 / 兜底。
+    元数据。本函数只承接全局覆盖和显式手工映射；未配置模型值时使用固定的
+    JiuwenSwarm 默认窗口，不按模型名查询官方表、OpenRouter 或 core 内置表。
     """
     model_state = model_state or _ContextEngineModelState()
     react_cfg = react_cfg or {}
@@ -1083,8 +1087,17 @@ def _build_deep_agent_context_engine_config(
         for key, value in cec.items()
         if key in ContextEngineConfig.model_fields
     }
-    # 显式设置的上下文窗口上限；非法值回退 None（由 agent-core 按模型解析）。
-    supported["context_window_tokens"] = cw_tokens
+    # 全局值保持可选，以免遮蔽当前模型的 1M 显式配置。没有模型状态时，
+    # 使用固定默认值；有模型状态时由下方的模型级 override/map 提供默认。
+    supported["context_window_tokens"] = (
+        cw_tokens
+        if cw_tokens is not None
+        else (
+            DEFAULT_CONTEXT_WINDOW_TOKENS
+            if model_state.model is None and not model_state.model_name
+            else None
+        )
+    )
     if "model_context_window_tokens" in ContextEngineConfig.model_fields:
         supported["model_context_window_tokens"] = model_context_windows
     # 压缩召回：压缩时归档原始消息，供模型按需召回。
@@ -1106,10 +1119,10 @@ def _build_deep_agent_context_engine_config(
     # only download-capable warm-up path before this config is consumed.
     supported["enable_tokenizer_download"] = False
     supported["tokenizer_offline"] = True
-    supported["enable_openrouter_model_context_window_tokens"] = _parse_bool(
-        cec.get("enable_openrouter_model_context_window_tokens"),
-        bool(getattr(defaults, "enable_openrouter_model_context_window_tokens", False)),
-    )
+    # Model context metadata is fully explicit in JiuwenSwarm. Never enable
+    # the core's OpenRouter fetch path, even when an older config still has the
+    # legacy flag set to true.
+    supported["enable_openrouter_model_context_window_tokens"] = False
     supported["enable_context_debug"] = _parse_bool(
         cec.get("enable_context_debug"), bool(getattr(defaults, "enable_context_debug", False))
     )
@@ -1167,28 +1180,32 @@ def _build_deep_agent_context_engine_config(
             tokenizer_spec = None
             supported["tokenizer_spec"] = None
             supported["tokenizer_registry"] = tokenizer_registry
-    agentos_cw: int | None = None
-    if model_state.model is not None:
-        agentos_cw = parse_int(
-            getattr(model_state.model, "_agentos_ctx_window", None),
-            None,
+    # Attach only the selected model's explicit value. If it is absent, add a
+    # fixed default row so agent-core never falls through to its own model
+    # tables. Legacy AgentOS entries may expose the old private value; treat it
+    # as a model-level override rather than a global value.
+    selected_model_context_window = parse_positive_int(
+        getattr(getattr(model_state.model, "model_config", None), "context_window", None)
+        if model_state.model is not None
+        else None
+    )
+    if selected_model_context_window is None and model_state.model is not None:
+        selected_model_context_window = parse_positive_int(
+            getattr(model_state.model, "_agentos_ctx_window", None)
         )
-    elif isinstance(effective_config, dict) and selected_model_name:
-        agentos_raw = (effective_config.get("models") or {}).get("agentos")
-        agentos_list = agentos_raw if isinstance(agentos_raw, list) else []
-        for block in agentos_list:
-            if not isinstance(block, dict):
-                continue
-            model_client_config = block.get("model_client_config") or {}
-            if (
-                isinstance(model_client_config, dict)
-                and model_client_config.get("model_name") == selected_model_name
-            ):
-                model_config = block.get("model_config_obj") or {}
-                agentos_cw = parse_int(model_config.get("max_tokens"), None)
-                break
-    if agentos_cw is not None:
-        supported["context_window_tokens"] = agentos_cw
+    if selected_model_context_window is not None:
+        if "model_context_window_tokens_override" in ContextEngineConfig.model_fields:
+            supported["model_context_window_tokens_override"] = selected_model_context_window
+    if selected_model_name and "model_context_window_tokens" in ContextEngineConfig.model_fields:
+        model_context_windows = dict(model_context_windows or {})
+        if selected_model_context_window is None:
+            model_context_windows.setdefault(
+                selected_model_name,
+                DEFAULT_CONTEXT_WINDOW_TOKENS,
+            )
+        else:
+            model_context_windows[selected_model_name] = selected_model_context_window
+        supported["model_context_window_tokens"] = model_context_windows
 
     return ContextEngineConfig.model_validate({**defaults.model_dump(), **supported})
 
@@ -13912,7 +13929,7 @@ class JiuWenSwarmDeepAdapter:
         except Exception:
             logger.debug("[JiuWenSwarmDeepAdapter] DeepAgent.get_context_usage in usage_summary failed", exc_info=True)
 
-        # 回退：DeepAgent 未返回 context_window_tokens 时，用 ContextUtils 解析模型上下文窗口上限
+        # 回退：DeepAgent 未返回 context_window_tokens 时，用固定默认值或显式模型配置
         if context_window_tokens is None:
             try:
                 model_name = (
@@ -13927,7 +13944,7 @@ class JiuWenSwarmDeepAdapter:
                 if cw_fallback > 0:
                     context_window_tokens = cw_fallback
             except Exception:
-                logger.debug("[JiuWenSwarmDeepAdapter] ContextUtils.resolve_context_max fallback failed", exc_info=True)
+                logger.debug("[JiuWenSwarmDeepAdapter] context window fallback failed", exc_info=True)
 
         if usage_accumulator["total_tokens"] > 0:
             payload: dict[str, Any] = {
