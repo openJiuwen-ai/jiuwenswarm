@@ -2496,6 +2496,16 @@ class SkillManager:
         )
         self._refresh_agent_data_indexes()
 
+        try:
+            self._vet_scan_and_sync(plugin_name, dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed during marketplace install: "
+                "skill=%s error=%s",
+                plugin_name,
+                exc,
+            )
+
         return {"success": True}
 
     async def handle_skills_install_builtin(self, params: dict) -> dict:
@@ -5350,6 +5360,15 @@ class SkillManager:
         self._add_local_skill(record)
         self._refresh_agent_data_indexes()
         try:
+            self._vet_scan_and_sync(skill_name, dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed while registering workspace "
+                "skill: skill=%s error=%s",
+                skill_name,
+                exc,
+            )
+        try:
             preserved_version = get_current_version(dest)
         except SkillArchiveError:
             preserved_version = None
@@ -5522,7 +5541,7 @@ class SkillManager:
 
         skill_type = detect_skill_type(dest)
         try:
-            self._ensure_vet_report(dest)
+            self._vet_scan_and_sync(skill_name, dest)
         except Exception as exc:
             logger.warning(
                 "[SkillManager] skill-vetter scan failed during install: skill=%s error=%s",
@@ -9075,6 +9094,41 @@ class SkillManager:
             return VetReport.from_dict(stored)
         report = run_vet(skill_dir)
         set_vet_report(self._state, report.to_dict())
+        self._save_state()
+        return report
+
+    def _vet_scan_and_sync(self, skill_name: str, skill_dir: Path) -> VetReport:
+        """Scan *skill_dir* and re-gate an already-enabled skill whose bytes changed.
+
+        This does not introduce a second enforcement path: it flips the same
+        enabled flag ``skills.toggle`` reads, so a re-enable still has to pass
+        ``_vet_gate_for_enable``.
+        """
+        new_hash = compute_content_hash(skill_dir)
+        section = self._state.get("skill_vet")
+        if not isinstance(section, dict):
+            section = {}
+            self._state["skill_vet"] = section
+        hashes = section.get("skill_hashes")
+        if not isinstance(hashes, dict):
+            hashes = {}
+            section["skill_hashes"] = hashes
+        old_hash = hashes.get(skill_name)
+        report = self._ensure_vet_report(skill_dir)
+        if (
+            old_hash is not None
+            and old_hash != new_hash
+            and get_skill_enabled(self._state, skill_name)
+        ):
+            self.set_skill_enabled(skill_name, False)
+            logger.warning(
+                "[SkillManager] skill-vetter: skill content changed while enabled; "
+                "disabling pending re-vet: skill=%s old_hash=%s new_hash=%s",
+                skill_name,
+                old_hash,
+                new_hash,
+            )
+        hashes[skill_name] = new_hash
         self._save_state()
         return report
 
