@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies, Co., Ltd. 2026. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 """Flash 模式适配器 — 极简单 agent profile。
 
 仿照 :class:`JiuwenSwarmCodeAdapter` 的「独立 mode + 继承 DeepAdapter」结构，flash
@@ -6,29 +6,36 @@
 ``AgentManager`` 按 ``mode:sub_mode:project_dir`` 缓存到独立 facade，同一 sidecar
 进程同时服务 flash 与 agent 两套 agent，互不串味、不重启。
 
-flash 是一个**固定语义的 mode**——它的定义（行为开关 + rail 白名单）和它的实现
-都内聚在本文件；工具权限沿用全局 config，其余 profile 行为不依赖 config.yaml。
-父类只提供通用工具工厂与生命周期扩展点，不感知具体 flash 工具。这与 code 模式
+flash 是一个**固定语义的 mode**——它的定义（行为开关 + rail 白名单 + 工具面）和
+它的实现都内聚在本文件；工具权限沿用全局 config，其余 profile 行为不依赖
+config.yaml。父类只提供通用工具工厂与生命周期扩展点，不感知具体 flash 工具。
+这与 code 模式
 一致：CodeAdapter 把 ``_FIXED_RAIL_NAMES`` / ``_is_code_agent`` 等定义硬编码为
-类常量，flash 同样把行为开关与 keep 白名单作为类常量。
+类常量，flash 同样把行为开关、keep 白名单与工具面裁剪作为类常量/override。
+
+部署组合提示：``flash.enabled`` 是进程级开关，不区分 channel / 请求来源——
+officeclaw 对话与 cron / heartbeat / proactive 等后台流水线同样进入 flash。
+flash 白名单不含 ``_llm_retry_rail`` / ``_context_overflow_recovery_rail`` /
+``_deepresearch_execution_rail`` 等健壮性 rail，长文档 / 弱网任务的容错弱于
+normal；officeclaw 等部署开启 flash 前需评估此影响面，如需按来源豁免应在
+mode 解析 guard（``_shared.resolve_agent_request_mode``）增加 channel 过滤。
 
 flash 行为由类常量定义：
-- :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false`` 等），
-  深合并进 config_base，使 ``_resolve_enable_task_loop`` 读到 task_loop=false。
+- :data:`_FLASH_REACT_OVERRIDE` — react/evolution 覆盖（``enable_task_loop=false``
+  等）与渐进式工具的常驻名单（``tool_lazy_load.eager_tools`` 整表替换），深合并
+  进 config_base，使 ``_resolve_enable_task_loop`` 读到 task_loop=false。
 - :data:`_FLASH_RAIL_KEEP` — rail 白名单（attr_name），``_instantiate_rails`` 实例化
   前据此裁剪 ``_build_agent_rails`` 的全量 rail 表。
 - :data:`_PROFILE_PROTECTED_RAILS` — 白名单下也必留的 rail（丢掉会留下半成品
   依赖或破坏安全不变量，如 ``_disabled_tools_rail``）。
+- :data:`_FLASH_TOOL_CARD_DROP_NAMES` — ``_get_tool_cards`` 末尾按名剔除的工具卡。
 
 覆盖宿主方法注入 flash 行为，主要分为三组：
 - 工具工厂与生命周期 — ``_build_web_tools`` / ``_build_cron_tools`` /
   ``_cron_tool_names`` / ``_build_progressive_tool_rail``，仅为 flash 注册
   ``web_flash`` 与 ``cron_flash``。
 - :meth:`create_instance` — 先合并 flash react 覆盖进 config_base，再
-  ``await super().create_instance(...)``。super 内部四步（``_resolve_instance_config_base``
-  补缺 / ``coalesce_config_skill_envs`` / ``merge_memory_config_into_config`` /
-  ``_merge_enterprise_models_into_config``）都是补缺或只动各自字段，flash 合并进去的
-  ``react.evolution`` 一路存活到 ``_resolve_enable_task_loop``。
+  ``await super().create_instance(...)``。
 - :meth:`_apply_reload_config_snapshot` — super 把 ``_config_cache`` 重置成全局
   react，这里再合一次 flash 覆盖并重置两个 cache，防止热重载把 task_loop 翻回 true。
 - :meth:`_instantiate_rails` — super 的 ``_build_agent_rails`` 实例化前调用本方法；
@@ -40,6 +47,24 @@ flash 行为由类常量定义：
 - :meth:`try_start_dreaming` / :meth:`try_stop_dreaming` — no-op。flash 是「无自演进」
   profile，memory dreaming（被动记忆巩固）属自演进范畴，不挂。
 
+工具面 override（rail 构建 / 工具卡注册两个层面，类都来自
+``jiuwenswarm.agents.harness.flash`` 包）：
+- :meth:`_build_task_planning_rail` → FlashTodoRail（todo 4→1 统一工具）
+- :meth:`_build_memory_rail` → FlashMemoryRail（memory 5→1 统一工具 + 群聊只读开关）
+- :meth:`_build_filesystem_rail` → SlimSysOperationRail（不注册 powershell /
+  list_files；glob / read 注册 flash 增强版）
+- :meth:`_resolve_skill_mode` — 钉死 ALL（ListSkillTool 仅 AUTO_LIST 注册，flash
+  技能发现走 search_skill 自动安装闭环，技能卡只保留 skill_tool）
+- :meth:`_iter_runtime_audio_tools` — 音频全有或全无（无配置不降级 audio_metadata）
+- :meth:`_get_tool_cards` — 裁剪 wiki/acp 与 stock 技能三卡，换装 SlimSkillToolkit
+  （search_skill 折叠自动安装）
+- :meth:`_update_runtime_config` — super() 后修正统一 memory 卡的群聊只读/恢复
+
+reload 一致性：``_get_current_agent_rails`` 的四个复活点（skill_rail /
+skill_credential / skill_active_state / disabled_tools）全部在 keep 白名单内，
+冷启动表项经 override 构建 flash 变体后，reload 复用/重建走的也是同一批 override，
+冷热两态不漂移。
+
 要调 flash 的行为，改本文件的类常量（纳入代码审查/版本管理），而非 config.yaml。
 """
 
@@ -50,6 +75,13 @@ import logging
 import os
 from typing import Any
 
+from openjiuwen.core.foundation.store.base_embedding import EmbeddingConfig
+from openjiuwen.harness.rails import SkillUseRail
+
+from jiuwenswarm.agents.harness.common.memory.config import (
+    get_embed_config,
+    is_proactive_memory,
+)
 from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     add_collection,
     call_phone,
@@ -79,6 +111,16 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
     view_push_result,
     xiaoyi_gui_agent,
 )
+from jiuwenswarm.agents.harness.flash import (
+    FlashMemoryRail,
+    FlashTodoRail,
+    SlimSkillToolkit,
+    SlimSysOperationRail,
+)
+from jiuwenswarm.common.config import (
+    get_evolution_review_trigger_enabled,
+    get_skill_create_enabled,
+)
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
     _CRON_TOOL_NAMES,
@@ -97,6 +139,9 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     wiki_lint,
     wiki_query,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
+    TOOL_PERMISSION_CONTEXT,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -105,8 +150,12 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     """Flash 模式适配器 — 极简单 agent profile（单轮、无 task loop、无自演进）。
 
     继承 :class:`JiuWenSwarmDeepAdapter`，通过工具工厂、配置合并和 rail 生命周期
-    扩展点注入 flash 行为，不重写 ``_build_agent_rails`` 本体——复用父类按 mode
-    构建的 rail 表，只在其实例化前用白名单裁剪。
+    扩展点注入 flash 行为；覆盖五个宿主方法
+    （``create_instance`` / ``_apply_reload_config_snapshot`` / ``_instantiate_rails``
+    / ``_update_rails_for_mode`` / ``try_start_dreaming``）注入 flash 的行为覆盖与
+    rail 裁剪，再覆盖一组构建方法/钩子替换工具面（todo / memory 统一、
+    文件系统精简、skill 面只留 skill_tool），不重写 ``_build_agent_rails`` 本体
+    ——复用父类按 mode 构建的 rail 表，只在其实例化前用白名单裁剪。
     """
 
     # ── flash 行为定义（类常量，仿 CodeAdapter._FIXED_RAIL_NAMES） ─────────
@@ -119,12 +168,35 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     #   skill_create=false           — 与 review_trigger 同为 false，否则触发 force-revive
     #                                  把 enable_task_loop 强拉回 true。
     #   review_trigger=false         — 同上。
+    #   tool_lazy_load.eager_tools   — 渐进式工具呈现的常驻名单。深合并对 list 是
+    #                                  整表替换，须写全 flash 最终列表（统一 todo
+    #                                  替换 todo_create/list/get/modify，去掉
+    #                                  list_files；tools_search/invoke_tool 由
+    #                                  _normalize_progressive_eager_tools 自动补回）。
+    #                                  enabled 不强制——flash 的精简来自 rail 构建层，
+    #                                  lazy load 只影响呈现方式，交给部署配置。
     _FLASH_REACT_OVERRIDE: dict[str, Any] = {
         "enable_task_loop": False,
         "evolution": {
             "skill_evolution": False,
             "skill_create": False,
             "review_trigger": False,
+        },
+        "tool_lazy_load": {
+            "eager_tools": [
+                "web_search",
+                "fetch_webpage",
+                "ask_user",
+                "read_file",
+                "write_file",
+                "edit_file",
+                "glob",
+                "grep",
+                "bash",
+                "skill_tool",
+                "skill_complete",
+                "todo",
+            ],
         },
     }
 
@@ -153,14 +225,25 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         "_subagent_rail",
         "_permission_rail",
         "_context_processor_rail",
-        # _filesystem_rail: SysOperationRail, init() 注册 ReadFile/WriteFile/
-        #   EditFile/Glob/ListDir/Grep/Bash；丢掉=无文件/shell 能力。
+        # _filesystem_rail: SlimSysOperationRail（flash override），init() 注册
+        #   Read/Write/Edit/Glob/Grep/Bash，不注册 powershell/list_files；
+        #   丢掉=无文件/shell 能力。
         "_filesystem_rail",
         # _progressive_tool_rail: ProgressiveToolRail, 系统提示词中的渐进式工具引导。
         "_progressive_tool_rail",
         # 技能执行 + 凭证注入：见上方注释，flash 必须能跑已安装技能。
+        # _skill_rail 由 flash 钉 ALL 模式，只注册 skill_tool。
         "_skill_rail",
         "_skill_credential_injection_rail",
+        # _skill_active_state_rail / _skill_authorization_rail: 活跃技能状态与
+        #   skill_tool 授权门禁——保持与 normal 对等的技能链（上游 flash 裁掉了
+        #   这两个，本仓决策保留）。
+        "_skill_active_state_rail",
+        "_skill_authorization_rail",
+        # _memory_rail: FlashMemoryRail（flash override，统一 memory 工具）挂在
+        #   动态挂载路径上，进 keep 才不会被 _drop_non_whitelist_dynamic_rails
+        #   卸载；闸门是 modes.agent.memory.enabled（flash 记忆档归一 agent）。
+        "_memory_rail",
         # ask_user：交互请求动态挂载，留白名单避免 churn（见上方注释）。
         "_ask_user_rail",
     })
@@ -176,6 +259,19 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     _PROFILE_PROTECTED_RAILS = frozenset({
         "_permission_rail",
         "_disabled_tools_rail",
+    })
+
+    # 工具卡裁剪名单（_get_tool_cards 覆盖里按名剔除）：wiki 三件套与 acp_chat 属
+    # normal 会话的能力面，flash 不注册；stock 技能三卡被剔后由 SlimSkillToolkit
+    # 的折叠版 search_skill（独立 id）替换。
+    _FLASH_TOOL_CARD_DROP_NAMES: frozenset[str] = frozenset({
+        "wiki_ingest",
+        "wiki_query",
+        "wiki_lint",
+        "acp_chat",
+        "search_skill",
+        "install_skill",
+        "uninstall_skill",
     })
 
     def __init__(
@@ -238,14 +334,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.
 
-        这是 :meth:`JiuWenSwarmDeepAdapter._get_tool_cards` 的逐字副本，唯一差异：
-        web 工具段由父类的 ``build_jiuwen_harness_named_web_tools``（web_search +
-        fetch_webpage 多卡）换成 flash 的 ``self._build_web_tools``（单张 web_flash
-        卡）。整方法复制而非 super(). 后处理，是为避免父类把 Deep web 卡注册进
-        ability_manager 后再移除的 add+remove 噪声，也避免动 interface_deep.py。
-        其余工具段（wiki/vision/audio/video/image_gen/xiaoyi/skill/symphony/acp/
-        deepresearch/extra）与父类逐字一致——flash 的能力裁剪在 rail 白名单层做，
-        不在 tool_cards 注册层做。
+        这是 :meth:`JiuWenSwarmDeepAdapter._get_tool_cards` 的逐字副本，两处差异：
+        1. web 工具段由父类的 ``build_jiuwen_harness_named_web_tools``（web_search +
+           fetch_webpage 多卡）换成 flash 的 ``self._build_web_tools``（单张 web_flash
+           卡）。整方法复制而非 super(). 后处理，是为避免父类把 Deep web 卡注册进
+           ability_manager 后再移除的 add+remove 噪声，也避免动 interface_deep.py。
+        2. 尾部追加 flash 工具面裁剪：按名剔除（wiki/acp 与 stock 技能三卡）并
+           换装 SlimSkillToolkit 的折叠版 search_skill（独立 id，不受共享注册
+           表先到先得影响）。被剔除的工具已注册进共享注册表对其他 adapter 无害
+           （agent 模式本就注册它们），剔除只影响本会话的可见卡面。
+           cron_flash 不经本方法（由 ``_ensure_cron_tools_registered`` 按会话
+           生命周期注册）。
         """
         tool_cards = []
 
@@ -449,6 +548,35 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
         self._append_extra_tool_cards(tool_cards)
 
+        # flash 工具面裁剪（见方法 docstring 差异 2）：按名剔除 + slim 换装。
+        drop_names = self._FLASH_TOOL_CARD_DROP_NAMES
+        tool_cards = [
+            card
+            for card in tool_cards
+            if str(getattr(card, "name", "") or "") not in drop_names
+        ]
+        try:
+            slim_toolkit = SlimSkillToolkit(
+                manager=self._skill_manager,
+                service_id=self._service_id,
+                agent_id=self._agent_id,
+                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+            )
+            slim_names: list[str] = []
+            for tool in slim_toolkit.get_tools():
+                registered = self._register_shared_tool(tool)
+                tool_cards.append(registered.card)
+                slim_names.append(registered.card.name)
+            logger.info(
+                "[JiuwenSwarmFlashAdapter] SlimSkillToolkit registered: tools=%s",
+                slim_names,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] slim skill tools registration failed: %s",
+                exc,
+            )
+
         return tool_cards
 
     def _ensure_cron_tools_registered(self, session_id: str | None) -> None:
@@ -591,12 +719,16 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
         父类 ``_update_rails_for_mode``（interface_deep.py:9990，每请求由
         :10595 调用）调 ``_update_agent_rails()`` 动态注册 ``_context_assemble_rail`` /
-        ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些**不在** flash 白名单
+        ``_memory_rail`` / ``_external_memory_rail`` 等 rail——这些大多不在 flash 白名单
         内，却会绕过 ``_instantiate_rails`` 的冷启动裁剪被挂上，使白名单形同虚设。
 
-        flash 覆盖此方法：**不调** ``_update_agent_rails()``，只做两件事——
+        flash 覆盖此方法：**不调** ``_update_agent_rails()``，只做三件事——
         1. 记 ``_last_mode``（父类首行本就做）；
-        2. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
+        2. 记忆 rail：flash 的统一 memory 工具（FlashMemoryRail）走动态挂载路径，
+           这里按归一后的 agent 档调 ``_handle_memory_rail_by_config``（闸门
+           ``modes.agent.memory.enabled``，未开启则卸载）；``_memory_rail`` 在 keep
+           白名单内，不会被后续卸载步骤误删。
+        3. 卸载白名单（``_FLASH_RAIL_KEEP`` ∪ ``_PROFILE_PROTECTED_RAILS``）外的、
            可能被父类/旧 reload 残留注册的动态 rail。
 
         白名单内的 rail（task_planning / context_processor / skill 等）冷启动已由
@@ -609,6 +741,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         重建」的 churn（参见 PR6431 review #4 修正）。
         """
         self._last_mode = mode
+        await self._handle_memory_rail_by_config("agent")
         await self._drop_non_whitelist_dynamic_rails()
 
     async def try_start_dreaming(self, busy_checker=None) -> None:
@@ -626,6 +759,153 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     async def try_stop_dreaming(self) -> None:
         """no-op：与 ``try_start_dreaming`` 对称，flash 从未启 dreaming，停亦空操作."""
         return
+
+    # ── 工具面覆盖（rail 构建 / 工具卡注册） ──────────────────────
+
+    def _build_task_planning_rail(
+        self, config: dict[str, Any] | None = None
+    ) -> FlashTodoRail | None:
+        """flash 用统一 todo rail 替换 TaskPlanningRail（todo 4→1）.
+
+        兼容两处调用：冷启动 rail 表传 react config（统一 todo 无配置项，忽略），
+        agent 模式动态挂载不传参。
+        """
+        try:
+            todo_rail = FlashTodoRail()
+            logger.info("[JiuwenSwarmFlashAdapter] FlashTodoRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] FlashTodoRail create failed: %s", exc)
+            todo_rail = None
+        return todo_rail
+
+    def _build_memory_rail(self, mode: str) -> FlashMemoryRail | None:
+        """flash 用统一 memory rail 替换 MemoryRail（memory 5→1，mode 分发）.
+
+        与父类 ``_build_memory_rail`` 保持同步（差异仅 rail 类与日志标签）。
+        flash 记忆档归一到 modes.agent（``is_agent_mode`` 含 "flash"）。
+        """
+        try:
+            config = (
+                self._startup_config_base
+                if isinstance(self._startup_config_base, dict)
+                else get_config()
+            )
+            embed_config = get_embed_config()
+            has_api_key = embed_config.get("api_key") if isinstance(embed_config, dict) else None
+            has_base_url = embed_config.get("base_url") if isinstance(embed_config, dict) else None
+            has_model = embed_config.get("model") if isinstance(embed_config, dict) else None
+            if not all([has_api_key, has_base_url, has_model]):
+                logger.warning(
+                    "[JiuwenSwarmFlashAdapter] FlashMemoryRail create failed: "
+                    "No available embedding config"
+                )
+            self._is_proactive_memory = is_proactive_memory(mode, config)
+            memory_rail = FlashMemoryRail(
+                embedding_config=EmbeddingConfig(
+                    model_name=embed_config.get("model"),
+                    base_url=embed_config.get("base_url"),
+                    api_key=embed_config.get("api_key"),
+                ),
+                is_proactive=self._is_proactive_memory,
+            )
+            logger.info("[JiuwenSwarmFlashAdapter] FlashMemoryRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] FlashMemoryRail create failed: %s", exc)
+            memory_rail = None
+        return memory_rail
+
+    @staticmethod
+    def _build_filesystem_rail() -> SlimSysOperationRail | None:
+        """flash 文件系统 rail：不注册 powershell / list_files，
+        glob / read 注册 flash 增强版（mtime 排序、多文件并行读）。"""
+        try:
+            fs_rail = SlimSysOperationRail()
+            logger.info("[JiuwenSwarmFlashAdapter] SlimSysOperationRail create success")
+        except Exception as exc:
+            logger.warning("[JiuwenSwarmFlashAdapter] SlimSysOperationRail create failed: %s", exc)
+            fs_rail = None
+        return fs_rail
+
+    @staticmethod
+    def _resolve_skill_mode(config: dict[str, Any]) -> str:
+        """flash 钉死 ALL：ListSkillTool 仅在 AUTO_LIST 注册，flash 的技能发现走
+        search_skill 自动安装闭环，技能卡只保留 skill_tool。同时使 reload 的
+        skill_mode 变更检测读到稳定值，不会把 rail 拨回 AUTO_LIST。"""
+        _ = config
+        return SkillUseRail.SKILL_MODE_ALL
+
+    def _iter_runtime_audio_tools(self, agent_id: str | None) -> list[Any]:
+        """flash 音频全有或全无：未配置音频模型时不降级注册 audio_metadata.
+
+        flash 会话的音频工具只经本方法进入工具面；无配置返回空列表即完全不
+        注册，配置了则与 normal 同等注册全套。
+        """
+        if self._audio_model_config is None:
+            return []
+        from openjiuwen.harness.tools import create_audio_tools
+
+        return list(
+            create_audio_tools(
+                language=self._resolve_runtime_language(),
+                audio_model_config=self._audio_model_config,
+                agent_id=agent_id,
+            )
+        )
+
+    async def _update_runtime_config(self, runtime_config: Any) -> None:
+        """每回合 super() 后修正统一 memory 卡的可见性。
+
+        super() 的群聊块只认 stock 五件套（对 flash 全是 no-op），且其恢复分支
+        会把 stock write_memory/edit_memory 加回 flash 会话（统一卡才是 flash 的
+        记忆面）——这里先防御性清扫五件套，再按同一套权限上下文对统一卡做
+        三场景修正（全禁→摘卡；群聊分身→只读；其他→恢复+解除只读）。
+        """
+        await super()._update_runtime_config(runtime_config)
+        self._sync_unified_memory_tool_visibility()
+
+    def _sync_unified_memory_tool_visibility(self) -> None:
+        """按 TOOL_PERMISSION_CONTEXT 调整统一 memory 工具的可见性/只读。
+
+        与父方法的守卫一致：无权限上下文（普通请求不 set 该 contextvar）时
+        不做任何调整。
+        """
+        perm_ctx = TOOL_PERMISSION_CONTEXT.get()
+        if perm_ctx is None:
+            return
+
+        instance = self._instance
+        if instance is None:
+            return
+
+        # 防御性清扫：super() 恢复分支可能把 stock 记忆五件套加回 flash 会话。
+        # remove 对不存在的能力是安全 no-op（内部 in 检查 + pop，返回 None），
+        # 无需异常包裹。
+        for tool_name in (
+            "write_memory",
+            "edit_memory",
+            "read_memory",
+            "memory_search",
+            "memory_get",
+        ):
+            instance.ability_manager.remove(tool_name)
+
+        is_group_avatar = perm_ctx.group_digital_avatar and perm_ctx.avatar_mode
+        should_disable_memory = (
+            not perm_ctx.enable_memory and is_group_avatar
+        )
+        memory_rail = getattr(self, "_memory_rail", None)
+
+        if should_disable_memory:
+            instance.ability_manager.remove("memory")
+            if memory_rail is not None:
+                memory_rail.set_read_only(True)
+        elif is_group_avatar:
+            if memory_rail is not None:
+                memory_rail.set_read_only(True)
+        else:
+            if memory_rail is not None:
+                memory_rail.restore_memory_tool(instance)
+                memory_rail.set_read_only(False)
 
     # ── flash react 覆盖 / rail 裁剪 helpers ──────────────────────
 
@@ -649,8 +929,28 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
         if not isinstance(base_react, dict):
             base_react = {}
             out["react"] = base_react
+        base_lazy = base_react.get("tool_lazy_load")
+        base_eager = (
+            base_lazy.get("eager_tools") if isinstance(base_lazy, dict) else None
+        )
         for k, v in self._FLASH_REACT_OVERRIDE.items():
             base_react[k] = self._deep_merge_react_value(base_react.get(k), v)
+        # eager_tools 是整表替换（设计上 flash 须写全最终名单）：部署配置过的
+        # 自定义常驻工具会退到 deferred，这里把差异打出来，避免工具呈现变化
+        # 不可观测。
+        if isinstance(base_eager, list):
+            merged_lazy = out["react"].get("tool_lazy_load")
+            merged_eager = (
+                merged_lazy.get("eager_tools") if isinstance(merged_lazy, dict) else None
+            )
+            dropped = [t for t in base_eager if t not in (merged_eager or [])]
+            if dropped:
+                logger.warning(
+                    "[JiuwenSwarmFlashAdapter] flash eager_tools override replaces "
+                    "the deployment list; these tools fall back to deferred: %s",
+                    dropped,
+                )
+        self._warn_evolution_env_bypass(out)
         return out
 
     @staticmethod
@@ -671,6 +971,23 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
                 )
             return merged
         return copy.deepcopy(override)
+
+    def _warn_evolution_env_bypass(self, config_base: dict[str, Any] | None) -> None:
+        """env 级开关优先于 react.evolution，可把 flash 的 evolution 覆盖翻回 true，
+        进而触发 force-revive 把 enable_task_loop 拉回 true（flash 单轮语义失效）。
+        适配器层无法覆盖 env，只能告警暴露。"""
+        if get_skill_create_enabled(config_base):
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] SKILL_CREATE env overrides flash "
+                "evolution.skill_create=false; task_loop force-revive may "
+                "re-enable the multi-round loop"
+            )
+        if get_evolution_review_trigger_enabled(config_base):
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] EVOLUTION_REVIEW_TRIGGER env overrides "
+                "flash evolution.review_trigger=false; task_loop force-revive may "
+                "re-enable the multi-round loop"
+            )
 
     def _filter_rail_infos_by_keep(
         self,
