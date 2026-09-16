@@ -114,6 +114,12 @@ BUFFER_FLUSH_INTERVAL = 5.0
 BUFFER_MAX_SIZE = 100
 PENDING_MAX_SECONDS = 2.0
 
+ERROR_DEDUP_ENABLED_ENV = "JIUWENSWARM_ERROR_DEDUP_ENABLED"
+ERROR_DEDUP_MAX_REPEATS_ENV = "JIUWENSWARM_ERROR_DEDUP_MAX_REPEATS"
+
+_dedup_lock = threading.Lock()
+_error_dedup_state: dict[str, tuple[str, int]] = {}
+
 _buffer_lock = threading.Lock()
 _session_buffer: dict[str, dict[str, Any]] = {}
 _session_buffer_type: dict[str, str] = {}
@@ -1095,6 +1101,54 @@ def enrich_history_messages_session_id(
     return out
 
 
+def _error_fingerprint(content: str) -> str:
+    """归一化错误文本为去重指纹：折叠空白、去掉首尾空白。"""
+    return re.sub(r"\s+", " ", (content or "")).strip()
+
+
+def _is_error_like(event_type: str | None, content_text: str) -> bool:
+    """判断一条 assistant 记录是否是“错误类”记录，用于连续错误抑制。"""
+    et = str(event_type or "").strip()
+    if et == "chat.error":
+        return True
+    # Gateway 本地兜底（Path B）用 chat.final 携带 cron 失败文本。
+    if et == "chat.final" and "[cron] 任务执行失败" in (content_text or ""):
+        return True
+    return False
+
+
+def should_suppress_duplicate_error(
+    session_id: str, event_type: str | None, content_text: str
+) -> bool:
+    """连续相同错误抑制：同 session 连续出现相同指纹错误时，超过阈值则抑制。
+
+    返回 True 表示应抑制（不落盘 / 不推送）。非错误记录或未开启开关时恒为 False。
+    """
+    if not _is_error_like(event_type, content_text):
+        return False
+    if os.getenv(ERROR_DEDUP_ENABLED_ENV, "1") != "1":
+        return False
+    try:
+        max_repeats = int(os.getenv(ERROR_DEDUP_MAX_REPEATS_ENV, "1") or "1")
+    except (TypeError, ValueError):
+        max_repeats = 1
+    fp = _error_fingerprint(content_text)
+    with _dedup_lock:
+        state = _error_dedup_state.get(session_id)
+        if state is not None and state[0] == fp:
+            new_count = state[1] + 1
+            _error_dedup_state[session_id] = (fp, new_count)
+            return new_count > max_repeats
+        _error_dedup_state[session_id] = (fp, 1)
+        return False
+
+
+def reset_error_dedup(session_id: str) -> None:
+    """清空该 session 的错误去重状态（成功回合或错误内容变化后调用）。"""
+    with _dedup_lock:
+        _error_dedup_state.pop(session_id, None)
+
+
 def append_history_record(
     *,
     session_id: str,
@@ -1109,12 +1163,15 @@ def append_history_record(
     mode: str | None = None,
     sessions_root: str | Path | None = None,
     task_id: str | None = None,
-) -> None:
-    """向指定 session 的 history.json 追加一条 JSONL 记录（可合并事件先缓冲）。"""
+) -> bool:
+    """向指定 session 的 history.json 追加一条 JSONL 记录（可合并事件先缓冲）。
+
+    返回 True 表示记录已落盘（或进入缓冲/待写队列），False 表示被抑制跳过。
+    """
     sid = (session_id or "default").strip() or "default"
     if _is_ephemeral_heartbeat_session(sid):
         logger.debug("skip heartbeat session history: session_id=%s event_type=%s", sid, event_type)
-        return
+        return False
     rid = str(request_id or "").strip()
     cid = str(channel_id or "").strip()
     role_norm = "assistant" if role == "assistant" else "user"
@@ -1129,7 +1186,19 @@ def append_history_record(
             sid,
             event_type or "",
         )
-        return
+        return False
+
+    if role_norm == "assistant":
+        if _is_error_like(event_type, content_text):
+            if should_suppress_duplicate_error(sid, event_type, content_text):
+                logger.info(
+                    "suppressed duplicate error history: session_id=%s event_type=%s",
+                    sid,
+                    event_type,
+                )
+                return False
+        else:
+            reset_error_dedup(sid)
 
     item: dict[str, Any] = {
         "id": f"{rid}:{role_norm}",
@@ -1206,6 +1275,8 @@ def append_history_record(
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)
+
+    return True
 
 
 def append_compact_history_records(

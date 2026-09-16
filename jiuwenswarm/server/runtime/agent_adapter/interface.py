@@ -505,6 +505,32 @@ def _split_a2ui_stream_content(previous_probe: str, content: str) -> tuple[str, 
     return content[:split_index], content[split_index:]
 
 
+# Unmodified RelayClaw synthesizes jiuwen_session_busy when a stream ends with
+# frameCount<=2 and no chat.error/text/file. Duplicate errors must not be
+# yielded as chat.error (that would create another frontend bubble), so we
+# replace them with enough UI-noop chat.done frames to stay above that bar.
+_SUPPRESSED_ERROR_PADDING_FRAMES = 3
+
+
+def _iter_suppressed_error_padding(
+    *, request_id: str, channel_id: str, session_id: str
+) -> list[AgentResponseChunk]:
+    logger.info(
+        "[JiuWenSwarm] suppressed duplicate chat.error wire: session_id=%s request_id=%s",
+        session_id,
+        request_id,
+    )
+    return [
+        AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={"event_type": "chat.done"},
+            is_complete=False,
+        )
+        for _ in range(_SUPPRESSED_ERROR_PADDING_FRAMES)
+    ]
+
+
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
 reset_free_search_runtime_flags()
 
@@ -1115,7 +1141,7 @@ class JiuWenSwarm:
             return {"sessions_root": self._sessions_dir}
         return {}
 
-    def _append_history_record(self, *, request: Any | None = None, **kwargs: Any) -> None:
+    def _append_history_record(self, *, request: Any | None = None, **kwargs: Any) -> bool:
         if kwargs.get("sessions_root") is None:
             enterprise_root = self._history_kwargs().get("sessions_root")
             if enterprise_root is not None:
@@ -1124,7 +1150,7 @@ class JiuWenSwarm:
                 from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
 
                 kwargs["sessions_root"] = _sessions_dir_for_request(request)
-        append_history_record(**kwargs)
+        return append_history_record(**kwargs)
 
     def _append_ask_user_answered_history(
         self,
@@ -3345,7 +3371,7 @@ class JiuWenSwarm:
                     }
                     if error_type:
                         error_payload["error_type"] = error_type
-                    self._append_history_record(
+                    persisted = self._append_history_record(
                         request=request,
                         session_id=session_id,
                         request_id=rid,
@@ -3357,14 +3383,21 @@ class JiuWenSwarm:
                         mode=request.params.get("mode", "unknown"),
                         extra={"error_type": error_type} if error_type else None,
                     )
-                    yield AgentResponseChunk(
-                        request_id=rid,
-                        channel_id=cid,
-                        payload=error_payload,
-                        is_complete=False,
-                    )
+                    if not persisted:
+                        for pad in _iter_suppressed_error_padding(
+                            request_id=rid, channel_id=cid, session_id=session_id
+                        ):
+                            yield pad
+                    else:
+                        yield AgentResponseChunk(
+                            request_id=rid,
+                            channel_id=cid,
+                            payload=error_payload,
+                            is_complete=False,
+                        )
                 else:
                     if isinstance(data, AgentResponseChunk):
+                        skip_error_wire = False
                         if suppress_a2ui_stream:
                             data = _normalize_nested_stream_chunk(data)
                             if data is None:
@@ -3546,7 +3579,7 @@ class JiuWenSwarm:
                                 for pk in ("source", "proactive_type", "proactive_target"):
                                     if pk not in extra_fields and pk in request.params:
                                         extra_fields[pk] = request.params[pk]
-                                self._append_history_record(
+                                persisted_chunk = self._append_history_record(
                                     request=request,
                                     session_id=session_id,
                                     request_id=rid,
@@ -3559,6 +3592,12 @@ class JiuWenSwarm:
                                     mode=request.params.get("mode", "unknown"),
                                     task_id=payload_dict.get("task_id"),
                                 )
+                                if et == "chat.error" and not persisted_chunk:
+                                    skip_error_wire = True
+                                    for pad in _iter_suppressed_error_padding(
+                                        request_id=rid, channel_id=cid, session_id=session_id
+                                    ):
+                                        yield pad
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
                             if et == "chat.final":
@@ -3570,6 +3609,8 @@ class JiuWenSwarm:
                                     final_answer_content = ""
                         if data.is_complete:
                             facade_emitted_terminal_chunk = True
+                        if skip_error_wire:
+                            continue
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
@@ -3728,7 +3769,7 @@ class JiuWenSwarm:
                             for pk in ("source", "proactive_type", "proactive_target"):
                                 if pk not in extra_fields and pk in request.params:
                                     extra_fields[pk] = request.params[pk]
-                            self._append_history_record(
+                            persisted_chunk = self._append_history_record(
                                 request=request,
                                 session_id=session_id,
                                 request_id=rid,
@@ -3741,6 +3782,12 @@ class JiuWenSwarm:
                                 mode=request.params.get("mode", "unknown"),
                                 task_id=data.get("task_id"),
                             )
+                            if et == "chat.error" and not persisted_chunk:
+                                for pad in _iter_suppressed_error_padding(
+                                    request_id=rid, channel_id=cid, session_id=session_id
+                                ):
+                                    yield pad
+                                continue
                             if et == "chat.final":
                                 durable_final_content = str(data.get("content", ""))
                         if et == "chat.final":
