@@ -178,6 +178,9 @@ class FakeAgent:
 async def test_permission_control_ack_precedes_continuation_completion(streaming, case):
     paused, release = asyncio.Event(), asyncio.Event()
     received = []
+    # Each parameter owns its persisted Session; sharing one path lets a
+    # previous case's asynchronous metadata writer race the next case.
+    session_id = f"permission-session-{case}-{streaming}"
 
     class WaitingAgent(FakeAgent):
         async def process_message_stream(self, request):
@@ -214,14 +217,14 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
         agent_manager=manager, initializer=AsyncMock(), plan_controller=FakePlanController(),
     )
     original = AgentRequest(
-        request_id="original", channel_id="web", session_id="permission-session",
+        request_id="original", channel_id="web", session_id=session_id,
         req_method=ReqMethod.COMMAND_GOAL if case == "goal" else ReqMethod.CHAT_SEND,
         is_stream=True,
         params={"query": "Continue the task", "mode": "agent", "action": "set", "objective": "finish the task"},
     )
     await _collect_events(runtime.stream(original, trigger_hook=False))
     answer = AgentRequest(
-        request_id="answer-transport", channel_id="web", session_id="permission-session",
+        request_id="answer-transport", channel_id="web", session_id=session_id,
         req_method=ReqMethod.CHAT_SEND, is_stream=streaming,
         params={
             "query": "", "mode": "agent", "request_id": "inner-call",
@@ -239,7 +242,13 @@ async def test_permission_control_ack_precedes_continuation_completion(streaming
         if streaming else runtime.invoke(answer, trigger_hook=False, on_control_event=callback_arg)
     )
     try:
-        await asyncio.wait_for(paused.wait(), timeout=1)
+        try:
+            await asyncio.wait_for(paused.wait(), timeout=1)
+        except TimeoutError:
+            # Surface a failed delivery instead of hiding it behind the gate.
+            if task.done():
+                await task
+            raise
         assert len(received) == (1 if case == "smart" else 0)
         if case == "failed_handoff":
             with pytest.raises(RuntimeError, match="handoff failed"):

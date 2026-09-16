@@ -32,6 +32,7 @@ if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
     from jiuwenswarm.common.auth.login_credentials import LoginAuth
+    from jiuwenswarm.server.runtime.agent_adapter.session_input import SessionInputGuard
 
 import yaml
 from pydantic import ValidationError
@@ -1748,6 +1749,7 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_call_timeout_patch()
         self._instance: DeepAgent | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
+        self._session_input_guard: SessionInputGuard | None = None
         self._project_dir: str | None = None
         self._workspace_dir: str = str(get_agent_workspace_dir())
         self._permission_workspace_root: Path | None = None
@@ -10524,6 +10526,7 @@ class JiuWenSwarmDeepAdapter:
         # ensure_initialized(), so we live-register it here — same pattern
         # memory / task_planning / ask_user / context_* / skill_evolution use.
         await self._ensure_permission_rail_live_registered()
+        await self.install_session_input_guard(reload=True)
         self._sync_active_evolution_review_agent_after_reload()
 
         await self._sync_mcp_servers_for_runtime(config_base, tag="agent.reload")
@@ -11727,6 +11730,7 @@ class JiuWenSwarmDeepAdapter:
             kv_cache_runtime=get_kv_cache_runtime(),
         )
         await session.pre_run(inputs={})
+        await self.install_session_input_guard()
         await self._instance.start(session=session)
         if getattr(self._instance, "_interaction_started", True) is not True:
             raise RuntimeError(f"DeepAgent interaction did not become ready: {session_id}")
@@ -12291,16 +12295,9 @@ class JiuWenSwarmDeepAdapter:
         Missing or unknown values keep pre-Goal Gateway replace semantics
         (``None`` → OpenJiuwen default FOLLOW_UP boundary when idle).
         """
-        if not isinstance(params, dict):
-            return None
-        input_mode = str(
-            params.get("input_mode") or params.get("runtime_mode") or ""
-        ).strip().lower()
-        if input_mode == "follow_up":
-            return InputDispatchMode.FOLLOW_UP
-        if input_mode == "steer":
-            return InputDispatchMode.STEER
-        return None
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import sdk_input_mode
+
+        return sdk_input_mode(params)
 
     @staticmethod
     def _wants_attach_goal(params: Any) -> bool:
@@ -12596,11 +12593,14 @@ class JiuWenSwarmDeepAdapter:
                     )
             raise
 
-    async def _send_input_with_permission_resume_guard(self, request: SendInputRequest) -> bool:
+    async def _send_input_with_permission_resume_guard(
+        self, request: SendInputRequest, *, send: Any = None,
+    ) -> bool:
+        sender = send if send is not None else self._instance.send_input
         if not self._enable_auto_permission:
-            await self._instance.send_input(request)
+            await sender(request)
             return False
-        return await self._permission_dispatch.send(request, self._instance.send_input)
+        return await self._permission_dispatch.send(request, sender)
 
 
     def _permission_context_messages(
@@ -14921,6 +14921,160 @@ class JiuWenSwarmDeepAdapter:
             payload={"content": content},
             metadata=request.metadata,
         )
+
+    async def install_session_input_guard(self, *, reload: bool = False) -> None:
+        """Register the input guard on this Adapter's current SDK instance."""
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import (
+            SessionInputGuard,
+        )
+
+        instance = self._instance
+        register = getattr(instance, "register_rail", None)
+        if not callable(register):
+            return
+        guard = self._session_input_guard
+        if guard is None or guard.owner is not instance:
+            guard = SessionInputGuard(instance)
+        elif not reload:
+            return
+        else:
+            await instance.unregister_rail(guard)
+        await instance.ensure_initialized()
+        await register(guard)
+        self._session_input_guard = guard
+
+    async def deliver_active_session_input(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> bool:
+        """Send through the existing permission transaction and output owner.
+
+        Return False only before sending, when a new output owner is needed.
+        Literal '/...' supplements remain text rather than slash commands.
+        """
+        from jiuwenswarm.server.runtime.agent_adapter.session_input import (
+            SessionInputDeliveryUnknown,
+            sdk_input_mode,
+        )
+
+        instance = self._instance
+        if instance is None or instance.active_round is None:
+            return False
+        if not instance.has_output_stream():
+            return False
+        if self._stream_completion_state(had_interaction=False) == "suspended":
+            raise RuntimeError(
+                "session is waiting for an interaction answer; "
+                "supplemental input was not sent"
+            )
+        mode = sdk_input_mode(request.params)
+
+        def require_open_input() -> None:
+            if mode is InputDispatchMode.STEER:
+                guard = self._session_input_guard
+                if guard is None or guard.owner is not instance:
+                    accepting = False
+                else:
+                    accepting = guard.accepting
+                if not accepting:
+                    raise RuntimeError(
+                        "session is finishing or changing execution state; "
+                        "supplemental input was not sent, "
+                        "retry after it settles"
+                    )
+
+        require_open_input()
+        prepared = await self._prepare_root_input_dispatch(request, inputs)
+        try:
+            if instance.active_round is None or not instance.has_output_stream():
+                return False
+
+            async def send(sdk_request: SendInputRequest) -> None:
+                require_open_input()
+                target_round = instance.active_round
+                await instance.send_input(sdk_request)
+                # A closing boundary during SDK admission makes delivery
+                # uncertain. Preserve that receipt; never retry automatically.
+                if mode is InputDispatchMode.STEER and (
+                    not self._session_input_guard.accepting
+                    or instance.active_round is not target_round
+                ):
+                    raise SessionInputDeliveryUnknown(
+                        "session changed while sending; "
+                        "supplemental delivery is unknown, "
+                        "do not retry automatically"
+                    )
+
+            await self._send_input_with_permission_resume_guard(
+                SendInputRequest(
+                    request_id=request.request_id,
+                    inputs=self._permission_inputs_for_dispatch(
+                        request, prepared, mode
+                    ),
+                    mode=mode,
+                ),
+                send=send,
+            )
+            return True
+        finally:
+            self._permission_dispatch.finalize(prepared)
+
+    async def deliver_session_input_impl(
+        self, request: AgentRequest, inputs: dict[str, Any]
+    ) -> AsyncIterator[AgentResponseChunk]:
+        """Deliver to the cached owner without resetting its active run state."""
+        session_id = self._session_adapter_key(request.session_id)
+        if not self._is_session_scoped_adapter:
+            adapter = self._get_cached_session_adapter(session_id)
+            if adapter is None:
+                raise RuntimeError("session has no active adapter")
+            async with aclosing(adapter.deliver_session_input_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    yield chunk
+            return
+        if session_id != self._session_adapter_key(self._parent_session_id):
+            raise ValueError("supplemental input targets another Session")
+        self._register_session_agent_task(session_id)
+        try:
+            async with self._permission_request_admission(request, inputs):
+                self.validate_auto_permission_workspace_request(request)
+                with self._bind_permission_request_context(request):
+                    token_perm = setup_permission_context(request)
+                    try:
+                        accepted = await self.deliver_active_session_input(request, inputs)
+                    finally:
+                        cleanup_permission_context(token_perm)
+            if accepted:
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload={"event_type": "runtime.accepted", "request_id": request.request_id},
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=None, is_complete=True,
+                )
+                return
+            # The original execution can finish between Runtime routing and
+            # SDK admission. Reuse normal output ownership for the idle case.
+            if self._instance is not None and self._instance.has_output_stream():
+                raise RuntimeError(
+                    "session output is finishing; supplemental input was not "
+                    "sent, retry after it settles"
+                )
+            if not request.is_stream:
+                response = await self.process_message_impl(request, inputs)
+                if not response.ok:
+                    raise RuntimeError(str(response.payload))
+                yield AgentResponseChunk(
+                    request_id=request.request_id, channel_id=request.channel_id,
+                    payload=response.payload, metadata=response.metadata, is_complete=True,
+                )
+                return
+            async with aclosing(self.process_message_stream_impl(request, inputs)) as stream:
+                async for chunk in stream:
+                    yield chunk
+        finally:
+            self._unregister_session_agent_task(session_id)
 
     async def process_message_stream_impl(
         self, request: AgentRequest, inputs: dict[str, Any]

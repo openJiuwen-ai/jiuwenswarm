@@ -49,6 +49,7 @@ class SessionWorkKind(str, Enum):
     GOAL_CONTROL = "goal_control"
     GOAL_ATTACH = "goal_attach"
     CONTROL_INPUT = "control_input"
+    SESSION_INPUT = "session_input"
     HEARTBEAT = "heartbeat"
 
     @property
