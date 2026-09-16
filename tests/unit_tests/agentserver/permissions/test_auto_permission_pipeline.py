@@ -5,11 +5,10 @@ from __future__ import annotations
 import asyncio
 import json
 from copy import deepcopy
-from types import MethodType, SimpleNamespace, new_class
+from types import SimpleNamespace, new_class
 from unittest.mock import AsyncMock
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
-import jiuwenswarm.agents.harness.common.rails.permissions.tool_binding as tool_binding_module
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_override_consume as override_module
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
@@ -366,7 +365,7 @@ async def test_subagent_runtime_same_id_shadow_does_not_use_internal_fast_path(
         _parent_agent=resource._parent_agent,
     )
     monkeypatch.setattr(
-        tool_binding_module,
+        before_tool_module,
         "Runner",
         SimpleNamespace(
             resource_mgr=SimpleNamespace(get_tool=lambda *_args, **_kwargs: shadow)
@@ -394,7 +393,7 @@ async def test_subagent_runtime_subclass_shadow_does_not_use_internal_fast_path(
     shadow = object.__new__(shadow_type)
     shadow.__dict__.update(resource.__dict__)
     monkeypatch.setattr(
-        tool_binding_module,
+        before_tool_module,
         "Runner",
         SimpleNamespace(
             resource_mgr=SimpleNamespace(get_tool=lambda *_args, **_kwargs: shadow)
@@ -672,7 +671,7 @@ def _runtime_control_ctx(
         return resource
 
     monkeypatch.setattr(
-        tool_binding_module,
+        before_tool_module,
         "Runner",
         SimpleNamespace(resource_mgr=SimpleNamespace(get_tool=get_raw_tool)),
     )
@@ -710,185 +709,6 @@ def test_subagent_runtime_binding_rejects_missing_callback_context() -> None:
         before_tool_module._trusted_subagent_runtime_control_binding(invocation)
         is False
     )
-
-
-_READONLY_CASES = [
-    ("cron_list_jobs", {}), ("cron_get_job", {"job_id": "job-a"}),
-    ("cron_preview_job", {"job_id": "job-a"}), ("heartbeat_list_jobs", {"scope": "current"}),
-    ("heartbeat_get_job", {"job_id": "job-a"}), ("heartbeat_preview_job", {"job_id": "job-a"}),
-    ("read_terminal_output", {"terminal_id": "terminal-a"}),
-    ("wait_for_terminal_exit", {"terminal_id": "terminal-a"}),
-    ("convert_timestamp_to_utc8_time", {"timestamp": 1700000000}),
-]
-
-
-def _readonly_resource(name, tmp_path, monkeypatch, session_id="session-a", *, no_create=False):
-    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission import readonly_tool_bindings as bindings
-    from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import CronRuntimeBridge
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.tools.cron.cron_tools.get_cron_jobs_path",
-        lambda: tmp_path / "cron.json",
-    )
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.code.rails.heartbeat.runtime.get_heartbeat_jobs_path",
-        lambda: tmp_path / "heartbeat.json",
-    )
-    context = SimpleNamespace(session_id=session_id, channel_id="web", user_id="", metadata={}, tool_scope="readonly")
-    if name.startswith("cron_"):
-        bridge = CronRuntimeBridge()
-        bridge.set_backend(bindings._CronToolsCronBackend(bindings.CronTools()))
-        tools = bridge.build_tools(context=context, agent_id="readonly", allow_create=not no_create)
-    elif name.startswith("heartbeat_"):
-        tools = bindings.HeartbeatRuntimeBridge(bindings.HeartbeatRailRuntime(SimpleNamespace())).build_tools(context=context)
-    elif name == "convert_timestamp_to_utc8_time":
-        tools = [bindings.convert_timestamp_to_utc8_time]
-    else:
-        tools = bindings.acp.get_tools(session_id=session_id)
-    return next(tool for tool in tools if tool.card.name == name)
-
-
-@pytest.mark.parametrize(("name", "args"), _READONLY_CASES)
-@pytest.mark.parametrize("variant", ["valid", "shadow", "callable", "cross_session", "deny", "session_deny", "fail_closed"])
-async def test_readonly_real_binding_fast_path(tmp_path, monkeypatch, name, args, variant):
-    tool = _readonly_resource(name, tmp_path, monkeypatch, "another-session" if variant == "cross_session" else "session-a")
-    if variant == "shadow":
-        tool = LocalFunction(card=tool.card, func=lambda **kwargs: "not the builtin")
-    if variant == "callable":
-        monkeypatch.setattr(tool, "_func", lambda **kwargs: "replaced")
-    manager = AbilityManager(owner_id="readonly-permission")
-    manager.add_ability(tool.card, tool)
-    denies = SessionDenyStore()
-    if variant == "session_deny":
-        denies.record_denial(session_id="session-a", tool_name=name, tool_args=args, reason="user_rejected")
-    try:
-        for level in ("ask", "allow"):
-            policy_result = PolicyEvaluation(
-                level="deny" if variant == "deny" else level,
-                reason="configured", source="fail_closed" if variant == "fail_closed" else "engine",
-            )
-            rail, policy, reviewer, _base = _rail(tmp_path, policy_result, session_denies=denies)
-            ctx = _runtime_ctx(_Session(), tool_name=name, tool_args=args)
-            ctx.agent.ability_manager = manager
-            expected = "allow" if variant == "valid" or (variant == "cross_session" and name.startswith("convert_")) else "interrupt"
-            if variant in {"deny", "session_deny"}:
-                expected = "denied"
-            try:
-                result = await rail.before_tool_call(ctx)
-            except AbortError:
-                assert expected == "interrupt"
-            else:
-                assert classify_permission_result(result) == expected
-            assert len(policy.calls) == 1 and not reviewer.requests
-    finally:
-        manager.remove(name)
-
-
-@pytest.mark.parametrize(("name", "args"), _READONLY_CASES)
-@pytest.mark.parametrize("defect", ["owner", "missing", "card", "lookup", "code", "invoke"])
-def test_readonly_binding_rejects_unverified_dependencies(tmp_path, monkeypatch, name, args, defect):
-    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission import readonly_tool_bindings as bindings
-    tool = _readonly_resource(name, tmp_path, monkeypatch, no_create=name.startswith("cron_"))
-    ctx = _runtime_ctx(_Session(), tool_name=name, tool_args=args)
-    card = tool.card
-    ctx.agent.ability_manager = SimpleNamespace(get=lambda _: card)
-    monkeypatch.setattr(tool_binding_module.Runner.resource_mgr, "get_tool", lambda *a, **k: tool)
-    invocation = before_tool_module._extract_invocation((ctx,), {})
-    assert bindings.trusted_readonly_binding(invocation, "session-a")
-    if defect == "owner":
-        captured = dict(zip(tool._func.__code__.co_freevars, tool._func.__closure__ or ()))
-        if name.startswith("cron_"):
-            captured["backend"].cell_contents._inner = object()
-        elif name.startswith("heartbeat_"):
-            captured["self"].cell_contents._service = object()
-        elif name in bindings._ACP_DELEGATES:
-            monkeypatch.setattr(bindings.acp, name, lambda **kwargs: "replaced delegate")
-        else:
-            monkeypatch.setattr(tool, "_func", lambda **kwargs: "replaced")
-    elif defect == "missing":
-        ctx.agent.ability_manager = None
-    elif defect == "card":
-        monkeypatch.setattr(tool, "_card", deepcopy(card))
-    elif defect == "lookup":
-        monkeypatch.setattr(tool_binding_module.Runner.resource_mgr, "get_tool", lambda *a, **k: 1 / 0)
-    elif defect == "code":
-        monkeypatch.setattr(tool, "_func", lambda **kwargs: None)
-    else:
-        monkeypatch.setattr(tool, "invoke", AsyncMock())
-    assert not bindings.trusted_readonly_binding(invocation, "session-a")
-
-
-@pytest.mark.parametrize("defect", [
-    "cron_method", "cron_route", "cron_tools", "heartbeat_bridge", "heartbeat_service", "cron_wrapper",
-])
-@pytest.mark.parametrize("level", ["ask", "allow"])
-async def test_readonly_rejects_rebound_methods(tmp_path, monkeypatch, defect, level):
-    from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission import readonly_tool_bindings as bindings
-    name = "heartbeat_list_jobs" if defect.startswith("heartbeat_") else "cron_list_jobs"
-    tool = _readonly_resource(name, tmp_path, monkeypatch, no_create=defect == "cron_wrapper")
-    other = _readonly_resource(name, tmp_path, monkeypatch, session_id="another-session")
-    manager = AbilityManager(owner_id="readonly-method-binding")
-    manager.add_ability(tool.card, tool)
-    ctx = _runtime_ctx(_Session(), tool_name=name, tool_args={})
-    ctx.agent.ability_manager = manager
-    invocation = before_tool_module._extract_invocation((ctx,), {})
-    rail, _policy, reviewer, _base = _rail(tmp_path, PolicyEvaluation(level=level, reason="configured"))
-
-    def closure(resource):
-        return dict(zip(resource._func.__code__.co_freevars, (c.cell_contents for c in resource._func.__closure__)))
-
-    try:
-        assert bindings.trusted_readonly_binding(invocation, "session-a")
-        assert await rail.before_tool_call(ctx) is None
-        current, foreign = closure(tool), closure(other)
-        if defect.startswith("cron_"):
-            owner, other_owner = current["backend"], foreign["backend"]
-            if defect == "cron_wrapper":
-                async def replacement(self, **kwargs):
-                    raise AssertionError("unverified delegate must not execute")
-                monkeypatch.setattr(owner, "list_jobs", MethodType(replacement, owner._inner))
-            else:
-                method = "_with_route" if defect == "cron_route" else "list_jobs"
-                if defect == "cron_tools":
-                    owner, other_owner = owner._cron_tools, other_owner._cron_tools
-                monkeypatch.setattr(owner, method, getattr(other_owner, method))
-        else:
-            owner, other_owner = current["self"], foreign["self"]
-            method = "_send"
-            if defect == "heartbeat_service":
-                owner, other_owner = owner._service, other_owner._service
-                method = "handle_operation"
-            monkeypatch.setattr(owner, method, getattr(other_owner, method))
-        # Exercise the actual rail, not only a helper-level rejection.
-        with pytest.raises(AbortError):
-            await rail.before_tool_call(ctx)
-        assert not bindings.trusted_readonly_binding(invocation, "session-a")
-        assert not reviewer.requests
-    finally:
-        manager.remove(name)
-
-
-@pytest.mark.parametrize("case", [
-    "valid", "other_owner", "other_func", "unbound", "missing", "none",
-    "empty_owner", "empty_func", "empty_both",
-])
-def test_bound_method_requires_both_expected_identities(case):
-    class Owner:
-        def first(self):
-            pass
-
-        def second(self):
-            pass
-
-    owner = Owner()
-    methods = {
-        "other_owner": Owner().first, "other_func": owner.second,
-        "unbound": Owner.first, "missing": object(), "none": None, "empty_both": None,
-    }
-    assert tool_binding_module.matches_bound_method(
-        methods.get(case, owner.first),
-        expected_owner=None if case in {"empty_owner", "empty_both"} else owner,
-        expected_func=None if case in {"empty_func", "empty_both"} else Owner.first,
-    ) is (case == "valid")
 
 
 def _install_core_auto_confirm_contract(base: FakeBaseRail) -> None:

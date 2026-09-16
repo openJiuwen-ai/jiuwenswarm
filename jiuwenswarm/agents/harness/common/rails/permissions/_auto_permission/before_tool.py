@@ -6,6 +6,7 @@ import asyncio
 from collections.abc import Mapping
 from typing import Any
 
+from openjiuwen.core.runner import Runner
 from openjiuwen.harness.tools.subagent.subagent_tools import (
     SubagentCloseTool,
     SubagentListTool,
@@ -45,8 +46,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models
     ToolInvocation,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import NATIVE_PATH_ACCESS
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_binding import resolve_tool_binding
-from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.readonly_tool_bindings import trusted_readonly_binding
 from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context import (
     PUBLIC_HTTPS_FETCH_CONTEXT_ATTR,
 )
@@ -158,10 +157,12 @@ def _trusted_subagent_runtime_control_binding(invocation: ToolInvocation) -> boo
     try:
         callback_agent = invocation.ctx.agent
         manager = callback_agent.ability_manager
-        resource = resolve_tool_binding(callback_agent, invocation.tool_name, expected_type)
+        card = manager.get(invocation.tool_name)
+        resource = Runner.resource_mgr.get_tool(card.id, session=None)
         outer_agent = _subagent_tool_parent(resource)
         return bool(
-            resource is not None
+            resource.__class__ is expected_type
+            and resource.card is card
             and outer_agent.react_agent is callback_agent
             and outer_agent.ability_manager is manager
         )
@@ -418,10 +419,6 @@ class AutoPermissionBeforeToolMixin:
             facts.capability.operation_family == "subagent_runtime_control"
             and _trusted_subagent_runtime_control_binding(invocation)
         )
-        readonly_binding_verified = bool(
-            facts.capability.operation_family == "internal_readonly"
-            and trusted_readonly_binding(invocation, session_id)
-        )
 
         if trusted_send_resolution is not None:
             if (
@@ -566,8 +563,6 @@ class AutoPermissionBeforeToolMixin:
                 "subagent_runtime_control_binding_unverified",
                 "manual_only",
             )
-        if facts.capability.operation_family == "internal_readonly" and not readonly_binding_verified:
-            domain_route = DecisionRoute(ASK_LEVEL, "readonly_tool_binding_unverified", "manual_only")
 
         if _is_rejection_confirmation(user_input):
             if invocation_resume is None:
@@ -791,7 +786,6 @@ class AutoPermissionBeforeToolMixin:
         if terminal_internal_route(
             facts,
             subagent_runtime_control_verified=subagent_runtime_control_verified,
-            readonly_binding_verified=readonly_binding_verified,
         ) is not None:
             self._record_reviewer_success_metadata(
                 invocation.ctx,
