@@ -183,23 +183,29 @@ def _normalize_actions(actions: Any) -> list[dict[str, Any]]:
     return normalized
 
 
-async def _resolve_cron_authorization_target(cron_job_id: str) -> dict[str, Any] | None:
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+async def _resolve_cron_authorization_target(
+    cron_job_id: str, *, user_id: str, request_id: str = "", session_id: str = "",
+) -> dict[str, Any] | None:
+    from jiuwenswarm.agents.harness.common.tools.cron.cron_runtime import (
+        query_authoritative_cron_job,
+    )
 
-    job = await CronJobStore().get_job(cron_job_id)
+    job = await query_authoritative_cron_job(
+        cron_job_id, user_id=user_id, request_id=request_id, session_id=session_id,
+    )
     if job is None:
         return None
     return {
         "type": "cronJob",
-        "cronJobId": job.id,
-        "name": job.name,
-        "description": job.description,
+        "cronJobId": job["id"],
+        "name": job.get("name"),
+        "description": job.get("description"),
         "persistent": True,
-        "enabled": bool(job.enabled),
+        "enabled": bool(job.get("enabled", True)),
         "activationRequiredAfterApproval": True,
         "schedule": {
-            "cronExpression": job.cron_expr,
-            "timezone": job.timezone,
+            "cronExpression": job.get("cron_expr"),
+            "timezone": job.get("timezone"),
         },
     }
 
@@ -257,7 +263,17 @@ async def request_a4p_intent_authorization(
     cron_job_id = str(cron_job_id or "").strip()
     cron_target = None
     if cron_job_id:
-        cron_target = await _resolve_cron_authorization_target(cron_job_id)
+        try:
+            cron_target = await _resolve_cron_authorization_target(
+                cron_job_id, user_id=execution_context.user_id,
+                request_id=execution_context.request_id, session_id=session_id,
+            )
+        except Exception as exc:
+            AUTHORIZATION_EXECUTION_CONTEXTS.set_attempt(
+                session_id, request_id=execution_context.request_id,
+                status="failed", error=str(exc),
+            )
+            return {"ok": False, "error": str(exc), "code": "CRON_JOB_QUERY_FAILED"}
         if cron_target is None:
             AUTHORIZATION_EXECUTION_CONTEXTS.set_attempt(
                 session_id,

@@ -21,7 +21,8 @@ await build({
         const mocks = {
           '../../../../components/ui':
             'export { Switch } from "./src/components/ui/Switch/Switch"; export { Button } from "./src/components/ui/Button/Button";',
-          '../../../../stores': 'export const useChatStore = selector => selector({activeSessionId:"session"});',
+          '../../../../stores':
+            'export const useChatStore = selector => selector({activeSessionId:globalThis.a4pFixture.session});',
           '../../services/SettingsServicesProvider':
             'export const useSettingsServices = () => globalThis.a4pFixture.services;',
           '../../services/SettingsSourceProvider':
@@ -76,19 +77,26 @@ async function mount(options, run) {
   const calls = [],
     saves = [];
   let rejectStatus = options.rejectStatus;
+  let config = { enabled: options.enabled ?? true, require_user_signature: options.signed ?? false };
   globalThis.a4pFixture = {
-    source: {
-      values: { a4p_enabled: options.enabled ?? true, a4p_require_user_signature: options.signed ?? false },
-      savingKeys: new Set(),
-      save: async (update) => {
-        saves.push(update);
-        Object.assign(a4pFixture.source.values, update);
-      },
-    },
+    session: options.session === undefined ? 'session' : options.session,
     services: {
       isConnected: true,
-      request: async (method) => {
+      request: async (method, params) => {
         calls.push(method);
+        if (method === 'a4p.config.get') {
+          if (options.rejectConfig) throw new Error('config unavailable');
+          return { ...config };
+        }
+        if (method === 'a4p.config.update') {
+          const { session_id, ...update } = params;
+          assert.equal(session_id, 'session');
+          saves.push(update);
+          if (options.rejectUpdate) throw new Error('update failed');
+          if (options.update) return options.update(update);
+          config = { ...config, ...update };
+          return config;
+        }
         if (method === 'a4p.webauthn.credentials.get') {
           if (rejectStatus) throw new Error('offline');
           if (options.pending) return new Promise(() => {});
@@ -146,7 +154,7 @@ for (const [name, options, reason] of [
       assert.deepEqual(saves, []);
       await click('register');
       assert.equal(get('environment-error').textContent, 'a4pSettings.' + reason);
-      assert.deepEqual(calls, ['a4p.webauthn.credentials.get']);
+      assert.deepEqual(calls, ['a4p.webauthn.credentials.get', 'a4p.config.get']);
       assert.equal(browserCalls(), 0);
     });
   });
@@ -160,7 +168,7 @@ test('enabled signature shows error and can be disabled even with A4P off', asyn
       assert.deepEqual(saves, []);
       assert.equal(get('signature').disabled, false);
       await click('signature');
-      assert.deepEqual(saves, [{ a4p_require_user_signature: false }]);
+      assert.deepEqual(saves, [{ require_user_signature: false }]);
       assert.equal(get('environment-error'), null);
     },
   );
@@ -169,7 +177,7 @@ test('enabled signature shows error and can be disabled even with A4P off', asyn
 test('supported origin allows enable and reaches registration RPC', async () => {
   await mount({}, async ({ get, click, saves, calls }) => {
     await click('signature');
-    assert.deepEqual(saves, [{ a4p_require_user_signature: true }]);
+    assert.deepEqual(saves, [{ require_user_signature: true }]);
     assert.equal(get('environment-error'), null);
     await click('register');
     assert.ok(calls.includes('a4p.webauthn.registration.options'));
@@ -184,4 +192,73 @@ test('status recovery clears stale environment hint', async () => {
     await click('refresh');
     assert.equal(get('environment-error'), null);
   });
+});
+
+test('config load failure blocks toggles and surfaces error', async () => {
+  await mount({ rejectConfig: true }, async ({ get, click, saves }) => {
+    assert.equal(get('enabled').disabled, true);
+    assert.equal(get('signature').disabled, true);
+    assert.equal(get('operation-error').textContent, 'config unavailable');
+    await click('enabled');
+    assert.deepEqual(saves, []);
+  });
+});
+
+test('failed update retains confirmed state and permits retry', async () => {
+  await mount({ rejectUpdate: true }, async ({ get, click, saves }) => {
+    await click('enabled');
+    assert.equal(get('enabled').getAttribute('aria-checked'), 'true');
+    assert.equal(get('enabled').disabled, false);
+    assert.equal(get('operation-error').textContent, 'update failed');
+    assert.deepEqual(saves, [{ enabled: false }]);
+  });
+});
+
+test('pending update blocks both toggles and applies canonical response', async () => {
+  let resolve;
+  await mount(
+    {
+      update: () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    },
+    async ({ get, click, saves }) => {
+      await click('enabled');
+      assert.equal(get('enabled').disabled, true);
+      assert.equal(get('signature').disabled, true);
+      await click('signature');
+      assert.equal(saves.length, 1);
+      await act(async () => resolve({ enabled: false, require_user_signature: false }));
+      assert.equal(get('enabled').getAttribute('aria-checked'), 'false');
+    },
+  );
+});
+
+test('missing session blocks config and credential requests', async () => {
+  await mount({ session: null }, async ({ get, calls }) => {
+    assert.deepEqual(calls, []);
+    assert.equal(get('enabled').disabled, true);
+    assert.equal(get('register').disabled, true);
+  });
+});
+
+test('session switch ignores a stale update response', async () => {
+  let resolve;
+  await mount(
+    {
+      update: () =>
+        new Promise((r) => {
+          resolve = r;
+        }),
+    },
+    async ({ get, click, render }) => {
+      await click('enabled');
+      a4pFixture.session = 'next-session';
+      await render();
+      await act(async () => resolve({ enabled: false, require_user_signature: true }));
+      assert.equal(get('enabled').getAttribute('aria-checked'), 'true');
+      assert.equal(get('signature').getAttribute('aria-checked'), 'false');
+    },
+  );
 });

@@ -233,7 +233,7 @@ class WebAuthorizerBroker:
         event_type: str,
         terminal: dict[str, Any] | None = None,
     ) -> None:
-        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+        from jiuwenswarm.runtime.host_services import send_runtime_push
 
         ui_context = dict(request.ui_context)
         route = request.route
@@ -252,7 +252,7 @@ class WebAuthorizerBroker:
             )
         else:
             payload.update(terminal)
-        await AgentWebSocketServer.get_instance().send_push(
+        delivered = await send_runtime_push(
             {
                 "channel_id": str(ui_context.get("channelId") or "web"),
                 "session_id": route.session_id,
@@ -268,6 +268,8 @@ class WebAuthorizerBroker:
                 "payload": payload,
             }
         )
+        if not delivered:
+            raise RuntimeError("A4P authorization push could not be delivered")
 
 
 __all__ = ["WebAuthorizationRequest", "WebAuthorizerBroker"]

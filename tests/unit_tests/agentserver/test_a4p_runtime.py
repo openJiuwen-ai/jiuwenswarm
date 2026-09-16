@@ -44,7 +44,6 @@ from jiuwenswarm.agents.harness.common.a4p_runtime import (
     DEFAULT_CRON_INTENT_VALIDITY_SECONDS,
     INTERNAL_A4P_USER_ID,
     is_a4p_enabled,
-    remove_cron_intent_token_for_job,
     resolve_a4p_identity,
 )
 from jiuwenswarm.agents.harness.common.tools.a4p_tools import (
@@ -126,8 +125,9 @@ def test_authorizer_route_preserves_logical_agent_reference() -> None:
         session_id="session-1",
         channel_id="web",
         req_method=ReqMethod.CHAT_SEND,
-        params={},
-        metadata={"app_id": "app-1", "ws_id": "ws-1"},
+        params={"user_id": "untrusted-param"},
+        user_id="trusted-user",
+        metadata={"app_id": "app-1", "ws_id": "ws-1", "user_id": "untrusted-metadata"},
         agent_ref={"mode": "team", "id": "research"},
     )
 
@@ -137,6 +137,7 @@ def test_authorizer_route_preserves_logical_agent_reference() -> None:
         mode="agent",
     )
 
+    assert context.user_id == "trusted-user"
     assert context.authorizer_route == AuthorizerRoute(
         session_id="session-1",
         app_id="app-1",
@@ -285,32 +286,6 @@ def test_a4p_identity_metadata_agent_overrides_agent_name() -> None:
     )
 
     assert identity.agent_id == "metadata-agent"
-
-
-def test_a4p_status_reports_intent_only_state() -> None:
-    runtime = A4PRuntime(
-        {
-            "a4p": {
-                "enabled": False,
-            }
-        }
-    )
-    payload = runtime.status()
-
-    assert payload["enabled"] is False
-    assert payload["requireUserSignature"] is False
-    assert "intentAuthorizationEnabled" not in payload
-    assert payload["intentValiditySeconds"] == 3600
-    assert payload["cronIntentValiditySeconds"] == DEFAULT_CRON_INTENT_VALIDITY_SECONDS
-    assert payload["authorizationTimeoutSeconds"] == 300
-    assert runtime.authorizer.timeout_seconds == 300
-    assert "intentTokenUsagePath" not in payload
-    assert "userId" not in payload
-    assert "userName" not in payload
-    assert payload["webauthnCredentialStorePath"].endswith(
-        "a4p/webauthn_credentials.json"
-    )
-    assert payload["webauthnCredentialsCount"] == 0
 
 
 @pytest.mark.asyncio
@@ -1212,13 +1187,8 @@ async def test_disabling_a4p_cancels_pending_and_pushes_terminal_event(
         def get_instance() -> _Server:
             return _Server()
 
-    import jiuwenswarm.server.agent_ws_server as agent_ws_server
-
-    monkeypatch.setattr(
-        agent_ws_server,
-        "AgentWebSocketServer",
-        _AgentWebSocketServer,
-    )
+    from jiuwenswarm.runtime import host_services
+    monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     task = asyncio.create_task(
         runtime.authorizer.request_authorization(
             WebAuthorizationRequest(
@@ -1344,21 +1314,20 @@ def test_agent_server_payload_preserves_agent_ref() -> None:
 async def test_a4p_cron_authorization_target_includes_job_description(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    from jiuwenswarm.gateway.cron.store import CronJobStore
+    from jiuwenswarm.agents.harness.common.tools.cron import cron_runtime
 
-    async def _get_job(_store, cron_job_id: str):
-        return SimpleNamespace(
-            id=cron_job_id,
-            name="daily report",
-            description="Write a daily report to the workspace",
-            enabled=False,
-            cron_expr="0 9 * * *",
-            timezone="Asia/Shanghai",
+    async def _get_job(cron_job_id: str, **kwargs):
+        assert kwargs["user_id"] == "owner"
+        return dict(
+            id=cron_job_id, name="daily report",
+            description="Write a daily report to the workspace", enabled=False,
+            cron_expr="0 9 * * *", timezone="Asia/Shanghai",
         )
 
-    monkeypatch.setattr(CronJobStore, "get_job", _get_job)
-
-    target = await a4p_tools_module._resolve_cron_authorization_target("cron-job-1")
+    monkeypatch.setattr(cron_runtime, "query_authoritative_cron_job", _get_job)
+    target = await a4p_tools_module._resolve_cron_authorization_target(
+        "cron-job-1", user_id="owner",
+    )
 
     assert target is not None
     assert target["description"] == "Write a daily report to the workspace"
@@ -1368,7 +1337,7 @@ async def test_a4p_cron_authorization_target_includes_job_description(
 async def test_a4p_tool_rejects_unknown_cron_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _missing_target(cron_job_id: str):
+    async def _missing_target(cron_job_id: str, **kwargs):
         _ = cron_job_id
         return None
 
@@ -1389,7 +1358,7 @@ async def test_a4p_tool_rejects_unknown_cron_job(
 async def test_a4p_tool_rejects_enabled_cron_job(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _enabled_target(cron_job_id: str):
+    async def _enabled_target(cron_job_id: str, **kwargs):
         return {
             "type": "cronJob",
             "cronJobId": cron_job_id,
@@ -1417,7 +1386,7 @@ async def test_a4p_tool_rejects_enabled_cron_job(
 async def test_a4p_cron_authorization_success_requires_explicit_enable(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    async def _disabled_target(cron_job_id: str):
+    async def _disabled_target(cron_job_id: str, **kwargs):
         return {
             "type": "cronJob",
             "cronJobId": cron_job_id,
@@ -1909,24 +1878,6 @@ def test_a4p_cron_authorization_summary_exposes_scope_without_token(
     assert "token" not in summary
 
 
-def test_remove_cron_intent_token_without_initializing_runtime(
-    monkeypatch: pytest.MonkeyPatch,
-    tmp_path,
-) -> None:
-    monkeypatch.setattr(a4p_runtime, "get_config_dir", lambda: tmp_path)
-    monkeypatch.setattr(a4p_runtime, "_runtime", None)
-    path = tmp_path / "a4p" / CRON_INTENT_TOKENS_DB_FILENAME
-    store = SQLiteCronIntentTokenStore(path)
-    token = {"tokenId": "token", "expireAt": "2099-01-01T00:00:00Z"}
-    store.put("job-1", token)
-    store.put("job-2", token)
-
-    remove_cron_intent_token_for_job("job-1")
-
-    assert store.get("job-1") is None
-    assert store.get("job-2") == token
-
-
 def test_a4p_cron_token_store_preserves_cross_instance_updates(tmp_path) -> None:
     path = tmp_path / "a4p" / CRON_INTENT_TOKENS_DB_FILENAME
     first = SQLiteCronIntentTokenStore(path)
@@ -1939,9 +1890,10 @@ def test_a4p_cron_token_store_preserves_cross_instance_updates(tmp_path) -> None
         "job-2",
         {"tokenId": "token-2", "expireAt": "2099-01-01T00:00:00Z"},
     )
-    first.remove("job-1")
+    replacement = {"tokenId": "replacement", "expireAt": "2099-01-01T00:00:00Z"}
+    first.put("job-1", replacement)
 
-    assert first.get("job-1") is None
+    assert second.get("job-1") == replacement
     assert second.get("job-2") == {
         "tokenId": "token-2",
         "expireAt": "2099-01-01T00:00:00Z",
@@ -2135,9 +2087,8 @@ async def test_a4p_authorization_push_uses_session_channel(monkeypatch: pytest.M
         def get_instance() -> _Server:
             return _Server()
 
-    import jiuwenswarm.server.agent_ws_server as agent_ws_server
-
-    monkeypatch.setattr(agent_ws_server, "AgentWebSocketServer", _AgentWebSocketServer)
+    from jiuwenswarm.runtime import host_services
+    monkeypatch.setattr(host_services, "_runtime_push_handler", _Server().send_push)
     assert route is not None
     await runtime.authorizer._send_push(
         WebAuthorizationRequest(

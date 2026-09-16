@@ -10309,12 +10309,13 @@ class AgentWebSocketServer:
                 reload_kwargs["target_session_id"] = target_session_id
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
-            if isinstance(config_payload, dict):
+            if isinstance(config_payload, dict) and "a4p" in config_payload:
                 from jiuwenswarm.agents.harness.common.a4p_runtime import (
-                    reconfigure_a4p_runtime,
+                    get_a4p_config,
                 )
 
-                await reconfigure_a4p_runtime(config_payload)
+                # Gateway snapshots may predate an AgentServer-owned config RPC.
+                config_payload = {**config_payload, "a4p": get_a4p_config()}
             agent_reload_scopes = {
                 "model",
                 "multimodal",

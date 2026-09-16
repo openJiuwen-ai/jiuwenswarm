@@ -506,6 +506,25 @@ class CronTools:
             out.append(d)
         return out
 
+    async def get_authoritative_job(self, job_id: str) -> Any:
+        """Read the owner-scoped host store, never a snapshot or local projection."""
+        if not self._uses_gateway_command_ack():
+            raise RuntimeError("authoritative cron query requires acknowledged transport")
+        result = await self._send("get", {"job_id": job_id, "authoritative": True})
+        if result.get("status") != "ok" or "data" not in result:
+            raise RuntimeError("invalid authoritative cron query response")
+        data = result["data"]
+        if not isinstance(data, dict):
+            raise RuntimeError("invalid authoritative cron query response")
+        if data.get("status") == "missing":
+            return None
+        if data.get("status") != "found":
+            raise RuntimeError("authoritative cron query failed: " + str(data.get("status")))
+        job = data.get("job")
+        if not isinstance(job, dict) or job.get("id") != job_id:
+            raise RuntimeError("invalid authoritative cron job")
+        return job
+
     async def get_job(self, job_id: str) -> Any:
         if self._uses_gateway_command_ack():
             return (await self._send("get", {"job_id": job_id})).get("data")
@@ -694,12 +713,6 @@ class CronTools:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
                 deleted = bool((result.get("data") or {}).get("deleted"))
-                if deleted:
-                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
-                        remove_cron_intent_token_for_job,
-                    )
-
-                    remove_cron_intent_token_for_job(job_id)
                 return deleted
             # Gateway's AgentOS snapshot is best-effort.  A restarted
             # AgentServer (or a failed pre-turn sync) must still be able to ask
@@ -715,11 +728,6 @@ class CronTools:
         await self._send("delete", {"job_id": job_id})
         self._pending_view_for_route().pop(job_id, None)
         self._pending_deletes_for_route().add(job_id)
-        from jiuwenswarm.agents.harness.common.a4p_runtime import (
-            remove_cron_intent_token_for_job,
-        )
-
-        remove_cron_intent_token_for_job(job_id)
         # 上游 CronToolBackend / wrapper 契约声明 delete 返回 bool；True 表示
         # 删除请求已提交 Gateway 单源（异步落库），不得返回 dict 破坏单用户兼容。
         return True

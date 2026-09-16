@@ -1,3 +1,6 @@
+import json
+import sqlite3
+from contextlib import closing
 from unittest.mock import AsyncMock
 
 import pytest
@@ -87,4 +90,59 @@ def test_cron_rejects_invalid_new_tokens_and_expires_existing(tmp_path, monkeypa
     assert store.get("invalid") is None
     monkeypatch.setattr(a4p_token_expiry.time, "time", lambda: 5_000_000_000)
     assert store.get("s") is None
-    assert store.summaries() == {}
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute("SELECT COUNT(*) FROM cron_intent_tokens").fetchone() == (0,)
+
+
+def seed_tokens(store):
+    store.put("valid", token())
+    with closing(sqlite3.connect(store.path)) as connection:
+        connection.executemany(
+            "INSERT INTO cron_intent_tokens VALUES (?, ?, 0)",
+            [
+                ("expired", json.dumps(token("old", "2000-01-01T00:00:00Z"))),
+                ("invalid-expiry", json.dumps(token("bad", "invalid"))),
+                ("invalid-json", "{"),
+                ("invalid-type", "[]"),
+            ],
+        )
+        connection.commit()
+
+
+def test_prune_expired_removes_all_stale_rows_without_accessing_jobs(tmp_path):
+    store = SQLiteCronIntentTokenStore(tmp_path / "tokens.sqlite3")
+    assert store.prune_expired() == 0
+    assert not store.path.exists()
+    seed_tokens(store)
+    assert store.prune_expired() == 4
+    assert store.prune_expired() == 0
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute("SELECT cron_job_id FROM cron_intent_tokens").fetchall() == [("valid",)]
+    assert store.get("valid") == token()
+
+
+def test_prune_preserves_concurrently_replaced_token(tmp_path, monkeypatch):
+    store = SQLiteCronIntentTokenStore(tmp_path / "tokens.sqlite3")
+    seed_tokens(store)
+    remove = store._remove_if_unchanged
+
+    def replace_before_remove(job_id, encoded):
+        store.put(job_id, token("replacement"))
+        return remove(job_id, encoded)
+
+    monkeypatch.setattr(store, "_remove_if_unchanged", replace_before_remove)
+    assert store.prune_expired() == 0
+    assert store.get("expired") == token("replacement")
+
+
+def test_runtime_initialization_prunes_persisted_expired_tokens(tmp_path, monkeypatch):
+    from jiuwenswarm.agents.harness.common import a4p_runtime
+    from jiuwenswarm.agents.harness.common.a4p_cron_token_store import CRON_INTENT_TOKENS_DB_FILENAME
+
+    monkeypatch.setattr(a4p_runtime, "get_config_dir", lambda: tmp_path)
+    store = SQLiteCronIntentTokenStore(tmp_path / "a4p" / CRON_INTENT_TOKENS_DB_FILENAME)
+    seed_tokens(store)
+    instance = A4PRuntime({"a4p": {"enabled": True}})
+    with closing(sqlite3.connect(store.path)) as connection:
+        assert connection.execute("SELECT cron_job_id FROM cron_intent_tokens").fetchall() == [("valid",)]
+    assert instance.cron_tokens.get("valid") == token()

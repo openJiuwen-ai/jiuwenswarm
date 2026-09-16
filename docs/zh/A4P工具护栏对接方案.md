@@ -176,7 +176,7 @@ sequenceDiagram
 - 阶段二与 2.2 基本一致，差异仅在于 Runtime 通过 `find_valid_cron_intent_token()` 按 `metadata.cron.job_id` 查 token，而非按 `session_id` 查 session token 池。
 - 每次 cron 模型调用前，`RuntimePromptRail` 按 `metadata.cron.job_id` 自动注入该 job 的授权 actions、params 和有效期；不向 Agent 暴露原始 token 或 SDK 内部协议字段。Prompt 明确要求只执行 scope 内调用，并提示 scope 外、过期或身份不匹配的调用无法完成 cron 场景下的交互式审批，因而可能失败。
 - A4P 启用时，进入权限 host 确认回调的 cron 调用遇到 scope miss、缺失 job id 或校验失败，采用 fail-closed：直接向 Agent 返回 `A4P_CRON_SCOPE_DENIED`，不回落 session token，也不创建普通 permission interrupt。该限制不覆盖此前已由权限层直接处理的调用（见 4.2）。Agent 可根据反馈调整后续步骤或报告失败。
-- 删除 cron job 时同步删除对应 token；cron token 默认有效 30 天，可由授权工具传入的 `validitySeconds` 覆盖。
+- 删除 cron job 不主动删除对应 token；cron token 默认有效 30 天，可由授权工具传入的 `validitySeconds` 覆盖。过期记录在 A4P runtime 初始化或现有存储读取清理路径中删除。
 
 ### 2.4 Token 匹配规则
 
@@ -249,10 +249,12 @@ JiuwenSwarm Web 当前按单用户个人助理处理，因此 A4P SDK 所需的 
 - `runtime.authorizer.pending_for_route()` 按逻辑路由返回尚未结束的授权请求，供 Web 重连或切回 session 后恢复卡片。
 - session token 在查找、导出和导入时过滤过期项并删除空会话条目；session/cron 共用与 SDK 一致的过期判断（UTC 秒格式，当前时间严格晚于 expireAt 才过期），过期、缺失或非法 expireAt 的新 token 不入库。闲置 session 不做定时扫描或主动释放。
 - `find_valid_intent_token()` 通过 SDK `verify_intent_token()` 校验 session token。
-- `a4p/cron_intent_tokens.sqlite3` 持久化保存 `cronJobId -> token` 绑定，并通过 SQLite 事务支持 Gateway 与 AgentServer 跨进程安全更新。
-- JiuwenSwarm 的 `SQLiteCronIntentTokenStore` 保存 cron job 与 token 的宿主归属。
-- `find_valid_cron_intent_token()` 只按当前 `cron.job_id` 查对应 token，再通过 SDK 原生语义校验 action、params、agent 和 expireAt。
-- 删除 cron job 时同步清理对应的持久化 token。
+- `a4p/cron_intent_tokens.sqlite3` 持久化保存 `cronJobId -> token` 绑定，由 AgentServer 读写，Gateway 不访问 token 数据库。
+- `SQLiteCronIntentTokenStore` 保存任务 ID 与 token 的绑定。
+- `find_valid_cron_intent_token()` 按当前 `cron.job_id` 查询绑定，通过 SDK 校验 action、params、agent 和有效期，不远程检查任务是否存在。
+- `prune_expired()` 全量清理过期或无效记录，在 A4P runtime 初始化时调用；保留 `get()` 对当前任务 token 的按需清理；移除无业务调用的 `status()`、`cron_intent_token_status()` 和 `summaries()`。孤立 token 到期后需等上述清理路径触发从数据库删除。
+- A4P 设置通过 `a4p.config.get` / `a4p.config.update` 由 AgentServer 校验、持久化并更新运行时；接口返回 `enabled` 和 `require_user_signature` 布尔值，关闭 A4P 时仍可管理配置。
+- 授权 broker 使用宿主注入的 `send_runtime_push`，不引用 AgentServer 单例。Gateway 保留协议转发和可信路由校验，不 import A4P 实现。
 
 ### 4.2 权限护栏
 

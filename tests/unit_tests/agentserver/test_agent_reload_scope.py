@@ -585,23 +585,23 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_agent_reload_config_handler_reconfigures_a4p_before_reload(monkeypatch):
+async def test_agent_reload_config_preserves_agent_owned_a4p_config(monkeypatch):
     from jiuwenswarm.agents.harness.common import a4p_runtime
 
     server = agent_ws_server_module.AgentWebSocketServer()
     order = []
 
-    async def fake_reconfigure_a4p_runtime(config):
-        assert config == {"a4p": {"enabled": False}}
-        order.append("reconfigure")
+    reconfigure = AsyncMock()
+    monkeypatch.setattr(a4p_runtime, "get_a4p_config", lambda: {"enabled": True})
 
     async def fake_reload(config, env, **kwargs):
+        assert config == {"a4p": {"enabled": True}}
         order.append("reload")
 
     monkeypatch.setattr(
         a4p_runtime,
         "reconfigure_a4p_runtime",
-        fake_reconfigure_a4p_runtime,
+        reconfigure,
     )
     monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
     monkeypatch.setattr(
@@ -627,7 +627,9 @@ async def test_agent_reload_config_handler_reconfigures_a4p_before_reload(monkey
     ws = FakeWebSocket()
     await server._handle_agent_reload_config(ws, request, asyncio.Lock())
 
-    assert order == ["reconfigure", "reload"]
+    assert order == ["reload"]
+    reconfigure.assert_not_awaited()
+    assert request.params["config"] == {"a4p": {"enabled": False}}
     assert json.loads(ws.sent[-1])["ok"] is True
 
 

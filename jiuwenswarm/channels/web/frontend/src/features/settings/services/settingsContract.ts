@@ -60,7 +60,7 @@ const yamlField = (
 /**
  * Authoritative flat backend-field contract used by Settings business modules.
  * Keep this list aligned with app_web_handlers._CONFIG_SET_ENV_MAP,
- * _CONFIG_YAML_KEYS, _A4P_CONFIG_SPECS and the Symphony-specific config specs.
+ * _CONFIG_YAML_KEYS and the Symphony-specific config specs.
  */
 export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
   envField('embed_api_base', 'models', 'text', 'EMBED_API_BASE'),
@@ -129,8 +129,6 @@ export const SETTINGS_CONFIG_FIELDS: readonly ConfigFieldContract[] = [
 
   yamlField('a2ui_enabled', 'experimental', 'boolean', 'a2ui.enabled'),
   yamlField('rsi_enabled', 'experimental', 'boolean', 'rsi.enabled'),
-  yamlField('a4p_enabled', 'experimental', 'boolean', 'a4p.enabled'),
-  yamlField('a4p_require_user_signature', 'experimental', 'boolean', 'a4p.require_user_signature'),
   yamlField('trajectory_ui_enabled', 'experimental', 'boolean', 'trajectory_ui.enabled'),
   yamlField('task_full_duplex_enabled', 'experimental', 'boolean', 'experimental.task_full_duplex_enabled'),
   envField('asr_api_base', 'experimental', 'text', 'ASR_API_BASE'),

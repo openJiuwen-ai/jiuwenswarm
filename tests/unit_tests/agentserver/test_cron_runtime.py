@@ -1283,32 +1283,3 @@ class TestBuildToolsAllowCreate:
         result = await unified._func(action="list")
 
         assert result == {"jobs": [{"id": "job-1"}]}
-
-
-@pytest.mark.asyncio
-async def test_cron_tools_delete_removes_a4p_token(monkeypatch: pytest.MonkeyPatch) -> None:
-    removed: list[str] = []
-
-    async def _view_job(job_id: str):
-        return SimpleNamespace(id=job_id, mode="agent")
-
-    async def _send(action: str, params: dict):
-        assert action == "delete"
-        assert params == {"job_id": "job-1"}
-        return {"data": {"deleted": True}}
-
-    monkeypatch.setattr(
-        "jiuwenswarm.agents.harness.common.a4p_runtime.remove_cron_intent_token_for_job",
-        removed.append,
-    )
-    cron_tools = object.__new__(CronTools)
-    cron_tools._view_job = _view_job
-    cron_tools._uses_gateway_command_ack = lambda: False
-    cron_tools._send = _send
-    cron_tools._pending_view_for_route = lambda: {"job-1": object()}
-    pending_deletes: set[str] = set()
-    cron_tools._pending_deletes_for_route = lambda: pending_deletes
-
-    assert await cron_tools.delete_job("job-1") is True
-    assert removed == ["job-1"]
-    assert pending_deletes == {"job-1"}

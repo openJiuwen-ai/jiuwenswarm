@@ -8,9 +8,9 @@ import { Button, Switch } from '../../../../components/ui';
 import { createPasskey, isWebAuthnSupported } from '../../../a4p/webauthn';
 import { SettingRow } from '../../components';
 import type { SettingsCustomItemProps } from '../../registry/types';
-import { parseConfigBoolean } from '../../services/settingsContract';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
-import { useSettingsSource } from '../../services/SettingsSourceProvider';
+
+type A4PConfig = { enabled: boolean; require_user_signature: boolean };
 
 type CredentialSummary = {
   credentialId: string;
@@ -37,11 +37,14 @@ function shortCredentialId(value: string): string {
 
 export function A4PSettings({ disabled }: SettingsCustomItemProps) {
   const { t, i18n } = useTranslation();
-  const source = useSettingsSource();
   const { isConnected, request } = useSettingsServices();
   const activeSessionId = useChatStore((state) => state.activeSessionId);
-  const enabled = parseConfigBoolean(source.values.a4p_enabled);
-  const signatureRequired = parseConfigBoolean(source.values.a4p_require_user_signature);
+  const [config, setConfig] = useState<A4PConfig | null>(null);
+  const [saving, setSaving] = useState(false);
+  const savingRef = useRef(false);
+  const configGeneration = useRef(0);
+  const enabled = config?.enabled ?? false;
+  const signatureRequired = config?.require_user_signature ?? false;
   const [status, setStatus] = useState<CredentialStatus | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -94,14 +97,53 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
     };
   }, [loadStatus]);
 
-  async function updateSetting(key: 'a4p_enabled' | 'a4p_require_user_signature', next: boolean) {
-    setError('');
-    if (key === 'a4p_require_user_signature' && next && !checkEnvironment()) return;
+  const loadConfig = useCallback(async () => {
+    const generation = ++configGeneration.current;
+    setConfig(null);
+    setSaving(false);
+    savingRef.current = false;
+    if (!activeSessionId || !isConnected) return;
     try {
-      await source.save({ [key]: next }, key);
-      if (key === 'a4p_require_user_signature' && !next) setEnvironmentAttempted(false);
+      const loaded = await request<A4PConfig>('a4p.config.get', { session_id: activeSessionId });
+      if (generation === configGeneration.current) setConfig(loaded);
+    } catch (loadError) {
+      if (generation === configGeneration.current) {
+        setError(loadError instanceof Error ? loadError.message : String(loadError));
+      }
+    }
+  }, [activeSessionId, isConnected, request]);
+
+  useEffect(() => {
+    void loadConfig();
+    return () => {
+      configGeneration.current += 1;
+    };
+  }, [loadConfig]);
+
+  async function updateSetting(key: keyof A4PConfig, next: boolean) {
+    if (controlsDisabled || !config || savingRef.current) return;
+    setError('');
+    if (key === 'require_user_signature' && next && !checkEnvironment()) return;
+    const generation = configGeneration.current;
+    savingRef.current = true;
+    setSaving(true);
+    try {
+      const updated = await request<A4PConfig>('a4p.config.update', {
+        [key]: next,
+        session_id: activeSessionId,
+      });
+      if (generation !== configGeneration.current) return;
+      setConfig(updated);
+      if (key === 'require_user_signature' && !next) setEnvironmentAttempted(false);
     } catch (saveError) {
-      setError(saveError instanceof Error ? saveError.message : String(saveError));
+      if (generation === configGeneration.current) {
+        setError(saveError instanceof Error ? saveError.message : String(saveError));
+      }
+    } finally {
+      if (generation === configGeneration.current) {
+        savingRef.current = false;
+        setSaving(false);
+      }
     }
   }
 
@@ -133,7 +175,7 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
   }
 
   const credentials = status?.credentials ?? [];
-  const controlsDisabled = disabled || !isConnected;
+  const controlsDisabled = disabled || !isConnected || !activeSessionId;
   const locale = i18n.resolvedLanguage?.startsWith('zh') ? 'zh-CN' : 'en-US';
   return (
     <div className="settings-a4p" data-testid="settings-a4p">
@@ -142,8 +184,8 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
           data-testid="settings-a4p-enabled"
           aria-label={t('a4pSettings.title')}
           checked={enabled}
-          disabled={controlsDisabled || source.savingKeys.has('a4p_enabled')}
-          onChange={(next) => void updateSetting('a4p_enabled', next)}
+          disabled={controlsDisabled || !config || saving}
+          onChange={(next) => void updateSetting('enabled', next)}
         />
       </SettingRow>
       <SettingRow title={t('a4pSettings.authorizationMode')} description={t('a4pSettings.signedMode')}>
@@ -151,10 +193,8 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
           data-testid="settings-a4p-signature"
           aria-label={t('a4pSettings.authorizationMode')}
           checked={signatureRequired}
-          disabled={
-            controlsDisabled || (!enabled && !signatureRequired) || source.savingKeys.has('a4p_require_user_signature')
-          }
-          onChange={(next) => void updateSetting('a4p_require_user_signature', next)}
+          disabled={controlsDisabled || (!enabled && !signatureRequired) || !config || saving}
+          onChange={(next) => void updateSetting('require_user_signature', next)}
         />
       </SettingRow>
       <div className="settings-page__section-body" data-testid="settings-a4p-passkeys">
@@ -168,15 +208,18 @@ export function A4PSettings({ disabled }: SettingsCustomItemProps) {
           <div className="flex gap-2">
             <Button
               data-testid="settings-a4p-refresh"
-              disabled={controlsDisabled || busy || !activeSessionId}
-              onClick={() => void loadStatus()}
+              disabled={controlsDisabled || busy || saving}
+              onClick={() => {
+                void loadStatus();
+                void loadConfig();
+              }}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>
             <Button
               variant="primary"
               data-testid="settings-a4p-register"
-              disabled={controlsDisabled || busy || !activeSessionId}
+              disabled={controlsDisabled || busy || saving}
               onClick={() => void registerPasskey()}
             >
               <Plus className="h-4 w-4" />

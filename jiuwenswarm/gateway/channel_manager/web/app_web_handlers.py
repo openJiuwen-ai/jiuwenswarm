@@ -67,7 +67,6 @@ from jiuwenswarm.common.config import (
     update_skill_retrieval_in_config,
     update_symphony_in_config,
     update_permissions_profile_in_config,
-    update_a4p_in_config,
     update_setup_guide_enabled_in_config,
     update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
@@ -1260,11 +1259,6 @@ def _validate_wechat_numeric_params(params: dict) -> str | None:
     return None
 
 
-_A4P_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
-    "a4p_enabled": (("enabled",), "bool", False),
-    "a4p_require_user_signature": (("require_user_signature",), "bool", False),
-}
-
 _SYMPHONY_CONFIG_SPECS: dict[str, tuple[tuple[str, ...], str, Any]] = {
     "symphony_enabled": (("enabled",), "bool", False),
 }
@@ -1393,17 +1387,6 @@ def _flatten_swarmflow_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
     flat = {"swarmflow_enabled": "true" if enabled else "false"}
     if budget is not None:
         flat["swarmflow_budget"] = str(budget)
-    return flat
-
-
-def _flatten_a4p_for_config_panel(raw: dict[str, Any]) -> dict[str, str]:
-    section = raw.get("a4p") if isinstance(raw.get("a4p"), dict) else {}
-    flat: dict[str, str] = {}
-    for key, (path, value_type, default) in _A4P_CONFIG_SPECS.items():
-        value = _get_nested_config_value(section, path, default)
-        flat[key] = "true" if value_type == "bool" and bool(value) else (
-            "false" if value_type == "bool" else str(value or "")
-        )
     return flat
 
 
@@ -1605,16 +1588,6 @@ def _build_symphony_config_update(params: dict[str, Any]) -> dict[str, Any]:
 def _build_skill_retrieval_config_update(params: dict[str, Any]) -> dict[str, Any]:
     updates: dict[str, Any] = {}
     for key, (path, value_type, default) in _SKILL_RETRIEVAL_CONFIG_SPECS.items():
-        if key not in params:
-            continue
-        value = _coerce_config_panel_value(params[key], value_type, default)
-        _set_nested_config_value(updates, path, value)
-    return updates
-
-
-def _build_a4p_config_update(params: dict[str, Any]) -> dict[str, Any]:
-    updates: dict[str, Any] = {}
-    for key, (path, value_type, default) in _A4P_CONFIG_SPECS.items():
         if key not in params:
             continue
         value = _coerce_config_panel_value(params[key], value_type, default)
@@ -3104,7 +3077,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "true" if experimental_cfg.get("task_full_duplex_enabled", False) else "false"
             )
             payload.update(_flatten_swarmflow_for_config_panel(raw))
-            payload.update(_flatten_a4p_for_config_panel(raw))
             payload.update(_flatten_external_cli_agents_for_config_panel(raw))
             payload.update(_flatten_symphony_for_config_panel(raw))
             if not payload.get("free_search_ddg_enabled"):
@@ -3133,13 +3105,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("memory_forbidden_enabled", "false")
             payload.setdefault("memory_forbidden_description", "")
             payload.setdefault("swarmflow_enabled", "true" if DEFAULT_SWARMFLOW_ENABLED else "false")
-            for key, (_, value_type, default) in _A4P_CONFIG_SPECS.items():
-                payload.setdefault(
-                    key,
-                    ("true" if default else "false")
-                    if value_type == "bool"
-                    else str(default or ""),
-                )
             for key, value in get_default_a2ui_config_payload().items():
                 payload.setdefault(key, value)
             payload.setdefault("trajectory_ui_enabled", "false")
@@ -3478,14 +3443,6 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 yaml_updated.extend(k for k in _SYMPHONY_CONFIG_KEYS if k in params)
             except Exception as e:
                 logger.warning("[config.set] 写回 symphony 失败: %s", e)
-
-        a4p_updates = _build_a4p_config_update(params)
-        if a4p_updates:
-            try:
-                update_a4p_in_config(a4p_updates)
-                yaml_updated.extend(k for k in _A4P_CONFIG_SPECS if k in params)
-            except Exception as e:
-                logger.warning("[config.set] 写回 a4p 失败: %s", e)
 
         try:
             skill_retrieval_updates = _build_skill_retrieval_config_update(params)
@@ -7460,6 +7417,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
         channel.register_method(method_name, _handler)
 
+    _register_a4p("a4p.config.get", _A4PReq.A4P_CONFIG_GET)
+    _register_a4p("a4p.config.update", _A4PReq.A4P_CONFIG_UPDATE)
     _register_a4p("a4p.authorization.complete", _A4PReq.A4P_AUTHORIZATION_COMPLETE)
     _register_a4p("a4p.authorization.reject", _A4PReq.A4P_AUTHORIZATION_REJECT)
     _register_a4p("a4p.authorization.pending", _A4PReq.A4P_AUTHORIZATION_PENDING)

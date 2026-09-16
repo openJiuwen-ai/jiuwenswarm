@@ -3304,9 +3304,29 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                data = await _get_owned_job(str(params.get("job_id") or ""))
-                if data is None:
-                    raise KeyError("job not found")
+                job_id = str(params.get("job_id") or "")
+                if params.get("authoritative") is True:
+                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
+                        raise ValueError("authoritative cron query requires a nonempty job_id")
+                    data = await cc.get_job(job_id)
+                    if data is not None:
+                        if (
+                            not isinstance(data, dict)
+                            or data.get("id") != job_id.strip()
+                            or not isinstance(data.get("user_id", ""), str)
+                        ):
+                            raise ValueError("invalid authoritative cron job")
+                        job_owner = data.get("user_id", "")
+                        if str(job_owner or "").strip() != owner_user_id:
+                            data = {"status": "forbidden", "code": "FORBIDDEN"}
+                        else:
+                            data = {"status": "found", "job": data}
+                    else:
+                        data = {"status": "missing"}
+                else:
+                    data = await _get_owned_job(job_id)
+                    if data is None:
+                        raise KeyError("job not found")
             elif action == "create":
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
@@ -3369,6 +3389,9 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
+
+        if not channel_id:
+            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(

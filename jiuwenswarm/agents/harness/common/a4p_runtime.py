@@ -135,6 +135,7 @@ class A4PRuntime:
             self.config.get("require_user_signature", False)
         )
         self.cron_tokens = SQLiteCronIntentTokenStore(self._cron_tokens_path)
+        self.cron_tokens.prune_expired()
         self.webauthn = A4PWebAuthnAdapter(
             self._webauthn_credential_store_path,
             require_user_signature=self.require_user_signature,
@@ -432,9 +433,6 @@ class A4PRuntime:
     def store_cron_intent_token(self, cron_job_id: str, token: dict[str, Any]) -> None:
         self.cron_tokens.put(cron_job_id, token)
 
-    def remove_cron_intent_token(self, cron_job_id: str) -> None:
-        self.cron_tokens.remove(cron_job_id)
-
     async def find_valid_cron_intent_token(
         self,
         *,
@@ -477,14 +475,6 @@ class A4PRuntime:
         )
         return bool(result.valid)
 
-    def cron_intent_token_status(self) -> dict[str, Any]:
-        live = self.cron_tokens.summaries()
-        return {
-            "path": str(self._cron_tokens_path),
-            "count": len(live),
-            "tokens": live,
-        }
-
     def cron_intent_authorization_summary(
         self,
         cron_job_id: str,
@@ -501,24 +491,6 @@ class A4PRuntime:
             "tokenId": str(token.get("tokenId") or "")[:12],
             "actions": deepcopy(intent.get("actions") or []),
             "expireAt": token.get("expireAt"),
-        }
-
-    def status(self) -> dict[str, Any]:
-        cron_status = self.cron_intent_token_status()
-        return {
-            "enabled": bool(self.config.get("enabled", False)),
-            "requireUserSignature": self.require_user_signature,
-            "intentValiditySeconds": DEFAULT_INTENT_VALIDITY_SECONDS,
-            "cronIntentValiditySeconds": DEFAULT_CRON_INTENT_VALIDITY_SECONDS,
-            "authorizationTimeoutSeconds": DEFAULT_AUTHORIZATION_TIMEOUT_SECONDS,
-            "cronIntentTokensPath": cron_status["path"],
-            "cronIntentTokensCount": cron_status["count"],
-            "webauthnCredentialStorePath": str(
-                self._webauthn_credential_store_path
-            ),
-            "webauthnCredentialsCount": len(
-                self.webauthn.credential_summaries(INTERNAL_A4P_USER_ID)
-            ),
         }
 
 
@@ -581,19 +553,6 @@ async def reconfigure_a4p_runtime(config: dict[str, Any] | None = None) -> int:
     return cancelled
 
 
-def remove_cron_intent_token_for_job(cron_job_id: str) -> None:
-    """Remove a cron grant without forcing creation of an A4P runtime."""
-    job_id = str(cron_job_id or "").strip()
-    if not job_id:
-        return
-    if _runtime is not None:
-        _runtime.remove_cron_intent_token(job_id)
-        return
-    SQLiteCronIntentTokenStore(
-        get_config_dir() / "a4p" / CRON_INTENT_TOKENS_DB_FILENAME
-    ).remove(job_id)
-
-
 __all__ = [
     "A4PIdentity",
     "A4PRuntime",
@@ -607,7 +566,6 @@ __all__ = [
     "is_a4p_enabled",
     "disable_a4p_runtime",
     "reconfigure_a4p_runtime",
-    "remove_cron_intent_token_for_job",
     "reset_a4p_runtime_for_tests",
     "resolve_a4p_identity",
 ]

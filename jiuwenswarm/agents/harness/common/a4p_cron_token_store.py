@@ -8,7 +8,6 @@ import json
 import sqlite3
 import time
 from contextlib import closing
-from copy import deepcopy
 from pathlib import Path
 from typing import Any
 
@@ -100,22 +99,10 @@ class SQLiteCronIntentTokenStore:
             return None
         return token
 
-    def remove(self, cron_job_id: str) -> None:
-        job_id = str(cron_job_id or "").strip()
-        if not job_id or not self.path.exists():
-            return
+    def _remove_if_unchanged(self, cron_job_id: str, token_json: str) -> bool:
         with closing(self._connect()) as connection:
             connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
-                "DELETE FROM cron_intent_tokens WHERE cron_job_id = ?",
-                (job_id,),
-            )
-            connection.commit()
-
-    def _remove_if_unchanged(self, cron_job_id: str, token_json: str) -> None:
-        with closing(self._connect()) as connection:
-            connection.execute("BEGIN IMMEDIATE")
-            connection.execute(
+            cursor = connection.execute(
                 """
                 DELETE FROM cron_intent_tokens
                 WHERE cron_job_id = ? AND token_json = ?
@@ -123,40 +110,26 @@ class SQLiteCronIntentTokenStore:
                 (cron_job_id, token_json),
             )
             connection.commit()
+            return cursor.rowcount > 0
 
-    def summaries(self) -> dict[str, dict[str, Any]]:
+    def prune_expired(self) -> int:
+        """Remove expired or invalid grants, without touching concurrent replacements."""
         if not self.path.exists():
-            return {}
+            return 0
         with closing(self._connect()) as connection:
             rows = connection.execute(
-                """
-                SELECT cron_job_id, token_json, created_at_epoch
-                FROM cron_intent_tokens
-                ORDER BY cron_job_id
-                """
+                "SELECT cron_job_id, token_json FROM cron_intent_tokens"
             ).fetchall()
-        summaries: dict[str, dict[str, Any]] = {}
-        stale_rows: list[tuple[str, str]] = []
-        for job_id, token_json, created_at_epoch in rows:
+        removed = 0
+        for job_id, token_json in rows:
             encoded = str(token_json)
             try:
                 token = json.loads(encoded)
             except (TypeError, ValueError):
-                stale_rows.append((str(job_id), encoded))
-                continue
+                token = None
             if not isinstance(token, dict) or token_expired(token):
-                stale_rows.append((str(job_id), encoded))
-                continue
-            summaries[str(job_id)] = {
-                "tokenId": token.get("tokenId"),
-                "expireAt": token.get("expireAt"),
-                "subject": deepcopy(token.get("subject")),
-                "intent": deepcopy(token.get("intent")),
-                "createdAtEpoch": int(created_at_epoch),
-            }
-        for job_id, token_json in stale_rows:
-            self._remove_if_unchanged(job_id, token_json)
-        return summaries
+                removed += int(self._remove_if_unchanged(str(job_id), encoded))
+        return removed
 
 
 __all__ = [

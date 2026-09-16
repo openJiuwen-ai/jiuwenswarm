@@ -36,6 +36,7 @@ class AuthorizationExecutionContext:
     agent_id: str
     metadata: dict[str, Any]
     authorizer_route: AuthorizerRoute | None = None
+    user_id: str = ""
 
     @property
     def is_interactive_web(self) -> bool:
@@ -162,6 +163,7 @@ def build_authorization_execution_context(
         agent_id=str(agent_id or "").strip(),
         metadata=metadata,
         authorizer_route=route,
+        user_id=str(getattr(request, "user_id", None) or "").strip(),
     )
 
 

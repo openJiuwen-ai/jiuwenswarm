@@ -368,6 +368,8 @@ class ReqMethod(Enum):
     A4P_AUTHORIZATION_COMPLETE = "a4p.authorization.complete"
     A4P_AUTHORIZATION_REJECT = "a4p.authorization.reject"
     A4P_AUTHORIZATION_PENDING = "a4p.authorization.pending"
+    A4P_CONFIG_GET = "a4p.config.get"
+    A4P_CONFIG_UPDATE = "a4p.config.update"
     A4P_WEBAUTHN_CREDENTIALS_GET = "a4p.webauthn.credentials.get"
     A4P_WEBAUTHN_REGISTRATION_OPTIONS = "a4p.webauthn.registration.options"
     A4P_WEBAUTHN_REGISTRATION_VERIFY = "a4p.webauthn.registration.verify"
