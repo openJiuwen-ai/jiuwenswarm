@@ -36,7 +36,7 @@ import type { CodeReviewTarget } from '../../features/code-mode/types';
 import { useCodeGitDiffWatch } from '../../features/code-mode/useCodeGitDiffWatch';
 import { type SingleAgentToolTab } from '../../features/singleAgentPanelState';
 import { useBrowserAgentActivity } from '../../features/browserAgentActivity';
-import { closeDesktopBrowserTab, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
+import { closeDesktopBrowserTab, openFileInDesktopBrowser, useDesktopBrowserTabFlags } from '../../features/desktopBrowserFile';
 import { SubagentExpandedPanel } from '../subagent/SubagentExpandedPanel';
 import { SubagentStatusIcon } from '../subagent/SubagentStatusIcon';
 import { useSubagentStore, selectSubagents } from '../../stores/subagentStore';
@@ -725,6 +725,8 @@ export function ToolPanel({
             emptyIllustration={emptyArtifactsIcon}
             renderStatusIcon={task => <FileIcon fileName={task.title ?? ''} size={16} className="shrink-0" />}
             onTaskClick={taskId => {
+              const artifact = sessionArtifacts.find(item => item.id === taskId);
+              if (artifact && openFileInDesktopBrowser({ name: artifact.name, download_url: artifact.downloadUrl })) return;
               expandTo('artifacts');
               if (isTeam) {
                 setTeamAreaSelectedArtifactId(taskId);

@@ -1,5 +1,4 @@
 import { useEffect, useState } from 'react';
-import type { FileDownloadItem } from '../types';
 import { getApiBase } from '../utils/env';
 import { useChatStore } from '../stores/chatStore';
 import { useSessionStore } from '../stores/sessionStore';
@@ -57,7 +56,7 @@ function activeSessionId(): string {
  * 下载链接带上 inline=1：后端以 Content-Disposition: inline 返回，
  * BrowserView 才会直接渲染 html/md 而不是触发保存。
  */
-function buildInlineFileUrl(downloadUrl: string): string | null {
+function buildInlineFileUrl(downloadUrl: string | null | undefined): string | null {
   const trimmed = downloadUrl?.trim();
   if (!trimmed) return null;
   try {
@@ -78,12 +77,18 @@ function openDesktopBrowserPanel(): void {
   openSingleAgentPanel('browser');
 }
 
+/** 桌面内置浏览器可打开文件的最小结构（FileDownloadItem / ArtifactItem 均满足）。 */
+export interface DesktopBrowserOpenableFile {
+  name: string;
+  download_url?: string | null;
+}
+
 /**
  * Electron 内置浏览器打开聊天文件（.html/.md）。
  * 命中时导航 BrowserView 并切到 browser 页签，返回 true；非 Electron、
  * 不可预览或缺少下载链接时返回 false，调用方继续走产物面板预览。
  */
-export function openFileInDesktopBrowser(file: FileDownloadItem): boolean {
+export function openFileInDesktopBrowser(file: DesktopBrowserOpenableFile): boolean {
   if (!window.jiuwenDesktop) return false;
   if (!isDesktopBrowserPreviewableFile(file.name)) return false;
   const url = buildInlineFileUrl(file.download_url);

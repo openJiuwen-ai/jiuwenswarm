@@ -7,6 +7,7 @@ import { executeDesktopSave, type DesktopSaveApiResult } from '../../utils/deskt
 import { FileIcon } from '../FileIcon';
 import { buildArtifacts, type ArtifactItem } from './artifactCollection';
 import { artifactDownloadUrl } from './filePreviewModel';
+import { openFileInDesktopBrowser } from '../../features/desktopBrowserFile';
 
 export { fileArtifactId } from './artifactCollection';
 export { ArtifactExpandedPanel } from './ArtifactExpandedPanel';
@@ -78,6 +79,7 @@ export function ArtifactList({
                 data-testid="artifact-list-item"
                 data-variant={artifact.id}
                 onClick={() => {
+                  if (openFileInDesktopBrowser({ name: artifact.name, download_url: artifact.downloadUrl })) return;
                   onSelectArtifact?.(artifact.id);
                 }}
                 role="button"
@@ -85,6 +87,7 @@ export function ArtifactList({
                 onKeyDown={e => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
+                    if (openFileInDesktopBrowser({ name: artifact.name, download_url: artifact.downloadUrl })) return;
                     onSelectArtifact?.(artifact.id);
                   }
                 }}
