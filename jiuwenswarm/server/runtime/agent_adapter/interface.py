@@ -35,6 +35,7 @@ from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
 from jiuwenswarm.agents.harness.common.memory.config import get_memory_mode, is_auto_memory_enabled, is_memory_enabled
 from jiuwenswarm.agents.harness.code.prompt import plan_approval as _plan_approval
 from jiuwenswarm.server.runtime.session.session_history import (
+    HistoryAppendStatus,
     append_compact_history_records,
     append_history_record,
     collapse_file_content_blocks,
@@ -518,6 +519,72 @@ def _split_a2ui_stream_content(previous_probe: str, content: str) -> tuple[str, 
         return "", content
     split_index = marker_start - content_start
     return content[:split_index], content[split_index:]
+
+
+# Unmodified RelayClaw synthesizes jiuwen_session_busy when a stream ends with
+# frameCount<=2 and no chat.error/text/file. Duplicate errors must not be
+# yielded as chat.error (that would create another frontend bubble), so we
+# replace them with enough UI-noop chat.done frames to stay above that bar.
+#
+# CONTRACT with RelayClaw (must hold for this scheme to work):
+#  * frameCount<=2 + no chat.error/text/file → busy synthesis on the front-end
+#    (frontend/src/.../transform/transform.ts on chat.done);
+#  * chat.done is allowed to return null on the transform path so the
+#    padding frames disappear without polluting the transcript.
+# If RelayClaw ever raises the frameCount threshold above
+# ``_SUPPRESSED_ERROR_PADDING_FRAMES`` or stops dropping chat.done, this
+# fallback silently breaks — long-term fix is a RelayClaw-visible
+# suppression marker (deferred — see PR scope).
+_SUPPRESSED_ERROR_PADDING_FRAMES = 3
+
+_SUPPRESSED_DUP_LOG = (
+    "[JiuWenSwarm] suppressed duplicate chat.error wire: "
+    "session_id=%s request_id=%s"
+)
+
+
+def _request_is_cron_or_proactive(request: Any | None) -> bool:
+    """Whether this AgentRequest originated from a cron tick or proactive engine.
+
+    Background tasks fire identical-fingerprint failures on every tick when
+    a config (model key, network, sandbox) is broken — without dedup the
+    user sees the same bubble on every reload. Interactive users, by
+    contrast, want their (single) failure to surface; suppressing
+    retries mid-session leaves them with a silent empty round.
+
+    Markers checked (cheap, all survive gateway → AgentServer hop):
+      * ``request.params["cron"]`` — gateway/cron/scheduler.py:932 / 1602
+      injects ``{"job_id": ..., "run_id": ...}`` for both cron and
+      proactive.tick jobs (the proactive engine is itself a cron job).
+      * ``request.request_id`` prefix — cron tasks use ``cron-<...>``,
+      proactive uses ``proactive-tick-<...>`` (gateway/cron/scheduler.py).
+      * ``request.metadata.source`` — gateway may stamp ``"cron"`` for
+      background flows; RelayClaw is expected to forward as-is.
+
+    NOTE: as of this revision dedup applies to ALL sources — the cron
+    gate is no longer enforced here. RelayClaw does not currently stamp
+    any of these markers for connector-driven reminder ticks, so a
+    cron-only gate would miss repeated failures from reminders. The
+    state in session_history keys on session_id + error fingerprint,
+    so an interactive user retry still surfaces the first time per
+    fingerprint; subsequent identical errors within the dedup window
+    are suppressed.
+    """
+    return True
+
+
+def _suppressed_error_padding_frames(
+    *, request_id: str, channel_id: str, session_id: str
+) -> list[AgentResponseChunk]:
+    return [
+        AgentResponseChunk(
+            request_id=request_id,
+            channel_id=channel_id,
+            payload={"event_type": "chat.done"},
+            is_complete=False,
+        )
+        for _ in range(_SUPPRESSED_ERROR_PADDING_FRAMES)
+    ]
 
 
 load_dotenv_runtime(dotenv_path=get_env_file(), override=True)
@@ -1130,7 +1197,7 @@ class JiuWenSwarm:
             return {"sessions_root": self._sessions_dir}
         return {}
 
-    def _append_history_record(self, *, request: Any | None = None, **kwargs: Any) -> None:
+    def _append_history_record(self, *, request: Any | None = None, **kwargs: Any) -> Any:
         if kwargs.get("sessions_root") is None:
             enterprise_root = self._history_kwargs().get("sessions_root")
             if enterprise_root is not None:
@@ -1139,7 +1206,8 @@ class JiuWenSwarm:
                 from jiuwenswarm.server.handlers._shared import _sessions_dir_for_request
 
                 kwargs["sessions_root"] = _sessions_dir_for_request(request)
-        append_history_record(**kwargs)
+        kwargs.setdefault("request", request)
+        return append_history_record(**kwargs)
 
     def _append_ask_user_answered_history(
         self,
@@ -3377,7 +3445,7 @@ class JiuWenSwarm:
                     }
                     if error_type:
                         error_payload["error_type"] = error_type
-                    self._append_history_record(
+                    persisted = self._append_history_record(
                         request=request,
                         session_id=session_id,
                         request_id=rid,
@@ -3389,14 +3457,22 @@ class JiuWenSwarm:
                         mode=request.params.get("mode", "unknown"),
                         extra={"error_type": error_type} if error_type else None,
                     )
-                    yield AgentResponseChunk(
-                        request_id=rid,
-                        channel_id=cid,
-                        payload=error_payload,
-                        is_complete=False,
-                    )
+                    if persisted is HistoryAppendStatus.SUPPRESSED_DUPLICATE:
+                        logger.info(_SUPPRESSED_DUP_LOG, session_id, rid)
+                        for pad in _suppressed_error_padding_frames(
+                            request_id=rid, channel_id=cid, session_id=session_id
+                        ):
+                            yield pad
+                    else:
+                        yield AgentResponseChunk(
+                            request_id=rid,
+                            channel_id=cid,
+                            payload=error_payload,
+                            is_complete=False,
+                        )
                 else:
                     if isinstance(data, AgentResponseChunk):
+                        skip_error_wire = False
                         if suppress_a2ui_stream:
                             data = _normalize_nested_stream_chunk(data)
                             if data is None:
@@ -3578,7 +3654,7 @@ class JiuWenSwarm:
                                 for pk in ("source", "proactive_type", "proactive_target"):
                                     if pk not in extra_fields and pk in request.params:
                                         extra_fields[pk] = request.params[pk]
-                                self._append_history_record(
+                                persisted_chunk = self._append_history_record(
                                     request=request,
                                     session_id=session_id,
                                     request_id=rid,
@@ -3591,6 +3667,13 @@ class JiuWenSwarm:
                                     mode=request.params.get("mode", "unknown"),
                                     task_id=payload_dict.get("task_id"),
                                 )
+                                if et == "chat.error" and persisted_chunk is HistoryAppendStatus.SUPPRESSED_DUPLICATE:
+                                    skip_error_wire = True
+                                    logger.info(_SUPPRESSED_DUP_LOG, session_id, rid)
+                                    for pad in _suppressed_error_padding_frames(
+                                        request_id=rid, channel_id=cid, session_id=session_id
+                                    ):
+                                        yield pad
                                 if et == "chat.final":
                                     durable_final_content = str(data.payload.get("content", ""))
                             if et == "chat.final":
@@ -3602,6 +3685,8 @@ class JiuWenSwarm:
                                     final_answer_content = ""
                         if data.is_complete:
                             facade_emitted_terminal_chunk = True
+                        if skip_error_wire:
+                            continue
                         yield data
                     elif isinstance(data, dict) and isinstance(data.get("event_type"), str):
                         et = str(data.get("event_type"))
@@ -3760,7 +3845,7 @@ class JiuWenSwarm:
                             for pk in ("source", "proactive_type", "proactive_target"):
                                 if pk not in extra_fields and pk in request.params:
                                     extra_fields[pk] = request.params[pk]
-                            self._append_history_record(
+                            persisted_chunk = self._append_history_record(
                                 request=request,
                                 session_id=session_id,
                                 request_id=rid,
@@ -3773,6 +3858,13 @@ class JiuWenSwarm:
                                 mode=request.params.get("mode", "unknown"),
                                 task_id=data.get("task_id"),
                             )
+                            if et == "chat.error" and persisted_chunk is HistoryAppendStatus.SUPPRESSED_DUPLICATE:
+                                logger.info(_SUPPRESSED_DUP_LOG, session_id, rid)
+                                for pad in _suppressed_error_padding_frames(
+                                    request_id=rid, channel_id=cid, session_id=session_id
+                                ):
+                                    yield pad
+                                continue
                             if et == "chat.final":
                                 durable_final_content = str(data.get("content", ""))
                         if et == "chat.final":

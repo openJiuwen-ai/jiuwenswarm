@@ -3170,8 +3170,14 @@ def setup_logger(log_level: Optional[str] = None) -> logging.Logger:
     ) -> None:
         if not file_enabled:
             return
+        full_path = logs_root / filename
+        # Defensive: re-create the parent directory on every call. setup_logger
+        # already mkdir's ``logs_root`` above, but a previous run may have
+        # removed it (CI sandboxes / parallel pytest workers) and the cached
+        # ``_log_listener`` path can outlive the on-disk directory.
+        full_path.parent.mkdir(parents=True, exist_ok=True)
         h = SafeRotatingFileHandler(
-            filename=logs_root / filename,
+            filename=full_path,
             maxBytes=_LOG_FILE_MAX_BYTES,
             backupCount=_LOG_FILE_BACKUP_COUNT,
             encoding="utf-8",
