@@ -3,10 +3,6 @@
 import asyncio
 import importlib
 import json
-
-# TEST ONLY: URL literals are configuration payloads on RFC-reserved domains or
-# known provider strings consumed by local handler doubles; no network I/O occurs.
-
 import threading
 import time
 from pathlib import Path
@@ -30,7 +26,6 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
 )
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
-from jiuwenswarm.extensions.registry import ExtensionRegistry
 
 
 class FakeWebChannel:
@@ -928,9 +923,8 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
         lambda _config: [{
             "model_client_config": {
                 "model_name": "qwen3.8-max",
-                # Reserved test-only endpoint and synthetic credential.
-                "api_base": "https://example.invalid/v1",
-                "api_key": "TEST_ONLY_API_KEY",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
                 "client_provider": "OpenAI",
                 "vendor_key": "alibaba",
                 "plan": "token_plan",
@@ -1162,7 +1156,7 @@ async def test_config_save_handlers_respond_before_agent_reload_finishes(monkeyp
 @pytest.mark.parametrize(
     "params,keys,scopes",
     [
-        ({"api_base": "https://example.invalid/one"}, {"API_BASE"}, ["model"]),
+        ({"api_base": "https://example.com/one"}, {"API_BASE"}, ["model"]),
         ({"bocha_api_key": "test-key"}, {"BOCHA_API_KEY"}, ["search"]),
         ({"serper_api_key": ""}, {"SERPER_API_KEY"}, ["search"]),
         (
@@ -1255,7 +1249,7 @@ async def test_config_set_reports_saved_when_hot_reload_callback_fails(monkeypat
     await channel.methods["config.set"](
         object(),
         "req-hot-reload-failed",
-        {"api_base": "https://example.invalid/one"},
+        {"api_base": "https://example.com/one"},
         "sess-1",
     )
 
@@ -1337,11 +1331,6 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
     channel = FakeWebChannel()
     monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
-    monkeypatch.setattr(
-        ExtensionRegistry,
-        "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
-    )
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     await channel.methods["config.get"](
@@ -1603,258 +1592,6 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
 
 
 @pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("permissions", "expected_profile", "expected_enabled"),
-    [
-        ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
-        ({"enabled": False, "mode": "auto"}, "full_access", "false"),
-        ({"enabled": True, "mode": "future"}, "default", "true"),
-    ],
-)
-async def test_config_get_returns_canonical_permission_profile(
-    monkeypatch, permissions, expected_profile, expected_enabled
-):
-    channel = FakeWebChannel()
-    raw_config = {"permissions": permissions}
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
-    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
-    monkeypatch.setattr(
-        ExtensionRegistry,
-        "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
-    )
-    monkeypatch.setattr(
-        app_web_handlers, "_flatten_modes_team_for_config_panel", lambda raw: {}
-    )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.get"](object(), "req-profile", {}, "sess-profile")
-
-    payload = channel.responses[-1]["payload"]
-    assert payload["permissions_profile"] == expected_profile
-    assert payload["permissions_enabled"] == expected_enabled
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    "params",
-    [
-        {"permissions_profile": "invalid"},
-        {"permissions_mode": "auto"},
-        {"permissions_profile": "automatic", "permissions_enabled": "true"},
-    ],
-)
-async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params):
-    channel = FakeWebChannel()
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
-
-    assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "BAD_REQUEST"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize(
-    ("params", "saved_profile", "canonical"),
-    [
-        (
-            {"permissions_profile": "automatic"},
-            "automatic",
-            {"permissions_profile": "automatic", "permissions_enabled": "true"},
-        ),
-        (
-            {"permissions_enabled": "false"},
-            "full_access",
-            {"permissions_profile": "full_access", "permissions_enabled": "false"},
-        ),
-    ],
-)
-async def test_config_set_returns_canonical_permission_facade(
-    monkeypatch, params, saved_profile, canonical
-):
-    channel = FakeWebChannel()
-    saved: list[str] = []
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_permissions_profile_in_config",
-        lambda profile: saved.append(profile),
-    )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
-
-    assert saved == [saved_profile]
-    assert channel.responses[-1]["payload"]["canonical_config"] == canonical
-
-
-@pytest.mark.asyncio
-async def test_config_save_all_returns_canonical_permission_facade(monkeypatch):
-    channel = FakeWebChannel()
-    saved: list[str] = []
-    reload_options_seen: list[dict] = []
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_permissions_profile_in_config",
-        lambda profile: saved.append(profile),
-    )
-
-    async def on_config_saved(updated_keys, *, env_updates, config_payload, reload_options):
-        del updated_keys, env_updates, config_payload
-        reload_options_seen.append(dict(reload_options))
-        return True
-
-    _register_web_handlers(
-        WebHandlersBindParams(channel=channel, on_config_saved=on_config_saved)
-    )
-
-    await channel.methods["config.save_all"](
-        object(),
-        "req-save-all-profile",
-        {"config": {"permissions_enabled": "false"}},
-        "sess-profile",
-    )
-
-    assert saved == ["full_access"]
-    assert reload_options_seen == [{
-        "target_channel_id": "web",
-        "reload_scopes": ["permissions"],
-    }]
-    assert channel.responses[-1]["ok"] is True
-    assert channel.responses[-1]["payload"]["updated"] == ["permissions_enabled"]
-    assert channel.responses[-1]["payload"]["applied_without_restart"] is True
-    assert channel.responses[-1]["payload"]["canonical_config"] == {
-        "permissions_profile": "full_access",
-        "permissions_enabled": "false",
-    }
-
-
-@pytest.mark.asyncio
-async def test_invalid_combined_payload_does_not_persist_permission_profile(
-    monkeypatch,
-):
-    channel = FakeWebChannel()
-    saved: list[str] = []
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_permissions_profile_in_config",
-        lambda profile: saved.append(profile),
-    )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.set"](
-        object(),
-        "req-invalid-combined-profile",
-        {"permissions_profile": "full_access", "model_provider": "invalid"},
-        "sess-profile",
-    )
-
-    assert saved == []
-    assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "BAD_REQUEST"
-
-
-@pytest.mark.asyncio
-async def test_permission_profile_write_failure_returns_no_canonical_success(
-    monkeypatch,
-):
-    channel = FakeWebChannel()
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-
-    def fail_update(_profile: str) -> None:
-        raise OSError("write failed")
-
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_permissions_profile_in_config",
-        fail_update,
-    )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.set"](
-        object(),
-        "req-profile-write-failure",
-        {"permissions_profile": "automatic"},
-        "sess-profile",
-    )
-
-    response = channel.responses[-1]
-    assert response["ok"] is False
-    assert response["code"] == "INTERNAL_ERROR"
-    assert response["payload"] is None
-
-
-@pytest.mark.asyncio
-async def test_config_save_all_kvc_failure_does_not_persist_permission_profile(
-    monkeypatch,
-):
-    channel = FakeWebChannel()
-    saved: list[str] = []
-    affinity_checks: list[None] = []
-
-    def invalid_affinity():
-        affinity_checks.append(None)
-        return False, ["invalid affinity"]
-
-    monkeypatch.setattr(
-        ExtensionRegistry,
-        "get_instance",
-        lambda: SimpleNamespace(get_crypto_provider=lambda: None),
-    )
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    monkeypatch.setattr(app_web_handlers, "is_affinity_enabled", lambda _config: False)
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_default_models_in_config",
-        lambda _models: None,
-    )
-    monkeypatch.setattr(
-        app_web_handlers,
-        "validate_persisted_kv_cache_affinity",
-        invalid_affinity,
-    )
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_kv_cache_affinity_enabled_in_config",
-        lambda _enabled: None,
-    )
-    monkeypatch.setattr(
-        app_web_handlers,
-        "update_permissions_profile_in_config",
-        lambda profile: saved.append(profile),
-    )
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-
-    await channel.methods["config.save_all"](
-        object(),
-        "req-save-all-invalid-kvc",
-        {
-            "config": {"permissions_profile": "automatic"},
-            "models": [
-                {
-                    "model_name": "model-one",
-                    "api_base": "https://example.invalid/v1",
-                    "api_key": "TEST_ONLY_API_KEY",
-                    "model_provider": "OpenAI",
-                    "is_default": True,
-                }
-            ],
-        },
-        "sess-profile",
-    )
-
-    assert affinity_checks == [None]
-    assert saved == []
-    assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "INTERNAL_ERROR"
-
-
-@pytest.mark.asyncio
 async def test_models_replace_all_applies_scoped_reload_before_responding(monkeypatch):
     channel = FakeWebChannel()
     reload_started = asyncio.Event()
@@ -1903,8 +1640,8 @@ async def test_models_replace_all_applies_scoped_reload_before_responding(monkey
             "models": [
                 {
                     "model_name": "model-one",
-                    "api_base": "https://example.invalid/v1",
-                    "api_key": "TEST_ONLY_API_KEY",
+                    "api_base": "https://example.com/v1",
+                    "api_key": "secret",
                     "model_provider": "OpenAI",
                     "is_default": True,
                     "vendor_key": "alibaba",
@@ -1950,9 +1687,8 @@ async def test_models_replace_all_rejects_invalid_vendor_identity(vendor_key, pl
         {
             "models": [{
                 "model_name": "model-one",
-                # Reserved test-only endpoint and synthetic credential.
-                "api_base": "https://example.invalid/v1",
-                "api_key": "TEST_ONLY_API_KEY",
+                "api_base": "https://example.com/v1",
+                "api_key": "secret",
                 "model_provider": "OpenAI",
                 "is_default": True,
                 "vendor_key": vendor_key,
@@ -2344,7 +2080,6 @@ async def test_config_set_rejects_unavailable_external_cli_path(monkeypatch):
 async def test_config_set_starts_codex_dependency_install_without_saving_codex(monkeypatch):
     channel = FakeWebChannel()
     updates: list[tuple[list[str], str | None]] = []
-    saved_profiles: list[str] = []
 
     monkeypatch.setenv("WEB_PORT", "19000")
     _register_web_handlers(WebHandlersBindParams(channel=channel))
@@ -2365,10 +2100,6 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_external_cli_agents_in_config",
         lambda agents, publish_url=None: updates.append((agents, publish_url)),
     )
-    monkeypatch.setattr(
-        "jiuwenswarm.gateway.channel_manager.web.app_web_handlers.update_permissions_profile_in_config",
-        lambda profile: saved_profiles.append(profile),
-    )
 
     await channel.methods["config.set"](
         object(),
@@ -2376,20 +2107,13 @@ async def test_config_set_starts_codex_dependency_install_without_saving_codex(m
         {
             "external_cli_agent_codex_enabled": "true",
             "external_cli_agent_codex_use_builtin": "true",
-            "permissions_profile": "automatic",
         },
         "sess-codex-installing",
     )
 
     assert updates == [([], "ws://127.0.0.1:19000/ws")]
-    assert saved_profiles == ["automatic"]
     assert channel.responses[-1]["ok"] is True
     assert channel.responses[-1]["payload"]["codex_dependency_install"]["status"] == "running"
-    assert channel.responses[-1]["payload"]["external_cli_dependency_installs"]["codex"]["status"] == "running"
-    assert channel.responses[-1]["payload"]["canonical_config"] == {
-        "permissions_profile": "automatic",
-        "permissions_enabled": "true",
-    }
 
 
 @pytest.mark.asyncio

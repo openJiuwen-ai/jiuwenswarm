@@ -2495,9 +2495,6 @@ _SENSITIVE_PATTERNS: list[re.Pattern[str]] = [
 _SENSITIVE_PII_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[-3:])
 # 凭证类 prefix pattern：掩码并附指纹（同 key 指纹一致可关联、不可逆）。
 _SENSITIVE_CREDENTIAL_PATTERNS: tuple[re.Pattern[str], ...] = tuple(_SENSITIVE_PATTERNS[:4])
-_SAFE_AUTHORIZATION_OUTCOME_PATTERN = re.compile(
-    r'"authorization_outcome":"(?:allow|deny|block|cancel)"'
-)
 
 
 def _fingerprint(value: str) -> str:
@@ -2548,18 +2545,7 @@ def _sanitize_log_text(text: str) -> str:
     if not text:
         return text
 
-    protected = text
-    replacements: list[tuple[str, str]] = []
-    for index, match in enumerate(
-        tuple(_SAFE_AUTHORIZATION_OUTCOME_PATTERN.finditer(text))
-    ):
-        marker = f"__JIUWEN_SAFE_OUTCOME_{index}__"
-        while marker in text:
-            marker += "_"
-        protected = protected.replace(match.group(0), marker, 1)
-        replacements.append((marker, match.group(0)))
-
-    masked = protected
+    masked = text
     masked = _DATA_IMAGE_PATTERN.sub("data:image/*;base64,******", masked)
     # _KV_SENSITIVE_PATTERN: 组1=键名, 组2=分隔符, 组4=值（组3/5 为可选引号）。
     masked = _KV_SENSITIVE_PATTERN.sub(
@@ -2583,8 +2569,6 @@ def _sanitize_log_text(text: str) -> str:
     # PII（邮箱/手机/身份证）：纯掩码，不附指纹。
     for pattern in _SENSITIVE_PII_PATTERNS:
         masked = pattern.sub(_SENSITIVE_MASK, masked)
-    for marker, original in replacements:
-        masked = masked.replace(marker, original)
     return masked
 
 
