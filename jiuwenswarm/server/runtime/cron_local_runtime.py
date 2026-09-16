@@ -32,9 +32,20 @@ class NopCronMessageHandler:
 
 
 class InProcessAgentServerClient:
-    """Invoke ``TenantAgentPool.process_message`` without a WebSocket hop.
+    """Invoke the AgentServer dispatch pipeline without a WebSocket hop.
 
     Satisfies the ``send_request`` surface used by ``CronSchedulerService._on_wake``.
+
+    Requests are routed through ``dispatch_parsed_request`` — the same
+    convergence point used by the WS and HTTP transports — so method
+    semantics (e.g. ``session.create``) are honored by the registered
+    handlers. Directly calling ``TenantAgentPool.process_message`` skips
+    the dispatch layer, which turned every ``session.create`` from the
+    Agent-side cron scheduler into a generic message on session "default"
+    and returned an empty session_id (``cron session.create returned
+    empty session_id``). Falls back to the pool only when the dispatch
+    entry (the running ``AgentWebSocketServer``) is unavailable, e.g. in
+    unit tests that never start the server.
     """
 
     def __init__(self, agent_manager: Any | None = None) -> None:
@@ -59,6 +70,52 @@ class InProcessAgentServerClient:
 
         return TenantAgentPool.get_instance()
 
+    def _make_dispatch_ctx(self, request: Any) -> Any | None:
+        """Build a ``RequestContext`` over a capturing sink, or ``None``.
+
+        ``None`` means the dispatch entry is unavailable in this process
+        (no running ``AgentWebSocketServer``); the caller falls back to
+        the legacy direct pool call.
+        """
+        try:
+            from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+            from jiuwenswarm.server.context import AgentServerServices, RequestContext
+            from jiuwenswarm.server.transports.sink import UnaryHTTPSink
+        except Exception:
+            logger.debug(
+                "[InProcessAgentServerClient] dispatch imports unavailable",
+                exc_info=True,
+            )
+            return None
+
+        server = AgentWebSocketServer.get_instance()
+        if server is None:
+            return None
+        sink = UnaryHTTPSink()
+        return RequestContext(
+            request=request,
+            sink=sink,
+            connection_id="in-process-cron",
+            services=AgentServerServices(server),
+        ), sink
+
+    @staticmethod
+    def _wire_to_response(sink: Any, request_id: str) -> AgentResponse:
+        """Decode the captured sink frame back into an ``AgentResponse``."""
+        from jiuwenswarm.common.e2a.wire_codec import parse_agent_server_wire_unary
+
+        wire = sink.wire or sink.last_frame
+        if isinstance(wire, dict) and wire:
+            return parse_agent_server_wire_unary(wire)
+        if sink.response is not None:
+            return sink.response
+        return AgentResponse(
+            request_id=request_id,
+            channel_id="",
+            ok=False,
+            payload={"error": "cron in-process dispatch produced no response frame"},
+        )
+
     @staticmethod
     async def connect(uri: str) -> None:
         return None
@@ -77,6 +134,17 @@ class InProcessAgentServerClient:
 
     async def send_request(self, envelope: E2AEnvelope) -> AgentResponse:
         request = e2a_to_agent_request(envelope)
+        made = self._make_dispatch_ctx(request)
+        if made is not None:
+            ctx, sink = made
+            from jiuwenswarm.server.pipeline import dispatch_parsed_request
+
+            await dispatch_parsed_request(ctx, request)
+            return self._wire_to_response(sink, request.request_id or "")
+        logger.warning(
+            "[InProcessAgentServerClient] dispatch unavailable; "
+            "falling back to direct pool call (method semantics may be lost)"
+        )
         pool = self._resolve_pool()
         return await pool.process_message(request)
 
@@ -85,6 +153,32 @@ class InProcessAgentServerClient:
     ) -> AsyncIterator[AgentResponseChunk]:
         request = e2a_to_agent_request(envelope)
         request.is_stream = True
+        made = self._make_dispatch_ctx(request)
+        if made is not None:
+            ctx, sink = made
+            from jiuwenswarm.common.e2a.wire_codec import (
+                parse_agent_server_wire_chunk,
+            )
+            from jiuwenswarm.server.pipeline import dispatch_parsed_request
+
+            await dispatch_parsed_request(ctx, request)
+            for frame in sink.frames:
+                if isinstance(frame, AgentResponseChunk):
+                    yield frame
+                elif isinstance(frame, dict) and frame.get("response_kind"):
+                    try:
+                        yield parse_agent_server_wire_chunk(frame)
+                    except Exception:
+                        logger.debug(
+                            "[InProcessAgentServerClient] skip undecodable stream frame",
+                            exc_info=True,
+                        )
+                # AgentResponse / degraded frames are not chunks; skip.
+            return
+        logger.warning(
+            "[InProcessAgentServerClient] dispatch unavailable; "
+            "falling back to direct pool call (method semantics may be lost)"
+        )
         pool = self._resolve_pool()
         async for chunk in pool.process_message_stream(request):
             yield chunk

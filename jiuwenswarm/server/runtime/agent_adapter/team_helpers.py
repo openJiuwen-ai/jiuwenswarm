@@ -1755,6 +1755,125 @@ async def _start_team_stream_round(
     return request_queue
 
 
+def _hydrate_team_model_auth(request: Any, config_base: dict[str, Any]) -> dict[str, Any]:
+    """Merge tip ``default_headers`` auth into ``models.defaults`` for team runs.
+
+    OfficeClaw / Huawei MaaS syncs real LLM auth via the tip ``default_headers``
+    env (``Authorization: Basic ...``); ``models.defaults`` entries only carry
+    the placeholder ``huawei-maas-session`` api_key or none at all. The deep
+    adapter merges these headers into its own model clients at agent
+    creation time (``_build_model_from_entry``), but team members build their
+    model clients from ``config_base.models.defaults`` during the chat stream
+    — outside any overlay-bound window — so without this hydration their calls
+    go out without ``Authorization`` and MaaS rejects them (APIG.0303).
+
+    Rebinds the tenant env overlay for the header read only (same window
+    pattern as ``_effective_config_for_request``), merges Authorization into
+    every ``models.defaults[*].model_client_config.custom_headers`` (tip wins
+    for Authorization, setdefault otherwise — mirroring
+    ``_build_model_from_entry``), and returns a deep-ish copy. The original
+    config dict is never mutated; team template snapshots do not persist the
+    ``models`` section, so credentials stay in-memory only.
+
+    Non-tip environments (no ``default_headers`` in the effective env) are
+    returned unchanged — including plain disk-config flows.
+    """
+    try:
+        from jiuwenswarm.common.local_env_config import (
+            bind_agent_env_ns,
+            bind_task_env_overlay,
+            build_effective_env_overlay,
+            read_default_headers,
+            reset_agent_env_ns,
+            reset_task_env_overlay,
+        )
+        from jiuwenswarm.server.runtime.sync_agents_configs import materialize_sync_env
+        from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+        from jiuwenswarm.server.runtime.tenant_catalog_registry import (
+            TenantCatalogRegistry,
+        )
+        from jiuwenswarm.server.runtime.tenant_context import (
+            bind_workspace_key,
+            reset_workspace_key,
+        )
+
+        agent_id, service_id, workspace_key = TenantAgentPool.extract_ids(request)
+        env: dict[str, Any] = {}
+        spec = TenantCatalogRegistry.get_instance().get(service_id, agent_id)
+        if spec is not None and isinstance(spec.env, dict):
+            env = materialize_sync_env(spec.env) or {}
+
+        ns_token = bind_agent_env_ns(service_id, agent_id)
+        wk_token = bind_workspace_key(workspace_key)
+        try:
+            overlay_token = bind_task_env_overlay(
+                build_effective_env_overlay(env, service_id=service_id, agent_id=agent_id)
+            )
+            try:
+                tip_headers = read_default_headers()
+            finally:
+                reset_task_env_overlay(overlay_token)
+        finally:
+            reset_agent_env_ns(ns_token)
+            reset_workspace_key(wk_token)
+
+        if not tip_headers:
+            return config_base
+
+        models = config_base.get("models")
+        if not isinstance(models, dict):
+            return config_base
+        defaults = models.get("defaults")
+        if not isinstance(defaults, list) or not defaults:
+            return config_base
+
+        hydrated = dict(config_base)
+        models_copy = dict(models)
+        defaults_copy = []
+        merged_entries = 0
+        for entry in defaults:
+            if not isinstance(entry, dict):
+                defaults_copy.append(entry)
+                continue
+            mcc = entry.get("model_client_config")
+            if not isinstance(mcc, dict):
+                defaults_copy.append(entry)
+                continue
+            mcc_copy = dict(mcc)
+            existing = mcc_copy.get("custom_headers")
+            merged = dict(existing) if isinstance(existing, dict) else {}
+            for header_name, header_value in tip_headers.items():
+                key = str(header_name)
+                # Tip credentials must win for Authorization (MaaS Basic auth).
+                if key.lower() == "authorization":
+                    merged[key] = str(header_value)
+                else:
+                    merged.setdefault(key, str(header_value))
+            mcc_copy["custom_headers"] = merged
+            defaults_copy.append({**entry, "model_client_config": mcc_copy})
+            merged_entries += 1
+        if not merged_entries:
+            return config_base
+        models_copy["defaults"] = defaults_copy
+        hydrated["models"] = models_copy
+        logger.info(
+            "[TeamHelpers] hydrated tip default_headers into team model config: "
+            "service_id=%s agent_id=%s entries=%d header_keys=%s",
+            service_id,
+            agent_id,
+            merged_entries,
+            sorted(str(k) for k in tip_headers),
+        )
+        return hydrated
+    except Exception:
+        logger.warning(
+            "[TeamHelpers] team model auth hydration failed; "
+            "falling back to unhydrated config_base",
+            exc_info=True,
+        )
+        return config_base
+
+
 async def process_team_message_stream(
     request: Any,
     inputs: dict[str, Any],
@@ -1887,6 +2006,7 @@ async def process_team_message_stream(
         # no pre-built parent DeepAgent required.
         runtime_context: dict[str, Any] = {}
         if config_base is not None:
+            config_base = _hydrate_team_model_auth(request, config_base)
             runtime_context["config_base"] = config_base
         if sessions_root is not None:
             runtime_context["sessions_root"] = sessions_root
