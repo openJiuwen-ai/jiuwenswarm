@@ -71,7 +71,7 @@ class Records:
                 parse_constant=_constant,
                 parse_float=_float,
             )
-        except (ValueError, UnicodeError, RecursionError) as error:
+        except (ValueError, RecursionError) as error:
             raise ProtocolError("invalid UTF-8 JSON record") from error
         if not isinstance(record, dict):
             raise ProtocolError("output record must be an object")

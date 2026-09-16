@@ -11,7 +11,7 @@ from pathlib import Path
 import pytest
 
 from jiuwenswarm_sdk import Client, InteractionRequired, ProtocolError, TransportError
-from jiuwenswarm_sdk.protocol import encode
+from jiuwenswarm_sdk.protocol import Records, encode
 
 FIXTURE = Path(__file__).resolve().parents[2] / "tests" / "fixture_child.py"
 
@@ -61,6 +61,20 @@ async def test_distinct_query_processes():
 async def test_reject_protocol_or_process_disagreement(mode):
     with pytest.raises(ProtocolError):
         await client(mode).run({"input": "test"}, deadline_seconds=10)
+
+
+@pytest.mark.parametrize(
+    ("line", "cause"),
+    [
+        (b"\xff\n", UnicodeDecodeError),
+        (b"{\n", json.JSONDecodeError),
+        (b"[" * 2000 + b"\n", RecursionError),
+    ],
+)
+def test_invalid_json_retains_protocol_error_and_cause(line, cause):
+    with pytest.raises(ProtocolError, match="invalid UTF-8 JSON record") as error:
+        Records("request").accept(line)
+    assert isinstance(error.value.__cause__, cause)
 
 
 @pytest.mark.asyncio
@@ -203,8 +217,13 @@ async def test_cancelled_caller_task_reaps_child(tmp_path):
 
 def _is_running(pid):
     if os.name == "nt":
+        tasklist = (
+            Path(os.environ.get("SystemRoot", "C:/Windows"))
+            / "System32"
+            / "tasklist.exe"
+        )
         result = subprocess.run(
-            ["tasklist.exe", "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
+            [str(tasklist), "/FI", f"PID eq {pid}", "/FO", "CSV", "/NH"],
             capture_output=True,
             timeout=10,
         )
@@ -251,14 +270,21 @@ def test_nonfinite_rejected(value):
 
 
 def test_no_runtime_dependency():
-    import subprocess
-
+    source = str(FIXTURE.parents[1] / "python" / "src")
+    script = (
+        "import sys\n"
+        f"sys.path.append({source!r})\n"
+        "import jiuwenswarm_sdk\n"
+        "from pathlib import Path\n"
+        f"assert Path(jiuwenswarm_sdk.__file__).resolve().parent == Path({source!r}) / 'jiuwenswarm_sdk'\n"
+        "assert not any(k.startswith(('jiuwenswarm.', 'openjiuwen')) for k in sys.modules)\n"
+    )
     result = subprocess.run(
         [
             sys.executable,
             "-I",
             "-c",
-            f"import sys; sys.path.insert(0, {str(FIXTURE.parents[1] / 'python' / 'src')!r}); import jiuwenswarm_sdk; assert not any(k.startswith(('jiuwenswarm.', 'openjiuwen')) for k in sys.modules)",
+            script,
         ],
         capture_output=True,
     )

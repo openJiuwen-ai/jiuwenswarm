@@ -225,7 +225,10 @@ class _Invocation:
         await self.cancel()
 
     async def drain_stderr(self) -> None:
-        while chunk := await self.stderr.read(8192):
+        while True:
+            chunk = await self.stderr.read(8192)
+            if not chunk:
+                break
             self.stderr_tail.extend(chunk)
             del self.stderr_tail[:-65536]
 
@@ -344,7 +347,7 @@ class _Invocation:
                         if killer.returncode is None:
                             killer.kill()
                             await killer.wait()
-            except (OSError, TimeoutError):
+            except OSError:
                 pass
         else:
             with contextlib.suppress(ProcessLookupError):
