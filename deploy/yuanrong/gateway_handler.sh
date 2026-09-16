@@ -107,6 +107,10 @@ gateway_start_systemd() {
     local dropin_dir="/etc/systemd/system/${svc_name}.service.d"
     local dropin_file="${dropin_dir}/env.conf"
 
+    # gateway 日志独立目录（gateway.log 及轮转归档）；源码默认与其它日志同目录，
+    # 由部署脚本显式指定 /var/log/agentos（Linux），可通过 .env.custom 覆盖。
+    local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+
     # 解析 jiuwenswarm-gateway 和 python bin/lib 目录的绝对路径（远程主机上）
     local gw_bin py_bindir py_libdir
     gw_bin=$(exec_on_host "${master_host}" "command -v jiuwenswarm-gateway" 2>/dev/null | tr -d '\r') || true
@@ -168,7 +172,8 @@ Environment=PATH=${py_bindir}:${remote_path}
 Environment=LD_LIBRARY_PATH=${py_libdir}:${remote_ld_lib}
 Environment=GATEWAY_HOST=${gw_host}
 Environment=GATEWAY_PORT=${gw_port}
-Environment=WEB_PORT=${web_port}"
+Environment=WEB_PORT=${web_port}
+Environment=AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir}"
     if [ "${force_root_home}" = "1" ]; then
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_HOME=/root"
@@ -177,6 +182,9 @@ Environment=JIUWENSWARM_HOME=/root"
         dropin_content="${dropin_content}
 Environment=JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name}"
     fi
+
+    # 确保 gateway 日志目录存在且运行用户可写（服务以 root 运行，通常天然可写）
+    exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
 
     # 写本地临时文件后 copy_to_host 到目标主机（与 config 文件下发方式一致）
     info "Creating systemd unit ${svc_name} on ${master_host}..."
@@ -217,9 +225,14 @@ gateway_start_nohup() {
     local home_prefix="${2:-}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
 
-    local start_cmd="${home_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    # gateway 日志独立目录（与 systemd 模式一致），通过环境变量传给进程
+    local gateway_log_dir="${DEPLOY_VARS["AGENTOS_GATEWAY_LOG_DIR"]:-/var/log/agentos}"
+    exec_on_host "${master_host}" "mkdir -p '${gateway_log_dir}'" || true
+    local log_dir_prefix="AGENTOS_GATEWAY_LOG_DIR=${gateway_log_dir} "
+
+    local start_cmd="${home_prefix}${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} ${log_dir_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
