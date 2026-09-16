@@ -19,6 +19,16 @@ from jiuwenswarm.server.runtime.skill.skill_vetter.vocabulary import (
 )
 
 
+def _make_benign_skill(root: Path) -> Path:
+    skill = root / "good-skill"
+    skill.mkdir()
+    (skill / "SKILL.md").write_text(
+        "---\nname: good-skill\ndescription: x\n---\n", encoding="utf-8"
+    )
+    (skill / "hello.py").write_text("print('hello')\n", encoding="utf-8")
+    return skill
+
+
 def _make_skill(root: Path) -> Path:
     skill = root / "evil-skill"
     (skill / "scripts").mkdir(parents=True)
@@ -130,8 +140,47 @@ def test_scan_skill_surfaces_binary_file(tmp_path):
     findings = scan_skill(skill)
     hits = [f for f in findings if f.rule_id == "unscanned.binary"]
     assert hits
+    assert hits[0].severity is Severity.HIGH
+    assert hits[0].category is ThreatCategory.OBFUSCATION
+
+
+def test_archive_files_emit_no_unscanned_finding(tmp_path):
+    """`.archive/` is product-managed (TeamSkills-Hub copies the skill there)."""
+    skill = _make_benign_skill(tmp_path)
+    content = skill / ".archive" / "versions" / "content" / "good-skill"
+    content.mkdir(parents=True)
+    (skill / ".archive" / "versions" / "index.json").write_text(
+        '{"versions": []}', encoding="utf-8"
+    )
+    (content / "hello.py").write_text("print('hello')\n", encoding="utf-8")
+
+    findings = scan_skill(skill)
+    assert not [f for f in findings if f.rule_id.startswith("unscanned.")]
+    grade = grade_from_findings(findings)
+    assert grade not in (Severity.HIGH.value, Severity.EXTREME.value)
+
+
+def test_scan_skill_surfaces_pycache_as_medium(tmp_path):
+    skill = _make_benign_skill(tmp_path)
+    (skill / "__pycache__").mkdir()
+    (skill / "__pycache__" / "x.pyc").write_bytes(b"\x00\x01\x02")
+    findings = scan_skill(skill)
+    hits = [f for f in findings if f.rule_id == "unscanned.skipped-dir"]
+    assert hits
+    assert hits[0].file == "__pycache__/x.pyc"
     assert hits[0].severity is Severity.MEDIUM
     assert hits[0].category is ThreatCategory.OBFUSCATION
+
+
+def test_content_hash_covers_archive_dir(tmp_path):
+    skill = _make_benign_skill(tmp_path)
+    archive_file = skill / ".archive" / "versions" / "index.json"
+    archive_file.parent.mkdir(parents=True)
+    archive_file.write_text('{"v": 1}', encoding="utf-8")
+    h1 = compute_content_hash(skill)
+    archive_file.write_text('{"v": 2}', encoding="utf-8")
+    h2 = compute_content_hash(skill)
+    assert h1 != h2
 
 
 @pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo unavailable")

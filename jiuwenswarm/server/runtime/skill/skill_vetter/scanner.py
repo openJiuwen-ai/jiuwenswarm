@@ -7,14 +7,23 @@ from pathlib import Path
 from .rules import HIGH_CONFIDENCE_CREDENTIAL_RULE_IDS, RULES
 from .vocabulary import Finding, Severity, ThreatCategory
 
-_SKIP_DIRS = {".archive", ".git", "__pycache__", "node_modules", ".venv"}
+# ``.archive`` is product-managed: the TeamSkills-Hub install path writes a full
+# copy of the skill's own content under ``.archive/versions/...``, so it is
+# already represented by the scanned live copy (and still covered by the hash).
+# Reporting it would grade every hub-installed benign skill HIGH and gate it.
+_ARCHIVE_DIR = ".archive"
+# Code-bearing dirs can hide an attacker payload the live tree never shows.
+_CODE_BEARING_SKIP_DIRS = {".git", "node_modules", ".venv"}
+# Bytecode derived from already-scanned source: worth surfacing, must not gate.
+_DERIVED_SKIP_DIRS = {"__pycache__"}
+_SKIP_DIRS = {_ARCHIVE_DIR} | _CODE_BEARING_SKIP_DIRS | _DERIVED_SKIP_DIRS
 _MAX_FILE_BYTES = 1024 * 1024  # 1 MiB per file
 _TEXT_CHUNK = 4096
 
 _UNSCANNED_RULES: dict[str, tuple[Severity, str]] = {
     "skipped-dir": (Severity.HIGH, "unscanned.skipped-dir"),
     "too-large": (Severity.HIGH, "unscanned.too-large"),
-    "binary": (Severity.MEDIUM, "unscanned.binary"),
+    "binary": (Severity.HIGH, "unscanned.binary"),
 }
 
 
@@ -124,12 +133,33 @@ def _scan_files(skill_dir: Path) -> list[Finding]:
     return findings
 
 
+def _skipped_dir_severity(rel_parts: tuple[str, ...]) -> Severity | None:
+    """Severity for a file dropped by a skip dir, or ``None`` to emit nothing.
+
+    Precedence: ``.archive`` (product-managed, emit nothing) > code-bearing
+    (HIGH) > derived bytecode (MEDIUM).
+    """
+    if _ARCHIVE_DIR in rel_parts:
+        return None
+    if any(part in _CODE_BEARING_SKIP_DIRS for part in rel_parts):
+        return Severity.HIGH
+    if any(part in _DERIVED_SKIP_DIRS for part in rel_parts):
+        return Severity.MEDIUM
+    return None
+
+
 def _unscanned_findings(skill_dir: Path) -> list[Finding]:
     """Surface every file the scan set dropped, so skipped content never vanishes."""
     findings: list[Finding] = []
     for path, reason in iter_skipped_files(skill_dir):
-        severity, rule_id = _UNSCANNED_RULES[reason]
         rel = path.relative_to(skill_dir).as_posix()
+        if reason == "skipped-dir":
+            severity = _skipped_dir_severity(path.relative_to(skill_dir).parts)
+            if severity is None:
+                continue
+        else:
+            severity = _UNSCANNED_RULES[reason][0]
+        _, rule_id = _UNSCANNED_RULES[reason]
         findings.append(
             Finding(
                 category=ThreatCategory.OBFUSCATION,
