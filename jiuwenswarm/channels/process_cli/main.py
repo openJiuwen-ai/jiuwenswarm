@@ -135,6 +135,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--session", help="恢复已有的 Runtime 会话 ID。")
     parser.add_argument(
+        "--query-json",
+        metavar="FILE|-",
+        help="执行一次只读 Runtime 查询，输出 query_result 后关闭 Runtime 并退出。",
+    )
+    parser.add_argument(
         "--run-json",
         metavar="FILE|-",
         help="执行一份机器 JSON 请求并输出版本化 JSONL；- 从标准输入读取至 EOF。",
@@ -224,6 +229,16 @@ def _activate_requested_cwd(
 def main() -> None:
     parser = build_parser()
     args = parser.parse_args()
+    if args.query_json is not None:
+        from jiuwenswarm.channels.process_cli.query_entry import execute_query_source
+
+        standalone = sys.argv[1:] in (
+            ["--query-json", args.query_json],
+            [f"--query-json={args.query_json}"],
+        )
+        sys.exit(
+            execute_query_source(args.query_json, conflicting_arguments=not standalone)
+        )
     if args.run_jsonl:
         from jiuwenswarm.channels.process_cli.machine_entry import execute_source
 

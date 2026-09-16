@@ -17,8 +17,10 @@ from jiuwenswarm.channels.process_cli.protocol import (
     RunStatus,
     RuntimeErrorInfo,
 )
+from jiuwenswarm.channels.process_cli.protocol.query import OneShotQueryResult
 
 _T = TypeVar("_T")
+_Result = TypeVar("_Result", OneShotRunResult, OneShotQueryResult)
 _ACTIVE: ContextVar[CommandSignals | None] = ContextVar("machine_signals", default=None)
 
 
@@ -59,7 +61,7 @@ class CommandSignals:
             self.cleaning = True
             self._task = previous
 
-    def finalize(self, result: OneShotRunResult) -> OneShotRunResult:
+    def finalize(self, result: _Result) -> _Result:
         """Freeze the outcome before publication; keep the first failure."""
         self._settled = True
         if self.interrupted and result.error is None:

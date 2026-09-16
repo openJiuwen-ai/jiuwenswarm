@@ -15,7 +15,7 @@ import uuid
 from collections.abc import Coroutine, Iterator
 from dataclasses import replace
 from pathlib import Path
-from typing import Any, TextIO
+from typing import Any, TextIO, TypeVar
 
 from jiuwenswarm.channels.process_cli.machine_io import (
     MAX_RUN_INPUT_BYTES,
@@ -35,7 +35,15 @@ from jiuwenswarm.channels.process_cli.protocol import (
     WorkspaceSpec,
 )
 
+from jiuwenswarm.channels.process_cli.protocol.query import (
+    OneShotQueryInput,
+    OneShotQueryResult,
+)
+
 logger = logging.getLogger(__name__)
+
+_Input = TypeVar("_Input", OneShotRunInput, OneShotQueryInput)
+_Result = TypeVar("_Result", OneShotRunResult, OneShotQueryResult)
 
 
 @contextlib.contextmanager
@@ -76,7 +84,7 @@ def _absolute_path(value: str) -> str:
     return str(Path(value).expanduser().resolve())
 
 
-def prepare_workspace(run_input: OneShotRunInput) -> OneShotRunInput:
+def prepare_workspace(run_input: _Input) -> _Input:
     """Resolve all paths before chdir so project and cwd retain separate roles."""
     workspace = run_input.workspace
     if workspace is None:
@@ -161,12 +169,12 @@ async def _execute_document(source: str, writer: OneShotWriter) -> OneShotRunRes
 
 
 def _run_async(
-    operation: Coroutine[Any, Any, OneShotRunResult], signals: CommandSignals
-) -> OneShotRunResult:
+    operation: Coroutine[Any, Any, _Result], signals: CommandSignals
+) -> _Result:
     """Observe failures that asyncio.run logs instead of raising on shutdown."""
     shutdown_failed = False
 
-    async def guarded() -> OneShotRunResult:
+    async def guarded() -> _Result:
         loop = asyncio.get_running_loop()
         previous = loop.get_exception_handler()
 
@@ -188,15 +196,13 @@ def _run_async(
     result = asyncio.run(guarded())
     if not shutdown_failed:
         return result
-    error = result.error or RuntimeErrorInfo(
+    error: RuntimeErrorInfo = result.error or RuntimeErrorInfo(
         code="SHUTDOWN_FAILED", message="Runtime cleanup failed."
     )
-    existing = error.details.get("cleanup_errors", ())
-    errors = (
-        (*existing, "asyncio_shutdown")
-        if isinstance(existing, tuple)
-        else ("asyncio_shutdown",)
-    )
+    existing: object = error.details.get("cleanup_errors", ())
+    errors: tuple[Any, ...] = ("asyncio_shutdown",)
+    if isinstance(existing, tuple):
+        errors = existing + errors
     return replace(
         result,
         status=result.status if result.error else RunStatus.FAILED,
