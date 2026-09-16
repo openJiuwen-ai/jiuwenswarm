@@ -701,7 +701,9 @@ class OfficeClawMcpRegistration:
 # owner task 排干队列在自身上下文里跑 session.call_tool。请求清理时销毁 owner task
 # （cancel 关闭 stdio 进程/浏览器）。
 
-# stdio MCP 无 apply_mcp_call_timeout_patch 兜底（仅覆盖 HTTP），故此处对 call_tool/discovery 各加超时。
+# Request-scoped worker defaults: this 300s ceiling covers connector
+# discovery/startup and call_tool. Process-level ToolMgr clients use the
+# separate 30s ``mcp_call_timeout_patch.DEFAULT_CALL_TIMEOUT`` fallback.
 _MCP_CALL_TOOL_TIMEOUT_S = 300.0
 _MCP_CONNECTOR_DISCOVERY_TIMEOUT_S = 300.0
 

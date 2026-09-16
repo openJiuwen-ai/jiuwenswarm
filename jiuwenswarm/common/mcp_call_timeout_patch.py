@@ -98,7 +98,11 @@ _wrapped_connects: set[tuple[type, str]] = set()
 _pending_sdk_read_timeout: contextvars.ContextVar[float | None] = contextvars.ContextVar(
     "_jws_pending_sdk_read_timeout", default=None
 )
-#: Fallback per-call timeout (seconds) when ``--timeout_s`` is not supplied.
+#: Fallback per-call timeout for process-level ToolMgr MCP clients when
+#: ``--timeout_s`` is not supplied. Request-scoped MCP workers use their
+#: separate 300s default in ``mcp_config._MCP_CALL_TOOL_TIMEOUT_S`` because
+#: connector discovery/startup may legitimately take longer than this
+#: process-level fail-fast fallback.
 DEFAULT_CALL_TIMEOUT = 30.0
 
 # AbilityManager 外层曾用 anyio.fail_after 包 tool.invoke；MCP 重连若落在该

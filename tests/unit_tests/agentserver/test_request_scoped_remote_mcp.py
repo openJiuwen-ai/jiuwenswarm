@@ -206,6 +206,27 @@ async def test_remote_discovery_connect_uses_large_connector_timeout(
 
 
 @pytest.mark.asyncio
+async def test_remote_discovery_keeps_default_for_short_connector_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector timeout below 300s must not shorten discovery."""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    _, params = await list_request_mcp_server_tools(
+        "baidu-netdisk", {**_sse_config(), "timeout_s": 0.3}
+    )
+
+    client = _FakeRemoteClient.instances[0]
+    assert (
+        client.connect.call_args.kwargs["timeout"]
+        == mcp_config._MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
+    )
+    assert params["timeout_s"] == 0.3
+
+
+@pytest.mark.asyncio
 async def test_sse_discovery_connect_failure_returns_empty(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
