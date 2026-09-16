@@ -127,3 +127,57 @@ def test_subplan_business_failure_includes_delivery_status() -> None:
     assert _is_subplan_business_failure({"export_status": "failed"}) is True
     assert _is_subplan_business_failure({"status": "error"}) is True
     assert _is_subplan_business_failure({"status": "ok"}) is False
+
+
+def test_business_failure_without_artifact_is_not_collected() -> None:
+    """失败 dict 无 __artifact__ 时不进 holder，wrap 仍看不见 delivery_status。"""
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.runtime.skill_turbo.executor import SkillTurboExecutor
+
+    ex = SkillTurboExecutor.__new__(SkillTurboExecutor)
+    ex._node_artifacts_holder = {}
+    result = {"status": "error", "delivery_status": "failed"}
+    ex._collect_node_artifact(
+        SimpleNamespace(plan_name="p10_delivery"),
+        result,
+        "task-p10",
+        1.0,
+        True,
+    )
+
+    assert "p10_delivery" not in ex._node_artifacts_holder
+
+
+@pytest.mark.asyncio
+async def test_empty_pages_dir_emits_failed_artifact() -> None:
+    """P10 pages_dir 为空的快速失败也必须带 __artifact__，否则 wrap 仍会假成功。"""
+    from types import SimpleNamespace
+
+    from jiuwenswarm.server.runtime.skill_turbo.executor import SkillTurboExecutor
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery import (
+        DeliveryNode,
+    )
+    from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+        _ppt_delivery_failed_error,
+    )
+
+    result = await DeliveryNode()._execute({})
+    artifact = result.get("__artifact__")
+
+    assert result["delivery_status"] == "failed"
+    assert isinstance(artifact, dict)
+    assert artifact["info"]["delivery_status"] == "failed"
+
+    ex = SkillTurboExecutor.__new__(SkillTurboExecutor)
+    ex._node_artifacts_holder = {}
+    ex._collect_node_artifact(
+        SimpleNamespace(plan_name="p10_delivery"),
+        result,
+        "task-p10",
+        1.0,
+        True,
+    )
+
+    assert _ppt_delivery_failed_error(ex._node_artifacts_holder)
+    assert "__artifact__" not in result
