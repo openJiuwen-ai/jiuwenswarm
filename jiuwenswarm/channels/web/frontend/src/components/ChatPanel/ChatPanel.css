@@ -1056,9 +1056,14 @@
 }
 
 .chat-composer-suggestion__list {
-  max-height: 278px;
+  max-height: 266px;
   overflow-y: auto;
-  padding: 6px;
+  margin: 6px 0;
+  padding: 0 6px;
+}
+
+.chat-composer-suggestion__list::-webkit-scrollbar {
+  width: 4px;
 }
 
 .chat-composer-suggestion__item {
@@ -1157,8 +1162,9 @@
 }
 
 .chat-composer-suggestion--slash .chat-composer-suggestion__list {
-  max-height: 320px;
-  padding: 10px 8px;
+  max-height: 300px;
+  margin: 10px 0;
+  padding: 0 8px;
   overscroll-behavior: contain;
   scrollbar-gutter: stable;
 }
@@ -1275,11 +1281,11 @@
 
 @media (max-width: 720px) {
   .chat-composer-suggestion--slash {
-    border-radius: 14px;
+    border-radius: 10px;
   }
 
   .chat-composer-suggestion--slash .chat-composer-suggestion__list {
-    max-height: 240px;
+    max-height: 220px;
   }
 
   .chat-composer-suggestion__source {
@@ -2286,7 +2292,7 @@
   width: auto;
   z-index: 30;
   margin-top: 0;
-  border-radius: 18px;
+  border-radius: 10px;
 }
 
 .chat-work-context-row {
