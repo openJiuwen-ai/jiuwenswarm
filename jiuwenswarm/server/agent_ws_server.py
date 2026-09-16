@@ -6938,7 +6938,7 @@ class AgentWebSocketServer:
             # event vanished, and the next context commit was reported as a
             # sequence gap.
             _trajectory_mode = deprecate_mode(canonical_mode)
-            _turn = agent.resolve_trajectory_turn()
+            _turn = await agent.resolve_trajectory_turn(session_id)
             _run_span = open_agent_run_span(
                 session_id=session_id,
                 mode=_trajectory_mode,

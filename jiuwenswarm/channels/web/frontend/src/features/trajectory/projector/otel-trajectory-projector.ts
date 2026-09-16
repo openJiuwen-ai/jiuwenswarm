@@ -1752,6 +1752,9 @@ export function projectOtelTrajectory(
   }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
   const compactions = new Map<string, ProjectedSpan>()
+  // Turns that made a conversational model call. A turn with compaction
+  // attempts but none of these is a compaction run on its own.
+  const conversationTurnKeys = new Set<string>()
   const toolSchemaByTurnAndName = new Map<string, string>()
   const inferenceById = new Map(spans.filter(isInference).flatMap((span): Array<[
     string,
@@ -1794,6 +1797,7 @@ export function projectOtelTrajectory(
         ))
         continue
       }
+      conversationTurnKeys.add(span.turnKey)
       const target = group(turn, step, span.attributes.stepId, startedAt(span))
       const inputs = inputProjection.inputsBySpanId.get(span.span.spanId)
         ?? { messages: [], prompts: [] }
@@ -1938,24 +1942,41 @@ export function projectOtelTrajectory(
         cells: [...value.cells].sort(compareTrajectoryCells),
       }))
       .filter(value => value.cells.length > 0)
-    if (groups.length > 0) turns.push({ turn: turn.turn, groups })
     const compaction = compactions.get(turnKey)
     const attempts = compactionInferences.get(turnKey) ?? []
-    if (compaction !== undefined || attempts.length > 0) {
-      const ordered = [...attempts].sort(comparePhysicalInference)
-      // The attempts come first and the outcome last, so the group reads as
-      // what the compaction actually did rather than only how it ended.
-      const cells = [
+    if (compaction === undefined && attempts.length === 0) {
+      if (groups.length > 0) turns.push({ turn: turn.turn, groups })
+      continue
+    }
+    const ordered = [...attempts].sort(comparePhysicalInference)
+    // The attempts come first and the outcome last, so the group reads as
+    // what the compaction actually did rather than only how it ended.
+    const compactionGroup = {
+      title: compactionGroupTitle(ordered),
+      cells: [
         ...ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
         ...(compaction === undefined
           ? []
           : [compactionCell(compaction, ordered[ordered.length - 1])]),
-      ]
-      turns.push({
-        turn: null,
-        groups: [{ title: compactionGroupTitle(ordered), cells }],
-      })
+      ],
     }
+    if (!conversationTurnKeys.has(turnKey)) {
+      // A turn that made no conversational model call is a compaction run on
+      // its own, such as a manual /compact: a turn whose model calls are the
+      // summary attempts and whose outcome is the window it committed. The
+      // attempts open that turn, ahead of the window they produced, instead
+      // of trailing it as a group between turns.
+      turns.push({
+        turn: turn.turn,
+        groups: [{
+          ...compactionGroup,
+          cells: [...compactionGroup.cells, ...groups.flatMap(value => value.cells)],
+        }],
+      })
+      continue
+    }
+    if (groups.length > 0) turns.push({ turn: turn.turn, groups })
+    turns.push({ turn: null, groups: [compactionGroup] })
   }
   for (const event of v2CompactionEvents) {
     if (event.cells.length === 0) continue

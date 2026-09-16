@@ -444,7 +444,7 @@ async def test_handle_command_compact_returns_custom_instructions(server, fake_w
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
 
-        def resolve_trajectory_turn(self):
+        async def resolve_trajectory_turn(self, session_id):
             return TurnIdentity(turn_id="turn-compact", turn_number=3)
 
         async def compress_context(self, session_id, *, return_state=False):
@@ -507,7 +507,7 @@ async def test_handle_command_compact_pushes_current_compression_state_event(ser
             # /compact 同 /btw：server 会先 ensure_instance 懒构建根 DeepAgent。
             return None
 
-        def resolve_trajectory_turn(self):
+        async def resolve_trajectory_turn(self, session_id):
             return TurnIdentity(turn_id="turn-compact", turn_number=3)
 
         async def compress_context(self, session_id, *, return_state=False):
@@ -572,7 +572,7 @@ async def test_handle_command_compact_attributes_team_work_to_live_leader(server
         async def compress_context(self, session_id, *, return_state=False):
             return {"result": "noop", "stats": None}
 
-        def resolve_trajectory_turn(self):
+        async def resolve_trajectory_turn(self, session_id):
             return TurnIdentity(turn_id="turn-compact", turn_number=3)
 
     subject = SimpleNamespace(
@@ -646,7 +646,7 @@ async def test_handle_command_compact_opens_run_span_with_canonical_mode(
         async def compress_context(self, session_id, *, return_state=False):
             return {"result": "noop", "stats": None}
 
-        def resolve_trajectory_turn(self):
+        async def resolve_trajectory_turn(self, session_id):
             return TurnIdentity(turn_id="turn-compact", turn_number=3)
 
     captured = {}

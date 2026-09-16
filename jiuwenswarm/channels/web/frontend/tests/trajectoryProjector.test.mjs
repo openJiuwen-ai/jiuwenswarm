@@ -2771,6 +2771,146 @@ test('every attempt of one compaction is shown under its own numbered group', ()
   assert.ok(groups[0].cells[4].text.includes('Attempt 5'));
 });
 
+test('a manual compaction is a turn whose attempts open it, ahead of the window it committed', () => {
+  // The real shape of a manual /compact between two chat turns: its run
+  // claims the next turn number, makes no conversational model call, and
+  // commits the window its summary produced. It used to trail its turn as a
+  // group between turns, so the summary request read as coming after its
+  // own outcome.
+  const chatTrace = 'abababababababababababababababab';
+  const compactTrace = '77777777777777777777777777777777';
+  const nextTrace = 'cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd';
+  const compactTurnId = 'turn-manual-compaction';
+  const user = contextMessage('message-user-1', 'user', 'first question');
+  const memory = contextMessage(
+    'message-memory',
+    'user',
+    '<memory_block_round>summary</memory_block_round>',
+    'harness_internal',
+  );
+  const next = contextMessage('message-user-2', 'user', 'next question');
+  const modelRequests = [{ request_id: 'request-compaction', inference_id: 'inference-compaction-2' }];
+
+  const firstInference = legacyInferenceRecord({
+    output: 'first answer',
+    requestNumber: 1,
+    spanId: 'a'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-chat-1',
+    stepNumber: 1,
+  });
+  const firstCommit = v2Record({
+    eventId: 'event-chat-1',
+    sequence: 1,
+    traceId: chatTrace,
+    inferenceId: 'a'.repeat(16),
+    turn: 1,
+    payload: contextCommit('window-1', null, [user], []),
+  });
+  const attempt = compactionAttemptRecord({
+    sequence: 2,
+    compactionNumber: 1,
+    failed: false,
+    traceId: compactTrace,
+    turnId: compactTurnId,
+  });
+  setIntAttribute(spansOf([attempt])[0], 'openjiuwen.turn.number', 2);
+  const completed = v2Record({
+    eventId: 'event-manual-compaction',
+    eventKind: 'compaction.completed',
+    sequence: 2,
+    time: 3_000_000,
+    traceId: compactTrace,
+    turn: 2,
+    turnId: compactTurnId,
+    payload: {
+      operation_id: 'operation-1',
+      status: 'completed',
+      model_requests: modelRequests,
+      summary: 'Compressed 2 -> 1 messages',
+      compact_summary: '<memory_block_round>summary</memory_block_round>',
+    },
+  });
+  const compactionCommit = v2Record({
+    eventId: 'event-manual-compaction-window',
+    sequence: 3,
+    time: 3_000_001,
+    traceId: compactTrace,
+    inferenceId: 'agent-run-span',
+    turn: 2,
+    turnId: compactTurnId,
+    payload: {
+      ...contextCommit('window-2', 'window-1', [memory], [
+        { op: 'remove', message_id: user.message_id, index: 0 },
+        { op: 'insert', message_id: memory.message_id, index: 0, message: memory },
+      ]),
+      request_purpose: 'compaction',
+      transition_kind: 'compaction',
+      caused_by_operation_id: 'operation-1',
+      input_window_id: 'window-1',
+      output_window_id: 'window-2',
+      model_requests: modelRequests,
+    },
+  });
+  const nextInference = legacyInferenceRecord({
+    output: 'next answer',
+    requestNumber: 3,
+    spanId: 'c'.repeat(16),
+    startTimeUnixNano: 4_000_000,
+    stepId: 'step-chat-3',
+    stepNumber: 1,
+  });
+  spansOf([nextInference])[0].traceId = nextTrace;
+  setIntAttribute(spansOf([nextInference])[0], 'openjiuwen.turn.number', 3);
+  const nextCommit = v2Record({
+    eventId: 'event-chat-3',
+    sequence: 4,
+    traceId: nextTrace,
+    inferenceId: 'c'.repeat(16),
+    turn: 3,
+    payload: contextCommit('window-3', 'window-2', [memory, next], [
+      { op: 'insert', message_id: next.message_id, index: 1, message: next },
+    ]),
+  });
+
+  const snapshot = projectOtelTrajectory([
+    nextCommit, nextInference, compactionCommit, completed, attempt, firstCommit, firstInference,
+  ]);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2, 3]);
+  const compactionTurn = snapshot.turns[1];
+  assert.deepEqual(compactionTurn.groups.map(group => group.title), ['Compaction #1']);
+  assert.deepEqual(compactionTurn.groups[0].cells.map(cell => cell.kind), [
+    'message', 'compacted', 'context',
+  ]);
+  assert.ok(compactionTurn.groups[0].cells[0].text.includes('Attempt 1'));
+});
+
+test('a compaction inside a conversation turn still follows that turn between turns', () => {
+  const trace = 'abababababababababababababababab';
+  const inference = legacyInferenceRecord({
+    output: 'answer',
+    requestNumber: 1,
+    spanId: 'a'.repeat(16),
+    startTimeUnixNano: 1_000_000,
+    stepId: 'step-chat-1',
+    stepNumber: 1,
+  });
+  const attempt = compactionAttemptRecord({
+    sequence: 5,
+    compactionNumber: 1,
+    failed: false,
+    traceId: trace,
+  });
+
+  const snapshot = projectOtelTrajectory([attempt, inference]);
+
+  assert.deepEqual(
+    snapshot.turns.map(turn => [turn.turn, turn.groups.map(group => group.title)]),
+    [[1, ['Step 1']], [null, ['Compaction #1']]],
+  );
+});
+
 test('a compaction still groups when its number is absent', () => {
   const records = [compactionAttemptRecord({ sequence: 1, compactionNumber: 0, failed: false })];
   const snapshot = projectOtelTrajectory(records);

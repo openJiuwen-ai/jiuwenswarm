@@ -12673,7 +12673,7 @@ class JiuWenSwarmDeepAdapter:
             return False
         return getattr(self._instance, "active_round", None) is not None
 
-    def resolve_standalone_trajectory_turn(self) -> TurnIdentity:
+    async def resolve_standalone_trajectory_turn(self, session_id: str) -> TurnIdentity:
         """Open a new trajectory turn for work that runs outside the ReAct loop.
 
         A manual compaction is a turn of its own: an instruction goes in, the
@@ -12682,9 +12682,21 @@ class JiuWenSwarmDeepAdapter:
         message would, so it sits between its neighbours on the timeline
         instead of standing outside every turn.
 
+        The number must come from the tracker the session's chat requests
+        resolve against, which lives on the session-scoped adapter. The root
+        adapter keeps a tracker of its own that never sees those requests;
+        resolving there numbered every compaction from one, and the viewer,
+        which orders turns by number, sorted them in among the earliest turns.
+
+        Args:
+            session_id: Session whose turn sequence the run joins.
+
         Returns:
             The turn identity to stamp on the run's root span.
         """
+        if not self._is_session_scoped_adapter:
+            session_adapter = await self._get_or_create_session_adapter(session_id)
+            return await session_adapter.resolve_standalone_trajectory_turn(session_id)
         return self._turn_tracker.resolve(self._active_loop_session(), continues_turn=False)
 
     def _resolve_trajectory_turn(self, params: Any) -> TurnIdentity:

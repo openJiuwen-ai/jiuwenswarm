@@ -4441,8 +4441,11 @@ class JiuWenSwarm:
             return_state=return_state,
         )
 
-    def resolve_trajectory_turn(self) -> TurnIdentity:
+    async def resolve_trajectory_turn(self, session_id: str) -> TurnIdentity:
         """Open a new trajectory turn for a standalone run such as a manual compaction.
+
+        Args:
+            session_id: Session whose turn sequence the run joins.
 
         Returns:
             The turn identity to stamp on the run's root span.
@@ -4450,7 +4453,7 @@ class JiuWenSwarm:
         adapter = self._adapter
         if adapter is None:
             raise ValueError("Agent adapter not available")
-        return adapter.resolve_standalone_trajectory_turn()
+        return await adapter.resolve_standalone_trajectory_turn(session_id)
 
     async def get_context_usage(self, session_id: str) -> dict[str, Any]:
         """获取当前上下文窗口占用统计。
