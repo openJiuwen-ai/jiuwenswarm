@@ -37,15 +37,11 @@ from jiuwenswarm.common.utils import logger
 from jiuwenswarm.agents.harness.common.tools.todo_resume import (
     is_skip_invoke_task_update_sync,
     clear_skip_invoke_task_update_sync,
-    is_resume_user_query,
     set_stale_todo_ids,
     clear_stale_todo_ids,
     set_pre_invoke_todo_ids,
     set_current_invoke_todo_ids,
     get_pre_invoke_todo_ids,
-    set_todo_started_ids,
-    get_todo_started_ids,
-    clear_todo_started_ids,
 )
 
 _ACTIVE_TASK_ID: ContextVar[str | None] = ContextVar(
@@ -59,68 +55,6 @@ SKILL_TURBO_OUTER_TODO_ACTIVE_EXTRA_KEY = (
 def get_current_task_id() -> str | None:
     """Return current task id for stream payload correlation."""
     return _ACTIVE_TASK_ID.get()
-
-
-def _inputs_is_scheduled_tick(inputs: Any) -> bool:
-    for meth_name in ("is_heartbeat", "is_cron"):
-        meth = getattr(inputs, meth_name, None)
-        if not callable(meth):
-            continue
-        try:
-            if meth():
-                return True
-        except Exception:
-            logger.debug(
-                "[TaskExecutionRail] %s check failed",
-                meth_name,
-                exc_info=True,
-            )
-    return False
-
-
-def _query_is_interactive_input(query: Any) -> bool:
-    try:
-        from openjiuwen.core.session.interaction.interactive_input import (
-            InteractiveInput,
-        )
-    except Exception:
-        logger.debug(
-            "[TaskExecutionRail] InteractiveInput import/check failed",
-            exc_info=True,
-        )
-        return False
-    return isinstance(query, InteractiveInput)
-
-
-def _is_hitl_or_resume_continuation(
-    ctx: AgentCallbackContext,
-    skip_invoke: bool,
-) -> bool:
-    """True when this invoke continues the same user turn.
-
-    Permission / ask-user / confirm resume arrives as a new ``chat.send`` with
-    ``skip_invoke=False`` and ``query`` rebuilt as ``InteractiveInput``. Treating
-    that as a fresh user request would wipe ``_todo_started`` and re-emit
-    ``task.start`` for the same in_progress item.
-    """
-    if skip_invoke or ctx.session is None:
-        return True
-    inputs = getattr(ctx, "inputs", None)
-    if inputs is None:
-        return True
-    if _inputs_is_scheduled_tick(inputs):
-        return True
-    query = getattr(inputs, "query", None)
-    if query is None:
-        return True
-    if _query_is_interactive_input(query):
-        return True
-    if not isinstance(query, str):
-        return True
-    text = query.strip()
-    if not text:
-        return True
-    return is_resume_user_query(text)
 
 
 _SERIAL_TODO_DONE_STATUSES = frozenset({"completed", "cancelled"})
@@ -1512,46 +1446,14 @@ class TaskExecutionRail(DeepAgentRail):
             list(self._active_tasks.keys()),
             skip_invoke,
         )
-        # 权限卡 / 空 query / 「继续」是同一轮续跑，不能当新任务清
-        # _todo_started，否则 lazy_start 会给同一条 in_progress 再发 task.start。
-        resume_continuation = _is_hitl_or_resume_continuation(ctx, skip_invoke)
-        preserved_started: set[str] = set()
-        preserved_active: dict[str, TaskExecutionContext] = {}
-        if resume_continuation:
-            preserved_started = set(self._todo_started)
-            preserved_active = dict(self._active_tasks)
-            if ctx.session is not None:
-                try:
-                    preserved_started |= get_todo_started_ids(ctx.session)
-                except Exception:
-                    logger.debug(
-                        "[TaskExecutionRail] before_invoke: "
-                        "get_todo_started_ids failed",
-                        exc_info=True,
-                    )
         self._todo_map = {}
         self._todo_map_before_tool = {}
+        self._active_tasks = {}
+        self._todo_started = set()
         self._todo_complete_deferred = set()
         self._todo_start_deferred = set()
         self._tool_start_times = {}
-        if resume_continuation:
-            self._todo_started = preserved_started
-            self._active_tasks = preserved_active
-            if ctx.session is not None:
-                self._persist_todo_started(ctx.session)
-        else:
-            self._active_tasks = {}
-            self._todo_started = set()
-            if ctx.session is not None:
-                try:
-                    clear_todo_started_ids(ctx.session)
-                except Exception:
-                    logger.debug(
-                        "[TaskExecutionRail] before_invoke: "
-                        "clear_todo_started_ids failed",
-                        exc_info=True,
-                    )
-            _ACTIVE_TASK_ID.set(None)
+        _ACTIVE_TASK_ID.set(None)
         if isinstance(ctx.inputs, InvokeInputs):
             await self._init_task_tracking(ctx.session)
             # 跨请求时实例上的 deferred 已被清空；从磁盘快照重建，
@@ -2085,28 +1987,6 @@ class TaskExecutionRail(DeepAgentRail):
                 sorted(self._todo_complete_deferred),
             )
 
-    def _persist_todo_started(self, session: Session | None) -> None:
-        if session is None:
-            return
-        try:
-            set_todo_started_ids(session, self._todo_started)
-        except Exception:
-            logger.debug(
-                "[TaskExecutionRail] persist todo_started failed",
-                exc_info=True,
-            )
-
-    def _remember_started_todo(
-        self,
-        session: Session | None,
-        task_id: str,
-    ) -> None:
-        raw_id = str(task_id or "").strip()
-        if not raw_id:
-            return
-        self._todo_started.add(raw_id)
-        self._persist_todo_started(session)
-
     # ------------------------------------------------------------------
     # State transition detection + event emission
     # ------------------------------------------------------------------
@@ -2316,7 +2196,6 @@ class TaskExecutionRail(DeepAgentRail):
         source: Literal["todo"],
     ) -> None:
         full_task_id = f"{source}:{task_id}"
-        self._remember_started_todo(session, task_id)
 
         if full_task_id in self._active_tasks:
             _ACTIVE_TASK_ID.set(full_task_id)

@@ -12181,47 +12181,6 @@ class JiuWenSwarmDeepAdapter:
             for entry in interrupted.values()
         )
 
-    def _deep_agent_has_pending_interrupt(self) -> bool:
-        """True when DeepAgent still holds a paused tool waiting for HITL answers.
-
-        Fail-open (True) when the interrupt map cannot be inspected, so a real
-        permission / ask-user resume is not dropped as stale.
-        """
-        loop_session = getattr(getattr(self, "_instance", None), "_loop_session", None)
-        if loop_session is None:
-            return True
-        try:
-            state = loop_session.get_state(INTERRUPTION_KEY)
-        except Exception:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] inspect pending interrupt failed; "
-                "treating resume as live HITL",
-                exc_info=True,
-            )
-            return True
-        interrupted = getattr(state, "interrupted_tools", None)
-        return isinstance(interrupted, dict) and bool(interrupted)
-
-    @staticmethod
-    def _is_stale_idle_interrupt_resume(
-        *,
-        is_interrupt_resume: bool,
-        has_pending_interrupt: bool,
-        attached_stream: Any,
-    ) -> bool:
-        """Idle session + leftover permission card, with no paused tool.
-
-        Hosted subagent cards can still arrive as ``permission_interrupt`` after
-        the paused tool already finished. If DeepAgent is idle and INTERRUPTION_KEY is empty,
-        sending that as a new round makes the model spam 「收到 / 任务已完成」.
-        Busy sessions (attach_output is None) still inject into the live round.
-        """
-        return bool(
-            is_interrupt_resume
-            and not has_pending_interrupt
-            and attached_stream is not None
-        )
-
     async def _try_skill_turbo_resume(
         self,
         request: AgentRequest,
@@ -17186,10 +17145,6 @@ class JiuWenSwarmDeepAdapter:
                 _approval_id,
                 resolved,
             )
-            # RelayClaw consumeFrames treats a 2-frame empty run (accepted +
-            # complete, no chat.delta) as jiuwen_session_busy / OA.05000090
-            # and can interrupt the parent turn. Keepalive is a non-business
-            # frame that raises frameCount above that heuristic.
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -17198,12 +17153,6 @@ class JiuWenSwarmDeepAdapter:
                     "request_id": request.request_id,
                     "resolved": resolved,
                 },
-                is_complete=False,
-            )
-            yield AgentResponseChunk(
-                request_id=request.request_id,
-                channel_id=request.channel_id,
-                payload={"event_type": "keepalive"},
                 is_complete=False,
             )
             yield AgentResponseChunk(
@@ -18049,28 +17998,6 @@ class JiuWenSwarmDeepAdapter:
                     is_complete=True,
                 )
 
-            async def _yield_stale_interrupt_ack() -> AsyncIterator[AgentResponseChunk]:
-                # Same 3-frame shape as hosted subagent approval: RelayClaw
-                # treats accepted+complete with no keepalive as session busy.
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload={"event_type": "runtime.accepted", "request_id": rid},
-                    is_complete=False,
-                )
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload={"event_type": "keepalive"},
-                    is_complete=False,
-                )
-                yield AgentResponseChunk(
-                    request_id=rid,
-                    channel_id=cid,
-                    payload=None,
-                    is_complete=True,
-                )
-
             if pending_goal_op is not None:
                 interaction_stream = await self._instance.attach_output()
                 control = await self._dispatch_goal_control(
@@ -18184,38 +18111,6 @@ class JiuWenSwarmDeepAdapter:
                 # Interrupt resumes (permission/confirm/ask-user) must send_input
                 # even when Goal already holds the output lease.
                 interaction_stream = await self._instance.attach_output()
-                if self._is_stale_idle_interrupt_resume(
-                    is_interrupt_resume=self._is_interrupt_resume_dispatch(
-                        request.params
-                    ),
-                    has_pending_interrupt=self._deep_agent_has_pending_interrupt(),
-                    attached_stream=interaction_stream,
-                ):
-                    # Leftover 「本次允许」 after the paused tool already finished.
-                    # Do not start a new ReAct round (that was the 「收到」 spam).
-                    logger.info(
-                        "[JiuWenSwarmDeepAdapter] stale interrupt resume ignored: "
-                        "idle session has no pending HITL session_id=%s "
-                        "request_id=%s source=%s",
-                        session_id,
-                        rid,
-                        (request.params or {}).get("source")
-                        if isinstance(request.params, dict)
-                        else "",
-                    )
-                    try:
-                        await interaction_stream.close(abort_active_round=False)
-                    except Exception:
-                        logger.debug(
-                            "[JiuWenSwarmDeepAdapter] close stale interrupt "
-                            "lease failed",
-                            exc_info=True,
-                        )
-                    interaction_stream = None
-                    async for chunk in _yield_stale_interrupt_ack():
-                        yield chunk
-                    interaction_stream_abort = False
-                    return
                 # Last stop before the message is injected into the running
                 # single-agent interaction (interrupt / HITL resume).
                 server_logger.info(

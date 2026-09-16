@@ -111,10 +111,6 @@ CURRENT_INVOKE_TODO_IDS_SESSION_KEY = "jiuwenclaw_current_invoke_todo_ids"
 # 用于区分「磁盘旧残留」与「本轮 LLM 新建」：过滤 stale ids 时，
 # 若 id 既在 stale 集又在此快照中 → 真旧残留，过滤；否则 → 本轮新建，保留。
 PRE_INVOKE_TODO_IDS_SESSION_KEY = "jiuwenclaw_pre_invoke_todo_ids"
-# Todos that already emitted task.start in this session. Permission / HITL
-# resume is a new invoke and used to wipe the in-memory set, so the next
-# work tool re-emitted task.start for the same in_progress item.
-TODO_STARTED_SESSION_KEY = "jiuwenclaw_todo_started_ids"
 
 
 def set_current_invoke_todo_ids(session: Any, ids: list[str] | set[str]) -> None:
@@ -178,30 +174,6 @@ def get_stale_todo_ids(session: Any) -> set[str]:
 
 def clear_stale_todo_ids(session: Any) -> None:
     session.update_state({STALE_TODO_IDS_SESSION_KEY: None})
-
-
-def set_todo_started_ids(session: Any, ids: list[str] | set[str]) -> None:
-    """Persist todos that already opened a UI task.start segment."""
-    session.update_state({TODO_STARTED_SESSION_KEY: sorted(ids)})
-
-
-def get_todo_started_ids(session: Any) -> set[str]:
-    """Todos that already emitted task.start; empty set when unset."""
-    value = session.get_state(TODO_STARTED_SESSION_KEY)
-    if not isinstance(value, list):
-        return set()
-    started: set[str] = set()
-    for item in value:
-        if item is None or isinstance(item, (dict, list, tuple)):
-            continue
-        text = str(item).strip()
-        if text:
-            started.add(text)
-    return started
-
-
-def clear_todo_started_ids(session: Any) -> None:
-    session.update_state({TODO_STARTED_SESSION_KEY: None})
 
 
 def _todo_status_value(item: Any) -> str:

@@ -296,11 +296,6 @@ async def request_subagent_hosted_permission_confirmation(
     from jiuwenswarm.openjiuwen_streaming_tool_patch import (
         streaming_tool_wait_timeout_paused,
     )
-    from jiuwenswarm.openjiuwen_subagent_approval_queue_patch import (
-        apply_subagent_approval_queue_patch,
-    )
-
-    apply_subagent_approval_queue_patch()
 
     tool_call = req.tool_call
     tool_name = str(getattr(tool_call, "name", "") or "").strip()

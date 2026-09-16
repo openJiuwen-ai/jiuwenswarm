@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-from types import SimpleNamespace
-
 import pytest
 
 from jiuwenswarm.common.schema.agent import AgentRequest
@@ -49,55 +47,6 @@ def test_subagent_approval_answer_detection() -> None:
         "call_1",
         {"source": "permission_interrupt", "answers": ["本次允许"]},
     )
-
-
-def test_deep_agent_has_pending_interrupt_fail_open_without_session() -> None:
-    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._instance = None
-    assert adapter._deep_agent_has_pending_interrupt() is True
-
-
-def test_deep_agent_has_pending_interrupt_reads_interruption_map() -> None:
-    adapter = JiuWenSwarmDeepAdapter.__new__(JiuWenSwarmDeepAdapter)
-    adapter._instance = SimpleNamespace(
-        _loop_session=SimpleNamespace(get_state=lambda _key: None)
-    )
-    assert adapter._deep_agent_has_pending_interrupt() is False
-
-    adapter._instance._loop_session.get_state = lambda _key: SimpleNamespace(
-        interrupted_tools={
-            "call_1": SimpleNamespace(tool_call=SimpleNamespace(name="bash"))
-        }
-    )
-    assert adapter._deep_agent_has_pending_interrupt() is True
-
-    adapter._instance._loop_session.get_state = lambda _key: SimpleNamespace(
-        interrupted_tools={}
-    )
-    assert adapter._deep_agent_has_pending_interrupt() is False
-
-
-def test_stale_idle_interrupt_resume_only_when_idle_and_no_pending() -> None:
-    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
-        is_interrupt_resume=True,
-        has_pending_interrupt=False,
-        attached_stream=object(),
-    ) is True
-    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
-        is_interrupt_resume=True,
-        has_pending_interrupt=True,
-        attached_stream=object(),
-    ) is False
-    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
-        is_interrupt_resume=True,
-        has_pending_interrupt=False,
-        attached_stream=None,
-    ) is False
-    assert JiuWenSwarmDeepAdapter._is_stale_idle_interrupt_resume(
-        is_interrupt_resume=False,
-        has_pending_interrupt=False,
-        attached_stream=object(),
-    ) is False
 
 
 @pytest.mark.asyncio
@@ -147,12 +96,11 @@ async def test_process_message_stream_resolves_subagent_approval_early(
         "request_id": "subagent_tool_permission_deadbeef",
         "answers": ["本次允许"],
     }
-    assert len(chunks) == 3
+    assert len(chunks) == 2
     assert chunks[0].payload["event_type"] == "runtime.accepted"
     assert chunks[0].payload["resolved"] is True
-    assert chunks[1].payload["event_type"] == "keepalive"
-    assert chunks[2].is_complete is True
-    assert chunks[2].payload is None
+    assert chunks[1].is_complete is True
+    assert chunks[1].payload is None
 
 
 @pytest.mark.asyncio
@@ -208,6 +156,7 @@ def test_resolve_subagent_approval_works_without_agent_scope_id(monkeypatch):
     from openjiuwen.harness.security.skill_authorization.subagent_approval_registry import (
         SubagentApprovalKind,
         SubagentApprovalRequest,
+        SubagentApprovalRegistry,
     )
     from jiuwenswarm.agents.harness.common.rails.permissions.skill_authorization.runtime import (
         resolve_subagent_approval,
