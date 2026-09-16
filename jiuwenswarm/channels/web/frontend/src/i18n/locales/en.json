@@ -833,8 +833,6 @@
       "permission": {
         "default": "Default",
         "defaultDesc": "Always ask when editing external files or accessing the internet",
-        "automatic": "Smart Approval",
-        "automaticDesc": "Reviews tool requests against your task and permissions, asking you when needed",
         "fullAccess": "Full Access",
         "fullAccessDesc": "Unrestricted access to the internet and any files on your computer",
         "fullAccessWarning": {
@@ -2951,47 +2949,6 @@
         "resultWords": "{{count}} words returned"
       }
     },
-    "autoReviewer": {
-      "title": "Permission review",
-      "status": {
-        "approved": "Automatically allowed",
-        "userApproved": "User allowed",
-        "userRejected": "User rejected",
-        "manual": "Manual review required",
-        "denied": "Denied",
-        "blocked": "Blocked",
-        "hostRevalidationFailed": "Host validation failed",
-        "inProgress": "Reviewing",
-        "timedOut": "Review timed out",
-        "fallback": "Manual fallback",
-        "aborted": "Review stopped"
-      },
-      "details": {
-        "source": "Decision source",
-        "sourceValues": {
-          "automatic": "Smart Approval",
-          "manual": "Manual approval",
-          "system": "System permission check"
-        },
-        "risk": "Risk",
-        "riskValues": {
-          "critical": "Critical",
-          "high": "High",
-          "medium": "Medium",
-          "low": "Low",
-          "unknown": "Unknown"
-        },
-        "reason": "Reason",
-        "reasonValues": {
-          "approved": "Permission review allowed this operation.",
-          "denied": "Permission review denied this operation.",
-          "manual": "Available information is insufficient for Smart Approval; manual judgment is required.",
-          "inProgress": "Permission review is in progress."
-        },
-        "hint": "Manual review guidance",
-        "manualGuidanceFallback": "Review the tool parameters, target, and risks before deciding."
-      }
-    },
     "teamActivity": {
       "preparing": "Agent Team is preparing",
       "currentActivity": "{{member}} - {{summary}}",
@@ -3378,10 +3335,6 @@
     "allowOnce": "Allow once",
     "allowAlways": "Always allow",
     "skip": "Skip",
-    "toolPayload": {
-      "title": "Tool payload (redacted)",
-      "notice": "This display copy is redacted and may be truncated for safety or size limits."
-    },
     "tip": {
       "allowOnce": "Allow this action only this time",
       "allowAlways": "Remember this rule and auto-allow from now on",
