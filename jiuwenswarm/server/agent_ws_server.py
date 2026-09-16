@@ -148,6 +148,10 @@ from jiuwenswarm.common.config import (
 )
 from jiuwenswarm.server.sandbox_config_rpc import get_sandbox_config_req_methods
 from jiuwenswarm.server.sandbox.jiuwenbox_runner import JiuwenBoxRunner
+from jiuwenswarm.runtime.host_services import (
+    install_runtime_push_handler,
+    restore_runtime_push_handler,
+)
 from jiuwenswarm.common.security.ws_origin import (
     extract_handshake_request,
     forbidden_origin_response,
@@ -363,6 +367,8 @@ class AgentWebSocketServer:
         self._jiuwenbox_runner = JiuwenBoxRunner.instance()
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
+        self._runtime_push_handler = None
+        self._previous_runtime_push_handler = None
         get_acp_output_manager().set_send_push_callback(
             lambda msg: asyncio.create_task(self.send_push(msg))
         )
@@ -432,6 +438,11 @@ class AgentWebSocketServer:
     def reset_instance(cls) -> None:
         """重置单例（仅用于测试）。"""
         cls._instance = None
+
+    @classmethod
+    def current_instance(cls) -> AgentWebSocketServer | None:
+        """Return the live singleton without creating a new AgentServer."""
+        return cls._instance
 
     @property
     def host(self) -> str:
@@ -533,6 +544,25 @@ class AgentWebSocketServer:
         # 启动 (用户依然可以在 TUI 里跑 /sandbox enable 重试)。
         await self._bootstrap_internal_jiuwenbox()
         await self._start_loop_lag_monitor()
+        self._install_runtime_push_host()
+
+    def _install_runtime_push_host(self) -> None:
+        """Register send_push as the optional Runtime host for this lifetime."""
+        if self._runtime_push_handler is not None:
+            return
+        self._runtime_push_handler = self.send_push
+        self._previous_runtime_push_handler = install_runtime_push_handler(
+            self._runtime_push_handler
+        )
+
+    def _restore_runtime_push_host(self) -> None:
+        """Drop this server's push ownership without reviving a removed owner."""
+        handler = self._runtime_push_handler
+        if handler is None:
+            return
+        restore_runtime_push_handler(handler, self._previous_runtime_push_handler)
+        self._runtime_push_handler = None
+        self._previous_runtime_push_handler = None
 
     async def _start_loop_lag_monitor(self) -> None:
         """启动事件循环 lag 观测 task 与停摆探针（验收用，不主动断连/不发应用心跳）。"""
@@ -963,6 +993,8 @@ class AgentWebSocketServer:
         )
 
         await cancel_pending_tasks()
+
+        self._restore_runtime_push_host()
 
         if not had_server:
             return
