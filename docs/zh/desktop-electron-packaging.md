@@ -181,6 +181,7 @@ CDP 端点仅回环但**无认证**，本机任意进程理论上可连接并控
 
 - preload 暴露 `window.jiuwenDesktop`（browser.* / desktop.* IPC，全部 `trustedSender` 校验），同时保留 `window.pywebview.api` 兼容层
 - `DesktopBrowserPane`（`src/components/DesktopBrowserPane/`）：工具栏 + 地址栏 + 视口；`ResizeObserver` + `zoom-changed` 重算 bounds，主进程按 `zoomFactor` 换算 CSS px → DIP 后 setBounds
+- **模态遮挡规避**：原生 WebContentsView 永远盖在页面 DOM 之上（z-index 无效）；pane 监听到 `role="dialog"[aria-modal="true"]` 弹窗挂载时临时隐藏视图，关闭后恢复显示（`browser:set-visible` 的 focus=false 不抢主窗口焦点）
 - **tab 显示条件**（重要）：`isElectron && (useBrowserAgentActivity(sessionId) || useDesktopBrowserTabFlags(sessionId).requested) && !closed`
   - 单 agent 模式：subagentStore 中出现 `subagent_type === 'browser_agent'` 的子代理（spawn 即算，含历史恢复）
   - team 模式：`teamMemberExecutionEvents` 中出现过 `browser_*` 工具调用（team 的浏览器子代理挂在成员内部，不进主会话 subagentStore）

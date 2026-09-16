@@ -42,7 +42,7 @@ const desktopApi = Object.freeze({
     reload: sessionId => invoke('browser:reload', sessionId),
     stop: sessionId => invoke('browser:stop', sessionId),
     setBounds: (bounds, sessionId) => invoke('browser:set-bounds', bounds, sessionId),
-    setVisible: (visible, sessionId) => invoke('browser:set-visible', visible, sessionId),
+    setVisible: (visible, sessionId, focus) => invoke('browser:set-visible', visible, sessionId, focus !== false),
     getState: sessionId => invoke('browser:get-state', sessionId),
     onStateChanged: callback => {
       const listener = (_event, state) => callback(state);

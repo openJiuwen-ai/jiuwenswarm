@@ -54,7 +54,8 @@ export interface JiuwenElectronDesktopApi {
     reload: (sessionId: string) => Promise<ElectronBrowserState>;
     stop: (sessionId: string) => Promise<ElectronBrowserState>;
     setBounds: (bounds: ElectronBrowserBounds, sessionId: string) => Promise<ElectronBrowserBounds>;
-    setVisible: (visible: boolean, sessionId: string) => Promise<boolean>;
+    /** focus=false：恢复显示时不抢主窗口焦点（模态弹窗关闭后的恢复路径） */
+    setVisible: (visible: boolean, sessionId: string, focus?: boolean) => Promise<boolean>;
     getState: (sessionId: string) => Promise<ElectronBrowserState>;
     onStateChanged: (callback: (state: ElectronBrowserState) => void) => () => void;
   };

@@ -90,6 +90,42 @@ export function DesktopBrowserPane({ sessionId }: { sessionId: string }) {
     });
   }, [desktop, syncBounds]);
 
+  // 原生 WebContentsView 永远盖在页面 DOM 之上（z-index 对其无效），aria-modal
+  // 模态弹窗（删除确认等）会被它遮挡：弹窗挂载期间隐藏原生视图，关闭后恢复。
+  const [modalOverlayOpen, setModalOverlayOpen] = useState(false);
+
+  useEffect(() => {
+    if (!desktop) return;
+    const MODAL_SELECTOR = '[role="dialog"][aria-modal="true"]';
+    let frame = 0;
+    const evaluate = () => {
+      frame = 0;
+      setModalOverlayOpen(Boolean(document.querySelector(MODAL_SELECTOR)));
+    };
+    const scheduleEvaluate = () => {
+      if (frame) return;
+      frame = window.requestAnimationFrame(evaluate);
+    };
+    const observer = new MutationObserver(scheduleEvaluate);
+    observer.observe(document.body, { childList: true, subtree: true, attributeFilter: ['aria-modal'] });
+    evaluate();
+    return () => {
+      if (frame) window.cancelAnimationFrame(frame);
+      observer.disconnect();
+    };
+  }, [desktop]);
+
+  useEffect(() => {
+    if (!desktop) return;
+    if (modalOverlayOpen) {
+      void desktop.browser.setVisible(false, sessionId);
+      return;
+    }
+    // focus=false：弹窗关闭后的恢复显示不抢主窗口焦点。
+    void desktop.browser.setVisible(true, sessionId, false);
+    window.requestAnimationFrame(syncBounds);
+  }, [desktop, modalOverlayOpen, sessionId, syncBounds]);
+
   if (!desktop) return null;
 
   const navigate = (event: FormEvent) => {

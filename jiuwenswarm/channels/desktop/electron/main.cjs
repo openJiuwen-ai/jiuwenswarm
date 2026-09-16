@@ -1157,7 +1157,7 @@ function applyBrowserBounds(entry, bounds) {
   return { x, y, width, height };
 }
 
-function setBrowserPaneVisible(sessionId, visible) {
+function setBrowserPaneVisible(sessionId, visible, focus = true) {
   const key = normalizeBrowserSessionId(sessionId);
   if (!visible) {
     const entry = browserViews.get(key);
@@ -1183,7 +1183,8 @@ function setBrowserPaneVisible(sessionId, visible) {
       entry.visible = true;
       entry.view.setVisible(true);
       if (lastBrowserBounds) applyBrowserBounds(entry, lastBrowserBounds);
-      if (entry.visible) entry.view.webContents.focus();
+      // focus=false 用于模态弹窗关闭后的恢复显示：不抢主窗口焦点。
+      if (entry.visible && focus) entry.view.webContents.focus();
       emitBrowserState(entry);
     })
     .catch(error => console.warn('[electron] sideview activation failed', { sessionId: key, error }));
@@ -2311,8 +2312,8 @@ function registerIpcHandlers() {
     const entry = browserViews.get(normalizeBrowserSessionId(sessionId));
     return currentBrowserState(entry);
   });
-  registerHandler('browser:set-visible', (visible, sessionId) => {
-    return setBrowserPaneVisible(sessionId, Boolean(visible));
+  registerHandler('browser:set-visible', (visible, sessionId, focus) => {
+    return setBrowserPaneVisible(sessionId, Boolean(visible), focus !== false);
   });
   registerHandler('browser:set-bounds', (bounds, sessionId) => {
     lastBrowserBounds = bounds;
