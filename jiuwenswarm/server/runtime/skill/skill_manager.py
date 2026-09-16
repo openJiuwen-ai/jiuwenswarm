@@ -433,7 +433,7 @@ from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import compute_conten
 from jiuwenswarm.server.runtime.skill.skill_vetter.store import (  # noqa: E402
     get_vet_approval,  # noqa: F401
     get_vet_report,
-    set_vet_approval,  # noqa: F401
+    set_vet_approval,
     set_vet_report,
 )
 
@@ -1425,6 +1425,52 @@ class SkillManager:
         if reasons <= {"disabled"}:
             return f"技能包包含已禁用的技能{suffix}，请先在「包含技能」中启用后再启用技能包"
         return f"技能包包含未安装的技能{suffix}，请先在「包含技能」中安装，或重新下载完整技能包后再启用"
+
+    async def handle_skills_vet(self, params: dict) -> dict:
+        """按需重跑一次确定性扫描并返回当前 vet 报告（不授予启用）。"""
+        name = params.get("name", "")
+        try:
+            name = _safe_path_name(name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.vet", "skill", name, exc)
+            return {"success": False, "detail": str(exc)}
+        skill_dir = self._resolve_local_skill_dir(name)
+        if skill_dir is None:
+            return {"success": False, "detail": f"未找到本地 skill: {name}"}
+        report = self._ensure_vet_report(skill_dir)
+        return {
+            "success": True,
+            "name": name,
+            "grade": report.grade,
+            "findings": report.findings,
+            "content_hash": report.content_hash,
+            "escalated": report.escalated,
+        }
+
+    async def handle_skills_vet_approve(self, params: dict) -> dict:
+        """记录对某个 content hash 的显式批准，解锁 HIGH/EXTREME 启用。"""
+        name = params.get("name", "")
+        content_hash = str(params.get("content_hash") or "").strip()
+        try:
+            name = _safe_path_name(name, "skill")
+        except ValueError as exc:
+            _log_rejected_name("skills.vet-approve", "skill", name, exc)
+            return {"success": False, "detail": str(exc)}
+        if not content_hash:
+            return {"success": False, "detail": "缺少参数: content_hash"}
+        skill_dir = self._resolve_local_skill_dir(name)
+        if skill_dir is None:
+            return {"success": False, "detail": f"未找到本地 skill: {name}"}
+        report = self._ensure_vet_report(skill_dir)
+        if report.content_hash != content_hash:
+            return {
+                "success": False,
+                "code": ERROR_SKILL_VET_BLOCKED,
+                "detail": "content_hash 与当前技能内容不匹配，请重新审计后再批准。",
+            }
+        set_vet_approval(self._state, content_hash, approved_by=params.get("approved_by") or "user")
+        self._save_state()
+        return {"success": True, "name": name, "content_hash": content_hash}
 
     @staticmethod
     def _resolve_skill_visibility_target(params: dict) -> tuple[str, str, Path] | dict:
