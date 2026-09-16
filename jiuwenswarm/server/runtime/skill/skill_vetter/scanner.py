@@ -49,7 +49,10 @@ def _iter_all_files(skill_dir: Path) -> list[Path]:
     paths: list[Path] = []
     for dirpath, _dirnames, filenames in os.walk(skill_dir, followlinks=False):
         for filename in filenames:
-            paths.append(Path(dirpath) / filename)
+            path = Path(dirpath) / filename
+            # Only regular files: FIFOs/sockets/device nodes would block on read.
+            if path.is_file():
+                paths.append(path)
     paths.sort(key=lambda p: p.relative_to(skill_dir).as_posix())
     return paths
 
@@ -85,6 +88,10 @@ def iter_skipped_files(skill_dir: Path) -> list[tuple[Path, str]]:
     for dirpath, _dirnames, filenames in os.walk(skill_dir, followlinks=False):
         for filename in filenames:
             path = Path(dirpath) / filename
+            # Only regular files: non-regular entries are neither hashed nor
+            # reported as skipped (reading them could block indefinitely).
+            if not path.is_file():
+                continue
             rel_parts = path.relative_to(skill_dir).parts
             if any(part in _SKIP_DIRS for part in rel_parts):
                 out.append((path, "skipped-dir"))

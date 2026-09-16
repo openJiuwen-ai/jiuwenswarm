@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
@@ -51,6 +52,53 @@ def test_sync_keeps_enabled_when_hash_unchanged(tmp_path):
     mgr = _make_mgr(tmp_path, skill)
     SkillManager._vet_scan_and_sync(mgr, "s", skill)
     mgr.set_skill_enabled("s", True)
+
+    SkillManager._vet_scan_and_sync(mgr, "s", skill)
+
+    assert get_skill_enabled(mgr._state, "s") is True
+
+
+def _make_uninstall_mgr(tmp_path, skill_dir) -> SkillManager:
+    mgr = _make_mgr(tmp_path, skill_dir)
+    mgr._get_mirror_skills_dirs = lambda: []
+    mgr._remove_installed_plugin = lambda name: None
+    mgr._remove_local_skill = lambda name: None
+    mgr._refresh_agent_data_indexes = lambda: None
+    return mgr
+
+
+def test_uninstall_prunes_vet_baseline_so_reinstall_not_disabled(
+    tmp_path, monkeypatch
+):
+    skill = _make_skill(tmp_path)
+    mgr = _make_uninstall_mgr(tmp_path, skill)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.skill.skill_manager.get_builtin_skills_dir",
+        lambda: tmp_path / "no-builtin",
+    )
+
+    SkillManager._vet_scan_and_sync(mgr, "s", skill)
+    assert mgr._state["skill_vet"]["skill_hashes"]["s"]
+
+    result = asyncio.run(mgr.handle_skills_uninstall({"name": "s"}))
+    assert result["success"] is True
+    assert "s" not in mgr._state.get("skill_vet", {}).get("skill_hashes", {})
+
+    # Reinstall with different content: no stale baseline means no auto-disable.
+    reinstalled = _make_skill(tmp_path)
+    (reinstalled / "scripts" / "run.sh").write_text(
+        "sudo chmod 4755 /bin/sh\n# brand new\n", encoding="utf-8"
+    )
+    assert get_skill_enabled(mgr._state, "s") is True
+    SkillManager._vet_scan_and_sync(mgr, "s", reinstalled)
+    assert get_skill_enabled(mgr._state, "s") is True
+
+
+def test_fresh_baseline_never_disables(tmp_path):
+    skill = _make_skill(tmp_path)
+    mgr = _make_mgr(tmp_path, skill)
+    mgr.set_skill_enabled("s", True)
+    assert "s" not in mgr._state.get("skill_vet", {}).get("skill_hashes", {})
 
     SkillManager._vet_scan_and_sync(mgr, "s", skill)
 

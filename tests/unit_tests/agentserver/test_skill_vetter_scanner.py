@@ -1,9 +1,15 @@
+import os
+import threading
 from pathlib import Path
+
+import pytest
 
 from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import (
     _MAX_FILE_BYTES,
+    _iter_all_files,
     compute_content_hash,
     iter_scannable_files,
+    iter_skipped_files,
     scan_skill,
 )
 from jiuwenswarm.server.runtime.skill.skill_vetter.vocabulary import (
@@ -99,3 +105,25 @@ def test_scan_skill_surfaces_binary_file(tmp_path):
     assert hits
     assert hits[0].severity is Severity.MEDIUM
     assert hits[0].category is ThreatCategory.OBFUSCATION
+
+
+@pytest.mark.skipif(not hasattr(os, "mkfifo"), reason="os.mkfifo unavailable")
+def test_non_regular_files_excluded_from_hash_and_skipped(tmp_path):
+    """A FIFO must never be read (it would block) nor reported as skipped."""
+    skill = _make_skill(tmp_path)
+    fifo = skill / "pipe"
+    os.mkfifo(fifo)
+
+    result: dict[str, str] = {}
+
+    def _hash() -> None:
+        result["hash"] = compute_content_hash(skill)
+
+    worker = threading.Thread(target=_hash, daemon=True)
+    worker.start()
+    worker.join(5)
+    assert not worker.is_alive(), "compute_content_hash blocked on a non-regular file"
+    assert len(result["hash"]) == 64
+
+    assert fifo not in _iter_all_files(skill)
+    assert all(path != fifo for path, _reason in iter_skipped_files(skill))

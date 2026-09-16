@@ -417,7 +417,7 @@ def _get_state_file() -> "Path":
     return get_state_file()
 
 
-from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
+from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (  # noqa: E402
     get_registered_skill_names,
     get_skill_enabled,
     get_state_file,
@@ -433,6 +433,7 @@ from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import compute_conten
 from jiuwenswarm.server.runtime.skill.skill_vetter.store import (  # noqa: E402
     get_vet_approval,  # noqa: F401
     get_vet_report,
+    remove_skill_hash,
     set_vet_approval,
     set_vet_report,
 )
@@ -4719,6 +4720,10 @@ class SkillManager:
         self._remove_local_skill(raw_name)
         # 卸载时一并清掉该 skill 的 enabled 配置，避免重装同名 skill 时沿用旧的禁用状态。
         self.remove_skill_config(raw_name)
+        # 同时清掉 vet 内容基线，避免重装同名 skill（内容不同）时旧哈希触发误禁用。
+        self.remove_skill_hash(raw_name)
+        if name != raw_name:
+            self.remove_skill_hash(name)
         self._refresh_agent_data_indexes()
         if affected_skillpacks:
             logger.info(
@@ -9158,6 +9163,11 @@ class SkillManager:
 
     def remove_skill_config(self, skill_name: str) -> None:
         if remove_skill_config(self._state, skill_name):
+            self._save_state()
+
+    def remove_skill_hash(self, skill_name: str) -> None:
+        """Drop the skill-vetter content baseline for *skill_name* (on uninstall)."""
+        if remove_skill_hash(self._state, skill_name):
             self._save_state()
 
     def reload_state(self) -> None:

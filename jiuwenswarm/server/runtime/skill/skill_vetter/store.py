@@ -12,6 +12,25 @@ def _vet_section(state: dict[str, Any]) -> dict[str, Any]:
     return section
 
 
+def remove_skill_hash(state: dict[str, Any], skill_name: str) -> bool:
+    """Drop a skill's recorded content baseline. Returns True if anything was removed.
+
+    ``skill_hashes`` drives the enabled-skill update gate: on reinstall of a
+    same-named skill with different bytes, a stale entry would make the fresh
+    install look "changed while enabled" and auto-disable it. Prune on uninstall.
+    """
+    if not skill_name:
+        return False
+    section = state.get("skill_vet")
+    if not isinstance(section, dict):
+        return False
+    hashes = section.get("skill_hashes")
+    if not isinstance(hashes, dict) or skill_name not in hashes:
+        return False
+    del hashes[skill_name]
+    return True
+
+
 def get_vet_report(state: dict[str, Any], content_hash: str) -> dict[str, Any] | None:
     reports = _vet_section(state).get("reports")
     if not isinstance(reports, dict):
