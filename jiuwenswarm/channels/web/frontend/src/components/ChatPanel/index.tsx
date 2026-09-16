@@ -1147,6 +1147,7 @@ export const ChatPanel = React.memo(function ChatPanel({
   }, []);
   const {
     turnsByMessageId: codeTurnsByMessageId,
+    turnCardAnchors: codeTurnCardAnchors,
     loading: codeTurnHistoryLoading,
     reload: reloadCodeTurnHistory,
     latestTurnKey: latestCodeTurnKey,
@@ -1165,6 +1166,9 @@ export const ChatPanel = React.memo(function ChatPanel({
     (message: Message) => {
       const turns = codeTurnsByMessageId.get(message.id);
       if (!turns?.length) return null;
+      // 同一轮的多条消息共享同一个 id（后端每个 chat.final 一条记录、同一个
+      // `<request_id>:assistant`），只在锚点消息上出卡片，避免重复渲染多张。
+      if (!codeTurnCardAnchors.has(message)) return null;
       return turns.map((turn) => {
         const turnKey = turnDiffKey(turn);
         const isLatest = turnKey === latestCodeTurnKey;
@@ -1186,6 +1190,7 @@ export const ChatPanel = React.memo(function ChatPanel({
       });
     },
     [
+      codeTurnCardAnchors,
       codeTurnHistoryLoading,
       codeTurnsByMessageId,
       discardLatestTurn,

@@ -1241,6 +1241,29 @@ class TestTeamModeWake:
         assert "model" not in env.params
 
     @pytest.mark.asyncio
+    async def test_agent_wake_stamps_job_timezone_into_metadata(self, tmp_path):
+        """执行请求的 metadata.cron 携带 job.timezone，供 UserTurn 信封按任务时区渲染。"""
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(
+            description="print current time",
+            targets="tui",
+            timezone="Asia/Tokyo",
+        )
+
+        agent = FakeAgentClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:1234"
+        await svc.on_wake(job, run_id)
+        task = svc.run_tasks.get(run_id)
+        assert task is not None
+        await task
+
+        env = agent.stream_requests[0]
+        assert env.channel_context["cron"]["timezone"] == "Asia/Tokyo"
+
+    @pytest.mark.asyncio
     async def test_agent_wake_passes_job_mcp_as_params_mcp(self, tmp_path):
         """会话级 MCP 选择：执行时注入 chat.send 的 mcp 字段（走 reconcile）。"""
         store = CronJobStore(path=tmp_path / "cron_jobs.json")
@@ -1573,6 +1596,46 @@ class TestTeamModeWake:
         state = svc.runs[run_id]
         assert state.status == "failed"
         assert "未产生有效报告" in (state.result_text or "")
+
+    @pytest.mark.asyncio
+    async def test_team_stream_propagates_team_error_reason(self, tmp_path):
+        """team.error 必须走「任务执行失败: <原因>」出口。
+
+        团队运行时直接抛 team.error，不经 gateway 归一化成 chat.error。此前
+        该事件类型不被识别，轮次状态里既不记 error_text 也无 leader_text，
+        于是只返回无因由的「未产生有效报告」，后端真实报错丢失。
+        """
+        store = CronJobStore(path=tmp_path / "cron_jobs.json")
+        job = _make_job(mode="team", targets="tui")
+
+        class TeamErrorStreamClient(FakeAgentClient):
+            async def send_request_stream(self, envelope):
+                self.stream_requests.append(envelope)
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={"event_type": "team.error", "error": "模型调用失败: 429"},
+                    is_complete=False,
+                )
+                yield AgentResponseChunk(
+                    request_id=envelope.request_id or "",
+                    channel_id=envelope.channel or "",
+                    payload={"is_complete": True},
+                    is_complete=True,
+                )
+
+        agent = TeamErrorStreamClient()
+        handler = FakeMessageHandler()
+        svc = _make_scheduler(store, handler, agent_client=agent)
+
+        run_id = f"{job.id}:team-error"
+        await svc.on_wake(job, run_id)
+        await svc.run_tasks[run_id]
+
+        state = svc.runs[run_id]
+        assert state.status == "failed"
+        assert "模型调用失败: 429" in (state.result_text or "")
+        assert "未产生有效报告" not in (state.result_text or "")
 
 
 class TestResolveCronExecutionContext:

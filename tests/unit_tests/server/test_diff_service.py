@@ -426,6 +426,57 @@ def test_git_diff_tracked_large_file_marked_large(tmp_path):
     assert info["isTruncated"] is False
 
 
+def test_git_diff_not_blocked_by_stale_rebase_head(tmp_path):
+    """rebase 结束后残留的 REBASE_HEAD 不应被当成瞬态状态。
+
+    Git 在 rebase 成功收尾（--continue / --skip / --quit）后会遗留
+    ``.git/REBASE_HEAD``，此时 ``rebase-merge`` / ``rebase-apply`` 已被清除、
+    rebase 实际已结束。若把 REBASE_HEAD 当作瞬态信号，``get_git_diff`` 会恒
+    返回 None 且不报错，前端"变更"栏将长期显示 ``+0 -0``。
+    """
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    tracked = repo / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "init")
+
+    head = subprocess.run(
+        ["git", "rev-parse", "HEAD"],
+        cwd=repo,
+        check=True,
+        capture_output=True,
+        text=True,
+    ).stdout.strip()
+    (repo / ".git" / "REBASE_HEAD").write_text(f"{head}\n", encoding="utf-8")
+    assert not (repo / ".git" / "rebase-merge").exists()
+    assert not (repo / ".git" / "rebase-apply").exists()
+
+    tracked.write_text("after\n", encoding="utf-8")
+
+    assert DiffService._is_in_transient_git_state(str(repo)) is False
+    diff = DiffService().get_git_diff(str(repo))
+    assert diff is not None
+    assert diff["stats"] == {"filesChanged": 1, "linesAdded": 1, "linesRemoved": 1}
+    assert str(tracked) in diff["files"]
+
+
+def test_git_diff_skipped_during_active_rebase(tmp_path):
+    """rebase 正在进行（rebase-merge 存在）时仍应跳过 diff 计算。"""
+    repo = tmp_path / "repo"
+    _init_repo(repo)
+    tracked = repo / "tracked.txt"
+    tracked.write_text("before\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "init")
+
+    (repo / ".git" / "rebase-merge").mkdir()
+    tracked.write_text("after\n", encoding="utf-8")
+
+    assert DiffService._is_in_transient_git_state(str(repo)) is True
+    assert DiffService().get_git_diff(str(repo)) is None
+
+
 def test_git_diff_tracked_file_under_1mb_shows_full(tmp_path):
     """1MB 以内的 tracked 改动整段返回，不做 400 行截断。"""
     repo = tmp_path / "repo"
