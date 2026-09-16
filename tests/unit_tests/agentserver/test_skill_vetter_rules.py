@@ -29,3 +29,15 @@ def test_ssh_private_key_rule_emits_extreme():
 def test_rule_ids_are_unique():
     ids = [r.rule_id for r in RULES]
     assert len(ids) == len(set(ids))
+
+
+def test_named_secret_rules_are_high_confidence():
+    by_id = {r.rule_id: r for r in RULES}
+    assert by_id["credential.ssh-private-key"].confidence == "high"
+    assert by_id["credential.cloud-creds"].confidence == "high"
+
+
+def test_generic_credential_rules_are_low_confidence():
+    by_id = {r.rule_id: r for r in RULES}
+    assert by_id["credential.env-read"].confidence == "low"
+    assert by_id["credential.dotenv"].confidence == "low"

@@ -4,7 +4,7 @@ import hashlib
 import os
 from pathlib import Path
 
-from .rules import RULES
+from .rules import HIGH_CONFIDENCE_CREDENTIAL_RULE_IDS, RULES
 from .vocabulary import Finding, Severity, ThreatCategory
 
 _SKIP_DIRS = {".archive", ".git", "__pycache__", "node_modules", ".venv"}
@@ -144,9 +144,18 @@ def _unscanned_findings(skill_dir: Path) -> list[Finding]:
 
 
 def _combination_findings(findings: list[Finding]) -> list[Finding]:
-    """Cross-category escalation: credential-read + network-egress = exfil (EXTREME)."""
-    cats = {f.category for f in findings}
-    if ThreatCategory.CREDENTIAL_THEFT in cats and ThreatCategory.NETWORK in cats:
+    """Cross-category escalation: credential-read + network-egress = exfil (EXTREME).
+
+    Only HIGH-confidence credential access escalates. Generic env/config reads
+    (``credential.env-read``/``credential.dotenv``) are ubiquitous in benign
+    skills, so pairing them with any HTTP call would grade almost every Python
+    skill EXTREME and train users to blind-approve.
+    """
+    has_high_confidence_cred = any(
+        f.rule_id in HIGH_CONFIDENCE_CREDENTIAL_RULE_IDS for f in findings
+    )
+    has_network = any(f.category is ThreatCategory.NETWORK for f in findings)
+    if has_high_confidence_cred and has_network:
         return [
             Finding(
                 category=ThreatCategory.CREDENTIAL_THEFT,

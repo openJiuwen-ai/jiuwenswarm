@@ -12,6 +12,7 @@ class TextRule:
     category: ThreatCategory
     severity: Severity
     pattern: "re.Pattern[str]"
+    confidence: str = "low"
 
     def scan(self, rel_path: str, text: str) -> list[Finding]:
         findings: list[Finding] = []
@@ -31,9 +32,15 @@ class TextRule:
 
 
 def _rule(
-    rule_id: str, category: ThreatCategory, severity: Severity, pattern: str
+    rule_id: str,
+    category: ThreatCategory,
+    severity: Severity,
+    pattern: str,
+    confidence: str = "low",
 ) -> TextRule:
-    return TextRule(rule_id, category, severity, re.compile(pattern, re.IGNORECASE))
+    return TextRule(
+        rule_id, category, severity, re.compile(pattern, re.IGNORECASE), confidence
+    )
 
 
 _NET = ThreatCategory.NETWORK
@@ -67,12 +74,14 @@ RULES: list[TextRule] = [
         _CRED,
         Severity.EXTREME,
         r"\.ssh/(id_rsa|id_ed25519|id_dsa|id_ecdsa)\b",
+        confidence="high",
     ),
     _rule(
         "credential.cloud-creds",
         _CRED,
         Severity.HIGH,
         r"(\.aws/credentials|\.config/gcloud|kubeconfig|\.kube/config|\.netrc)\b",
+        confidence="high",
     ),
     _rule(
         "credential.env-read",
@@ -112,3 +121,12 @@ RULES: list[TextRule] = [
         r"\b(chmod\s+[0-7]*4[0-7]{2}|chmod\s+u\+s|setcap)\b",
     ),
 ]
+
+# Credential rules that name a specific secret path/file (as opposed to generic
+# env/config access). Only these are trustworthy enough to escalate a bare
+# credential+network co-occurrence into the EXTREME exfiltration combination.
+HIGH_CONFIDENCE_CREDENTIAL_RULE_IDS: frozenset[str] = frozenset(
+    r.rule_id
+    for r in RULES
+    if r.category is ThreatCategory.CREDENTIAL_THEFT and r.confidence == "high"
+)
