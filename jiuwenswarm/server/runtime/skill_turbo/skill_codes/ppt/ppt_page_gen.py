@@ -1152,7 +1152,7 @@ def _repair_structural_template_slots(seed_html: str, filled_html: str) -> str |
         prev = list(_UNFILLED_PLACEHOLDER_RE.finditer(seed_html, 0, idx))
         left_start = prev[-1].end() if prev else 0
         left = seed_html[left_start:idx]
-        after = seed_html[idx + len(token) :]
+        after = seed_html[idx + len(token):]
         next_m = _UNFILLED_PLACEHOLDER_RE.search(after)
         right = after[: next_m.start()] if next_m else after[:64]
         left_anchor = left if len(left) <= 96 else left[-96:]
