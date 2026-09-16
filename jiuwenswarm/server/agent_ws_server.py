@@ -2306,9 +2306,7 @@ class AgentWebSocketServer:
                 "project.get_cron_sessions", "project.pinned_sessions", "chat.cancel",
                 "session.stop",
             }
-            if guarded_method not in unguarded_methods and not guarded_method.startswith(
-                "trajectory."
-            ):
+            if guarded_method not in unguarded_methods:
                 try:
                     guard(
                         str(guarded_params.get("session_id") or request.session_id or ""),

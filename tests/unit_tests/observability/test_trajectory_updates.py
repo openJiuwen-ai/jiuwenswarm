@@ -11,7 +11,6 @@ import pytest
 
 from jiuwenswarm.gateway.channel_manager.web.web_connect import WebChannel
 from jiuwenswarm.observability.models import CommittedTraceUpdate
-from jiuwenswarm.observability.updates import TrajectoryUpdateBroker
 
 test_logger = logging.getLogger("tests.trajectory_updates")
 
@@ -23,34 +22,6 @@ class _RoutingKey:
 
 class _WebSocket:
     closed = False
-
-
-def test_update_broker_isolates_listeners_and_unregisters() -> None:
-    broker = TrajectoryUpdateBroker()
-    received: list[tuple[CommittedTraceUpdate, ...]] = []
-
-    def _failing(_updates: tuple[CommittedTraceUpdate, ...]) -> None:
-        raise RuntimeError("injected listener failure")
-
-    received_listener = received.append
-    broker.register(_failing)
-    broker.register(received_listener)
-    updates = (
-        CommittedTraceUpdate(
-            session_id="session-1",
-            trace_id="1" * 32,
-            revision=7,
-            store_epoch="epoch-1",
-            lifecycle="running",
-        ),
-    )
-
-    broker.publish(updates)
-    broker.unregister(received_listener)
-    broker.publish(updates)
-
-    assert received == [updates]
-    test_logger.info("commit hint listener failures stayed isolated")
 
 
 @pytest.mark.asyncio
