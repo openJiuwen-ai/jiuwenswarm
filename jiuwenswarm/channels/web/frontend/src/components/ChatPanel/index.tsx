@@ -905,8 +905,19 @@ function scrollToBottom(el: HTMLDivElement): void {
 }
 
 const BEE_ANIMATION_DURATION = 4536;
+const WELCOME_BUBBLE_HIDE_DELAY = 3000;
 
-function BeeBanner({ className, altText, onTrigger }: { className: string; altText: string; onTrigger: () => void }) {
+function BeeBanner({
+  className,
+  altText,
+  onTrigger,
+  onLeave,
+}: {
+  className: string;
+  altText: string;
+  onTrigger: () => void;
+  onLeave: () => void;
+}) {
   const [isPlaying, setIsPlaying] = useState(false);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
@@ -935,6 +946,7 @@ function BeeBanner({ className, altText, onTrigger }: { className: string; altTe
       alt={altText}
       data-testid="chat-panel-welcome-banner"
       onMouseEnter={handleMouseEnter}
+      onMouseLeave={onLeave}
     />
   );
 }
@@ -1056,6 +1068,31 @@ export const ChatPanel = React.memo(function ChatPanel({
   const shouldShowHumanShare = mode === 'team' && teamHumanShareCommands.length > 0;
   const [humanShareOpen, setHumanShareOpen] = React.useState(false);
   const [bubbleVisible, setBubbleVisible] = useState(false);
+  const bubbleHideTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const handleBubbleShow = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+      bubbleHideTimerRef.current = null;
+    }
+    setBubbleVisible(true);
+  }, []);
+  const handleBubbleLeave = useCallback(() => {
+    if (bubbleHideTimerRef.current) {
+      clearTimeout(bubbleHideTimerRef.current);
+    }
+    bubbleHideTimerRef.current = setTimeout(() => {
+      bubbleHideTimerRef.current = null;
+      setBubbleVisible(false);
+    }, WELCOME_BUBBLE_HIDE_DELAY);
+  }, []);
+  useEffect(() => {
+    return () => {
+      if (bubbleHideTimerRef.current) {
+        clearTimeout(bubbleHideTimerRef.current);
+        bubbleHideTimerRef.current = null;
+      }
+    };
+  }, []);
   // 新会话占位符 'new' 还没有真实 session_id，隐藏心跳入口，见接口规格说明 §16.2
   const heartbeatAvailable = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const handlePluginConversationItem = useCallback((sid: string, role: 'user' | 'assistant', text: string, presentation?: 'tool_result') => {
@@ -1869,7 +1906,8 @@ export const ChatPanel = React.memo(function ChatPanel({
                     <BeeBanner
                       className="chat-welcome__banner chat-welcome__banner--bee"
                       altText={t('chat.welcomeLogoAlt')}
-                      onTrigger={() => setBubbleVisible(true)}
+                      onTrigger={handleBubbleShow}
+                      onLeave={handleBubbleLeave}
                     />
                   </>
                 )}

@@ -4058,7 +4058,7 @@
   padding: 12px 16px;
   font-size: 14px;
   color: var(--color-chat-supporting-text);
-  transition: right 0.3s ease, top 0.3s ease;
+  transition: right 0.3s ease, top 0.3s ease, opacity 0.4s ease, transform 0.4s ease;
   opacity: 0;
   transform: scale(0);
   pointer-events: none;
@@ -4067,19 +4067,6 @@
 .chat-welcome__banner--bubble--visible {
   opacity: 1;
   transform: scale(1);
-  animation: bubble-pop 0.4s ease forwards;
-}
-
-@keyframes bubble-pop {
-  0% {
-    opacity: 0;
-    transform: scale(0);
-  }
-
-  100% {
-    opacity: 1;
-    transform: scale(1);
-  }
 }
 
 .chat-welcome__banner--bee {
