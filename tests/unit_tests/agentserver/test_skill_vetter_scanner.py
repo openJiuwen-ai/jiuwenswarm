@@ -1,6 +1,7 @@
 from pathlib import Path
 
 from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import (
+    _MAX_FILE_BYTES,
     compute_content_hash,
     iter_scannable_files,
     scan_skill,
@@ -57,3 +58,44 @@ def test_combination_pass_escalates_exfil_to_extreme(tmp_path):
     combo = [f for f in findings if f.rule_id == "combination.exfil"]
     assert combo
     assert combo[0].severity is Severity.EXTREME
+
+
+def test_content_hash_covers_skipped_dirs(tmp_path):
+    skill = _make_skill(tmp_path)
+    (skill / "node_modules").mkdir()
+    payload = skill / "node_modules" / "payload.py"
+    payload.write_text("print('a')", encoding="utf-8")
+    h1 = compute_content_hash(skill)
+    payload.write_text("print('b')", encoding="utf-8")
+    h2 = compute_content_hash(skill)
+    assert h1 != h2
+
+
+def test_scan_skill_surfaces_skipped_dir(tmp_path):
+    skill = _make_skill(tmp_path)
+    (skill / "node_modules").mkdir()
+    (skill / "node_modules" / "payload.py").write_text("print('x')", encoding="utf-8")
+    findings = scan_skill(skill)
+    hits = [f for f in findings if f.rule_id == "unscanned.skipped-dir"]
+    assert hits
+    assert hits[0].category is ThreatCategory.OBFUSCATION
+    assert hits[0].severity is Severity.HIGH
+
+
+def test_scan_skill_surfaces_too_large_file(tmp_path):
+    skill = _make_skill(tmp_path)
+    (skill / "big.txt").write_bytes(b"a" * (_MAX_FILE_BYTES + 1))
+    findings = scan_skill(skill)
+    hits = [f for f in findings if f.rule_id == "unscanned.too-large"]
+    assert hits
+    assert hits[0].severity is Severity.HIGH
+
+
+def test_scan_skill_surfaces_binary_file(tmp_path):
+    skill = _make_skill(tmp_path)
+    (skill / "blob.py").write_bytes(b"\x00\x01\x02" + b"a" * 10)
+    findings = scan_skill(skill)
+    hits = [f for f in findings if f.rule_id == "unscanned.binary"]
+    assert hits
+    assert hits[0].severity is Severity.MEDIUM
+    assert hits[0].category is ThreatCategory.OBFUSCATION
