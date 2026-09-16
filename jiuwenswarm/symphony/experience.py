@@ -258,13 +258,9 @@ def _skill_chain(
         source = str(raw_edge.get("source") or "")
         target = str(raw_edge.get("target") or "")
         relation = str(raw_edge.get("relation") or "can_feed")
-        if (
-            source not in member_ids
-            or target not in member_ids
-            or source == target
-            or relation != "can_feed"
-            or source in adjacency
-        ):
+        if source not in member_ids or target not in member_ids or source == target:
+            raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
+        if relation != "can_feed" or source in adjacency:
             raise SkillPackNotInstallableError("recipe is not a simple Skill chain")
         adjacency[source] = target
         indegree[target] += 1

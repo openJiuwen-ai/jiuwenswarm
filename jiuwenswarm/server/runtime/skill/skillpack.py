@@ -263,21 +263,23 @@ def _read_skill_document(path: Path) -> tuple[dict[str, Any], str]:
 
 def _validate_skill_id(value: str, label: str) -> None:
     path_value = Path(value)
+    if not value or value in {".", ".."} or len(value) > _MAX_NAME_LENGTH:
+        raise SkillPackValidationError(f"invalid SkillPack {label}: {value}")
+    if "/" in value or "\\" in value or path_value.is_absolute():
+        raise SkillPackValidationError(f"invalid SkillPack {label}: {value}")
     if (
-        not value
-        or value in {".", ".."}
-        or len(value) > _MAX_NAME_LENGTH
-        or "/" in value
-        or "\\" in value
-        or path_value.is_absolute()
-        or PureWindowsPath(value).is_absolute()
+        PureWindowsPath(value).is_absolute()
         or any(char in value for char in _INVALID_NAME_CHARS)
         or value.startswith(".")
-        or value.endswith(".")
+    ):
+        raise SkillPackValidationError(f"invalid SkillPack {label}: {value}")
+    if (
+        value.endswith(".")
         or set(value) <= {"."}
         or any(ord(character) < 0x20 or ord(character) == 0x7F for character in value)
-        or value.split(".", 1)[0].upper() in _RESERVED_NAME_STEMS
     ):
+        raise SkillPackValidationError(f"invalid SkillPack {label}: {value}")
+    if value.split(".", 1)[0].upper() in _RESERVED_NAME_STEMS:
         raise SkillPackValidationError(f"invalid SkillPack {label}: {value}")
 
 
@@ -339,10 +341,10 @@ def _parse_workflow_graph(
             raise SkillPackValidationError("Workflow Graph edge 无效")
         source = edge.get("source")
         target = edge.get("target")
+        if not isinstance(source, str) or not isinstance(target, str):
+            raise SkillPackValidationError("Workflow Graph edge 引用或关系无效")
         if (
-            not isinstance(source, str)
-            or not isinstance(target, str)
-            or source not in nodes
+            source not in nodes
             or target not in nodes
             or edge.get("relation") != "can_feed"
         ):
