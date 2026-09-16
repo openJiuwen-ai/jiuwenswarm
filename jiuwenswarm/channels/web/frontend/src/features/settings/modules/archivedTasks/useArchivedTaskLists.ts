@@ -4,7 +4,6 @@ import {
   archivedTaskClient,
   type ArchivedListParams,
   type ArchivedListResponse,
-  type ArchivedProject,
   type ArchivedSession,
 } from '../../../../features/workspace/archivedTaskClient';
 import {
@@ -16,17 +15,17 @@ import type { WorkMode } from '../../../../features/workspace/projectTypes';
 const PAGE_SIZE = 20;
 const EVENT_REFRESH_DEBOUNCE_MS = 300;
 
-/** 归档相关的 WebSocket 事件：仅用于同步刷新，不替代请求结果。 */
+/**
+ * 归档相关的 WebSocket 事件：仅用于同步刷新，不替代请求结果。
+ * `project.deleted` 必须保留：项目级联删除会清掉归档区会话，
+ * 而网关对项目删除只发项目级事件、不发逐会话事件。
+ */
 const ARCHIVE_EVENT_NAMES = [
   'session.archived',
   'session.unarchived',
   'session.deleted',
-  'project.archived',
-  'project.unarchived',
   'project.deleted',
 ] as const;
-
-export type ArchivedResource = 'projects' | 'sessions';
 
 export interface ResourceListState<T> {
   items: T[];
@@ -81,7 +80,7 @@ function pageLoadFailed<T>(prev: ResourceListState<T>): ResourceListState<T> {
 }
 
 /**
- * 已归档任务页的数据层：两个资源列表的请求、分页合并、竞态作废、
+ * 已归档任务页的数据层：归档会话列表的请求、分页合并、竞态作废、
  * 归档事件订阅与本地行移除。搜索词/工作模式/连接状态变化时自动重拉。
  */
 export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
@@ -89,18 +88,13 @@ export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
   keyword: string;
   workMode: WorkMode;
 }) {
-  const [projectsState, setProjectsState] = useState<ResourceListState<ArchivedProject>>(
-    createInitialListState<ArchivedProject>,
-  );
   const [sessionsState, setSessionsState] = useState<ResourceListState<ArchivedSession>>(
     createInitialListState<ArchivedSession>,
   );
 
   // 竞态防护：代际计数让旧请求（搜索词/工作模式已变化、页面已卸载）的结果直接作废。
-  const generationRef = useRef<Record<ArchivedResource, number>>({ projects: 0, sessions: 0 });
+  const generationRef = useRef(0);
   const mountedRef = useRef(true);
-  const projectsStateRef = useRef(projectsState);
-  projectsStateRef.current = projectsState;
   const sessionsStateRef = useRef(sessionsState);
   sessionsStateRef.current = sessionsState;
   const keywordRef = useRef(keyword);
@@ -122,42 +116,30 @@ export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
     offset,
   }), []);
 
-  /** 两个资源列表共用一套分页加载逻辑：拉取→代际校验→写回，仅取数器和 id 字段不同。 */
-  const fetchResource = useCallback((resource: ArchivedResource, mode: 'replace' | 'more') => {
-    const isProjects = resource === 'projects';
-    const generation = ++generationRef.current[resource];
-    const currentItems = isProjects ? projectsStateRef.current.items : sessionsStateRef.current.items;
-    const request = isProjects
-      ? archivedTaskClient.listArchivedProjects(listParams(mode === 'more' ? currentItems.length : 0))
-      : archivedTaskClient.listArchivedSessions(listParams(mode === 'more' ? currentItems.length : 0));
-    if (isProjects) setProjectsState((prev) => startLoading(prev, mode));
-    else setSessionsState((prev) => startLoading(prev, mode));
+  /** 分页加载：拉取→代际校验→写回。 */
+  const fetchResource = useCallback((mode: 'replace' | 'more') => {
+    const generation = ++generationRef.current;
+    const currentItems = sessionsStateRef.current.items;
+    const request = archivedTaskClient.listArchivedSessions(listParams(mode === 'more' ? currentItems.length : 0));
+    setSessionsState((prev) => startLoading(prev, mode));
     request.then((payload) => {
-      if (!mountedRef.current || generation !== generationRef.current[resource]) return;
-      if (isProjects) {
-        const page = normalizeArchivedListResponse<ArchivedProject>(payload, 'projects');
-        setProjectsState((prev) => applyLoadedPage(prev, page, mode, (item) => item.project_id));
-      } else {
-        const page = normalizeArchivedListResponse<ArchivedSession>(payload, 'sessions');
-        setSessionsState((prev) => applyLoadedPage(prev, page, mode, (item) => item.session_id));
-      }
+      if (!mountedRef.current || generation !== generationRef.current) return;
+      const page = normalizeArchivedListResponse<ArchivedSession>(payload, 'sessions');
+      setSessionsState((prev) => applyLoadedPage(prev, page, mode, (item) => item.session_id));
     }).catch(() => {
-      if (!mountedRef.current || generation !== generationRef.current[resource]) return;
-      if (isProjects) setProjectsState(pageLoadFailed);
-      else setSessionsState(pageLoadFailed);
+      if (!mountedRef.current || generation !== generationRef.current) return;
+      setSessionsState(pageLoadFailed);
     });
   }, [listParams]);
 
   const refreshLists = useCallback(() => {
-    fetchResource('projects', 'replace');
-    fetchResource('sessions', 'replace');
+    fetchResource('replace');
   }, [fetchResource]);
 
-  // 页面进入、搜索词/工作模式/连接状态变化时并行刷新两个列表。
+  // 页面进入、搜索词/工作模式/连接状态变化时刷新列表。
   useEffect(() => {
     if (!isConnected) return;
-    fetchResource('projects', 'replace');
-    fetchResource('sessions', 'replace');
+    fetchResource('replace');
   }, [isConnected, keyword, workMode, fetchResource]);
 
   // 归档事件到达后按当前条件幂等刷新（去抖合并可能成串到达的事件）。
@@ -167,8 +149,7 @@ export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
       if (timerId !== null) window.clearTimeout(timerId);
       timerId = window.setTimeout(() => {
         timerId = null;
-        fetchResource('projects', 'replace');
-        fetchResource('sessions', 'replace');
+        fetchResource('replace');
       }, EVENT_REFRESH_DEBOUNCE_MS);
     };
     const unsubscribes = ARCHIVE_EVENT_NAMES.map((eventName) => webClient.on(eventName, scheduleRefresh));
@@ -177,29 +158,6 @@ export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
       if (timerId !== null) window.clearTimeout(timerId);
     };
   }, [fetchResource]);
-
-  /** 仅移除项目行：恢复项目用。项目恢复只恢复可见性，其下显式归档的会话保持归档、继续留在列表。 */
-  const removeLocalProjectRow = useCallback((projectId: string) => {
-    setProjectsState((prev) => ({
-      ...prev,
-      items: prev.items.filter((item) => item.project_id !== projectId),
-      total: Math.max(0, prev.total - 1),
-    }));
-  }, []);
-
-  /** 删除项目用：后端会连带删除其下会话，本地同步移除对应归档会话。 */
-  const removeLocalProjectCascade = useCallback((projectId: string) => {
-    removeLocalProjectRow(projectId);
-    setSessionsState((prev) => {
-      const remaining = prev.items.filter((item) => item.project_id !== projectId);
-      if (remaining.length === prev.items.length) return prev;
-      return {
-        ...prev,
-        items: remaining,
-        total: Math.max(0, prev.total - (prev.items.length - remaining.length)),
-      };
-    });
-  }, [removeLocalProjectRow]);
 
   const removeLocalSession = useCallback((sessionId: string) => {
     setSessionsState((prev) => ({
@@ -210,12 +168,9 @@ export function useArchivedTaskLists({ isConnected, keyword, workMode }: {
   }, []);
 
   return {
-    projectsState,
     sessionsState,
     fetchResource,
     refreshLists,
-    removeLocalProjectRow,
-    removeLocalProjectCascade,
     removeLocalSession,
   };
 }

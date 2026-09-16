@@ -84,8 +84,10 @@ export function DropdownMenu({
   useEffect(() => {
     if (open || !restoreFocusRef.current) return;
     restoreFocusRef.current = false;
+    const active = document.activeElement;
+    // 出场动画期间内容仍未卸载、焦点多半还留在菜单里（卸载后会落到 body）；
     // 焦点已被别处接管（如 onSelect 打开的对话框 autoFocus）时不再抢回
-    if (document.activeElement === document.body) {
+    if (active === document.body || contentRef.current?.contains(active)) {
       triggerRef.current?.focus();
     }
   }, [open]);

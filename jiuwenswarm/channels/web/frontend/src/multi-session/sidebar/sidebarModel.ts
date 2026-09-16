@@ -2,7 +2,6 @@ export type SessionIndicator = 'waiting' | 'processing' | 'unread' | 'error' | '
 
 export type SidebarMenuAction =
   | 'archive-sessions'
-  | 'delete-archived-sessions'
   | 'pin'
   | 'rename'
   | 'archive'
@@ -98,16 +97,15 @@ function buildSidebarMenuItems(
 }
 
 export function getProjectMenuItems(isPinned: boolean, translate: Translate, isDefault = false): SidebarMenuItem[] {
+  // “删除已归档会话”属于归档管理页的项目分组操作，项目菜单只保留批量归档。
   const batchItems: SidebarMenuItem[] = [
     { action: 'archive-sessions', label: translate('multiSession.project.archiveSessions') },
-    { action: 'delete-archived-sessions', label: translate('multiSession.project.deleteArchivedSessions'), danger: true },
   ];
   if (isDefault) return batchItems;
-  // 删除项目是项目行独立能力，不与会话菜单共用开关。
+  // 项目不再有整体归档；菜单 = 置顶/重命名/删除 + 项目级批量会话操作。
   return [
-    ...buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.project, translate, {
-      archiveLabel: translate('multiSession.project.archiveProject'),
-    }),
+    { action: 'pin', label: translate(isPinned ? PIN_LABEL_PAIRS.project[1] : PIN_LABEL_PAIRS.project[0]), pinned: isPinned },
+    { action: 'rename', label: translate('multiSession.project.rename') },
     { action: 'delete', label: translate('multiSession.delete'), danger: true },
     ...batchItems,
   ];
@@ -119,10 +117,18 @@ export function getProjectSessionMenuItems(isPinned: boolean, translate: Transla
   });
 }
 
-export function getConversationMenuItems(isPinned: boolean, translate: Translate): SidebarMenuItem[] {
-  return buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate, {
+export function getConversationMenuItems(
+  isPinned: boolean,
+  translate: Translate,
+  options: { archivable?: boolean } = {},
+): SidebarMenuItem[] {
+  const items = buildSidebarMenuItems(isPinned, PIN_LABEL_PAIRS.conversation, translate, {
     archiveLabel: translate('multiSession.project.archiveConversation'),
   });
+  // cron/heartbeat 触发会话被后端禁止单独归档，不提供必然失败的菜单项。
+  return options.archivable === false
+    ? items.filter((item) => item.action !== 'archive')
+    : items;
 }
 
 export function sortSessionsForSidebar<T extends SessionLike>(sessions: T[]): T[] {

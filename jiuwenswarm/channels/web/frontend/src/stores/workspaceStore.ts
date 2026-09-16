@@ -46,7 +46,7 @@ interface WorkspaceState {
   isLoadingProjects: boolean;
   error: string | null;
   setWorkMode: (workMode: WorkMode) => Promise<void>;
-  loadProjects: () => Promise<void>;
+  loadProjects: (refreshEpoch?: number) => Promise<void>;
   loadProjectSessions: (projectId: string, limit?: number, refreshEpoch?: number) => Promise<void>;
   showMoreSessions: (projectId: string) => Promise<void>;
   collapseSessions: (projectId: string) => Promise<void>;
@@ -58,12 +58,9 @@ interface WorkspaceState {
   pinProject: (projectId: string, pinned: boolean) => Promise<void>;
   removeProject: (projectId: string) => Promise<void>;
   removeSessions: (sessionIds: string[]) => void;
-  archiveProject: (projectId: string) => Promise<void>;
   archiveSession: (sessionId: string) => Promise<void>;
   /** 归档成功后同步从侧边栏移除会话，供 toast 与列表同帧更新。 */
   removeSessionLocally: (sessionId: string) => void;
-  /** 归档成功后同步从侧边栏移除项目及其会话列表缓存。 */
-  removeProjectLocally: (projectId: string) => void;
   refreshWorkspaceData: () => Promise<void>;
   upsertSession: (session: Session, options?: UpsertSessionOptions) => void;
   pinSession: (sessionId: string, pinned: boolean) => Promise<void>;
@@ -281,12 +278,13 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  loadProjects: async () => {
+  loadProjects: async (refreshEpoch?: number) => {
     const requestedWorkMode = get().workMode;
     set({ isLoadingProjects: true, error: null });
     try {
       const payload = await projectRegistryClient.list('all', requestedWorkMode);
       if (get().workMode !== requestedWorkMode) return;
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
       const projects = (payload.projects || []).map((project) => (
         normalizeProject(project, requestedWorkMode)
       ));
@@ -309,7 +307,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
           isLoadingProjects: false,
         };
       });
-      await get().loadPinnedSessions();
+      await get().loadPinnedSessions(refreshEpoch);
     } catch (error) {
       set({ isLoadingProjects: false, error: error instanceof Error ? error.message : String(error) });
     }
@@ -357,18 +355,23 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
   },
 
   loadPinnedSessions: async (refreshEpoch) => {
-    const payload = await projectRegistryClient.pinnedSessions();
-    if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
-    const { workMode, projects } = get();
-    const visibleProjectIds = new Set(projects.map((project) => project.project_id));
-    set({
-      pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
-        .filter((session) => {
-          if (session.work_mode) return session.work_mode === workMode;
-          if (session.project_id) return visibleProjectIds.has(session.project_id);
-          return workMode === 'work';
-        }),
-    });
+    try {
+      const payload = await projectRegistryClient.pinnedSessions();
+      if (refreshEpoch !== undefined && refreshEpoch !== workspaceRefreshEpoch) return;
+      const { workMode, projects } = get();
+      const visibleProjectIds = new Set(projects.map((project) => project.project_id));
+      set({
+        pinnedSessions: mergeLocalSessionTitles(payload.sessions || [])
+          .filter((session) => {
+            if (session.work_mode) return session.work_mode === workMode;
+            if (session.project_id) return visibleProjectIds.has(session.project_id);
+            return workMode === 'work';
+          }),
+      });
+    } catch (error) {
+      console.error('Failed to load pinned sessions', error);
+      set({ error: error instanceof Error ? error.message : String(error) });
+    }
   },
 
   setSelectedProject: (project) => set({ selectedProject: project }),
@@ -401,7 +404,7 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     await get().loadProjects();
   },
 
-  // 既有“删除项目”入口现在对应项目归档，后端隐藏项目及其活跃会话并停用 cron。
+  // 删除项目：后端直接级联物理删除项目记录、两区全部会话与 cron 任务（保留工作目录）。
   removeProject: async (projectId) => {
     await projectRegistryClient.remove(projectId);
     const sessionState = useSessionStore.getState();
@@ -413,12 +416,6 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     if (sessionState.currentSession?.project_id === projectId) ids.add(sessionState.currentSession.session_id);
     get().removeSessions([...ids]);
     await get().refreshWorkspaceData();
-  },
-
-  // 归档项目只影响可见性：后端会隐藏项目与其下会话、停用 cron。
-  // 列表移除由调用方在 toast 同帧本地更新，再后台 refresh 对账。
-  archiveProject: async (projectId) => {
-    await archivedTaskClient.archiveProject(projectId);
   },
 
   archiveSession: async (sessionId) => {
@@ -464,31 +461,12 @@ export const useWorkspaceStore = create<WorkspaceState>((set, get) => ({
     });
   },
 
-  removeProjectLocally: (projectId) => {
-    set((state) => {
-      if (!state.projects.some((project) => project.project_id === projectId)) return state;
-      const { [projectId]: _sessions, ...projectSessions } = state.projectSessions;
-      const { [projectId]: _total, ...projectSessionTotals } = state.projectSessionTotals;
-      const { [projectId]: _visibility, ...sessionVisibility } = state.sessionVisibility;
-      const { [projectId]: _expanded, ...expandedProjectIds } = state.expandedProjectIds;
-      return {
-        projects: state.projects.filter((project) => project.project_id !== projectId),
-        projectSessions,
-        projectSessionTotals,
-        sessionVisibility,
-        expandedProjectIds,
-        selectedProject: state.selectedProject?.project_id === projectId ? null : state.selectedProject,
-      };
-    });
-  },
-
   // 归档/恢复/删除相关事件与操作后的统一对账入口：刷新项目、置顶会话
   // 以及默认项目与已展开项目的会话列表。用 epoch 丢弃过期写回，避免归档/撤销交错时列表闪烁。
   refreshWorkspaceData: async () => {
     const epoch = ++workspaceRefreshEpoch;
-    await get().loadProjects();
-    if (epoch !== workspaceRefreshEpoch) return;
-    await get().loadPinnedSessions(epoch);
+    // loadProjects 内部会以同一 epoch 刷新置顶会话，此处无需重复请求。
+    await get().loadProjects(epoch);
     if (epoch !== workspaceRefreshEpoch) return;
     const state = get();
     await Promise.all(state.projects

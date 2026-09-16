@@ -60,19 +60,6 @@
   white-space: nowrap;
 }
 
-/* 类型标签：在混合列表中标示“这是一条已归档项目” */
-.archived-tasks__type-tag {
-  flex-shrink: 0;
-  padding: 1px 8px;
-  border: 1px solid var(--color-settings-border);
-  border-radius: var(--radius-full, 999px);
-  color: var(--color-settings-text-secondary);
-  font-size: 12px;
-  font-weight: 400;
-  line-height: 18px;
-  white-space: nowrap;
-}
-
 .archived-tasks__group-count {
   flex-shrink: 0;
   color: var(--color-settings-text-secondary);
@@ -171,30 +158,6 @@
   color: var(--color-feedback-danger);
 }
 
-/* project.delete 部分失败：分组标题与列表之间的横幅，保留项目行供重试 */
-.archived-tasks__row-failure {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  gap: 8px;
-  margin-bottom: 6px;
-  padding: 8px 12px;
-  color: var(--color-feedback-danger);
-  border: 1px solid var(--color-border-danger);
-  border-radius: var(--radius-lg);
-  background: var(--color-feedback-danger-subtle);
-  font-size: 12px;
-  line-height: 18px;
-}
-
-.archived-tasks__row-failure-detail {
-  min-width: 0;
-  overflow: hidden;
-  color: var(--color-settings-text-secondary);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-}
-
 .archived-tasks__more {
   display: flex;
   justify-content: center;
@@ -275,16 +238,6 @@
 
 .archived-tasks__dialog-line--danger {
   color: var(--color-feedback-danger);
-}
-
-.archived-tasks__dialog-dir {
-  display: block;
-  margin-top: 4px;
-  overflow: hidden;
-  color: var(--color-settings-text-secondary);
-  font-size: 12px;
-  text-overflow: ellipsis;
-  white-space: nowrap;
 }
 
 @media (max-width: 720px) {
