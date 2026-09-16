@@ -1,0 +1,15 @@
+{
+  "proprietary": [
+    "agent-group-creator",
+    "rsi-program-dataset-creator",
+    "skill-creator",
+    "skill-creator-normal",
+    "plugin-creator",
+    "agent-creator",
+    "docx-pro",
+    "harmonyos-dev-suite",
+    "huawei-cloud-maas-setup",
+    "skill-omni-creation",
+    "swarmskill-creator"
+  ]
+}

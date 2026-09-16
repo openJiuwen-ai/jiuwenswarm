@@ -165,6 +165,31 @@ _ONLINE_SEARCH_SOURCE_TIMEOUT = 30.0
 _TEAM_SKILL_PLUGIN_TYPES = {"swarmskill", "swarm-skill", "teamskills", "team-skill"}
 _SINGLE_SKILL_PLUGIN_TYPES = {"skill"}
 
+# 自研内置技能名单（内置技能目录下 _proprietary_skills.json）。名单内的内置技能标记
+# proprietary=true（自研），名单外的内置技能一律视为三方下载——不配置即默认三方。
+_PROPRIETARY_SKILLS_FILENAME = "_proprietary_skills.json"
+_PROPRIETARY_NAMES_CACHE: frozenset[str] | None = None
+
+
+def _load_proprietary_builtin_names() -> frozenset[str]:
+    """加载自研内置技能名单，进程级缓存；文件缺失/损坏时返回空集合（默认三方）."""
+    global _PROPRIETARY_NAMES_CACHE
+    if _PROPRIETARY_NAMES_CACHE is not None:
+        return _PROPRIETARY_NAMES_CACHE
+    try:
+        data = json.loads(
+            (get_builtin_skills_dir() / _PROPRIETARY_SKILLS_FILENAME).read_text(encoding="utf-8")
+        )
+        names = data.get("proprietary") if isinstance(data, dict) else None
+        if isinstance(names, list):
+            _PROPRIETARY_NAMES_CACHE = frozenset(str(n).strip() for n in names if str(n).strip())
+        else:
+            _PROPRIETARY_NAMES_CACHE = frozenset()
+    except Exception:
+        logger.debug("加载自研内置技能名单失败，按默认三方处理", exc_info=True)
+        _PROPRIETARY_NAMES_CACHE = frozenset()
+    return _PROPRIETARY_NAMES_CACHE
+
 
 def _maybe_disable_insecure_warning() -> None:
     """关闭证书校验时同步静默 urllib3 的 InsecureRequestWarning。
@@ -888,6 +913,7 @@ class SkillManager:
         meta["display_name"] = base_meta.get("display_name") or self._resolve_skill_display_name(name)
         meta["is_builtin"] = bool(base_meta.get("is_builtin", False))
         meta["is_builtin_source"] = bool(base_meta.get("is_builtin_source", False))
+        meta["proprietary"] = bool(base_meta.get("proprietary", False))
         if "marketplace" in base_meta:
             meta["marketplace"] = base_meta.get("marketplace")
         meta["has_evolutions"] = _has_effective_evolutions(
@@ -5717,6 +5743,12 @@ class SkillManager:
         else:
             meta["is_builtin_source"] = False
         meta["has_evolutions"] = _has_effective_evolutions(child)
+        # 自研判定：内置（含已安装副本/仅源码存在的内置技能）且名单内为自研；其余（本地导入、
+        # marketplace/SkillNet 安装、MCP 捆绑、用户自建等）一律三方——不配置默认三方。
+        meta["proprietary"] = bool(
+            (meta.get("is_builtin") or meta.get("is_builtin_source"))
+            and str(meta.get("name") or "") in _load_proprietary_builtin_names()
+        )
         self.apply_archive_version_and_type(meta, child)
         # 不在列表中返回 body
         meta.pop("body", None)
@@ -5755,6 +5787,8 @@ class SkillManager:
             meta["source"] = "builtin"
             meta["is_builtin"] = True
             meta["is_builtin_source"] = True
+            # 名单内的内置技能为自研，其余内置技能视为三方（不配置默认三方）
+            meta["proprietary"] = str(meta.get("name") or "") in _load_proprietary_builtin_names()
             meta["installed"] = False
             meta["has_evolutions"] = False
             self._apply_enabled_config(meta, meta.get("name", ""))
@@ -6181,6 +6215,7 @@ class SkillManager:
                     "is_builtin_source": bool(
                         listed_meta.get("is_builtin_source", False)
                     ),
+                    "proprietary": bool(listed_meta.get("proprietary", False)),
                 }
                 return child, base
 
