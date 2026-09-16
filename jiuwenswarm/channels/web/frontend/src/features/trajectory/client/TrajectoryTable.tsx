@@ -1644,25 +1644,39 @@ interface ParsedToolSchema {
   parameters: object
 }
 
-function parseToolSchema(value: string): ParsedToolSchema | undefined {
+export function parseToolSchema(value: string): ParsedToolSchema | undefined {
   try {
     const parsed: unknown = JSON.parse(value)
     if (typeof parsed !== 'object' || parsed === null || Array.isArray(parsed)) return undefined
-    const schema = parsed as Record<string, unknown>
-    if (
-      typeof schema.name !== 'string'
-      || typeof schema.description !== 'string'
-      || typeof schema.parameters !== 'object'
-      || schema.parameters === null
-      || Array.isArray(schema.parameters)
-    ) return undefined
-    return {
-      name: schema.name,
-      description: schema.description,
-      parameters: schema.parameters,
-    }
+    const container = parsed as Record<string, unknown>
+    // The OTel projector records the tool definition beside its call
+    // metadata; the schema itself is the definition inside. A payload that
+    // already carries the schema at the top level needs no unwrap.
+    const definition = container.definition
+    const unwrapped = (
+      typeof definition === 'object' && definition !== null && !Array.isArray(definition)
+        ? definition as Record<string, unknown>
+        : undefined
+    )
+    return schemaShapeOf(container) ?? schemaShapeOf(unwrapped)
   } catch {
     return undefined
+  }
+}
+
+function schemaShapeOf(schema: Record<string, unknown> | undefined): ParsedToolSchema | undefined {
+  if (
+    schema === undefined
+    || typeof schema.name !== 'string'
+    || typeof schema.description !== 'string'
+    || typeof schema.parameters !== 'object'
+    || schema.parameters === null
+    || Array.isArray(schema.parameters)
+  ) return undefined
+  return {
+    name: schema.name,
+    description: schema.description,
+    parameters: schema.parameters,
   }
 }
 

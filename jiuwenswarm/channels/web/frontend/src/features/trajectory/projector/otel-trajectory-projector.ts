@@ -252,6 +252,44 @@ function formatted(value: unknown): string {
   return JSON.stringify(value, null, 2) ?? String(value)
 }
 
+// Keyword arguments the runner injects into every tool invocation. They are
+// call context, not model output, so a recorded invocation that carries only
+// these beside the arguments unwraps to the arguments themselves.
+const INJECTED_TOOL_KWARGS = new Set(['session', '_tool_callback_context'])
+
+/**
+ * The recorded arguments of one tool call, as the model sent them.
+ *
+ * Older runs recorded the invocation signature the harness captured — the
+ * runner's ``(args, kwargs)`` call — so their spans carry the arguments
+ * buried in ``[args, kwargs]`` beside injected call context. Unwrap that one
+ * shape; anything else stays as recorded.
+ */
+/**
+ * The recorded arguments of one tool call, as the model sent them.
+ *
+ * Older runs recorded the invocation signature the harness captured — the
+ * runner's ``(args, kwargs)`` call — so their spans carry the arguments
+ * buried in ``[args, kwargs]`` beside injected call context. Unwrap that one
+ * shape; anything else stays as recorded.
+ */
+function toolArgumentsDetail(value: unknown): string | undefined {
+  if (value === undefined) return undefined
+  const positional = Array.isArray(value) && value.length === 2 && Array.isArray(value[0])
+    ? value[0]
+    : undefined
+  const kwargs = Array.isArray(value) && value.length === 2 ? object(value[1]) : undefined
+  if (
+    positional !== undefined
+    && kwargs !== undefined
+    && positional.length === 1
+    && Object.keys(kwargs).every(key => INJECTED_TOOL_KWARGS.has(key))
+  ) {
+    return formatted(positional[0])
+  }
+  return formatted(value)
+}
+
 function structuralIdentity(value: unknown): string {
   if (Array.isArray(value)) return `[${value.map(structuralIdentity).join(',')}]`
   const valueObject = object(value)
@@ -839,7 +877,7 @@ function toolCell(
   const result = span.attributes.toolCallResult === undefined
     ? correlatedResult?.response
     : span.attributes.toolCallResult
-  const inputText = input === undefined ? undefined : formatted(input)
+  const inputText = toolArgumentsDetail(input)
   const resultText = result === undefined ? undefined : formatted(result)
   const nested = span.parentSpanId !== undefined && toolSpanIds.has(span.parentSpanId)
   const error = statusError(span)

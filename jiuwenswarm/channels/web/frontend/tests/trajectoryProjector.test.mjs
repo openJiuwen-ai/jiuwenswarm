@@ -3126,3 +3126,33 @@ test('a resumed run does not present the messages it resumed with as newly said'
   // the first one twice, which is what a reader saw after every restart.
   assert.deepEqual(userText, ['the first thing asked', 'what was asked after the restart']);
 });
+
+test('tool payload unwraps a recorded invocation signature to the model arguments', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const tool = spansOf(records).find(span => span.name === 'tool.search');
+  assert.ok(tool);
+  setStringAttribute(
+    tool,
+    'gen_ai.tool.call.arguments',
+    '[[{"command":"pwd","description":"show cwd"}],{"session":"session:legacy"}]',
+  );
+
+  const cell = cellsOf(projectOtelTrajectory(records)).find(candidate => candidate.kind === 'tool');
+  assert.ok(cell);
+  assert.deepEqual(JSON.parse(cell.inputDetail), { command: 'pwd', description: 'show cwd' });
+});
+
+test('tool payload stays as recorded when the wrapper is not an invocation signature', async () => {
+  const records = await fixtureRecords('agent-loop-records.json');
+  const tool = spansOf(records).find(span => span.name === 'tool.search');
+  assert.ok(tool);
+  setStringAttribute(
+    tool,
+    'gen_ai.tool.call.arguments',
+    '[[{"command":"pwd"}],{"user":"u1"}]',
+  );
+
+  const cell = cellsOf(projectOtelTrajectory(records)).find(candidate => candidate.kind === 'tool');
+  assert.ok(cell);
+  assert.deepEqual(JSON.parse(cell.inputDetail), [[{ command: 'pwd' }], { user: 'u1' }]);
+});
