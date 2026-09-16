@@ -24,6 +24,9 @@ from openjiuwen.harness.prompts.prompt_attachment_manager import (
 )
 
 from openjiuwen.harness.rails.base import DeepAgentRail
+from jiuwenswarm.agents.harness.common.prompt.priority_registry import (
+    SystemPromptPriority,
+)
 from jiuwenswarm.agents.harness.common.prompt.shell_environment import build_shell_environment_prompt
 from jiuwenswarm.common.utils import (
     get_agent_workspace_dir,
@@ -395,16 +398,16 @@ class RuntimePromptRail(DeepAgentRail):
         self.system_prompt_builder.add_section(PromptSection(
             name="env",
             content={"cn": env_content, "en": env_content},
-            priority=89,
+            priority=SystemPromptPriority.ENV,
         ))
 
         # ── Channel: directory and file-operation boundaries ──
         # Remove both the consolidated section and legacy sections first so
-        # switching away from TUI/Web cannot leave stale directory guidance.
+        # switching to a channel without local directory guidance clears it.
         self.system_prompt_builder.remove_section("directory_boundaries")
         self.system_prompt_builder.remove_section("tui_current_project_policy")
         self.system_prompt_builder.remove_section("trusted_dirs_policy")
-        if self._channel in ("tui", "web", "ws_client"):
+        if self._channel in ("tui", "web", "ws_client", "process_cli"):
             # This agent's own workspace. Team members each own one; without
             # it (single-agent runs) the process-wide agent workspace is the
             # same directory anyway.
@@ -591,7 +594,7 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.add_section(PromptSection(
                 name="directory_boundaries",
                 content={"cn": directory_content, "en": directory_content},
-                priority=89,
+                priority=SystemPromptPriority.DIRECTORY_BOUNDARIES,
             ))
 
     async def _refresh_dynamic_attachments(
@@ -706,7 +709,7 @@ class RuntimePromptRail(DeepAgentRail):
             self.system_prompt_builder.add_section(PromptSection(
                 name="git_status",
                 content={"cn": git_content, "en": git_content},
-                priority=90,
+                priority=SystemPromptPriority.GIT_STATUS,
             ))
 
     async def _upsert_prompt_attachment(

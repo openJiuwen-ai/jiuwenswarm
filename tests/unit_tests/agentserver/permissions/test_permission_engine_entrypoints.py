@@ -20,9 +20,10 @@ _INTERRUPT_HELPERS = (
 )
 
 
-def test_interrupt_helpers_uses_permission_engine_factory() -> None:
+def test_interrupt_helpers_uses_host_permission_rail() -> None:
     source = _INTERRUPT_HELPERS.read_text(encoding="utf-8")
-    assert "build_permission_interrupt_rail" in source
+    assert "JiuwenSwarmPermissionInterruptRail" in source
+    assert "ToolPermissionHost" in source
     assert "from openjiuwen.harness.security.host" not in source
     # A Host subclass is allowed for Smart callbacks; do not mistake its
     # longer class name for direct construction of the SDK base class.

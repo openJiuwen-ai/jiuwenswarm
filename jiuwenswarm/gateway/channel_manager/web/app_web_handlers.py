@@ -66,7 +66,7 @@ from jiuwenswarm.common.config import (
     validate_persisted_kv_cache_affinity,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
-    update_permissions_enabled_in_config,
+    update_permissions_profile_in_config,
     update_setup_guide_enabled_in_config,
     update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
@@ -93,6 +93,9 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     set_default_model_provider_in_entries,
 )
 from jiuwenswarm.common.model_catalog import ModelCatalog
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+    is_auto_permission_mode,
+)
 from jiuwenswarm.server.runtime.a2ui.integration import (
     get_a2ui_config_payload,
     get_default_a2ui_config_payload,
@@ -106,7 +109,10 @@ from jiuwenswarm.common.reasoning_injector import (
     build_reasoning_model_request_kwargs,
     core_has_context_window_field,
 )
-from jiuwenswarm.common.context_window import resolve_context_window_tokens
+from jiuwenswarm.common.context_window import (
+    DEFAULT_CONTEXT_WINDOW_TOKENS,
+    parse_positive_int,
+)
 from jiuwenswarm.common.updater import DEFAULT_SOURCE_CONFIG, UpdaterService
 from jiuwenswarm.common.utils import (
     get_env_file,
@@ -149,16 +155,19 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VIDEO_API_BASE",
     "VIDEO_API_KEY",
     "VIDEO_ENDPOINT_PROFILE",
+    "VIDEO_CONTEXT_WINDOW_TOKENS",
     "AUDIO_PROVIDER",
     "AUDIO_MODEL_NAME",
     "AUDIO_API_BASE",
     "AUDIO_API_KEY",
     "AUDIO_ENDPOINT_PROFILE",
+    "AUDIO_CONTEXT_WINDOW_TOKENS",
     "VISION_PROVIDER",
     "VISION_MODEL_NAME",
     "VISION_API_BASE",
     "VISION_API_KEY",
     "VISION_ENDPOINT_PROFILE",
+    "VISION_CONTEXT_WINDOW_TOKENS",
     "VISION_ENABLED",
     "AUDIO_ENABLED",
     "VIDEO_ENABLED",
@@ -168,12 +177,14 @@ _MULTIMODAL_RELOAD_ENV_KEYS = {
     "VIDEO_GEN_MODEL_NAME",
     "VIDEO_GEN_PROVIDER",
     "VIDEO_GEN_PROTOCOL",
+    "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
     "VISUAL_GEN_ENABLED",
     "VISUAL_GEN_API_BASE",
     "VISUAL_GEN_API_KEY",
     "VISUAL_GEN_MODEL_NAME",
     "VISUAL_GEN_PROVIDER",
     "VISUAL_GEN_PROTOCOL",
+    "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
 }
 _ASR_ENV_KEYS = {
     "ASR_API_BASE",
@@ -247,6 +258,9 @@ class _ConfigApplyResult:
     yaml_updated: list[str]
     codex_dependency_install: dict[str, Any] | None = None
     external_cli_dependency_installs: dict[str, dict[str, Any]] | None = None
+    canonical_config: dict[str, str] | None = None
+    pending_permission_profile: str | None = None
+    pending_permission_key: str | None = None
 
 
 _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
@@ -631,6 +645,8 @@ def _merge_models_for_replace_all(
                     new_mco["reasoning_level"] = _serialize_reasoning_level(reasoning_level)
                 else:
                     new_mco.pop("reasoning_level", None)
+            if item.get("context_window_tokens_provided"):
+                new_mco["context_window"] = item["context_window_tokens"]
             if not _values_match(item["timeout"], resolved_mcc.get("timeout")):
                 new_mcc["timeout"] = item["timeout"]
             if not _values_match(item["alias"], (resolved_entry or {}).get("alias")):
@@ -678,6 +694,11 @@ def _merge_models_for_replace_all(
                     **({"endpoint_profile": item["endpoint_profile"]} if item.get("endpoint_profile") else {}),
                 },
                 "model_config_obj": {
+                    "context_window": (
+                        item["context_window_tokens"]
+                        if item.get("context_window_tokens_provided")
+                        else DEFAULT_CONTEXT_WINDOW_TOKENS
+                    ),
                     **({"temperature": item["temperature"]} if item["temperature"] is not None else {}),
                     **({"reasoning_level": _serialize_reasoning_level(item.get("reasoning_level"))}
                        if item.get("reasoning_level") else {}),
@@ -706,6 +727,7 @@ class _DummyBus:
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.delete",
     "command.goal",
@@ -753,6 +775,12 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.teamskillshub.init",
     "skills.teamskillshub.validate",
     "skills.teamskillshub.pack",
+    "assets.publish.describe",
+    "assets.publish.prepare",
+    "assets.publish.commit",
+    "assets.publish.status",
+    "assets.publish.records",
+    "assets.publish.local_status",
     "skills.teamskillshub.search",
     "skills.swarmskillshub.recommend",
     "skills.teamskillshub.install",
@@ -771,6 +799,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -877,6 +907,7 @@ _FORWARD_REQ_METHODS = frozenset({
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.templates.list",
     "team.bindings.list",
@@ -925,6 +956,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.teamskillshub.init",
     "skills.teamskillshub.validate",
     "skills.teamskillshub.pack",
+    "assets.publish.describe",
+    "assets.publish.prepare",
+    "assets.publish.commit",
+    "assets.publish.status",
+    "assets.publish.records",
+    "assets.publish.local_status",
     "skills.teamskillshub.search",
     "skills.swarmskillshub.recommend",
     "skills.teamskillshub.install",
@@ -943,6 +980,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -1041,6 +1080,7 @@ _CONFIG_SET_ENV_MAP = {
     "video_endpoint_profile": "VIDEO_ENDPOINT_PROFILE",
     "video_vendor_key": "VIDEO_VENDOR_KEY",
     "video_plan": "VIDEO_PLAN",
+    "video_context_window_tokens": "VIDEO_CONTEXT_WINDOW_TOKENS",
     "video_enabled": "VIDEO_ENABLED",
     # video processing (generation) - dedicated slot, separate from the
     # video-understanding fields above.
@@ -1049,6 +1089,7 @@ _CONFIG_SET_ENV_MAP = {
     "video_gen_model": "VIDEO_GEN_MODEL_NAME",
     "video_gen_provider": "VIDEO_GEN_PROVIDER",
     "video_gen_protocol": "VIDEO_GEN_PROTOCOL",
+    "video_gen_context_window_tokens": "VIDEO_GEN_CONTEXT_WINDOW_TOKENS",
     "video_gen_enabled": "VIDEO_GEN_ENABLED",
     # visual processing (image generation) - dedicated slot, independent of
     # both visual_question_answering's VISION_* slot and image_tools.py's
@@ -1058,6 +1099,7 @@ _CONFIG_SET_ENV_MAP = {
     "visual_gen_model": "VISUAL_GEN_MODEL_NAME",
     "visual_gen_provider": "VISUAL_GEN_PROVIDER",
     "visual_gen_protocol": "VISUAL_GEN_PROTOCOL",
+    "visual_gen_context_window_tokens": "VISUAL_GEN_CONTEXT_WINDOW_TOKENS",
     "visual_gen_enabled": "VISUAL_GEN_ENABLED",
     # audio 模型
     "audio_api_base": "AUDIO_API_BASE",
@@ -1067,6 +1109,7 @@ _CONFIG_SET_ENV_MAP = {
     "audio_endpoint_profile": "AUDIO_ENDPOINT_PROFILE",
     "audio_vendor_key": "AUDIO_VENDOR_KEY",
     "audio_plan": "AUDIO_PLAN",
+    "audio_context_window_tokens": "AUDIO_CONTEXT_WINDOW_TOKENS",
     "audio_enabled": "AUDIO_ENABLED",
     # vision 模型
     "vision_api_base": "VISION_API_BASE",
@@ -1076,6 +1119,7 @@ _CONFIG_SET_ENV_MAP = {
     "vision_endpoint_profile": "VISION_ENDPOINT_PROFILE",
     "vision_vendor_key": "VISION_VENDOR_KEY",
     "vision_plan": "VISION_PLAN",
+    "vision_context_window_tokens": "VISION_CONTEXT_WINDOW_TOKENS",
     "vision_enabled": "VISION_ENABLED",
     # 其他
     "email_address": "EMAIL_ADDRESS",
@@ -1157,6 +1201,20 @@ _DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 _DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 _EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 _UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
+_PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
+
+
+def _permission_profile(permission_config: object) -> str:
+    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
+        return "full_access"
+    return "automatic" if is_auto_permission_mode(permission_config) else "default"
+
+
+def _canonical_permission_facade(profile: str) -> dict[str, str]:
+    return {
+        "permissions_profile": profile,
+        "permissions_enabled": "false" if profile == "full_access" else "true",
+    }
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
 # 用于 channel.wechat.set_conf 写盘前校验，拒绝负数 / 0 / 极大值 / 浮点越界 / 非数字，
@@ -2583,7 +2641,6 @@ def _project_info_payload(
             "pinned": False,
             "pin_order": 0,
             "is_default": True,
-            "hidden": False,
             "work_mode": work_mode,
             "git": git_payload,
             "session_count": st["session_count"],
@@ -2600,7 +2657,6 @@ def _project_info_payload(
         "pinned": proj.pinned,
         "pin_order": proj.pin_order,
         "is_default": False,
-        "hidden": proj.hidden,
         "work_mode": work_mode,
         "git": git_payload,
         "session_count": st["session_count"],
@@ -3004,7 +3060,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "true" if is_affinity_enabled(raw) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
-            payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
+            payload.update(_canonical_permission_facade(_permission_profile(perm_cfg)))
             # Skill evolution is controlled solely by the canonical nested YAML key.
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
@@ -3044,6 +3100,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("rsi_enabled", "true")
+            payload.setdefault("permissions_profile", "full_access")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -3160,6 +3217,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         encrypted = dict(params)
         for key, val in list(encrypted.items()):
             from jiuwenswarm.extensions.registry import ExtensionRegistry
+            if key.endswith("_context_window_tokens"):
+                continue
             if (("api_key" in key.lower() or "token" in key.lower())
                     and ExtensionRegistry.get_instance().get_crypto_provider()):
                 encrypted[key] = ExtensionRegistry.get_instance().get_crypto_provider().encrypt(val)
@@ -3212,14 +3271,33 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _apply_config_payload(params: dict[str, Any]) -> _ConfigApplyResult:
         """Apply config.set-style payload to .env/config.yaml without triggering reload."""
+        if "permissions_mode" in params:
+            raise _ConfigBadRequest("permissions_mode is not writable")
+        if "permissions_profile" in params and "permissions_enabled" in params:
+            raise _ConfigBadRequest(
+                "permissions_profile and permissions_enabled are mutually exclusive"
+            )
         params = _encrypt_config_params(params)
         env_updates: dict[str, str] = {}
         yaml_updated: list[str] = []
         codex_dependency_install: dict[str, Any] | None = None
         external_cli_dependency_installs: dict[str, dict[str, Any]] = {}
+        canonical_config: dict[str, str] | None = None
         available_model_providers = [provider.value for provider in ProviderType]
         raw = get_config_raw()
         preferred_lang = raw.get("preferred_language", "zh")
+
+        pending_permission_profile: str | None = None
+        if "permissions_profile" in params:
+            pending_permission_profile = str(params["permissions_profile"]).strip()
+            if pending_permission_profile not in _PERMISSIONS_PROFILES:
+                raise _ConfigBadRequest("invalid permissions_profile")
+            canonical_config = _canonical_permission_facade(pending_permission_profile)
+        elif "permissions_enabled" in params:
+            pending_permission_profile = (
+                "default" if _parse_config_bool(params["permissions_enabled"]) else "full_access"
+            )
+            canonical_config = _canonical_permission_facade(pending_permission_profile)
 
         try:
             normalize_affinity_request(params)
@@ -3230,6 +3308,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if param_key not in params:
                 continue
             val = params[param_key]
+            if param_key.endswith("_context_window_tokens") and val not in (None, ""):
+                parsed_context_window = parse_positive_int(val)
+                if parsed_context_window is None:
+                    raise _ConfigBadRequest(
+                        f"{param_key} must be a positive integer or a value such as 256K or 1M"
+                    )
+                val = str(parsed_context_window)
             if param_key.endswith("_provider") and val and val not in available_model_providers:
                 raise _ConfigBadRequest(f"Model provider must in: {available_model_providers} ")
             if val is None:
@@ -3272,7 +3357,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "kv_cache_affinity_enabled":
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
-                    update_permissions_enabled_in_config(parsed)
+                    continue
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "rsi_enabled":
@@ -3391,9 +3476,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
 
         return _ConfigApplyResult(
-            env_updates, yaml_updated, codex_dependency_install,
-            external_cli_dependency_installs or None,
+            env_updates=env_updates,
+            yaml_updated=yaml_updated,
+            codex_dependency_install=codex_dependency_install,
+            external_cli_dependency_installs=external_cli_dependency_installs or None,
+            canonical_config=canonical_config,
+            pending_permission_profile=pending_permission_profile,
+            pending_permission_key=(
+                "permissions_profile"
+                if "permissions_profile" in params
+                else "permissions_enabled"
+                if "permissions_enabled" in params
+                else None
+            ),
         )
+
+    def _commit_pending_permission_profile(apply_result: _ConfigApplyResult) -> None:
+        profile = apply_result.pending_permission_profile
+        if profile is None:
+            return
+        try:
+            update_permissions_profile_in_config(profile)
+        except (OSError, ValueError) as exc:
+            raise _ConfigInternalError("failed to update permissions profile") from exc
+        if apply_result.pending_permission_key is not None:
+            apply_result.yaml_updated.append(apply_result.pending_permission_key)
 
     async def _apply_config_change_set(change_set: _ConfigChangeSet) -> bool:
         """Synchronously apply only the runtime scope affected by a saved config change."""
@@ -3468,6 +3575,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # 原样透传给共享校验函数：不要用 `or ""` 压平，否则布尔 False
             # （legacy YAML 裸 off / 非前端客户端传的 JSON false）会被当成清空。
             raw_reasoning_level = item.get("reasoning_level")
+            context_window_tokens_provided = "context_window_tokens" in item
+            context_window_tokens = None
+            if context_window_tokens_provided:
+                context_window_tokens = parse_positive_int(item.get("context_window_tokens"))
+                if context_window_tokens is None:
+                    raise _ConfigBadRequest(
+                        f"models[{idx}].context_window_tokens must be a positive integer or a value such as 256K or 1M"
+                    )
             vendor_key = str(item.get("vendor_key") or "").strip() or None
             plan = str(item.get("plan") or "").strip() or None
             if plan:
@@ -3510,6 +3625,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "verify_ssl": verify_ssl,
                 "alias": alias,
                 "reasoning_level": reasoning_level or "",
+                "context_window_tokens": context_window_tokens,
+                "context_window_tokens_provided": context_window_tokens_provided,
                 "origin_index": origin_index,
                 # vendor_key is an opaque hint
                 # selector; not validated (the selector only ever emits keys
@@ -3558,6 +3675,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             apply_result = _apply_config_payload(params)
+            _commit_pending_permission_profile(apply_result)
         except _ConfigBadRequest as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
@@ -3586,6 +3704,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["codex_dependency_install"] = apply_result.codex_dependency_install
         if apply_result.external_cli_dependency_installs is not None:
             payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
+        if apply_result.canonical_config is not None:
+            payload["canonical_config"] = apply_result.canonical_config
         await channel.send_response(
             ws, req_id, ok=True,
             payload=payload,
@@ -3781,21 +3901,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 mcc = entry.get("model_client_config", {})
                 mco = entry.get("model_config_obj", {})
                 is_default = entry.get("is_default", False)
-                model_name = mcc.get("model_name", "")
-                try:
-                    context_window_tokens = resolve_context_window_tokens(
-                        model_name=model_name,
-                        context_engine_config=(config.get("react", {}) or {}),
-                        model_config_obj=mco,
-                    )
-                except Exception:
-                    context_window_tokens = 0
-                    logger.debug(
-                        "Failed to resolve context_window_tokens for model %s",
-                        model_name,
-                        exc_info=True,
-                    )
-                result.append({
+                model_name = str(mcc.get("model_name", "") or "").strip()
+                result_entry = {
+                    # 模型稳定 ID（模型组路由依据）；由 _ensure_model_business_ids
+                    # 迁移/校验后注入，前端据此关联模型组与路由。
                     "model_id": entry.get("model_id", ""),
                     "model_name": model_name,
                     "api_base": mcc.get("api_base", ""),
@@ -3810,11 +3919,19 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     "is_agentos": bool(mco.get("_source") == "agentos"),
                     "alias": entry.get("alias", ""),
                     "origin_index": idx,
-                    "context_window_tokens": context_window_tokens,
                     "vendor_key": mcc.get("vendor_key") or entry.get("vendor_key") or "",
                     "plan": mcc.get("plan") or entry.get("plan") or "",
                     "endpoint_profile": mcc.get("endpoint_profile") or "",
-                })
+                }
+                # An empty template entry is not a configured model yet; do
+                # not surface a synthetic context window until the user saves
+                # the model configuration.
+                if model_name:
+                    result_entry["context_window_tokens"] = (
+                        parse_positive_int(mco.get("context_window"))
+                        or DEFAULT_CONTEXT_WINDOW_TOKENS
+                    )
+                result.append(result_entry)
             # Zen 免费模型仅存在于进程内缓存，不能写回 models.defaults；但需要
             # 与普通模型一同出现在会话选择器中。is_default 保持 None（而不是
             # False），使前端把它视为可选模型，同时不会改变首个配置模型作为
@@ -3842,7 +3959,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "is_agentos": False,
                         "is_free": True,
                         "alias": entry.get("alias", ""),
-                        "context_window_tokens": entry.get("context_window_tokens", 0),
+                        # Zen model metadata is intentionally not used for
+                        # context-window resolution; free models use the same
+                        # fixed default as every other unconfigured model.
+                        "context_window_tokens": DEFAULT_CONTEXT_WINDOW_TOKENS,
                     })
                     existing_names.add(model_name)
             except Exception:
@@ -3949,9 +4069,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if config_params:
                 apply_result = _apply_config_payload(config_params)
                 applied_env = apply_result.env_updates
-                applied_yaml = apply_result.yaml_updated
                 env_updates.update(applied_env)
-                yaml_updated.extend(applied_yaml)
             else:
                 apply_result = _ConfigApplyResult({}, [])
 
@@ -3979,6 +4097,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "KV cache affinity saved but not applied: " + "; ".join(failures)
                     )
 
+            _commit_pending_permission_profile(apply_result)
+            yaml_updated.extend(apply_result.yaml_updated)
+
             change_set = _ConfigChangeSet(
                 env_updates,
                 yaml_updated,
@@ -4002,6 +4123,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["codex_dependency_install"] = apply_result.codex_dependency_install
             if apply_result.external_cli_dependency_installs is not None:
                 payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
+            if apply_result.canonical_config is not None:
+                payload["canonical_config"] = apply_result.canonical_config
 
             await channel.send_response(
                 ws,
@@ -4550,10 +4673,20 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """返回单个会话的元数据（mode / model / project_dir / last_user_message_at 等）。
 
         经统一薄代理 E2A 转发目标 AgentServer（SessionAdapter
-        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。
+        SESSION_GET_METADATA），由注入目录读取（O(1)，不扫描目录）。运行态不属于
+        持久化 metadata：由 WebChannel 已维护的 session busy 状态在响应入队前覆盖，
+        这样页面刷新仍能恢复当前会话的停止按钮，并与随后同一 WS 上的状态事件保持顺序。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
+
+        target_session_id = str(
+            params.get("session_id") if isinstance(params, dict) else session_id or ""
+        ).strip()
+
+        def _attach_runtime_status(ok: bool, payload: dict[str, Any]) -> None:
+            if ok:
+                payload["is_processing"] = channel.is_session_busy(target_session_id)
 
         await proxy_unary_request(
             channel=channel,
@@ -4565,6 +4698,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.SESSION_GET_METADATA,
             label="session.get_metadata",
+            on_done=_attach_runtime_status,
         )
 
     async def _session_plan_status(ws, req_id, params, session_id, user_id=None):
@@ -4726,14 +4860,12 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """获取项目列表(含统计),已排序,包含默认项目。
 
         filter: ``"all"``(默认) / ``"pinned"`` / ``"unpinned"``
-        include_hidden: 是否包含已软删除(``hidden:true``)项目,默认 ``false``。
-            仅 ``"all"`` / ``"unpinned"`` 生效;``"pinned"`` 模式自动排除隐藏项目。
         work_mode: 可选,按工作模式过滤(``"code"`` / ``"work"``),不传则返回全部模式。
             默认项目按 work_mode 拆分:``default``(work)+ ``default_code``(code)。
 
         统计口径: ``session_count`` / ``last_message_at`` / ``last_user_message_at``
         仅统计该项目的非置顶**普通**会话(``cron_id`` 为空)。置顶会话与 cron 会话
-        不计入任何项目统计。隐藏项目统计恒为 0/null(其非置顶会话已临时归属默认项目)。
+        不计入任何项目统计。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
         from jiuwenswarm.gateway.routing.e2a_proxy import proxy_unary_request
@@ -4804,8 +4936,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             user_id=user_id,
             req_method=ReqMethod.PROJECT_CREATE,
             label="project.create",
-            # PROJECT_ARCHIVED 失败明细携带 project_id，前端据此调用
-            # project.unarchive 恢复归档项目，不能在 Gateway 丢弃。
+            # 保留 AgentServer 返回的结构化错误明细。
             preserve_error_payload=True,
             on_done=lambda ok, _payload: (
                 _schedule_agent_prewarm_sync("project.create") if ok else None
@@ -5486,6 +5617,10 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["session_id"] = params.get("session_id")
             if "page_idx" in params:
                 payload["page_idx"] = params.get("page_idx")
+            if "cursor" in params:
+                payload["cursor"] = params.get("cursor")
+            if "limit" in params:
+                payload["limit"] = params.get("limit")
         await channel.send_response(ws, req_id, ok=True, payload=payload)
 
     async def _locale_get_conf(ws, req_id, params, session_id, user_id=None):

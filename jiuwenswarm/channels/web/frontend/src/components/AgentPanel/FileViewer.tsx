@@ -436,6 +436,7 @@ export function FileViewer({ filePath, fileName, reloadNonce = 0 }: FileViewerPr
                   executions={historyExecutions}
                   reasoningSegments={historyReasoningSegments}
                   staticTimeline
+                  virtualized
                   mode={historyPreviewMode ?? undefined}
                   disableA2UIInteraction={true}
                 />

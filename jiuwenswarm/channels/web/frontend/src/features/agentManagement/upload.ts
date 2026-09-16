@@ -1,4 +1,5 @@
 const AGENT_ARCHIVE_EXTENSIONS = ['.zip', '.tar'] as const;
+const AGENT_GROUP_ARCHIVE_EXTENSIONS = ['.zip', '.tar', '.tar.gz'] as const;
 
 export function isAgentUploadFilename(name: string): boolean {
   const lower = name.toLowerCase();
@@ -42,4 +43,9 @@ export function mapLocalPackageImportError(
     return translate(keys.persona);
   }
   return message;
+}
+
+export function isAgentGroupUploadFilename(name: string): boolean {
+  const lower = name.toLowerCase();
+  return AGENT_GROUP_ARCHIVE_EXTENSIONS.some(extension => lower.endsWith(extension));
 }

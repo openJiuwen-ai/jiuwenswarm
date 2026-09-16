@@ -13,6 +13,7 @@ import {
   ToolResult,
   ToolExecution,
   ToolExecutionStatus,
+  AutoReviewerMetadata,
   InterruptResultPayload,
   AskUserQuestionPayload,
   EvolutionStatusPayload,
@@ -24,6 +25,7 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 import {
+  mergeReviewerProgress,
   mergeToolResultProgress,
   shouldDropToolResult,
 } from './toolResultLifecycle';
@@ -71,8 +73,13 @@ interface TaskItem {
 }
 
 export interface HistoryPagerMeta {
-  loadedPages: number;
-  totalPages: number;
+  nextCursor: string | null;
+  hasMore: boolean;
+  snapshotId: string | null;
+  snapshotEnd: number;
+  loadedBatchSeq: number;
+  publishedBatchSeq: number;
+  historyComplete: boolean;
 }
 
 /**
@@ -90,6 +97,8 @@ export interface ReasoningSegment {
   updatedAt?: number;
   /** 收尾时刻；用于延迟折进 streak。历史可省略。 */
   closedAt?: number;
+  /** 仅用于大历史渐进发布；实时思考没有该标记。 */
+  historyBatchSeq?: number;
 }
 
 export interface ChatRuntime {
@@ -225,7 +234,13 @@ interface ChatState {
   closeReasoning: (sessionId: string, options?: { atMs?: number }) => void;
   restoreReasoningSegments: (
     sessionId: string,
-    items: { at: string; text: string; agentTemplateName?: string; updatedAt?: number }[],
+    items: {
+      at: string;
+      text: string;
+      agentTemplateName?: string;
+      updatedAt?: number;
+      historyBatchSeq?: number;
+    }[],
   ) => void;
   startStreaming: (sessionId: string, messageId: string, streamKey?: string) => void;
   stopStreaming: (sessionId: string, streamKey?: string) => void;
@@ -257,9 +272,15 @@ interface ChatState {
   addToolCall: (
     sessionId: string,
     toolCall: ToolCall,
-    options?: { startedAt?: string; requestId?: string; agentTemplateName?: string },
+    options?: {
+      startedAt?: string;
+      requestId?: string;
+      agentTemplateName?: string;
+      historyBatchSeq?: number;
+    },
   ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
+  updateToolReviewer: (sessionId: string, toolCallId: string, reviewer: AutoReviewerMetadata) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
@@ -559,6 +580,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
           // 历史已结束：closedAt 用 startedAt，立刻 settled，且比魔法 0 更可解释。
           closedAt: startedAt,
           updatedAt,
+          historyBatchSeq: item.historyBatchSeq,
         });
       });
       segments.sort((a, b) => a.startedAt - b.startedAt);
@@ -1044,6 +1066,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         timeoutAt,
         requestId: options?.requestId,
         agentTemplateName: options?.agentTemplateName,
+        historyBatchSeq: options?.historyBatchSeq,
       });
 
       const nextOrder = [...runtime.toolExecutionOrder, toolCall.id];
@@ -1214,6 +1237,29 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         status: keepStatus,
         updatedAt:
           keepStatus === 'pending' ? new Date().toISOString() : execution.updatedAt,
+      });
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
+        },
+      };
+    });
+  },
+
+  updateToolReviewer: (sessionId, toolCallId, reviewer) => {
+    if (!toolCallId) return;
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      const execution = runtime.toolExecutions.get(toolCallId);
+      if (!execution) return state;
+      const nextReviewer = mergeReviewerProgress(execution.toolCall.reviewer, reviewer);
+      if (nextReviewer === execution.toolCall.reviewer) return state;
+      const nextExecutions = new Map(runtime.toolExecutions);
+      nextExecutions.set(toolCallId, {
+        ...execution,
+        toolCall: { ...execution.toolCall, reviewer: nextReviewer },
       });
       return {
         runtimes: {

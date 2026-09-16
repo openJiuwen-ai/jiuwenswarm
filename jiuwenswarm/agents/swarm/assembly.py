@@ -206,6 +206,7 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
     from jiuwenswarm.agents.swarm.agent_group import load_agent_group_package
     from jiuwenswarm.server.runtime.extension_package_manager import (
         resolve_agent_group_dir,
+        resolve_agent_group_member_display_name,
     )
 
     package_dir = resolve_agent_group_dir(agent_group_name)
@@ -241,7 +242,11 @@ def _apply_agent_group(spec: Any, agent_group_name: str) -> None:
         predefined_members.append(
             TeamMemberSpec(
                 member_name=agent_name,
-                display_name=template.agent_card.name or agent_name,
+                display_name=resolve_agent_group_member_display_name(
+                    package_dir,
+                    agent_name,
+                    fallback=template.agent_card.name or agent_name,
+                ),
                 desc=template.agent_card.description or "",
                 prompt=member_prompt,
                 role_type=TeamRole.TEAMMATE,

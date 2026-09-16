@@ -1,3 +1,4 @@
+import { withCatalogCache, type CatalogItems, type CatalogCacheMetadata } from '../features/catalogCache';
 import { webRequest } from './webClient';
 import type {
   ConnectorConnectResponse,
@@ -182,12 +183,12 @@ export const connectorApi = {
   // (local，= 已连接的预置 + 全部自定义)。实测过 dev_aipc_feat_v2 分支：缺省 filter 时后端按
   // "builtin" 处理，之前不传 filter 的单次调用会让"我的MCP"完全看不到自定义 MCP，是真实 bug，
   // 不是理论风险（评估过程见 cjh/feature/MCP/_migration/mcp-interface-v2-gap-assessment.md）。
-  list: async (filter: 'builtin' | 'local'): Promise<ConnectorSummary[]> => {
-    const payload = await requestEquipmentList<{ items: RawConnectorSummary[] }>(webRequest, 'mcp.list', { filter });
-    return payload.items.map(fromRawSummary);
+  list: async (filter: 'builtin' | 'local'): Promise<CatalogItems<ConnectorSummary>> => {
+    const payload = await requestEquipmentList<{ items: RawConnectorSummary[]; cache?: CatalogCacheMetadata }>(webRequest, 'mcp.list', { filter });
+    return withCatalogCache(payload.items.map(fromRawSummary), payload.cache);
   },
   show: async (id: string): Promise<ConnectorDetail> => {
-    const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { id });
+    const payload = await webRequest<{ item: RawConnectorDetail }>('mcp.show', { id }, { timeoutMs: 90000 });
     return fromRawDetail(payload.item);
   },
   // mcp.install embeds the connect result used by the same token/OAuth flow.

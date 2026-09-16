@@ -1,6 +1,6 @@
 name: 🐞 缺陷报告
 description: |
-             创建一份报告，帮助我们复现并修复这个缺陷
+  创建一份报告，帮助我们复现并修复这个缺陷
 title: "[Bug]: "
 labels: ["bug"]
 type: "Bug-Report"
@@ -20,35 +20,55 @@ body:
     id: module_select
     attributes:
       label: 模块选择
+      description: |
+        dev-stable分支请选择【dev-stable专属】模块
+        develop、agent-os、xiaoyi分支请选择【通用】模块
       options:
-        - Agent Core harness
-        - AutoHarness
-        - 集群模式
-        - 同session联机
-        - Gateway
-        - 编排与分发
-        - 单Agent模式
-        - 定时
-        - 多session
-        - 记忆
-        - 数字分身
-        - 浏览器
-        - 文件系统
-        - TUI
-        - A2UI
-        - Sandbox
-        - LLM wiki
-        - skillnet
-        - 前端
-        - channel-小艺
-        - channel-钉钉
-        - channel-web
-        - channel-飞书
-        - channel-微信
-        - channel-企业微信
-        - channel-WharsApp
-        - 自演进
-        - 未知
+        - 【dev-stable专属】 服务接入和处理
+        - 【dev-stable专属】 Agent执行控制
+        - 【dev-stable专属】 工具与外部能力
+        - 【dev-stable专属】 上下文
+        - 【dev-stable专属】 技能管理
+        - 【dev-stable专属】 平台底座
+        - 【dev-stable专属】 主动推荐（数字分身）
+        - 【dev-stable专属】 性能
+        - 【dev-stable专属】 成本（非skill加速）
+        - 【dev-stable专属】 稳定性
+        - 【dev-stable专属】 AI提效（开发质量、代码检视）
+        - 【dev-stable专属】 自演进
+        - 【dev-stable专属】 安全
+        - 【dev-stable专属】 Agent Team
+        - 【dev-stable专属】 Code Agent
+        - 【dev-stable专属】 记忆引擎
+        - 【dev-stable专属】 DeepSearch
+        - 【通用】 Agent Core harness
+        - 【通用】 AutoHarness
+        - 【通用】 集群模式
+        - 【通用】 同session联机
+        - 【通用】 Gateway
+        - 【通用】 编排与分发
+        - 【通用】 单Agent模式
+        - 【通用】 定时
+        - 【通用】 多session
+        - 【通用】 记忆
+        - 【通用】 数字分身
+        - 【通用】 浏览器
+        - 【通用】 文件系统
+        - 【通用】 TUI
+        - 【通用】 A2UI
+        - 【通用】 Sandbox
+        - 【通用】 LLM wiki
+        - 【通用】 skillnet
+        - 【通用】 前端
+        - 【通用】 channel-小艺
+        - 【通用】 channel-钉钉
+        - 【通用】 channel-web
+        - 【通用】 channel-飞书
+        - 【通用】 channel-微信
+        - 【通用】 channel-企业微信
+        - 【通用】 channel-WharsApp
+        - 【通用】 自演进
+        - 【通用】 未知
     validations:
       required: true
   - type: checkboxes
@@ -85,21 +105,21 @@ body:
     attributes:
       label: 详细的环境信息描述
       description: |
-                   请提供必要的全部环境信息，包括所有的软件、硬件、驱动等信息. **否则，该问题将被关闭**。
+        请提供必要的全部环境信息，包括所有的软件、硬件、驱动等信息. **否则，该问题将被关闭**。
       placeholder: "包括但不限于该问题出现所依赖的软件及版本、硬件、驱动等信息，尽可能的详细."
     validations:
-       required: true
+      required: true
   - type: textarea
     attributes:
       label: 其他辅助信息
       description: |
-                   任何其他有助于我们定位问题的信息，请您提供。
+        任何其他有助于我们定位问题的信息，请您提供。
       placeholder: "任何其他您想要提供的建议"
   - type: textarea
     attributes:
       label: 版本信息
       description: |
-                   如果涉及多个版本，请悉数告知我们对应的版本号信息，以方便我们复现问题。
+        如果涉及多个版本，请悉数告知我们对应的版本号信息，以方便我们复现问题。
       validations:
       required: true
   - type: markdown

@@ -16,6 +16,9 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     cleanup_permission_context,
     setup_permission_context,
 )
+from jiuwenswarm.agents.harness.common.rails.permissions.permission_interrupt_rail import (
+    JiuwenSwarmPermissionInterruptRail,
+)
 from jiuwenswarm.common import config
 
 
@@ -101,7 +104,8 @@ def test_installed_snapshot_never_reloads_overlays(tmp_path, monkeypatch):
 def test_manual_builder_retains_sdk_factory_and_dynamic_overlay_host(overlays):
     caller = {"permissions": {"enabled": True, "mode": "manual", "tools": {}}}
     rail = build_permission_rail(caller, session_id="manual")
-    assert type(rail) is PermissionInterruptRail
+    assert type(rail) is JiuwenSwarmPermissionInterruptRail
+    assert isinstance(rail, PermissionInterruptRail)
     first = rail._host.get_permissions_snapshot()
     assert first["tools"]["user_tool"] == "allow"
     assert first["tools"]["session_tool"] == "allow"
@@ -157,10 +161,12 @@ def test_builder_requires_consistent_enabled_auto_activation(invalid, invalid_si
 
 
 def test_manual_factory_failure_still_returns_none(monkeypatch):
-    import openjiuwen.harness.security as security
-
-    def fail_factory(**_kwargs):
+    def fail_factory(*_args, **_kwargs):
         raise RuntimeError("factory failure")
 
-    monkeypatch.setattr(security, "build_permission_interrupt_rail", fail_factory)
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.common.rails.permissions."
+        "permission_interrupt_rail.JiuwenSwarmPermissionInterruptRail",
+        fail_factory,
+    )
     assert build_permission_rail({"permissions": {"enabled": True}}) is None

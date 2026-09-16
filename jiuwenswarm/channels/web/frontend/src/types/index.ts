@@ -27,6 +27,12 @@ export interface Session {
   display_title?: string | null;
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
+  /** Direct parent session when this conversation was created by fork. */
+  forked_from?: string;
+  /** Temporary side conversations are omitted from the normal session list. */
+  ephemeral?: boolean;
+  /** Direct parent for an ephemeral side conversation. */
+  side_parent_session_id?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
@@ -38,6 +44,10 @@ export interface Session {
   current_task?: string;
   tools?: string[];
   team_name?: string;
+  /** 首条团队消息成功绑定的 AgentGroup id；后端 metadata 读回后成为只读绑定。 */
+  agent_group_name?: string | null;
+  /** 首次 AgentGroup 绑定时锁定的 leader 身份；旧 session 可能没有该字段。 */
+  team_leader_identity?: unknown;
   // ---- session.list 扩展字段 ----
   channel_id?: string;         // 渠道ID
   user_id?: string;            // 创建人ID
@@ -67,7 +77,7 @@ export type AgentMode =
   | 'team.code.normal'
   | 'team.code.plan';
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
-export type Permission = 'default' | 'full_access';
+export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
 

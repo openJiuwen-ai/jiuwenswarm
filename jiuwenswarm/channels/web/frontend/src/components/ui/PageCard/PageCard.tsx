@@ -1,4 +1,4 @@
-﻿import { type MouseEvent, type ReactNode } from 'react';
+import { type KeyboardEvent, type MouseEvent, type ReactNode } from 'react';
 import { EntityHeader, type EntityHeaderAvatar } from '../EntityHeader/EntityHeader';
 import { useAdaptiveTooltip } from '../../../hooks/useAdaptiveTooltip';
 import './PageCard.css';
@@ -21,8 +21,12 @@ export interface PageCardProps {
   actionSlot?: ReactNode;
   description?: string;
   onClick?: () => void;
+  interactive?: boolean;
+  ariaLabel?: string;
   className?: string;
   testId?: string;
+  /** Optional test hook for the clickable card header. */
+  headerTestId?: string;
   variant?: string;
 }
 
@@ -35,8 +39,11 @@ export function PageCard({
   actionSlot,
   description,
   onClick,
+  interactive = false,
+  ariaLabel,
   className,
   testId,
+  headerTestId,
   variant,
 }: PageCardProps) {
   const classNames = ['page-card'];
@@ -45,11 +52,27 @@ export function PageCard({
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
 
   const hasLabel = Array.isArray(label) && label.length > 0;
+  const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
+    if (!interactive || !onClick || event.target !== event.currentTarget) return;
+    if (event.key !== 'Enter' && event.key !== ' ') return;
+    event.preventDefault();
+    onClick();
+  };
 
   return (
-    <div onClick={onClick} className={classNames.join(' ')} data-testid={testId} data-variant={variant}>
+    <div
+      onClick={onClick}
+      onKeyDown={handleKeyDown}
+      role={interactive ? 'button' : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={interactive ? ariaLabel : undefined}
+      className={[...classNames, ...(interactive ? ['page-card--interactive'] : [])].join(' ')}
+      data-testid={testId}
+      data-variant={variant}
+    >
       <EntityHeader
         variant="card"
+        testId={headerTestId}
         avatar={avatar}
         title={title}
         titleEnd={titleEnd}

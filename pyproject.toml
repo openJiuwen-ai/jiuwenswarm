@@ -17,7 +17,7 @@ dependencies = [
     "ruamel.yaml>=0.18.0,<0.20",
     "lark-oapi>=1.5.3,<2",
     "loguru>=0.7.3,<0.8",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@564997732e22fcdd204959b79b38b4768f5220c0",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@7e98a60f96a6fa988c55af38c5eb1a2b6108bb23",
     "pgvector>=0.4.2,<0.5",
     "portalocker>=3.2.0,<4",
     "prompt-toolkit>=3.0,<4.0",
@@ -70,7 +70,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@564997732e22fcdd204959b79b38b4768f5220c0",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@7e98a60f96a6fa988c55af38c5eb1a2b6108bb23",
     "pgvector>=0.4.2",
     "portalocker>=3.2.0",
     "aiosqlite>=0.22.1",
@@ -104,7 +104,8 @@ harmony = [
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
 desktop = ["pywebview>=5.4,<7"]
-dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
+# gitcode-cli 仅供打包，版本须与内置连接器 cli.json 的 minVersion 一致
+dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7", "gitcode-cli==0.12.0"]
 tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
@@ -188,7 +189,7 @@ default-groups = ['dev']
 
 [tool.uv.sources]
 workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
-openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "564997732e22fcdd204959b79b38b4768f5220c0" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)

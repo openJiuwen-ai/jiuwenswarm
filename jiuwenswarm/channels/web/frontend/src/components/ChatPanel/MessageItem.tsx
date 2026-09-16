@@ -9,6 +9,7 @@ import type { ReactNode } from 'react';
 import {
   Check,
   Copy,
+  GitFork,
   Info,
   Square,
   Target,
@@ -51,8 +52,13 @@ import { FileIcon } from '../FileIcon';
 import { webRequest } from '../../services/webClient';
 import { useChatStore } from '../../stores/chatStore';
 import { useSessionStore } from '../../stores/sessionStore';
+import type { AgentGroupIdentity } from '../../features/agentManagement';
 import { extractTokenFromDownloadUrl } from '../../utils/fileDownloadDedup';
 import { isSkillPackageFile } from '../../utils/skillPackageFile';
+import {
+  resolveTeamLeaderDisplayName,
+  type TeamLeaderIdentity,
+} from '../../features/teamLeaderIdentity';
 
 function openArtifactPanelForActiveMode(selectedArtifactId: string): void {
   const sessionId = useChatStore.getState().activeSessionId;
@@ -100,30 +106,54 @@ export function TeamMemberMessageFrame({
   showAvatar = true,
   children,
   contentClassName,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   member?: string;
   showAvatar?: boolean;
   children: ReactNode;
   contentClassName?: string;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
+  const { i18n } = useTranslation();
   const activeSessionId = useChatStore((s) => s.activeSessionId);
   const teamMembers = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.teamMembers);
-  // 头像旁的成员名：名册 display name 优先，leader 固定 Jiuwen，查不到退回 member_id。
+  // 头像旁的成员名：leader 使用显式 session identity，否则固定 Jiuwen；其他成员
+  // 使用名册 display name，查不到退回 member_id。
   // 订阅名册而非 getState 直读，成员迟到时名字能跟着刷新（同 TeamMemberAvatar 的考量）。
   const memberName = useMemo(() => {
     const id = member?.trim() ?? '';
     if (!id) return '';
-    if (isTeamLeaderMember(id)) return 'Jiuwen';
+    if (isTeamLeaderMember(id)) {
+      return teamGroupIdentity?.displayName?.trim()
+        || resolveTeamLeaderDisplayName(teamLeaderIdentity, i18n.language)
+        || 'Jiuwen';
+    }
     const known = teamMembers?.find((item) => item.member_id === id);
     return known?.name?.trim() || id;
-  }, [member, teamMembers]);
+  }, [i18n.language, member, teamGroupIdentity, teamLeaderIdentity, teamMembers]);
+
+  const actorIdentity = isTeamLeaderMember(member)
+    ? teamGroupIdentity
+      ? {
+          agentTemplateId: teamGroupIdentity.id,
+          displayName: teamGroupIdentity.displayName,
+          ...(teamGroupIdentity.avatarUrl ? { avatar: teamGroupIdentity.avatarUrl } : {}),
+        }
+      : teamLeaderIdentity ?? undefined
+    : undefined;
 
   return (
     <div className="team-member-message animate-fade-in" data-testid="chat-panel-team-member-message">
       {/* 与单 agent 的 assistant-row 一致：无头像时整列不渲染，正文直接对齐最左边。 */}
       {showAvatar ? (
         <div className="team-member-message__header" data-testid="chat-panel-team-member-message-header">
-          <TeamMemberAvatar member={member} />
+          {actorIdentity ? (
+            <AgentAvatar identityOverride={actorIdentity} alt="" />
+          ) : (
+            <TeamMemberAvatar member={member} />
+          )}
           {memberName ? <span className="chat-avatar-name">{memberName}</span> : null}
         </div>
       ) : null}
@@ -144,6 +174,8 @@ function TeamLeaderPlainTextMessage({
   showAvatar = true,
   fileItems,
   disableA2UIInteraction = false,
+  teamLeaderIdentity,
+  teamGroupIdentity,
 }: {
   member?: string;
   content: string;
@@ -154,11 +186,15 @@ function TeamLeaderPlainTextMessage({
   showAvatar?: boolean;
   fileItems?: FileDownloadItem[];
   disableA2UIInteraction?: boolean;
+  teamLeaderIdentity?: TeamLeaderIdentity | null;
+  teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   return (
     <TeamMemberMessageFrame
       member={member}
       showAvatar={showAvatar}
+      teamLeaderIdentity={teamLeaderIdentity}
+      teamGroupIdentity={teamGroupIdentity}
     >
       {fileItems && fileItems.length > 0 && (
         <FileDownloadList
@@ -297,6 +333,11 @@ interface MessageItemProps {
   disableA2UIInteraction?: boolean;
   hideMeta?: boolean;
   enableAssistantAvatar?: boolean;
+  /** Explicit session-frozen identity override for Team leader rendering. */
+  teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
+  /** Selected Expert Team identity for the top-level conversation surface. */
+  teamGroupIdentityOverride?: AgentGroupIdentity | null;
+  onForkFromMessage?: (message: Message) => Promise<void>;
 }
 
 export const MessageItem = memo(function MessageItem({
@@ -306,6 +347,9 @@ export const MessageItem = memo(function MessageItem({
   disableA2UIInteraction = false,
   hideMeta = false,
   enableAssistantAvatar = false,
+  teamLeaderIdentityOverride,
+  teamGroupIdentityOverride,
+  onForkFromMessage,
 }: MessageItemProps) {
   const { t } = useTranslation();
   const {
@@ -326,13 +370,20 @@ export const MessageItem = memo(function MessageItem({
     commandInput,
     commandOutput,
     agentTemplateName,
+    crossSession,
   } = message;
   const [hasAutoSpoken, setHasAutoSpoken] = useState(false);
   const [isAudioPlaying, setIsAudioPlaying] = useState(false);
   const [isExpanded, setIsExpanded] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [isForking, setIsForking] = useState(false);
   const audioRef = useRef<HTMLAudioElement | null>(null);
   const { tooltip, handlers: tooltipHandlers } = useAdaptiveTooltip({ placement: 'top' });
+  const activeSessionId = useChatStore((state) => state.activeSessionId);
+  const sessionTeamLeaderIdentity = useSessionStore(
+    (state) => state.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
+  );
+  const teamLeaderIdentity = teamLeaderIdentityOverride ?? sessionTeamLeaderIdentity;
 
   // TTS
   const { isSpeaking, speak, stop, isSupported: ttsSupported } = useSpeechSynthesis({
@@ -427,6 +478,18 @@ export const MessageItem = memo(function MessageItem({
     setCopied(true);
     window.setTimeout(() => setCopied(false), 2000);
   }, [content, role]);
+
+  const handleForkFromMessage = useCallback(async () => {
+    if (!onForkFromMessage || isForking) return;
+    setIsForking(true);
+    try {
+      await onForkFromMessage(message);
+    } catch {
+      window.alert(t('chatUi.forkFromMessageFailed'));
+    } finally {
+      setIsForking(false);
+    }
+  }, [isForking, message, onForkFromMessage, t]);
 
   // 自动朗读新消息（仅助手消息，由父组件通过 autoSpeak 控制）
   useEffect(() => {
@@ -592,15 +655,18 @@ export const MessageItem = memo(function MessageItem({
 	                 isStreaming={isStreaming}
 	                 hideMeta={hideMeta}
 	                 showAvatar={showAvatar}
+	                 teamLeaderIdentity={teamLeaderIdentity}
+	                 teamGroupIdentity={teamGroupIdentityOverride}
 	               />
 	             );
 	           }
 	           
 	           // p2p 和 broadcast 消息展示
 	           return (
-	             <TeamMemberMessageFrame
+	               <TeamMemberMessageFrame
 	               member={event.fromMember}
 	               showAvatar={showAvatar}
+	               teamLeaderIdentity={teamLeaderIdentity}
 	             >
 	               <div className="team-member-message__card" data-testid="chat-panel-team-event-card">
 	                 <div className="team-member-message__content" data-testid="chat-panel-team-event-card-content">
@@ -658,6 +724,8 @@ export const MessageItem = memo(function MessageItem({
 	           showAvatar={showAvatar}
 	           fileItems={fileItems}
 	           disableA2UIInteraction={disableA2UIInteraction}
+	           teamLeaderIdentity={teamLeaderIdentity}
+	           teamGroupIdentity={teamGroupIdentityOverride}
 	         />
 	       );
 	     }
@@ -686,6 +754,12 @@ export const MessageItem = memo(function MessageItem({
   const hasBubbleContent = isUser
     ? hasDisplayText || isStreaming
     : Boolean(content) || Boolean(visibleMediaItems) || Boolean(visibleFileItems);
+  const showFork = Boolean(
+    onForkFromMessage &&
+      !isStreaming &&
+      (role === 'user' || role === 'assistant') &&
+      hasBubbleContent
+  );
 
   const withAssistantAvatar = !isUser && enableAssistantAvatar;
 
@@ -782,24 +856,6 @@ export const MessageItem = memo(function MessageItem({
           </div>
         )}
 
-        {/* Token usage summary */}
-        {!isUser && !isStreaming && message.usageSummary && message.usageSummary.total_tokens > 0 && (
-          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-text-muted mt-1 mb-0.5" data-testid="chat-panel-message-usage-summary">
-            <span>
-              {message.usageSummary.input_tokens.toLocaleString()} in /{' '}
-              {message.usageSummary.output_tokens.toLocaleString()} out /{' '}
-              {message.usageSummary.total_tokens.toLocaleString()} total
-            </span>
-            {message.usageSummary.total_cost != null && message.usageSummary.total_cost > 0 && (
-              <span>
-                ${message.usageSummary.input_cost?.toFixed(4)} in /{' '}
-                ${message.usageSummary.output_cost?.toFixed(4)} out /{' '}
-                ${message.usageSummary.total_cost.toFixed(4)} total
-              </span>
-            )}
-          </div>
-        )}
-
         {!isStreaming && !hideMeta && (
           <div
             data-testid="chat-panel-message-meta"
@@ -814,6 +870,18 @@ export const MessageItem = memo(function MessageItem({
               <span className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta" data-testid="chat-panel-message-goal-badge">
                 <Target className="w-3 h-3" strokeWidth={2} />
                 {t('goal.badge')}
+              </span>
+            )}
+
+            {isUser && crossSession && (
+              <span
+                className="inline-flex items-center gap-1 rounded-full bg-secondary px-2 py-0.5 text-xs text-text-meta"
+                data-testid="chat-panel-message-cross-session-badge"
+                title={crossSession.sourceSessionId}
+              >
+                {t('crossSession.messageBadge', {
+                  title: crossSession.sourceTitle || crossSession.sourceSessionId,
+                })}
               </span>
             )}
 
@@ -859,6 +927,27 @@ export const MessageItem = memo(function MessageItem({
                   ) : (
                     <Volume2 className="w-4 h-4" strokeWidth={1.5} />
                   )}
+                </button>
+                {tooltip}
+              </div>
+            )}
+
+            {showFork && (
+              <div className="relative" data-testid="chat-panel-message-fork">
+                <button
+                  type="button"
+                  data-testid="chat-panel-message-fork-btn"
+                  data-tooltip={t('chatUi.forkFromMessage')}
+                  aria-label={t('chatUi.forkFromMessage')}
+                  {...tooltipHandlers}
+                  onClick={() => void handleForkFromMessage()}
+                  disabled={isForking}
+                  className={clsx(
+                    'p-1.5 rounded-md hover:text-accent hover:bg-secondary',
+                    isForking && 'cursor-wait opacity-50'
+                  )}
+                >
+                  <GitFork className="w-4 h-4" strokeWidth={1.5} />
                 </button>
                 {tooltip}
               </div>

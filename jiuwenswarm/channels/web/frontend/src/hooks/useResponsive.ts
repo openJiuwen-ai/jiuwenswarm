@@ -32,6 +32,9 @@ export function useMinWidth(key: BreakpointKey): boolean {
 
 export function useResponsiveLayout() {
   const isMobile = useMaxWidth('sm');
+  // ≤1280px 时收起态工具浮层（tool-panel-collapsed）默认不自动打开：
+  // 页面加载与窗口变窄跨过断点时隐藏，用户仍可手动展开
+  const isToolPanelAutoHideViewport = useMaxWidth('toolPanelAutoHide');
   const [conversationSidebarCollapsed, setConversationSidebarCollapsed] = useState(false);
   const [conversationSidebarFloating, setConversationSidebarFloating] = useState(false);
   const [toolPanelHidden, setToolPanelHidden] = useState(false);
@@ -45,8 +48,15 @@ export function useResponsiveLayout() {
     }
   }, [isMobile]);
 
+  useEffect(() => {
+    if (isToolPanelAutoHideViewport) {
+      setToolPanelHidden(true);
+    }
+  }, [isToolPanelAutoHideViewport]);
+
   return {
     isMobile,
+    isToolPanelAutoHideViewport,
     conversationSidebarCollapsed,
     setConversationSidebarCollapsed,
     conversationSidebarFloating,

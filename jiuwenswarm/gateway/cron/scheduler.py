@@ -639,22 +639,14 @@ class CronSchedulerService:
             for project in inventory.get("projects", []):
                 operation = project.get("operation") or {}
                 pending = operation and operation.get("status") != "completed"
-                if not pending and (not project.get("hidden") or operation.get("status") == "completed"):
+                if not pending or operation.get("kind") != "delete":
                     continue
                 if pending and not operation.get("retryable", True):
                     continue
                 project_id = project["project_id"]
-                action = operation.get("kind", "archive") if pending else "archive"
-                if pending and action == "archive":
-                    # Archive failures require an explicit retry, never stop work
-                    # or silently archive later after a busy response.
-                    continue
                 try:
-                    if action == "unarchive":
-                        await call("project.unarchive", {"project_id": project_id})
-                        continue
                     ok, token = await call(
-                        f"project.{action}",
+                        "project.delete",
                         {"project_id": project_id, "_lifecycle_stage": "prepare"},
                     )
                     if not ok or "operation_id" not in token:
@@ -673,18 +665,14 @@ class CronSchedulerService:
                     saved, _ = await call("project.lifecycle", {**token, "planned_cron_job_ids": planned})
                     if not saved:
                         continue
-                    stopped = 0
                     for job in matching:
                         if job.enabled:
                             await self._store.update_job(job.id, {"enabled": False})
-                            stopped += 1
                     await self.reload()
-                    if action == "delete":
-                        await self.stop_project_runs(project_id, owner)
+                    await self.stop_project_runs(project_id, owner)
                     completed = list(operation.get("completed_items", {}).get("cron", []))
                     for job in matching:
-                        if action == "delete":
-                            await self._store.delete_job(job.id)
+                        await self._store.delete_job(job.id)
                         if job.id not in completed:
                             completed.append(job.id)
                         saved, failure = await call("project.lifecycle", {**token, "completed_cron_job_ids": completed})
@@ -692,11 +680,10 @@ class CronSchedulerService:
                             raise RuntimeError(failure.get("error", "checkpoint failed"))
                     await self.reload()
                     await call(
-                        f"project.{action}",
+                        "project.delete",
                         {
                             **token,
                             "_lifecycle_stage": "finish",
-                            "stopped_cron_jobs": stopped,
                             "deleted_cron_jobs": len(planned),
                             "completed_cron_job_ids": completed,
                         },
@@ -705,7 +692,7 @@ class CronSchedulerService:
                     logger.warning("project lifecycle recovery deferred: %s: %s", project_id, exc)
                     if "token" in locals() and token.get("operation_id"):
                         await call("project.lifecycle", {**token, "failed": True, "error": str(exc),
-                                                         "phase": "delete_cron" if action == "delete" else "stop_cron"})
+                                                         "phase": "delete_cron"})
 
     def remember_lifecycle_owner(self, user_id: str | None) -> None:
         owner = str(user_id or "")
@@ -723,18 +710,6 @@ class CronSchedulerService:
             channel_id="__cron__", timeout_seconds=10,
         )
         return bool(ok and payload.get("exists") and not payload.get("execution_blocked", True))
-
-    def has_running_project_sessions(self, project_id: str, user_id: str | None = None) -> bool:
-        """Read in-flight cron runs, including those still creating a session."""
-        for state in self._runs.values():
-            if (
-                state.exec_project_id == project_id
-                and str(state.exec_user_id or "") == str(user_id or "")
-            ):
-                task = self._run_tasks.get(state.run_id)
-                if task is not None and not task.done():
-                    return True
-        return False
 
     async def stop_project_runs(self, project_id: str, user_id: str | None = None) -> None:
         matching = [state for state in list(self._runs.values())
@@ -761,7 +736,7 @@ class CronSchedulerService:
         if job is None:
             raise KeyError("job not found")
         if not await self.project_execution_allowed(job.project_id, job.user_id):
-            raise ValueError("PROJECT_ARCHIVED: project execution is blocked")
+            raise ValueError("OPERATION_IN_PROGRESS: project execution is blocked")
         now = datetime.now(tz=ZoneInfo(job.timezone))
         push_dt = now
         wake_dt = now

@@ -825,3 +825,20 @@ def _safe_rmtree_for_test(path: Path) -> None:
     import shutil
 
     shutil.rmtree(path, ignore_errors=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize('output', ['out', 'dist'])
+async def test_pack_excludes_credentials_and_own_output_on_repeat(tmp_path, output):
+    manager = TeamSkillsHubHarnessSkillManager(workspace_dir=str(tmp_path))
+    skill = tmp_path / 'skills' / 'safe-pack'
+    skill.mkdir(parents=True)
+    (skill / 'SKILL.md').write_text('---\nname: safe-pack\ndescription: safe\n---\nbody\n')
+    (skill / '.env').write_text('TOKEN=synthetic-test-value')
+    original = (skill / 'SKILL.md').read_bytes()
+    for _ in range(2):
+        result = await manager.handle_skills_team_skills_hub_pack({'path': str(skill), 'output': output})
+        assert result['success'] is True, result
+        with zipfile.ZipFile(result['path']) as archive:
+            assert not any(name.endswith(('.zip', '/.env')) for name in archive.namelist())
+    assert (skill / 'SKILL.md').read_bytes() == original

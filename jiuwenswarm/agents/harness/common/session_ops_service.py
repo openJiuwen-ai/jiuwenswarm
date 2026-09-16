@@ -5,12 +5,18 @@ import json
 import logging
 import re
 import shutil
+import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
+from datetime import datetime
 from pathlib import Path
 from typing import Any, TYPE_CHECKING
 
+from jiuwenswarm.common.session_message import SESSION_MESSAGE_ORIGIN
 from jiuwenswarm.common.utils import get_agent_sessions_dir, get_agent_workspace_dir
 from jiuwenswarm.server.runtime.session.session_history import (
+    flush_history_writes,
     get_read_history_path,
     history_exists,
     load_history_records,
@@ -22,6 +28,151 @@ if TYPE_CHECKING:
     from openjiuwen.harness import DeepAgent
 
 logger = logging.getLogger(__name__)
+
+_FORK_HISTORY_SESSION_KEYS = frozenset({
+    "session_id",
+    "parent_session_id",
+    "product_session_id",
+    "execution_session_id",
+    "sessionId",
+    "parentSessionId",
+    "productSessionId",
+    "executionSessionId",
+})
+_FORK_CONTEXT_MARKER_METADATA_KEY = "_jiuwenswarm_fork_context_marker"
+
+
+def _fork_source_from_history(history_records: list[dict[str, Any]]) -> str:
+    """Return the direct fork parent recorded on copied history items."""
+    for record in history_records:
+        marker = record.get("forked_from")
+        source_session_id = (
+            marker.get("session_id") if isinstance(marker, dict) else marker
+        )
+        if isinstance(source_session_id, str) and source_session_id.strip():
+            return source_session_id.strip()
+    return ""
+
+
+def _fork_source_for_session(
+    session_id: str,
+    history_records: list[dict[str, Any]],
+) -> str:
+    """Resolve the direct fork parent from canonical metadata or history."""
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+        marker = metadata.get("forked_from") if isinstance(metadata, dict) else None
+        source_session_id = (
+            marker.get("session_id") if isinstance(marker, dict) else marker
+        )
+        if isinstance(source_session_id, str) and source_session_id.strip():
+            return source_session_id.strip()
+    except Exception as exc:
+        logger.debug(
+            "failed to resolve fork parent from metadata for %s: %s",
+            session_id,
+            exc,
+        )
+
+    return _fork_source_from_history(history_records)
+
+
+def _side_parent_for_session(session_id: str) -> str:
+    """Return the parent id only when ``session_id`` is an ephemeral side chat."""
+    try:
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        metadata = get_session_metadata(session_id, enable_writeback=False)
+    except Exception as exc:
+        logger.debug(
+            "failed to read side conversation metadata for %s: %s",
+            session_id,
+            exc,
+        )
+        return ""
+    if not isinstance(metadata, dict) or metadata.get("ephemeral") is not True:
+        return ""
+    return str(metadata.get("side_parent_session_id") or "").strip()
+
+
+def _mark_fork_context(
+    messages: list[Any],
+    source_session_id: str,
+    *,
+    side_conversation: bool = False,
+) -> list[Any]:
+    """Add model-visible fork provenance without duplicating ancestor markers."""
+    from openjiuwen.core.foundation.llm.schema.message import SystemMessage
+
+    inherited_messages: list[Any] = []
+    for message in messages:
+        metadata = getattr(message, "metadata", None)
+        has_marker = (
+            isinstance(metadata, dict)
+            and bool(metadata.get(_FORK_CONTEXT_MARKER_METADATA_KEY))
+        )
+        if not has_marker:
+            inherited_messages.append(message)
+    marker = SystemMessage(
+        content=(
+            (
+                "This is an ephemeral side conversation forked from chat "
+                f"{source_session_id}. Everything before this boundary is inherited "
+                "reference context, not an active task. Only user messages after this "
+                "boundary are active requests. Keep this side conversation focused on "
+                "lightweight exploration and do not modify files or external state unless "
+                "the user explicitly asks you to do so here. Do not spawn subagents."
+            )
+            if side_conversation
+            else (
+                "This conversation was forked from chat "
+                f"{source_session_id}. The messages that follow were inherited from "
+                "that source chat and are available as prior conversation context. "
+                "When the user refers to the previous or source chat, answer directly "
+                "from this inherited history."
+            )
+        ),
+        metadata={_FORK_CONTEXT_MARKER_METADATA_KEY: source_session_id},
+    )
+    return [*inherited_messages, marker] if side_conversation else [marker, *inherited_messages]
+
+
+def _build_side_context_messages_from_history(
+    history_records: list[dict[str, Any]],
+    source_session_id: str,
+) -> tuple[list[Any], int]:
+    """Rebuild a side chat with its boundary between inherited and local turns."""
+    boundary = 0
+    for record in history_records:
+        marker = record.get("forked_from")
+        parent_id = marker.get("session_id") if isinstance(marker, dict) else marker
+        if str(parent_id or "").strip() != source_session_id:
+            break
+        boundary += 1
+
+    inherited, inherited_skipped = _build_context_messages_from_history(
+        history_records[:boundary]
+    )
+    local, local_skipped = _build_context_messages_from_history(
+        history_records[boundary:]
+    )
+    return (
+        [
+            *_mark_fork_context(
+                inherited,
+                source_session_id,
+                side_conversation=True,
+            ),
+            *local,
+        ],
+        inherited_skipped + local_skipped,
+    )
 
 
 def _get_context_processors(react_agent: Any) -> list[tuple[str, Any]] | None:
@@ -49,6 +200,141 @@ def _derive_first_prompt(history: list[dict[str, Any]]) -> str:
         text = re.sub(r"\s+", " ", content).strip()
         return text[:100] if text else "Branched conversation"
     return "Branched conversation"
+
+
+def _copy_fork_history_value(
+    value: Any,
+    *,
+    source_session_id: str,
+    target_session_id: str,
+) -> Any:
+    """Deep-copy history while rebinding fields that own the session boundary."""
+    if isinstance(value, list):
+        return [
+            _copy_fork_history_value(
+                item,
+                source_session_id=source_session_id,
+                target_session_id=target_session_id,
+            )
+            for item in value
+        ]
+    if not isinstance(value, dict):
+        return value
+
+    copied: dict[str, Any] = {}
+    for key, item in value.items():
+        if key in _FORK_HISTORY_SESSION_KEYS and item == source_session_id:
+            copied[key] = target_session_id
+            continue
+        copied[key] = _copy_fork_history_value(
+            item,
+            source_session_id=source_session_id,
+            target_session_id=target_session_id,
+        )
+    return copied
+
+
+def _fork_record_content(record: dict[str, Any]) -> str:
+    content = record.get("content")
+    if isinstance(content, str) and content:
+        return content
+    payload = record.get("event_payload")
+    if isinstance(payload, dict) and isinstance(payload.get("content"), str):
+        return payload["content"]
+    return content if isinstance(content, str) else ""
+
+
+def _fork_timestamp_seconds(value: Any) -> float | None:
+    if isinstance(value, (int, float)):
+        return float(value)
+    if not isinstance(value, str) or not value.strip():
+        return None
+    raw = value.strip()
+    try:
+        return float(raw)
+    except ValueError:
+        pass
+    try:
+        return datetime.fromisoformat(raw.replace("Z", "+00:00")).timestamp()
+    except ValueError:
+        return None
+
+
+def _fork_history_prefix(
+    records: list[dict[str, Any]],
+    *,
+    message_id: str,
+    role: str,
+    content: str,
+    timestamp: Any,
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """Return history through the selected visible message, inclusive."""
+    normalized_role = role.strip().lower()
+    candidates: list[tuple[int, dict[str, Any]]] = []
+    for index, record in enumerate(records):
+        record_role = str(record.get("role") or "").strip().lower()
+        if not normalized_role or record_role == normalized_role:
+            candidates.append((index, record))
+
+    normalized_message_id = message_id.strip()
+    if normalized_message_id:
+        exact = [
+            (index, record)
+            for index, record in candidates
+            if str(record.get("id") or "").strip() == normalized_message_id
+        ]
+        if content:
+            exact_content = [
+                item for item in exact if _fork_record_content(item[1]) == content
+            ]
+            if exact_content:
+                exact = exact_content
+        if normalized_role == "assistant":
+            exact_final = [
+                item
+                for item in exact
+                if str(item[1].get("event_type") or "").strip() in {"", "chat.final"}
+            ]
+            if exact_final:
+                exact = exact_final
+        if exact:
+            index, selected = exact[-1]
+            return records[: index + 1], selected
+
+    if content:
+        content_matches = [
+            item for item in candidates if _fork_record_content(item[1]) == content
+        ]
+        if content_matches:
+            cutoff_seconds = _fork_timestamp_seconds(timestamp)
+            if cutoff_seconds is not None:
+                content_matches.sort(
+                    key=lambda item: abs(
+                        (_fork_timestamp_seconds(item[1].get("timestamp")) or 0)
+                        - cutoff_seconds
+                    )
+                )
+                index, selected = content_matches[0]
+            else:
+                index, selected = content_matches[-1]
+            return records[: index + 1], selected
+
+    cutoff_seconds = _fork_timestamp_seconds(timestamp)
+    if cutoff_seconds is not None and candidates:
+        timestamp_matches: list[tuple[float, int, dict[str, Any]]] = []
+        for index, record in candidates:
+            record_seconds = _fork_timestamp_seconds(record.get("timestamp"))
+            if record_seconds is None:
+                continue
+            timestamp_matches.append(
+                (abs(record_seconds - cutoff_seconds), index, record)
+            )
+        if timestamp_matches:
+            distance, index, selected = min(timestamp_matches, key=lambda item: item[0])
+            if distance <= 30:
+                return records[: index + 1], selected
+
+    raise ValueError("fork cutoff message not found")
 
 
 def _get_unique_fork_name(base_name: str, existing_titles: set[str]) -> str:
@@ -83,6 +369,11 @@ def fork_session(
     target_session_id: str,
     title: str = "",
     channel_id: str = "tui",
+    cutoff_message_id: str = "",
+    cutoff_role: str = "",
+    cutoff_content: str = "",
+    cutoff_timestamp: Any = None,
+    side_conversation: bool = False,
 ) -> dict[str, Any]:
     sessions_dir = get_agent_sessions_dir()
     source_dir = sessions_dir / source_session_id
@@ -93,28 +384,62 @@ def fork_session(
     if target_dir.exists():
         raise ValueError("target session already exists")
 
-    target_dir.mkdir(parents=True, exist_ok=True)
-
-    history_data: list[dict[str, Any]] = []
+    has_message_cutoff = bool(
+        cutoff_message_id.strip()
+        or cutoff_role.strip()
+        or cutoff_content
+        or cutoff_timestamp is not None
+    )
+    history_records: list[dict[str, Any]] | None = None
+    selected_record: dict[str, Any] | None = None
+    flush_history_writes()
     if history_exists(source_session_id):
         try:
             data = load_history_records(source_session_id)
             if isinstance(data, list):
-                history_data = data
-                forked_records: list[dict[str, Any]] = []
-                for record in data:
-                    forked_record = dict(record)
-                    forked_record["forked_from"] = {
-                        "session_id": source_session_id,
-                        "original_id": record.get("id", ""),
-                    }
-                    forked_records.append(forked_record)
+                history_records = data
+        except Exception as exc:
+            if has_message_cutoff:
+                raise ValueError("fork cutoff message not found") from exc
+            logger.warning("fork: failed to read source history: %s", exc)
+
+    if has_message_cutoff:
+        if not history_records:
+            raise ValueError("fork cutoff message not found")
+        history_records, selected_record = _fork_history_prefix(
+            history_records,
+            message_id=cutoff_message_id,
+            role=cutoff_role,
+            content=cutoff_content,
+            timestamp=cutoff_timestamp,
+        )
+
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    if history_records is not None:
+        try:
+            forked_records: list[dict[str, Any]] = []
+            for record in history_records:
+                forked_record = _copy_fork_history_value(
+                    record,
+                    source_session_id=source_session_id,
+                    target_session_id=target_session_id,
+                )
+                forked_record["forked_from"] = {
+                    "session_id": source_session_id,
+                    "original_id": record.get("id", ""),
+                }
+                forked_records.append(forked_record)
+            if forked_records:
                 write_history_records(
                     target_session_id,
                     forked_records,
                     preserve_existing_format=False,
                 )
         except Exception as exc:
+            if has_message_cutoff:
+                shutil.rmtree(target_dir, ignore_errors=True)
+                raise
             logger.warning("fork: failed to add forked_from to history: %s", exc)
 
     from jiuwenswarm.server.runtime.session.session_metadata import (
@@ -126,7 +451,10 @@ def fork_session(
 
     source_meta = get_session_metadata(source_session_id)
 
-    if title:
+    if side_conversation:
+        source_title = str(source_meta.get("title") or "").strip()
+        final_title = f"Side from {source_title}" if source_title else "Side chat"
+    elif title:
         base_name = title
     elif source_meta.get("title"):
         base_name = source_meta["title"]
@@ -135,34 +463,63 @@ def fork_session(
         # for the status bar. First prompt like "hi" makes an ugly title.
         base_name = ""
 
-    existing_titles: set[str] = set()
-    try:
-        all_sessions = get_all_sessions_metadata(limit=500, offset=0)
-        if isinstance(all_sessions, list):
-            for s in all_sessions:
-                t = s.get("title", "")
-                if t:
-                    existing_titles.add(t)
-    except Exception as exc:
-        logger.debug("fork_session: failed to get existing titles: %s", exc)
+    if not side_conversation:
+        existing_titles: set[str] = set()
+        try:
+            all_sessions = get_all_sessions_metadata(limit=500, offset=0)
+            if isinstance(all_sessions, list):
+                for s in all_sessions:
+                    t = s.get("title", "")
+                    if t:
+                        existing_titles.add(t)
+        except Exception as exc:
+            logger.debug("fork_session: failed to get existing titles: %s", exc)
 
-    final_title = _get_unique_fork_name(base_name, existing_titles)
+        final_title = _get_unique_fork_name(base_name, existing_titles)
     source_mode = source_meta.get("mode", "code.normal")
+    selected_timestamp = (
+        _fork_timestamp_seconds(selected_record.get("timestamp"))
+        if selected_record is not None
+        else None
+    )
 
     metadata = {
         "session_id": target_session_id,
         "channel_id": channel_id,
         "user_id": source_meta.get("user_id", ""),
         "created_at": _current_timestamp(),
-        "last_message_at": source_meta.get("last_message_at", 0),
+        "last_message_at": (
+            _current_timestamp()
+            if side_conversation
+            else selected_timestamp
+            if selected_timestamp is not None
+            else source_meta.get("last_message_at", 0)
+        ),
         "title": final_title,
-        "message_count": source_meta.get("message_count", 0),
+        "message_count": (
+            0
+            if side_conversation
+            else len(history_records)
+            if has_message_cutoff and history_records is not None
+            else source_meta.get("message_count", 0)
+        ),
         "mode": source_mode,
         "forked_from": source_session_id,
         # 复制源会话的项目归属字段，确保分叉会话继承原项目归属
         "project_id": source_meta.get("project_id", ""),
         "project_dir": source_meta.get("project_dir", ""),
     }
+    if side_conversation:
+        metadata["ephemeral"] = True
+        metadata["side_parent_session_id"] = source_session_id
+        for key in ("model", "session_equipment"):
+            if key in source_meta:
+                metadata[key] = copy.deepcopy(source_meta[key])
+    if selected_record is not None:
+        metadata["forked_at"] = {
+            "message_id": str(selected_record.get("id") or ""),
+            "record_count": len(history_records or []),
+        }
     # 复制源会话的 channel_metadata，确保分叉会话在 /resume 按项目目录过滤时可见
     source_channel_meta = source_meta.get("channel_metadata")
     if source_channel_meta and isinstance(source_channel_meta, dict):
@@ -173,6 +530,7 @@ def fork_session(
         "session_id": target_session_id,
         "source_session_id": source_session_id,
         "title": final_title,
+        "ephemeral": side_conversation,
     }
 
 
@@ -532,46 +890,128 @@ def list_session_turns(
     return {"turns": turns, "total": user_count}
 
 
-def get_last_turn_info(
+_TURN_MUTATION_LOCKS: dict[str, threading.Lock] = {}
+_TURN_MUTATION_LOCKS_GUARD = threading.Lock()
+
+
+@contextmanager
+def turn_mutation_lock(session_id: str) -> Iterator[None]:
+    """按 session 串行化 discard/redo 等轮次状态变更。
+
+    状态校验(turn diff 的 status 检查)与状态变更(restore/mark/unmark/
+    truncate)之间不是原子的:并发请求可同时通过校验各自执行——重复
+    discard 会双双返回成功(违反 ``NOTHING_TO_DISCARD`` 契约),并发 redo
+    会因前一个已移除 ``discarded_out`` 标记而误报 ``REDO_HISTORY_MISSING``。
+    本锁在变更全程按 session 互斥;discard/redo 运行在线程池中
+    (``asyncio.to_thread``),线程锁即足以覆盖真实并发。
+
+    锁按 session_id 惰性创建、进程生命周期内复用(数量与 session 同量级,
+    不做主动回收)。
+    """
+    with _TURN_MUTATION_LOCKS_GUARD:
+        lock = _TURN_MUTATION_LOCKS.setdefault(session_id, threading.Lock())
+    with lock:
+        yield
+
+
+def _turn_still_in_history(
+    turn: dict[str, Any], record: dict[str, Any] | None
+) -> bool:
+    """校验候选轮是否仍对应当前 history 中的第 N 条 user 消息。
+
+    conversation rewind / 历史重写会移除或替换 user 消息,但 change_sets 与
+    snapshot 不随之清理;按 request_id → user_message_id → timestamp 三级
+    身份核对(镜像 ``DiffService._entry_matches_turn`` 的规则),排除已回退
+    或被替换的轮次。
+    """
+    from jiuwenswarm.server.utils.diff_service import DiffService
+
+    return DiffService.turn_matches_history_record(turn, record)
+
+
+def get_last_modified_turn_info(
     *,
     session_id: str,
+    project_dir: str | None = None,
+    extra_history_roots: list[str] | None = None,
 ) -> dict[str, Any]:
-    """返回最后一轮 user message 的 turn_index 和 timestamp.
+    """返回最后一个有文件修改的轮次的 turn_index 和 timestamp.
 
-    用于"撤销本轮代码修改"(``project.git.discard_turn_changes``)功能:
-    该接口需要最后一轮的 turn_index(传给 ``restore_session_files``)和
-    timestamp(传给 ``truncate_file_ops_by_timestamp``)。
+    用于"撤销/重新应用代码修改"(``project.git.discard_turn_changes`` /
+    ``project.git.redo_turn_changes``)定位目标轮:turn diff 中 files
+    非空的最新轮次(含 change_sets 持久化的 discarded 轮,其快照保留
+    撤销前的文件列表)。
 
-    与 ``list_session_turns`` 不同,本函数不过滤不可选的 user message,
-    返回的是最后一条 user message 的信息(包括系统注入的消息)。
+    纯对话轮(无文件修改)不构成撤销目标——否则新一轮对话没有任何
+    文件改动时,上一轮的修改既无法撤销,discard 还会把空轮误标为
+    discarded。
+
+    已从会话回退(rewind)或被替换的轮次同样不构成撤销目标:change_sets
+    与 snapshot 不随 rewind 清理,须按当前 history 的 user 消息身份校验
+    排除,否则会定位到当前会话已不存在的轮次,restore 空转却返回成功。
 
     Returns:
         ``{"turn_index": int, "timestamp": float}``;
-        无 history 或无 user message 时返回 ``{"turn_index": 0, "timestamp": 0.0}``。
+        无 history 或无带文件修改的轮次时返回 ``{"turn_index": 0, "timestamp": 0.0}``;
+        目标轮详情缺失(change_sets 有记录但快照丢失)时返回该轮序号与
+        零时间戳,由调用方按 ``DIFF_HISTORY_EXPIRED`` 拒绝——它仍是最后
+        一个有修改的轮,不能降级选中更早轮次。
+
+    Raises:
+        history 读取或 turn diff 计算失败时原样向上传播。"定位目标轮失败"
+        是错误态,由调用方映射为 ``INTERNAL_ERROR``;若在此吞掉并返回
+        ``{"turn_index": 0}``,discard/redo 会报 ``NO_TURN_TO_DISCARD``
+        ("没有可撤销的修改"),把内部错误伪装成业务空态误导用户。
     """
-    if not history_exists(session_id):
-        return {"turn_index": 0, "timestamp": 0.0}
+    from jiuwenswarm.server.utils.diff_service import get_diff_service
 
-    try:
+    user_records: list[dict[str, Any]] = []
+    if history_exists(session_id):
         history = load_history_records(session_id)
-    except Exception as exc:
-        logger.warning("get_last_turn_info: failed to read history: %s", exc)
-        return {"turn_index": 0, "timestamp": 0.0}
+        if isinstance(history, list):
+            user_records = [
+                r
+                for r in history
+                if isinstance(r, dict) and r.get("role") == "user"
+            ]
 
-    if not isinstance(history, list):
-        return {"turn_index": 0, "timestamp": 0.0}
+    turns = get_diff_service().get_turn_diff_summaries(
+        session_id,
+        project_dir,
+        extra_history_roots=extra_history_roots,
+    )
 
-    user_count = 0
-    last_timestamp: float = 0.0
-    for record in history:
-        if record.get("role") != "user":
+    # get_turn_diff_summaries 按 turnIndex 倒序返回,跳过纯对话轮与已回退轮。
+    for turn in turns:
+        turn_index = int(turn.get("turnIndex", 0) or 0)
+        if turn_index <= 0:
             continue
-        user_count += 1
-        ts = record.get("timestamp", 0)
-        if isinstance(ts, (int, float)):
-            last_timestamp = float(ts)
-
-    return {"turn_index": user_count, "timestamp": last_timestamp}
+        record = (
+            user_records[turn_index - 1]
+            if 0 < turn_index <= len(user_records)
+            else None
+        )
+        if not _turn_still_in_history(turn, record):
+            continue
+        if not turn.get("files"):
+            # change_sets 有该轮记录但快照丢失/损坏:summaries 降级构造的
+            # 摘要 files 为空而 stats.filesChanged > 0。若跳过它会误选更早
+            # 轮次,后续 redo 按时间下界读日志会重新应用该轮已撤销的内容;
+            # 返回零时间戳,交由调用方守卫以 DIFF_HISTORY_EXPIRED 拒绝。
+            logger.warning(
+                "get_last_modified_turn_info: turn %s has change_set records "
+                "but no snapshot details",
+                turn_index,
+            )
+            return {"turn_index": turn_index, "timestamp": 0.0}
+        timestamp = turn.get("start_timestamp")
+        if not isinstance(timestamp, (int, float)):
+            # change_sets 降级构造的轮次可能缺 start_timestamp,
+            # 按当前 history 的第 N 条 user 消息兜底(与 turn_index 编号规则一致)。
+            ts = record.get("timestamp", 0) if record else 0
+            timestamp = ts if isinstance(ts, (int, float)) else 0
+        return {"turn_index": turn_index, "timestamp": float(timestamp or 0.0)}
+    return {"turn_index": 0, "timestamp": 0.0}
 
 
 def restore_session_files(
@@ -781,6 +1221,7 @@ def _build_context_messages_from_history(
     """
     from openjiuwen.core.foundation.llm.schema.message import (
         OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+        OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL,
         OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
@@ -829,12 +1270,40 @@ def _build_context_messages_from_history(
         # ── User message ──
         if role == "user":
             if content.strip():
-                source_kind = str(record.get("channel_id") or "history").strip()
+                internal_session_message = (
+                    record.get("message_origin") == SESSION_MESSAGE_ORIGIN
+                )
+                if internal_session_message:
+                    from jiuwenswarm.server.runtime.agent_adapter.user_turn import (
+                        render_cross_session_history_content,
+                    )
+
+                    cross_session = record.get("cross_session")
+                    cross_session = (
+                        dict(cross_session)
+                        if isinstance(cross_session, dict)
+                        else {}
+                    )
+                    language = str(cross_session.get("language") or "zh").strip()
+                    content = render_cross_session_history_content(
+                        content,
+                        cross_session,
+                        language=language,
+                    )
+                source_kind = (
+                    "agent_session"
+                    if internal_session_message
+                    else str(record.get("channel_id") or "history").strip()
+                )
                 context_messages.append(UserMessage(
                     content=content,
                     metadata={
                         OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
-                            OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                            (
+                                OPENJIUWEN_MESSAGE_ORIGIN_HARNESS_INTERNAL
+                                if internal_session_message
+                                else OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER
+                            ),
                         OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
                     },
                 ))
@@ -1027,12 +1496,26 @@ async def warmup_session_context(
                 history_records = history_records[:index]
                 break
 
-    context_messages, skipped = _build_context_messages_from_history(history_records)
+    side_parent_session_id = _side_parent_for_session(session_id)
+    if side_parent_session_id:
+        context_messages, skipped = _build_side_context_messages_from_history(
+            history_records,
+            side_parent_session_id,
+        )
+    else:
+        context_messages, skipped = _build_context_messages_from_history(history_records)
     if not context_messages:
         logger.info(
             "warmup_session_context: no rebuildable messages in history for %s", session_id
         )
         return False
+
+    fork_source_session_id = _fork_source_for_session(session_id, history_records)
+    if fork_source_session_id and not side_parent_session_id:
+        context_messages = _mark_fork_context(
+            context_messages,
+            fork_source_session_id,
+        )
 
     session = resolve_live_agent_session(deep_agent, session_id)
     if session is None:
@@ -1441,30 +1924,66 @@ async def copy_session_context(
     deep_agent: "DeepAgent",
     source_session_id: str,
     target_session_id: str,
+    *,
+    force_history: bool = False,
+    side_conversation: bool = False,
 ) -> bool:
-    """Copy in-memory conversation context from source to target session.
+    """Copy conversation context from memory, falling back to forked history.
 
     Uses DeepAgent.get_current_context() to read the source session's
     accumulated LLM conversation history (UserMessage, AssistantMessage,
     ToolMessage objects), then calls create_new_context_engine() to
-    seed the target session with identical history.
+    seed the target session with identical history. If the source context was
+    evicted or was never materialized, rebuild the messages from the target's
+    already-copied on-disk history instead.
 
     Returns True on success, False if context copy was skipped or failed.
     """
-    try:
-        messages = deep_agent.get_current_context(session_id=source_session_id)
-    except Exception as exc:
-        logger.warning(
-            "copy_session_context: cannot read source context: %s", exc
-        )
-        return False
+    messages: list[Any] = []
+    if not force_history:
+        try:
+            messages = deep_agent.get_current_context(
+                session_id=source_session_id
+            )
+        except Exception as exc:
+            logger.warning(
+                "copy_session_context: cannot read source context, falling back to "
+                "copied history: %s",
+                exc,
+            )
 
     if not messages:
-        logger.info(
-            "copy_session_context: no in-memory messages for %s, skipping",
-            source_session_id,
-        )
-        return False
+        try:
+            history_records = load_history_records(target_session_id)
+        except OSError as exc:
+            logger.warning(
+                "copy_session_context: cannot read copied history for %s: %s",
+                target_session_id,
+                exc,
+            )
+            return False
+        if isinstance(history_records, list):
+            messages, skipped = _build_context_messages_from_history(history_records)
+            if messages:
+                logger.info(
+                    "copy_session_context: rebuilt %d messages from copied history "
+                    "for %s (skipped %d records)",
+                    len(messages),
+                    target_session_id,
+                    skipped,
+                )
+        if not messages:
+            logger.info(
+                "copy_session_context: no rebuildable messages for %s, skipping",
+                source_session_id,
+            )
+            return False
+
+    messages = _mark_fork_context(
+        messages,
+        source_session_id,
+        side_conversation=side_conversation,
+    )
 
     try:
         await deep_agent.create_new_context_engine(

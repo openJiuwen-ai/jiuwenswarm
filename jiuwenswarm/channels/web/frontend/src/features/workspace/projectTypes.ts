@@ -18,7 +18,6 @@ export type ProjectInfo = {
   pinned: boolean;
   pin_order: number;
   is_default: boolean;
-  hidden: boolean;
   work_mode: WorkMode;
   git: ProjectGitSnapshot;
   session_count: number;

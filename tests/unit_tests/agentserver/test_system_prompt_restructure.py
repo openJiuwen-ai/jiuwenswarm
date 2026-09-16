@@ -1255,7 +1255,8 @@ async def test_runtime_git_status_is_stable_system_context_for_one_invoke(tmp_pa
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
+async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     stale_dir = tmp_path / "missing-worktree"
@@ -1275,7 +1276,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="tui")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_trusted_dirs([str(stale_dir), str(current_dir), str(extra_dir)])
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
@@ -1312,8 +1313,9 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir(tmp_path, monke
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["tui", "process_cli"])
 async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1332,7 +1334,7 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="tui")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(current_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1356,8 +1358,9 @@ async def test_runtime_prompt_distinguishes_cwd_from_project_dir_in_chinese(
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match(
-    tmp_path, monkeypatch
+    tmp_path, monkeypatch, channel
 ):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
@@ -1374,7 +1377,7 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(project_dir), project_dir=str(project_dir))
     ctx = AgentCallbackContext(
@@ -1394,7 +1397,8 @@ async def test_runtime_prompt_preserves_single_directory_prompt_when_paths_match
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="en")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1410,7 +1414,7 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="en", channel="web")
+    runtime_rail = RuntimePromptRail(language="en", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=str(task_dir), project_dir=None)
     ctx = AgentCallbackContext(
@@ -1430,7 +1434,8 @@ async def test_runtime_prompt_describes_external_cwd_without_project(tmp_path, m
 
 
 @pytest.mark.asyncio
-async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch):
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
+async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkeypatch, channel):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
     agent_data_dir = tmp_path / "agent-data"
@@ -1444,7 +1449,7 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
         lambda: tmp_path / "jiuwenswarm-data",
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     runtime_rail.set_runtime_paths(cwd=None, project_dir=None)
     ctx = AgentCallbackContext(
@@ -1463,9 +1468,55 @@ async def test_runtime_prompt_describes_agent_data_cwd_fallback(tmp_path, monkey
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("language", ["en", "cn"])
+@pytest.mark.parametrize("mode", ["agent.code.normal", "agent.code.plan", "agent.work.normal", "agent.work.plan"])
+async def test_process_cli_directory_prompt_refreshes_across_requests(
+    tmp_path, monkeypatch, language, mode
+):
+    import jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail as runtime_module
+
+    builder = SystemPromptBuilder(language=language)
+    agent = _FakeAgent(builder)
+    internal = tmp_path / "agent-data"
+    first = tmp_path / "first-project"
+    second = tmp_path / "second-project"
+    current = tmp_path / "task-cwd"
+    for directory in (internal, first, second, current):
+        directory.mkdir()
+    monkeypatch.setattr(runtime_module, "get_agent_workspace_dir", lambda: internal)
+    monkeypatch.setattr(runtime_module, "get_user_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(runtime_module, "get_runtime_state_path", lambda _: tmp_path / "absent.yaml")
+    monkeypatch.setattr(RuntimePromptRail, "_configured_model_names", staticmethod(lambda: []))
+    rail = RuntimePromptRail(language=language, channel="process_cli")
+    rail.init(agent)
+    rail.set_mode(mode)
+    ctx = AgentCallbackContext(agent=agent, inputs=None, session=_FakeSession(), extra={})
+
+    for previous, project in ((None, first), (first, second)):
+        rail.set_runtime_paths(cwd=str(current), project_dir=str(project), workspace_dir=str(internal))
+        await rail.before_model_call(ctx)
+        prompt = builder.build()
+        assert str(project) in prompt
+        assert str(current) in prompt
+        assert str(internal) in prompt
+        if previous is not None:
+            assert str(previous) not in prompt
+        rule = (
+            "不要把普通任务产物写入智能体内部目录或启动配置目录"
+            if language == "cn"
+            else "Do not write ordinary task artifacts to the Agent internal data"
+        )
+        assert rule in prompt
+        assert rail._cwd == str(current)
+        assert rail._project_dir == str(project)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("channel", ["web", "process_cli"])
 async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
     tmp_path,
     monkeypatch,
+    channel,
 ):
     builder = SystemPromptBuilder(language="cn")
     agent = _FakeAgent(builder)
@@ -1476,7 +1527,7 @@ async def test_runtime_prompt_clears_directory_boundaries_outside_web_and_tui(
         lambda: agent_data_dir,
     )
 
-    runtime_rail = RuntimePromptRail(language="cn", channel="web")
+    runtime_rail = RuntimePromptRail(language="cn", channel=channel)
     runtime_rail.init(agent)
     ctx = AgentCallbackContext(
         agent=agent,

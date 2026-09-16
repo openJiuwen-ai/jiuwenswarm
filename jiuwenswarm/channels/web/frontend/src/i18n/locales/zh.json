@@ -36,7 +36,6 @@
     "work": "任务",
     "agent": "专家",
     "experiments": "实验",
-    "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -66,6 +65,7 @@
       "browser": "浏览器",
       "channels": "频道",
       "personalContext": "个人上下文",
+      "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -78,6 +78,39 @@
     },
     "access": {
       "readOnly": "当前为只读状态。"
+    },
+    "archivedTasks": {
+      "description": "管理已归档的对话：可恢复到工作区，或彻底删除。彻底删除不可恢复。",
+      "searchPlaceholder": "搜索对话",
+      "clearSearch": "清除搜索",
+      "unassignedProject": "未归属项目",
+      "restoreSession": "恢复对话",
+      "deletePermanently": "彻底删除",
+      "moreActions": "更多操作",
+      "loadMore": "加载更多",
+      "loadFailed": "归档列表加载失败",
+      "emptyTitle": "无归档内容",
+      "emptyDescription": "归档后的对话会显示在这里。",
+      "emptySearchTitle": "没有匹配的归档对话",
+      "stopPending": "任务停止处理中",
+      "stopPendingTooltip": "该任务的停止流程仍在处理中，完成后即可恢复。",
+      "sessionRestored": "对话已恢复",
+      "sessionDeleted": "对话已删除",
+      "deleteSessionTitle": "彻底删除对话",
+      "deleteSessionRecord": "确定要彻底删除对话“{{sessionTitle}}”吗？",
+      "deleteSessionIrreversible": "对话数据将永久删除，删除后不可恢复。",
+      "deleteArchivedSessions": "删除已归档会话",
+      "deleteArchivedSessionsTitle": "删除已归档对话",
+      "deleteArchivedSessionsRecord": "永久删除项目“{{projectName}}”下全部已归档对话，此操作不可恢复。",
+      "archivedSessionsDeleted": "已删除 {{count}} 个已归档对话",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。",
+      "errors": {
+        "forbidden": "该资源不支持此操作",
+        "notFound": "资源不存在或已发生变化，请刷新后重试",
+        "sessionGone": "该会话已不存在，无法恢复",
+        "requestFailed": "操作失败，请稍后重试",
+        "sessionRestoreFailed": "对话恢复失败，请刷新后重试"
+      }
     },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
@@ -133,6 +166,12 @@
       "protocol": "协议",
       "vendor": "模型提供商",
       "model": "模型",
+      "contextWindow": "模型上下文配置",
+      "contextWindowPlaceholder": "例如 256K、1M 或 262144",
+      "contextWindowHint": "请输入正整数，支持纯数字以及 K/M 单位（不区分大小写），例如 256K、200k 或 1310720。",
+      "contextWindow1m": "启用 1M 上下文",
+      "contextWindow1mHint": "打开后上下文固定为 1M，模型上下文配置将不可编辑；请先确认模型和当前服务商支持 1M 上下文。",
+      "contextWindow1mWarning": "请确保模型和当前服务商支持 1M 上下文。",
       "vendorPlaceholder": "请选择",
       "selectVendor": "选择模型提供商",
       "searchVendor": "搜索模型提供商",
@@ -145,9 +184,9 @@
       "modelIdHint": "例如：glm-4.7。不同厂商的模型 ID 不同，请以其模型列表或官方文档为准。",
       "fetchLatestModels": "拉取最新",
       "presetModels": "当前展示提供商预设模型，展开列表后将拉取最新模型",
-      "noPresetModels": "暂无预设模型，展开列表或点击刷新以拉取最新模型",
-      "noPresetModelsApiKeyRequired": "暂无预设模型，请先填写 API Key 后拉取最新模型",
-      "noPresetModelsNoEndpoint": "该提供商没有可用的预设模型，也未提供模型列表接口",
+      "noPresetModels": "展开列表或点击刷新以拉取最新模型",
+      "noPresetModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
+      "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
       "fetchModelsFailed": "模型列表拉取失败",
@@ -155,11 +194,11 @@
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
       "fetchModelsUnrecognizedResult": "提供商返回了未识别的模型列表来源或原因",
       "fetchReasons": {
-        "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
-        "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
-        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
-        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
+        "noEndpoint": "该提供商未提供模型列表接口",
+        "apiKeyRequired": "填写 API Key 后可拉取最新模型",
+        "remoteFailed": "远端拉取失败或返回为空",
+        "remoteAuthFailed": "API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -230,6 +269,7 @@
         "anthropicUnavailable": "当前提供商套餐不支持 Anthropic 协议，请切换为 OpenAI 协议或重新选择提供商",
         "reasoningUnsupported": "当前推理选项“{{value}}”不受支持，请重新选择或使用默认值",
         "reasoningUnavailable": "推理选项尚未加载，请重试后保存",
+        "contextWindowInvalid": "请输入有效的正整数上下文窗口，例如 256K、1M 或 1310720",
         "aliasConflict": "自定义名称必须全局唯一，且不能与其他模型 ID 相同",
         "modelNameConflict": "模型 ID 不能与其他配置的自定义名称相同"
       },
@@ -472,7 +512,6 @@
     "noGroupMessages": "暂无群聊消息",
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
-    "noMemberTasks": "暂无可归属到该成员的任务",
     "noProcessData": "暂无该成员的执行过程数据",
     "collapseView": "收起视图",
     "expandView": "展开视图",
@@ -658,6 +697,16 @@
     "welcomeLogoAlt": "WorkSwarm 标志",
     "welcomeBubbleText": "HI~我是你的专属桌面智能搭子，随时待命陪你摸鱼解闷~",
     "welcomeHeading": "你好，我是WorkSwarm，很高兴认识你！",
+    "groupCreateWelcomeBrand": "JiuwenSwarm",
+    "groupCreateWelcomeSuffix": "轻松解决工作每个问题！",
+    "groupCreateBannerAlt": "JiuwenSwarm 专家团创建",
+    "groupCreateCapabilities": {
+      "web": "网页",
+      "document": "文档",
+      "slides": "幻灯片",
+      "spreadsheet": "表格",
+      "imageGeneration": "图片生成"
+    },
     "welcomeSuggestions": {
       "journey": "让我们开启一段新的旅程吧！",
       "skills": "能告诉我你有哪些技能吗？"
@@ -736,6 +785,7 @@
     "skillsAdd": "添加到输入栏",
     "skillsRemove": "移除",
     "agent": "专家",
+    "agentGroup": "专家团",
     "agentToggle": "选择已安装专家",
     "agentSearchPlaceholder": "请输入关键词搜索",
     "agentNoInstalled": "暂无已安装专家",
@@ -743,6 +793,15 @@
     "agentAdd": "添加到输入栏",
     "agentRemove": "移除专家",
     "agentMore": "更多",
+    "agentGroupSearchPlaceholder": "请输入关键字搜索",
+    "agentGroupNoInstalled": "暂无已安装专家团",
+    "agentGroupNoMatches": "没有找到匹配的专家团",
+    "agentGroupRemove": "移除专家团",
+    "agentGroupSkillsLocked": "已选择专家团，不能额外添加专家团技能",
+    "agentGroupBinding": "当前对话已绑定专家团，暂不可更换",
+    "agentGroupFirstBuildOnly": "专家团只能在首次创建 Team 时选择",
+    "agentOnlyInSingleAgentMode": "专家仅支持在单 Agent 模式下选择",
+    "agentGroupOnlyInTeamMode": "专家团仅支持在集群模式下选择",
     "extension": "扩展",
     "extensionSearchPlaceholder": "请输入关键字搜索",
     "extensionEmpty": "暂无内容",
@@ -788,6 +847,18 @@
     },
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "continuedFromChat": "从原会话继续",
+    "openSourceChat": "打开原会话",
+    "sideConversation": {
+      "title": "侧会话",
+      "from": "来自 {{title}}",
+      "empty": "在不离开主会话的情况下提问",
+      "placeholder": "发送消息到侧会话",
+      "send": "发送消息",
+      "working": "处理中…",
+      "sendFailed": "消息发送失败，请重试。",
+      "close": "关闭侧会话"
+    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -797,6 +868,8 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
+        "automatic": "智能审批",
+        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
@@ -891,6 +964,9 @@
   "persistSession": {
     "textRequired": "请在 /persist 后输入任务内容"
   },
+  "crossSession": {
+    "messageBadge": "来自会话：{{title}}"
+  },
   "goal": {
     "formSubmit": "确定",
     "formCancel": "取消",
@@ -899,6 +975,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
@@ -1295,7 +1372,7 @@
       "viaChatPrompt": "我们一起来设置一个定时任务吧。首先，说明定时任务在 WorkSwarm 中的工作方式。然后询问我需要安排什么，以及应该在什么时候运行。"
     },
     "stats": {
-      "total": "任务总数（{{count}}）"
+      "total": "任务总数 {{count}}"
     },
     "tabs": {
       "list": "任务列表",
@@ -1929,6 +2006,7 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "uninstalling": "卸载中...",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",
@@ -2500,7 +2578,7 @@
     "title": "专家管理",
     "subtitle": "创建并管理专家，快速复用专家资产",
     "tabsLabel": "专家管理分类",
-    "tabs": { "catalog": "专家广场", "mine": "我的专家" },
+    "tabs": { "catalog": "专家广场", "teams": "专家团广场", "mine": "我的专家", "mineAgent": "专家", "mineGroup": "专家团", "mineLabel": "我的资产类型" },
     "source": { "builtin": "官方", "local": "我的", "hub": "Hub" },
     "categoryLabel": "专家分类",
     "categoryAll": "全部",
@@ -2510,7 +2588,9 @@
     "mineSubtitle": "管理你创建或已安装的专家",
     "searchLabel": "搜索专家",
     "searchCatalog": "搜索专家",
+    "searchTeams": "搜索专家团",
     "searchMine": "搜索我的专家",
+    "searchMineGroup": "搜索我的专家团",
     "unknownDescription": "暂无能力介绍",
     "categories": {
       "IndustryConsultant": "行业顾问",
@@ -2551,6 +2631,7 @@
       "installed": "已安装",
       "loadError": "专家列表加载失败，请重试。",
       "detailError": "专家详情加载失败，请重试。",
+      "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
@@ -2569,7 +2650,7 @@
       "uploadMissingReadme": "专家包缺少 README.md 文件",
       "uploadMissingPersona": "专家包缺少 persona 目录，或目录下没有 .md 文件",
       "newVersion": "该专家有新版本，可更新",
-      "teamUnavailable": "团队专家管理暂未开放",
+      "teamUnavailable": "专家团管理暂未开放",
       "featureUnavailable": "该功能暂不在本期范围",
       "catalogEmpty": "暂无可展示的专家",
       "mineEmpty": "还没有我的专家",
@@ -2695,6 +2776,92 @@
         "descriptionRequired": "请输入能力介绍",
         "personaRequired": "请输入专家人设"
       }
+    },
+    "group": {
+      "actions": {
+        "createFirst": "手动创建",
+        "createByChat": "通过聊天创建",
+        "createByUpload": "上传文件创建",
+        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "install": "安装",
+        "installing": "安装中…",
+        "use": "使用",
+        "uninstall": "卸载",
+        "uninstalling": "卸载中…",
+        "delete": "删除",
+        "saving": "保存中…"
+      },
+      "card": { "open": "查看 {{name}} 详情", "actions": "{{name}} 操作" },
+      "states": {
+        "loadError": "专家团列表加载失败，请重试。",
+        "detailError": "专家团详情加载失败，请重试。",
+        "actionError": "专家团操作未完成，请重试。",
+        "duplicateName": "专家团名称已存在，请更换名称后重试。",
+        "unavailable": "该专家团包已不存在。",
+        "definitionUnavailable": "该专家团定义不完整，暂时无法使用。",
+        "membersInvalid": "专家团成员信息无效，请选择唯一的负责人和成员。",
+        "memberUnavailable": "所选专家不可用或不兼容团队。",
+        "createSuccess": "专家团包 {{id}} 已创建。",
+        "uploadSuccess": "专家团包 {{id}} 已导入，请在我的专家团中查看。",
+        "uploadError": "专家团包导入失败，请检查文件后重试。",
+        "catalogEmpty": "暂无可展示的专家团",
+        "mineEmpty": "还没有我的专家团",
+        "noMatch": "没有找到匹配的专家团"
+      },
+      "detail": {
+        "membersTitle": "专家团成员",
+        "leader": "负责人",
+        "tabsLabel": "专家团详情内容",
+        "contentTab": "内容详情",
+        "filesTab": "文件预览",
+        "noDetails": "暂无更多详情",
+        "filesUnavailable": "安装后即可查看该专家团的文件。"
+      },
+      "files": { "loadError": "专家团文件列表加载失败，请重试。", "readError": "专家团文件读取失败，请重试。" },
+      "form": {
+        "title": "手动创建",
+        "createAgentTab": "创建专家",
+        "createGroupTab": "创建专家团",
+        "basic": "基本信息",
+        "nameLabel": "专家团名称",
+        "namePlaceholder": "输入展示名称",
+        "descriptionLabel": "能力介绍",
+        "descriptionPlaceholder": "说明专家团的能力与适用场景",
+        "tagLabel": "领域标签（可选）",
+        "tagPlaceholder": "请选择领域标签",
+        "teamIntro": "专家团介绍",
+        "teamConfig": "专家团配置",
+        "personaLabel": "专家团介绍",
+        "personaPlaceholder": "说明专家团的介绍内容",
+        "leaderFieldLabel": "负责人",
+        "leaderLabel": "选择负责人",
+        "changeLeader": "更换负责人",
+        "membersFieldLabel": "成员",
+        "addMember": "添加成员",
+        "removeMember": "移除成员 {{name}}",
+        "skillsLabel": "专家团技能配置（可选）",
+        "chooseSkills": "选择技能",
+        "removeSkill": "移除技能 {{name}}",
+        "skillsError": "技能列表加载失败，请重试。",
+        "skillsEmpty": "暂无可用技能",
+        "promptsLabel": "这样问我试试看（可选）",
+        "promptPlaceholder": "输入推荐问题",
+        "removePrompt": "删除推荐问题",
+        "addPrompt": "添加问题",
+        "saveError": "专家团创建未完成，请检查表单内容后重试。",
+        "uploadKindLabel": "类别",
+        "uploadGroupTab": "专家团",
+        "uploadAgentTab": "专家",
+        "uploadHint": "支持上传 .zip、.tar 格式的专家团包。解压后的包根目录须包含 manifest.json，声明 package_type: \"agent_group\"，并配置专家团名称、Leader 及专家成员。包内须包含配置引用的成员定义、人设等文件；推荐提供 README.md 说明文档。",
+        "uploadInvalidType": "仅支持 .zip、.tar 和 .tar.gz 专家团包",
+        "errors": {
+          "nameRequired": "请输入专家团名称",
+          "descriptionRequired": "请输入专家团介绍",
+          "personaRequired": "请输入专家团介绍",
+          "leaderRequired": "请选择负责人"
+        }
+      },
+      "picker": { "leaderTitle": "选择负责人", "memberTitle": "选择成员", "empty": "没有匹配的专家", "selectedCount": "已选 {{count}} 个" }
     }
   },
   "fileViewer": {
@@ -2711,6 +2878,8 @@
     "copied": "已复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
+    "forkFromMessage": "从此消息新建会话分支",
+    "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
@@ -2817,6 +2986,47 @@
         "completed": "Discovery completed",
         "failed": "Discovery failed",
         "resultWords": "{{count}} words returned"
+      }
+    },
+    "autoReviewer": {
+      "title": "权限审查",
+      "status": {
+        "approved": "已自动允许",
+        "userApproved": "用户已允许",
+        "userRejected": "用户已拒绝",
+        "manual": "需要人工审批",
+        "denied": "已拒绝",
+        "blocked": "已阻止",
+        "hostRevalidationFailed": "主机校验失败",
+        "inProgress": "审查中",
+        "timedOut": "审查超时",
+        "fallback": "已转人工",
+        "aborted": "审查已停止"
+      },
+      "details": {
+        "source": "决策来源",
+        "sourceValues": {
+          "automatic": "智能审批",
+          "manual": "人工审批",
+          "system": "系统权限检查"
+        },
+        "risk": "风险",
+        "riskValues": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低",
+          "unknown": "未知"
+        },
+        "reason": "原因",
+        "reasonValues": {
+          "approved": "权限审查已允许此操作。",
+          "denied": "权限审查已拒绝此操作。",
+          "manual": "当前信息不足以完成智能审批，需要人工判断。",
+          "inProgress": "权限审查正在进行。"
+        },
+        "hint": "人工判断建议",
+        "manualGuidanceFallback": "请核对工具参数、操作目标和风险后再决定。"
       }
     },
     "teamActivity": {
@@ -3101,15 +3311,27 @@
       "pinFailed": "置顶操作失败",
       "rename": "重命名",
       "renamePlaceholder": "输入新名称",
+      "archiveConversation": "归档",
+      "conversationArchived": "已归档任务会话",
+      "archiveView": "查看",
+      "archiveUndo": "撤销",
       "deleteProject": "删除项目",
-      "deleteProjectDescription": "确定要移除“<name>{{projectName}}</name>”吗？项目下有会话运行时无法归档；归档后项目及其下会话将被隐藏，定时任务将停用。重新选择该项目目录可恢复。",
+      "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
+      "archiveSessions": "归档全部会话",
+      "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
+      "sessionsArchived": "已归档 {{count}} 个会话",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
       "errors": {
         "pathExists": "该项目路径已存在，请选择其他目录或直接从现有项目开始新对话",
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
-        "projectArchived": "该项目目录属于已归档项目，恢复失败，请重试"
+        "projectUnavailable": "项目不可用，请刷新后重试",
+        "archiveSessionBusy": "会话运行中，请停止后再归档",
+        "archiveForbidden": "该任务不支持归档",
+        "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
+        "archiveFailed": "归档操作失败，请稍后重试"
       },
       "cancel": "取消",
       "confirm": "确定"
@@ -3142,7 +3364,6 @@
     "closed": "已关闭",
     "failed": "异常",
     "cancelled": "已取消",
-    "tasksEmpty": "暂无任务",
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
@@ -3201,6 +3422,10 @@
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
     "skip": "跳过",
+    "toolPayload": {
+      "title": "工具参数（已脱敏）",
+      "notice": "这是用于审批展示的脱敏副本，内容可能因安全或大小限制被截断。"
+    },
     "tip": {
       "allowOnce": "仅本次授权执行",
       "allowAlways": "记住该规则，以后自动放行",
@@ -3313,7 +3538,7 @@
       "breadcrumbPlugin": "插件详情",
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
-      "mcpDisconnectedBannerSelf": "当前连接器未连接，无法正常使用",
+      "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
       "connectMcp": "点击连接",
       "sections": {
         "basicInfo": "基本信息",

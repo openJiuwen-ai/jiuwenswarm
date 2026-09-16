@@ -23,6 +23,11 @@ def get_agent_sessions_dir():
 
 class SessionArchiveService:
     def __init__(self, runtime):
+        try:
+            lc.migrate_project_archives()
+        except Exception:
+            # 一次性数据迁移不得阻断服务启动；marker 未写入时会于下次启动重试。
+            logger.exception("project archive migration failed; retry on next start")
         self.runtime = runtime
         self._locks: dict[tuple[str, str], asyncio.Lock] = {}
         self._stopping: dict[str, asyncio.Task] = {}
@@ -158,6 +163,7 @@ class SessionArchiveService:
         channel_id: str,
         *,
         parent_operation: str = "",
+        pre_stopped: bool = False,
     ) -> dict:
         lc.validate_id(session_id)
         # Project lock must precede the session lock; project cascade already
@@ -171,11 +177,28 @@ class SessionArchiveService:
                     raise lc.LifecycleError(
                         "OPERATION_IN_PROGRESS", "project operation is pending"
                     )
-                return await self._session(session_id, action, channel_id, project_id)
-        return await self._session(session_id, action, channel_id, project_id)
+                return await self._session(
+                    session_id, action, channel_id, project_id,
+                    pre_stopped=pre_stopped,
+                )
+        return await self._session(
+            session_id, action, channel_id, project_id, pre_stopped=pre_stopped
+        )
+
+    def _session_message_service(self):
+        """Return the Runtime-attached mailbox, or None when messaging is off."""
+
+        service = getattr(self.runtime, "session_message_service", None)
+        return service if service is not None else None
 
     async def _session(
-        self, session_id: str, action: str, channel_id: str, project_id: str
+        self,
+        session_id: str,
+        action: str,
+        channel_id: str,
+        project_id: str,
+        *,
+        pre_stopped: bool = False,
     ) -> dict:
         async with self.lock("session", session_id):
             active, archived = lc.session_paths(session_id)
@@ -195,7 +218,6 @@ class SessionArchiveService:
                     "FORBIDDEN",
                     "cron and heartbeat sessions cannot be archived separately",
                 )
-            parent = project_store.get_project_by_id(project_id, cache_bust=True)
             if not pending:
                 if action == "archive" and archived.exists():
                     return dict(
@@ -212,35 +234,49 @@ class SessionArchiveService:
                         ok=True,
                         restored=False,
                         project_id=project_id,
-                        project_archived=bool(parent and parent.hidden),
                     )
             if action == "archive" and self.runtime.is_session_running(session_id):
                 raise lc.LifecycleError(
-                    "SESSION_BUSY", "Session is running; finish it before archiving",
+                    "SESSION_BUSY",
+                    "Session is running; finish it before archiving",
                     {"stop_pending": False},
                 )
-            operation = lc.begin("session", session_id, action, block_execution=action != "archive")
+            operation = lc.begin(
+                "session", session_id, action, block_execution=action != "archive"
+            )
             operation = lc.claim_operation("session", session_id, self._owner_id)
             lc.update("session", session_id, project_id=project_id)
+            mailbox = self._session_message_service() if action == "delete" else None
+            if mailbox is not None:
+                # 删除屏障先于 stop 生效：阻止信箱新执行并取消目标消费者。
+                await mailbox.begin_target_delete(session_id)
             try:
                 if action == "delete":
                     lc.update(
                         "session", session_id, phase="stop_sessions", status="running"
                     )
-                    await self.stop(
-                        session_id, str(meta.get("channel_id") or channel_id)
-                    )
+                    # 归档区会话没有运行时生产者，无需 stop 与全局 flush 屏障；
+                    # 项目级预停止过的会话也不再重复停止，避免二次排队等待。
+                    if active.exists() and not pre_stopped:
+                        await self.stop(
+                            session_id, str(meta.get("channel_id") or channel_id)
+                        )
                     lc.fence_writes("session", session_id)
                 elif action == "archive":
                     # Flush accepted writes, but do not stop or close the runtime.
-                    from jiuwenswarm.server.runtime.session import session_metadata, session_history
+                    from jiuwenswarm.server.runtime.session import (
+                        session_metadata,
+                        session_history,
+                    )
 
                     flushed = await asyncio.gather(
                         asyncio.to_thread(session_metadata.flush_pending_writes, 10),
                         asyncio.to_thread(session_history.flush_pending_writes, 10),
                     )
                     if not all(flushed):
-                        raise lc.LifecycleError("ARCHIVE_FAILED", "Session writes are still pending")
+                        raise lc.LifecycleError(
+                            "ARCHIVE_FAILED", "Session writes are still pending"
+                        )
                 if action == "delete":
                     lc.update("session", session_id, phase="delete_directory")
                     result = await self.runtime.delete_session(
@@ -251,7 +287,12 @@ class SessionArchiveService:
                             result.error_code or "DELETE_FAILED",
                             result.error_message or "delete failed",
                         )
-                    payload = dict(session_id=session_id, ok=True, project_id=project_id)
+                    if mailbox is not None:
+                        # queued/running/waiting_user/unknown 统一记 cancelled 并清正文。
+                        await mailbox.on_target_deleted(session_id)
+                    payload = dict(
+                        session_id=session_id, ok=True, project_id=project_id
+                    )
                     lc.complete("session", session_id, deleted=True, result=payload)
                     return payload
                 source, destination = (
@@ -293,7 +334,19 @@ class SessionArchiveService:
                     else:
                         meta.pop("archived", None)
                         meta.pop("archived_at", None)
-                    lc.atomic_json(destination / "metadata.json", meta)
+                    try:
+                        lc.atomic_json(destination / "metadata.json", meta)
+                    except Exception:
+                        if not source.exists() and destination.exists():
+                            try:
+                                os.replace(destination, source)
+                            except OSError:
+                                logger.warning(
+                                    "session move rollback failed: %s",
+                                    session_id,
+                                    exc_info=True,
+                                )
+                        raise
                 from jiuwenswarm.server.runtime.session.session_metadata import (
                     remove_session_metadata_cache,
                 )
@@ -316,7 +369,6 @@ class SessionArchiveService:
                         ok=True,
                         restored=True,
                         project_id=project_id,
-                        project_archived=bool(parent and parent.hidden),
                     )
                 )
                 lc.complete(
@@ -324,6 +376,16 @@ class SessionArchiveService:
                 )
                 return payload
             except Exception as exc:
+                if mailbox is not None:
+                    # 删除失败：解除屏障并恢复该目标的信箱队列消费。
+                    try:
+                        await mailbox.abort_target_delete(session_id)
+                    except Exception:  # noqa: BLE001
+                        logger.exception(
+                            "session.delete failed to resume mailbox consumer: "
+                            "session_id=%s",
+                            session_id,
+                        )
                 lc.update(
                     "session",
                     session_id,
@@ -430,33 +492,10 @@ class SessionArchiveService:
                     "pinned": False,
                     "pin_order": 0,
                     "project_name": project.name if project else None,
-                    "project_archived": bool(project and project.hidden),
                     **lc.projection("session", sid, project_id=pid),
                 }
             )
         return lc.page(items, params, "sessions", 200)
-
-    @staticmethod
-    def list_projects(params: dict) -> dict:
-        project_fields = (
-            "project_id",
-            "name",
-            "project_dir",
-            "work_mode",
-            "hidden",
-            "archived_at",
-            "created_at",
-            "updated_at",
-        )
-        items = []
-        for p in project_store.list_projects(include_hidden=True, cache_bust=True):
-            if not p.hidden:
-                continue
-            project_data = p.to_dict()
-            item = {k: project_data[k] for k in project_fields}
-            item.update(lc.projection("project", p.project_id))
-            items.append(item)
-        return lc.page(items, params, "projects", 100)
 
     @staticmethod
     def project_sessions(project_id: str) -> list[str]:
@@ -471,97 +510,97 @@ class SessionArchiveService:
                     result.append(path.name)
         return result
 
+    async def project_batch(
+        self, project_id: str, action: str, channel_id: str
+    ) -> dict:
+        lc.validate_id(project_id)
+        if action not in {"archive", "delete_archived"}:
+            raise lc.LifecycleError("BAD_REQUEST", "unknown session batch operation")
+        async with self.lock("project", project_id):
+            lc.guard(project_id=project_id)
+            if not is_default_project_id(
+                project_id
+            ) and not project_store.get_project_by_id(project_id, cache_bust=True):
+                raise lc.LifecycleError("NOT_FOUND", "project not found")
+            ids = []
+            for sid in self.project_sessions(project_id):
+                active, archived = lc.session_paths(sid)
+                meta = lc.raw_metadata(sid)
+                if action == "archive":
+                    if active.exists() and not (
+                        meta.get("cron_id") or sid.startswith(("cron_", "heartbeat_"))
+                    ):
+                        ids.append(sid)
+                elif archived.exists():
+                    ids.append(sid)
+            results = []
+            for sid in sorted(set(ids)):
+                try:
+                    results.append(
+                        await self._session(
+                            sid,
+                            "archive" if action == "archive" else "delete",
+                            channel_id,
+                            project_id,
+                        )
+                    )
+                except lc.LifecycleError as exc:
+                    results.append(
+                        dict(
+                            session_id=sid,
+                            ok=False,
+                            code=exc.code,
+                            error=str(exc),
+                            **exc.details,
+                        )
+                    )
+            succeeded = sum(item["ok"] for item in results)
+            return dict(
+                project_id=project_id,
+                succeeded_count=succeeded,
+                failed_count=len(results) - succeeded,
+                results=results,
+            )
+
     async def project(
         self, project_id: str, action: str, channel_id: str, params: dict
     ) -> dict:
         lc.validate_id(project_id)
+        if action != "delete":
+            raise lc.LifecycleError("BAD_REQUEST", "projects only support deletion")
         if is_default_project_id(project_id):
-            raise lc.LifecycleError(
-                "FORBIDDEN", "default project cannot be archived or deleted"
-            )
+            raise lc.LifecycleError("FORBIDDEN", "default project cannot be deleted")
         async with self.lock("project", project_id):
             project = project_store.get_project_by_id(project_id, cache_bust=True)
             old = lc.state("project", project_id).get("operation", {})
             if not project:
-                if (
-                    action == "delete"
-                    and old.get("status") == "completed"
-                    and old.get("kind") == "delete"
-                ):
-                    return old["result"]
-                if (
-                    action == "delete"
-                    and old.get("phase") == "delete_project"
-                    and old.get("result")
-                ):
-                    lc.complete(
-                        "project", project_id, deleted=True, result=old["result"]
-                    )
+                finalized = (
+                    old.get("status") == "completed"
+                    or old.get("phase") == "delete_project"
+                )
+                if old.get("kind") == "delete" and old.get("result") and finalized:
+                    if old.get("status") != "completed":
+                        lc.complete(
+                            "project", project_id, deleted=True, result=old["result"]
+                        )
                     return old["result"]
                 raise lc.LifecycleError("NOT_FOUND", "project not found")
-            if action == "delete" and not project.hidden:
+            # 两阶段契约必须显式声明阶段：无阶段调用会在 begin 时立起
+            # 执行栅栏却永不提交，遗留 pending operation 阻塞整个项目。
+            stage = params.get("_lifecycle_stage")
+            if stage not in {"prepare", "finish"}:
                 raise lc.LifecycleError(
-                    "CONFLICT", "archive project before permanent deletion"
+                    "BAD_REQUEST", "project deletion requires an explicit lifecycle stage"
                 )
-            cleanup_pending = (
-                action == "unarchive"
-                and bool(old)
-                and old.get("status") != "completed"
-                and old.get("kind") != action
-            )
-            if cleanup_pending:
-                raise lc.LifecycleError(
-                    "OPERATION_IN_PROGRESS", "archive cleanup is pending"
-                )
-            if action == "unarchive" and not project.hidden:
-                if old and old.get("kind") == "unarchive" and old.get("status") != "completed":
-                    # Crash between restore_project() and the lifecycle commit:
-                    # the project is visible again but its execution fence is
-                    # still up. Finish the interrupted operation before
-                    # reporting idempotency, otherwise the fence never lifts.
-                    ids = self.project_sessions(project_id)
-                    lc.complete(
-                        "project",
-                        project_id,
-                        result=dict(
-                            project_id=project_id,
-                            restored=True,
-                            work_mode=project.work_mode,
-                            affected_sessions=sum(
-                                lc.session_paths(sid)[0].exists() for sid in ids
-                            ),
-                        ),
-                    )
-                return dict(
-                    project_id=project_id,
-                    restored=False,
-                    work_mode=project.work_mode,
-                    affected_sessions=0,
-                )
-            # Archive is a point-in-time check, not an admission barrier. Only
-            # the initial request checks; Gateway finish does not stop new work.
-            if action == "archive" and params.get("_lifecycle_stage") != "finish":
-                busy = [sid for sid in self.project_sessions(project_id)
-                        if self.runtime.is_session_running(sid)]
-                if busy:
-                    raise lc.LifecycleError(
-                        "PROJECT_BUSY", "Project has running sessions; finish them before archiving",
-                        {"project_id": project_id, "running_session_ids": busy, "stop_pending": False},
-                    )
-            operation = lc.begin("project", project_id, action, block_execution=action != "archive")
+            operation = lc.begin("project", project_id, "delete")
             operation = lc.claim_operation("project", project_id, self._owner_id)
-            # Gateway owns cron: prepare persists the operation (and, only for
-            # deletion, an execution fence). finish requires the same token.
-            stage = params.get(
-                "_lifecycle_stage", "finish" if action == "unarchive" else "prepare"
-            )
             if stage == "prepare":
                 return dict(
                     project_id=project_id,
                     operation_id=operation["operation_id"],
                     generation=operation["generation"],
                 )
-            if action != "unarchive" and (
+            if (
                 params.get("operation_id") != operation["operation_id"]
                 or params.get("generation") != operation["generation"]
             ):
@@ -569,129 +608,72 @@ class SessionArchiveService:
                     "OPERATION_IN_PROGRESS", "stale project lifecycle generation"
                 )
             try:
-                ids = self.project_sessions(project_id)
-                if action == "delete":
-                    # Save the input set before deleting any child, so an absent
-                    # directory on retry still runs the child's pending cleanup.
-                    ids = list(dict.fromkeys([*operation.get("session_ids", []), *ids]))
-                    operation = lc.update("project", project_id, session_ids=ids)
-                active_count = sum(lc.session_paths(sid)[0].exists() for sid in ids)
-                if action == "unarchive":
-                    project_store.restore_project(project_id)
-                    result = dict(
-                        project_id=project_id,
-                        restored=True,
-                        work_mode=project.work_mode,
-                        affected_sessions=active_count,
+                ids = list(
+                    dict.fromkeys(
+                        [
+                            *operation.get("session_ids", []),
+                            *self.project_sessions(project_id),
+                        ]
                     )
-                else:
-                    lc.update("project", project_id, phase="stop_sessions" if action == "delete" else "update_project")
-                    semaphore = asyncio.Semaphore(8)
-
-                    async def stop_one(sid):
-                        async with semaphore:
-                            await self.stop(
-                                sid,
-                                str(
-                                    lc.raw_metadata(sid).get("channel_id") or channel_id
-                                ),
-                            )
-
-                    outcomes = await asyncio.gather(
-                        *(stop_one(sid) for sid in ids), return_exceptions=True
-                    ) if action == "delete" else []
-                    failures = [
-                        (sid, outcome)
-                        for sid, outcome in zip(ids, outcomes)
-                        if isinstance(outcome, BaseException)
-                    ]
-                    if failures:
-                        raise lc.LifecycleError(
-                            "STOP_TIMEOUT",
-                            "; ".join(f"{sid}: {exc}" for sid, exc in failures),
-                            {
-                                "failed_items": [
-                                    dict(
-                                        resource_type="session",
-                                        resource_id=sid,
-                                        code=getattr(exc, "code", "STOP_SUBMIT_FAILED"),
-                                        error=str(exc),
-                                    )
-                                    for sid, exc in failures
-                                ],
-                                "stop_pending": any(
-                                    getattr(exc, "code", "") == "STOP_TIMEOUT"
-                                    for _, exc in failures
-                                ),
-                            },
-                        )
-                    lc.fence_writes("project", project_id)
-                    if action == "archive":
-                        project_store.hide_project(
-                            project_id, archived_at=operation["archived_at"]
-                        )
-                        project_store.reindex_project_pin_orders()
-                        result = dict(
-                            project_id=project_id,
-                            archived=True,
-                            hidden=True,
-                            archived_at=project.archived_at
-                            if project.hidden
-                            else operation["archived_at"],
-                            affected_sessions=0 if project.hidden else active_count,
-                            stopped_cron_jobs=params.get("stopped_cron_jobs", 0),
-                            stop_pending=False,
-                        )
-                    else:
-                        lc.update("project", project_id, phase="delete_sessions")
-                        completed = dict(operation.get("completed_items", {}))
-                        done_ids = list(completed.get("sessions", []))
-                        for sid in ids:
-                            if sid in done_ids:
-                                continue
-                            child = lc.state("session", sid)
-                            if (
-                                child.get("deleted")
-                                and child.get("operation", {}).get("status")
-                                == "completed"
-                            ):
-                                done_ids.append(sid)
-                                completed["sessions"] = done_ids
-                                lc.update(
-                                    "project", project_id, completed_items=completed
-                                )
-                                continue
-                            await self.session(
-                                sid,
-                                "delete",
-                                channel_id,
-                                parent_operation=operation["operation_id"],
-                            )
-                            if sid not in done_ids:
-                                done_ids.append(sid)
-                            completed["sessions"] = done_ids
-                            lc.update("project", project_id, completed_items=completed)
-                        if self.project_sessions(project_id):
-                            raise lc.LifecycleError(
-                                "DELETE_FAILED", "project sessions remain"
-                            )
-                        result = dict(
-                            project_id=project_id,
-                            deleted=True,
-                            deleted_sessions=len(done_ids),
-                            deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
-                        )
-                        lc.update(
-                            "project", project_id, phase="delete_project", result=result
-                        )
-                        project_store.delete_project(project_id)
-                lc.complete(
+                )
+                operation = lc.update(
                     "project",
                     project_id,
-                    archived=action == "archive",
-                    deleted=action == "delete",
-                    result=result,
+                    session_ids=ids,
+                    phase="stop_sessions",
+                    status="running",
                 )
+                # Stop every producer before deleting any child data.
+                stopped_ids: set[str] = set()
+                for sid in ids:
+                    if lc.state("session", sid).get("deleted"):
+                        continue
+                    if not lc.session_paths(sid)[0].exists():
+                        # 归档区会话没有运行时生产者，无需停止。
+                        continue
+                    await self.stop(
+                        sid,
+                        str(lc.raw_metadata(sid).get("channel_id") or channel_id),
+                    )
+                    stopped_ids.add(sid)
+                lc.fence_writes("project", project_id)
+                lc.update("project", project_id, phase="delete_sessions")
+                completed = dict(operation.get("completed_items", {}))
+                done_ids = list(completed.get("sessions", []))
+                for sid in ids:
+                    if sid in done_ids:
+                        continue
+                    child = lc.state("session", sid)
+                    if (
+                        child.get("deleted")
+                        and child.get("operation", {}).get("status") == "completed"
+                    ):
+                        done_ids.append(sid)
+                        completed["sessions"] = done_ids
+                        lc.update("project", project_id, completed_items=completed)
+                        continue
+                    await self.session(
+                        sid,
+                        "delete",
+                        channel_id,
+                        parent_operation=operation["operation_id"],
+                        pre_stopped=sid in stopped_ids,
+                    )
+                    if sid not in done_ids:
+                        done_ids.append(sid)
+                    completed["sessions"] = done_ids
+                    lc.update("project", project_id, completed_items=completed)
+                if self.project_sessions(project_id):
+                    raise lc.LifecycleError("DELETE_FAILED", "project sessions remain")
+                result = dict(
+                    project_id=project_id,
+                    deleted=True,
+                    deleted_sessions=len(done_ids),
+                    deleted_cron_jobs=params.get("deleted_cron_jobs", 0),
+                )
+                lc.update("project", project_id, phase="delete_project", result=result)
+                project_store.delete_project(project_id)
+                lc.complete("project", project_id, deleted=True, result=result)
                 return result
             except Exception as exc:
                 operation = lc.update(
@@ -699,21 +681,10 @@ class SessionArchiveService:
                     project_id,
                     status="failed",
                     errors=[str(exc)],
-                    stop_pending=isinstance(exc, lc.LifecycleError)
-                    and exc.code == "STOP_TIMEOUT",
+                    stop_pending=getattr(exc, "code", "")
+                    in {"STOP_TIMEOUT", "STOP_SUBMIT_FAILED"},
                     retryable=getattr(exc, "code", "")
                     not in {"SESSION_ID_CONFLICT", "BAD_REQUEST"},
-                )
-                code = (
-                    (
-                        "CONFLICT"
-                        if isinstance(exc, project_store.ProjectNameConflict)
-                        else "RESTORE_FAILED"
-                    )
-                    if action == "unarchive"
-                    else "PARTIAL_PROJECT_DELETE_FAILED"
-                    if action == "delete"
-                    else "PARTIAL_PROJECT_ARCHIVE_FAILED"
                 )
                 details = dict(
                     operation_id=operation["operation_id"],
@@ -728,7 +699,7 @@ class SessionArchiveService:
                         dict(
                             resource_type="project",
                             resource_id=project_id,
-                            code=getattr(exc, "code", code),
+                            code=getattr(exc, "code", "DELETE_FAILED"),
                             error=str(exc),
                         )
                     ],
@@ -736,4 +707,6 @@ class SessionArchiveService:
                 )
                 if isinstance(exc, lc.LifecycleError):
                     details.update(exc.details)
-                raise lc.LifecycleError(code, str(exc), details) from exc
+                raise lc.LifecycleError(
+                    "PARTIAL_PROJECT_DELETE_FAILED", str(exc), details
+                ) from exc

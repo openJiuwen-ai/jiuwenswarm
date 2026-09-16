@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 
 # ---------------------------------------------------------------------------
@@ -157,6 +157,64 @@ class TestForkSessionChannelMetadata:
             "fork_session should not add an empty channel_metadata"
         )
 
+    def test_side_conversation_is_ephemeral_and_keeps_parent_history(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id = "web_parent"
+        target_id = "web_side"
+        _write_source_meta(
+            sessions_dir,
+            source_id,
+            {
+                "session_id": source_id,
+                "title": "Parent chat",
+                "message_count": 2,
+                "mode": "agent.work.normal",
+                "model": "test-model",
+                "session_equipment": {"plugin_names": ["search"]},
+            },
+        )
+        (sessions_dir / source_id / "history.jsonl").write_text("\n", encoding="utf-8")
+        records = [
+            {"id": "parent-user", "role": "user", "content": "Parent question"},
+            {
+                "id": "parent-answer",
+                "role": "assistant",
+                "event_type": "chat.final",
+                "content": "Parent answer",
+            },
+        ]
+        write_history = MagicMock()
+
+        with patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.history_exists",
+            return_value=True,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+            return_value=records,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.write_history_records",
+            write_history,
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+            result = fork_session(
+                source_session_id=source_id,
+                target_session_id=target_id,
+                channel_id="web",
+                side_conversation=True,
+            )
+
+        assert result["ephemeral"] is True
+        target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["ephemeral"] is True
+        assert target_meta["side_parent_session_id"] == source_id
+        assert target_meta["message_count"] == 0
+        assert target_meta["model"] == "test-model"
+        assert target_meta["session_equipment"] == {"plugin_names": ["search"]}
+        assert len(write_history.call_args.args[1]) == 2
+
     def test_channel_metadata_is_deep_copied(self, tmp_path, monkeypatch):
         """Verify channel_metadata is a deep copy, not a shared reference."""
         sessions_dir = self._setup(monkeypatch, tmp_path)
@@ -206,3 +264,167 @@ class TestForkSessionChannelMetadata:
         )
         assert source_meta_reread["channel_metadata"]["project_dir"] == "/Users/test/deep-project"
         assert source_meta_reread["channel_metadata"]["custom_field"] == "custom_value"
+
+    def test_history_is_rebound_to_target_and_keeps_source_provenance(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id = "web_source"
+        target_id = "web_target"
+        source_record = {
+            "id": "request-1:assistant",
+            "role": "assistant",
+            "event_type": "chat.final",
+            "session_id": source_id,
+            "event_payload": {
+                "parent_session_id": source_id,
+                "nested": {"sessionId": source_id},
+            },
+            "content": "source answer",
+        }
+        _write_source_meta(
+            sessions_dir,
+            source_id,
+            {
+                "session_id": source_id,
+                "title": "Source",
+                "message_count": 1,
+                "mode": "agent.work.normal",
+            },
+        )
+        (sessions_dir / source_id / "history.jsonl").write_text("\n", encoding="utf-8")
+        write_history = MagicMock()
+        flush_history = MagicMock()
+
+        with patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.history_exists",
+            return_value=True,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+            return_value=[source_record],
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.flush_history_writes",
+            flush_history,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.write_history_records",
+            write_history,
+        ), patch(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+            return_value=[],
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+            fork_session(
+                source_session_id=source_id,
+                target_session_id=target_id,
+                channel_id="web",
+            )
+
+        copied = write_history.call_args.args[1][0]
+        flush_history.assert_called_once_with()
+        assert copied["session_id"] == target_id
+        assert copied["event_payload"]["parent_session_id"] == target_id
+        assert copied["event_payload"]["nested"]["sessionId"] == target_id
+        assert copied["forked_from"] == {
+            "session_id": source_id,
+            "original_id": "request-1:assistant",
+        }
+        assert source_record["session_id"] == source_id
+        assert source_record["event_payload"]["parent_session_id"] == source_id
+
+    def test_message_fork_copies_history_only_through_selected_assistant(
+        self, tmp_path, monkeypatch
+    ):
+        sessions_dir = self._setup(monkeypatch, tmp_path)
+        source_id = "web_source"
+        target_id = "web_target"
+        records = [
+            {
+                "id": "request-1:user",
+                "role": "user",
+                "request_id": "request-1",
+                "timestamp": 100.0,
+                "content": "first question",
+            },
+            {
+                "id": "request-1:assistant",
+                "role": "assistant",
+                "request_id": "measurement-1",
+                "event_type": "context.usage",
+                "timestamp": 101.0,
+                "content": "",
+            },
+            {
+                "id": "request-1:assistant",
+                "role": "assistant",
+                "request_id": "request-1",
+                "event_type": "chat.final",
+                "timestamp": 102.0,
+                "content": "first answer",
+            },
+            {
+                "id": "request-1:assistant",
+                "role": "assistant",
+                "request_id": "request-1",
+                "event_type": "chat.usage_summary",
+                "timestamp": 103.0,
+                "content": "",
+            },
+            {
+                "id": "request-2:user",
+                "role": "user",
+                "request_id": "request-2",
+                "timestamp": 104.0,
+                "content": "later question",
+            },
+        ]
+        _write_source_meta(
+            sessions_dir,
+            source_id,
+            {
+                "session_id": source_id,
+                "title": "Source",
+                "message_count": len(records),
+                "last_message_at": 104.0,
+                "mode": "agent.work.normal",
+            },
+        )
+        (sessions_dir / source_id / "history.jsonl").write_text("\n", encoding="utf-8")
+        write_history = MagicMock()
+
+        with patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.history_exists",
+            return_value=True,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.load_history_records",
+            return_value=records,
+        ), patch(
+            "jiuwenswarm.agents.harness.common.session_ops_service.write_history_records",
+            write_history,
+        ), patch(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_all_sessions_metadata",
+            return_value=[],
+        ):
+            from jiuwenswarm.agents.harness.common.session_ops_service import fork_session
+
+            fork_session(
+                source_session_id=source_id,
+                target_session_id=target_id,
+                channel_id="web",
+                cutoff_message_id="request-1:assistant",
+                cutoff_role="assistant",
+                cutoff_content="first answer",
+                cutoff_timestamp=102.0,
+            )
+
+        copied_records = write_history.call_args.args[1]
+        assert [record["event_type"] for record in copied_records[1:]] == [
+            "context.usage",
+            "chat.final",
+        ]
+        assert all(record.get("content") != "later question" for record in copied_records)
+
+        target_meta = _read_target_meta(sessions_dir, target_id)
+        assert target_meta["message_count"] == 3
+        assert target_meta["last_message_at"] == 102.0
+        assert target_meta["forked_at"]["message_id"] == "request-1:assistant"

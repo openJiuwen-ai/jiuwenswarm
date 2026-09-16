@@ -154,7 +154,7 @@ def _build_project_lookup() -> tuple[
         for p in list_projects(include_hidden=True, cache_bust=True):
             if p.project_id:
                 id_to_work_mode[p.project_id] = p.work_mode
-            if not p.project_dir or p.hidden:
+            if not p.project_dir:
                 continue
             dir_to_projects.setdefault(
                 _normalize_path_for_match(p.project_dir), []
@@ -223,6 +223,8 @@ def _apply_metadata_defaults_with_inference(
     metadata.setdefault("pinned", False)
     metadata.setdefault("pin_order", 0)
     metadata.setdefault("status", "idle")
+    metadata.setdefault("ephemeral", False)
+    metadata.setdefault("side_parent_session_id", "")
 
     changed = False  # 是否有需要写盘的确定性推断
     changed_fields: set[str] = set()
@@ -824,6 +826,7 @@ def update_session_metadata(
     team_name: str | None = None,
     team_template_id: str | None = None,
     agent_group_name: str | None = None,
+    team_leader_identity: dict[str, Any] | None = None,
     accent_color: str | None = None,
     project_dir: str | None = None,
     project_id: str | None = None,
@@ -916,6 +919,8 @@ def update_session_metadata(
             metadata["channel_metadata"] = channel_metadata
         if session_equipment is not None:
             metadata["session_equipment"] = copy.deepcopy(session_equipment)
+        if isinstance(team_leader_identity, dict):
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
     else:
         # 更新现有元数据
         # channel_id：首次锁定——仅当磁盘值为空时写入，后续不覆盖
@@ -936,6 +941,12 @@ def update_session_metadata(
             metadata["team_template_id"] = team_template_id
         if agent_group_name is not None:
             metadata["agent_group_name"] = agent_group_name
+        # AgentGroup leader identity is a first-binding snapshot. Never replace
+        # an existing value, including an invalid legacy value; old sessions
+        # must keep the ordinary Team fallback instead of being re-derived from
+        # a changed package definition.
+        if isinstance(team_leader_identity, dict) and "team_leader_identity" not in metadata:
+            metadata["team_leader_identity"] = copy.deepcopy(team_leader_identity)
         if accent_color is not None:
             metadata["accent_color"] = accent_color
         # model：覆盖式——每次请求更新为本次模型
@@ -1771,6 +1782,8 @@ def get_all_sessions_metadata(
                 enable_writeback=False,
             )
 
+        if metadata.get("ephemeral") is True:
+            continue
         from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
         if visible(metadata):
             metadata.update(projection("session", session_id, project_id=project_id_for(metadata)))
@@ -1862,6 +1875,8 @@ def collect_all_sessions_metadata(
                 id_to_work_mode=id_to_work_mode,
                 enable_writeback=False,
             )
+        if meta.get("ephemeral") is True:
+            continue
         from jiuwenswarm.server.runtime.session.lifecycle import visible, projection, project_id_for
         if visible(meta):
             meta.update(projection("session", sid, project_id=project_id_for(meta)))

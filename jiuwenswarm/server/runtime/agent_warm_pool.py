@@ -264,7 +264,7 @@ class AgentWarmPool:
         )
         projects = list(project_store.list_projects(cache_bust=True))
         records = [
-            (p.project_id, p.project_dir, p.work_mode) for p in projects if not p.hidden
+            (p.project_id, p.project_dir, p.work_mode) for p in projects
         ]
         records.extend(
             [

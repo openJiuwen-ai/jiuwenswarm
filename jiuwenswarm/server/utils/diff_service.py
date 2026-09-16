@@ -81,6 +81,29 @@ class DiffService:
         self._enrich_with_change_sets(session_id, turns, repo_context=repo_context)
         return list(reversed(turns))
 
+    @staticmethod
+    def turn_matches_history_record(
+        turn: dict[str, Any], record: dict[str, Any] | None
+    ) -> bool:
+        """Match a turn snapshot to the current user message after rewind."""
+        if record is None:
+            return False
+        turn_rid = str(turn.get("request_id", "") or "")
+        record_rid = str(record.get("request_id", "") or "")
+        if turn_rid or record_rid:
+            return bool(turn_rid and record_rid and turn_rid == record_rid)
+        turn_uid = str(turn.get("user_message_id", "") or "")
+        record_id = str(record.get("id", "") or "")
+        if turn_uid or record_id:
+            return bool(turn_uid and record_id and turn_uid == record_id)
+        turn_ts = turn.get("start_timestamp")
+        record_ts = record.get("timestamp")
+        return (
+            isinstance(turn_ts, (int, float))
+            and isinstance(record_ts, (int, float))
+            and float(turn_ts) == float(record_ts)
+        )
+
     def get_turn_diff_summaries(
         self,
         session_id: str,
@@ -108,8 +131,21 @@ class DiffService:
             if snapshot is None:
                 snapshot = self._turn_from_change_set_entry(entry)
             by_turn[turn_index] = snapshot
+        # Rewind retains snapshots, but their former turn indexes can now
+        # belong to different user messages. Do not expose those stale cards.
+        user_records = [
+            record for record in self._read_history(session_id)
+            if isinstance(record, dict) and record.get("role") == "user"
+        ]
+        current_turns = []
+        for index, turn in by_turn.items():
+            prev_record = (
+                user_records[index - 1] if 0 < index <= len(user_records) else None
+            )
+            if self.turn_matches_history_record(turn, prev_record):
+                current_turns.append(turn)
         return sorted(
-            by_turn.values(),
+            current_turns,
             key=lambda t: int(t.get("turnIndex", 0) or 0),
             reverse=True,
         )
@@ -526,14 +562,21 @@ class DiffService:
         project_dir: str | None = None,
         *,
         extra_history_roots: list[str] | None = None,
+        target: dict[str, Any] | None = None,
     ) -> str | None:
-        """将指定 turn 的 change_set 状态标记为 discarded。"""
+        """将指定 turn 的 change_set 状态标记为 discarded。
+
+        ``target`` 为调用方已查到的该轮 turn diff 时直接复用(如 discard
+        守卫里 ``get_turn_diff`` 的结果),省去一次完整的 diff 计算;为
+        ``None`` 时按 ``turn_index`` 内部自查。
+        """
         if turn_index <= 0:
             return None
-        target = self.get_turn_diff(
-            session_id, turn_index=turn_index, project_dir=project_dir,
-            extra_history_roots=extra_history_roots,
-        )
+        if target is None:
+            target = self.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project_dir,
+                extra_history_roots=extra_history_roots,
+            )
         change_set_id = str((target or {}).get("change_set_id") or "")
         if not change_set_id:
             return None
@@ -560,6 +603,7 @@ class DiffService:
         project_dir: str | None = None,
         *,
         extra_history_roots: list[str] | None = None,
+        target: dict[str, Any] | None = None,
     ) -> str | None:
         """将指定 turn 的 status 恢复为 completed(与 ``mark_turn_discarded`` 对称).
 
@@ -570,13 +614,17 @@ class DiffService:
         3. 去掉 file_ops 中该轮条目的 ``discarded_out`` 标记
            (只恢复 discard 标记,不触碰 rewind 的 ``rewound_out``,避免
            误暴露此前 conversation rewind 软隐藏的"未来"条目)
+
+        ``target`` 为调用方已查到的该轮 turn diff 时直接复用,省去一次
+        完整的 diff 计算;为 ``None`` 时按 ``turn_index`` 内部自查。
         """
         if turn_index <= 0:
             return None
-        target = self.get_turn_diff(
-            session_id, turn_index=turn_index, project_dir=project_dir,
-            extra_history_roots=extra_history_roots,
-        )
+        if target is None:
+            target = self.get_turn_diff(
+                session_id, turn_index=turn_index, project_dir=project_dir,
+                extra_history_roots=extra_history_roots,
+            )
         change_set_id = str((target or {}).get("change_set_id") or "")
         if not change_set_id:
             return None

@@ -301,6 +301,23 @@ def get_skill_evolution_enabled(config: dict[str, Any] | None) -> bool:
     return _get_evolution_config(config).get("skill_evolution") is True
 
 
+def get_symphony_evolution_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether both Symphony and its evolution switch are enabled."""
+    if not isinstance(config, dict):
+        return False
+    symphony = config.get("symphony")
+    if not isinstance(symphony, dict):
+        return False
+    evolution = symphony.get("evolution")
+    if not isinstance(evolution, dict):
+        return False
+    enabled_values = {"1", "true", "yes", "on"}
+    return (
+        str(symphony.get("enabled")).strip().lower() in enabled_values
+        and str(evolution.get("enabled")).strip().lower() in enabled_values
+    )
+
+
 def is_subagent_runtime_enabled(config: dict[str, Any] | None = None) -> bool:
     """Return ``react.subagent_runtime.enabled`` for persistent subagent tools."""
     cfg = config or get_config()

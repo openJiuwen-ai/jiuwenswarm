@@ -99,6 +99,7 @@
 .entity-header__tags {
   --entity-header-tag-overflow-width: 20px;
   display: flex;
+  width: 100%;
   min-width: 0;
   align-items: center;
   gap: 6px;

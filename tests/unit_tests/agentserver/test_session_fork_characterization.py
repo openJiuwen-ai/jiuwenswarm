@@ -160,6 +160,56 @@ async def test_session_fork_server_preserves_runtime_commit_and_wire_order() -> 
 
 
 @pytest.mark.asyncio
+async def test_session_fork_server_forwards_message_cutoff() -> None:
+    trace: list[str] = []
+    runtime, _ = _runtime_adapter(trace=trace)
+    ws = SimpleNamespace(send=AsyncMock())
+    request = _request()
+    request.params["fork_point"] = {
+        "message_id": "request-1:assistant",
+        "role": "assistant",
+        "content": "first answer",
+        "timestamp": "2026-09-13T05:36:11Z",
+    }
+
+    await _server(runtime)._handle_session_fork(ws, request, asyncio.Lock())
+
+    runtime.prepare_session_fork.assert_awaited_once_with(
+        SessionForkInput(
+            channel_id="tui",
+            source_session_id="fork-source",
+            target_session_id="fork-target",
+            title="Forked session",
+            cutoff_message_id="request-1:assistant",
+            cutoff_role="assistant",
+            cutoff_content="first answer",
+            cutoff_timestamp="2026-09-13T05:36:11Z",
+        )
+    )
+
+
+@pytest.mark.asyncio
+async def test_session_fork_server_forwards_side_conversation_flag() -> None:
+    trace: list[str] = []
+    runtime, _ = _runtime_adapter(trace=trace)
+    ws = SimpleNamespace(send=AsyncMock())
+    request = _request(channel_id="web")
+    request.params["side_conversation"] = True
+
+    await _server(runtime)._handle_session_fork(ws, request, asyncio.Lock())
+
+    runtime.prepare_session_fork.assert_awaited_once_with(
+        SessionForkInput(
+            channel_id="web",
+            source_session_id="fork-source",
+            target_session_id="fork-target",
+            title="Forked session",
+            side_conversation=True,
+        )
+    )
+
+
+@pytest.mark.asyncio
 async def test_session_fork_crosses_real_runtime_boundary_end_to_end(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:

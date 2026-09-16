@@ -2,7 +2,11 @@ from types import SimpleNamespace
 
 import pytest
 
-from openjiuwen.core.single_agent.rail.base import ToolCallInputs
+from openjiuwen.core.single_agent.rail.base import AgentCallbackContext, ToolCallInputs
+from openjiuwen.harness.security import PermissionConfirmResponse
+
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.runtime_bridge import AutoPermissionRuntimeBridgeMixin
+from jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.models import ToolInvocation
 
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_stream_metadata import (
     REVIEWER_TOOL_RESULT_METADATA_EXTRA_KEY,
@@ -19,6 +23,28 @@ class _StreamSession:
 
     async def write_stream(self, event: object) -> None:
         self.events.append(event)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("feedback", ["command_contract_error", "file_delivery_prohibited_by_user", "tool_invocation_resume_required"])
+async def test_smart_runtime_denial_without_reviewer_is_explicit_failure(feedback):
+    bridge = AutoPermissionRuntimeBridgeMixin()
+    bridge.base_rail = SimpleNamespace()
+    call = SimpleNamespace(name="bash", id="denied-call", arguments={})
+    ctx = AgentCallbackContext(
+        agent=SimpleNamespace(), inputs=ToolCallInputs(tool_call=call, tool_name="bash", tool_args={}), extra={},
+    )
+    response = PermissionConfirmResponse(approved=False, feedback=feedback)
+    invocation = ToolInvocation(ctx, call, call.name, {})
+    assert bridge._runtime_result(invocation, response) is response
+    assert ctx.extra["_skip_tool"] is True
+    assert ctx.inputs.tool_msg.content == feedback
+    assert ctx.inputs.tool_result["success"] is False
+    session = _StreamSession()
+    await JiuSwarmStreamEventRail()._emit_tool_result(session, call, ctx.inputs.tool_result)
+    payload = _tool_result_payload(session)
+    assert payload["success"] is False
+    assert "reviewer_metadata" not in payload
 
 
 def _tool_result_payload(session: _StreamSession, index: int = 0) -> dict[str, object]:

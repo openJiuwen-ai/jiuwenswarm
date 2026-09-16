@@ -25,6 +25,11 @@
   box-shadow: 0 8px 24px 0 rgba(0, 0, 0, 0.08);
 }
 
+.page-card--interactive:focus-visible {
+  outline: 2px solid var(--color-action-primary);
+  outline-offset: 2px;
+}
+
 @media (min-width: 1600px) {
   .page-card {
     max-width: 456px;

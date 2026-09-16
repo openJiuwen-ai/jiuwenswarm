@@ -1092,9 +1092,13 @@ async def test_forward_loop_cancel_intent_uses_fire_and_forget(
 
 
 @pytest.mark.asyncio
-async def test_forward_loop_supplement_forwards_new_input_to_interrupt() -> None:
+@pytest.mark.parametrize("interrupt_success", [True, False])
+async def test_forward_loop_supplement_forwards_new_input_to_interrupt(monkeypatch, interrupt_success) -> None:
     """AgentServer needs the text marker to discard a superseded ask_user round."""
     handler = _TestMessageHandler.create()
+    monkeypatch.setattr(_FakeAgentClient, "response_payload", {
+        "event_type": "chat.interrupt_result", "success": interrupt_success,
+    })
     await handler.start_forwarding()
     try:
         supplement_msg = Message(

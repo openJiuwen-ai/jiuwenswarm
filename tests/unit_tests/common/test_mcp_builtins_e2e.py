@@ -49,7 +49,11 @@ def temp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
-    """prepare_workspace 跑完后, mcp_builtins 应从 seed zip 解压就位."""
+    """prepare_workspace 跑完后, mcp_builtins 应从 seed zip 解压就位.
+
+    种子里当前零内置包, 因此只断言目录/版本标记就位与「目录名 == 包 id」的
+    一致性; 包内容由 test_ensure_mcp_builtins 的合成种子覆盖.
+    """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
     mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
@@ -58,7 +62,6 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
     assert not (mcp_builtins / "manifest.json").exists()
     assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip()
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
-    assert pkg_dirs
     packages = [load_mcp_package(package) for package in pkg_dirs]
     assert {package.package_id for package in packages} == {p.name for p in pkg_dirs}
     assert not any(
@@ -68,14 +71,21 @@ def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
 
 
 def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None:
-    """解压后的内置 MCP 包应能被 marketplace 正常加载和展示."""
+    """marketplace 的 builtin 列表应恰好来自解压出来的内置包目录."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
     # 重置 registry 缓存路径指向临时工作区.
     import jiuwenswarm.server.runtime.mcp.registry as reg
     # registry 的 _packages_dir 依赖 get_workspace_dir, 已被 fixture 重定向.
     items = reg.list_marketplace_mcps("builtin")
     names = [item["name"] for item in items]
-    assert names, "空列表"
+    installed = {
+        path.name
+        for path in (
+            temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+        ).iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    assert set(names) == installed
     assert all(item["source"] == "built_in" for item in items)
     details = [reg.get_mcp(name) for name in names]
     assert all(detail is not None for detail in details)

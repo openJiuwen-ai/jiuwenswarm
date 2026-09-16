@@ -701,3 +701,49 @@ async def test_agent_manager_uses_project_dir_not_workspace_dir_for_identity(
     assert vars(request) == original_fields
     assert request.params is params
     assert params == {"mode": mode, **project_fields}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["agent", "code", "team", "auto_harness"])
+@pytest.mark.parametrize(
+    ("explicit_project", "with_callback", "callback_project", "expected_project"),
+    [
+        pytest.param(None, False, None, "C:/projects/pi", id="request-fallback"),
+        pytest.param("C:/override", False, None, "C:/override", id="explicit-path"),
+        pytest.param("", False, None, "", id="explicit-empty"),
+        pytest.param("C:/override", True, None, None, id="callback-none"),
+        pytest.param("", True, "C:/admitted", "C:/admitted", id="callback-path"),
+    ],
+)
+async def test_manager_project_identity_respects_explicit_and_admitted_values(
+    manual_manager_lookup, mode, explicit_project, with_callback,
+    callback_project, expected_project,
+):
+    manager, lookup, _seen_requests = manual_manager_lookup
+    params = {
+        "mode": mode,
+        "project_dir": "C:/projects/pi",
+        "workspace_dir": "C:/internal/workspace",
+    }
+    request = SimpleNamespace(session_id="session-manager", channel_id="web", params=params)
+    original_params = params.copy()
+    original_fields = vars(request).copy()
+    admissions = []
+
+    def admit_request():
+        admissions.append(request)
+        return callback_project
+
+    agent = await manager.get_agent_for_request(
+        request, project_dir=explicit_project,
+        admit_request=admit_request if with_callback else None,
+    )
+
+    assert agent is lookup.return_value
+    lookup.assert_awaited_once_with(
+        channel_id="web", mode=mode, project_dir=expected_project, sub_mode=None,
+    )
+    assert admissions == ([request] if with_callback else [])
+    assert vars(request) == original_fields
+    assert request.params is params
+    assert params == original_params

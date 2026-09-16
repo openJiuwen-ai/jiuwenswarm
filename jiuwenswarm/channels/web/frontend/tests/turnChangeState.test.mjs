@@ -2,8 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 import {
-  latestTurnDiffKey,
-  latestTurnDiffKeyForMessages,
+  latestModifiedTurn,
   turnChangeErrorMessage,
   updateTurnChangeStatus,
 } from '../node_modules/.cache/turn-change-state/features/code-mode/turnChangeState.js';
@@ -19,59 +18,22 @@ const turn = (overrides = {}) => ({
   user_prompt_preview: 'edit files',
   status: 'completed',
   stats: { files_changed: 1, lines_added: 2, lines_removed: 1 },
-  files: {},
+  files: { 'src/a.py': {} },
   ...overrides,
 });
 
-test('only the newest turn diff is exposed as the undo or redo target', () => {
-  assert.equal(
-    latestTurnDiffKey([
-      turn({ change_set_id: 'cs-4', turn_index: 4 }),
-      turn({ change_set_id: 'cs-2', turn_index: 2 }),
-      turn({ change_set_id: 'cs-7', turn_index: 7 }),
-    ]),
-    'cs-7',
-  );
+test('selects only the latest file-editing turn regardless of pure chat turns', () => {
+  const latest = turn({ turn_index: 2 });
+  const chats = Array.from({ length: 100 }, (_, index) => turn({ turn_index: index + 3, files: {}, stats: { files_changed: 0, lines_added: 0, lines_removed: 0 } }));
+  assert.equal(latestModifiedTurn([turn(), latest, ...chats]), latest);
+  assert.equal(latestModifiedTurn(chats), null);
 });
 
-test('hides the action when the latest user turn did not produce a diff', () => {
-  assert.equal(latestTurnDiffKey([turn({ user_message_id: 'user-1' })], 'user-2'), null);
-});
-
-test('uses the latest rendered card when the live user id differs from persisted history', () => {
-  const latestTurn = turn({ user_message_id: 'persisted-user-1' });
-  const messages = [
-    { id: 'user-frontend-1', role: 'user' },
-    { id: 'assistant-live-1', role: 'assistant' },
-  ];
-  const bindings = new Map([['assistant-live-1', [latestTurn]]]);
-
-  assert.equal(latestTurnDiffKeyForMessages(messages, [latestTurn], bindings), 'cs-1');
-});
-
-test('uses the latest cron final card when its persisted user message is not rendered', () => {
-  const latestTurn = turn({
-    request_id: 'cron-nightly:1720000000',
-    user_message_id: 'cron-nightly:1720000000:user',
-    assistant_message_id: 'cron-nightly:1720000000:assistant',
-  });
-  const messages = [{ id: 'cron-final-nightly:1720000000', role: 'assistant' }];
-  const bindings = new Map([['cron-final-nightly:1720000000', [latestTurn]]]);
-
-  assert.equal(latestTurnDiffKeyForMessages(messages, [latestTurn], bindings), 'cs-1');
-});
-
-test('does not expose an older bound card when the newest user turn has no diff', () => {
-  const previousTurn = turn({ user_message_id: 'persisted-user-1' });
-  const messages = [
-    { id: 'user-frontend-1', role: 'user' },
-    { id: 'assistant-live-1', role: 'assistant' },
-    { id: 'user-frontend-2', role: 'user' },
-    { id: 'assistant-live-2', role: 'assistant' },
-  ];
-  const bindings = new Map([['assistant-live-1', [previousTurn]]]);
-
-  assert.equal(latestTurnDiffKeyForMessages(messages, [previousTurn], bindings), null);
+test('discard keeps the same target and a new file edit replaces it', () => {
+  const discarded = turn({ status: 'discarded' });
+  assert.equal(latestModifiedTurn([discarded, turn({ turn_index: 2, files: {}, stats: { files_changed: 0, lines_added: 0, lines_removed: 0 } })]), discarded);
+  const newer = turn({ turn_index: 3, change_set_id: 'cs-3' });
+  assert.equal(latestModifiedTurn([newer, discarded]), newer);
 });
 
 test('updates the operation target by change set id', () => {
@@ -90,4 +52,9 @@ test('falls back to the turn index when the backend returns no change set id', (
 test('localizes backend redo history errors', () => {
   const error = Object.assign(new Error('raw backend message'), { code: 'REDO_HISTORY_MISSING' });
   assert.equal(turnChangeErrorMessage(error, 'redo'), '撤销记录不完整，无法重新应用修改');
+});
+
+test('localizes diff history expired errors', () => {
+  const error = Object.assign(new Error('raw backend message'), { code: 'DIFF_HISTORY_EXPIRED' });
+  assert.equal(turnChangeErrorMessage(error, 'discard'), '修改记录已过期，无法定位该轮修改，请刷新后重试');
 });

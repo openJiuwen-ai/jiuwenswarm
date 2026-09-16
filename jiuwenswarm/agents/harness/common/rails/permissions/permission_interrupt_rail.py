@@ -8,6 +8,7 @@ from collections.abc import Callable
 from contextvars import ContextVar
 from copy import deepcopy
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from openjiuwen.core.runner.callback import AbortError
@@ -22,6 +23,7 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_r
 from jiuwenswarm.agents.harness.common.rails.permissions.native_path_context import (
     NativePathGuardProjection, current_native_path_access,
 )
+from jiuwenswarm.common.utils import logger
 
 ExactPermissionPersistCallback = Callable[
     [str, dict[str, Any], tuple[tuple[str, str], ...]], bool
@@ -60,7 +62,42 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
         if checker is not None and not isinstance(checker, NativePathGuardProjection):
             self._engine._file_guard = NativePathGuardProjection(checker)  # pylint: disable=protected-access
 
+    def _sync_engine_workspace_root(self) -> None:
+        """Refresh file_guard workspace when the host resolver changes."""
+        host = getattr(self, "_host", None)
+        resolver = getattr(host, "resolve_workspace_dir", None) if host is not None else None
+        if resolver is None:
+            return
+        try:
+            workspace = resolver()
+            if workspace is None:
+                return
+            normalized = Path(workspace).expanduser().resolve(strict=False)
+        except (OSError, RuntimeError, TypeError, ValueError) as exc:
+            logger.debug(
+                "[PermissionInterruptRail] workspace_resolve_failed: %s",
+                exc,
+                exc_info=True,
+            )
+            return
+        engine = self._engine
+        current = getattr(engine, "_workspace_root", None)
+        if current is not None:
+            try:
+                if Path(current).expanduser().resolve(strict=False) == normalized:
+                    return
+            except (OSError, RuntimeError, ValueError) as exc:
+                logger.debug(
+                    "[PermissionInterruptRail] workspace_compare_failed: %s",
+                    exc,
+                    exc_info=True,
+                )
+        engine._workspace_root = normalized  # pylint: disable=protected-access
+        engine._rebuild_file_guard()  # pylint: disable=protected-access
+        self._project_native_path_guard()
+
     def update_config(self, *args: Any, **kwargs: Any) -> None:
+        self._sync_engine_workspace_root()
         super().update_config(*args, **kwargs)
         self._project_native_path_guard()
 
@@ -166,6 +203,7 @@ class JiuwenSwarmPermissionInterruptRail(PermissionInterruptRail):
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if root_nonpermission_resume_from_context(ctx) is not None:
             return
+        self._sync_engine_workspace_root()
         try:
             await super().before_tool_call(ctx)
         except AbortError as exc:
