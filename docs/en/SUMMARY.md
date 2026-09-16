@@ -23,6 +23,7 @@
   - [Auto-fix PR](AutofixPR.md)
   - [Slash Command Architecture](SlashCommandArchitecture.md)
   - [Tool Permissions & Security](ToolPermissionsSecurity.md)
+  - [Command Execution Guards](CommandExecutionGuards.md)
   - [Scheduled tasks](ScheduledTasks.md)
   - [Task planning](TaskPlanning.md)
   - [Memory](Memory.md)
