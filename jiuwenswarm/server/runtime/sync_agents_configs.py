@@ -289,6 +289,31 @@ def _validate_shared_env(shared_env: Any) -> None:
     )
 
 
+def _validate_teams_payload(teams: Any) -> dict[str, Any]:
+    """Validate the optional relay ``teams`` payload; structural checks only.
+
+    Shape (relay-claw ``RelayClawTeamsPayload``): ``{agents: {template_key:
+    template}, team: [team_spec, ...]}``. Deep field semantics are enforced by
+    ``_build_modes_team_mapping`` at injection time — here we only keep the
+    sync protocol resilient: a malformed ``teams`` must not block agent env
+    sync, it is logged and dropped by the caller.
+
+    ``team`` omitted/empty is a meaningful signal (relay semantics: empty
+    array → clear modes.team), so it is preserved as ``[]``.
+    """
+    if not isinstance(teams, dict):
+        raise ValueError("teams must be an object when provided")
+    agents = teams.get("agents")
+    if agents is not None and not isinstance(agents, dict):
+        raise ValueError("teams.agents must be an object")
+    team = teams.get("team")
+    if team is None:
+        team = []
+    if not isinstance(team, list):
+        raise ValueError("teams.team must be an array")
+    return {"agents": agents if agents is not None else {}, "team": team}
+
+
 def validate_sync_payload(params: Any) -> dict[str, Any]:
     """Validate sync_agents_configs params; raise ValueError on protocol errors."""
     if not isinstance(params, dict):
@@ -316,6 +341,18 @@ def validate_sync_payload(params: Any) -> dict[str, Any]:
     shared_env = params.get("shared_env")
     if shared_env is not None:
         _validate_shared_env(shared_env)
+
+    # Optional relay teams topology (preset/user teams). Dropped here on
+    # structural errors — team sync must never block agent env sync.
+    teams: dict[str, Any] | None = None
+    if "teams" in params and params.get("teams") is not None:
+        try:
+            teams = _validate_teams_payload(params.get("teams"))
+        except ValueError as exc:
+            logger.warning(
+                "sync_agents_configs: invalid teams payload dropped: %s", exc
+            )
+            teams = None
 
     seen_ids: set[str] = set()
     normalized_agents: list[dict[str, Any]] = []
@@ -367,6 +404,7 @@ def validate_sync_payload(params: Any) -> dict[str, Any]:
         "service_id": service_id,
         "agents": normalized_agents,
         "shared_env": shared_env,
+        "teams": teams,
     }
 
 
