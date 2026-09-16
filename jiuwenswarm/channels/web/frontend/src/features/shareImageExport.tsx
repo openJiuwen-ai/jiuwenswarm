@@ -7,6 +7,7 @@ import type { Options as HtmlToImageOptions } from 'html-to-image/es/types';
 import { useTranslation } from 'react-i18next';
 import { ChatTimelineList } from '../components/ChatPanel/MessageList';
 import { MarkdownMessageBody } from '../components/ChatPanel/MessageItem';
+import { FileDownloadMediaPreviewContext } from '../components/ChatPanel/FileDownloadMediaPreviewContext';
 import { TeamMemberAvatar } from '../components/TeamMemberAvatar';
 import { MarkdownIncludeMathMLContext } from '../components/MarkdownRenderer';
 import { getMemberDisplayName } from '../components/teamArea/shared';
@@ -834,6 +835,7 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
 
   return (
     <MarkdownIncludeMathMLContext.Provider value={false}>
+      <FileDownloadMediaPreviewContext.Provider value={false}>
       <div ref={ref} className="share-image-document">
       <header className="share-image-header">
         <div className="share-image-masthead">
@@ -899,6 +901,7 @@ export const ShareImageDocument = forwardRef<HTMLDivElement, ShareImageDocumentP
         </div>
       </footer>
       </div>
+      </FileDownloadMediaPreviewContext.Provider>
     </MarkdownIncludeMathMLContext.Provider>
   );
 });
