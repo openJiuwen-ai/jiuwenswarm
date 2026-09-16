@@ -118,17 +118,31 @@ def main() -> None:
     procs: list[subprocess.Popen] = [agent] + ([gateway] if gateway else [])
 
     def _terminate_all() -> None:
+        from jiuwenswarm.common.process_tree import (
+            collect_descendant_pids,
+            pid_is_running,
+            terminate_pid_tree,
+            terminate_popen_tree,
+        )
+
+        descendants: list[int] = []
         for p in procs:
             if p.poll() is None:
-                p.terminate()
+                descendants.extend(collect_descendant_pids(p.pid))
+                terminate_popen_tree(p, force=False)
         deadline = time.time() + 12
         while time.time() < deadline:
-            if all(p.poll() is not None for p in procs):
+            roots_dead = all(p.poll() is not None for p in procs)
+            kids_dead = all(not pid_is_running(pid) for pid in descendants)
+            if roots_dead and kids_dead:
                 break
             time.sleep(0.1)
         for p in procs:
             if p.poll() is None:
-                p.kill()
+                terminate_popen_tree(p, force=True)
+        for pid in descendants:
+            if pid_is_running(pid):
+                terminate_pid_tree(pid, force=True)
 
     exit_code = 0
     try:
