@@ -194,7 +194,10 @@ test('Expert and Expert Team content details use the same full-width markdown la
 });
 
 test('Expert Team cards and details reuse the Expert visual primitives', () => {
-  assert.match(catalogPageSource, /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card"/);
+  assert.match(
+    catalogPageSource,
+    /<PageCard[\s\S]*className="agent-management-page-card agent-definition-card agent-management-catalog-card"/,
+  );
   assert.match(groupCardSource, /import \{ PageCard \} from '\.\.\/ui';/);
   assert.match(groupCardSource, /className="agent-management-page-card agent-group-card"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
@@ -280,6 +283,6 @@ for (const status of ['success', 'loading', 'error']) {
 }
 
 test('expert selection matches Hub identity or runtime package without clearing a missing catalog entry', () => {
-  assert.match(inputAreaSource, /item\.id === selectedAgentId \|\| item\.runtimePackageName === selectedAgentId/);
-  assert.match(inputAreaSource, /if \(selectedItem && \(selectedItem\.enabled === false/);
+  assert.match(inputAreaSource, /item\.id === selectedId \|\| item\.runtimePackageName === selectedId/);
+  assert.match(inputAreaSource, /if \(\s*selectedItem\s*&&\s*\(selectedItem\.enabled === false/);
 });
