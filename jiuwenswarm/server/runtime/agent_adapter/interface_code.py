@@ -40,6 +40,14 @@ from openjiuwen.harness.subagents.browser_agent import build_browser_agent_confi
 from openjiuwen.harness.subagents.code_agent import build_code_agent_config
 from openjiuwen.harness.subagents.explore_agent import build_explore_agent_config
 from openjiuwen.harness.subagents.plan_agent import build_plan_agent_config
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    build_statusline_setup_agent_config,
+)
 from openjiuwen.harness.tools.worktree import WorktreeConfig, WorktreeRail
 from openjiuwen.harness.workspace.workspace import Workspace
 
@@ -1013,18 +1021,44 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             config: dict[str, Any],
             config_base: dict[str, Any] | None = None,
     ) -> tuple[list[Any] | None, bool]:
-        """Build subagents for code mode: explore_agent + plan_agent + code_agent + browser_agent.
+        """Build subagents for code mode, including the built-in status-line setup agent.
 
         explore_agent / plan_agent 固定挂载（Code 模式核心子代理）。
         code_agent / browser_agent 按配置启用。
+
+        每个 spec 都带上父 Agent 的 ``sys_operation``，子 Agent 才能和父 Agent 落在
+        同一套文件系统边界上。
         """
         react_cfg = config if isinstance(config, dict) else {}
         subagents_cfg = react_cfg.get("subagents")
 
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
+        sys_operation = self._sys_operation
         subagents: list[Any] = []
         self._sync_browser_runtime_environment(config_base)
+
+        statusline_setup_cfg = (
+            subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        if self._is_subagent_default_enabled(statusline_setup_cfg):
+            statusline_setup_options = (
+                statusline_setup_cfg if isinstance(statusline_setup_cfg, dict) else {}
+            )
+            subagents.append(
+                build_statusline_setup_agent_config(
+                    model,
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        statusline_setup_options.get("max_iterations"),
+                        DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+                    ),
+                )
+            )
 
         # ── 固定挂载：explore_agent（Code 模式核心子代理，始终启用）──
         if not self._subagent_list_has_name(subagents, "explore_agent"):
@@ -1032,6 +1066,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             explore_spec = build_explore_agent_config(
                 model=model,
                 workspace=workspace,
+                sys_operation=sys_operation,
                 language=resolved_language,
                 max_iterations=parse_int(
                     explore_agent_cfg.get("max_iterations") if isinstance(explore_agent_cfg, dict) else None,
@@ -1047,6 +1082,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
             plan_spec = build_plan_agent_config(
                 model=model,
                 workspace=workspace,
+                sys_operation=sys_operation,
                 language=resolved_language,
                 max_iterations=parse_int(
                     plan_agent_cfg.get("max_iterations") if isinstance(plan_agent_cfg, dict) else None,
@@ -1070,6 +1106,7 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 code_spec = build_code_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     rails=code_agent_rails,
                     max_iterations=parse_int(
@@ -1091,14 +1128,18 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                         "[JiuwenSwarmCodeAdapter] browser subagent enabled without BROWSER_DRIVER; "
                         "defaulting to managed mode"
                     )
+                browser_max_iterations = None
+                if isinstance(browser_agent_cfg, dict):
+                    browser_max_iterations = browser_agent_cfg.get("max_iterations")
                 browser_spec = build_browser_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     max_iterations=parse_int(
-                        browser_agent_cfg.get("max_iterations") if isinstance(browser_agent_cfg, dict) else None,
-                        react_cfg.get("max_iterations", 15),
-                    )
+                        browser_max_iterations,
+                        DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+                    ),
                 )
                 browser_spec.factory_kwargs = {"auto_create_workspace": False}
                 subagents.append(browser_spec)
@@ -1315,6 +1356,10 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                 self._project_memory_rail.set_additional_directories(
                     runtime_config.trusted_dirs,
                 )
+
+        code_agent_rail = getattr(self, "_code_agent_rail", None)
+        if code_agent_rail is not None:
+            code_agent_rail.set_workspace_dir(project_workspace)
 
         # code 模式始终走 _update_rails_for_mode 的 code 逻辑
         await self._update_rails_for_mode(runtime_config.mode)
@@ -1591,8 +1636,14 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
         deep_config = getattr(agent, "deep_config", None)
         if deep_config is not None and getattr(deep_config, "model", None) is None:
             deep_config.model = model
-        if deep_config is not None and getattr(deep_config, "sys_operation", None) is None:
-            deep_config.sys_operation = self._create_sys_operation()
+        inherited_sys_operation = (
+            getattr(deep_config, "sys_operation", None) if deep_config is not None else None
+        )
+        if inherited_sys_operation is None:
+            inherited_sys_operation = self._create_sys_operation()
+            if deep_config is not None:
+                deep_config.sys_operation = inherited_sys_operation
+        self._sys_operation = inherited_sys_operation
         tool_cards = self.build_code_tool_cards(agent_id)
         added_tools = _merge_tool_cards(agent, tool_cards)
 

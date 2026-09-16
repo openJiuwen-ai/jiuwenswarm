@@ -135,7 +135,7 @@ def _make_fake_runtime() -> MagicMock:
 
 # ─── DeepAdapter (agent mode): only research_agent + browser_agent ──────
 
-def test_deep_adapter_subagents_defaults_to_none_when_unconfigured(
+def test_deep_adapter_subagents_defaults_to_statusline_when_unconfigured(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     adapter = _TestableJiuWenSwarmDeepAdapter()
@@ -145,14 +145,15 @@ def test_deep_adapter_subagents_defaults_to_none_when_unconfigured(
         "_browser_runtime_enabled",
         staticmethod(lambda: False),
     )
-    # DeepAdapter: no subagents configured, no browser → None
+    # DeepAdapter: no subagents configured, no browser → statusline still default-on
     subagents, _ = adapter.build_configured_subagents(
         model,
         {"max_iterations": 8},
         {},
     )
 
-    assert subagents is None
+    assert subagents is not None
+    assert [spec.agent_card.name for spec in subagents] == ["statusline-setup"]
 
 
 def test_browser_runtime_environment_tracks_mode_and_chrome_path(
@@ -208,13 +209,16 @@ def test_deep_adapter_subagents_includes_browser_by_default_when_runtime_enabled
 
     subagents, _ = adapter.build_configured_subagents(
         model,
-        {"max_iterations": 8},
+        {
+            "max_iterations": 8,
+            "subagents": {"statusline-setup": {"enabled": False}},
+        },
         {},
     )
 
     assert subagents is not None
     assert [item["name"] for item in subagents] == ["browser_agent"]
-    assert subagents[-1]["kwargs"]["max_iterations"] == 8
+    assert subagents[-1]["kwargs"]["max_iterations"] == 100
 
 
 def test_deep_adapter_subagents_only_includes_explicitly_enabled_agents(
@@ -248,6 +252,7 @@ def test_deep_adapter_subagents_only_includes_explicitly_enabled_agents(
             "subagents": {
                 "research_agent": {"enabled": True, "max_iterations": 5},
                 "browser_agent": {"max_iterations": 7},
+                "statusline-setup": {"enabled": False},
             },
         },
         {},
@@ -280,6 +285,7 @@ def test_deep_adapter_subagents_skips_browser_without_runtime(
         {
             "subagents": {
                 "browser_agent": {"max_iterations": 7},
+                "statusline-setup": {"enabled": False},
             },
         },
         {},

@@ -593,6 +593,9 @@ react:
       # max_iterations: 15
     browser_agent:
       enabled: true
+      # max_iterations: 100
+    statusline-setup:
+      enabled: true
       # max_iterations: 15
   # ============ SkillTurbo 配置 ============
   skill_turbo:

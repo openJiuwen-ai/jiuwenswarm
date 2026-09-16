@@ -20,7 +20,6 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from openjiuwen.harness.tools.base_tool import ToolOutput
 from openjiuwen.harness.workspace.workspace import Workspace
 
-from jiuwenswarm.common.utils import DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL
 from jiuwenswarm.server.runtime.debug_trace import invoke_subagent_with_trace
 
 if TYPE_CHECKING:
@@ -244,7 +243,12 @@ class AgentTool(Tool):
             "workspace": workspace,
             "skills": spec.skills,
             "backend": spec.backend if spec.backend is not None else parent_config.backend,
-            "sys_operation": None,  # 子 agent 不继承 sys_operation
+            # 子 agent 必须复用父 agent 的 SysOperation：它才是用户配置的文件系统边界
+            # （本地全量访问 / jiuwenbox 沙箱 / allow-deny 路径）。传 None 会让
+            # create_deep_agent 另建一套 LOCAL SysOperation，并在 restrict_to_work_dir
+            # 打开 restrict_to_sandbox——本地模式下子 agent 反而被锁进 workspace，沙箱
+            # 模式下子 agent 又逃出沙箱直接落到宿主机。
+            "sys_operation": getattr(parent_config, "sys_operation", None),
             "language": spec.language if spec.language is not None else parent_config.language,
             "prompt_mode": spec.prompt_mode if spec.prompt_mode is not None else parent_config.prompt_mode,
             "subagents": None,
@@ -254,8 +258,14 @@ class AgentTool(Tool):
         }
 
         factory_kwargs = dict(spec.factory_kwargs or {})
-        # read_file 默认不读取图片：关闭多模态内联（agent 定义显式开启时遵从）。
-        factory_kwargs.setdefault("enable_read_image_multimodal", DEFAULT_ENABLE_READ_IMAGE_MULTIMODAL)
+        # CodeAgentRail creates custom subagents directly instead of using
+        # DeepAgent.create_subagent().  Preserve the parent's explicit image
+        # policy by default, while allowing a custom Agent with another model
+        # to declare its own value through factory_kwargs.
+        factory_kwargs.setdefault(
+            "enable_read_image_multimodal",
+            getattr(parent_config, "enable_read_image_multimodal", None),
+        )
 
         sub_agent = create_deep_agent(**create_kwargs, **factory_kwargs)
         logger.info("[AgentTool] Created sub-agent for '%s' via create_deep_agent()", agent_def.name)
@@ -378,6 +388,16 @@ class CodeAgentRail(DeepAgentRail):
     def uninit(self, agent: DeepAgent) -> None:
         self._unregister_agent_tool(agent)
         self._agent = None
+
+    def set_workspace_dir(self, workspace_dir: str) -> None:
+        """Rebind custom-agent discovery to the current Code workspace."""
+        normalized = str(workspace_dir or "").strip()
+        if not normalized or normalized == self._workspace_dir:
+            return
+        self._workspace_dir = normalized
+        if self._agent is not None:
+            self._unregister_agent_tool(self._agent)
+            self._register_agent_tool()
 
     def _register_agent_tool(self) -> None:
         custom_agents = self._load_custom_agents()

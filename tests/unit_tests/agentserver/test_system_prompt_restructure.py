@@ -1166,6 +1166,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
         "subagents": {
             "research_agent": {"enabled": True},
             "browser_agent": {"max_iterations": 7},
+            "statusline-setup": {"enabled": False},
         },
     }
 
@@ -1187,6 +1188,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
     mock_research.assert_called_once_with(
         model,
         workspace="/tmp/jiuwenswarm-workspace",
+        sys_operation=adapter._sys_operation,
         language="cn",
         max_iterations=9,
         rails=None,
@@ -1199,6 +1201,7 @@ def test_deep_adapter_subagents_includes_optional_browser_and_configured_researc
     mock_browser.assert_called_once_with(
         model,
         workspace="/tmp/jiuwenswarm-workspace",
+        sys_operation=adapter._sys_operation,
         language="cn",
         max_iterations=7,
         rails=None,
@@ -1209,7 +1212,10 @@ def test_deep_adapter_subagents_omits_research_without_explicit_enable():
     adapter = _TestableJiuWenSwarmDeepAdapter()
     adapter.set_workspace_dir("/tmp/jiuwenswarm-workspace")
     model = object()
-    config = {"max_iterations": 9}
+    config = {
+        "max_iterations": 9,
+        "subagents": {"statusline-setup": {"enabled": False}},
+    }
 
     with (
         patch.object(adapter, "_resolve_runtime_language", return_value="cn"),

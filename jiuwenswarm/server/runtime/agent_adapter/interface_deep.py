@@ -106,6 +106,14 @@ except ImportError:
         return "auto" if default_auto_save else "suggest"
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
 from openjiuwen.harness.subagents.research_agent import build_research_agent_config
+from jiuwenswarm.agents.harness.common.browser_defaults import (
+    DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
+)
+from jiuwenswarm.server.runtime.agent_adapter.statusline_setup_agent import (
+    DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+    STATUSLINE_SETUP_AGENT_TYPE,
+    build_statusline_setup_agent_config,
+)
 from openjiuwen.harness.tools import (
     create_audio_tools,
     create_vision_tools,
@@ -4013,8 +4021,31 @@ class JiuWenSwarmDeepAdapter:
 
         resolved_language = self._resolve_runtime_language()
         workspace = self._workspace_dir or "./"
+        sys_operation = self._sys_operation
         subagents: list[Any] = []
         should_add_general_purpose = False
+
+        statusline_setup_cfg = (
+            subagents_cfg.get(STATUSLINE_SETUP_AGENT_TYPE)
+            if isinstance(subagents_cfg, dict)
+            else None
+        )
+        if self._is_subagent_default_enabled(statusline_setup_cfg):
+            statusline_setup_options = (
+                statusline_setup_cfg if isinstance(statusline_setup_cfg, dict) else {}
+            )
+            subagents.append(
+                build_statusline_setup_agent_config(
+                    model,
+                    workspace=workspace,
+                    sys_operation=sys_operation,
+                    language=resolved_language,
+                    max_iterations=parse_int(
+                        statusline_setup_options.get("max_iterations"),
+                        DEFAULT_STATUSLINE_SETUP_MAX_ITERATIONS,
+                    ),
+                )
+            )
 
         # Build progressive tool rail for subagents if enabled.
         subagent_rails: list[Any] | None = None
@@ -4044,6 +4075,7 @@ class JiuWenSwarmDeepAdapter:
                     build_research_agent_config(
                         model,
                         workspace=workspace,
+                        sys_operation=sys_operation,
                         language=resolved_language,
                         max_iterations=parse_int(
                             research_agent_cfg.get("max_iterations"),
@@ -4076,18 +4108,18 @@ class JiuWenSwarmDeepAdapter:
                     "[JiuWenSwarmDeepAdapter] browser subagent enabled without BROWSER_DRIVER; "
                     "defaulting to managed mode"
                 )
+            browser_max_iterations = None
+            if isinstance(browser_agent_cfg, dict):
+                browser_max_iterations = browser_agent_cfg.get("max_iterations")
             subagents.append(
                 build_browser_agent_config(
                     model,
                     workspace=workspace,
+                    sys_operation=sys_operation,
                     language=resolved_language,
                     max_iterations=parse_int(
-                        (
-                            browser_agent_cfg.get("max_iterations")
-                            if isinstance(browser_agent_cfg, dict)
-                            else None
-                        ),
-                        react_cfg.get("max_iterations", 15),
+                        browser_max_iterations,
+                        DEFAULT_BROWSER_AGENT_MAX_ITERATIONS,
                     ),
                     rails=subagent_rails,
                 )
@@ -4108,6 +4140,7 @@ class JiuWenSwarmDeepAdapter:
                 _load_custom_subagents(
                     self._workspace_dir, subagents_cfg, model, workspace,
                     __name__, model_cache=self._model_cache,
+                    sys_operation=sys_operation,
                 )
             )
         except Exception:
@@ -21431,6 +21464,7 @@ def _agent_def_to_subagent_config(
     model: Any,
     workspace: str,
     model_cache: dict[str, Any] | None = None,
+    sys_operation: SysOperation | None = None,
 ) -> SubAgentConfig:
     """将 AgentDefinition 转换为 SubAgentConfig，用于 SubagentRail 注册。
 
@@ -21439,6 +21473,10 @@ def _agent_def_to_subagent_config(
         model: 父 agent 的 Model 实例（作为默认模型）
         workspace: 工作空间路径
         model_cache: 模型缓存字典（用于按名称查找指定模型）
+        sys_operation: 父 agent 的 SysOperation。子 agent 必须复用同一文件系统
+            边界。``DeepAgent.create_subagent`` 只在 ``spec.workspace`` 同时非空时
+            才采用 ``spec.sys_operation``，因此 workspace 也要一并写入 spec，否则
+            会落到一套带 ``restrict_to_sandbox`` 约束的新 LOCAL SysOperation。
     """
     from openjiuwen.harness.schema.config import SubAgentConfig
 
@@ -21486,6 +21524,8 @@ def _agent_def_to_subagent_config(
         system_prompt=agent_def.prompt,
         tools=tools,
         model=resolved_model,
+        workspace=workspace,
+        sys_operation=sys_operation,
         skills=agent_def.skills,
         max_iterations=agent_def.max_iterations,
         enable_task_loop=True,
@@ -21511,13 +21551,14 @@ def _load_custom_subagents(
         model: 模型配置
         workspace: 工作空间路径
         logger_name: 日志记录器名称
-        **kwargs: 额外参数，支持 model_cache 等
+        **kwargs: 额外参数，支持 model_cache、sys_operation 等
     """
     from jiuwenswarm.server.runtime.agent_config_service import AgentConfigService
 
     _logger = logging.getLogger(logger_name)
     agent_service = AgentConfigService(workspace_dir)
     model_cache: dict | None = kwargs.get("model_cache")
+    sys_operation = kwargs.get("sys_operation")
     result: list[Any] = []
     for agent_def in agent_service.list_agents():
         if agent_def.source == "builtin":
@@ -21526,7 +21567,9 @@ def _load_custom_subagents(
         # 只有显式 enabled: true 才加载
         if not (isinstance(subagent_cfg, dict) and bool(subagent_cfg.get("enabled", False))):
             continue
-        custom_spec = _agent_def_to_subagent_config(agent_def, model, workspace, model_cache)
+        custom_spec = _agent_def_to_subagent_config(
+            agent_def, model, workspace, model_cache, sys_operation,
+        )
         custom_spec.factory_kwargs = {"auto_create_workspace": False}
         result.append(custom_spec)
         _logger.info("loaded custom agent '%s' from %s", agent_def.name, agent_def.source)
