@@ -180,6 +180,104 @@ test('composer context-menu paste dispatches clipboard image event', async () =>
   });
 });
 
+test('number inputs treat full value as selection for copy/cut/paste', async () => {
+  await withDom(async (window) => {
+    const clipboard = { value: '12' };
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: async () => clipboard.value,
+        writeText: async (value) => {
+          clipboard.value = value;
+        },
+      },
+    });
+
+    const number = window.document.createElement('input');
+    number.type = 'number';
+    number.value = '60';
+    // Chromium: selectionStart/End are null for type=number.
+    Object.defineProperty(number, 'selectionStart', {
+      configurable: true,
+      get: () => null,
+    });
+    Object.defineProperty(number, 'selectionEnd', {
+      configurable: true,
+      get: () => null,
+    });
+    number.setSelectionRange = () => {
+      throw new window.DOMException('InvalidStateError');
+    };
+    window.document.body.append(number);
+
+    assert.equal(getSelectedText(number), '60');
+    const caps = getTextEditCapabilities(number);
+    assert.equal(caps.canCopy, true);
+    assert.equal(caps.canCut, true);
+
+    await runTextEditAction(number, 'paste');
+    assert.equal(number.value, '12');
+  });
+});
+
+test('paste respects maxLength on text inputs', async () => {
+  await withDom(async (window) => {
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: async () => '12',
+        writeText: async () => {},
+      },
+    });
+
+    const input = window.document.createElement('input');
+    input.type = 'text';
+    input.maxLength = 4;
+    input.value = 'ab';
+    window.document.body.append(input);
+    input.focus();
+    input.setSelectionRange(2, 2);
+
+    await runTextEditAction(input, 'paste');
+    assert.equal(input.value, 'ab12');
+    await runTextEditAction(input, 'paste');
+    assert.equal(input.value, 'ab12');
+  });
+});
+
+test('paste prefers insertText so undo stack can be used', async () => {
+  await withDom(async (window) => {
+    Object.defineProperty(window.navigator, 'clipboard', {
+      configurable: true,
+      value: {
+        readText: async () => '12',
+        writeText: async () => {},
+      },
+    });
+
+    const input = window.document.createElement('input');
+    input.type = 'text';
+    input.value = 'hello';
+    window.document.body.append(input);
+    input.focus();
+    input.setSelectionRange(5, 5);
+
+    let insertTextArgs = null;
+    window.document.execCommand = (command, _show, value) => {
+      if (command === 'insertText') {
+        insertTextArgs = value;
+        input.value = `${input.value}${value}`;
+        return true;
+      }
+      return false;
+    };
+
+    await runTextEditAction(input, 'paste');
+    assert.equal(insertTextArgs, '12');
+    assert.equal(input.value, 'hello12');
+  });
+});
+
 test('composer context-menu paste prefers native clipboard files over images', async () => {
   await withDom(async (window) => {
     const blob = new window.Blob([new Uint8Array([1])], { type: 'image/png' });
