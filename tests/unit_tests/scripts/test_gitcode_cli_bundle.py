@@ -36,13 +36,13 @@ def test_gitcode_bundle_verifier_refuses_to_pass_outside_the_frozen_exe(monkeypa
         verifier["verify_gitcode_cli_bundle"]()
 
 
-def test_dev_extra_pins_the_version_the_frozen_verifier_expects():
+def test_dependencies_pins_the_version_the_frozen_verifier_expects():
     pyproject = tomllib.loads((ROOT / "pyproject.toml").read_text(encoding="utf-8"))
     expected = _verifier()["EXPECTED_VERSION"]
 
     pins = [
         requirement
-        for requirement in pyproject["project"]["optional-dependencies"]["dev"]
+        for requirement in pyproject["project"]["dependencies"]
         if requirement.startswith("gitcode-cli")
     ]
 
