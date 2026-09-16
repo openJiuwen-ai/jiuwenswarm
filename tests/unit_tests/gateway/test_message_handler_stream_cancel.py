@@ -290,7 +290,12 @@ async def test_tui_no_longer_cancels_orphan_session() -> None:
 
 
 @pytest.mark.asyncio
-async def test_web_channel_only_cancels_matching_session() -> None:
+async def test_web_channel_keeps_same_session_stream_queued() -> None:
+    """issue #1548：同 session 流不被新 chat.send 顶替（改由 per-session 锁排队保序）.
+
+    web 非单用户 channel：既不取消同 session 的流（保序排队），也不取消
+    其他 session 的流（孤儿流清理只针对单用户 channel）。
+    """
     handler = _TestMessageHandler.create()
     same_session_task = _seed_stream_task(
         handler, rid="rid-a", channel_id="web", session_id="sess_a",
@@ -303,15 +308,16 @@ async def test_web_channel_only_cancels_matching_session() -> None:
         _chat_send_message(channel_id="web", session_id="sess_a"),
     )
 
-    assert cancelled == 1
-    assert same_session_task.cancelled()
+    assert cancelled == 0
+    assert not same_session_task.cancelled()
     assert not other_session_task.cancelled()
     await asyncio.sleep(0)
-    assert len(_FakeAgentClient.sent_requests) == 1
+    assert len(_FakeAgentClient.sent_requests) == 0
 
 
 @pytest.mark.asyncio
 async def test_ordinary_replacement_keeps_develop_cleanup_failure_behavior() -> None:
+    """issue #1548 后同 session 流不取消（排队保序），AgentServer 清理失败路径不再触发."""
     handler = _TestMessageHandler.create_with_client(_FailedCancelAgentClient())
     old_task = _seed_stream_task(
         handler,
@@ -324,8 +330,8 @@ async def test_ordinary_replacement_keeps_develop_cleanup_failure_behavior() -> 
         _chat_send_message(channel_id="web", session_id="sess-replace")
     )
 
-    assert cancelled == 1
-    assert old_task.cancelled()
+    assert cancelled == 0
+    assert not old_task.cancelled()
 
 
 @pytest.mark.asyncio
@@ -518,6 +524,7 @@ async def test_interaction_managed_goal_input_does_not_cancel_existing_stream() 
 
 @pytest.mark.asyncio
 async def test_plain_chat_send_still_replaces_existing_stream() -> None:
+    """issue #1548：普通 chat.send 不再顶替同 session 流（per-session 锁排队保序）."""
     handler = _TestMessageHandler.create()
     goal_task = _seed_stream_task(
         handler, rid="rid-goal", channel_id="tui", session_id="sess_goal",
@@ -527,8 +534,8 @@ async def test_plain_chat_send_still_replaces_existing_stream() -> None:
 
     try:
         cancelled = await handler.cancel_stream_tasks_for_channel(msg)
-        assert cancelled == 1
-        assert goal_task.cancelled()
+        assert cancelled == 0
+        assert not goal_task.cancelled()
     finally:
         if not goal_task.done():
             goal_task.cancel()
