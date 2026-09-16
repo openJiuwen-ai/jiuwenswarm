@@ -128,7 +128,6 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
         obs_cfg = build_observability_config(
             cfg,
             service_name="jiuwenswarm-agent",
-            default_backend="otlp",
             traces_dir=traces_dir,
         )
         provider_existed = acquire_observability(obs_cfg)
@@ -146,17 +145,17 @@ def _sync_agent_observability_locked(*, force: bool) -> None:
                     "[AgentObservability] reusing existing observability provider "
                     "(owned by another subsystem)"
                 )
-            elif cfg.get("exporter", "otlp_grpc") == "file":
+            elif obs_cfg.exporter == "file":
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s traces_dir=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    traces_dir,
+                    obs_cfg.exporter,
+                    obs_cfg.traces_dir,
                 )
             else:
                 logger.info(
                     "[AgentObservability] enabled: exporter=%s endpoint=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    cfg.get("endpoint", "http://localhost:4317"),
+                    obs_cfg.exporter,
+                    obs_cfg.endpoint,
                 )
     except Exception as exc:
         _agent_observability_active = False
