@@ -20,7 +20,6 @@ import type { AskUserQuestionPayload, Question, QuestionOption, UserAnswer } fro
 import { formatToolArguments } from '../../utils';
 import { classifyAuthOption, type AuthSemantic } from './promptRouting';
 import { AutoReviewerDetails, AutoReviewerStatusBadge } from '../ChatPanel/AutoReviewerStatus';
-import { permissionQuestionKind } from '../../stores/pendingQuestionQueue';
 
 interface AuthorizationPromptProps {
   pending: AskUserQuestionPayload;
@@ -53,7 +52,14 @@ export function resolveAuthorizationActions(questions: Question[]): ResolvedActi
       option,
       label: option.label,
       tip: (option.description || '').trim(),
-    }));
+    }))
+    .filter((action) =>
+      questions.length <= 1 ||
+      (action.semantic !== 'other' &&
+        questions.every((question) =>
+          question.options.some((option) => optionSemantic(option) === action.semantic),
+        )),
+    );
   const rank = (semantic: AuthSemantic) => {
     const index = ACTION_ORDER.indexOf(semantic);
     return index === -1 ? ACTION_ORDER.length : index;
@@ -64,7 +70,6 @@ export function resolveAuthorizationActions(questions: Question[]): ResolvedActi
 export function buildAuthorizationAnswers(
   questions: Question[],
   picked: ResolvedAction,
-  smart = false,
 ): UserAnswer[] {
   return questions.map((question) => {
     const match =
@@ -74,8 +79,8 @@ export function buildAuthorizationAnswers(
           (option.value || option.label) === (picked.option.value || picked.option.label),
       );
     const reject = question.options.find((option) => optionSemantic(option) === 'reject');
-    const selected = match || (smart ? reject : question.options[0]);
-    return { selected_options: [selected ? selected.value || selected.label : smart ? 'reject' : picked.label] };
+    const selected = match || reject;
+    return { selected_options: [selected ? selected.value || selected.label : 'reject'] };
   });
 }
 
@@ -189,7 +194,6 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
 
   const questions = pending.questions ?? [];
   const primary = questions[0];
-  const smart = pending.source === 'permission_interrupt' && permissionQuestionKind(questions) === 'smart';
   const reviewer = primary?.reviewer_metadata;
   const isConfirm = pending.source === 'confirm_interrupt';
   const count = questions.length;
@@ -203,8 +207,8 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
 
   /** 把选中的语义应用到所有 question（多条时统一处理）。 */
   const buildAnswers = useCallback(
-    (picked: ResolvedAction): UserAnswer[] => buildAuthorizationAnswers(questions, picked, smart),
-    [questions, smart],
+    (picked: ResolvedAction): UserAnswer[] => buildAuthorizationAnswers(questions, picked),
+    [questions],
   );
 
   const handlePick = useCallback(
@@ -224,7 +228,7 @@ export function AuthorizationPrompt({ pending, onSubmit }: AuthorizationPromptPr
 
   return (
     <div
-      className={smart ? 'auth-prompt auth-prompt--smart' : 'auth-prompt'}
+      className="auth-prompt"
       role="alertdialog"
       aria-label={title}
       data-testid="interaction-slot-auth-prompt"

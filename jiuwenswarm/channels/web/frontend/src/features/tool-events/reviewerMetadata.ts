@@ -53,5 +53,5 @@ export function normalizeReviewerMetadata(payload: UnknownPayload): AutoReviewer
     risk_level: asString(source.risk_level),
     user_review_hint: asString(source.user_review_hint),
   };
-  return effectiveReviewerStatus(reviewer) ? reviewer : undefined;
+  return Object.values(reviewer).some(value => value !== undefined) ? reviewer : undefined;
 }

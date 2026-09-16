@@ -143,10 +143,7 @@ def _permission_tool_result_text(result: Any) -> str:
 
 
 def _permission_tool_result_payload(result: Any, text: str) -> Any:
-    if (
-        classify_permission_result(result) in {"denied", "user_rejection"}
-        or _is_permission_denied_metadata_payload(result)
-    ):
+    if _is_permission_denied_metadata_payload(result):
         return _permission_denied_tool_result_payload(result, text)
     return text
 

@@ -24,7 +24,7 @@ export function pendingQuestionIdentity(payload: AskUserQuestionPayload): string
   return `interaction\u0000${payload.source ?? ''}\u0000${requestId}`;
 }
 
-export function permissionQuestionKind(
+function permissionQuestionKind(
   questions: AskUserQuestionPayload['questions'],
 ): 'legacy' | 'smart' | undefined {
   if (
