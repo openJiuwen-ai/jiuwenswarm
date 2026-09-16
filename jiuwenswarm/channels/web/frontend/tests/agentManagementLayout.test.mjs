@@ -88,6 +88,55 @@ test('expert catalog renders inside the standard page shell and toolbar', async 
   assert.match(markup, /data-testid="agent-management-search"[^>]*class="relative flex-shrink-0"/);
 });
 
+for (const detailStatus of ['loading', 'error']) {
+  test(`expert ${detailStatus} keeps the back bar outside the centered content`, async () => {
+    const { DefinitionDetailPage } = await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const markup = renderToStaticMarkup(React.createElement(DefinitionDetailPage, {
+      detail: null, detailStatus, detailError: 'Unavailable', onBack() {}, onRetry() {},
+    }));
+    const document = new JSDOM(markup).window.document;
+    const shell = document.querySelector('[data-testid="agent-detail"]');
+    assert.ok(shell, 'Loading and errors must reuse the normal detail shell');
+    assert.equal(shell.classList.contains('agent-management-detail--state'), false);
+    const back = shell.querySelector('[data-testid="agent-management-detail-back"]');
+    assert.equal(back.parentElement, shell);
+    const content = shell.querySelector('[data-testid="agent-management-detail-state"]');
+    assert.ok(content);
+    assert.equal(content.contains(back), false);
+    assert.equal(content.getAttribute('role'), detailStatus === 'loading' ? 'status' : 'alert');
+    assert.equal(content.querySelector('[data-testid="agent-management-detail-retry"]') !== null, detailStatus === 'error');
+  });
+}
+
+for (const [source, installed, expected] of [['local', true, 'delete'], ['local', false, 'delete'], ['hub', true, 'uninstall'], ['builtin', true, 'uninstall']]) {
+  test(`expert ${source} installed=${installed} uses ${expected}`, async () => {
+    const { DefinitionDetailPage } = await import('../node_modules/.cache/agent-management-layout/DefinitionDetailPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const detail = { id: 'test', runtimePackageName: 'test', displayName: 'Test', description: '', source, installed, connectionState: 'connected', tags: [], avatarUrl: null, skills: [], tools: [], rails: [], mcps: [], suggestedPrompts: [], pendingConnectors: [], details: '', prompt: '' };
+    const markup = renderToStaticMarkup(React.createElement(DefinitionDetailPage, { detail, detailStatus: 'ready', detailTab: 'content', fileEntries: [], onBack() {}, onUninstall() {} }));
+    const button = new JSDOM(markup).window.document.querySelector('.agent-management-detail-action--uninstall');
+    assert.equal(button.textContent, expected === 'delete' ? '删除' : '卸载');
+  });
+}
+
+for (const name of ['MarketCard', 'MyMarketCard']) {
+  for (const [state, quickAction, label] of [['connected', 'install', '使用'], ['idle', 'install', '安装'], ['idle', 'connect', '连接']]) {
+    test(`${name} ${state}/${quickAction} exposes one text action`, async () => {
+      const module = await import(`../node_modules/.cache/agent-management-layout/${name}.mjs`);
+      const { JSDOM } = await import('jsdom');
+      const html = renderToStaticMarkup(React.createElement(module[name], { title: 'Test', tags: ['变更审查', '行为覆盖', '合入就绪'], description: '', avatar: { firstChar: "T", style: {} }, state, quickAction, onUse() {}, onQuickAdd() {}, onQuickInstall() {} }));
+      const document = new JSDOM(html).window.document;
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('变更审查'));
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('行为覆盖'));
+      assert.ok(document.querySelector('.entity-header__tags').textContent.includes('合入就绪'));
+      const buttons = document.querySelectorAll('button');
+      assert.equal(buttons.length, 1);
+      assert.equal(buttons[0].textContent, label);
+      assert.ok(buttons[0].classList.contains('connector-market-card-install'));
+    });
+  }
+}
 test('Expert and Expert Team management keep the shared page shell and field limits', () => {
   assert.match(panelSource, /<div className="page-shell flex-none"[^>]*>\s*<PageHeader/);
   assert.match(groupCatalogSource, /className="page-shell agent-management-toolbar"/);
@@ -167,4 +216,29 @@ test('Expert Team upload dialog puts Expert first and removes the reference link
     /const typeHint = kind === 'group' \? t\('agentManagement\.group\.form\.uploadHint'\) : t\('agentManagement\.form\.uploadHint'\)/,
   );
   assert.doesNotMatch(groupUploadSource, /uploadHintReference|hint-reference/);
+});
+
+for (const status of ['success', 'loading', 'error']) {
+  test(`expert catalog keeps page two cards during ${status}`, async () => {
+    const { CatalogPage } = await import('../node_modules/.cache/agent-management-layout/CatalogPage.mjs');
+    const { JSDOM } = await import('jsdom');
+    const items = Array.from({ length: 20 }, (_, i) => ({ id: `expert-${i}`, runtimePackageName: `expert-${i}`, displayName: `Expert ${i}`, description: '', source: 'local', installed: true, connectionState: 'connected', tags: [], avatarUrl: null }));
+    const document = new JSDOM(renderToStaticMarkup(React.createElement(CatalogPage, {
+      scope: 'mine', items, totalItems: items.length, page: 2, query: '', category: '', status, error: 'Refresh failed', onPageChange() {},
+    }))).window.document;
+    const cards = document.querySelectorAll('[data-testid="agent-card"]');
+    assert.equal(cards.length, 5);
+    assert.equal(cards[0].getAttribute('data-variant'), 'expert-15');
+    assert.equal(document.querySelector('[data-testid="agent-catalog-page-previous"]').disabled, false);
+    assert.equal(document.querySelector('[data-testid="agent-catalog-page-next"]').disabled, true);
+    for (const card of cards) {
+      assert.equal(card.querySelectorAll('button').length, 1);
+      assert.ok(card.querySelector('.agent-management-card-action--use'));
+    }
+  });
+}
+
+test('expert selection matches Hub identity or runtime package without clearing a missing catalog entry', () => {
+  assert.match(inputAreaSource, /item\.id === selectedAgentId \|\| item\.runtimePackageName === selectedAgentId/);
+  assert.match(inputAreaSource, /if \(selectedItem && \(selectedItem\.enabled === false/);
 });

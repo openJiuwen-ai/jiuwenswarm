@@ -1,13 +1,3 @@
-function decodeQuotedPythonLikeString(raw: string): string {
-  return raw
-    .replace(/\\r/g, '\r')
-    .replace(/\\n/g, '\n')
-    .replace(/\\t/g, '\t')
-    .replace(/\\'/g, "'")
-    .replace(/\\"/g, '"')
-    .replace(/\\\\/g, '\\');
-}
-
 /** 字面量 `\\n` 明显多于真换行时还原，避免 GFM 表格解析失败。 */
 export function unescapeLiteralNewlines(text: string): string {
   const realNl = (text.match(/\n/g) || []).length;
@@ -108,49 +98,21 @@ export function findAssistantSegmentIdForFinal(
   return null;
 }
 
+/**
+ * 字符串类型的 chat.final.content 就是展示正文，仅做展示层归一（还原字面
+ * 换行、去掉开头的空行）。
+ *
+ * 协议包装（agent invoke 风格的 `{"output": ..., "result_type": ...}` 字典）
+ * 在结构化数据进入正文之前由后端解包（_parse_stream_chunk：answer chunk 的
+ * payload.output 提取后才写入 content），前端不得再从正文中按关键字猜测
+ * 解包——回答本身包含 JSON 示例（含 output/delta.content 字段）时，旧逻辑
+ * 会把示例里的值当成协议包装提取出来，覆盖整篇回答，表现为正文被截断。
+ * 后端若引入新包装，必须携带明确的结构标识并在进入正文前解包。
+ */
 export function normalizeFinalContent(payload: Record<string, unknown>): string {
   const rawContent = payload.content;
   if (typeof rawContent !== 'string') {
     return '';
   }
-
-  const trimmed = rawContent.trim();
-
-  if (trimmed.startsWith('{') && trimmed.endsWith('}')) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      if (typeof parsed.output === 'string') {
-        return normalizeFinalDisplayText(parsed.output);
-      }
-    } catch {
-      // ignore
-    }
-  }
-
-  if (!trimmed.includes('result_type') || !trimmed.includes('output')) {
-    try {
-      const parsed = JSON.parse(trimmed) as Record<string, unknown>;
-      if (parsed.delta && typeof parsed.delta === 'object') {
-        const delta = parsed.delta as Record<string, unknown>;
-        if (typeof delta.content === 'string') {
-          return normalizeFinalDisplayText(delta.content);
-        }
-      }
-    } catch {
-      // ignore
-    }
-    return normalizeFinalDisplayText(rawContent);
-  }
-
-  const singleQuoted = rawContent.match(/['"]output['"]\s*:\s*'((?:\\'|[^'])*)'/s);
-  if (singleQuoted?.[1] != null) {
-    return normalizeFinalDisplayText(decodeQuotedPythonLikeString(singleQuoted[1]));
-  }
-
-  const doubleQuoted = rawContent.match(/['"]output['"]\s*:\s*"((?:\\"|[^"])*)"/s);
-  if (doubleQuoted?.[1] != null) {
-    return normalizeFinalDisplayText(decodeQuotedPythonLikeString(doubleQuoted[1]));
-  }
-
   return normalizeFinalDisplayText(rawContent);
 }

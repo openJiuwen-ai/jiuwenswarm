@@ -83,7 +83,6 @@ from jiuwenswarm.server.runtime.session.session_metadata import (
     build_server_push_message,
     get_all_sessions_metadata,
     get_session_metadata,
-    remove_session_metadata_cache,
 )
 from jiuwenswarm.server.runtime.session.session_message_service import (
     SessionMessageExecutionResult,
@@ -1108,10 +1107,8 @@ class AgentWebSocketServer:
         self._acp_client_capabilities_by_ws: dict[int, dict[str, Any]] = {}
         # AgentServer and the process CLI share this transport-independent Runtime.
         # Keep the manager alias for legacy transport handlers.
-        self._runtime = AgentRuntime(
+        self._runtime = self._build_runtime(
             plan_controller=_SERVER_PLAN_CONTROLLER,
-            enable_kvc_tracking=True,
-            before_agent_cleanup=self._close_kv_cache,
         )
         self._agent_manager = self._runtime.agent_manager
         self._runtime_push_handler = None
@@ -1148,6 +1145,9 @@ class AgentWebSocketServer:
         # skills.* 等无状态 RPC：AgentManager 未缓存 agent 时复用的轻量 JiuWenSwarm，
         # 避免每次 cache miss 都 new 导致 SkillNet 异步安装等实例态断裂。
         self._stateless_fallback_agents: dict[str, Any] = {}
+        self._asset_publish_api = None
+        self._asset_publish_lock = asyncio.Lock()
+        self._asset_start_task = None
         # session_id → all live stream tasks. This is host lifecycle tracking
         # for interrupt/connection cleanup only; it never decides interaction
         # output ownership.
@@ -1312,6 +1312,20 @@ class AgentWebSocketServer:
         self._tokenizer_warmup_tasks.add(task)
         task.add_done_callback(self._tokenizer_warmup_tasks.discard)
 
+    @staticmethod
+    async def _start_symphony_recovery() -> None:
+        """Recover Flow candidates without affecting AgentServer availability."""
+
+        try:
+            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+            await get_swarm_symphony_service().start()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] Symphony Flow recovery failed: %s",
+                exc,
+            )
+
     async def start(self) -> None:
         """启动或恢复面向 Gateway 的 WebSocket 服务端。
 
@@ -1332,11 +1346,8 @@ class AgentWebSocketServer:
             logger.warning("[AgentWebSocketServer] 服务端已在运行")
             return
 
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-            get_kv_cache_runtime,
-        )
-
-        get_kv_cache_runtime()
+        owner = self._kv_cache_application_owner
+        await owner.activate_from_config()
 
         from jiuwenswarm.server.runtime.session.session_archive import SessionArchiveService
         self._archive_service = SessionArchiveService(self._execution_runtime())
@@ -1375,6 +1386,8 @@ class AgentWebSocketServer:
             "[AgentWebSocketServer] 已启动: ws://%s:%s", self._host, self._port
         )
 
+        self._asset_start_task = asyncio.create_task(self._start_asset_services())
+
         # The port is already listening. Remote tokenizer downloads must not
         # delay startup; ContextEngine is local-only and uses string fallback
         # if this task has not completed when the first context is created.
@@ -1388,7 +1401,6 @@ class AgentWebSocketServer:
                 try:
                     await self._runtime.start()
                     await self._heartbeat_runtime.start()
-                    return
                 except Exception as exc:  # noqa: BLE001
                     logger.warning(
                         "[AgentWebSocketServer] Runtime warmup failed; "
@@ -1396,8 +1408,11 @@ class AgentWebSocketServer:
                         retry_delay,
                         exc,
                     )
-                await asyncio.sleep(retry_delay)
-                retry_delay = min(30.0, retry_delay * 2)
+                    await asyncio.sleep(retry_delay)
+                    retry_delay = min(30.0, retry_delay * 2)
+                    continue
+                await self._start_symphony_recovery()
+                return
 
         self._checkpointer_warmup_task = asyncio.create_task(
             _start_runtime(), name="runtime-start"
@@ -1762,6 +1777,17 @@ class AgentWebSocketServer:
 
     async def _stop_main_services(self) -> None:
         """Stop AgentServer-owned services before optional host cleanup."""
+        task = getattr(self, "_asset_start_task", None)
+        if task is not None:
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+            self._asset_start_task = None
+        api = getattr(self, "_asset_publish_api", None)
+        if api is not None:
+            await api.close()
+            self._asset_publish_api = None
+        from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import close_hub_catalog_cache
+        await close_hub_catalog_cache()
         archive_service = getattr(self, "_archive_service", None)
         if archive_service is not None:
             await archive_service.close()
@@ -1821,11 +1847,20 @@ class AgentWebSocketServer:
         closing_runtime = self._runtime
         runtime_close_completed = False
         runtime_close_error: BaseException | None = None
+        # Stop optional remote KVC activity as soon as ingress is closed.  This
+        # must also happen when Runtime close is later rejected by an unfinished
+        # two-phase Session operation.  suspend() performs local cancellation
+        # only; it never closes the shared KVC runtime or sends root eviction.
+        try:
+            await self._suspend_kv_cache()
+        except BaseException as exc:  # preserve cancellation until host cleanup
+            runtime_close_error = exc
         try:
             await closing_runtime.close()
             runtime_close_completed = True
         except BaseException as exc:  # preserve cancellation until host cleanup
-            runtime_close_error = exc
+            if runtime_close_error is None:
+                runtime_close_error = exc
             if isinstance(exc, Exception):
                 logger.warning(
                     "[AgentWebSocketServer] runtime shutdown failed: %s",
@@ -1842,10 +1877,8 @@ class AgentWebSocketServer:
                 # its next lifecycle. Plan state is process-local and must not
                 # cross a completed stop/start boundary.
                 plan_controller = _renew_server_plan_controller()
-                self._runtime = AgentRuntime(
+                self._runtime = self._build_runtime(
                     plan_controller=plan_controller,
-                    enable_kvc_tracking=True,
-                    before_agent_cleanup=self._close_kv_cache,
                 )
                 self._agent_manager = self._runtime.agent_manager
                 self._heartbeat_runtime = HeartbeatRailRuntime(self)
@@ -1869,6 +1902,16 @@ class AgentWebSocketServer:
                     ConfigAdapter(),
                 ):
                     self._adapter_registry.register(adapter)
+
+        try:
+            from jiuwenswarm.symphony.service import get_swarm_symphony_service
+
+            await get_swarm_symphony_service().close()
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[AgentWebSocketServer] Symphony runtime close failed: %s",
+                exc,
+            )
 
         runtime_push_handler = getattr(self, "_runtime_push_handler", None)
         if runtime_push_handler is not None:
@@ -1896,23 +1939,50 @@ class AgentWebSocketServer:
             raise runtime_close_error
         logger.info("[AgentWebSocketServer] 已停止")
 
-    @staticmethod
-    async def _close_kv_cache() -> None:
-        """Release application-owned KVC while Runtime model resources are alive."""
+    async def _suspend_kv_cache(self) -> None:
+        """Detach KVC locally without sending management requests during stop."""
+        owner = getattr(self, "_kv_cache_application_owner", None)
+        if owner is None:
+            return
         try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                cancel_pending_tasks,
-            )
-
-            await cancel_pending_tasks()
+            await owner.suspend()
         except Exception:
-            logger.warning("KVC task cleanup failed; continue shutdown", exc_info=True)
+            logger.warning("KVC application suspend failed; continue shutdown", exc_info=True)
 
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_runtime import (
-            close_kv_cache_runtime,
+    def _build_runtime(
+        self,
+        *,
+        plan_controller: Any,
+        agent_manager: Any | None = None,
+        reuse_dependencies: bool = False,
+    ) -> AgentRuntime:
+        """Build every AgentServer Runtime through one product composition root."""
+        from jiuwenswarm.agents.harness.team import get_team_manager
+        from jiuwenswarm.runtime.session_lifecycle import RuntimeParticipantRegistry
+        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_application_owner import (
+            get_kv_cache_application_owner,
         )
 
-        await close_kv_cache_runtime()
+        owner = get_kv_cache_application_owner()
+        self._kv_cache_application_owner = owner
+        registry = RuntimeParticipantRegistry()
+        lease = owner.attach_runtime(registry)
+        return AgentRuntime(
+            agent_manager=agent_manager,
+            initializer=(
+                _reuse_server_runtime_dependencies if reuse_dependencies else None
+            ),
+            plan_controller=plan_controller,
+            admission_controller=getattr(
+                getattr(self, "_heartbeat_runtime", None),
+                "admission",
+                None,
+            ),
+            session_delete_lifecycle=getattr(self, "_heartbeat_runtime", None),
+            participant_registry=registry,
+            resource_lease=lease,
+            team_execution_controller=get_team_manager(None),
+        )
 
     # ---------- 连接处理 ----------
 
@@ -2176,6 +2246,9 @@ class AgentWebSocketServer:
             )
 
         try:
+            if request.req_method is not None and request.req_method.value.startswith("assets.publish."):
+                await self._handle_asset_publish(ws, request, send_lock)
+                return
             if request.req_method in _PERSONAL_CONTEXT_REQ_METHODS:
                 manager = getattr(self, "_agent_manager", None)
                 runtime_callback = getattr(
@@ -2680,51 +2753,6 @@ class AgentWebSocketServer:
             ReqMethod.CHAT_ANSWER,
         )
 
-    async def _record_kvc_chat_started(self, request: AgentRequest) -> None:
-        """Best-effort KVC task fact; only same-Session evict may block it."""
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                record_chat_started,
-            )
-
-            params = request.params if isinstance(request.params, dict) else {}
-            await record_chat_started(
-                session_id=str(request.session_id or params.get("session_id") or "").strip(),
-                params=params,
-                channel_id=str(request.channel_id or "default"),
-            )
-        except Exception as exc:
-            logger.warning(
-                "[AgentWebSocketServer] KVC chat-start hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
-
-    @staticmethod
-    def _record_kvc_chat_finished(
-        request: AgentRequest,
-        *,
-        succeeded: bool,
-    ) -> None:
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                record_chat_finished,
-            )
-
-            params = request.params if isinstance(request.params, dict) else {}
-            record_chat_finished(
-                session_id=str(request.session_id or params.get("session_id") or "").strip(),
-                succeeded=succeeded,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[AgentWebSocketServer] KVC chat-finish hook failed; preserving chat: "
-                "session_id=%s error=%s",
-                request.session_id,
-                exc,
-            )
-
     async def _try_record_implicit_feedback(self, request: AgentRequest) -> None:
         """Best-effort 采集隐式反馈：用户在收到推荐后的文本回复。
 
@@ -2732,7 +2760,7 @@ class AgentWebSocketServer:
         上的赞/踩按钮，这条回复就是隐式反馈。把它关联到该会话最近一条推荐，
         交由 ``record_implicit_feedback`` 做情感分类后入 buffer，供下次 tick 梯度更新。
 
-        与 ``_record_kvc_chat_started`` 同款 best-effort：任何异常只 log debug，
+        与 Runtime activity participant 同款 best-effort：任何异常只 log debug，
         绝不阻断主 chat 流。只在 ``chat.send`` 且来源不是 proactive 自己触发的
         推荐指令时才介入（``source=proactive_recommendation`` 是系统主动塞给主
         agent 的指令，不是用户说的话，见 proactive_adapter 触发处）。
@@ -4062,22 +4090,10 @@ class AgentWebSocketServer:
         runtime = getattr(self, "_runtime", None)
         manager = getattr(self, "_agent_manager", None)
         if runtime is None or runtime.agent_manager is not manager:
-            runtime = AgentRuntime(
+            runtime = self._build_runtime(
                 agent_manager=manager,
-                initializer=_reuse_server_runtime_dependencies,
-                before_agent_cleanup=self._close_kv_cache,
                 plan_controller=_SERVER_PLAN_CONTROLLER,
-                admission_controller=getattr(
-                    getattr(self, "_heartbeat_runtime", None),
-                    "admission",
-                    None,
-                ),
-                session_delete_lifecycle=getattr(
-                    self,
-                    "_heartbeat_runtime",
-                    None,
-                ),
-                enable_kvc_tracking=True,
+                reuse_dependencies=True,
             )
             self._runtime = runtime
             runtime.set_session_message_service(
@@ -4363,85 +4379,6 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
-    async def _prepare_session_switch_owner(
-        self,
-        *,
-        channel_id: str,
-        target_session_id: str,
-        previous_session_id: str,
-        params: dict[str, Any],
-        reason: str,
-    ) -> tuple[bool, str, Any, Any, Any]:
-        """Resolve switch context and run product-owner prepare (team switch).
-
-        Returns:
-            ``(target_is_team, resolved_mode, context, team_manager, dispatch_signals)``.
-            ``dispatch_signals`` may be ``None`` when KVC hooks are unavailable.
-        """
-        target_is_team = is_team_params(params)
-        _, _, resolved_mode = resolve_agent_request_mode(
-            params.get("mode", "agent.plan")
-        )
-        context = None
-        dispatch_signals = None
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                dispatch_session_switch_signals,
-                resolve_session_switch_context,
-            )
-
-            context = resolve_session_switch_context(
-                target_session_id=target_session_id,
-                previous_session_id=previous_session_id,
-                params=params,
-            )
-            target_is_team = context.target_is_team
-            resolved_mode = context.resolved_mode
-            dispatch_signals = dispatch_session_switch_signals
-        except Exception as exc:
-            logger.warning(
-                "[AgentWebSocketServer] session switch KVC context unavailable; "
-                "preserving product lifecycle: target_session_id=%s error=%s",
-                target_session_id,
-                exc,
-            )
-
-        previous_is_team = bool(context and context.previous_is_team)
-        team_manager = None
-        if target_is_team or previous_is_team:
-            from jiuwenswarm.agents.harness.team import get_team_manager
-
-            team_manager = get_team_manager(channel_id)
-            await team_manager.prepare_session_switch(
-                target_session_id,
-                previous_session_id=(
-                    previous_session_id if previous_is_team else None
-                ),
-                reason=reason,
-            )
-        return target_is_team, resolved_mode, context, team_manager, dispatch_signals
-
-    async def _dispatch_session_switch_kvc(
-        self,
-        *,
-        channel_id: str,
-        target_session_id: str,
-        previous_session_id: str,
-        context: Any,
-        dispatch_signals: Any,
-        view_id: str = "default-view",
-    ) -> None:
-        """Optional KVC signals after the product owner has prepared the switch."""
-        if context is None or dispatch_signals is None:
-            return
-        await dispatch_signals(
-            context=context,
-            channel_id=channel_id,
-            target_session_id=target_session_id,
-            previous_session_id=previous_session_id,
-            view_id=view_id,
-        )
-
     async def _handle_session_kvc_prepare(
         self,
         ws: Any,
@@ -4462,15 +4399,9 @@ class AgentWebSocketServer:
             )
         else:
             try:
-                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                    record_session_prepare,
-                )
-
-                outcome = record_session_prepare(
-                    session_id=session_id,
-                    intent_id=intent_id,
-                    channel_id=str(request.channel_id or "default"),
-                    params=params,
+                outcome = await self._execution_runtime().record_session_prepare(
+                    request,
+                    view_id=str(params.get("view_id") or "default-view"),
                 )
                 logger.info(
                     "[AgentWebSocketServer] session.kvc.prepare processed: "
@@ -4680,7 +4611,7 @@ class AgentWebSocketServer:
         return {}
 
     @staticmethod
-    def _create_team_binding_from_template(
+    async def _create_team_binding_from_template(
         *,
         team_name: str,
         template_id: str,
@@ -4698,6 +4629,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.server.runtime.team_entity_store import get_team_entity_store
 
         normalized_name = validate_team_name(team_name)
+        from jiuwenswarm.runtime.session_delete import TEAM_DELETION_GATE
         template_ids = {
             str(item.get("template_id") or "")
             for item in list_team_template_summaries(config_base)
@@ -4705,22 +4637,24 @@ class AgentWebSocketServer:
         if template_id not in template_ids:
             raise TeamBindingStoreError("template_id not found", code="NOT_FOUND")
 
-        entity_store = get_team_entity_store()
-        if entity_store.exists(normalized_name):
-            raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
-        template_snapshot = get_team_template_snapshot(config_base, template_id=template_id)
-        binding_store = get_team_binding_store()
-        binding = binding_store.create(team_name=normalized_name, template_id=template_id)
-        try:
-            entity_store.write(
-                team_name=binding.team_name,
-                template_id=binding.template_id,
-                template_snapshot=template_snapshot,
-                created_at=binding.created_at,
-            )
-        except Exception:
-            binding_store.delete(binding.team_name)
-            raise
+        async with TEAM_DELETION_GATE.mutation_lock(normalized_name):
+            TEAM_DELETION_GATE.assert_not_deleting_locked(normalized_name)
+            entity_store = get_team_entity_store()
+            if entity_store.exists(normalized_name):
+                raise TeamBindingStoreError("team_name already exists", code="CONFLICT")
+            template_snapshot = get_team_template_snapshot(config_base, template_id=template_id)
+            binding_store = get_team_binding_store()
+            binding = binding_store.create(team_name=normalized_name, template_id=template_id)
+            try:
+                entity_store.write(
+                    team_name=binding.team_name,
+                    template_id=binding.template_id,
+                    template_snapshot=template_snapshot,
+                    created_at=binding.created_at,
+                )
+            except Exception:
+                binding_store.delete(binding.team_name)
+                raise
         return binding
 
     @classmethod
@@ -4759,7 +4693,7 @@ class AgentWebSocketServer:
             suffix = "" if candidate_index == 0 else f"_{candidate_index + 1}"
             candidate = f"{generated_name[:64 - len(suffix)]}{suffix}"
             try:
-                binding = cls._create_team_binding_from_template(
+                binding = await cls._create_team_binding_from_template(
                     team_name=candidate,
                     template_id=template_id,
                     config_base=config_base,
@@ -4885,23 +4819,27 @@ class AgentWebSocketServer:
             binding_store = get_team_binding_store()
             entity_store = get_team_entity_store()
             try:
-                binding = binding_store.bind_session(
-                    team_name=binding.team_name,
-                    session_id=session_id,
-                )
-                update_session_metadata(
-                    session_id=session_id,
-                    channel_id=request.channel_id or None,
-                    user_content=query,
-                    mode=canonical_mode,
-                    team_name=binding.team_name,
-                    team_template_id=binding.template_id,
-                    agent_group_name=requested_agent_group_name or None,
-                    team_leader_identity=team_leader_identity,
-                    touch_last_message_at=False,
-                    cache_bust=bool(requested_agent_group_name),
-                    sync_write=True,
-                )
+                from jiuwenswarm.runtime.session_delete import TEAM_DELETION_GATE
+
+                async with TEAM_DELETION_GATE.mutation_lock(binding.team_name):
+                    TEAM_DELETION_GATE.assert_not_deleting_locked(binding.team_name)
+                    binding = binding_store.bind_session(
+                        team_name=binding.team_name,
+                        session_id=session_id,
+                    )
+                    update_session_metadata(
+                        session_id=session_id,
+                        channel_id=request.channel_id or None,
+                        user_content=query,
+                        mode=canonical_mode,
+                        team_name=binding.team_name,
+                        team_template_id=binding.template_id,
+                        agent_group_name=requested_agent_group_name or None,
+                        team_leader_identity=team_leader_identity,
+                        touch_last_message_at=False,
+                        cache_bust=bool(requested_agent_group_name),
+                        sync_write=True,
+                    )
             except Exception:
                 cleanup_errors: list[str] = []
                 cleanup_steps = (
@@ -5086,6 +5024,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_team_binding_create(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        from jiuwenswarm.runtime.session_delete import TeamDeletionInProgress
         from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
         from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
 
@@ -5094,7 +5033,7 @@ class AgentWebSocketServer:
         template_id = str(params.get("template_id") or "").strip()
         config_base = get_config()
         try:
-            binding = self._create_team_binding_from_template(
+            binding = await self._create_team_binding_from_template(
                 team_name=team_name,
                 template_id=template_id,
                 config_base=config_base,
@@ -5106,7 +5045,7 @@ class AgentWebSocketServer:
                 payload={"team": binding.to_dict()},
                 metadata=request.metadata,
             )
-        except (TeamBindingStoreError, TeamEntityStoreError) as exc:
+        except (TeamBindingStoreError, TeamEntityStoreError, TeamDeletionInProgress) as exc:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5123,6 +5062,7 @@ class AgentWebSocketServer:
         from jiuwenswarm.agents.harness.team import (
             TeamNameGenerationError,
         )
+        from jiuwenswarm.runtime.session_delete import TeamDeletionInProgress
         from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError
         from jiuwenswarm.server.runtime.team_entity_store import TeamEntityStoreError
 
@@ -5153,7 +5093,7 @@ class AgentWebSocketServer:
                 payload={"error": str(exc), "code": "GENERATION_FAILED"},
                 metadata=request.metadata,
             )
-        except (TeamBindingStoreError, TeamEntityStoreError) as exc:
+        except (TeamBindingStoreError, TeamEntityStoreError, TeamDeletionInProgress) as exc:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5167,6 +5107,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_team_session_bind(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
+        from jiuwenswarm.runtime.session_delete import TeamDeletionInProgress
         from jiuwenswarm.server.runtime.session.session_metadata import update_session_metadata
         from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStoreError, get_team_binding_store
         from jiuwenswarm.server.runtime.team_entity_store import (
@@ -5191,18 +5132,22 @@ class AgentWebSocketServer:
             entity = ensure_team_entity_for_binding(existing_binding, config_base=get_config())
             if entity is None:
                 raise TeamBindingStoreError("team entity config missing", code="NOT_FOUND")
-            binding = binding_store.bind_session(
-                team_name=team_name,
-                session_id=session_id,
-            )
-            update_session_metadata(
-                session_id=session_id,
-                channel_id=str(request.channel_id or "").strip() or None,
-                mode=canonical_mode,
-                team_name=binding.team_name,
-                team_template_id=binding.template_id,
-                sync=True,
-            )
+            from jiuwenswarm.runtime.session_delete import TEAM_DELETION_GATE
+
+            async with TEAM_DELETION_GATE.mutation_lock(team_name):
+                TEAM_DELETION_GATE.assert_not_deleting_locked(team_name)
+                binding = binding_store.bind_session(
+                    team_name=team_name,
+                    session_id=session_id,
+                )
+                update_session_metadata(
+                    session_id=session_id,
+                    channel_id=str(request.channel_id or "").strip() or None,
+                    mode=canonical_mode,
+                    team_name=binding.team_name,
+                    team_template_id=binding.template_id,
+                    sync=True,
+                )
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5217,7 +5162,7 @@ class AgentWebSocketServer:
                 },
                 metadata=request.metadata,
             )
-        except (TeamBindingStoreError, TeamEntityStoreError) as exc:
+        except (TeamBindingStoreError, TeamEntityStoreError, TeamDeletionInProgress) as exc:
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
@@ -5231,31 +5176,7 @@ class AgentWebSocketServer:
             await send_wire_payload(ws, wire)
 
     async def _handle_team_delete(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
-        """Delete a team and all team sessions that persist that team."""
-        from openjiuwen.core.runner import Runner
-        from jiuwenswarm.agents.harness.team import (
-            stop_team_session_runtime_across_managers,
-        )
-        from jiuwenswarm.server.runtime.team_binding_store import (
-            TeamBindingStoreError,
-            get_team_binding_store,
-        )
-        from jiuwenswarm.server.runtime.team_entity_store import (
-            TeamEntityStoreError,
-            get_team_entity_store,
-        )
-
-        def delete_team_directory_best_effort(team_name: str) -> None:
-            try:
-                entity_store.delete_team_directory(team_name)
-            except TeamEntityStoreError as exc:
-                logger.warning(
-                    "[AgentWebSocketServer] failed to delete local team directory; "
-                    "continuing team delete: team_name=%s code=%s error=%s",
-                    team_name,
-                    getattr(exc, "code", "DELETE_FAILED"),
-                    exc,
-                )
+        """Validate transport input and delegate Team deletion to AgentRuntime."""
 
         params = request.params if isinstance(request.params, dict) else {}
         is_team = is_team_params(params)
@@ -5282,132 +5203,35 @@ class AgentWebSocketServer:
             )
         else:
             try:
-                binding_store = get_team_binding_store()
-                entity_store = get_team_entity_store()
-                team_session_ids = await self._find_team_session_ids(team_name)
-                if not team_session_ids:
-                    binding = binding_store.get(team_name)
-                    if binding is None and not entity_store.exists(team_name):
-                        resp = AgentResponse(
-                            request_id=request.request_id,
-                            channel_id=request.channel_id,
-                            ok=False,
-                            payload={"error": "team not found", "code": "NOT_FOUND"},
-                            metadata=request.metadata,
-                        )
-                    else:
-                        delete_team_directory_best_effort(team_name)
-                        binding_store.delete(team_name)
-                        resp = AgentResponse(
-                            request_id=request.request_id,
-                            channel_id=request.channel_id,
-                            ok=True,
-                            payload={
-                                "team_name": team_name,
-                                "session_ids": [],
-                                "deleted": True,
-                            },
-                            metadata=request.metadata,
-                        )
-                else:
-                    checkpoint_resp = await self._ensure_persistent_checkpointer_response(request)
-                    if checkpoint_resp is not None:
-                        resp = checkpoint_resp
-                    else:
-                        from jiuwenswarm.agents.harness.team import (
-                            kv_cache_team_delete_guard,
-                        )
-
-                        for team_session_id in team_session_ids:
-                            await kv_cache_team_delete_guard.stop_runtime_before_terminal_delete(
-                                stop_team_session_runtime_across_managers,
-                                session_id=team_session_id,
-                                reason="team.delete: ",
-                            )
-                            if kv_cache_team_delete_guard.is_enabled():
-                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                                    release_session_kvc,
-                                )
-
-                                await release_session_kvc(session_id=team_session_id, is_team=True)
-
-                        runtime_deleted = await Runner.delete_agent_team(
-                            team_name=team_name,
-                            session_ids=team_session_ids,
-                            force=True,
-                        )
-                        if not runtime_deleted:
-                            resp = AgentResponse(
-                                request_id=request.request_id,
-                                channel_id=request.channel_id,
-                                ok=False,
-                                payload={
-                                    "error": "agent team runtime cleanup failed",
-                                    "code": "DELETE_FAILED",
-                                    "team_name": team_name,
-                                    "deleted": False,
-                                },
-                                metadata=request.metadata,
-                            )
-                        else:
-                            failed_session_ids: list[str] = []
-                            for team_session_id in team_session_ids:
-                                session_dir = get_agent_sessions_dir() / team_session_id
-                                if session_dir.exists():
-                                    try:
-                                        shutil.rmtree(session_dir)
-                                    except Exception as exc:
-                                        logger.warning(
-                                            "[AgentWebSocketServer] failed to delete local team session dir: "
-                                            "session_id=%s error=%s",
-                                            team_session_id,
-                                            exc,
-                                        )
-                                        failed_session_ids.append(team_session_id)
-                                        continue
-                                remove_session_metadata_cache(team_session_id)
-                                from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                                    forget_deleted_session,
-                                )
-
-                                forget_deleted_session(team_session_id)
-
-                            if failed_session_ids:
-                                resp = AgentResponse(
-                                    request_id=request.request_id,
-                                    channel_id=request.channel_id,
-                                    ok=False,
-                                    payload={
-                                        "error": "failed to delete local team session directories",
-                                        "code": "DELETE_FAILED",
-                                        "team_name": team_name,
-                                        "failed_session_ids": failed_session_ids,
-                                        "deleted": False,
-                                    },
-                                    metadata=request.metadata,
-                                )
-                            else:
-                                # agent-core normally removes team_home; retry here because it logs and
-                                # suppresses filesystem cleanup failures.
-                                delete_team_directory_best_effort(team_name)
-                                binding_store.delete(team_name)
-                                resp = AgentResponse(
-                                    request_id=request.request_id,
-                                    channel_id=request.channel_id,
-                                    ok=True,
-                                    payload={
-                                        "team_name": team_name,
-                                        "session_ids": team_session_ids,
-                                        "deleted": True,
-                                    },
-                                    metadata=request.metadata,
-                                )
-            except (TeamBindingStoreError, TeamEntityStoreError) as exc:
+                result = await self._execution_runtime().delete_team(
+                    team_name=team_name,
+                    channel_id=request.channel_id,
+                )
+                payload = {
+                    "team_name": result.team_name,
+                    "session_ids": list(result.session_ids),
+                    "failed_session_ids": list(result.failed_session_ids),
+                    "deleted": result.deleted,
+                    "recovery_required": result.recovery_required,
+                }
+                if result.error_message:
+                    payload["error"] = result.error_message
+                if result.error_code:
+                    payload["code"] = result.error_code
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=result.ok,
+                    payload=payload,
+                    metadata=request.metadata,
+                )
+            except Exception as exc:
+                logger.exception("[AgentWebSocketServer] Runtime Team delete failed")
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
                     ok=False,
-                    payload={"error": str(exc), "code": getattr(exc, "code", "DELETE_FAILED")},
+                    payload={"error": str(exc), "code": "DELETE_FAILED"},
                     metadata=request.metadata,
                 )
 
@@ -7862,7 +7686,11 @@ class AgentWebSocketServer:
                     request_id=request.request_id,
                     channel_id=request.channel_id,
                     ok=True,
-                    payload={"type": "list", "items": items},
+                    payload={
+                        "type": "list",
+                        "items": items,
+                        **({"cache": items.cache} if hasattr(items, "cache") else {}),
+                    },
                 )
             elif action == "show":
                 name = str(params.get("name", "")).strip()
@@ -8170,6 +7998,56 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _get_asset_publish_api(self):
+        async with self._asset_publish_lock:
+            if self._asset_publish_api is None:
+                from jiuwenswarm.common.utils import get_workspace_dir
+                from jiuwenswarm.server.runtime.marketplace.asset_publish_api import AssetPublishAPI
+                api = AssetPublishAPI(get_workspace_dir() / "marketplace" / "publishing")
+                try:
+                    await api.start()
+                except BaseException:
+                    await api.close()
+                    raise
+                self._asset_publish_api = api
+            return self._asset_publish_api
+
+    async def _start_asset_services(self):
+        try:
+            await self._get_asset_publish_api()
+        except Exception:
+            logger.warning("[AssetPublish] startup unavailable; requests may retry initialization")
+        try:
+            from jiuwenswarm.common.utils import get_agent_workspace_dir
+            from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+            from jiuwenswarm.server.runtime.marketplace.hub_catalog_cache import start_hub_catalog_preload
+            await start_hub_catalog_preload(SkillManager(workspace_dir=str(get_agent_workspace_dir())))
+        except Exception:
+            logger.warning("[HubCatalog] preload unavailable; requests may load on demand")
+
+    async def _handle_asset_publish(self, ws, request, send_lock):
+        from jiuwenswarm.server.runtime.marketplace.asset_publish_api import PublishAPIError
+        try:
+            if request.channel_id != "web":
+                raise PublishAPIError("WEB_CHANNEL_REQUIRED")
+            api = await self._get_asset_publish_api()
+            payload = await api.call(request.req_method.value.rsplit(".", 1)[-1], request.params or {},
+                                     gateway_user=request.user_id)
+            ok = True
+        except PublishAPIError as exc:
+            payload = {"code": exc.code, "error": exc.code, "can_submit": False,
+                       "errors": [{"code": exc.code, "field": exc.field}]}
+            ok = False
+        except Exception:
+            # Do not log request params, authentication or arbitrary exception bodies.
+            payload = {"code": "PUBLISH_UNAVAILABLE", "error": "PUBLISH_UNAVAILABLE", "can_submit": False}
+            ok = False
+        response = AgentResponse(request_id=request.request_id, channel_id=request.channel_id,
+                                 ok=ok, payload=payload, agent_ref=request.agent_ref)
+        wire = encode_agent_response_for_wire(response, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def _handle_mcp_list(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
@@ -8186,12 +8064,13 @@ class AgentWebSocketServer:
             filter_val = str(params.get("filter") or "builtin").strip().lower() or "builtin"
             if filter_val not in ("builtin", "local"):
                 filter_val = "builtin"
-            items = await list_mcps_with_hub(filter_val)
+            items = await list_mcps_with_hub(filter_val, cache_mode=params.get("cache_mode"),
+                                              refresh=params.get("refresh") is True)
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={"type": "list", "items": items},
+                payload={"type": "list", "items": items, **({"cache": items.cache} if hasattr(items, "cache") else {})},
             )
         except Exception as exc:  # noqa: BLE001
             logger.exception("[AgentWebSocketServer] mcp.list failed: %s", exc)
@@ -10773,6 +10652,18 @@ class AgentWebSocketServer:
         if not isinstance(raw, list):
             return None
 
+        if normalized_subagent_id is None:
+            metadata = get_session_metadata(
+                normalized_session_id,
+                enable_writeback=False,
+            )
+            if (
+                isinstance(metadata, dict)
+                and metadata.get("ephemeral") is True
+                and metadata.get("side_parent_session_id")
+            ):
+                raw = [item for item in raw if not item.get("forked_from")]
+
         page_size = _HISTORY_PAGE_SIZE
         restorable = [
             item for item in raw
@@ -11121,6 +11012,10 @@ class AgentWebSocketServer:
             source = str(params.get("source_session_id") or "").strip()
             target = str(params.get("target_session_id") or "").strip()
             fork_title = str(params.get("title") or "").strip()
+            side_conversation = params.get("side_conversation") is True
+            fork_point = params.get("fork_point")
+            if not isinstance(fork_point, dict):
+                fork_point = {}
             channel_id = request.channel_id or "default"
 
             if not source:
@@ -11137,6 +11032,13 @@ class AgentWebSocketServer:
                     source_session_id=source,
                     target_session_id=target or None,
                     title=fork_title,
+                    cutoff_message_id=str(
+                        fork_point.get("message_id") or ""
+                    ).strip(),
+                    cutoff_role=str(fork_point.get("role") or "").strip(),
+                    cutoff_content=str(fork_point.get("content") or ""),
+                    cutoff_timestamp=fork_point.get("timestamp"),
+                    side_conversation=side_conversation,
                 )
             )
             result = await runtime.commit_session_provision(
@@ -11152,6 +11054,7 @@ class AgentWebSocketServer:
                     "session_id": result.session_id,
                     "source_session_id": result.source_session_id,
                     "title": result.title,
+                    **({"ephemeral": True} if result.ephemeral else {}),
                 },
             )
             wire = encode_agent_response_for_wire(

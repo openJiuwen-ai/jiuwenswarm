@@ -67,11 +67,6 @@ def _chat_facade(monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(interface_module, "get_config", lambda: {})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _config: "off")
     monkeypatch.setattr(interface_module, "build_user_prompt", lambda query, **_kwargs: query)
-    monkeypatch.setattr(
-        interface_module,
-        "_schedule_symphony_session_feedback",
-        lambda *_args, **_kwargs: None,
-    )
     return facade, reconcile
 
 

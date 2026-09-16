@@ -17,6 +17,7 @@ logger = logging.getLogger(__name__)
 
 DEFAULT_EXECUTION_TIMEOUT_SECONDS = 300.0
 DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS = 10.0
+_FINALIZATION_RETRY_SECONDS = 0.1
 
 
 def _consume_background_task_result(task: asyncio.Task[Any]) -> None:
@@ -188,7 +189,8 @@ class SessionRunAdmission:
             raise RuntimeError(
                 f"heartbeat preemption timed out after {timeout:g} seconds"
             )
-        preemption_task.result()
+        if not preemption_task.result():
+            raise RuntimeError(f"active heartbeat {run_id} could not be preempted")
 
         # A cancellation is complete only after the exact admission marker is
         # released. Another concurrent user may also already own that cleanup.
@@ -241,6 +243,11 @@ class SessionRunAdmission:
 
     async def begin_user(self, session_id: str) -> None:
         await self._begin_interactive_user(session_id, team=False)
+
+    async def begin_control(self, session_id: str) -> None:
+        """Block new Heartbeats while input resumes existing Session work."""
+        async with self._condition:
+            self._state(session_id).active_users += 1
 
     async def begin_team_user(self, session_id: str) -> None:
         """Mark an interactive Team iteration without serializing its steers.
@@ -313,6 +320,9 @@ class SessionRunAdmission:
             state.active_users = max(0, state.active_users - 1)
             self._drop_idle_state(session_id, state)
             self._condition.notify_all()
+
+    async def end_control(self, session_id: str) -> None:
+        await self.end_user(session_id)
 
     async def try_begin_heartbeat(self, session_id: str, run_id: str) -> bool:
         async with self._condition:
@@ -416,6 +426,7 @@ class _SchedulerCallback(Protocol):
         error: str | None = None,
         pause_schedule: bool = False,
         consume_queue: bool = True,
+        before_queue: Callable[[], Awaitable[None]] | None = None,
     ) -> bool:
         ...
 
@@ -429,6 +440,7 @@ class HeartbeatExecutionService:
         admission: SessionRunAdmission,
         *,
         execution_timeout_seconds: float = DEFAULT_EXECUTION_TIMEOUT_SECONDS,
+        cancel_timeout_seconds: float = DEFAULT_USER_PREEMPTION_TIMEOUT_SECONDS,
     ) -> None:
         self._server = server
         self._admission = admission
@@ -439,8 +451,11 @@ class HeartbeatExecutionService:
         self._scheduler: _SchedulerCallback | None = None
         self._completion_hook: Callable[[str], Awaitable[None]] | None = None
         self._tasks: dict[str, asyncio.Task[None]] = {}
+        self._finalizers: dict[str, asyncio.Task[None]] = {}
         self._jobs: dict[str, HeartbeatJob] = {}
         self._user_preempted_runs: set[str] = set()
+        self._stopping = False
+        self._cancel_timeout_seconds = max(0.001, float(cancel_timeout_seconds))
         self._admission.set_heartbeat_preemptor(self.preempt_for_user)
 
     def set_scheduler(self, scheduler: _SchedulerCallback) -> None:
@@ -462,7 +477,11 @@ class HeartbeatExecutionService:
 
     def has_active_run(self, run_id: str) -> bool:
         task = self._tasks.get(run_id)
-        return task is not None and not task.done()
+        finalizer = self._finalizers.get(run_id)
+        return bool(
+            (task is not None and not task.done())
+            or (finalizer is not None and not finalizer.done())
+        )
 
     def active_session_ids(self) -> set[str]:
         return self._admission.active_heartbeat_sessions()
@@ -474,7 +493,12 @@ class HeartbeatExecutionService:
         request_message: Any,
     ) -> bool:
         """Atomically admit and start a run; return False on a busy race."""
+        if self._stopping:
+            return False
         if not await self._admission.try_begin_heartbeat(job.session_id, run_id):
+            return False
+        if self._stopping:
+            await self._admission.end_heartbeat(job.session_id, run_id)
             return False
         task = asyncio.create_task(
             self._run(job, run_id, request_message),
@@ -503,23 +527,15 @@ class HeartbeatExecutionService:
                 user_id=str(request_message.user_id or ""),
                 agent_ref=request_message.agent_ref,
             )
-            execution_deadline = asyncio.timeout(self._execution_timeout_seconds)
-            try:
-                async with execution_deadline:
-                    await self._server.execute_internal_heartbeat(request)
-            except TimeoutError:
-                if not execution_deadline.expired():
-                    raise
-                outcome = "failed"
-                timeout = self._execution_timeout_seconds
-                error = f"heartbeat execution timed out after {timeout:g} seconds"
-                logger.error(
-                    "[HeartbeatExecution] run timed out: "
-                    "job=%s run=%s timeout=%.3fs",
-                    job.id,
-                    run_id,
-                    timeout,
-                )
+
+            async def execute() -> None:
+                await self._server.execute_internal_heartbeat(request)
+
+            await self._server.get_runtime().run_heartbeat(
+                request,
+                execute,
+                timeout_seconds=self._execution_timeout_seconds,
+            )
         except asyncio.CancelledError:
             outcome = "cancelled"
             if run_id in self._user_preempted_runs:
@@ -531,7 +547,29 @@ class HeartbeatExecutionService:
                 "[HeartbeatExecution] run failed: job=%s run=%s", job.id, run_id
             )
         finally:
-            await self._finish_run(job, run_id, outcome=outcome, error=error)
+            await self._finalize_run(job, run_id, outcome=outcome, error=error)
+
+    async def _finalize_run(
+        self,
+        job: HeartbeatJob,
+        run_id: str,
+        *,
+        outcome: str,
+        error: str | None,
+    ) -> None:
+        finalizer = self._finalizers.get(run_id)
+        if finalizer is None:
+            finalizer = asyncio.create_task(
+                self._finish_run(job, run_id, outcome=outcome, error=error),
+                name=f"heartbeat-finalize-{run_id}",
+            )
+            self._finalizers[run_id] = finalizer
+        while not finalizer.done():
+            try:
+                await asyncio.shield(finalizer)
+            except asyncio.CancelledError:
+                continue
+        finalizer.result()
 
     async def _finish_run(
         self,
@@ -541,27 +579,55 @@ class HeartbeatExecutionService:
         outcome: str,
         error: str | None,
     ) -> None:
-        self._tasks.pop(run_id, None)
-        self._jobs.pop(run_id, None)
-        try:
+        admission_ended = False
+
+        async def end_admission() -> None:
+            nonlocal admission_ended
             await self._admission.end_heartbeat(job.session_id, run_id)
-            if self._scheduler is not None:
-                await self._scheduler.on_run_finished(
+            admission_ended = True
+
+        while True:
+            try:
+                if self._scheduler is not None:
+                    await self._scheduler.on_run_finished(
+                        job.id,
+                        run_id,
+                        outcome=outcome,
+                        error=error,
+                        consume_queue=not self._stopping,
+                        before_queue=end_admission,
+                    )
+                if not admission_ended:
+                    await end_admission()
+                break
+            except asyncio.CancelledError:
+                continue
+            except Exception:  # noqa: BLE001
+                logger.exception(
+                    "[HeartbeatExecution] durable finalization failed; retrying: "
+                    "job=%s run=%s",
                     job.id,
                     run_id,
-                    outcome=outcome,
-                    error=error,
                 )
-            if self._completion_hook is not None:
+                await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+        if self._completion_hook is not None:
+            while True:
                 try:
                     await self._completion_hook(job.session_id)
+                    break
+                except asyncio.CancelledError:
+                    continue
                 except Exception:  # noqa: BLE001
                     logger.exception(
-                        "[HeartbeatExecution] completion hook failed: session=%s",
+                        "[HeartbeatExecution] completion hook failed; retrying: "
+                        "session=%s",
                         job.session_id,
                     )
-        finally:
-            self._user_preempted_runs.discard(run_id)
+                    await asyncio.sleep(_FINALIZATION_RETRY_SECONDS)
+        self._tasks.pop(run_id, None)
+        self._jobs.pop(run_id, None)
+        self._finalizers.pop(run_id, None)
+        self._user_preempted_runs.discard(run_id)
 
     async def _finish_run_safely(
         self,
@@ -573,7 +639,7 @@ class HeartbeatExecutionService:
         operation: str,
     ) -> bool:
         try:
-            await self._finish_run(
+            await self._finalize_run(
                 job,
                 run_id,
                 outcome=outcome,
@@ -590,14 +656,26 @@ class HeartbeatExecutionService:
 
     async def cancel(self, run_id: str, *, reason: str = "") -> bool:
         task = self._tasks.get(run_id)
-        if task is None or task.done():
+        finalizer = self._finalizers.get(run_id)
+        if task is None and finalizer is None:
             return False
         if reason == "user_request":
             self._user_preempted_runs.add(run_id)
-        task.cancel()
-        await asyncio.gather(task, return_exceptions=True)
+        if task is not None and not task.done() and finalizer is None:
+            task.cancel()
+        pending = {
+            candidate
+            for candidate in (task, self._finalizers.get(run_id))
+            if candidate is not None and not candidate.done()
+        }
+        if pending:
+            _done, pending = await asyncio.wait(
+                pending, timeout=self._cancel_timeout_seconds
+            )
+        if pending:
+            return False
         # Cancellation before the coroutine's first step bypasses _run.finally.
-        if self._tasks.get(run_id) is task:
+        if task is not None and self._tasks.get(run_id) is task:
             job = self._jobs.get(run_id)
             if job is not None:
                 error = (
@@ -617,30 +695,28 @@ class HeartbeatExecutionService:
     async def preempt_for_user(self, run_id: str) -> bool:
         return await self.cancel(run_id, reason="user_request")
 
+    def begin_stop(self) -> None:
+        self._stopping = True
+
     async def stop(self) -> None:
-        runs = list(self._tasks.items())
-        tasks = [task for _, task in runs]
-        for task in tasks:
-            task.cancel()
-        if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+        self._stopping = True
         try:
-            for run_id, task in runs:
-                if self._tasks.get(run_id) is not task:
+            await asyncio.gather(
+                *(self.cancel(run_id) for run_id in tuple(self._tasks)),
+                return_exceptions=True,
+            )
+            pending = {
+                task
+                for task in (*self._tasks.values(), *self._finalizers.values())
+                if not task.done()
+            }
+            while pending:
+                try:
+                    _done, pending = await asyncio.wait(pending)
+                except asyncio.CancelledError:
                     continue
-                job = self._jobs.get(run_id)
-                if job is not None:
-                    await self._finish_run_safely(
-                        job,
-                        run_id,
-                        outcome="cancelled",
-                        error=None,
-                        operation="stop",
-                    )
         finally:
-            self._tasks.clear()
-            self._jobs.clear()
-            self._user_preempted_runs.clear()
+            self._stopping = False
 
 
 __all__ = [

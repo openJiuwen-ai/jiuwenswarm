@@ -5,9 +5,9 @@
 from __future__ import annotations
 
 import asyncio
+import builtins
 import logging
 import os
-import signal
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from dataclasses import replace
@@ -16,6 +16,10 @@ from typing import TYPE_CHECKING, Any
 from jiuwenswarm.channels.process_cli.client import InProcessRuntimeClient
 from jiuwenswarm.channels.process_cli.machine_io import OneShotWriter
 from jiuwenswarm.channels.process_cli.machine_result import RunSummary
+from jiuwenswarm.channels.process_cli.machine_signals import (
+    command_signals,
+    defer_command_signals,
+)
 from jiuwenswarm.channels.process_cli.protocol import (
     OneShotRunInput,
     OneShotRunResult,
@@ -223,8 +227,13 @@ class _MachineRun:
 
     async def consume_noninteractive(self) -> bool:
         completed = False
-        async for event in self.stream:
+        stream = self.stream
+        if stream is None:
+            return False
+        async for event in stream:
             self.observe(event)
+            if self.summary.error is not None:
+                return False
             if event.ok and (event.is_complete or event.event_type == "chat.final"):
                 completed = True
             if event.event_type in _INTERACTION_EVENTS:
@@ -242,7 +251,7 @@ class _MachineRun:
             # safely be reset by wait_for's separate task.
             async with asyncio.timeout(SHUTDOWN_TIMEOUT_SECONDS):
                 await operation()
-        except (Exception, asyncio.CancelledError) as error:
+        except (Exception, asyncio.CancelledError, builtins.SystemExit) as error:
             self.cleanup_errors.append(name)
             logger.warning("one-shot %s failed (%s)", name, type(error).__name__)
             if isinstance(error, asyncio.CancelledError) and self.error is None:
@@ -255,15 +264,17 @@ class _MachineRun:
     async def cleanup(self) -> None:
         if self.control is not None:
             await self.cleanup_step("control_input", self.control.stop_input)
-        if self.client is None:
+        client = self.client
+        request = self.request
+        session_id = self.writer.session_id
+        if client is None:
+            self._record_cleanup_errors()
             return
-        if self.error is not None and self.request is not None:
+        if self.error is not None and request is not None:
             await self.cleanup_step(
                 "cancel",
-                lambda: self.client.cancel(
-                    _cancel_request(
-                        self.request, session_scope=self.control is not None
-                    )
+                lambda: client.cancel(
+                    _cancel_request(request, session_scope=self.control is not None)
                 ),
             )
         if self.control is not None:
@@ -271,27 +282,29 @@ class _MachineRun:
         close_stream = getattr(self.stream, "aclose", None)
         if close_stream is not None:
             await self.cleanup_step("stream_close", close_stream)
-        if self.writer.session_id is not None:
+        if session_id is not None:
             await self.cleanup_step(
                 "cleanup_session",
-                lambda: self.client.cleanup_session(
+                lambda: client.cleanup_session(
                     channel_id=CHANNEL_ID,
-                    session_id=self.writer.session_id,
+                    session_id=session_id,
                 ),
             )
-        await self.cleanup_step("runtime_close", self.client.close)
+        await self.cleanup_step("runtime_close", client.close)
+        self._record_cleanup_errors()
+
+    def _record_cleanup_errors(self) -> None:
         if self.cleanup_errors:
+            error = self.error or RuntimeErrorInfo(
+                code="SHUTDOWN_FAILED", message="Runtime cleanup failed."
+            )
             if self.error is None:
-                self.fail(
-                    RuntimeErrorInfo(
-                        code="SHUTDOWN_FAILED", message="Runtime cleanup failed."
-                    )
-                )
+                self.fail(error)
             self.error = replace(
-                self.error,
+                error,
                 details={
-                    **dict(self.error.details),
-                    "cleanup_errors": self.cleanup_errors,
+                    **dict(error.details),
+                    "cleanup_errors": tuple(self.cleanup_errors),
                 },
             )
 
@@ -353,10 +366,17 @@ async def run_machine(
         code = "OUTPUT_CLOSED" if writer.broken else "RUNTIME_FAILED"
         run.fail(RuntimeErrorInfo(code=code, message="Command I/O failed."))
         logger.warning("one-shot I/O failed (%s)", type(error).__name__)
+    except builtins.SystemExit:
+        run.fail(
+            RuntimeErrorInfo(
+                code="RUNTIME_FAILED", message="Runtime exited unexpectedly."
+            )
+        )
     except Exception as error:  # noqa: BLE001 - machine execution boundary
         run.fail(_exception_info(error))
         logger.warning("one-shot execution failed (%s)", type(error).__name__)
     finally:
+        defer_command_signals()
         await run.cleanup()
     return run.result()
 
@@ -368,19 +388,5 @@ async def run_with_signals(
     control: DuplexController | None = None,
 ) -> OneShotRunResult:
     """Route OS termination to the same bounded cancellation/cleanup path."""
-    task = asyncio.current_task()
-    previous: dict[int, Any] = {}
-
-    def interrupt(_signum: int, _frame: Any) -> None:
-        if task is not None:
-            task.cancel()
-
-    try:
-        for name in ("SIGTERM", "SIGBREAK"):
-            signum = getattr(signal, name, None)
-            if signum is not None:
-                previous[signum] = signal.signal(signum, interrupt)
-        return await run_machine(run_input, writer, control=control)
-    finally:
-        for signum, handler in previous.items():
-            signal.signal(signum, handler)
+    with command_signals() as signals:
+        return await signals.run(run_machine(run_input, writer, control=control))

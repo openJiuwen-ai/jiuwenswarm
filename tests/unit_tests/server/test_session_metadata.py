@@ -670,6 +670,28 @@ class TestGetAllSessionsMetadata:
         assert ids == {"sess_a", "sess_b"}
         assert len(sessions) == 2
 
+    @staticmethod
+    def test_excludes_ephemeral_side_conversations(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _write_metadata_sync,
+            get_all_sessions_metadata,
+        )
+
+        _write_metadata_sync("normal", {"session_id": "normal"})
+        _write_metadata_sync(
+            "side",
+            {
+                "session_id": "side",
+                "ephemeral": True,
+                "side_parent_session_id": "normal",
+            },
+        )
+
+        sessions, total = get_all_sessions_metadata(limit=20)
+
+        assert total == 1
+        assert [session["session_id"] for session in sessions] == ["normal"]
+
 
 # ===========================================================================
 # _read_metadata 容错

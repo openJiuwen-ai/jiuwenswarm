@@ -31,6 +31,7 @@ import {
   useWorkspaceStore,
   usePersonalContextStore,
 } from '../../stores';
+import { seedAgentCatalog, useAgentCatalogStore } from '../../stores/agentCatalogStore';
 import { supportsPlanMode } from '../../features/planMode/wireMode';
 import { applyPlanToggle, evaluatePlanToggle } from '../../features/planMode/planModeGate';
 import { queueOrAddGoalObjectiveMessage } from '../../features/goalPendingObjectiveBubble';
@@ -39,6 +40,7 @@ import { NEW_CONVERSATION_ID } from '../../multi-session/state/newConversationLi
 import { ProjectCreateMenu, type ProjectCreateMode } from '../../multi-session/sidebar/ProjectCreateMenu';
 import { projectCreateErrorKey } from '../../multi-session/sidebar/projectCreateErrors';
 import { AGENT_MODE_OPTIONS, PERMISSION_OPTIONS } from '../../config/chatConfig';
+import { effectivePermissionProfile, permissionOptionsForMode } from '../../config/permissionProfiles';
 import clsx from 'clsx';
 import { PermissionWarningDialog } from './PermissionWarningDialog';
 import ChatModelSelector from './ChatModelSelector';
@@ -47,7 +49,10 @@ import { getEvolutionPillLabel } from './evolution-status';
 import { webRequest } from '../../services/webClient';
 import {
   parseSlashLine,
+  parseGoalSlashArgs,
   findSlashCommand,
+  type GoalSlashAction,
+  type GoalSlashSnapshot,
   type SlashCommand,
   type SlashCommandContext,
 } from './slashCommands/registry';
@@ -56,7 +61,6 @@ import {
   hasUnfinishedGoal as isUnfinishedGoal,
   isSlashCommandDisabledByGoal,
   shouldExecuteRegisteredSlashCommand,
-  supportsWebSlashCommands,
 } from './slashCommands/semantics';
 import { withUploadDocumentBlock } from '../../utils/documentMessage';
 import { ExtensionPickerPanel } from './ExtensionPickerPanel';
@@ -123,6 +127,17 @@ const MENU_GAP = 10;
 /** 智能体选择列表单行高度（与 ChatPanel.css 的 .chat-agent-picker__item min-height 一致） */
 const AGENT_PICKER_ROW_HEIGHT = 40;
 const GROUP_PICKER_ROW_HEIGHT = 40;
+
+/**
+ * 专家选择 id 既可能是目录项 id（chat 面板 picker 路径），也可能是 runtimePackageName
+ * （AgentManagementPanel"使用/快捷输入"路径，见 AgentManagementPanel/index.tsx 的
+ * onUseAgent 与 DefinitionDetailPage 的 onUsePrompt）。两条入口必须等价——否则从详情页
+ * 跳转后，下面按 id 查找的守卫会把刚选上的专家 tag 立刻清掉。后端
+ * resolve_equipment_runtime_id 对两种标识都能解析，wire 层不受影响。
+ */
+function isSameAgentOption(item: AgentCatalogItem, selectedId: string | null): boolean {
+  return selectedId !== null && (item.id === selectedId || item.runtimePackageName === selectedId);
+}
 
 function resolveMenuDirection(anchorBottom: number, menuHeight: number) {
   const spaceBelow = window.innerHeight - anchorBottom - MENU_GAP;
@@ -274,6 +289,9 @@ function isDefaultProject(project: ProjectInfo): boolean {
 interface InputAreaProps {
   onSubmit: (content: string, mediaItems?: MediaItem[]) => void;
   onEnsureSession: (initialTitle?: string) => Promise<string | null>;
+  onNewSession: () => void;
+  onForkSession: (sourceSessionId: string) => Promise<void>;
+  onStartSideConversation: (sourceSessionId: string, prompt?: string) => Promise<void>;
   /** Signals that the user is editing an existing real Session. */
   onInputIntent?: (sessionId: string) => void;
   onPersistMedia: (content: string, mediaItems: MediaItem[]) => Promise<PersistMediaResponse>;
@@ -289,12 +307,15 @@ interface InputAreaProps {
   onNavigateToAgents?: () => void;
   /** Keeps the selected Expert Team identity available to the conversation surface. */
   onAgentGroupIdentityChange?: (identity: AgentGroupIdentity | null) => void;
-  permissionsEnabled: boolean;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
   /** 目标待设置态（"+"菜单选了「目标」）下发送时调用，取代普通 onSubmit/排队逻辑 */
-  onSetGoal?: (sessionId: string, objective: string) => void;
+  onSetGoal?: (sessionId: string, objective: string) => void | Promise<void>;
+  onPauseGoal?: (sessionId: string) => void | Promise<void>;
+  onResumeGoal?: (sessionId: string) => void | Promise<void>;
+  onRefreshGoal?: (sessionId: string) => void | Promise<void>;
   /** 工具栏"目标"标签的 × 按钮：目标已存在时点击等同删除目标 */
-  onClearGoal?: (sessionId: string) => void;
+  onClearGoal?: (sessionId: string) => void | Promise<void>;
   /**
    * 目标 active 时消息按设计走排队（见下方 isGoalActive 注释），但如果入队那一刻当前没有
    * 任何任务在处理，现有的自动排空触发点（chat.processing_status/interrupt_result）都要求
@@ -637,6 +658,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   {
     onSubmit,
     onEnsureSession,
+    onNewSession,
+    onForkSession,
+    onStartSideConversation,
     onInputIntent,
     onPersistMedia,
     onPersistDocuments,
@@ -648,9 +672,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     onNavigateToSkills,
     onNavigateToAgents,
     onAgentGroupIdentityChange,
-    permissionsEnabled,
+    permissionProfile,
     onSavePermission,
     onSetGoal,
+    onPauseGoal,
+    onResumeGoal,
+    onRefreshGoal,
     onClearGoal,
     onDrainTaskQueueIfIdle,
   },
@@ -679,7 +706,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const { tooltip: attachTooltipNode, handlers: attachTooltipHandlers } = useAdaptiveTooltip();
   const [hoveredOptionDesc, setHoveredOptionDesc] = useState<string | null>(null);
   const [hoveredOptionRect, setHoveredOptionRect] = useState<DOMRect | null>(null);
-  const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>([]);
+  // 初始值从共享目录缓存播种：详情页"使用/快捷输入"跳转过来时，tag 首帧就能解析出
+  // displayName/头像，而不是先显示原始 runtimePackageName、等目录请求回来再跳变。
+  const [agentOptions, setAgentOptions] = useState<AgentCatalogItem[]>(
+    () => useAgentCatalogStore.getState().catalog ?? [],
+  );
   const [agentOptionsStatus, setAgentOptionsStatus] = useState<'idle' | 'loading' | 'success' | 'error'>('idle');
   const agentManagementClient = useMemo(() => createAgentManagementClient(), []);
   const [groupOptions, setGroupOptions] = useState<AgentGroupCatalogItem[]>([]);
@@ -755,7 +786,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const setAgentGroupSelectionIntent = useSessionStore((s) => s.setAgentGroupSelectionIntent);
   const clearAgentGroupSelectionIntent = useSessionStore((s) => s.clearAgentGroupSelectionIntent);
   const clearSelectedSkills = useSessionStore((s) => s.clearSelectedSkills);
-  const selectedAgent = agentOptions.find((item) => item.id === selectedAgentId) ?? null;
+  const selectedAgent = agentOptions.find((item) => isSameAgentOption(item, selectedAgentId)) ?? null;
   const installedAgentOptions = useMemo(
     () =>
       agentOptions.filter((item) => item.installed && item.connectionState === 'connected' && item.enabled !== false),
@@ -801,15 +832,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     if (!activeSessionId || (pickerTab !== 'agent' && !selectedAgentId) || (!agentPickerOpen && !selectedAgentId)) return;
     let cancelled = false;
     setAgentOptionsStatus('loading');
-    void agentManagementClient
-      .listCatalog()
+    void agentManagementClient.listCatalog({ filter: 'mine' })
       .then((items) => {
         if (cancelled) return;
-        const selectedItem = selectedAgentId ? items.find((item) => item.id === selectedAgentId) : null;
-        if (selectedItem?.enabled === false || selectedItem?.connectionState !== 'connected') {
+        const selectedItem = selectedAgentId ? items.find((item) => isSameAgentOption(item, selectedAgentId)) : null;
+        // 'connecting' 是连接器建立中的瞬态，随后大概率回到 'connected'；用它清空选择
+        // 会造成刚选上的专家 tag 过一会儿自己消失。filter:'mine' 下已选专家可能不在
+        // 列表内，查不到时保留选择；仅在明确禁用或已断连（含连接失败）时清。
+        if (
+          selectedItem &&
+          (selectedItem.enabled === false ||
+            (selectedItem.connectionState !== 'connected' && selectedItem.connectionState !== 'connecting'))
+        ) {
           setAgentSelectionIntent(activeSessionId, { kind: 'clear' });
         }
         setAgentOptions(items);
+        seedAgentCatalog(items);
         setAgentOptionsStatus('success');
       })
       .catch(() => {
@@ -1808,6 +1846,46 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     return text.replace(/\u200B/g, '');
   }, []);
 
+  const runGoalSlashAction = useCallback(
+    async (
+      sessionId: string,
+      action: GoalSlashAction,
+      objective?: string,
+    ): Promise<GoalSlashSnapshot> => {
+      if (action === 'get' && sessionId === NEW_CONVERSATION_ID) return null;
+
+      if (action === 'set') {
+        const normalizedObjective = objective?.trim() ?? '';
+        if (!onSetGoal || !normalizedObjective) throw new Error('Goal setting is unavailable');
+        if (sessionId === NEW_CONVERSATION_ID) {
+          // 欢迎页没有真实 session：复用工具栏 Goal 的懒创建路径，
+          // 由 App 在 session.create 成功后迁移 armed 状态并发出 command.goal set。
+          useGoalStore.getState().setArmed(sessionId, true);
+          onSubmit(normalizedObjective);
+          return null;
+        }
+        queueOrAddGoalObjectiveMessage(sessionId, normalizedObjective);
+        useGoalStore.getState().setArmed(sessionId, false);
+        await onSetGoal(sessionId, normalizedObjective);
+      } else {
+        const handler =
+          action === 'pause'
+            ? onPauseGoal
+            : action === 'resume'
+              ? onResumeGoal
+              : action === 'clear'
+                ? onClearGoal
+                : onRefreshGoal;
+        if (!handler) throw new Error(`Goal ${action} is unavailable`);
+        await handler(sessionId);
+      }
+
+      const goal = useGoalStore.getState().getRuntime(sessionId)?.goal;
+      return goal ? { objective: goal.objective, status: goal.status } : null;
+    },
+    [onClearGoal, onPauseGoal, onRefreshGoal, onResumeGoal, onSetGoal, onSubmit],
+  );
+
   const executeSlashCommand = useCallback(
     async (command: SlashCommand, context: SlashCommandContext, args: string) => {
       // /plan 是计划开关的命令入口。两条调用路径都汇聚到这里：
@@ -1851,14 +1929,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     const richContent = extractRichContent();
     const trimmedBase = richContent.trim();
 
-    // 单 Agent 下拦截斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
-    // Team 下不拦截，以普通文本发送，不会触发 command.compact 等 RPC。
+    // 拦截当前模式支持的斜杠命令：控制命令不走 chat.send / 队列 / 中断逻辑。
+    // Team 仅支持全局 /new，其余注册命令仍以普通文本发送。
     if (trimmedBase.startsWith('/')) {
       const { name, args } = parseSlashLine(trimmedBase);
       const cmd = findSlashCommand(name);
       const slashSid = useChatStore.getState().activeSessionId;
       const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
       if (cmd && shouldExecuteRegisteredSlashCommand(name, args, slashMode)) {
+        if (
+          cmd.name === 'goal' &&
+          parseGoalSlashArgs(args).action === 'set' &&
+          readyMediaItems.length > 0
+        ) {
+          pushAttachmentAlert(t('chat.goalAttachmentsBlocked'));
+          return;
+        }
         if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
         setAttachments([]);
         setAttachmentAlerts([]);
@@ -1874,6 +1960,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
               inputLine: trimmedBase,
               addMessage: useChatStore.getState().addMessage,
               submitMessage: onSubmit,
+              startNewConversation: onNewSession,
+              forkConversation: onForkSession,
+              startSideConversation: onStartSideConversation,
+              runGoalAction: runGoalSlashAction,
+              confirmGoalOverwrite: (currentObjective, requestedObjective) =>
+                window.confirm(
+                  t('goal.overwriteConfirm', { currentObjective, requestedObjective }),
+                ),
             },
             args,
           );
@@ -1967,6 +2061,10 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
     composerDisabled,
     isInterruptible,
     onSubmit,
+    onNewSession,
+    onForkSession,
+    onStartSideConversation,
+    runGoalSlashAction,
     onInterrupt,
     mode,
     isAgentMode,
@@ -2106,13 +2204,13 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
         }
         const slashSid = useChatStore.getState().activeSessionId;
         const slashMode = useSessionStore.getState().getRuntime(slashSid)?.mode ?? mode;
-        if (!supportsWebSlashCommands(slashMode)) {
+        const slashCmd = findSlashCommand(value);
+        if (!slashCmd || !shouldExecuteRegisteredSlashCommand(value, '', slashMode)) {
           setComposerSuggestion(null);
           return;
         }
-        const slashCmd = findSlashCommand(value);
-        // 无参命令（/plan、/compact）：选中即执行，不插入文本、不再等回车。
-        // `/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
+        // 无参命令（/new、/fork、/plan、/compact）：选中即执行，不插入文本、不再等回车。
+        // `/fork title`、`/plan hi` 这类手工输入不走此选中路径，提交时会被当作普通消息。
         if (slashCmd && slashTakesArgs === false) {
           const trigger = getCurrentComposerTrigger();
           if (trigger) {
@@ -2124,7 +2222,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
             setRangeStartByTextOffset(range, el, Math.max(0, beforeTextLength - triggerLength));
             range.deleteContents();
           }
-          if (slashSid) useChatStore.getState().setInputValue(slashSid, extractPlainText());
+          if (slashCmd.name === 'new') {
+            if (slashSid) useChatStore.getState().setInputValue(slashSid, '');
+            setAttachments([]);
+            setAttachmentAlerts([]);
+            el.innerHTML = '';
+          } else if (slashSid) {
+            useChatStore.getState().setInputValue(slashSid, extractPlainText());
+          }
           setComposerSuggestion(null);
           el.focus();
           // requiresSession=false 的命令（如 /plan 纯本地开关）无需真实会话，欢迎页也能用
@@ -2137,6 +2242,14 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 inputLine: `/${value}`,
                 addMessage: useChatStore.getState().addMessage,
                 submitMessage: onSubmit,
+                startNewConversation: onNewSession,
+                forkConversation: onForkSession,
+                startSideConversation: onStartSideConversation,
+                runGoalAction: runGoalSlashAction,
+                confirmGoalOverwrite: (currentObjective, requestedObjective) =>
+                  window.confirm(
+                    t('goal.overwriteConfirm', { currentObjective, requestedObjective }),
+                  ),
               },
               '',
             );
@@ -2272,7 +2385,19 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       setComposerSuggestion(null);
       el.focus();
     },
-    [executeSlashCommand, extractPlainText, getCurrentComposerTrigger, mode, onSubmit, setRangeStartByTextOffset],
+    [
+      executeSlashCommand,
+      extractPlainText,
+      getCurrentComposerTrigger,
+      mode,
+      onNewSession,
+      onForkSession,
+      onStartSideConversation,
+      onSubmit,
+      runGoalSlashAction,
+      setRangeStartByTextOffset,
+      t,
+    ],
   );
 
   const notifyKVCInputIntent = useCallback(() => {
@@ -3090,7 +3215,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                 }}
                 onPick={insertComposerToken}
                 loading={slashCatalogLoading}
-                slashSkillsOnly={isTeamMode}
+                slashSkillsOnly={false}
               />
             )}
             <div
@@ -3319,7 +3444,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   ) : pickerTab === 'agent' ? (
                                     filteredAgentOptions.map((item) => {
                                       const avatarUrl = getAgentAvatarUrl(item);
-                                      const isSelected = selectedAgentId === item.id;
+                                      const isSelected = isSameAgentOption(item, selectedAgentId);
                                       return (
                                         <button
                                           key={item.id}
@@ -3818,7 +3943,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                     )}
                 </div>
                 {!isTeamMode && (
-                  <PermissionSelector permissionsEnabled={permissionsEnabled} onSavePermission={onSavePermission} />
+                  <PermissionSelector
+                    mode={mode}
+                    permissionProfile={permissionProfile}
+                    onSavePermission={onSavePermission}
+                  />
                 )}
 
                 {selectedAgentId && (
@@ -4094,7 +4223,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                   }}
                   onPick={insertComposerToken}
                   loading={slashCatalogLoading}
-                  slashSkillsOnly={isTeamMode}
+                  slashSkillsOnly={false}
                   placement="below"
                 />
               )}
@@ -4696,16 +4825,18 @@ function ComposerSuggestionMenu({
 
 function PermissionSelector({
   disabled = false,
-  permissionsEnabled,
+  mode,
+  permissionProfile,
   onSavePermission,
 }: {
   disabled?: boolean;
-  permissionsEnabled: boolean;
+  mode: AgentMode;
+  permissionProfile: Permission;
   onSavePermission: (updates: Record<string, string>) => Promise<void>;
 }) {
   const { t } = useTranslation();
-
-  const permission: Permission = permissionsEnabled ? 'default' : 'full_access';
+  const permission = effectivePermissionProfile(permissionProfile, mode);
+  const permissionOptions = permissionOptionsForMode(mode);
 
   const [isOpen, setIsOpen] = useState(false);
   const [menuDirection, setMenuDirection] = useState<'up' | 'down'>('up');
@@ -4731,7 +4862,7 @@ function PermissionSelector({
       if (value === 'full_access') {
         setPendingPermission('full_access');
       } else {
-        onSavePermission({ permissions_enabled: 'true' });
+        onSavePermission({ permissions_profile: value });
       }
     },
     [permission, onSavePermission],
@@ -4739,7 +4870,7 @@ function PermissionSelector({
 
   const handleConfirm = useCallback(() => {
     if (pendingPermission) {
-      onSavePermission({ permissions_enabled: 'false' });
+      onSavePermission({ permissions_profile: pendingPermission });
     }
     setPendingPermission(null);
   }, [pendingPermission, onSavePermission]);
@@ -4812,7 +4943,7 @@ function PermissionSelector({
                   : { position: 'fixed', top: menuAnchor.bottom + 10, left: menuAnchor.left, zIndex: 9999 }
               }
             >
-              {PERMISSION_OPTIONS.map((opt) => (
+              {PERMISSION_OPTIONS.filter((opt) => permissionOptions.includes(opt.value)).map((opt) => (
                 <button
                   type="button"
                   key={opt.value}

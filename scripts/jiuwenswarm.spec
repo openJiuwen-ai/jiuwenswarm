@@ -11,6 +11,7 @@ r"""JiuwenSwarm PyInstaller 打包配置。
 import glob
 import os
 import runpy
+import shutil
 import sys
 from pathlib import Path
 
@@ -336,6 +337,40 @@ for _c in _ruff_candidates:
 if not _bundled_binaries:
     print("WARNING: ruff binary not found in venv; auto-harness lint will be "
           "unavailable in the frozen exe (install ruff in the build venv)")
+
+# Bundle the GitCode CLI so bare `gitcode` works inside the frozen exe without
+# Python on the user's machine: gitcode-cli ships one pre-compiled binary per
+# platform (gc_cli/bin/gc-<os>-<arch>) and only the current one is staged. The
+# frozen entry already puts _internal on PATH, and `gitcode version` matching
+# the connector's pinned minVersion (compared for exact equality, so bumping it
+# needs a rebuild here too) skips the connector's pip-based init step.
+try:
+    from gc_cli.wrapper import get_binary_path as _gc_binary_path
+except ImportError:
+    raise SystemExit(
+        "错误: 打包环境缺少 gitcode-cli，冻结包将无法内置 gitcode CLI。"
+        "请先执行 uv sync --extra dev。"
+    )
+
+try:
+    _gc_source = str(_gc_binary_path())
+except RuntimeError as _gc_exc:
+    # 上游未提供当前平台的预编译二进制（如 Windows arm64），保持构建可用，
+    # 此时冻结包不内置 gitcode，连接器会退回 pip 安装流程。
+    print(f"WARNING: gitcode-cli has no prebuilt binary for this platform "
+          f"({_gc_exc}); the frozen exe will not bundle the gitcode CLI")
+except FileNotFoundError as _gc_exc:
+    raise SystemExit(f"错误: gitcode-cli 缺少当前平台的二进制文件: {_gc_exc}")
+else:
+    _gc_stage_dir = os.path.join(project_root, "build", "_gitcode_runtime")
+    os.makedirs(_gc_stage_dir, exist_ok=True)
+    _gc_stage = os.path.join(
+        _gc_stage_dir, "gitcode.exe" if sys.platform == "win32" else "gitcode"
+    )
+    shutil.copyfile(_gc_source, _gc_stage)
+    if sys.platform != "win32":
+        os.chmod(_gc_stage, 0o755)
+    _bundled_binaries.append((_gc_stage, "."))
 
 
 # Bundle pytest (pure-Python) so that `python -m pytest` works inside the

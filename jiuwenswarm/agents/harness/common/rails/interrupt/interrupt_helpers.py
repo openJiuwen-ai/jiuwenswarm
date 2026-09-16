@@ -39,9 +39,6 @@ from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue i
     RootPermissionCard,
     RootPermissionQueue,
 )
-from jiuwenswarm.agents.harness.common.rails.permissions.tool_capabilities import (
-    install_permission_file_semantics,
-)
 from jiuwenswarm.agents.harness.common.rails.permissions.reviewer_redaction import (
     redact_secret_values,
     sanitize_permission_ui_payload,
@@ -268,8 +265,6 @@ def build_permission_rail(
             session_id=bound_session_id,
         )
     )
-    if enable_auto_permission:
-        install_permission_file_semantics()
 
     def _collect_optional_tool_tags(cfg: dict[str, Any]) -> list[str]:
         # openjiuwen PermissionInterruptRail 会拦截所有工具；

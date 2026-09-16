@@ -109,6 +109,11 @@ def _package_roots() -> tuple[Path, Path]:
     return _packages_dir(), _hub_packages_dir()
 
 
+def resolve_package(name: str) -> McpPackageManifest | None:
+    """Resolve a local MCP package for callers outside the registry."""
+    return _resolve_package(name)
+
+
 def _resolve_package(name: str) -> McpPackageManifest | None:
     return resolve_mcp_package(str(name or "").strip(), *_package_roots())
 

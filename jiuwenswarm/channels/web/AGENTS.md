@@ -144,4 +144,6 @@
 | `features/trajectory` | `trajectory` | 轨迹面板(归档导入/导出;原始数据检视器) |
 | `features/trajectory` | `single-agent` | 单 Agent 工作台(chat/trajectory 双 tab 切换) |
 | `features/trajectory` | `team-trajectory` | 团队轨迹工作台(泳道视图) |
+| `components/AssetPublishDrawer` | `asset-publish` | 四类资源发布表单、预检、任务及 OAuth 恢复 |
+| `components/marketplace` | `marketplace` | 公共市场布局与目录缓存状态 |
 | `App.tsx` | `app` | 应用外壳;全局布局与 toast |

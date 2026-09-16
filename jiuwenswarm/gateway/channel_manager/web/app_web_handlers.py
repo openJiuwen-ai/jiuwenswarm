@@ -66,7 +66,7 @@ from jiuwenswarm.common.config import (
     validate_persisted_kv_cache_affinity,
     update_skill_retrieval_in_config,
     update_symphony_in_config,
-    update_permissions_enabled_in_config,
+    update_permissions_profile_in_config,
     update_setup_guide_enabled_in_config,
     update_rsi_enabled_in_config,
     update_enable_free_models_in_config,
@@ -91,6 +91,9 @@ from jiuwenswarm.common.kv_cache_affinity_config import (
     normalize_affinity_request,
     parse_bool as parse_kvc_bool,
     set_default_model_provider_in_entries,
+)
+from jiuwenswarm.agents.harness.common.rails.permissions.auto_config import (
+    is_auto_permission_mode,
 )
 from jiuwenswarm.server.runtime.a2ui.integration import (
     get_a2ui_config_payload,
@@ -246,6 +249,9 @@ class _ConfigApplyResult:
     yaml_updated: list[str]
     codex_dependency_install: dict[str, Any] | None = None
     external_cli_dependency_installs: dict[str, dict[str, Any]] | None = None
+    canonical_config: dict[str, str] | None = None
+    pending_permission_profile: str | None = None
+    pending_permission_key: str | None = None
 
 
 _CODEX_DEPENDENCY_INSTALL_LOCK = threading.Lock()
@@ -705,6 +711,7 @@ class _DummyBus:
 _FORWARD_REQ_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.delete",
     "command.goal",
@@ -752,6 +759,12 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.teamskillshub.init",
     "skills.teamskillshub.validate",
     "skills.teamskillshub.pack",
+    "assets.publish.describe",
+    "assets.publish.prepare",
+    "assets.publish.commit",
+    "assets.publish.status",
+    "assets.publish.records",
+    "assets.publish.local_status",
     "skills.teamskillshub.search",
     "skills.swarmskillshub.recommend",
     "skills.teamskillshub.install",
@@ -770,6 +783,8 @@ _FORWARD_REQ_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -876,6 +891,7 @@ _FORWARD_REQ_METHODS = frozenset({
 _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "initialize",
     "session.switch",
+    "session.fork",
     "acp.tool_response",
     "team.templates.list",
     "team.bindings.list",
@@ -924,6 +940,12 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.teamskillshub.init",
     "skills.teamskillshub.validate",
     "skills.teamskillshub.pack",
+    "assets.publish.describe",
+    "assets.publish.prepare",
+    "assets.publish.commit",
+    "assets.publish.status",
+    "assets.publish.records",
+    "assets.publish.local_status",
     "skills.teamskillshub.search",
     "skills.swarmskillshub.recommend",
     "skills.teamskillshub.install",
@@ -942,6 +964,8 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "skills.graph.status",
     "skills.graph.get",
     "skills.graph.cancel",
+    "skills.experience.list",
+    "skills.experience.request",
     "personal_context.runtime.status",
     "personal_context.runtime.start_collection",
     "personal_context.runtime.stop_collection",
@@ -1156,6 +1180,20 @@ _DEFAULT_EXTERNAL_CLI_PUBLISH_HOST = "127.0.0.1"
 _DEFAULT_EXTERNAL_CLI_PUBLISH_PORT = "19000"
 _EXTERNAL_CLI_PUBLISH_PATH = "/ws"
 _UNSUPPORTED_WINDOWS_CLI_SUFFIXES = {".bat", ".cmd", ".ps1"}
+_PERMISSIONS_PROFILES = frozenset({"default", "automatic", "full_access"})
+
+
+def _permission_profile(permission_config: object) -> str:
+    if not isinstance(permission_config, dict) or permission_config.get("enabled") is not True:
+        return "full_access"
+    return "automatic" if is_auto_permission_mode(permission_config) else "default"
+
+
+def _canonical_permission_facade(profile: str) -> dict[str, str]:
+    return {
+        "permissions_profile": profile,
+        "permissions_enabled": "false" if profile == "full_access" else "true",
+    }
 
 # 微信通道数值参数的取值范围：(下限, 上限, 是否必须为整数)。均为秒，必须为有限正数。
 # 用于 channel.wechat.set_conf 写盘前校验，拒绝负数 / 0 / 极大值 / 浮点越界 / 非数字，
@@ -3001,7 +3039,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 "true" if is_affinity_enabled(raw) else "false"
             )
             perm_cfg = raw.get("permissions") or {}
-            payload["permissions_enabled"] = "true" if perm_cfg.get("enabled", False) else "false"
+            payload.update(_canonical_permission_facade(_permission_profile(perm_cfg)))
             # Skill evolution is controlled solely by the canonical nested YAML key.
             evolution_cfg = (raw.get("react") or {}).get("evolution") or {}
             payload["skill_evolution"] = "true" if evolution_cfg.get("skill_evolution", False) else "false"
@@ -3041,6 +3079,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload.setdefault("kv_cache_affinity_enabled", "false")
             payload.setdefault("permissions_enabled", "false")
             payload.setdefault("rsi_enabled", "true")
+            payload.setdefault("permissions_profile", "full_access")
             payload.setdefault("setup_guide_enabled", "true")
             payload.setdefault("skill_evolution", "false")
             payload.setdefault("memory_forbidden_enabled", "false")
@@ -3209,14 +3248,33 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _apply_config_payload(params: dict[str, Any]) -> _ConfigApplyResult:
         """Apply config.set-style payload to .env/config.yaml without triggering reload."""
+        if "permissions_mode" in params:
+            raise _ConfigBadRequest("permissions_mode is not writable")
+        if "permissions_profile" in params and "permissions_enabled" in params:
+            raise _ConfigBadRequest(
+                "permissions_profile and permissions_enabled are mutually exclusive"
+            )
         params = _encrypt_config_params(params)
         env_updates: dict[str, str] = {}
         yaml_updated: list[str] = []
         codex_dependency_install: dict[str, Any] | None = None
         external_cli_dependency_installs: dict[str, dict[str, Any]] = {}
+        canonical_config: dict[str, str] | None = None
         available_model_providers = [provider.value for provider in ProviderType]
         raw = get_config_raw()
         preferred_lang = raw.get("preferred_language", "zh")
+
+        pending_permission_profile: str | None = None
+        if "permissions_profile" in params:
+            pending_permission_profile = str(params["permissions_profile"]).strip()
+            if pending_permission_profile not in _PERMISSIONS_PROFILES:
+                raise _ConfigBadRequest("invalid permissions_profile")
+            canonical_config = _canonical_permission_facade(pending_permission_profile)
+        elif "permissions_enabled" in params:
+            pending_permission_profile = (
+                "default" if _parse_config_bool(params["permissions_enabled"]) else "full_access"
+            )
+            canonical_config = _canonical_permission_facade(pending_permission_profile)
 
         try:
             normalize_affinity_request(params)
@@ -3269,7 +3327,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 elif param_key == "kv_cache_affinity_enabled":
                     update_kv_cache_affinity_enabled_in_config(parsed)
                 elif param_key == "permissions_enabled":
-                    update_permissions_enabled_in_config(parsed)
+                    continue
                 elif param_key == "setup_guide_enabled":
                     update_setup_guide_enabled_in_config(parsed)
                 elif param_key == "rsi_enabled":
@@ -3388,9 +3446,31 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 )
 
         return _ConfigApplyResult(
-            env_updates, yaml_updated, codex_dependency_install,
-            external_cli_dependency_installs or None,
+            env_updates=env_updates,
+            yaml_updated=yaml_updated,
+            codex_dependency_install=codex_dependency_install,
+            external_cli_dependency_installs=external_cli_dependency_installs or None,
+            canonical_config=canonical_config,
+            pending_permission_profile=pending_permission_profile,
+            pending_permission_key=(
+                "permissions_profile"
+                if "permissions_profile" in params
+                else "permissions_enabled"
+                if "permissions_enabled" in params
+                else None
+            ),
         )
+
+    def _commit_pending_permission_profile(apply_result: _ConfigApplyResult) -> None:
+        profile = apply_result.pending_permission_profile
+        if profile is None:
+            return
+        try:
+            update_permissions_profile_in_config(profile)
+        except (OSError, ValueError) as exc:
+            raise _ConfigInternalError("failed to update permissions profile") from exc
+        if apply_result.pending_permission_key is not None:
+            apply_result.yaml_updated.append(apply_result.pending_permission_key)
 
     async def _apply_config_change_set(change_set: _ConfigChangeSet) -> bool:
         """Synchronously apply only the runtime scope affected by a saved config change."""
@@ -3555,6 +3635,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         try:
             apply_result = _apply_config_payload(params)
+            _commit_pending_permission_profile(apply_result)
         except _ConfigBadRequest as exc:
             await channel.send_response(ws, req_id, ok=False, error=str(exc), code="BAD_REQUEST")
             return
@@ -3583,6 +3664,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             payload["codex_dependency_install"] = apply_result.codex_dependency_install
         if apply_result.external_cli_dependency_installs is not None:
             payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
+        if apply_result.canonical_config is not None:
+            payload["canonical_config"] = apply_result.canonical_config
         await channel.send_response(
             ws, req_id, ok=True,
             payload=payload,
@@ -3936,9 +4019,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             if config_params:
                 apply_result = _apply_config_payload(config_params)
                 applied_env = apply_result.env_updates
-                applied_yaml = apply_result.yaml_updated
                 env_updates.update(applied_env)
-                yaml_updated.extend(applied_yaml)
             else:
                 apply_result = _ConfigApplyResult({}, [])
 
@@ -3966,6 +4047,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                         "KV cache affinity saved but not applied: " + "; ".join(failures)
                     )
 
+            _commit_pending_permission_profile(apply_result)
+            yaml_updated.extend(apply_result.yaml_updated)
+
             change_set = _ConfigChangeSet(
                 env_updates,
                 yaml_updated,
@@ -3989,6 +4073,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 payload["codex_dependency_install"] = apply_result.codex_dependency_install
             if apply_result.external_cli_dependency_installs is not None:
                 payload["external_cli_dependency_installs"] = apply_result.external_cli_dependency_installs
+            if apply_result.canonical_config is not None:
+                payload["canonical_config"] = apply_result.canonical_config
 
             await channel.send_response(
                 ws,

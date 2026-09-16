@@ -1,9 +1,9 @@
+import './ConnectorMarket.css';
 import { useState } from 'react';
-import { Plus, Loader2, AlertCircle } from 'lucide-react';
+import { Loader2, AlertCircle } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import type { AvatarStyle } from '../../utils/skillAvatar';
-import { NewConversationIcon } from './icons';
-import { PageCard, type PageCardActionProps } from '../ui';
+import { PageCard } from '../ui';
 import { useAdaptiveTooltip } from '../../hooks/useAdaptiveTooltip';
 import type { McpCardState } from './mcpState';
 import { busyLabelKey } from './mcpState';
@@ -11,6 +11,7 @@ import type { McpBusyKind } from '../../types/connector';
 
 interface MarketCardProps {
   title: string;
+  tags?: string[];
   description: string;
   avatar: AvatarStyle;
   iconUrl?: string;
@@ -20,11 +21,13 @@ interface MarketCardProps {
   onOpenDetail: () => void;
   onQuickAdd: () => void;
   quickAction?: 'install' | 'connect';
+  actionDisabled?: boolean;
   onUse?: () => void;
 }
 
 export function MarketCard({
   title,
+  tags = [],
   description,
   avatar,
   iconUrl,
@@ -34,6 +37,7 @@ export function MarketCard({
   onOpenDetail,
   onQuickAdd,
   quickAction = 'install',
+  actionDisabled = false,
   onUse,
 }: MarketCardProps) {
   const { t } = useTranslation();
@@ -57,9 +61,7 @@ export function MarketCard({
     </>
   ) : undefined;
 
-  // 单按钮统一走 PageCard action（page-card-action 32×32 统一样式）；
-  // connecting 是非按钮内容（spinner + 文案），必须走 actionSlot。
-  let action: PageCardActionProps | undefined;
+  // 安装操作使用与专家卡片一致的文字按钮，已连接仍保留会话入口。
   let actionSlot: React.ReactNode;
 
   if (state === 'connecting') {
@@ -70,17 +72,22 @@ export function MarketCard({
       </span>
     );
   } else if (state === 'connected') {
-    action = {
-      icon: <NewConversationIcon size={15} />,
-      onClick: onUse,
-      tooltip: t('connectorMarket.card.use'),
-    };
+    actionSlot = <button type="button" className="connector-market-card-install" data-testid="connector-market-card-use" disabled={!onUse} onClick={event => { event.stopPropagation(); onUse?.(); }}>{t('connectorMarket.card.use')}</button>;
   } else if (state === 'idle' || state === 'error') {
-    action = {
-      icon: <Plus size={16} strokeWidth={2.5} />,
-      onClick: onQuickAdd,
-      tooltip: state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`),
-    };
+    actionSlot = (
+      <button
+        type="button"
+        className="connector-market-card-install"
+        disabled={actionDisabled}
+        data-testid="connector-market-card-install"
+        onClick={(event) => {
+          event.stopPropagation();
+          onQuickAdd();
+        }}
+      >
+        {state === 'error' ? t('connectorMarket.card.retry') : t(`connectorMarket.card.${quickAction}`)}
+      </button>
+    );
   }
 
   return (
@@ -90,9 +97,9 @@ export function MarketCard({
       onClick={canOpenDetail ? onOpenDetail : undefined}
       avatar={avatarProp}
       title={title}
+      label={tags}
       titleEnd={titleEndNode}
       description={description}
-      action={action}
       actionSlot={actionSlot}
     />
   );

@@ -245,10 +245,6 @@ async def test_personal_context_stop_failure_does_not_change_normal_stop_result(
 
     host.stop = _failed_stop  # type: ignore[method-assign]
     server._server = _FakeWebSocketServer(events)  # pylint: disable=protected-access
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.cancel_pending_tasks",
-        _noop_async,
-    )
     monkeypatch.setattr(server._jiuwenbox_runner, "stop", _noop_async)
 
     await server.stop()
@@ -270,10 +266,6 @@ async def test_stop_finishes_main_services_before_personal_context_cleanup(
 
     host.stop = _record_personal_context_stop  # type: ignore[method-assign]
     server._server = _FakeWebSocketServer(events)  # pylint: disable=protected-access
-    monkeypatch.setattr(
-        "jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks.cancel_pending_tasks",
-        _noop_async,
-    )
     monkeypatch.setattr(server._jiuwenbox_runner, "stop", _noop_async)
 
     await server.stop()

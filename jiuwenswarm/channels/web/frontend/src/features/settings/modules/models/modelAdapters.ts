@@ -231,7 +231,7 @@ export function applyVendorSelection(draft: ModelDraft, selection: string, catal
     ...draft,
     protocol: anthropic ? 'anthropic' : 'openai',
     vendor_selection: selection,
-    model_name: preset.default_model,
+    model_name: '',
     model_input_mode: 'options',
     api_key: '',
     api_base: anthropic ? (preset.anthropic_base ?? '') : preset.api_base,

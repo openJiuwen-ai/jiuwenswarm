@@ -3045,3 +3045,46 @@
     width: 100%;
   }
 }
+
+/* Actions share the title row; tags retain the full width after installation. */
+.agent-management-catalog-card .page-card__header {
+  display: grid;
+  grid-template-columns: 48px minmax(0, 1fr) auto;
+  column-gap: 12px;
+  row-gap: 4px;
+}
+.agent-management-catalog-card .page-card__avatar {
+  grid-column: 1;
+  grid-row: 1 / span 2;
+}
+.agent-management-catalog-card .page-card__title-area {
+  display: contents;
+}
+.agent-management-catalog-card .page-card__title-row {
+  grid-column: 2;
+  grid-row: 1;
+}
+.agent-management-catalog-card .page-card__action {
+  grid-column: 3;
+  grid-row: 1;
+}
+.agent-management-catalog-card .page-card__label {
+  grid-column: 2 / -1;
+  grid-row: 2;
+}
+.agent-management-catalog-card:focus-within .agent-management-card__actions {
+  opacity: 1;
+}
+/* Measure available space rather than the width of already-truncated tags. */
+.agent-management-catalog-card .page-card__tags {
+  width: 100%;
+}
+
+.agent-management-detail-action--use {
+  border-color: var(--color-text-strong);
+  background: var(--color-text-strong);
+  color: var(--color-text-inverse);
+}
+.agent-management-detail-action--use:hover:not(:disabled) {
+  background: var(--color-text-primary);
+}

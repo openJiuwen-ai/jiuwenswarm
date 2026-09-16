@@ -27,6 +27,12 @@ export interface Session {
   display_title?: string | null;
   is_custom_title?: boolean;
   title_source?: 'auto' | 'user';
+  /** Direct parent session when this conversation was created by fork. */
+  forked_from?: string;
+  /** Temporary side conversations are omitted from the normal session list. */
+  ephemeral?: boolean;
+  /** Direct parent for an ephemeral side conversation. */
+  side_parent_session_id?: string;
   model?: string;
   mode: AgentMode;
   status: SessionStatus;
@@ -71,7 +77,7 @@ export type AgentMode =
   | 'team.code.normal'
   | 'team.code.plan';
 export type SessionStatus = 'active' | 'paused' | 'completed' | 'interrupted';
-export type Permission = 'default' | 'full_access';
+export type Permission = 'default' | 'automatic' | 'full_access';
 
 export type ModelPlan = 'token_plan' | 'coding_plan' | 'custom_api';
 

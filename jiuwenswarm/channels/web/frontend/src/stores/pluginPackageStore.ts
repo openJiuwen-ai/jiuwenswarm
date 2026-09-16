@@ -1,3 +1,4 @@
+import { scheduleCatalogRefresh, catalogScope } from '../features/catalogCache';
 import { create } from 'zustand';
 import { extractRpcErrorMessage } from '../features/agentManagement/upload';
 import { PluginInstallPendingError, pluginPackagesApi } from '../services/pluginPackagesApi';
@@ -103,6 +104,7 @@ interface PluginPackageState {
    * 成功提示，统一在 install() 里 set 一次即可覆盖，不用调用方各自维护。 */
   successMessage: string | null;
   busyId: string | null;
+  installingIds: Record<string, boolean>;
 
   loadList: (filter?: 'builtin+hub' | 'mine', options?: { silent?: boolean }) => Promise<void>;
   // 返回是否成功——PluginDetailPage.tsx 卸载后要重新 show() 探测这个插件还在不在（新方案
@@ -161,7 +163,7 @@ function scheduleQuickRefresh(): void {
   }, QUICK_REFRESH_DELAY_MS);
 }
 
-export const usePluginPackageStore = create<PluginPackageState>((set) => ({
+export const usePluginPackageStore = create<PluginPackageState>((set, get) => ({
   packages: [],
   localPackages: [],
   detailCache: {},
@@ -173,15 +175,19 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   noticeMessage: null,
   successMessage: null,
   busyId: null,
+  installingIds: {},
 
   // silent=true 仅用于安装/卸载后的快速校准，不改变页面的加载状态。
   loadList: async (filter, options) => {
     const silent = options?.silent ?? false;
     const seqKey = filter === 'mine' ? 'mine' : 'packages';
     const mySeq = ++listRequestSeq[seqKey];
+    const requestScope = catalogScope();
     if (!silent) set({ isLoading: true, error: null });
     try {
       const freshPackages = await pluginPackagesApi.list(filter);
+      if (requestScope !== catalogScope()) return;
+      scheduleCatalogRefresh('pluginPackageStore.ts:' + seqKey, freshPackages.cache, () => { void get().loadList(filter, { silent: true }); }, () => listRequestSeq[seqKey] === mySeq);
       if (listRequestSeq[seqKey] !== mySeq) return; // 已有更新的同桶调用发起过，这次结果作废
       const packages = freshPackages;
       set((state) => {
@@ -206,7 +212,6 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
       if (listRequestSeq[seqKey] !== mySeq) return;
       if (silent) return;
       set({
-        ...(filter === 'mine' ? { localPackages: [] } : { packages: [] }),
         isLoading: false,
         error: error instanceof Error ? error.message : String(error),
       });
@@ -295,8 +300,9 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
   // scheduleQuickRefresh 一次真实 loadList('local') 兜底校准（同 connectorStore.ts 的
   // scheduleQuickRefresh，避免乐观值和后端真实状态长期不同步）。
   install: async (id: string) => {
+    if (get().installingIds[id]) return;
     set((state) => ({
-      busyId: id,
+      installingIds: { ...state.installingIds, [id]: true },
       error: null,
       successMessage: null,
       installPendingMap: { ...state.installPendingMap, [id]: undefined },
@@ -308,7 +314,7 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
         persistLocalState({ installed: nextInstalled });
         return {
           installed: nextInstalled,
-          busyId: null,
+          installingIds: { ...state.installingIds, [id]: false },
           successMessage: successKey.pluginInstalled,
           connectionStateMap: { ...state.connectionStateMap, [id]: 'connected' },
         };
@@ -317,12 +323,12 @@ export const usePluginPackageStore = create<PluginPackageState>((set) => ({
     } catch (error) {
       if (error instanceof PluginInstallPendingError) {
         set((state) => ({
-          busyId: null,
+          installingIds: { ...state.installingIds, [id]: false },
           installPendingMap: { ...state.installPendingMap, [id]: error.pendingConnectors },
         }));
         return;
       }
-      set({ busyId: null, error: error instanceof Error ? error.message : String(error) });
+      set((state) => ({ installingIds: { ...state.installingIds, [id]: false }, error: error instanceof Error ? error.message : String(error) }));
     }
   },
 

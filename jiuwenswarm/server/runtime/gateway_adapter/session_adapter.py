@@ -11,14 +11,14 @@
   color=None 为查询模式，合法值白名单与 TUI 一致）；
 - ``session.preview`` → ``session_history.load_history_records`` + 对话白名单过滤
   （chat.final / team.message，与 TUI 预览行为一致）；
-- ``session.delete`` → 目录删除（team session 拒绝、evict KV cache）；
+- ``session.delete`` → AgentServer 离线时由无 KVC participant 的维护型 Runtime 编排；
 - ``session.rename`` → 会话重命名；
 - ``session.restore_files`` → 会话文件恢复；
 - ``history.list_turns`` → 会话历史轮次列表。
 
-注：``session.delete`` / ``session.rename`` 在 AgentServer 在线 dispatch 时
-由 ``_GATEWAY_ADAPTER_LEGACY_METHODS`` 跳过适配器、走原 handler（保留
-KV cache evict 等在线状态清理语义）。
+注：AgentServer 在线 dispatch 时，``session.delete`` 先由 lifecycle
+handler 交给 Runtime，不会进入本适配器；``session.rename`` 仍由
+``_GATEWAY_ADAPTER_LEGACY_METHODS`` 跳过适配器、走原 handler。
 """
 
 from __future__ import annotations
@@ -27,7 +27,6 @@ import asyncio
 import logging
 from typing import Final
 
-from jiuwenswarm.common.mode_matrix import is_team_mode
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.common.utils import get_agent_root_dir
@@ -40,6 +39,7 @@ from jiuwenswarm.server.runtime.session.session_history import (
     load_history_records,
 )
 from jiuwenswarm.server.runtime.session.session_info import to_session_info
+from jiuwenswarm.server.runtime.session import session_metadata as session_metadata_store
 from jiuwenswarm.server.runtime.session.session_metadata import (
     _read_metadata,
     _write_metadata_sync,
@@ -113,10 +113,10 @@ class SessionAdapter(GatewayAdapter):
             ReqMethod.HISTORY_LIST_TURNS.value,
             ReqMethod.SESSION_RESTORE_FILES.value,
             # 以下两个 method 保留给 e2a_proxy 的单用户共享目录离线 fallback
-            # 使用；AgentWebSocketServer 在线 dispatch 会显式跳过适配器、走
-            # 原 handler：SESSION_DELETE 需执行 Team runtime 清理、
-            # Runner.release 和 session binding 解绑；SESSION_RENAME 保持迁移前
-            # 的失败 code 语义。
+            # 使用。SESSION_DELETE 通过维护型 Runtime 删除普通 Session；
+            # SESSION_RENAME 保持迁移前的离线语义。
+            # AgentWebSocketServer 在线时，delete 会更早被 lifecycle handler
+            # 处理，rename 则由 legacy handler 处理。
             ReqMethod.SESSION_DELETE.value,
             ReqMethod.SESSION_RENAME.value,
         }
@@ -409,122 +409,81 @@ class SessionAdapter(GatewayAdapter):
         )
 
     async def _handle_delete(self, request: AgentRequest) -> AgentResponse:
-        """session.delete 文件级删除（单用户共享目录 legacy fallback 语义）。
-
-        仅在 AgentServer 不可达时由 e2a_proxy 薄代理调用（见 ``methods`` 注释）；
-        在线删除走 AgentServer 的完整生命周期（运行时停止、trajectory、KVC、
-        plan/binding 善后）。相比迁移前手写路径，这里补上归档区解析：
-        归档会话离线时同样可删，两区同 ID 返回 SESSION_ID_CONFLICT。
-        """
-        import shutil
-
-        # 函数级 import：与既有 handler 惯例一致，保证测试可 monkeypatch 源模块
-        # 门面（monkeypatch 不改变已绑定到适配器模块的引用）。用别名避免
-        # 与模块级同名导入产生 redefined-outer-name 告警。
-        from jiuwenswarm.common.utils import (
-            get_agent_sessions_dir as _get_agent_sessions_dir,
-        )
-        from jiuwenswarm.server.runtime.session.lifecycle import (
-            LifecycleError as _LifecycleError,
-            session_paths as _session_paths,
-        )
-        from jiuwenswarm.server.runtime.session.session_history import (
-            resolve_session_dir as _resolve_session_dir,
-        )
-        from jiuwenswarm.server.runtime.session.session_metadata import (
-            get_session_metadata as _get_session_metadata,
-        )
-
+        """Delete an offline ordinary Session through the Runtime boundary."""
         params = request.params if isinstance(request.params, dict) else {}
         target = str(params.get("session_id") or request.session_id or "").strip()
         if not target:
             return build_error_response(
                 request, "session_id is required", code="BAD_REQUEST"
             )
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from jiuwenswarm.server.runtime.offline_session_cleanup import (
+            delete_offline_session,
+        )
+
         try:
-            metadata = _get_session_metadata(target)
-            # metadata 落盘的是 canonical（agent_ws_server 写 mode=canonical_mode），
-            # Web 改发三段命名后 canonical 为 team.work.normal 等，裸 == "team" 会
-            # 漏判使 team 会话删除守卫被绕过，用 is_team_mode 覆盖全部 team 变体。
+            # Gateway may outlive the AgentServer process that last updated the
+            # Session. Read disk so a stale ordinary-Session cache entry cannot
+            # bypass the offline Team deletion guard.
+            metadata = (
+                session_metadata_store.get_session_metadata(
+                    target,
+                    cache_bust=True,
+                )
+                or {}
+            )
             if is_team_mode(metadata.get("mode")):
                 return build_error_response(
                     request,
                     "team session delete requires agent server",
                     code="AGENT_UNAVAILABLE",
                 )
-            session_dir, invalid_reason = _resolve_session_dir(
-                target, sessions_root=_get_agent_sessions_dir()
+            result = await delete_offline_session(
+                channel_id=str(request.channel_id or ""),
+                session_id=target,
             )
-            if session_dir is None:
-                return build_error_response(
-                    request,
-                    invalid_reason or "invalid session_id",
-                    code="BAD_REQUEST",
-                )
-            # 两区解析：归档区优先于活跃区（在线删除生命周期同序），
-            # 两区同 ID 视为冲突，禁止任选其一删除。
-            _, archived_dir = _session_paths(target)
-            if archived_dir.exists():
-                session_dir = archived_dir
-            if not session_dir.exists():
-                return build_error_response(
-                    request, "session not found", code="NOT_FOUND"
-                )
-            if not session_dir.is_dir():
-                return build_error_response(
-                    request, "session is not a directory", code="BAD_REQUEST"
-                )
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                release_session_kvc,
-            )
-
-            await release_session_kvc(session_id=target)
-            from jiuwenswarm.server.runtime.session.session_message_store import (
-                SessionMessageStore,
-            )
-
-            # Remove the directory first: this fallback path has no access to
-            # the live consumer, so a mailbox wipe must only happen once the
-            # Session itself is really gone. A failed rmtree keeps the queued
-            # messages (and their content) intact for a retry.
-            await asyncio.to_thread(shutil.rmtree, session_dir)
-            # The Session directory is already gone, so a mailbox-cancel
-            # failure must not fail the delete itself: a client retry would
-            # hit NOT_FOUND (the dir no longer exists) and never reach this
-            # cleanup again. Record the residue loudly instead — the target
-            # Session is deleted either way.
-            try:
-                mailbox = SessionMessageStore(
-                    get_agent_root_dir() / "session_messages.sqlite3"
-                )
-                if mailbox.exists():
-                    records = await asyncio.to_thread(
-                        mailbox.cancel_pending_for_target, target
-                    )
-                    logger.info(
-                        "[SessionAdapter] session.delete cleared %d mailbox "
-                        "record(s): session_id=%s",
-                        len(records),
-                        target,
-                    )
-            except Exception as exc:  # noqa: BLE001
-                logger.warning(
-                    "[SessionAdapter] session.delete mailbox cleanup failed; "
-                    "mailbox records for this session remain pending: "
-                    "session_id=%s error=%s",
-                    target,
-                    exc,
-                )
-        except _LifecycleError as exc:
-            return build_error_response(request, str(exc), code=exc.code)
         except Exception as exc:  # noqa: BLE001
-            logger.warning("[SessionAdapter] session.delete failed: %s", exc)
+            logger.warning("[SessionAdapter] offline session.delete failed: %s", exc)
             return build_error_response(request, str(exc), code="INTERNAL_ERROR")
+        if not result.ok:
+            return build_error_response(
+                request,
+                result.error_message or "session.delete failed",
+                code=result.error_code or "DELETE_FAILED",
+            )
+        from jiuwenswarm.server.runtime.session.session_message_store import (
+            SessionMessageStore,
+        )
+
+        # Runtime has committed the Session deletion. Mailbox residue is a
+        # secondary, best-effort cleanup and must not rewrite that result.
+        try:
+            mailbox = SessionMessageStore(
+                get_agent_root_dir() / "session_messages.sqlite3"
+            )
+            if mailbox.exists():
+                records = await asyncio.to_thread(
+                    mailbox.cancel_pending_for_target, target
+                )
+                logger.info(
+                    "[SessionAdapter] session.delete cleared %d mailbox "
+                    "record(s): session_id=%s",
+                    len(records),
+                    target,
+                )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[SessionAdapter] session.delete mailbox cleanup failed; "
+                "mailbox records for this session remain pending: "
+                "session_id=%s error=%s",
+                target,
+                exc,
+            )
         return AgentResponse(
             request_id=request.request_id,
             channel_id=request.channel_id,
             ok=True,
-            payload={"session_id": target},
+            payload={"session_id": result.session_id},
             metadata=request.metadata,
         )
 

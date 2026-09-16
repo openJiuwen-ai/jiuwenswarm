@@ -11,13 +11,31 @@ view identity, request/wire translation, and response delivery.
 from __future__ import annotations
 
 import asyncio
+from collections import OrderedDict
+from contextlib import AsyncExitStack
 import logging
 import os
 import shutil
+import time
 from dataclasses import dataclass
 from enum import Enum
 from typing import TYPE_CHECKING, Generic, Protocol, TypeAlias, TypeVar
 from weakref import WeakValueDictionary
+
+from jiuwenswarm.runtime.session_delete import (
+    TEAM_DELETION_GATE,
+    SessionDeleteResult,
+    TeamDeleteResult,
+    session_delete_lock,
+    team_delete_lock,
+)
+from jiuwenswarm.runtime.session_lifecycle import (
+    RuntimeParticipantRegistry,
+    SessionDescriptor,
+    SessionForegroundEvent,
+    SessionKind,
+    SessionLifecycleTarget,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Awaitable, Callable
@@ -32,9 +50,44 @@ _LEGACY_WORK_MODE_MISMATCH_SEPARATOR = " " * 37
 # Preserve the established same-process serialization for explicit TUI IDs,
 # even when more than one Runtime instance exists. Weak values avoid retaining
 # one lock for every historical Session after no operation references it.
-_EXTERNAL_CREATE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = (
-    WeakValueDictionary()
-)
+_EXTERNAL_CREATE_LOCKS: WeakValueDictionary[str, asyncio.Lock] = WeakValueDictionary()
+_DELETE_RESULT_CACHE_MAX_ENTRIES = 256
+_DELETE_RESULT_CACHE_TTL_SECONDS = 60.0
+
+_DeleteResultT = TypeVar("_DeleteResultT")
+
+
+class _RecentDeleteResults(Generic[_DeleteResultT]):
+    """Bounded retry cache; it is not a durable record of deleted identities."""
+
+    def __init__(self) -> None:
+        self._entries: OrderedDict[str, tuple[float, _DeleteResultT]] = OrderedDict()
+
+    def get(self, key: str) -> _DeleteResultT | None:
+        entry = self._entries.pop(key, None)
+        if entry is None:
+            return None
+        expires_at, result = entry
+        if expires_at <= time.monotonic():
+            return None
+        self._entries[key] = entry
+        return result
+
+    def __setitem__(self, key: str, result: _DeleteResultT) -> None:
+        self._entries.pop(key, None)
+        self._entries[key] = (
+            time.monotonic() + _DELETE_RESULT_CACHE_TTL_SECONDS,
+            result,
+        )
+        while len(self._entries) > _DELETE_RESULT_CACHE_MAX_ENTRIES:
+            self._entries.popitem(last=False)
+
+    def pop(self, key: str, default: object = None) -> _DeleteResultT | object:
+        entry = self._entries.pop(key, None)
+        return entry[1] if entry is not None else default
+
+    def __len__(self) -> int:
+        return len(self._entries)
 
 
 def _require_bool(name: str, value: object) -> None:
@@ -116,6 +169,14 @@ class SessionForkInput:
     source_session_id: str
     target_session_id: str | None = None
     title: str = ""
+    cutoff_message_id: str = ""
+    cutoff_role: str = ""
+    cutoff_content: str = ""
+    cutoff_timestamp: float | str | None = None
+    side_conversation: bool = False
+
+    def __post_init__(self) -> None:
+        _require_bool("side_conversation", self.side_conversation)
 
 
 @dataclass(frozen=True, slots=True, kw_only=True)
@@ -165,19 +226,10 @@ class SessionForkResult:
     source_session_id: str
     session_id: str
     title: str
+    ephemeral: bool = False
 
-
-@dataclass(frozen=True, slots=True, kw_only=True)
-class SessionDescriptor:
-    """Transport-neutral persisted Session identity and routing metadata."""
-
-    session_id: str
-    channel_id: str
-    mode: str
-    work_mode: str
-    project_id: str = ""
-    project_dir: str = ""
-    user_id: str = ""
+    def __post_init__(self) -> None:
+        _require_bool("ephemeral", self.ephemeral)
 
 
 SessionProvisionInput: TypeAlias = (
@@ -464,34 +516,6 @@ class SessionDeleteLifecycle(Protocol):
         ...
 
 
-@dataclass(frozen=True, slots=True)
-class SessionDeleteResult:
-    """Transport-independent result of one product Session deletion."""
-
-    ok: bool
-    session_id: str
-    channel_id: str | None = None
-    is_team: bool = False
-    team_name: str = ""
-    error_code: str | None = None
-    error_message: str | None = None
-
-    @classmethod
-    def failure(
-        cls,
-        session_id: str,
-        *,
-        code: str,
-        message: str,
-    ) -> SessionDeleteResult:
-        return cls(
-            ok=False,
-            session_id=session_id,
-            error_code=code,
-            error_message=message,
-        )
-
-
 class RuntimeSessionProvisioner:
     """Coordinate transport-neutral Session lifecycle work for one Runtime."""
 
@@ -501,13 +525,21 @@ class RuntimeSessionProvisioner:
         agent_manager: AgentManager,
         plan_controller: PlanModeController,
         delete_lifecycle: SessionDeleteLifecycle | None = None,
+        participant_registry: RuntimeParticipantRegistry | None = None,
+        team_execution_controller: object | None = None,
     ) -> None:
         self._agent_manager = agent_manager
         self._plan_controller = plan_controller
         self._delete_lifecycle = delete_lifecycle
+        self._participant_registry = (
+            participant_registry or RuntimeParticipantRegistry()
+        )
+        self._team_execution_controller = team_execution_controller
         self._provision_owner_token = object()
         self._external_create_locks = _EXTERNAL_CREATE_LOCKS
         self._background_create_kvc_tasks: set[asyncio.Task[None]] = set()
+        self._completed_session_deletes = _RecentDeleteResults[SessionDeleteResult]()
+        self._completed_team_deletes = _RecentDeleteResults[TeamDeleteResult]()
 
     def set_delete_lifecycle(
         self,
@@ -848,8 +880,8 @@ class RuntimeSessionProvisioner:
         *,
         claimed_session_id: str | None,
         external_lock: asyncio.Lock | None,
-        switch_context: object | None = None,
-        dispatch_signals: Callable[..., Awaitable[None]] | None = None,
+        switch_context: SessionLifecycleTarget | None = None,
+        dispatch_signals: SessionLifecycleTarget | None = None,
         previous_session_id: str = "",
     ) -> PreparedSessionProvision[SessionCreateResult]:
         finalized = False
@@ -870,14 +902,13 @@ class RuntimeSessionProvisioner:
             context: SessionProvisionCommitContext,
         ) -> None:
             try:
-                if switch_context is not None and dispatch_signals is not None:
+                self._completed_session_deletes.pop(result.session_id, None)
+                if switch_context is not None:
                     task = asyncio.create_task(
-                        dispatch_signals(
-                            context=switch_context,
-                            channel_id=result.channel_id,
-                            target_session_id=result.session_id,
-                            previous_session_id=previous_session_id,
-                            view_id=(context.foreground_scope_id or "default-view"),
+                        self._dispatch_foreground_transition(
+                            target=switch_context,
+                            previous=dispatch_signals,
+                            view_id=context.foreground_scope_id or "default-view",
                         ),
                         name=f"session-create-kvc-{result.session_id}",
                     )
@@ -915,6 +946,7 @@ class RuntimeSessionProvisioner:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+            self._background_create_kvc_tasks.difference_update(tasks)
 
     async def _prepare_create_owner(
         self,
@@ -923,42 +955,28 @@ class RuntimeSessionProvisioner:
         session_id: str,
         previous_session_id: str,
         params: dict[str, object],
-    ) -> tuple[object | None, Callable[..., Awaitable[None]] | None]:
-        switch_context = None
-        dispatch_signals = None
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                dispatch_session_switch_signals,
-                resolve_session_switch_context,
-            )
-
-            switch_context = resolve_session_switch_context(
-                target_session_id=session_id,
-                previous_session_id=previous_session_id,
-                params=params,
-            )
-            dispatch_signals = dispatch_session_switch_signals
-        except Exception as exc:
-            logger.warning(
-                "Session create KVC context unavailable; preserving product "
-                "lifecycle: session_id=%s error=%s",
-                session_id,
-                exc,
-            )
-
+    ) -> tuple[SessionLifecycleTarget, SessionLifecycleTarget | None]:
         from jiuwenswarm.common.mode_matrix import is_team_mode
 
-        if switch_context is not None:
-            target_is_team = bool(getattr(switch_context, "target_is_team", False))
-            previous_is_team = bool(getattr(switch_context, "previous_is_team", False))
-        else:
-            target_is_team = bool(params.get("team")) or is_team_mode(
-                params.get("mode")
-            )
-            # Match the established Server fallback: without a resolved KVC
-            # context, previous Session ownership is unknown and must not be
-            # inferred from a caller-supplied mode hint.
-            previous_is_team = False
+        mode = str(params.get("mode") or "agent.plan")
+        target_is_team = bool(params.get("team")) or is_team_mode(mode)
+        target = SessionLifecycleTarget(
+            descriptor=SessionDescriptor(
+                session_id=session_id,
+                channel_id=channel_id,
+                mode=mode,
+                work_mode=str(params.get("work_mode") or "work"),
+                project_id=str(params.get("project_id") or ""),
+                project_dir=str(params.get("project_dir") or params.get("cwd") or ""),
+                user_id=str(params.get("user_id") or ""),
+            ),
+            kind=SessionKind.TEAM if target_is_team else SessionKind.AGENT,
+            team_name=str(params.get("team_name") or ""),
+        )
+        previous_target = self._participant_registry.target(previous_session_id)
+        previous_is_team = bool(
+            previous_target and previous_target.kind is SessionKind.TEAM
+        )
         if target_is_team or previous_is_team:
             from jiuwenswarm.agents.harness.team import get_team_manager
 
@@ -967,7 +985,48 @@ class RuntimeSessionProvisioner:
                 previous_session_id=(previous_session_id if previous_is_team else None),
                 reason="session.create switch: ",
             )
-        return switch_context, dispatch_signals
+        return target, previous_target
+
+    async def _dispatch_foreground_transition(
+        self,
+        *,
+        target: SessionLifecycleTarget,
+        previous: SessionLifecycleTarget | None,
+        view_id: str,
+    ) -> None:
+        participants = self._participant_registry.snapshot_activity()
+        if not participants:
+            self._participant_registry.remember_target(target)
+            return
+        from jiuwenswarm.server.runtime.session.session_history import history_exists
+
+        if (
+            previous is not None
+            and previous.descriptor.session_id != target.descriptor.session_id
+        ):
+            previous_event = SessionForegroundEvent(
+                target=previous,
+                view_id=view_id,
+                visible=False,
+                has_history=history_exists(previous.descriptor.session_id),
+            )
+            for participant in participants:
+                try:
+                    await participant.foreground_changed(previous_event)
+                except Exception as exc:
+                    logger.warning("Runtime foreground participant failed: %s", exc)
+        self._participant_registry.remember_target(target)
+        target_event = SessionForegroundEvent(
+            target=target,
+            view_id=view_id,
+            visible=True,
+            has_history=history_exists(target.descriptor.session_id),
+        )
+        for participant in participants:
+            try:
+                await participant.foreground_changed(target_event)
+            except Exception as exc:
+                logger.warning("Runtime foreground participant failed: %s", exc)
 
     @staticmethod
     def _uses_projectless_workspace(
@@ -1040,12 +1099,8 @@ class RuntimeSessionProvisioner:
         apply it at the required before-result delivery boundary.
         """
         channel_id = str(provision_input.channel_id or "").strip() or "default"
-        target_session_id = str(
-            provision_input.target_session_id or ""
-        ).strip()
-        previous_session_id = str(
-            provision_input.previous_session_id or ""
-        ).strip()
+        target_session_id = str(provision_input.target_session_id or "").strip()
+        previous_session_id = str(provision_input.previous_session_id or "").strip()
         if not target_session_id:
             raise SessionProvisionError(
                 "session_id is required",
@@ -1056,63 +1111,65 @@ class RuntimeSessionProvisioner:
         from jiuwenswarm.runtime.request import resolve_agent_request_mode
 
         _, _, resolved_mode = resolve_agent_request_mode(provision_input.mode)
-        target_is_team = provision_input.team_hint or is_team_mode(
-            provision_input.mode
+        target_is_team = provision_input.team_hint or is_team_mode(provision_input.mode)
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
         )
-        switch_context = None
-        dispatch_signals = None
-        switch_params = {
-            "mode": provision_input.mode,
-            "previous_mode": provision_input.previous_mode,
-            "team": provision_input.team_hint,
-        }
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                dispatch_session_switch_signals,
-                resolve_session_switch_context,
-            )
 
-            switch_context = resolve_session_switch_context(
-                target_session_id=target_session_id,
-                previous_session_id=previous_session_id,
-                params=switch_params,
-            )
-            target_is_team = switch_context.target_is_team
-            resolved_mode = switch_context.resolved_mode
-            dispatch_signals = dispatch_session_switch_signals
-        except Exception as exc:
-            logger.warning(
-                "Session switch KVC context unavailable; preserving product "
-                "lifecycle: target_session_id=%s error=%s",
-                target_session_id,
-                exc,
-            )
-
-        previous_is_team = bool(
-            switch_context and switch_context.previous_is_team
+        target_metadata = get_session_metadata(target_session_id)
+        stored_mode = str(target_metadata.get("mode") or "").strip()
+        if stored_mode:
+            _, _, resolved_mode = resolve_agent_request_mode(stored_mode)
+            target_is_team = is_team_mode(stored_mode)
+        target = SessionLifecycleTarget(
+            descriptor=SessionDescriptor(
+                session_id=target_session_id,
+                channel_id=channel_id,
+                mode=resolved_mode,
+                work_mode="work",
+            ),
+            kind=SessionKind.TEAM if target_is_team else SessionKind.AGENT,
         )
+        previous = self._participant_registry.target(previous_session_id)
+        if previous is None and previous_session_id:
+            previous_metadata = get_session_metadata(previous_session_id)
+            previous_mode = str(
+                previous_metadata.get("mode") or provision_input.previous_mode or ""
+            )
+            if previous_mode:
+                previous = SessionLifecycleTarget(
+                    descriptor=SessionDescriptor(
+                        session_id=previous_session_id,
+                        channel_id=str(
+                            previous_metadata.get("channel_id") or channel_id
+                        ),
+                        mode=previous_mode,
+                        work_mode=str(previous_metadata.get("work_mode") or "work"),
+                    ),
+                    kind=(
+                        SessionKind.TEAM
+                        if is_team_mode(previous_mode)
+                        else SessionKind.AGENT
+                    ),
+                    team_name=str(previous_metadata.get("team_name") or ""),
+                )
+        previous_is_team = bool(previous and previous.kind is SessionKind.TEAM)
         if target_is_team or previous_is_team:
             from jiuwenswarm.agents.harness.team import get_team_manager
 
             team_manager = get_team_manager(channel_id)
             await team_manager.prepare_session_switch(
                 target_session_id,
-                previous_session_id=(
-                    previous_session_id if previous_is_team else None
-                ),
+                previous_session_id=(previous_session_id if previous_is_team else None),
                 reason="session.switch: ",
             )
 
         async def commit_switch(
             context: SessionProvisionCommitContext,
         ) -> None:
-            if switch_context is None or dispatch_signals is None:
-                return
-            await dispatch_signals(
-                context=switch_context,
-                channel_id=channel_id,
-                target_session_id=target_session_id,
-                previous_session_id=previous_session_id,
+            await self._dispatch_foreground_transition(
+                target=target,
+                previous=previous,
                 view_id=context.foreground_scope_id or "default-view",
             )
 
@@ -1123,9 +1180,7 @@ class RuntimeSessionProvisioner:
         )
         return self._stage_session_provision(
             result,
-            commit_timing=(
-                SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY
-            ),
+            commit_timing=(SessionProvisionCommitTiming.BEFORE_RESULT_DELIVERY),
             commit_hook=commit_switch,
             commit_attempt_is_terminal=True,
         )
@@ -1145,6 +1200,19 @@ class RuntimeSessionProvisioner:
         target_session_id = str(provision_input.target_session_id or "").strip()
         channel_id = provision_input.channel_id or "default"
         title = str(provision_input.title or "").strip()
+        cutoff_message_id = str(
+            provision_input.cutoff_message_id or ""
+        ).strip()
+        cutoff_role = str(provision_input.cutoff_role or "").strip()
+        cutoff_content = str(provision_input.cutoff_content or "")
+        cutoff_timestamp = provision_input.cutoff_timestamp
+        side_conversation = provision_input.side_conversation
+        has_message_cutoff = bool(
+            cutoff_message_id
+            or cutoff_role
+            or cutoff_content
+            or cutoff_timestamp is not None
+        )
 
         if not source_session_id:
             raise SessionProvisionError(
@@ -1165,22 +1233,52 @@ class RuntimeSessionProvisioner:
                 fork_session,
             )
 
+            fork_kwargs: dict[str, object] = {
+                "source_session_id": source_session_id,
+                "target_session_id": target_session_id,
+                "title": title,
+                "channel_id": channel_id,
+            }
+            if side_conversation:
+                fork_kwargs["side_conversation"] = True
+            if has_message_cutoff:
+                fork_kwargs.update(
+                    {
+                        "cutoff_message_id": cutoff_message_id,
+                        "cutoff_role": cutoff_role,
+                        "cutoff_content": cutoff_content,
+                        "cutoff_timestamp": cutoff_timestamp,
+                    }
+                )
             fork_result = fork_session(
-                source_session_id=source_session_id,
-                target_session_id=target_session_id,
-                title=title,
-                channel_id=channel_id,
+                **fork_kwargs,
             )
 
             agent = self._agent_manager.get_agent_nowait(channel_id)
             deep_agent = None
             if agent is not None:
                 deep_agent = await agent.ensure_instance()
-                await copy_session_context(
-                    deep_agent,
-                    source_session_id,
-                    target_session_id,
-                )
+                if has_message_cutoff:
+                    await copy_session_context(
+                        deep_agent,
+                        source_session_id,
+                        target_session_id,
+                        force_history=True,
+                    )
+                else:
+                    if side_conversation:
+                        await copy_session_context(
+                            deep_agent,
+                            source_session_id,
+                            target_session_id,
+                            side_conversation=True,
+                        )
+                    else:
+                        await copy_session_context(
+                            deep_agent,
+                            source_session_id,
+                            target_session_id,
+                        )
             else:
                 logger.warning(
                     "session.fork: no agent for channel %s; "
@@ -1190,16 +1288,17 @@ class RuntimeSessionProvisioner:
 
             from openjiuwen.core.single_agent.schema.agent_card import AgentCard
 
-            await copy_session_state(
-                source_session_id=source_session_id,
-                target_session_id=target_session_id,
-                card=(
-                    deep_agent.card
-                    if deep_agent is not None
-                    else AgentCard(id="jiuwenswarm", name="jiuwenswarm")
-                ),
-                deep_agent=deep_agent,
-            )
+            if not has_message_cutoff and not side_conversation:
+                await copy_session_state(
+                    source_session_id=source_session_id,
+                    target_session_id=target_session_id,
+                    card=(
+                        deep_agent.card
+                        if deep_agent is not None
+                        else AgentCard(id="jiuwenswarm", name="jiuwenswarm")
+                    ),
+                    deep_agent=deep_agent,
+                )
         except ValueError as error:
             raise SessionProvisionError(
                 str(error),
@@ -1213,6 +1312,7 @@ class RuntimeSessionProvisioner:
             ),
             session_id=str(fork_result.get("session_id") or target_session_id),
             title=str(fork_result.get("title") or ""),
+            ephemeral=bool(fork_result.get("ephemeral")),
         )
         return self._stage_session_provision(
             result,
@@ -1278,9 +1378,9 @@ class RuntimeSessionProvisioner:
         *,
         channel_id: str,
         session_id: str,
-        cleanup_session: Callable[..., Awaitable[bool]],
+        quiesce_session: Callable[..., Awaitable[None]],
+        dispose_session: Callable[..., Awaitable[None]],
     ) -> SessionDeleteResult:
-        """Delete one Session while preserving the established transaction."""
         target = str(session_id or "").strip()
         if not target:
             return SessionDeleteResult.failure(
@@ -1288,6 +1388,24 @@ class RuntimeSessionProvisioner:
                 code="BAD_REQUEST",
                 message="session_id is required",
             )
+        async with session_delete_lock(target):
+            return await self._delete_session_locked(
+                channel_id=channel_id,
+                session_id=target,
+                quiesce_session=quiesce_session,
+                dispose_session=dispose_session,
+            )
+
+    async def _delete_session_locked(
+        self,
+        *,
+        channel_id: str,
+        session_id: str,
+        quiesce_session: Callable[..., Awaitable[None]],
+        dispose_session: Callable[..., Awaitable[None]],
+    ) -> SessionDeleteResult:
+        """Delete one Session while preserving the established transaction."""
+        target = str(session_id or "").strip()
 
         from jiuwenswarm.common.utils import get_agent_sessions_dir
         from jiuwenswarm.server.runtime.session.session_history import (
@@ -1295,10 +1413,16 @@ class RuntimeSessionProvisioner:
         )
 
         from jiuwenswarm.server.runtime.session.lifecycle import (
-            session_paths, LifecycleError, state as lifecycle_state, update as lifecycle_update,
+            session_paths,
+            LifecycleError,
+            state as lifecycle_state,
+            update as lifecycle_update,
         )
+
         try:
-            session_dir, invalid_reason = resolve_session_dir(target, sessions_root=get_agent_sessions_dir())
+            session_dir, invalid_reason = resolve_session_dir(
+                target, sessions_root=get_agent_sessions_dir()
+            )
             if session_dir is not None:
                 _, archived_dir = session_paths(target)
                 if archived_dir.exists():
@@ -1312,8 +1436,14 @@ class RuntimeSessionProvisioner:
                 message=invalid_reason or "invalid session_id",
             )
         delete_operation = lifecycle_state("session", target).get("operation", {})
-        recovering_delete = delete_operation.get("kind") == "delete" and delete_operation.get("status") != "completed"
+        recovering_delete = (
+            delete_operation.get("kind") == "delete"
+            and delete_operation.get("status") != "completed"
+        )
         if not session_dir.exists() and not recovering_delete:
+            completed = self._completed_session_deletes.get(target)
+            if completed is not None:
+                return completed
             return SessionDeleteResult.failure(
                 target,
                 code="NOT_FOUND",
@@ -1343,7 +1473,9 @@ class RuntimeSessionProvisioner:
             get_session_metadata,
         )
 
-        metadata = get_session_metadata(target) or delete_operation.get("delete_metadata", {})
+        metadata = get_session_metadata(target) or delete_operation.get(
+            "delete_metadata", {}
+        )
         if recovering_delete and not delete_operation.get("delete_metadata"):
             lifecycle_update("session", target, delete_metadata=metadata)
         is_team_session = is_team_mode(metadata.get("mode"))
@@ -1358,10 +1490,47 @@ class RuntimeSessionProvisioner:
             is_team=is_team_session,
             team_name=team_name,
         )
+        descriptor = SessionDescriptor(
+            session_id=target,
+            channel_id=resolved_channel_id or "default",
+            mode=str(metadata.get("mode") or "agent.plan"),
+            work_mode=str(metadata.get("work_mode") or "work"),
+            project_id=str(metadata.get("project_id") or ""),
+            project_dir=str(metadata.get("project_dir") or ""),
+            user_id=str(metadata.get("user_id") or ""),
+        )
+        delete_target = SessionLifecycleTarget(
+            descriptor=descriptor,
+            kind=SessionKind.TEAM if is_team_session else SessionKind.AGENT,
+            team_name=team_name,
+        )
+        team_controller = self._team_execution_controller if is_team_session else None
+        team_delete_quiesced = False
+        participants = self._participant_registry.snapshot_delete()
+        entered_participants = []
+        for participant in participants:
+            entered_participants.append(participant)
+            try:
+                await participant.before_delete(delete_target)
+            except asyncio.CancelledError:
+                await self._notify_delete_failed(
+                    tuple(entered_participants),
+                    delete_target,
+                    destructive_started=False,
+                )
+                raise
+            except Exception as exc:
+                logger.warning(
+                    "Runtime delete participant before_delete failed: "
+                    "participant=%s session_id=%s error=%s",
+                    participant.name,
+                    target,
+                    exc,
+                )
 
-        self._mark_kvc_session_deleted(result)
         trajectory_prepared = False
         lifecycle_prepared = False
+        destructive_started = False
         try:
             if not is_team_session:
                 from jiuwenswarm.observability.session_delete import (
@@ -1379,23 +1548,63 @@ class RuntimeSessionProvisioner:
             if not session_dir.exists() and recovering_delete:
                 deleted = True
             elif is_team_session:
-                deleted = await self._delete_team_session(result)
-            else:
-                await self._delete_agent_session(
-                    result,
-                    cleanup_session=cleanup_session,
+                if team_controller is None:
+                    raise RuntimeError("team execution controller is unavailable")
+                await team_controller.quiesce_for_delete(
+                    delete_target,
+                    reason="session.delete: ",
                 )
+                team_delete_quiesced = True
+                await self._release_participants(
+                    tuple(entered_participants),
+                    delete_target,
+                )
+                destructive_started = True
+                await team_controller.dispose_after_resource_release(
+                    delete_target,
+                    reason="session.delete: ",
+                )
+                deleted = await self._delete_team_runner(result)
+            else:
+                await quiesce_session(
+                    channel_id=result.channel_id or "",
+                    session_id=result.session_id,
+                )
+                await self._release_participants(
+                    tuple(entered_participants),
+                    delete_target,
+                )
+                destructive_started = True
+                await dispose_session(
+                    channel_id=result.channel_id or "",
+                    session_id=result.session_id,
+                )
+                from openjiuwen.core.runner import Runner
+
+                await Runner.release(result.session_id)
                 deleted = True
             if deleted and session_dir.exists():
                 shutil.rmtree(session_dir)
             if deleted and recovering_delete:
                 lifecycle_update("session", target, phase="cleanup")
         except BaseException as exc:
+            if (
+                team_controller is not None
+                and team_delete_quiesced
+                and not destructive_started
+            ):
+                team_controller.delete_aborted(delete_target)
             await self._abort_delete(
                 result,
                 trajectory_prepared=trajectory_prepared,
                 lifecycle_prepared=lifecycle_prepared,
                 delete_lifecycle=delete_lifecycle,
+                destructive_started=destructive_started,
+            )
+            await self._notify_delete_failed(
+                tuple(entered_participants),
+                delete_target,
+                destructive_started=destructive_started,
             )
             if not isinstance(exc, Exception):
                 raise
@@ -1404,23 +1613,432 @@ class RuntimeSessionProvisioner:
                 target,
                 exc,
             )
-            return self._cleanup_failed(target)
+            return self._cleanup_failed(
+                result,
+                destructive_started=destructive_started,
+            )
 
         if not deleted:
+            if (
+                team_controller is not None
+                and team_delete_quiesced
+                and not destructive_started
+            ):
+                team_controller.delete_aborted(delete_target)
             await self._abort_delete(
                 result,
                 trajectory_prepared=trajectory_prepared,
                 lifecycle_prepared=lifecycle_prepared,
                 delete_lifecycle=delete_lifecycle,
+                destructive_started=destructive_started,
             )
-            return self._cleanup_failed(target)
+            await self._notify_delete_failed(
+                tuple(entered_participants),
+                delete_target,
+                destructive_started=destructive_started,
+            )
+            return self._cleanup_failed(
+                result,
+                destructive_started=destructive_started,
+            )
 
-        await self._commit_delete_observers(
-            result,
-            trajectory_prepared=trajectory_prepared,
-            lifecycle_prepared=lifecycle_prepared,
-            delete_lifecycle=delete_lifecycle,
+        try:
+            await self._commit_delete_observers(
+                result,
+                trajectory_prepared=trajectory_prepared,
+                lifecycle_prepared=lifecycle_prepared,
+                delete_lifecycle=delete_lifecycle,
+            )
+            committed_result = SessionDeleteResult(
+                ok=True,
+                session_id=result.session_id,
+                channel_id=result.channel_id,
+                is_team=result.is_team,
+                team_name=result.team_name,
+                deleted=True,
+            )
+            self.commit_session_delete(committed_result)
+            if team_controller is not None:
+                team_controller.delete_committed(delete_target)
+        except asyncio.CancelledError:
+            await self._notify_delete_failed(
+                tuple(entered_participants),
+                delete_target,
+                destructive_started=True,
+            )
+            raise
+        except Exception as exc:
+            logger.warning(
+                "Runtime Session delete commit remains pending: session_id=%s error=%s",
+                target,
+                exc,
+            )
+            await self._notify_delete_failed(
+                tuple(entered_participants),
+                delete_target,
+                destructive_started=True,
+            )
+            return SessionDeleteResult.failure(
+                target,
+                code="DELETE_COMMIT_PENDING",
+                message="session was deleted but commit is pending",
+                deleted=True,
+                recovery_required=True,
+                channel_id=result.channel_id,
+                is_team=result.is_team,
+                team_name=result.team_name,
+            )
+        await self._notify_delete_committed(
+            tuple(entered_participants),
+            delete_target,
         )
+        self._completed_session_deletes[target] = committed_result
+        return committed_result
+
+    async def delete_team(
+        self,
+        *,
+        team_name: str,
+        channel_id: str = "",
+    ) -> TeamDeleteResult:
+        """Delete one Team and all of its persisted Sessions as one operation."""
+        from jiuwenswarm.server.runtime.team_binding_store import (
+            TeamBindingStoreError,
+            get_team_binding_store,
+            validate_team_name,
+        )
+        from jiuwenswarm.server.runtime.team_entity_store import (
+            TeamEntityStoreError,
+            get_team_entity_store,
+        )
+
+        try:
+            normalized = validate_team_name(team_name)
+        except TeamBindingStoreError as exc:
+            return TeamDeleteResult(
+                ok=False,
+                team_name=str(team_name or "").strip(),
+                error_code=exc.code,
+                error_message=str(exc),
+            )
+
+        async with team_delete_lock(normalized):
+            gate_lock = TEAM_DELETION_GATE.mutation_lock(normalized)
+            async with gate_lock:
+                created_marker = TEAM_DELETION_GATE.begin_delete_locked(normalized)
+                binding_store = get_team_binding_store()
+                entity_store = get_team_entity_store()
+                binding = binding_store.get(normalized)
+                session_ids = self._inventory_team_session_ids(
+                    normalized,
+                    binding_session_ids=(binding.session_ids if binding else ()),
+                )
+
+            if not session_ids:
+                if binding is None and not entity_store.exists(normalized):
+                    completed = self._completed_team_deletes.get(normalized)
+                    if created_marker:
+                        async with gate_lock:
+                            TEAM_DELETION_GATE.finish_delete_locked(normalized)
+                    if completed is not None:
+                        return completed
+                    return TeamDeleteResult(
+                        ok=False,
+                        team_name=normalized,
+                        error_code="NOT_FOUND",
+                        error_message="team not found",
+                    )
+                try:
+                    entity_store.delete_team_directory(normalized)
+                    binding_store.delete(normalized)
+                except (TeamBindingStoreError, TeamEntityStoreError) as exc:
+                    if created_marker:
+                        async with gate_lock:
+                            TEAM_DELETION_GATE.finish_delete_locked(normalized)
+                    return TeamDeleteResult(
+                        ok=False,
+                        team_name=normalized,
+                        error_code=getattr(exc, "code", "DELETE_FAILED"),
+                        error_message=str(exc),
+                    )
+                async with gate_lock:
+                    TEAM_DELETION_GATE.finish_delete_locked(normalized)
+                result = TeamDeleteResult(
+                    ok=True,
+                    team_name=normalized,
+                    deleted=True,
+                )
+                self._completed_team_deletes[normalized] = result
+                return result
+
+            dependency_error = await self._ensure_delete_dependencies(
+                session_ids[0],
+                delete_lifecycle=self._delete_lifecycle,
+            )
+            if dependency_error is not None:
+                if created_marker:
+                    async with gate_lock:
+                        TEAM_DELETION_GATE.finish_delete_locked(normalized)
+                return TeamDeleteResult(
+                    ok=False,
+                    team_name=normalized,
+                    failed_session_ids=tuple(session_ids),
+                    error_code=dependency_error.error_code,
+                    error_message=dependency_error.error_message,
+                )
+
+            async with AsyncExitStack() as stack:
+                for session_id in session_ids:
+                    await stack.enter_async_context(session_delete_lock(session_id))
+                return await self._delete_team_locked(
+                    team_name=normalized,
+                    channel_id=channel_id,
+                    session_ids=session_ids,
+                    binding_store=binding_store,
+                    entity_store=entity_store,
+                    gate_lock=gate_lock,
+                    created_marker=created_marker,
+                )
+
+    @staticmethod
+    def _inventory_team_session_ids(
+        team_name: str,
+        *,
+        binding_session_ids: tuple[str, ...],
+    ) -> list[str]:
+        from jiuwenswarm.common.mode_matrix import is_team_mode
+        from jiuwenswarm.common.utils import get_agent_sessions_dir
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        matched = {
+            str(item).strip() for item in binding_session_ids if str(item).strip()
+        }
+        active_root = get_agent_sessions_dir()
+        for root in (active_root, active_root.parent / "sessions_archived"):
+            if not root.exists():
+                continue
+            for path in root.iterdir():
+                if not path.is_dir():
+                    continue
+                metadata = get_session_metadata(path.name)
+                if (
+                    is_team_mode(metadata.get("mode"))
+                    and str(metadata.get("team_name") or "").strip() == team_name
+                ):
+                    matched.add(path.name)
+        return sorted(matched)
+
+    async def _delete_team_locked(
+        self,
+        *,
+        team_name: str,
+        channel_id: str,
+        session_ids: list[str],
+        binding_store: object,
+        entity_store: object,
+        gate_lock: asyncio.Lock,
+        created_marker: bool,
+    ) -> TeamDeleteResult:
+        from jiuwenswarm.server.runtime.session.lifecycle import session_paths
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            get_session_metadata,
+        )
+
+        controller = self._team_execution_controller
+        if controller is None:
+            if created_marker:
+                async with gate_lock:
+                    TEAM_DELETION_GATE.finish_delete_locked(team_name)
+            return TeamDeleteResult(
+                ok=False,
+                team_name=team_name,
+                failed_session_ids=tuple(session_ids),
+                error_code="DELETE_FAILED",
+                error_message="team execution controller is unavailable",
+            )
+
+        participants = self._participant_registry.snapshot_delete()
+        operations: list[
+            tuple[SessionDeleteResult, SessionLifecycleTarget, tuple[object, ...]]
+        ] = []
+        lifecycle_prepared: set[str] = set()
+        destructive_started = False
+        try:
+            for session_id in session_ids:
+                metadata = get_session_metadata(session_id)
+                resolved_channel = (
+                    str(metadata.get("channel_id") or channel_id or "").strip() or None
+                )
+                result = SessionDeleteResult(
+                    ok=True,
+                    session_id=session_id,
+                    channel_id=resolved_channel,
+                    is_team=True,
+                    team_name=team_name,
+                )
+                target = SessionLifecycleTarget(
+                    descriptor=SessionDescriptor(
+                        session_id=session_id,
+                        channel_id=resolved_channel or "default",
+                        mode=str(metadata.get("mode") or "team"),
+                        work_mode=str(metadata.get("work_mode") or "work"),
+                        project_id=str(metadata.get("project_id") or ""),
+                        project_dir=str(metadata.get("project_dir") or ""),
+                        user_id=str(metadata.get("user_id") or ""),
+                    ),
+                    kind=SessionKind.TEAM,
+                    team_name=team_name,
+                )
+                entered: list[object] = []
+                for participant in participants:
+                    entered.append(participant)
+                    try:
+                        await participant.before_delete(target)
+                    except asyncio.CancelledError:
+                        await self._notify_delete_failed(
+                            tuple(entered),
+                            target,
+                            destructive_started=False,
+                        )
+                        raise
+                    except Exception as exc:
+                        logger.warning(
+                            "Runtime Team delete participant before failed: "
+                            "participant=%s session_id=%s error=%s",
+                            participant.name,
+                            session_id,
+                            exc,
+                        )
+                operations.append((result, target, tuple(entered)))
+
+            for result, target, _entered in operations:
+                if self._delete_lifecycle is not None:
+                    await self._delete_lifecycle.begin_session_delete(result.session_id)
+                    lifecycle_prepared.add(result.session_id)
+                await controller.quiesce_for_delete(target, reason="team.delete: ")
+
+            for _result, target, entered in operations:
+                await self._release_participants(entered, target)
+
+            destructive_started = True
+            for _result, target, _entered in operations:
+                await controller.dispose_after_resource_release(
+                    target,
+                    reason="team.delete: ",
+                )
+
+            from openjiuwen.core.runner import Runner
+
+            runner_deleted = await Runner.delete_agent_team(
+                team_name=team_name,
+                session_ids=session_ids,
+                force=True,
+            )
+            if runner_deleted is False:
+                raise RuntimeError("agent team runtime cleanup failed")
+        except BaseException as exc:
+            for result, target, entered in reversed(operations):
+                if not destructive_started and result.session_id in lifecycle_prepared:
+                    await self._abort_delete(
+                        result,
+                        trajectory_prepared=False,
+                        lifecycle_prepared=True,
+                        delete_lifecycle=self._delete_lifecycle,
+                        destructive_started=False,
+                    )
+                await self._notify_delete_failed(
+                    entered,
+                    target,
+                    destructive_started=destructive_started,
+                )
+                if not destructive_started:
+                    controller.delete_aborted(target)
+            if not destructive_started and created_marker:
+                async with gate_lock:
+                    TEAM_DELETION_GATE.finish_delete_locked(team_name)
+            if not isinstance(exc, Exception):
+                raise
+            return TeamDeleteResult(
+                ok=False,
+                team_name=team_name,
+                failed_session_ids=tuple(session_ids),
+                recovery_required=destructive_started,
+                error_code="DELETE_FAILED",
+                error_message=str(exc),
+            )
+
+        succeeded: list[str] = []
+        failed: list[str] = []
+        for result, target, entered in operations:
+            active_path, archived_path = session_paths(result.session_id)
+            session_dir = archived_path if archived_path.exists() else active_path
+            try:
+                if session_dir.exists():
+                    shutil.rmtree(session_dir)
+                if self._delete_lifecycle is not None:
+                    await self._delete_lifecycle.commit_session_delete(
+                        result.session_id
+                    )
+                committed = SessionDeleteResult(
+                    ok=True,
+                    session_id=result.session_id,
+                    channel_id=result.channel_id,
+                    is_team=True,
+                    team_name=team_name,
+                    deleted=True,
+                )
+                self.commit_session_delete(committed)
+                controller.delete_committed(target)
+                await self._notify_delete_committed(entered, target)
+                succeeded.append(result.session_id)
+            except Exception as exc:
+                logger.warning(
+                    "Runtime Team Session storage/commit failed: "
+                    "session_id=%s error=%s",
+                    result.session_id,
+                    exc,
+                )
+                await self._notify_delete_failed(
+                    entered,
+                    target,
+                    destructive_started=True,
+                )
+                failed.append(result.session_id)
+
+        if failed:
+            return TeamDeleteResult(
+                ok=False,
+                team_name=team_name,
+                session_ids=tuple(succeeded),
+                failed_session_ids=tuple(failed),
+                recovery_required=True,
+                error_code="DELETE_FAILED",
+                error_message="failed to delete one or more Team Sessions",
+            )
+
+        try:
+            entity_store.delete_team_directory(team_name)
+            binding_store.delete(team_name)
+        except Exception as exc:
+            return TeamDeleteResult(
+                ok=False,
+                team_name=team_name,
+                session_ids=tuple(succeeded),
+                recovery_required=True,
+                error_code=getattr(exc, "code", "DELETE_FAILED"),
+                error_message=str(exc),
+            )
+        async with gate_lock:
+            TEAM_DELETION_GATE.finish_delete_locked(team_name)
+        result = TeamDeleteResult(
+            ok=True,
+            team_name=team_name,
+            session_ids=tuple(succeeded),
+            deleted=True,
+        )
+        self._completed_team_deletes[team_name] = result
         return result
 
     def commit_session_delete(self, result: SessionDeleteResult) -> None:
@@ -1428,6 +2046,7 @@ class RuntimeSessionProvisioner:
         if not result.ok:
             raise ValueError("cannot commit a failed session delete")
         self._plan_controller.reset_session(result.session_id)
+        self._participant_registry.forget_target(result.session_id)
 
         from jiuwenswarm.server.runtime.session.session_metadata import (
             remove_session_metadata_cache,
@@ -1496,68 +2115,40 @@ class RuntimeSessionProvisioner:
         return None
 
     @staticmethod
-    def _cleanup_failed(session_id: str) -> SessionDeleteResult:
+    def _cleanup_failed(
+        result: SessionDeleteResult,
+        *,
+        destructive_started: bool,
+    ) -> SessionDeleteResult:
         return SessionDeleteResult.failure(
-            session_id,
+            result.session_id,
             code="DELETE_FAILED",
             message="session runtime cleanup failed",
+            deleted=False,
+            recovery_required=destructive_started,
+            channel_id=result.channel_id,
+            is_team=result.is_team,
+            team_name=result.team_name,
         )
 
     @staticmethod
-    def _mark_kvc_session_deleted(result: SessionDeleteResult) -> None:
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                mark_session_deleted,
-            )
-
-            mark_session_deleted(
-                session_id=result.session_id,
-                channel_id=result.channel_id or "default",
-                is_team=result.is_team,
-            )
-        except Exception as exc:  # noqa: BLE001 - established best effort
-            logger.warning(
-                "Runtime KVC delete tombstone failed; preserving product delete: "
-                "session_id=%s error=%s",
-                result.session_id,
-                exc,
-            )
-
-    async def _delete_team_session(self, result: SessionDeleteResult) -> bool:
-        from jiuwenswarm.agents.harness.team import get_team_manager
-
-        return await get_team_manager(result.channel_id).delete_session_runtime(
-            result.session_id,
-            reason="session.delete: ",
-        )
-
-    async def _delete_agent_session(
-        self,
-        result: SessionDeleteResult,
-        *,
-        cleanup_session: Callable[..., Awaitable[bool]],
-    ) -> None:
-        await self._agent_manager.release_subagent_runtime_for_session(
-            channel_id=result.channel_id,
-            session_id=result.session_id,
-            reason="session_deleted",
-        )
-        await cleanup_session(
-            channel_id=result.channel_id or "",
-            session_id=result.session_id,
-            reset_plan_state=False,
-        )
-
-        from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-            release_session_kvc,
-        )
-
-        await release_session_kvc(
-            session_id=result.session_id,
-        )
+    async def _delete_team_runner(result: SessionDeleteResult) -> bool:
         from openjiuwen.core.runner import Runner
 
+        if result.team_name:
+            deleted = await Runner.delete_agent_team(
+                team_name=result.team_name,
+                session_ids=[result.session_id],
+                force=True,
+            )
+            return deleted is not False
+        logger.warning(
+            "Runtime team Session delete fell back to Runner.release: "
+            "session_id=%s reason=missing_team_name",
+            result.session_id,
+        )
         await Runner.release(result.session_id)
+        return True
 
     async def _abort_delete(
         self,
@@ -1566,7 +2157,10 @@ class RuntimeSessionProvisioner:
         trajectory_prepared: bool,
         lifecycle_prepared: bool,
         delete_lifecycle: SessionDeleteLifecycle | None,
+        destructive_started: bool,
     ) -> None:
+        if destructive_started:
+            return
         if trajectory_prepared:
             try:
                 from jiuwenswarm.observability.session_delete import (
@@ -1593,18 +2187,62 @@ class RuntimeSessionProvisioner:
                     result.session_id,
                     exc,
                 )
-        try:
-            from jiuwenswarm.server.runtime.session.kv_cache.kv_cache_product_hooks import (
-                restore_session_after_failed_delete,
-            )
 
-            restore_session_after_failed_delete(result.session_id)
-        except Exception as exc:  # noqa: BLE001 - preserve primary failure
-            logger.warning(
-                "Runtime KVC failed-delete rollback failed: session_id=%s error=%s",
-                result.session_id,
-                exc,
-            )
+    @staticmethod
+    async def _release_participants(
+        participants: tuple[object, ...],
+        target: SessionLifecycleTarget,
+    ) -> None:
+        for participant in participants:
+            try:
+                await participant.release_resources(target)
+            except Exception as exc:
+                logger.warning(
+                    "Runtime delete participant release failed: "
+                    "participant=%s session_id=%s error=%s",
+                    participant.name,
+                    target.descriptor.session_id,
+                    exc,
+                )
+
+    @staticmethod
+    async def _notify_delete_failed(
+        participants: tuple[object, ...],
+        target: SessionLifecycleTarget,
+        *,
+        destructive_started: bool,
+    ) -> None:
+        for participant in reversed(participants):
+            try:
+                await participant.delete_failed(
+                    target,
+                    destructive_started=destructive_started,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Runtime delete participant failure notification failed: "
+                    "participant=%s session_id=%s error=%s",
+                    participant.name,
+                    target.descriptor.session_id,
+                    exc,
+                )
+
+    @staticmethod
+    async def _notify_delete_committed(
+        participants: tuple[object, ...],
+        target: SessionLifecycleTarget,
+    ) -> None:
+        for participant in participants:
+            try:
+                await participant.delete_committed(target)
+            except Exception as exc:
+                logger.warning(
+                    "Runtime delete participant commit notification failed: "
+                    "participant=%s session_id=%s error=%s",
+                    participant.name,
+                    target.descriptor.session_id,
+                    exc,
+                )
 
     async def _commit_delete_observers(
         self,

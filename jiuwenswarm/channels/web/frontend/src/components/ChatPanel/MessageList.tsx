@@ -36,7 +36,6 @@ import {
   isSettlingForStreak,
   streakMapFingerprint,
   formatStreakSummaryLabel,
-  messageHasDeliverable,
   filterDeliverableExecutions,
   completedWorkDurationMs,
   turnElapsedRangeMs,
@@ -49,11 +48,13 @@ const EMPTY_REASONING: ReasoningSegment[] = [];
 
 interface MessageListProps {
   messages: Message[];
+  sessionId?: string;
   renderAfterMessage?: (message: Message) => ReactNode;
   canLoadOlderHistory?: boolean;
   onLoadOlderHistory?: () => void | Promise<void>;
   teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
   teamGroupIdentityOverride?: AgentGroupIdentity | null;
+  onForkFromMessage?: (message: Message) => Promise<void>;
 }
 
 interface ChatTimelineListProps {
@@ -73,6 +74,7 @@ interface ChatTimelineListProps {
   renderAfterMessage?: (message: Message) => ReactNode;
   teamLeaderIdentityOverride?: TeamLeaderIdentity | null;
   teamGroupIdentityOverride?: AgentGroupIdentity | null;
+  onForkFromMessage?: (message: Message) => Promise<void>;
   /** 交互时间线按会话保存派生快照和逐批准入窗口。 */
   sessionId?: string | null;
   /** 内容不足一屏时继续发布已存在的更早历史。 */
@@ -288,6 +290,7 @@ export function TurnElapsed({
   startMs,
   endMs,
   isLastTurn,
+  isProcessing,
   showAvatar,
   agentTemplateName,
   teamLayout,
@@ -297,6 +300,7 @@ export function TurnElapsed({
   startMs: number;
   endMs: number;
   isLastTurn: boolean;
+  isProcessing: boolean;
   showAvatar?: boolean;
   agentTemplateName?: string;
   teamLayout: boolean;
@@ -304,7 +308,6 @@ export function TurnElapsed({
   teamGroupIdentity?: AgentGroupIdentity | null;
 }) {
   const { t } = useTranslation();
-  const isProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
   const active = isLastTurn && isProcessing;
   const now = useNow(active);
   const end = active ? now : endMs;
@@ -627,21 +630,23 @@ export function ChatTimelineList({
   onLoadOlderHistory,
   teamLeaderIdentityOverride,
   teamGroupIdentityOverride,
+  onForkFromMessage,
 }: ChatTimelineListProps) {
   const isTeamMode = mode === 'team';
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
+  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
+  const resolvedSessionId = sessionId ?? globalActiveSessionId;
   const runtimeTeamLeaderIdentity = useSessionStore(
-    (s) => s.runtimes[activeSessionId ?? '']?.teamLeaderIdentity ?? null
+    (s) => s.runtimes[resolvedSessionId ?? '']?.teamLeaderIdentity ?? null
   );
   const teamLeaderIdentity = teamLeaderIdentityOverride ?? runtimeTeamLeaderIdentity;
   const teamGroupIdentity = teamGroupIdentityOverride;
-  const storeIsProcessing = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isProcessing ?? false);
-  const isLoadingHistory = useChatStore((s) => s.runtimes[s.activeSessionId ?? '']?.isLoadingHistory ?? false);
+  const storeIsProcessing = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isProcessing ?? false);
+  const isLoadingHistory = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.isLoadingHistory ?? false);
   const historyPagerMeta = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.historyPagerMeta ?? null
+    (s) => s.runtimes[resolvedSessionId ?? '']?.historyPagerMeta ?? null
   );
   const storeReasoningSegments = useChatStore(
-    (s) => s.runtimes[s.activeSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
+    (s) => s.runtimes[resolvedSessionId ?? '']?.reasoningSegments ?? EMPTY_REASONING
   );
   const isProcessing = staticTimeline ? false : storeIsProcessing;
   const allReasoningSegments = reasoningSegmentsProp ?? (staticTimeline ? EMPTY_REASONING : storeReasoningSegments);
@@ -1057,7 +1062,7 @@ export function ChatTimelineList({
     suppressStreakTransitionRef.current = true;
     displayedStreakFpRef.current = '';
     setDisplayedStreakState({ scope: timelineScope, streaks: new Map() });
-  }, [activeSessionId, timelineScope]);
+  }, [resolvedSessionId, timelineScope]);
 
   const wasLoadingHistoryRef = useRef(false);
   useEffect(() => {
@@ -1140,69 +1145,7 @@ export function ChatTimelineList({
       ) : null}
       {visibleRenderItems.map((item) => {
         if (item.type === 'message') {
-          const turnKey = stableTurnKeyById.get(item.turnId) ?? item.key;
-          const meta = item.turnId >= 0 ? turnWorkMeta.get(item.turnId) : undefined;
-          const turnFoldable = Boolean(meta?.completed && meta.hasWork && item.hideMeta);
-          const turnOpen = !turnFoldable || Boolean(expandedTurns[turnKey]);
-          const isFoldAnchor = turnFoldAnchorKeys.get(item.turnId) === item.key;
-
-          if (turnFoldable) {
-            const hasDeliverable = messageHasDeliverable(item.message);
-            return (
-              <Fragment key={`${timelineScope}/${item.key}`}>
-                {/* 工具前的开场白若可折叠，折叠条锚在这里，展开后不会跑到「已完成」上面 */}
-                {isFoldAnchor && meta ? (
-                  <CompletedWorkChip
-                    key={`${timelineScope}/completed-work-${turnKey}`}
-                    variant="turn"
-                    outcomeTone={meta.outcomeTone}
-                    expanded={turnOpen}
-                    onToggle={() => toggleTurn(turnKey)}
-                    elapsedMs={completedWorkDurationMs(meta)}
-                    showAvatar
-                    teamLayout={isTeamMode}
-                    agentTemplateName={item.message.agentTemplateName ?? agentTemplateNameByTurn.get(item.turnId)}
-                    teamLeaderIdentity={teamLeaderIdentity}
-                    teamGroupIdentity={teamGroupIdentity}
-                  />
-                ) : null}
-                {/* 折叠态：交付物与代码变更卡需留在文档流内，不能放进被 absolute 隐藏的 collapse */}
-                {!turnOpen && hasDeliverable ? (
-                  <>
-                    <MessageItem
-                      message={{ ...item.message, content: '' }}
-                      showAvatar={false}
-                      hideMeta
-                      disableA2UIInteraction={disableA2UIInteraction}
-                      enableAssistantAvatar={!isTeamMode}
-                      teamLeaderIdentityOverride={teamLeaderIdentity}
-                      teamGroupIdentityOverride={teamGroupIdentity}
-                    />
-                    {renderAfterMessage?.(item.message)}
-                  </>
-                ) : null}
-                <div
-                  className={clsx('timeline-collapse', turnOpen && 'is-open')}
-                  data-testid="chat-panel-timeline-collapse"
-                  data-variant={turnOpen ? 'open' : 'closed'}
-                >
-                  <div className="timeline-collapse-inner">
-                    <MessageItem
-                      message={item.message}
-                      showAvatar={item.showAvatar}
-                      hideMeta={item.hideMeta}
-                      disableA2UIInteraction={disableA2UIInteraction}
-                      enableAssistantAvatar={!isTeamMode}
-                      teamLeaderIdentityOverride={teamLeaderIdentity}
-                      teamGroupIdentityOverride={teamGroupIdentity}
-                    />
-                    {turnOpen ? renderAfterMessage?.(item.message) : null}
-                  </div>
-                </div>
-              </Fragment>
-            );
-          }
-
+          // 正文始终展示；hideMeta 只控制时间与操作栏，不参与思考/工具折叠。
           return (
             <Fragment key={`${timelineScope}/${item.key}`}>
               <MessageItem
@@ -1213,6 +1156,7 @@ export function ChatTimelineList({
                 enableAssistantAvatar={!isTeamMode}
                 teamLeaderIdentityOverride={teamLeaderIdentity}
                 teamGroupIdentityOverride={teamGroupIdentity}
+                onForkFromMessage={onForkFromMessage}
               />
               {renderAfterMessage?.(item.message)}
             </Fragment>
@@ -1371,6 +1315,7 @@ export function ChatTimelineList({
               startMs={range.startMs}
               endMs={range.endMs}
               isLastTurn={item.isLastTurn}
+              isProcessing={isProcessing}
               showAvatar={item.showAvatar}
               agentTemplateName={agentTemplateNameByTurn.get(item.turnId)}
               teamLayout={isTeamMode}
@@ -1396,16 +1341,19 @@ export function ChatTimelineList({
 
 export function MessageList({
   messages,
+  sessionId,
   renderAfterMessage,
   canLoadOlderHistory,
   onLoadOlderHistory,
   teamLeaderIdentityOverride,
   teamGroupIdentityOverride,
+  onForkFromMessage,
 }: MessageListProps) {
-  const activeSessionId = useChatStore((s) => s.activeSessionId);
-  const toolExecutions = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutions ?? new Map());
-  const toolExecutionOrder = useChatStore((s) => s.runtimes[activeSessionId ?? '']?.toolExecutionOrder ?? []);
-  const mode = useSessionStore((s) => s.runtimes[activeSessionId ?? '']?.mode ?? 'agent');
+  const globalActiveSessionId = useChatStore((s) => s.activeSessionId);
+  const resolvedSessionId = sessionId ?? globalActiveSessionId;
+  const toolExecutions = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutions ?? new Map());
+  const toolExecutionOrder = useChatStore((s) => s.runtimes[resolvedSessionId ?? '']?.toolExecutionOrder ?? []);
+  const mode = useSessionStore((s) => s.runtimes[resolvedSessionId ?? '']?.mode ?? 'agent');
   const executions = useMemo(
     () => getExecutionList(toolExecutions, toolExecutionOrder),
     [toolExecutions, toolExecutionOrder]
@@ -1414,14 +1362,15 @@ export function MessageList({
   return (
     <ChatTimelineList
       messages={messages}
+      sessionId={resolvedSessionId ?? undefined}
       executions={executions}
       mode={mode}
       renderAfterMessage={renderAfterMessage}
-      sessionId={activeSessionId}
       canLoadOlderHistory={canLoadOlderHistory}
       onLoadOlderHistory={onLoadOlderHistory}
       teamLeaderIdentityOverride={teamLeaderIdentityOverride}
       teamGroupIdentityOverride={teamGroupIdentityOverride}
+      onForkFromMessage={onForkFromMessage}
     />
   );
 }

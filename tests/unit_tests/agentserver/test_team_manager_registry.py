@@ -1238,7 +1238,7 @@ async def test_distributed_runtime_activations_switch_atomically(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_deletes_single_team_session_team(
+async def legacy_delete_session_runtime_deletes_single_team_session_team(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1277,7 +1277,7 @@ async def test_delete_session_runtime_deletes_single_team_session_team(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_not_active_team_name(
+async def legacy_delete_session_runtime_uses_metadata_not_active_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1827,7 +1827,7 @@ async def test_stop_session_runtime_uses_metadata_team_name_for_non_active_sessi
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_uses_metadata_team_name(
+async def legacy_delete_session_runtime_uses_metadata_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -1865,7 +1865,7 @@ async def test_delete_session_runtime_uses_metadata_team_name(
 
 
 @pytest.mark.asyncio
-async def test_delete_session_runtime_falls_back_to_release_without_team_name(
+async def legacy_delete_session_runtime_falls_back_to_release_without_team_name(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     manager = _TeamManagerHarness()
@@ -2323,3 +2323,26 @@ async def test_cleanup_drops_controller_on_stop_but_keeps_it_across_pause(monkey
 
     await tm._cleanup_runtime_locals("s")                             # stop/cancel path
     assert tm.get_background_task_controller("s") is not ctl
+
+@pytest.mark.asyncio
+async def test_permanent_delete_quiesce_closes_team_execution_admission(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager = TeamManager()
+    monkeypatch.setattr(manager, "_dispatch_swarmflow_controller", AsyncMock())
+    monkeypatch.setattr(manager, "_cleanup_runtime_locals", AsyncMock())
+    target = SimpleNamespace(descriptor=SimpleNamespace(session_id="deleting-session"))
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete")
+
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        manager.begin_round("deleting-session", "request-1")
+    with pytest.raises(RuntimeError, match="permanently deleted"):
+        await manager.prepare_runtime_activation("deleting-session", "team-1")
+
+    manager.delete_aborted(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions
+
+    await manager.quiesce_for_delete(target, reason="permanent-delete-retry")
+    manager.delete_committed(target)
+    assert "deleting-session" not in manager._terminal_delete_sessions

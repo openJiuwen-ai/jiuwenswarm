@@ -22,6 +22,16 @@ function publishAgentCatalog(catalog: AgentCatalogItem[]): void {
   useAgentCatalogStore.setState({ catalog, status: 'success' });
 }
 
+/**
+ * 用调用方已加载的目录回填共享缓存（不递增 revision，不触发依赖方重新拉取）。
+ * 供 AgentManagementPanel 等已经持有完整目录的入口写入，让 ChatPanel 输入区的
+ * 专家 tag 首帧就能解析出 displayName/头像，而不是先显示原始 id 再跳变。
+ */
+export function seedAgentCatalog(catalog: AgentCatalogItem[]): void {
+  if (catalog.length === 0) return;
+  publishAgentCatalog(catalog);
+}
+
 export function invalidateAgentCatalog(): void {
   catalogGeneration += 1;
   useAgentCatalogStore.setState({

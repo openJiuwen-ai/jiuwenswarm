@@ -68,6 +68,32 @@ def test_unknown_path_and_shell_are_never_promoted(tmp_path: Path) -> None:
     assert terminal_low_risk_route(shell) is None
 
 
+@pytest.mark.parametrize(("name", "args", "valid"), [
+    ("cron_list_jobs", {}, True), ("cron_list_jobs", {"value": 1}, False),
+    ("cron_get_job", {"job_id": "job-a"}, True), ("cron_get_job", {"job_id": " "}, False),
+    ("heartbeat_list_jobs", {}, True), ("heartbeat_list_jobs", {"scope": None}, True),
+    ("heartbeat_list_jobs", {"scope": "current"}, True),
+    ("heartbeat_list_jobs", {"scope": "all_visible"}, False),
+    ("heartbeat_get_job", {"job_id": "job-a"}, True), ("heartbeat_get_job", {}, False),
+    ("read_terminal_output", {"terminal_id": "terminal-a"}, True),
+    ("wait_for_terminal_exit", {"terminal_id": "terminal-a"}, True),
+    ("wait_for_terminal_exit", {"terminal_id": 1}, False),
+    ("convert_timestamp_to_utc8_time", {"timestamp": 1700000000}, True),
+    ("convert_timestamp_to_utc8_time", {"timestamp": True}, False),
+    ("convert_timestamp_to_utc8_time", {"timestamp": float("inf")}, False),
+    ("convert_timestamp_to_utc8_time", {"timestamp": float("nan")}, False),
+] + [(name, {"job_id": "job-a", **extra}, valid)
+     for name in ("cron_preview_job", "heartbeat_preview_job")
+     for extra, valid in [({}, True), ({"count": 2}, True), ({"count": None}, False),
+                          ({"count": True}, False), ({"count": "2"}, False)]] )
+def test_readonly_fast_path_requires_binding_and_closed_args(tmp_path, name, args, valid):
+    facts = _facts(name, args, tmp_path)
+    assert terminal_internal_route(facts) is None
+    assert bool(terminal_internal_route(facts, readonly_binding_verified=True)) == valid
+    extra = _facts(name, {**args, "unexpected": 1}, tmp_path)
+    assert terminal_internal_route(extra, readonly_binding_verified=True) is None
+
+
 @pytest.mark.parametrize(
     ("tool_name", "tool_args"),
     [

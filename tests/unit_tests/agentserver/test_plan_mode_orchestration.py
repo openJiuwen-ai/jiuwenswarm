@@ -21,6 +21,9 @@ import pytest
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
+    RootPermissionQueueError,
+)
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
 from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
 
@@ -324,6 +327,31 @@ async def test_prepare_chat_uses_locked_persist_session_metadata() -> None:
 
     assert "persist_session" not in request.params
     assert request.params["eternal_conversation_enabled"] is True
+
+
+@pytest.mark.asyncio
+async def test_prepare_rejects_auto_root_change_before_metadata_sync() -> None:
+    manager = MagicMock()
+
+    async def reject(_request, **_kwargs):
+        raise RootPermissionQueueError("workspace_changed")
+
+    manager.get_agent_for_request = AsyncMock(side_effect=reject)
+    manager.wait_for_session_prewarm = AsyncMock()
+    server = AgentWebSocketServer.__new__(AgentWebSocketServer)
+    server._agent_manager = manager
+    request = _chat_request(
+        "sess_auto_root",
+        mode="agent",
+        extra_params={"work_mode": "work", "project_dir": "/tmp/other"},
+    )
+
+    with patch.object(agent_ws_server_module, "_sync_chat_request_metadata") as sync:
+        with pytest.raises(RootPermissionQueueError, match="workspace_changed"):
+            await server._prepare_code_mode_chat_turn(request, "web")
+
+    sync.assert_not_called()
+    manager.get_agent_for_request.assert_awaited_once()
 
 
 @pytest.mark.asyncio

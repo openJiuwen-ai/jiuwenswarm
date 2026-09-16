@@ -42,7 +42,6 @@
     "work": "任务",
     "agent": "专家",
     "experiments": "实验",
-    "teams": "团队",
     "sessions": "会话",
     "cron": "定时任务",
     "skills": "技能",
@@ -151,9 +150,9 @@
       "modelIdHint": "例如：glm-4.7。不同厂商的模型 ID 不同，请以其模型列表或官方文档为准。",
       "fetchLatestModels": "拉取最新",
       "presetModels": "当前展示提供商预设模型，展开列表后将拉取最新模型",
-      "noPresetModels": "暂无预设模型，展开列表或点击刷新以拉取最新模型",
-      "noPresetModelsApiKeyRequired": "暂无预设模型，请先填写 API Key 后拉取最新模型",
-      "noPresetModelsNoEndpoint": "该提供商没有可用的预设模型，也未提供模型列表接口",
+      "noPresetModels": "展开列表或点击刷新以拉取最新模型",
+      "noPresetModelsApiKeyRequired": "请先填写 API Key 后拉取模型列表",
+      "noPresetModelsNoEndpoint": "该提供商未提供模型列表接口",
       "fetchModelsLoading": "获取中...",
       "fetchModelsRemote": "已从提供商获取 {{count}} 个模型",
       "fetchModelsFailed": "模型列表拉取失败",
@@ -161,11 +160,11 @@
       "fetchModelsInvalidResponse": "提供商模型列表响应格式不正确",
       "fetchModelsUnrecognizedResult": "提供商返回了未识别的模型列表来源或原因",
       "fetchReasons": {
-        "noEndpoint": "当前为提供商预设列表：该提供商未提供模型列表接口",
-        "apiKeyRequired": "当前为提供商预设列表：填写 API Key 后可拉取最新模型",
-        "remoteFailed": "当前为提供商预设列表：远端拉取失败或返回为空",
-        "remoteAuthFailed": "当前为提供商预设列表：API Key 无效或鉴权方式不符（HTTP 401/403）",
-        "remoteRateLimited": "当前为提供商预设列表：远端限流（HTTP 429），请稍后重试"
+        "noEndpoint": "该提供商未提供模型列表接口",
+        "apiKeyRequired": "填写 API Key 后可拉取最新模型",
+        "remoteFailed": "远端拉取失败或返回为空",
+        "remoteAuthFailed": "API Key 无效或鉴权方式不符（HTTP 401/403）",
+        "remoteRateLimited": "远端限流（HTTP 429），请稍后重试"
       },
       "vendorGroups": {
         "token_plan": "Token Plan",
@@ -478,7 +477,6 @@
     "noGroupMessages": "暂无群聊消息",
     "memberTasksTitle": "{{member}} 执行的任务",
     "memberTasks": "Ta的任务",
-    "noMemberTasks": "暂无可归属到该成员的任务",
     "noProcessData": "暂无该成员的执行过程数据",
     "collapseView": "收起视图",
     "expandView": "展开视图",
@@ -814,6 +812,18 @@
     },
     "historyLoading": "历史数据加载中…",
     "historyLoadMore": "加载更多历史消息",
+    "continuedFromChat": "从原会话继续",
+    "openSourceChat": "打开原会话",
+    "sideConversation": {
+      "title": "侧会话",
+      "from": "来自 {{title}}",
+      "empty": "在不离开主会话的情况下提问",
+      "placeholder": "发送消息到侧会话",
+      "send": "发送消息",
+      "working": "处理中…",
+      "sendFailed": "消息发送失败，请重试。",
+      "close": "关闭侧会话"
+    },
     "config": {
       "mode": {
         "cluster": "集群模式",
@@ -823,6 +833,8 @@
       "permission": {
         "default": "默认权限",
         "defaultDesc": "编辑外部文件和使用互联网时始终询问",
+        "automatic": "智能审批",
+        "automaticDesc": "结合当前任务和权限规则，帮你处理每次工具审批；不确定时仍会询问你",
         "fullAccess": "完全访问权限",
         "fullAccessDesc": "可不受限制地访问互联网和您电脑上的任何文件",
         "fullAccessWarning": {
@@ -928,6 +940,7 @@
     "toggleLabel": "追求目标",
     "toolbarUnavailable": "当前已有进行中的目标，请先完成或清除",
     "toolbarUnavailablePlan": "计划模式进行中，暂不可选择目标",
+    "overwriteConfirm": "当前目标“{{currentObjective}}”尚未完成。是否替换为“{{requestedObjective}}”？",
     "closeTag": "取消目标",
     "badge": "目标",
     "status": {
@@ -1324,7 +1337,7 @@
       "viaChatPrompt": "我们一起来设置一个定时任务吧。首先，说明定时任务在 WorkSwarm 中的工作方式。然后询问我需要安排什么，以及应该在什么时候运行。"
     },
     "stats": {
-      "total": "任务总数（{{count}}）"
+      "total": "任务总数 {{count}}"
     },
     "tabs": {
       "list": "任务列表",
@@ -1958,6 +1971,7 @@
       "install": "安装",
       "installing": "安装中...",
       "uninstall": "卸载",
+      "uninstalling": "卸载中...",
       "importLocal": "导入本地技能",
       "sourceManager": "源管理",
       "create": "创建",
@@ -2582,6 +2596,7 @@
       "installed": "已安装",
       "loadError": "专家列表加载失败，请重试。",
       "detailError": "专家详情加载失败，请重试。",
+      "hubAssetChanged": "该专家已在 Hub 更新或下架，广场正在刷新，请返回后重新选择。",
       "actionError": "操作未完成，请稍后重试。",
       "duplicateName": "专家名称已存在，请更换名称后重试。",
       "agentUnavailable": "该专家已不存在，请刷新列表后重试。",
@@ -2732,7 +2747,7 @@
         "createFirst": "手动创建",
         "createByChat": "通过聊天创建",
         "createByUpload": "上传文件创建",
-        "createViaChatPrompt": "帮我创建一个 XXX 专家或专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
+        "createViaChatPrompt": "帮我创建一个 XXX 专家团，擅长 XXXXX。我的经验是：[请补充你的行业背景、相关经验]",
         "install": "安装",
         "installing": "安装中…",
         "use": "使用",
@@ -2828,6 +2843,8 @@
     "copied": "已复制",
     "stopReading": "停止朗读",
     "readMessage": "朗读消息",
+    "forkFromMessage": "从此消息新建会话分支",
+    "forkFromMessageFailed": "新建会话分支失败，请重试。",
     "fileExpired": "已过期",
     "agentProcessing": "Agent 处理中",
     "thinking": "正在思考...",
@@ -2934,6 +2951,47 @@
         "completed": "Discovery completed",
         "failed": "Discovery failed",
         "resultWords": "{{count}} words returned"
+      }
+    },
+    "autoReviewer": {
+      "title": "权限审查",
+      "status": {
+        "approved": "已自动允许",
+        "userApproved": "用户已允许",
+        "userRejected": "用户已拒绝",
+        "manual": "需要人工审批",
+        "denied": "已拒绝",
+        "blocked": "已阻止",
+        "hostRevalidationFailed": "主机校验失败",
+        "inProgress": "审查中",
+        "timedOut": "审查超时",
+        "fallback": "已转人工",
+        "aborted": "审查已停止"
+      },
+      "details": {
+        "source": "决策来源",
+        "sourceValues": {
+          "automatic": "智能审批",
+          "manual": "人工审批",
+          "system": "系统权限检查"
+        },
+        "risk": "风险",
+        "riskValues": {
+          "critical": "严重",
+          "high": "高",
+          "medium": "中",
+          "low": "低",
+          "unknown": "未知"
+        },
+        "reason": "原因",
+        "reasonValues": {
+          "approved": "权限审查已允许此操作。",
+          "denied": "权限审查已拒绝此操作。",
+          "manual": "当前信息不足以完成智能审批，需要人工判断。",
+          "inProgress": "权限审查正在进行。"
+        },
+        "hint": "人工判断建议",
+        "manualGuidanceFallback": "请核对工具参数、操作目标和风险后再决定。"
       }
     },
     "teamActivity": {
@@ -3264,7 +3322,6 @@
     "closed": "已关闭",
     "failed": "异常",
     "cancelled": "已取消",
-    "tasksEmpty": "暂无任务",
     "activityTitle": "活动",
     "activityEmpty": "暂无活动",
     "historyLoading": "正在恢复历史…",
@@ -3323,6 +3380,10 @@
     "allowOnce": "授权单次",
     "allowAlways": "总是允许",
     "skip": "跳过",
+    "toolPayload": {
+      "title": "工具参数（已脱敏）",
+      "notice": "这是用于审批展示的脱敏副本，内容可能因安全或大小限制被截断。"
+    },
     "tip": {
       "allowOnce": "仅本次授权执行",
       "allowAlways": "记住该规则，以后自动放行",
@@ -3435,7 +3496,7 @@
       "breadcrumbPlugin": "插件详情",
       "breadcrumbMcp": "连接器详情",
       "mcpDisconnectedBanner": "当前插件依赖的连接器未连接，无法正常使用",
-      "mcpDisconnectedBannerSelf": "当前连接器未连接，无法正常使用",
+      "mcpDisconnectedBannerSelf": "尚未连接，连接后即可使用",
       "connectMcp": "点击连接",
       "sections": {
         "basicInfo": "基本信息",

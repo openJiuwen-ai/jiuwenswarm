@@ -1458,6 +1458,15 @@ wheels = [
 ]
 
 [[package]]
+name = "gitcode-cli"
+version = "0.12.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/53/b1/b2a0a256bc122221dfb89d41e95b61d3badfad3d7361b23ab52458f46130/gitcode_cli-0.12.0.tar.gz", hash = "sha256:e7d859c0094178975627c6c058a7aae829baa424251ed28e1432f3ec973d318e", size = 18127803, upload-time = "2026-08-12T08:17:05.293Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/e3/75/a97e1ace908203d4b4622d46c54a54c7a027fd589c1a4410a40f4857ccf3/gitcode_cli-0.12.0-py3-none-any.whl", hash = "sha256:e27404b8886ca6c195092c69efbaefae71465b0535305f8eb49390c105cd76ad", size = 18205668, upload-time = "2026-08-12T08:17:01.102Z" },
+]
+
+[[package]]
 name = "google-adk"
 version = "2.1.0"
 source = { registry = "https://pypi.org/simple" }
@@ -2945,7 +2954,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.18"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0#564997732e22fcdd204959b79b38b4768f5220c0" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23#7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -5705,6 +5714,7 @@ desktop = [
     { name = "pywebview" },
 ]
 dev = [
+    { name = "gitcode-cli" },
     { name = "pyinstaller" },
     { name = "pywebview" },
 ]
@@ -5825,6 +5835,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
     { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
+    { name = "gitcode-cli", marker = "extra == 'dev'", specifier = "==0.12.0" },
     { name = "google-genai", specifier = ">=1.68.0,<2" },
     { name = "google-genai", marker = "extra == 'harmony'", specifier = ">=1.68.0" },
     { name = "greenlet", specifier = ">=3.3.2,<4" },
@@ -5843,11 +5854,11 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=564997732e22fcdd204959b79b38b4768f5220c0" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<2" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<2" },

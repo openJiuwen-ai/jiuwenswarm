@@ -1,3 +1,4 @@
+import { withCatalogCache, type CatalogCacheMetadata } from '../catalogCache';
 import { connectorApi } from '../../services/connectorApi';
 import { webRequest } from '../../services/webClient';
 import { requestEquipmentList } from '../equipmentListRequest';
@@ -68,7 +69,7 @@ async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplate
   const missingTags = items.filter((item) => item.tags.length === 0);
   if (missingTags.length === 0) return items;
 
-  const enriched = await Promise.all(
+  const enriched = await Promise.allSettled(
     missingTags.map(async (item) => {
       const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id: item.id });
       if (!payload.template) {
@@ -81,7 +82,9 @@ async function enrichCatalogTags(items: ReturnType<typeof normalizeAgentTemplate
     }),
   );
   const tagsById = new Map<string, ReturnType<typeof normalizeAgentTemplateListItem>['tags']>();
-  enriched.forEach(({ id, tags }) => {
+  enriched.forEach((result) => {
+    if (result.status !== 'fulfilled') return;
+    const { id, tags } = result.value;
     if (tags.length > 0) tagsById.set(id, tags);
   });
   return items.map((item) => {
@@ -95,21 +98,27 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     source: 'live',
     async listCatalog(options: AgentCatalogListOptions = {}) {
       try {
-        const payload = await requestEquipmentList<RawAgentListPayload>(webRequest, 'agent_templates.list', {
-          ...(options.filter ? { filter: options.filter } : {}),
-          ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
-        });
+        const payload = await requestEquipmentList<RawAgentListPayload & { cache?: CatalogCacheMetadata }>(
+          webRequest,
+          'agent_templates.list',
+          {
+            ...(options.filter ? { filter: options.filter } : {}),
+            ...(options.includeTeamCompatibility ? { include_team_compatibility: true } : {}),
+          },
+        );
+
         const items = (payload.templates || []).map((item) =>
           normalizeAgentTemplateListItem(item, getAgentManagementLocale()),
         );
-        return options.enrichTags === false ? items : enrichCatalogTags(items);
+        // Cached cards must not wait for remote details. Tag enrichment is an explicit optional operation.
+        return withCatalogCache(options.enrichTags === true ? await enrichCatalogTags(items) : items, payload.cache);
       } catch (error) {
         return rethrowAgentError(error);
       }
     },
     async getDefinition(id) {
       try {
-        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id });
+        const payload = await webRequest<RawAgentDetailPayload>('agent_templates.show', { id }, { timeoutMs: 90000 });
         if (!payload.template) {
           throw new AgentManagementError('Agent detail is empty', 'agent_detail_empty', false);
         }
@@ -197,7 +206,7 @@ export function createLiveAgentManagementClient(): AgentManagementClient {
     },
     async installDefinition(id) {
       try {
-        await webRequest('agent_templates.install', { id });
+        await webRequest('agent_templates.install', { id }, { timeoutMs: 180000 });
         invalidateAgentCatalog();
         return { kind: 'ok' };
       } catch (error) {

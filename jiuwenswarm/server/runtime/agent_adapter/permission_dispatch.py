@@ -10,7 +10,9 @@ from typing import Any
 
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 
-from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import prepare_nonpermission_resume
+from jiuwenswarm.server.runtime.agent_adapter.permission_continuation import (
+    prepare_nonpermission_resume, prepare_permission_wrappers,
+)
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     put_root_nonpermission_resume_in_inputs,
 )
@@ -73,7 +75,12 @@ class RootPermissionDispatch:
                 query,
                 root_session_id=root_session_id,
             )
-        prepared = put_root_nonpermission_resume_in_inputs(inputs, None)
+        try:
+            wrappers = prepare_permission_wrappers(loop_session, self.queue, answer)
+        except Exception:
+            self.queue.release_answer(answer)
+            raise
+        prepared = put_root_nonpermission_resume_in_inputs(inputs, None, wrappers=wrappers)
         prepared["query"] = answer.interactive_input
         prepared[ROOT_PERMISSION_ANSWER_KEY] = answer
         return prepared

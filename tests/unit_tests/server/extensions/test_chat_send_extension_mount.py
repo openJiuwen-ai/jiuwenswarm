@@ -826,3 +826,32 @@ class TestPackageCatalogReqMethodRouting:
 
         assert response.ok is True
         assert calls == [(AGENT_TEMPLATES, "sales-expert")]
+
+@pytest.mark.asyncio
+async def test_missing_hub_expert_invalidates_catalog_and_returns_code(monkeypatch):
+    from jiuwenswarm.server.runtime.marketplace.hub_client import HubNotFoundError
+    from jiuwenswarm.server.runtime.marketplace import hub_catalog_cache
+    iface = _iface()
+    monkeypatch.setattr(iface.package_manager, 'show_agent_template_with_hub', AsyncMock(side_effect=HubNotFoundError('missing')))
+    invalidate = MagicMock()
+    monkeypatch.setattr(hub_catalog_cache, 'invalidate_hub_catalog', invalidate)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(None, _req({'id': 'old-id'}, method=ReqMethod.AGENT_TEMPLATES_SHOW))
+    assert response.ok is False
+    assert response.payload['code'] == 'HUB_ASSET_NOT_FOUND'
+    invalidate.assert_called_once_with('agent_template')
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", [ReqMethod.PLUGIN_PACKAGES_INSTALL, ReqMethod.AGENT_TEMPLATES_INSTALL])
+async def test_equipment_install_has_total_timeout(monkeypatch, method):
+    iface = _iface()
+    async def expired(operation, *, timeout):
+        assert timeout == 120
+        operation.close()
+        raise TimeoutError()
+    monkeypatch.setattr(iface.asyncio, "wait_for", expired)
+    response = await iface.JiuWenSwarm._handle_package_catalog_request(
+        None, _req({"id": "slow-hub-asset"}, method=method)
+    )
+    assert response.ok is False
+    assert response.payload["error"] == "安装超时，请稍后重试"
