@@ -4,32 +4,27 @@ import { Archive, CircleAlert, Folder, Loader2, RotateCcw, Search, Trash2 } from
 import { Button, Input, toast } from '../../../../components/ui';
 import { SettingsConfirmDialog } from '../../components';
 import { useSettingsServices } from '../../services/SettingsServicesProvider';
-import { useCronStore, useWorkspaceStore } from '../../../../stores';
+import { useWorkspaceStore } from '../../../../stores';
 import {
   archivedTaskClient,
   findBatchSessionResult,
   getArchiveErrorCode,
-  parseProjectOperationFailure,
-  type ArchivedProject,
   type ArchivedSession,
-  type ProjectOperationFailure,
 } from '../../../../features/workspace/archivedTaskClient';
 import {
   buildArchivedTaskGroups,
   formatArchivedAt,
   getArchivedSessionTitle,
 } from '../../../../features/workspace/archivedTaskGrouping';
-import { ProjectGroupHeader } from './ProjectGroupHeader';
+import { projectRegistryClient } from '../../../../features/workspace/projectRegistryClient';
 import { useArchivedTaskLists } from './useArchivedTaskLists';
 import './ArchivedTasksSettings.css';
 
 const SEARCH_DEBOUNCE_MS = 300;
 
-type PendingAction = 'restore' | 'delete';
-
-type DeleteTarget =
-  | { kind: 'session'; session: ArchivedSession }
-  | { kind: 'project'; project: ArchivedProject };
+interface DeleteTarget {
+  session: ArchivedSession;
+}
 
 /** 错误码只用于分支判断，用户看到的始终是可翻译文案。 */
 function actionErrorKey(error: unknown): string {
@@ -49,23 +44,23 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
   const workMode = useWorkspaceStore((state) => state.workMode);
   const [searchInput, setSearchInput] = useState('');
   const [keyword, setKeyword] = useState('');
-  const [pendingActions, setPendingActions] = useState<Record<string, PendingAction>>({});
+  const [pendingActions, setPendingActions] = useState<Record<string, 'restore' | 'delete'>>({});
   const [deleteTarget, setDeleteTarget] = useState<DeleteTarget | null>(null);
   const [deleteBusy, setDeleteBusy] = useState(false);
   const [deleteError, setDeleteError] = useState<string | null>(null);
-  const [projectFailures, setProjectFailures] = useState<Record<string, ProjectOperationFailure>>({});
+  // 项目分组级操作：删除该项目下全部已归档会话（项目无归档态，操作只针对会话集合）。
+  const [deleteArchivedTarget, setDeleteArchivedTarget] = useState<{ projectId: string; projectName: string } | null>(null);
+  const [deleteArchivedBusy, setDeleteArchivedBusy] = useState(false);
+  const [deleteArchivedError, setDeleteArchivedError] = useState<string | null>(null);
 
   const {
-    projectsState,
     sessionsState,
     fetchResource,
     refreshLists,
-    removeLocalProjectRow,
-    removeLocalProjectCascade,
     removeLocalSession,
   } = useArchivedTaskLists({ isConnected, keyword, workMode });
 
-  // 单一搜索框同时驱动两个接口；新搜索由数据层的 replace 模式重置两种资源的 offset。
+  // 单一搜索框驱动归档会话列表；新搜索由数据层的 replace 模式重置 offset。
   useEffect(() => {
     const timerId = window.setTimeout(() => setKeyword(searchInput.trim()), SEARCH_DEBOUNCE_MS);
     return () => window.clearTimeout(timerId);
@@ -85,18 +80,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     });
   }, []);
 
-  const isResourcePending = (kind: 'project' | 'session', id: string) => (
-    pendingActions[`${kind}:${id}`] !== undefined
-  );
-
-  const clearProjectFailure = useCallback((projectId: string) => {
-    setProjectFailures((prev) => {
-      if (!(projectId in prev)) return prev;
-      const next = { ...prev };
-      delete next[projectId];
-      return next;
-    });
-  }, []);
+  const isResourcePending = (id: string) => pendingActions[id] !== undefined;
 
   const handleRestoreSession = async (session: ArchivedSession) => {
     const actionKey = `session:${session.session_id}`;
@@ -108,14 +92,13 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
         showToast('error', t('settingsPanel.archivedTasks.errors.sessionRestoreFailed'));
       } else {
         removeLocalSession(session.session_id);
-        showToast('success', t(session.project_archived
-          ? 'settingsPanel.archivedTasks.sessionRestoredProjectArchived'
-          : 'settingsPanel.archivedTasks.sessionRestored'));
-      }
-    } catch (error) {
-      if (getArchiveErrorCode(error) === 'NOT_FOUND') {
-        removeLocalSession(session.session_id);
         showToast('success', t('settingsPanel.archivedTasks.sessionRestored'));
+      }
+    } catch (error) {
+      if (getArchiveErrorCode(error) === 'NOT_FOUND') {
+        // NOT_FOUND 表示会话已被永久删除（如其他端删除后本端列表未同步），不存在"恢复成功"。
+        removeLocalSession(session.session_id);
+        showToast('error', t('settingsPanel.archivedTasks.errors.sessionGone'));
       } else {
         showToast('error', t(actionErrorKey(error)));
       }
@@ -124,106 +107,34 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     }
     refreshLists();
     void useWorkspaceStore.getState().refreshWorkspaceData();
-  };
-
-  const handleRestoreProject = async (project: ArchivedProject) => {
-    const actionKey = `project:${project.project_id}`;
-    setPendingActions((prev) => ({ ...prev, [actionKey]: 'restore' }));
-    try {
-      await archivedTaskClient.unarchiveProject(project.project_id);
-      clearProjectFailure(project.project_id);
-      removeLocalProjectRow(project.project_id);
-      showToast('success', t('settingsPanel.archivedTasks.projectRestoredCronPaused'));
-    } catch (error) {
-      if (getArchiveErrorCode(error) === 'NOT_FOUND') {
-        clearProjectFailure(project.project_id);
-        removeLocalProjectRow(project.project_id);
-        showToast('success', t('settingsPanel.archivedTasks.projectRestoredCronPaused'));
-      } else {
-        showToast('error', t(actionErrorKey(error)));
-      }
-    } finally {
-      clearPendingAction(actionKey);
-    }
-    refreshLists();
-    void useWorkspaceStore.getState().refreshWorkspaceData();
-    void useCronStore.getState().loadJobs();
-  };
-
-  const runDeleteProject = async (project: ArchivedProject): Promise<'ok' | 'partial' | 'error'> => {
-    const actionKey = `project:${project.project_id}`;
-    setPendingActions((prev) => ({ ...prev, [actionKey]: 'delete' }));
-    try {
-      await archivedTaskClient.deleteArchivedProject(project.project_id);
-      clearProjectFailure(project.project_id);
-      removeLocalProjectCascade(project.project_id);
-      showToast('success', t('settingsPanel.archivedTasks.projectDeleted'));
-      return 'ok';
-    } catch (error) {
-      if (getArchiveErrorCode(error) === 'NOT_FOUND') {
-        clearProjectFailure(project.project_id);
-        removeLocalProjectCascade(project.project_id);
-        showToast('success', t('settingsPanel.archivedTasks.projectDeleted'));
-        return 'ok';
-      }
-      const partial = parseProjectOperationFailure(error);
-      if (partial) {
-        setProjectFailures((prev) => ({ ...prev, [project.project_id]: partial }));
-        showToast('error', t('settingsPanel.archivedTasks.partialFailure'));
-        return 'partial';
-      }
-      showToast('error', t(actionErrorKey(error)));
-      return 'error';
-    } finally {
-      clearPendingAction(actionKey);
-      refreshLists();
-      void useWorkspaceStore.getState().refreshWorkspaceData();
-      void useCronStore.getState().loadJobs();
-    }
   };
 
   const handleConfirmDelete = async () => {
     if (!deleteTarget) return;
+    const session = deleteTarget.session;
     setDeleteBusy(true);
     setDeleteError(null);
+    const actionKey = `session:${session.session_id}`;
+    setPendingActions((prev) => ({ ...prev, [actionKey]: 'delete' }));
     try {
-      if (deleteTarget.kind === 'session') {
-        const session = deleteTarget.session;
-        const actionKey = `session:${session.session_id}`;
-        setPendingActions((prev) => ({ ...prev, [actionKey]: 'delete' }));
-        try {
-          await archivedTaskClient.deleteSession(session.session_id);
-          removeLocalSession(session.session_id);
-          showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
-          setDeleteTarget(null);
-        } catch (error) {
-          if (getArchiveErrorCode(error) === 'NOT_FOUND') {
-            removeLocalSession(session.session_id);
-            showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
-            setDeleteTarget(null);
-          } else {
-            setDeleteError(t(actionErrorKey(error)));
-          }
-        } finally {
-          clearPendingAction(actionKey);
-          refreshLists();
-          void useWorkspaceStore.getState().refreshWorkspaceData();
-        }
+      await archivedTaskClient.deleteSession(session.session_id);
+      removeLocalSession(session.session_id);
+      showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
+      setDeleteTarget(null);
+    } catch (error) {
+      if (getArchiveErrorCode(error) === 'NOT_FOUND') {
+        removeLocalSession(session.session_id);
+        showToast('success', t('settingsPanel.archivedTasks.sessionDeleted'));
+        setDeleteTarget(null);
       } else {
-        const result = await runDeleteProject(deleteTarget.project);
-        if (result === 'ok' || result === 'partial') {
-          setDeleteTarget(null);
-        } else {
-          setDeleteError(t('settingsPanel.archivedTasks.errors.requestFailed'));
-        }
+        setDeleteError(t(actionErrorKey(error)));
       }
     } finally {
+      clearPendingAction(actionKey);
       setDeleteBusy(false);
+      refreshLists();
+      void useWorkspaceStore.getState().refreshWorkspaceData();
     }
-  };
-
-  const handleRetryProjectDelete = (project: ArchivedProject) => {
-    void runDeleteProject(project);
   };
 
   const clearSearch = () => {
@@ -231,20 +142,45 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     setKeyword('');
   };
 
+  // 项目分组级“删除已归档会话”：服务端枚举该项目归档区全部会话（含未加载分页），
+  // 成功项本地移除；部分失败保留失败项并提示成功/失败数量。
+  const handleConfirmDeleteArchivedSessions = async () => {
+    if (!deleteArchivedTarget) return;
+    setDeleteArchivedBusy(true);
+    setDeleteArchivedError(null);
+    try {
+      const result = await projectRegistryClient.deleteArchivedSessions(deleteArchivedTarget.projectId);
+      result.results.filter((item) => item.ok).forEach((item) => removeLocalSession(item.session_id));
+      if (result.failed_count) {
+        setDeleteArchivedError(t('settingsPanel.archivedTasks.batchPartialFailure', {
+          succeeded: result.succeeded_count,
+          failed: result.failed_count,
+        }));
+      } else {
+        setDeleteArchivedTarget(null);
+        showToast('success', t('settingsPanel.archivedTasks.archivedSessionsDeleted', { count: result.succeeded_count }));
+      }
+    } catch (error) {
+      setDeleteArchivedError(t(actionErrorKey(error)));
+    } finally {
+      setDeleteArchivedBusy(false);
+      refreshLists();
+      void useWorkspaceStore.getState().refreshWorkspaceData();
+    }
+  };
+
   const groups = useMemo(
-    () => buildArchivedTaskGroups(projectsState.items, sessionsState.items),
-    [projectsState.items, sessionsState.items],
+    () => buildArchivedTaskGroups(sessionsState.items),
+    [sessionsState.items],
   );
 
   const groupsEmpty = groups.length === 0;
-  const anyError = projectsState.error || sessionsState.error;
-  const bothError = projectsState.error && sessionsState.error;
-  const anyLoading = projectsState.loading || sessionsState.loading;
-  const anyHasMore = projectsState.hasMore || sessionsState.hasMore;
-  const anyLoadingMore = projectsState.loadingMore || sessionsState.loadingMore;
-  const showFullError = isConnected && bothError;
-  const showSkeleton = isConnected && !anyError && anyLoading && groupsEmpty;
-  const showEmptyState = isConnected && !anyError && !anyLoading && groupsEmpty;
+  const hasError = sessionsState.error !== null;
+  const isLoading = sessionsState.loading;
+  const hasMore = sessionsState.hasMore;
+  const loadingMore = sessionsState.loadingMore;
+  const showSkeleton = isConnected && !hasError && isLoading && groupsEmpty;
+  const showEmptyState = isConnected && !hasError && !isLoading && groupsEmpty;
   const showSearchEmptyState = showEmptyState && keyword !== '';
 
   const renderErrorState = (message: string, onRetry: () => void, testId: string) => (
@@ -258,7 +194,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
   );
 
   const renderSessionActions = (session: ArchivedSession) => {
-    const pending = isResourcePending('session', session.session_id);
+    const pending = isResourcePending(session.session_id);
     const actionsDisabled = pending || session.stop_pending;
     const restoreTitle = t('settingsPanel.archivedTasks.restoreSession');
     const deleteTitle = t('settingsPanel.archivedTasks.deletePermanently');
@@ -287,7 +223,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
           aria-disabled={actionsDisabled || undefined}
           onClick={() => {
             setDeleteError(null);
-            setDeleteTarget({ kind: 'session', session });
+            setDeleteTarget({ session });
           }}
           data-testid="archived-tasks-session-delete"
           data-variant={session.session_id}
@@ -325,28 +261,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
     </li>
   );
 
-  const deleteDialogTitle = deleteTarget?.kind === 'project'
-    ? t('settingsPanel.archivedTasks.deleteProjectTitle')
-    : t('settingsPanel.archivedTasks.deleteSessionTitle');
-
-  const deleteDialogMessage = deleteTarget?.kind === 'project' ? (
-    <>
-      <p className="archived-tasks__dialog-line">
-        {t('settingsPanel.archivedTasks.deleteProjectRecord', { projectName: deleteTarget.project.name })}
-      </p>
-      <p className="archived-tasks__dialog-line archived-tasks__dialog-line--danger">
-        {t('settingsPanel.archivedTasks.deleteProjectScope')}
-      </p>
-      {deleteTarget.project.project_dir ? (
-        <p className="archived-tasks__dialog-line">
-          {t('settingsPanel.archivedTasks.deleteProjectDirKept')}
-          <span className="archived-tasks__dialog-dir" title={deleteTarget.project.project_dir}>
-            {deleteTarget.project.project_dir}
-          </span>
-        </p>
-      ) : null}
-    </>
-  ) : deleteTarget?.kind === 'session' ? (
+  const deleteDialogMessage = deleteTarget ? (
     <>
       <p className="archived-tasks__dialog-line">
         {t('settingsPanel.archivedTasks.deleteSessionRecord', {
@@ -379,7 +294,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
 
       {!isConnected ? (
         renderErrorState(t('settingsPanel.archivedTasks.loadFailed'), refreshLists, 'archived-tasks-error')
-      ) : showFullError ? (
+      ) : hasError ? (
         renderErrorState(t('settingsPanel.archivedTasks.loadFailed'), refreshLists, 'archived-tasks-error')
       ) : showSkeleton ? (
         <div className="archived-tasks__loading" aria-busy="true" role="status" data-testid="archived-tasks-loading">
@@ -403,24 +318,8 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
         </div>
       ) : (
         <div className="archived-tasks__groups" data-testid="archived-tasks-list">
-          {projectsState.error ? (
-            renderErrorState(
-              t('settingsPanel.archivedTasks.loadFailed'),
-              () => fetchResource('projects', 'replace'),
-              'archived-tasks-projects-error',
-            )
-          ) : null}
-          {sessionsState.error ? (
-            renderErrorState(
-              t('settingsPanel.archivedTasks.loadFailed'),
-              () => fetchResource('sessions', 'replace'),
-              'archived-tasks-sessions-error',
-            )
-          ) : null}
           {groups.map((group) => {
-            const { project } = group;
             const displayName = group.projectName ?? t('settingsPanel.archivedTasks.unassignedProject');
-            const failure = project ? projectFailures[project.project_id] : undefined;
             return (
               <section
                 key={group.key}
@@ -428,70 +327,45 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
                 data-testid="archived-tasks-group"
                 data-variant={group.key}
               >
-                {project ? (
-                  <ProjectGroupHeader
-                    project={project}
-                    pending={isResourcePending('project', project.project_id)}
-                    onRestore={() => { void handleRestoreProject(project); }}
-                    onDelete={() => {
-                      setDeleteError(null);
-                      setDeleteTarget({ kind: 'project', project });
-                    }}
-                  />
-                ) : (
-                  <div className="archived-tasks__group-header" data-testid="archived-tasks-group-header">
-                    <Folder className="archived-tasks__row-icon" aria-hidden="true" size={16} />
-                    <span className="archived-tasks__group-name" title={displayName}>{displayName}</span>
-                    {group.sessions.length > 0 ? (
-                      <span className="archived-tasks__group-count">({group.sessions.length})</span>
-                    ) : null}
-                  </div>
-                )}
-                {failure && project ? (
-                  <div
-                    className="archived-tasks__row-failure"
-                    role="alert"
-                    data-testid="archived-tasks-project-partial-failure"
-                    data-variant={project.project_id}
-                  >
-                    <span>{t('settingsPanel.archivedTasks.partialFailure')}</span>
-                    {failure.detail ? (
-                      <span className="archived-tasks__row-failure-detail" title={failure.detail}>
-                        {failure.detail}
-                      </span>
-                    ) : null}
-                    {failure.retryable ? (
+                <div className="archived-tasks__group-header" data-testid="archived-tasks-group-header">
+                  <Folder className="archived-tasks__row-icon" aria-hidden="true" size={16} />
+                  <span className="archived-tasks__group-name" title={displayName}>{displayName}</span>
+                  {group.sessions.length > 0 ? (
+                    <span className="archived-tasks__group-count">({group.sessions.length})</span>
+                  ) : null}
+                  {/* 仅项目分组提供“删除已归档会话”；未归属分组没有可操作的项目 */}
+                  {group.projectId ? (
+                    <span className="archived-tasks__row-actions">
                       <Button
+                        variant="quiet"
                         size="sm"
-                        onClick={() => handleRetryProjectDelete(project)}
-                        disabled={isResourcePending('project', project.project_id)}
-                        data-testid="archived-tasks-project-partial-retry"
-                        data-variant={project.project_id}
-                      >
-                        {t('settingsPanel.feedback.retry')}
-                      </Button>
-                    ) : null}
-                  </div>
-                ) : null}
-                {group.sessions.length > 0 ? (
-                  <ul className="archived-tasks__session-list" data-testid="archived-tasks-session-list">
-                    {group.sessions.map(renderSessionRow)}
-                  </ul>
-                ) : null}
+                        className="archived-tasks__delete-button"
+                        icon={<Trash2 aria-hidden="true" size={15} />}
+                        aria-label={t('settingsPanel.archivedTasks.deleteArchivedSessions')}
+                        title={t('settingsPanel.archivedTasks.deleteArchivedSessions')}
+                        onClick={() => {
+                          setDeleteArchivedError(null);
+                          setDeleteArchivedTarget({ projectId: group.projectId, projectName: group.projectName ?? displayName });
+                        }}
+                        data-testid="archived-tasks-group-delete-archived"
+                        data-variant={group.key}
+                      />
+                    </span>
+                  ) : null}
+                </div>
+                <ul className="archived-tasks__session-list" data-testid="archived-tasks-session-list">
+                  {group.sessions.map(renderSessionRow)}
+                </ul>
               </section>
             );
           })}
-          {anyHasMore ? (
+          {hasMore ? (
             <div className="archived-tasks__more">
               <Button
                 size="sm"
-                loading={anyLoadingMore}
-                disabled={anyLoading}
-                onClick={() => {
-                  // 只对还有下一页的资源翻页，避免对已取尽的资源重复发请求
-                  if (projectsState.hasMore) fetchResource('projects', 'more');
-                  if (sessionsState.hasMore) fetchResource('sessions', 'more');
-                }}
+                loading={loadingMore}
+                disabled={isLoading}
+                onClick={() => fetchResource('more')}
                 data-testid="archived-tasks-load-more"
               >
                 {t('settingsPanel.archivedTasks.loadMore')}
@@ -503,7 +377,7 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
 
       <SettingsConfirmDialog
         open={deleteTarget !== null}
-        title={deleteDialogTitle}
+        title={t('settingsPanel.archivedTasks.deleteSessionTitle')}
         message={deleteDialogMessage}
         confirming={deleteBusy}
         error={deleteError ?? undefined}
@@ -514,6 +388,26 @@ function ArchivedTasksSettingsPanel({ isConnected }: { isConnected: boolean }) {
           if (deleteBusy) return;
           setDeleteError(null);
           setDeleteTarget(null);
+        }}
+      />
+
+      <SettingsConfirmDialog
+        open={deleteArchivedTarget !== null}
+        title={t('settingsPanel.archivedTasks.deleteArchivedSessionsTitle')}
+        message={deleteArchivedTarget ? (
+          <p className="archived-tasks__dialog-line">
+            {t('settingsPanel.archivedTasks.deleteArchivedSessionsRecord', { projectName: deleteArchivedTarget.projectName })}
+          </p>
+        ) : null}
+        confirming={deleteArchivedBusy}
+        error={deleteArchivedError ?? undefined}
+        confirmLabel={t('settingsPanel.archivedTasks.deletePermanently')}
+        confirmVariant="danger"
+        onConfirm={() => { void handleConfirmDeleteArchivedSessions(); }}
+        onCancel={() => {
+          if (deleteArchivedBusy) return;
+          setDeleteArchivedError(null);
+          setDeleteArchivedTarget(null);
         }}
       />
     </div>

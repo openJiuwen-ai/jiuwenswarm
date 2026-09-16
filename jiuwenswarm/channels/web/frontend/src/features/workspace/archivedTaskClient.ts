@@ -3,49 +3,32 @@ import type { WebError } from '../../types';
 import type { WorkMode } from './projectTypes';
 
 /**
- * 项目与会话归档 API client。
+ * 会话归档 API client。
  *
- * 归档是独立于活跃资源的新协议：`project.archived.list` / `session.archived.list`
- * 只返回已归档资源，旧协议 `project.remove` / `project.restore` 已废弃，禁止再调用。
+ * 归档协议以《会话与项目归档删除设计》为准：项目不再有归档状态，
+ * `project.archive` / `project.unarchive` / `project.archived.list` 已移除，
+ * 禁止再调用；项目级操作只剩 `project.delete`（直接级联删除），
+ * 项目维度的批量会话操作由 projectRegistryClient 承担。
  * 请求通过注入的 request 函数发出（默认 `webRequest`），便于测试替换；
  * 请求失败由页面呈现错误态，不伪造空数据。
  */
-
-export interface ArchivedProject {
-  project_id: string;
-  name: string;
-  project_dir: string;
-  work_mode: WorkMode;
-  hidden: true;
-  archived_at: number;
-  created_at: number;
-  updated_at: number;
-  stop_pending: boolean;
-}
 
 export interface ArchivedSession {
   session_id: string;
   title: string;
   project_id: string;
   project_name: string | null;
-  project_archived: boolean;
   work_mode: WorkMode;
   archived: true;
   archived_at: number;
   stop_pending: boolean;
+  /** 生命周期投影；仅在该会话存在未完成操作时非空。 */
+  lifecycle_operation?: Record<string, unknown> | null;
+  execution_blocked?: boolean;
 }
 
 export interface ArchivedListResponse<T> {
   items: T[];
-  total: number;
-  limit: number;
-  offset: number;
-  has_more: boolean;
-}
-
-/** `project.archived.list` 的后端响应。页面层会统一规整为 `ArchivedListResponse`。 */
-export interface ArchivedProjectListResponse {
-  projects: ArchivedProject[];
   total: number;
   limit: number;
   offset: number;
@@ -61,7 +44,7 @@ export interface ArchivedSessionListResponse {
   has_more: boolean;
 }
 
-/** 后端在归档/恢复响应中附带的安全提示（如 cron 未自动恢复），仅作辅助详情展示。 */
+/** 后端在归档/恢复响应中附带的安全提示（如写入排空告警），仅作辅助详情展示。 */
 export interface ArchiveWarning {
   code: string;
   message?: string;
@@ -69,6 +52,7 @@ export interface ArchiveWarning {
 
 export interface ArchivedListParams {
   work_mode?: WorkMode;
+  project_id?: string;
   keyword?: string;
   limit?: number;
   offset?: number;
@@ -93,8 +77,8 @@ export interface BatchSessionArchiveResponse {
 }
 
 /**
- * `project.archive` / `project.delete` 的部分失败响应。
- * 后端可能已完成部分阶段（如 cron 停用成功、删除记录失败），
+ * `project.delete` 的部分失败响应。
+ * 后端可能已完成部分阶段（如 cron 删除成功、会话删除失败），
  * payload 会通过 WebError.payload 透传到这里；不能当“全部失败”处理。
  */
 export interface ProjectOperationFailurePayload {
@@ -113,17 +97,12 @@ export interface ProjectOperationFailurePayload {
 }
 
 export interface ProjectOperationFailure {
-  /** PARTIAL_PROJECT_ARCHIVE_FAILED / PARTIAL_PROJECT_DELETE_FAILED 等错误码，仅用于分支判断。 */
+  /** `PARTIAL_PROJECT_DELETE_FAILED` 错误码，仅用于分支判断。 */
   code: string;
   phase: string;
   retryable: boolean;
   /** 后端提供的安全错误文本，可作为辅助详情展示。 */
   detail: string | null;
-}
-
-interface ProjectOperationResponse {
-  project_id?: string;
-  warnings?: ArchiveWarning[];
 }
 
 type ArchiveRequest = <T = unknown>(
@@ -148,10 +127,10 @@ function getArchiveErrorDetail(error: unknown): string | null {
   return null;
 }
 
-/** 解析 `project.archive` / `project.delete` 的部分失败 payload；非部分失败返回 null。 */
+/** 解析 `project.delete` 的部分失败 payload；非部分失败返回 null。 */
 export function parseProjectOperationFailure(error: unknown): ProjectOperationFailure | null {
   const code = getArchiveErrorCode(error);
-  if (code !== 'PARTIAL_PROJECT_ARCHIVE_FAILED' && code !== 'PARTIAL_PROJECT_DELETE_FAILED') {
+  if (code !== 'PARTIAL_PROJECT_DELETE_FAILED') {
     return null;
   }
   const webError = error as WebError;
@@ -178,32 +157,23 @@ export function findBatchSessionResult(
 
 export function createArchivedTaskClient(request: ArchiveRequest) {
   return {
-    listArchivedProjects: (params: ArchivedListParams) =>
-      request<ArchivedProjectListResponse>('project.archived.list', {
-        ...(params.work_mode ? { work_mode: params.work_mode } : {}),
-        ...(params.keyword ? { keyword: params.keyword } : {}),
-        ...(params.limit !== undefined ? { limit: params.limit } : {}),
-        ...(params.offset !== undefined ? { offset: params.offset } : {}),
-      }),
     listArchivedSessions: (params: ArchivedListParams) =>
       request<ArchivedSessionListResponse>('session.archived.list', {
         ...(params.work_mode ? { work_mode: params.work_mode } : {}),
+        ...(params.project_id ? { project_id: params.project_id } : {}),
         ...(params.keyword ? { keyword: params.keyword } : {}),
         ...(params.limit !== undefined ? { limit: params.limit } : {}),
         ...(params.offset !== undefined ? { offset: params.offset } : {}),
       }),
-    archiveProject: (projectId: string) =>
-      request<ProjectOperationResponse>('project.archive', { project_id: projectId }),
-    unarchiveProject: (projectId: string) =>
-      request<ProjectOperationResponse>('project.unarchive', { project_id: projectId }),
-    deleteArchivedProject: (projectId: string) =>
-      request<ProjectOperationResponse>('project.delete', { project_id: projectId }),
     archiveSession: (sessionId: string) =>
       request<BatchSessionArchiveResponse>('session.archive', { session_ids: [sessionId] }),
     unarchiveSession: (sessionId: string) =>
       request<BatchSessionArchiveResponse>('session.unarchive', { session_ids: [sessionId] }),
+    /** 批量恢复（如项目批量归档 toast 的撤销）；逐项结果必须检查 ok。 */
+    unarchiveSessions: (sessionIds: string[]) =>
+      request<BatchSessionArchiveResponse>('session.unarchive', { session_ids: sessionIds }),
     deleteSession: (sessionId: string) =>
-      request<{ session_id?: string }>('session.delete', { session_id: sessionId }),
+      request<{ session_id?: string; project_id?: string }>('session.delete', { session_id: sessionId }),
   };
 }
 

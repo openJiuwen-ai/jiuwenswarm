@@ -3865,7 +3865,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         }
       }),
       // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
-      // 项目维度的事件还会同步 cron 列表。归档管理页自行订阅同名事件刷新归档列表。
+      // project.deleted 还会级联删除会话与 cron，因此同步 cron 列表。
+      // 归档管理页自行订阅同名事件刷新归档列表。项目归档事件已随协议移除。
       // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
       webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
         scheduleArchiveWorkspaceRefresh(false);
@@ -3875,12 +3876,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       }),
       webClient.on<ArchiveResourceEventPayload>('session.deleted', () => {
         scheduleArchiveWorkspaceRefresh(false);
-      }),
-      webClient.on<ArchiveResourceEventPayload>('project.archived', () => {
-        scheduleArchiveWorkspaceRefresh(true);
-      }),
-      webClient.on<ArchiveResourceEventPayload>('project.unarchived', () => {
-        scheduleArchiveWorkspaceRefresh(true);
       }),
       webClient.on<ArchiveResourceEventPayload>('project.deleted', () => {
         scheduleArchiveWorkspaceRefresh(true);
