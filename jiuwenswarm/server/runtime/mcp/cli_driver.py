@@ -162,6 +162,40 @@ def _safe_split_command(command: str) -> list[str]:
     return parts
 
 
+def _binary_dir_from_package() -> str | None:
+    """Return a workspace staging dir where bare ``gitcode`` resolves to the
+    gc_cli pre-built binary, else None.
+
+    The ``gc_cli`` wheel ships its binary as ``gc-<os>-<arch>``, not as
+    ``gitcode``, so adding its dir to PATH alone doesn't resolve the manifest's
+    bare ``gitcode version``.  We create a thin ``gitcode``/``gitcode.bat``
+    launcher there (mirroring the frozen-exe spec's rename to ``gitcode.exe``).
+    """
+    try:
+        from gc_cli.wrapper import get_binary_path  # type: ignore[import-not-found]
+    except ImportError:
+        return None
+    try:
+        binary = get_binary_path()
+    except Exception:  # noqa: BLE001
+        return None
+    if not binary or not binary.is_file():
+        return None
+
+    staging = get_workspace_dir() / "mcp" / ".cli_bin" / "gitcode"
+    staging.mkdir(parents=True, exist_ok=True)
+
+    if sys.platform == "win32":
+        wrapper = staging / "gitcode.bat"
+        wrapper.write_text(f'@"{binary}" %*\n', encoding="utf-8")
+    else:
+        wrapper = staging / "gitcode"
+        wrapper.write_text(f'#!/bin/sh\nexec "{binary}" "$@"\n')
+        wrapper.chmod(0o755)
+
+    return str(staging)
+
+
 def default_runner(command: str, timeout: float = 120.0, env: dict[str, str] | None = None) -> CommandResult:
     try:
         proc = subprocess.run(  # noqa: S603 - command from trusted cli.json
@@ -399,6 +433,25 @@ class CliDriver:
             self._runner = runner
         else:
             cred_env = self._cred_env
+            # 将包内置的 gitcode 启动器目录注入 PATH，使 manifest 的裸命令
+            # （如 ``gitcode version``）无需 pip install 即可找到。注入父进程
+            # os.environ 而非仅 cred_env：Windows 的 CreateProcess 与
+            # _safe_split_command 按父环境 PATH 解析裸可执行名。
+            _bin_dir = _binary_dir_from_package()
+            if _bin_dir:
+                _cur = os.environ.get("PATH", "")
+                _prefix = f"{_bin_dir}{os.pathsep}"
+                if _cur:
+                    os.environ["PATH"] = (
+                        _cur if _cur.startswith(_prefix) else f"{_prefix}{_cur}"
+                    )
+                else:
+                    os.environ["PATH"] = _bin_dir
+                if cred_env is not None:
+                    cred_env = dict(cred_env)
+                    cred_env["PATH"] = (
+                        f"{_prefix}{cred_env.get('PATH', _cur)}"
+                    )
             self._runner = (
                 (lambda cmd: default_runner(cmd, env=cred_env))
                 if cred_env is not None

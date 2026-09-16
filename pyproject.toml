@@ -57,6 +57,10 @@ dependencies = [
     "tree-sitter-bash>=0.25.0,<0.26.0",
     "playwright>=1.40,<2",
     "uv>=0.4.0,<0.13",
+    # gitcode-cli：依赖版本须与内置连接器 cli.json 的 minVersion 一致（0.12.0）。
+    # 其自带 gc_cli.wrapper 入口和预编译二进制（bin/gc-<os>-<arch>），
+    # 作为运行时依赖后，pip install / uv sync 直接安装，无需临时 pip install。
+    "gitcode-cli==0.12.0",
 ]
 
 [project.optional-dependencies]
@@ -103,8 +107,8 @@ harmony = [
 a2a = ["a2a-sdk[http-server]==1.0.0"]
 ssh = ["asyncssh>=2.14.0,<2.24"]
 desktop = ["pywebview>=5.4,<7"]
-# gitcode-cli 仅供打包，版本须与内置连接器 cli.json 的 minVersion 一致
-dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7", "gitcode-cli==0.12.0"]
+# gitcode-cli is now a runtime dependency (see [project.dependencies]).
+dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
 tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
 distribute = ["openjiuwen[postgres,zmq]"]
 claude = ["openjiuwen[claude]"]
