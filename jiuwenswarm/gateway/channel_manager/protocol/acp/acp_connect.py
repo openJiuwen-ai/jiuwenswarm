@@ -17,12 +17,14 @@ parse_dotenv_early("jiuwenswarm-acp-channel")
 
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.gateway.channel_manager.base import BaseChannel, RobotMessageRouter
+from jiuwenswarm.common.e2a.acp.prompt_blocks import ParsedPrompt, parse_prompt_blocks
 from jiuwenswarm.common.e2a.acp.protocol import (
     build_acp_initialize_result,
     build_acp_prompt_result,
     build_acp_session_list_result,
     build_acp_session_new_result,
 )
+from jiuwenswarm.gateway.media_attachments import normalize_chat_media_attachments
 from jiuwenswarm.common.e2a.acp.session_updates import (
     build_acp_final_text_update,
     build_acp_session_update,
@@ -117,6 +119,81 @@ def _should_wait_for_final_text_before_end_turn(ctx: Any) -> bool:
         getattr(ctx, "assistant_text", None)
         or getattr(ctx, "assistant_message_id", None)
     )
+
+
+def _apply_parsed_prompt_to_params(
+    params: dict[str, Any],
+    parsed: ParsedPrompt,
+    session_id: str,
+) -> None:
+    """Write parsed prompt content into dispatch params in place.
+
+    Base64 image blocks are persisted under the session uploads dir and
+    rewritten to path records so raw base64 never travels further downstream.
+    """
+    params["content"] = parsed.text
+    params["query"] = parsed.text
+    if parsed.attachments:
+        params["attachments"] = parsed.attachments
+    if parsed.media_items:
+        params["media_items"] = parsed.media_items
+        normalize_chat_media_attachments(params, session_id)
+
+
+# Assistant history rows restorable as plain agent messages. Records without
+# an event_type are legacy final answers.
+_ACP_REPLAY_FINAL_EVENT_TYPES = frozenset({"", "chat.final"})
+
+
+def load_acp_session_replay_updates(session_id: str) -> list[dict[str, Any]] | None:
+    """Load persisted session history as chronological ACP session/update payloads.
+
+    Returns None when the session has no restorable history (unknown session).
+    Reads the shared per-session history file directly - the same on-disk
+    session store the media upload path relies on.
+    """
+    from jiuwenswarm.server.runtime.session.session_history import (
+        history_exists,
+        is_valid_session_id,
+        load_history_records,
+    )
+
+    sid = str(session_id or "").strip()
+    if not sid or not is_valid_session_id(sid) or not history_exists(sid):
+        return None
+    try:
+        records = load_history_records(sid)
+    except Exception:  # noqa: BLE001
+        logger.warning("[ACP] session/load failed to read history: %s", sid, exc_info=True)
+        return None
+    if not isinstance(records, list):
+        return None
+    updates: list[dict[str, Any]] = []
+    for record in records:
+        update = _history_record_to_acp_update(record)
+        if update is not None:
+            updates.append(update)
+    return updates
+
+
+def _history_record_to_acp_update(record: Any) -> dict[str, Any] | None:
+    if not isinstance(record, dict):
+        return None
+    content = record.get("content")
+    if not isinstance(content, str) or not content.strip():
+        return None
+    role = str(record.get("role") or "").strip().lower()
+    if role == "user":
+        session_update = "user_message_chunk"
+    else:
+        event_type = str(record.get("event_type") or "").strip()
+        if event_type not in _ACP_REPLAY_FINAL_EVENT_TYPES:
+            return None
+        session_update = "agent_message_chunk"
+    return {
+        "sessionUpdate": session_update,
+        "content": {"type": "text", "text": content},
+    }
 
 
 class AcpGatewayBridge:
@@ -260,8 +337,8 @@ class AcpGatewayBridge:
                 session_id = str(params.get("sessionId") or "").strip()
                 if not session_id:
                     raise ValueError("sessionId is required")
-                text = self.extract_prompt_text(params)
-                if not text:
+                parsed = parse_prompt_blocks(params)
+                if not parsed.has_content:
                     raise ValueError("prompt is required")
 
                 request_id = f"acp_{uuid.uuid4().hex[:12]}"
@@ -273,18 +350,18 @@ class AcpGatewayBridge:
                     client_ws=ws,
                 )
                 self._active_prompt_request_by_session[session_id] = request_id
+                # Drop the raw prompt blocks: parsed content replaces them and
+                # base64 image payloads must not ship downstream twice.
+                dispatch_params = {k: v for k, v in params.items() if k != "prompt"}
+                dispatch_params["session_id"] = session_id
+                _apply_parsed_prompt_to_params(dispatch_params, parsed, session_id)
                 await self._dispatch_message(
                     Message(
                         id=request_id,
                         type="req",
                         channel_id=self._channel_id,
                         session_id=session_id,
-                        params={
-                            **dict(params),
-                            "content": text,
-                            "query": text,
-                            "session_id": session_id,
-                        },
+                        params=dispatch_params,
                         timestamp=time.time(),
                         ok=True,
                         req_method=ReqMethod.CHAT_SEND,
@@ -318,12 +395,26 @@ class AcpGatewayBridge:
                 )
                 return True
             if method == "session/load":
-                await self._send_raw_jsonrpc_error(
-                    ws,
-                    rpc_id,
-                    -32601,
-                    "Method not supported by agent capabilities: session/load",
-                )
+                session_id = str(params.get("sessionId") or "").strip()
+                if not session_id:
+                    raise ValueError("sessionId is required")
+                updates = load_acp_session_replay_updates(session_id)
+                if updates is None:
+                    await self._send_raw_jsonrpc_error(
+                        ws,
+                        rpc_id,
+                        -32602,
+                        f"Unknown session: {session_id}",
+                    )
+                    return True
+                self._bind_session(ws, session_id)
+                for update in updates:
+                    await self._send_raw_jsonrpc_notification(
+                        ws,
+                        "session/update",
+                        {"sessionId": session_id, "update": update},
+                    )
+                await self._send_raw_jsonrpc_result(ws, rpc_id, {})
                 return True
             await self._send_raw_jsonrpc_error(ws, rpc_id, -32601, f"Method not found: {method}")
         except ValueError as exc:
@@ -471,21 +562,7 @@ class AcpGatewayBridge:
 
     @staticmethod
     def extract_prompt_text(params: dict[str, Any]) -> str:
-        prompt = params.get("prompt")
-        if isinstance(prompt, list):
-            texts: list[str] = []
-            for item in prompt:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text = item.get("text")
-                    if isinstance(text, str) and text:
-                        texts.append(text)
-            if texts:
-                return "\n".join(texts)
-        for key in ("text", "content", "query"):
-            value = params.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        return parse_prompt_blocks(params).text
 
     async def _dispatch_message(self, msg: Message) -> bool:
         if self._on_message_cb is None:
@@ -1084,11 +1161,7 @@ class AcpChannel(BaseChannel):
                 )
                 return
             if method == "session/load":
-                await self._write_jsonrpc_error(
-                    rpc_id,
-                    -32601,
-                    "Method not supported by agent capabilities: session/load",
-                )
+                await self._handle_jsonrpc_session_load(rpc_id, params)
                 return
             await self._write_jsonrpc_error(rpc_id, -32601, f"Method not found: {method}")
         except ValueError as exc:
@@ -1131,6 +1204,31 @@ class AcpChannel(BaseChannel):
             build_acp_session_new_result(session_id),
         )
 
+    async def _handle_jsonrpc_session_load(
+        self,
+        rpc_id: str | int | None,
+        params: dict[str, Any],
+    ) -> None:
+        session_id = str(params.get("sessionId") or "").strip()
+        if not session_id:
+            raise ValueError("sessionId is required")
+        updates = load_acp_session_replay_updates(session_id)
+        if updates is None:
+            await self._write_jsonrpc_error(
+                rpc_id,
+                -32602,
+                f"Unknown session: {session_id}",
+            )
+            return
+        self._known_sessions.add(session_id)
+        self._session_ctx[session_id] = dict(params)
+        for update in updates:
+            await self._write_jsonrpc_notification(
+                "session/update",
+                {"sessionId": session_id, "update": update},
+            )
+        await self._write_jsonrpc_result(rpc_id, {})
+
     async def _handle_jsonrpc_session_prompt(
         self,
         rpc_id: str | int | None,
@@ -1142,12 +1240,14 @@ class AcpChannel(BaseChannel):
         self._known_sessions.add(session_id)
 
         rpc_params = dict(params)
-        prompt = rpc_params.get("prompt")
-        if not isinstance(prompt, list) or not prompt:
-            text = self._extract_prompt_text(rpc_params)
-            if not text:
-                raise ValueError("prompt is required")
-            rpc_params["prompt"] = [{"type": "text", "text": text}]
+        parsed = parse_prompt_blocks(rpc_params, fallback_keys=("content", "query", "text"))
+        if not parsed.has_content:
+            raise ValueError("prompt is required")
+        # Replace the raw block list with the parsed text block so base64
+        # image payloads never travel to the gateway; images are persisted
+        # locally and forwarded as path records instead.
+        rpc_params["prompt"] = [{"type": "text", "text": parsed.text}]
+        _apply_parsed_prompt_to_params(rpc_params, parsed, session_id)
         rpc_params["session_id"] = session_id
         session_ctx = self._session_ctx.get(session_id)
         if isinstance(session_ctx, dict):
@@ -1504,21 +1604,7 @@ class AcpChannel(BaseChannel):
 
     @staticmethod
     def _extract_prompt_text(params: dict[str, Any]) -> str:
-        prompt = params.get("prompt")
-        if isinstance(prompt, list):
-            texts: list[str] = []
-            for item in prompt:
-                if isinstance(item, dict) and item.get("type") == "text":
-                    text = item.get("text")
-                    if isinstance(text, str) and text:
-                        texts.append(text)
-            if texts:
-                return "\n".join(texts)
-        for key in ("content", "query", "text"):
-            value = params.get(key)
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        return parse_prompt_blocks(params, fallback_keys=("content", "query", "text")).text
 
     @staticmethod
     def _parse_req_method(method: str) -> ReqMethod | None:
