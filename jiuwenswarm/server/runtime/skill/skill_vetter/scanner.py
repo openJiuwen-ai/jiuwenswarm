@@ -20,10 +20,12 @@ _SKIP_DIRS = {_ARCHIVE_DIR} | _CODE_BEARING_SKIP_DIRS | _DERIVED_SKIP_DIRS
 _MAX_FILE_BYTES = 1024 * 1024  # 1 MiB per file
 _TEXT_CHUNK = 4096
 
-_UNSCANNED_RULES: dict[str, tuple[Severity, str]] = {
-    "skipped-dir": (Severity.HIGH, "unscanned.skipped-dir"),
-    "too-large": (Severity.HIGH, "unscanned.too-large"),
-    "binary": (Severity.HIGH, "unscanned.binary"),
+# Reason -> rule id. "skipped-dir" severity is resolved per path by
+# ``_skipped_dir_severity``; every other reason is always HIGH.
+_UNSCANNED_RULES: dict[str, str] = {
+    "skipped-dir": "unscanned.skipped-dir",
+    "too-large": "unscanned.too-large",
+    "binary": "unscanned.binary",
 }
 
 
@@ -136,12 +138,15 @@ def _scan_files(skill_dir: Path) -> list[Finding]:
 def _skipped_dir_severity(rel_parts: tuple[str, ...]) -> Severity | None:
     """Severity for a file dropped by a skip dir, or ``None`` to emit nothing.
 
-    Precedence: ``.archive`` (product-managed, emit nothing) > code-bearing
-    (HIGH) > derived bytecode (MEDIUM).
+    Precedence: root ``.archive`` (product-managed, emit nothing) > code-bearing
+    (HIGH) > derived bytecode (MEDIUM). A ``.archive`` at any non-root depth is
+    NOT the product-managed archive, so it can hide a payload and is HIGH.
     """
-    if _ARCHIVE_DIR in rel_parts:
+    if rel_parts and rel_parts[0] == _ARCHIVE_DIR:
         return None
-    if any(part in _CODE_BEARING_SKIP_DIRS for part in rel_parts):
+    if _ARCHIVE_DIR in rel_parts or any(
+        part in _CODE_BEARING_SKIP_DIRS for part in rel_parts
+    ):
         return Severity.HIGH
     if any(part in _DERIVED_SKIP_DIRS for part in rel_parts):
         return Severity.MEDIUM
@@ -158,8 +163,8 @@ def _unscanned_findings(skill_dir: Path) -> list[Finding]:
             if severity is None:
                 continue
         else:
-            severity = _UNSCANNED_RULES[reason][0]
-        _, rule_id = _UNSCANNED_RULES[reason]
+            severity = Severity.HIGH
+        rule_id = _UNSCANNED_RULES[reason]
         findings.append(
             Finding(
                 category=ThreatCategory.OBFUSCATION,

@@ -160,6 +160,21 @@ def test_archive_files_emit_no_unscanned_finding(tmp_path):
     assert grade not in (Severity.HIGH.value, Severity.EXTREME.value)
 
 
+def test_nested_archive_emits_high_unscanned_finding(tmp_path):
+    """Only the root product archive is exempt; a nested `.archive` can hide code."""
+    skill = _make_benign_skill(tmp_path)
+    nested = skill / "scripts" / ".archive"
+    nested.mkdir(parents=True)
+    (nested / "payload.py").write_text("print('payload')\n", encoding="utf-8")
+
+    findings = scan_skill(skill)
+    hits = [f for f in findings if f.rule_id == "unscanned.skipped-dir"]
+    assert hits
+    assert hits[0].file == "scripts/.archive/payload.py"
+    assert hits[0].severity is Severity.HIGH
+    assert hits[0].category is ThreatCategory.OBFUSCATION
+
+
 def test_scan_skill_surfaces_pycache_as_medium(tmp_path):
     skill = _make_benign_skill(tmp_path)
     (skill / "__pycache__").mkdir()
