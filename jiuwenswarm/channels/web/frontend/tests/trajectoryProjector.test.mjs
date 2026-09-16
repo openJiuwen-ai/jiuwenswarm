@@ -1745,6 +1745,27 @@ test('attribute-pressure llm.call spans keep tool-only and final Assistant reque
   ]);
 });
 
+test('an agent-kind span named llm.call is not projected as an inference', () => {
+  const recordOf = kind => {
+    const record = legacyInferenceRecord({
+      output: 'bridged turn output',
+      requestNumber: 1,
+      spanId: 'agent-bridge-span',
+      startTimeUnixNano: 1_000_000,
+      stepId: 'step-1',
+      stepNumber: 1,
+    });
+    setStringAttribute(spansOf([record])[0], 'openjiuwen.trajectory.record.kind', kind);
+    return record;
+  };
+  const messages = snapshot => cellsOf(snapshot).filter(cell => cell.kind === 'message');
+
+  // The closed record-kind set must know "agent": an unknown kind used to be
+  // dropped, and the span then fell through to the llm.call name heuristic.
+  assert.equal(messages(projectOtelTrajectory([recordOf('agent')])).length, 0);
+  assert.equal(messages(projectOtelTrajectory([recordOf('inference')])).length, 1);
+});
+
 test('canonical v2 context suppresses partial legacy diagnostics for its physical inference', async () => {
   const records = await fixtureRecords('attribute-pressure-llm-call-records.json');
   const llmSpans = spansOf(records).filter(span => span.name === 'llm.call');

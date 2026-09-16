@@ -27,7 +27,7 @@ endif
 .PHONY: help install sync lock update-deps update-openjiuwen test test-unit test-integration \
 		test-cov lint lint-fix format typecheck clean build \
 		init start-debug start-debug-rebuild restart-debug stop \
-		genai-semconv check-genai-semconv
+		genai-semconv check-genai-semconv openjiuwen-semconv check-openjiuwen-semconv
 
 # The generator updates this repository's TypeScript constants and the sibling
 # agent-core checkout's Python constants in one pass. Override either variable
@@ -82,6 +82,15 @@ check-genai-semconv: ## Check generated GenAI constants without modifying files
 	$(PY) scripts/genai_semconv/generate.py \
 		--agent-core-dir "$(AGENT_CORE_DIR)" \
 		--revision "$(GENAI_SEMCONV_REVISION)" \
+		--check
+
+openjiuwen-semconv: ## Regenerate TypeScript OpenJiuwen trajectory constants from agent-core
+	$(PY) scripts/genai_semconv/generate_openjiuwen.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)"
+
+check-openjiuwen-semconv: ## Check generated OpenJiuwen trajectory constants without modifying files
+	$(PY) scripts/genai_semconv/generate_openjiuwen.py \
+		--agent-core-dir "$(AGENT_CORE_DIR)" \
 		--check
 
 # ----------------------------------------------------------------------

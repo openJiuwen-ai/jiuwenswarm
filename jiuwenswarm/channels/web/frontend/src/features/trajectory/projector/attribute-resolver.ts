@@ -16,10 +16,10 @@ import {
   DSH_EVENTS,
   DSH_REQUEST_PURPOSES,
   DSH_STREAM_KINDS,
-  DSH_TRAJECTORY_KINDS,
   OPENJIUWEN_ATTRIBUTES,
   OPENJIUWEN_EVENTS,
   STANDARD_ATTRIBUTES,
+  TRAJECTORY_RECORD_KINDS,
 } from '../semconv/constants.ts'
 import type { OtlpAttributeMap } from '../semconv/attributes.ts'
 import type { OtlpAnyValue, OtlpKeyValue, OtlpSpanEvent } from '../shared/otlp.ts'
@@ -161,7 +161,7 @@ const COMPATIBILITY = {
   langfuseObservationType: 'langfuse.observation.type',
 } as const
 
-const TRAJECTORY_KINDS = new Set<string>(DSH_TRAJECTORY_KINDS)
+const TRAJECTORY_KINDS = new Set<string>(TRAJECTORY_RECORD_KINDS)
 const REQUEST_PURPOSES = new Set<string>(DSH_REQUEST_PURPOSES)
 const STREAM_KINDS = new Set<string>(DSH_STREAM_KINDS)
 

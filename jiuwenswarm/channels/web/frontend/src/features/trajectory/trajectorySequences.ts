@@ -15,9 +15,10 @@
 
 import type { TrajectoryDetailRecord } from './trajectoryClient'
 import type { OtlpExportTraceServiceRequest } from './shared/otlp'
-
-const SEQUENCE_REFERENCE_PREFIX = '@oj-seq'
-const SEQUENCE_REFERENCE_VERSION = '1'
+import {
+  SEQUENCE_REFERENCE_PREFIX,
+  SEQUENCE_REFERENCE_VERSION,
+} from './semconv/openjiuwen-semconv.generated.ts'
 
 /** Content held by hash, plus the chains seen so far. */
 export interface SequenceCache {
