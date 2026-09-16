@@ -5150,6 +5150,10 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
                 "再微调 `<main>` 内布局。禁止只改 flex/gap 假装过检。"
                 "Page Chrome 必须保持不动。只输出完整 HTML，不要解释。"
             )
+        system_prompt += (
+            "当前 HTML 中的 `data-skill-turbo-page-number` 页码锚点属于 Page Chrome，"
+            "输出时必须原样保留，禁止删除或改写。"
+        )
         try:
             result = await self.stream_llm_collect(
                 prompt=_build_layout_patch_prompt(
@@ -5227,6 +5231,14 @@ class PageWorkerNode(DisableThinkingMixin, PlanNode):
             )
             return "", html, "layout_patch_chart_option_still_null"
 
+        html = _apply_visible_page_number_policy(
+            html,
+            user_query=ctx.user_query,
+            style_constraints=ctx.style_constraints,
+            page_number=ctx.page_num,
+            total_pages=ctx.total_pages,
+            style_id=ctx.style_id,
+        )
         logger.info("[P8.1] 布局原位修补完成 page=%d", ctx.page_num)
         return html, "", ""
 
