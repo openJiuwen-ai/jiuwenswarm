@@ -13,7 +13,6 @@ import {
   ToolResult,
   ToolExecution,
   ToolExecutionStatus,
-  AutoReviewerMetadata,
   InterruptResultPayload,
   AskUserQuestionPayload,
   EvolutionStatusPayload,
@@ -25,7 +24,6 @@ import {
 } from '../types';
 import { useTodoStore } from './todoStore';
 import {
-  mergeReviewerProgress,
   mergeToolResultProgress,
   shouldDropToolResult,
 } from './toolResultLifecycle';
@@ -280,7 +278,6 @@ interface ChatState {
     },
   ) => void;
   updateToolProgress: (sessionId: string, toolCallId: string, progress: Partial<ToolResult>) => void;
-  updateToolReviewer: (sessionId: string, toolCallId: string, reviewer: AutoReviewerMetadata) => void;
   addToolResult: (sessionId: string, toolResult: ToolResult, options?: { updatedAt?: string }) => void;
   markTimedOutExecutions: (sessionId: string) => void;
   /** 历史回放常只有 tool_call、无 tool_result：把仍 pending 的工具按 startedAt 结算，避免超时巡检用 now 污染耗时 */
@@ -1237,29 +1234,6 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         status: keepStatus,
         updatedAt:
           keepStatus === 'pending' ? new Date().toISOString() : execution.updatedAt,
-      });
-      return {
-        runtimes: {
-          ...state.runtimes,
-          [sessionId]: { ...runtime, toolExecutions: nextExecutions },
-        },
-      };
-    });
-  },
-
-  updateToolReviewer: (sessionId, toolCallId, reviewer) => {
-    if (!toolCallId) return;
-    set((state) => {
-      const runtime = state.runtimes[sessionId];
-      if (!runtime) return state;
-      const execution = runtime.toolExecutions.get(toolCallId);
-      if (!execution) return state;
-      const nextReviewer = mergeReviewerProgress(execution.toolCall.reviewer, reviewer);
-      if (nextReviewer === execution.toolCall.reviewer) return state;
-      const nextExecutions = new Map(runtime.toolExecutions);
-      nextExecutions.set(toolCallId, {
-        ...execution,
-        toolCall: { ...execution.toolCall, reviewer: nextReviewer },
       });
       return {
         runtimes: {
