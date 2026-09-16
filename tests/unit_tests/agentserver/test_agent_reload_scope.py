@@ -585,6 +585,53 @@ async def test_agent_reload_config_handler_passes_explicit_scope(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_agent_reload_config_handler_reconfigures_a4p_before_reload(monkeypatch):
+    from jiuwenswarm.agents.harness.common import a4p_runtime
+
+    server = agent_ws_server_module.AgentWebSocketServer()
+    order = []
+
+    async def fake_reconfigure_a4p_runtime(config):
+        assert config == {"a4p": {"enabled": False}}
+        order.append("reconfigure")
+
+    async def fake_reload(config, env, **kwargs):
+        order.append("reload")
+
+    monkeypatch.setattr(
+        a4p_runtime,
+        "reconfigure_a4p_runtime",
+        fake_reconfigure_a4p_runtime,
+    )
+    monkeypatch.setattr(server._agent_manager, "reload_agents_config", fake_reload)
+    monkeypatch.setattr(
+        agent_ws_server_module,
+        "encode_agent_response_for_wire",
+        lambda resp, response_id: {
+            "response_id": response_id,
+            "ok": resp.ok,
+            "payload": resp.payload,
+        },
+    )
+
+    request = AgentRequest(
+        request_id="reload-disable-a4p",
+        channel_id="web",
+        req_method=ReqMethod.AGENT_RELOAD_CONFIG,
+        params={
+            "config": {"a4p": {"enabled": False}},
+            "env": {},
+        },
+    )
+
+    ws = FakeWebSocket()
+    await server._handle_agent_reload_config(ws, request, asyncio.Lock())
+
+    assert order == ["reconfigure", "reload"]
+    assert json.loads(ws.sent[-1])["ok"] is True
+
+
+@pytest.mark.asyncio
 async def test_agent_reload_config_handler_skips_agent_manager_for_web_ui_scope(monkeypatch):
     from jiuwenswarm.agents.harness import team as team_harness_module
 

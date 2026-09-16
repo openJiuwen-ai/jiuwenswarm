@@ -693,7 +693,14 @@ class CronTools:
         if existing is None:
             if remote_gateway:
                 result = await self._send("delete", {"job_id": job_id})
-                return bool((result.get("data") or {}).get("deleted"))
+                deleted = bool((result.get("data") or {}).get("deleted"))
+                if deleted:
+                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                        remove_cron_intent_token_for_job,
+                    )
+
+                    remove_cron_intent_token_for_job(job_id)
+                return deleted
             # Gateway's AgentOS snapshot is best-effort.  A restarted
             # AgentServer (or a failed pre-turn sync) must still be able to ask
             # the Gateway-owned store to delete a real job; Gateway performs
@@ -708,6 +715,11 @@ class CronTools:
         await self._send("delete", {"job_id": job_id})
         self._pending_view_for_route().pop(job_id, None)
         self._pending_deletes_for_route().add(job_id)
+        from jiuwenswarm.agents.harness.common.a4p_runtime import (
+            remove_cron_intent_token_for_job,
+        )
+
+        remove_cron_intent_token_for_job(job_id)
         # 上游 CronToolBackend / wrapper 契约声明 delete 返回 bool；True 表示
         # 删除请求已提交 Gateway 单源（异步落库），不得返回 dict 破坏单用户兼容。
         return True
