@@ -779,6 +779,8 @@ class _RailBuildInfo:
         """Normalize the optional params mapping to an empty dict."""
         self.params = self.params or {}
 
+# 统一 cron 工具名为 "cron"；legacy cron_* 名称保留在集合里作为安全网，
+# 用于摘除旧版本注册残留 / 历史会话重放的工具卡片。
 _CRON_TOOL_NAMES = frozenset(
     {
         "cron",

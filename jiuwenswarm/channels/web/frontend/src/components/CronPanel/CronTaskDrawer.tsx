@@ -40,7 +40,7 @@ export interface CronTaskFormValue {
   // 与 projectDir 配套的 project_id，下拉框选中时一并反查写入（见 projectOptions/onChange）。
   // 后端 controller.py resolve_cron_project_binding 优先信任显式 project_id，其次才按
   // project_dir 反查可见项目——只传 project_dir 会多走一层查找，带上 projectId 更直接、更可靠
-  // （与会话内 cron_create_job 工具调用那条链路天然自带 project_id 的行为对齐）。
+  // （与会话内 cron 工具 add 那条链路天然自带 project_id 的行为对齐）。
   projectId: string | null;
   modelName: string | null;
   description: string;

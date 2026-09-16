@@ -1003,7 +1003,7 @@ def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
             return [
                 types.SimpleNamespace(
                     card=types.SimpleNamespace(
-                        name="cron_list_jobs", id=f"cron_{agent_id}"
+                        name="cron", id=f"cron_{agent_id}"
                     )
                 )
             ]
@@ -1013,7 +1013,7 @@ def test_cron_tools_built(monkeypatch: pytest.MonkeyPatch) -> None:
 
     built = runtime_tools.build_cron_tools({}, ctx)
 
-    assert [tool.card.name for tool in built] == ["cron_list_jobs"]
+    assert [tool.card.name for tool in built] == ["cron"]
 
 
 def test_context_processor_returns_none_when_engine_disabled() -> None:

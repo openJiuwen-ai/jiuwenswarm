@@ -55,7 +55,7 @@ const TOOL_GROUPS: ToolGroup[] = [
   {
     groupKey: "ownerScopes.groups.cronTools",
     groupDescKey: "ownerScopes.groups.cronToolsDesc",
-    toolNames: ["cron_list_jobs", "cron_get_job", "cron_create_job", "cron_update_job", "cron_delete_job", "cron_toggle_job", "cron_preview_job"],
+    toolNames: ["cron"],
   },
   {
     groupKey: "ownerScopes.groups.sendFile",
