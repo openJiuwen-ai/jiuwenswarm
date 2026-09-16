@@ -38,6 +38,7 @@ from jiuwenswarm.common.request_ext import (
     set_current as _ext_set,
 )
 from jiuwenswarm.common.schema.message import EventType, Message, Mode, ReqMethod
+from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
 from jiuwenswarm.common.ws_diagnostics import (
     describe_ws_exception,
     describe_ws_peer,
@@ -556,6 +557,21 @@ class WebWsTransport(BaseWsChannel):
         """
         connection_user_id = cls._resolve_connection_user_id(flat_query, ws)
         routing_key_user_id = cls._routing_key_user_id(connection_user_id, remote)
+        if connection_user_id:
+            emit_audit_ua(
+                SUBMDL="gateway",
+                PROC="ws_resolve_identity",
+                UA=connection_user_id,
+                route_type=route_type,
+            )
+        else:
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="ws_resolve_identity",
+                MSG="connection user_id empty",
+                EVT="ws_identity_missing",
+                route_type=route_type,
+            )
         return connection_user_id, routing_key_user_id
 
     async def broadcast_event(
@@ -684,6 +700,14 @@ class WebWsTransport(BaseWsChannel):
             "WebChannel 握手拒绝 path=%s origin=%s reason=origin_not_allowed",
             path,
             origin,
+        )
+        emit_audit_evt(
+            SUBMDL="gateway",
+            PROC="ws_origin_check",
+            MSG="origin_not_allowed",
+            EVT="forbidden_origin",
+            origin=str(origin or ""),
+            path=str(path or ""),
         )
         return forbidden_origin_response(args)
 

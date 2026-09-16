@@ -396,6 +396,14 @@ def _openai_account_poll_login_payload(login_id: str) -> dict[str, Any]:
             }
 
         _remove_openai_account_login_job(login_id)
+        from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+        emit_audit_ua(
+            SUBMDL="gateway",
+            PROC="device_login_poll",
+            UA="authenticated",
+            login_id=login_id,
+        )
         return {
             "status": "authenticated",
             "authenticated": True,

@@ -290,9 +290,17 @@ class SendFileToolkit:
                 logger.warning("[SendFileToolkit] 文件不存在: %s", fp)
 
         if not valid_files:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
             msg_parts = ["发送文件失败：所有文件均不存在"]
             for mf in missing_files:
                 msg_parts.append(f"  - {mf}")
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG=msg_parts[0],
+                EVT="send_file_failed",
+            )
             return "\n".join(msg_parts)
 
         valid_files, skipped_files = _partition_sent_files(route.session_id, valid_files)
@@ -419,6 +427,14 @@ class SendFileToolkit:
                     route.request_id,
                     delivered,
                 )
+                from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+                emit_audit_evt(
+                    SUBMDL="file",
+                    PROC="send_file_to_user",
+                    MSG="推送通道无活跃订阅者或投递失败",
+                    EVT="send_file_failed",
+                )
                 return (
                     "发送文件失败：推送通道无活跃订阅者或投递失败"
                     f"（delivered={delivered!r}）。请检查 Gateway/Relay WebSocket 连接后重试。"
@@ -453,12 +469,28 @@ class SendFileToolkit:
                 result_parts.append("以下文件不存在，未发送：")
                 for mf in missing_files:
                     result_parts.append(f"  - {mf}")
+            from jiuwenswarm.common.audit_emit import emit_audit_ua
+
+            emit_audit_ua(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                session_id=route.session_id,
+                file_count=len(valid_files),
+            )
             return "\n".join(result_parts)
         except Exception as e:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
             logger.exception(
                 "[SendFileToolkit] send_file 失败 session_id=%s error=%s",
                 route.session_id,
                 str(e),
+            )
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="send_file_to_user",
+                MSG=str(e),
+                EVT="send_file_failed",
             )
             return f"提交文件失败: {str(e)}"
 

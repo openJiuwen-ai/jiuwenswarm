@@ -13,6 +13,7 @@ from jiuwenswarm.common.request_identity import (
     web_routing_identity,
 )
 from jiuwenswarm.common.schema.message import Message
+from jiuwenswarm.common.audit_emit import emit_audit_evt
 from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
@@ -96,6 +97,13 @@ async def dispatch_web_request(
     )
 
     if is_enterprise_write_forbidden(method):
+        emit_audit_evt(
+            SUBMDL="gateway",
+            PROC="web_rpc_authorize",
+            MSG="企业版配置由管理面统一下发",
+            EVT="FORBIDDEN",
+            method=method,
+        )
         await channel.send_response(
             outbound, request_id, ok=False,
             error="企业版配置由管理面统一下发", code="FORBIDDEN",

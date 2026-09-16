@@ -27,6 +27,7 @@ from jiuwenswarm.gateway.routing.agent_client import (
     AGENT_REQUEST_TIMEOUT_SECONDS,
     AgentServerClient,
 )
+from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
 from jiuwenswarm.gateway.routing.agent_rest_map import (
     assemble_rest_request,
     normalize_agent_http_base,
@@ -326,32 +327,52 @@ class HttpSseAgentServerClient(AgentServerClient):
     async def send_request(
         self, envelope: E2AEnvelope, *, base_url: str | None = None
     ) -> AgentResponse:
-        http = self._ensure_http()
-        api_root = self._resolve_api_root(base_url)
-        envelope.is_stream = False
-        assembled = assemble_rest_request(envelope, base_url=api_root)
-        channel_id = str(envelope.channel or "web")
-        rid = str(envelope.request_id or "")
-        logger.info(
-            "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
-            rid,
-            envelope.method,
-            assembled.verb,
-            assembled.url,
-            assembled.used_rpc_fallback,
-        )
-        response = await http.request(
-            assembled.verb,
-            assembled.url,
-            headers=self._request_headers(assembled.headers),
-            json=assembled.json_body,
-            params=assembled.query,
-        )
-        _raise_for_pod_http_error(response, base_url=base_url)
-        payload = _response_json(response, request_id=rid)
-        return http_unary_to_agent_response(
-            payload, channel_id=channel_id, request_id=rid
-        )
+        with audit_timer() as timer:
+            http = self._ensure_http()
+            api_root = self._resolve_api_root(base_url)
+            envelope.is_stream = False
+            assembled = assemble_rest_request(envelope, base_url=api_root)
+            channel_id = str(envelope.channel or "web")
+            rid = str(envelope.request_id or "")
+            logger.info(
+                "[E2A][out][http][unary] request_id=%s method=%s %s %s rpc=%s",
+                rid,
+                envelope.method,
+                assembled.verb,
+                assembled.url,
+                assembled.used_rpc_fallback,
+            )
+            try:
+                response = await http.request(
+                    assembled.verb,
+                    assembled.url,
+                    headers=self._request_headers(assembled.headers),
+                    json=assembled.json_body,
+                    params=assembled.query,
+                )
+                _raise_for_pod_http_error(response, base_url=base_url)
+                payload = _response_json(response, request_id=rid)
+                result = http_unary_to_agent_response(
+                    payload, channel_id=channel_id, request_id=rid
+                )
+            except Exception as exc:
+                emit_audit_evt(
+                    SUBMDL="api_client",
+                    PROC="http_agent_send",
+                    MSG=str(exc),
+                    EVT="http_agent_send_failed",
+                    request_id=rid,
+                    method=str(envelope.method or ""),
+                )
+                raise
+            emit_audit_ua(
+                SUBMDL="api_client",
+                PROC="http_agent_send",
+                COST=timer.cost_ms,
+                request_id=rid,
+                method=str(envelope.method or ""),
+            )
+            return result
 
     def _is_stream_cancelled(self, rid: str) -> bool:
         return bool(rid) and rid in self._cancelled_request_ids

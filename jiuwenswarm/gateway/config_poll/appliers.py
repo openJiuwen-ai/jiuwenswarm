@@ -50,6 +50,19 @@ async def apply_logging_config_table(ctx: TableApplyContext) -> None:
     logger.info("[ConfigPoll] logging_config applied rows=%d", len(ctx.rows))
 
 
+async def apply_audit_log_config_table(ctx: TableApplyContext) -> None:
+    from jiuwenswarm.gateway.config.audit.access import apply_audit_log_config_row
+
+    row = ctx.rows[0] if ctx.rows else None
+    if len(ctx.rows) > 1:
+        logger.warning(
+            "[ConfigPoll] audit_log_config expected one row, got %d; using first",
+            len(ctx.rows),
+        )
+    apply_audit_log_config_row(row if isinstance(row, dict) else None)
+    logger.info("[ConfigPoll] audit_log_config applied rows=%d", len(ctx.rows))
+
+
 async def apply_log_masking_rule_table(ctx: TableApplyContext) -> None:
     from jiuwenswarm.infrastructure.log_masking.engine import LogMaskingEngine
 
@@ -90,4 +103,5 @@ TABLE_APPLIERS: dict[str, ApplyTableFn] = {
     "channel_config": apply_channel_config_table,
     "logging_config": apply_logging_config_table,
     "log_masking_rule": apply_log_masking_rule_table,
+    "audit_log_config": apply_audit_log_config_table,
 }

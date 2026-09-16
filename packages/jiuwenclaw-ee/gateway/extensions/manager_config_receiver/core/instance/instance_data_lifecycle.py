@@ -38,6 +38,7 @@ INSTANCE_PURGE_TABLES: tuple[str, ...] = (
     "log_masking_rule",
     "logging_config",
     "task_memory_config",
+    "audit_log_config",
     "memory_config",
     "cron_job",
 )

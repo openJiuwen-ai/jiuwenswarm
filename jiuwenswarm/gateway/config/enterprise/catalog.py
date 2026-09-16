@@ -41,6 +41,7 @@ ENTERPRISE_RECORD_SPECS: dict[str, EnterpriseRecordSpec] = {
     "log_masking_rule": EnterpriseRecordSpec(key_fields=("rule_id",)),
     "cron_job": EnterpriseRecordSpec(key_fields=("job_id",)),
     "task_memory_config": EnterpriseRecordSpec(key_fields=()),
+    "audit_log_config": EnterpriseRecordSpec(key_fields=()),
     "manager_sign_pubkey": EnterpriseRecordSpec(
         key_fields=("id",),
         scope_field=None,

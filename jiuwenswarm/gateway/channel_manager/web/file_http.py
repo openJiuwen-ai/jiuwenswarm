@@ -415,16 +415,31 @@ def save_pushed_file(
         build_file_download_info,
     )
 
+    from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
     clean_name = safe_filename(filename)
     safe_name = f"{int(time.time())}_{clean_name}"
     local_path = resolve_path_under_directory(received_files_dir(), safe_name)
     if local_path is None:
+        emit_audit_evt(
+            SUBMDL="file",
+            PROC="file_upload",
+            MSG="invalid_filename",
+            EVT="invalid_filename",
+            session_id=session_id,
+        )
         raise ValueError("invalid_filename")
     local_path.write_bytes(file_bytes)
     download_info = build_file_download_info(
         file_path=str(local_path),
         file_name=clean_name,
         session_id=session_id,
+    )
+    emit_audit_ua(
+        SUBMDL="file",
+        PROC="file_upload",
+        session_id=session_id,
+        filename=clean_name,
     )
     return {
         "success": True,

@@ -245,10 +245,18 @@ def register_file_compat_routes(app: FastAPI) -> None:
         obs_url: str = "",
         file_name: str = "",
     ) -> Response:
+        from jiuwenswarm.common.audit_emit import emit_audit_evt, emit_audit_ua
+
         obs = (obs_url or "").strip()
         if obs:
             # Mirror upload-obs / push: personal edition must not expose OBS proxy.
             if not is_enterprise():
+                emit_audit_evt(
+                    SUBMDL="file",
+                    PROC="file_download",
+                    MSG="not_available",
+                    EVT="file_download_not_available",
+                )
                 return _json(404, {"error": "not_available"})
             from jiuwenswarm.gateway.message_handler.outbound_file_materialize import (
                 proxy_obs_download_response_async,
@@ -262,22 +270,52 @@ def register_file_compat_routes(app: FastAPI) -> None:
                 range_header=request.headers.get("range") or request.headers.get("Range"),
             )
         if not token:
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="file_download",
+                MSG="missing_token",
+                EVT="file_download_bad_request",
+            )
             return _json(400, {"error": "missing_token"})
         try:
             from jiuwenswarm.agents.harness.common.tools.web_file_download import (
                 validate_file_download_token,
             )
         except ImportError:
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="file_download",
+                MSG="download_module_unavailable",
+                EVT="file_download_unavailable",
+            )
             return _json(500, {"error": "download_module_unavailable"})
 
         payload = validate_file_download_token(token)
         if payload is None:
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="file_download",
+                MSG="invalid_or_expired_token",
+                EVT="file_download_forbidden",
+            )
             return _json(403, {"error": "invalid_or_expired_token"})
 
         file_path = str(payload.get("path") or "")
         if not file_path or not os.path.isfile(file_path):
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="file_download",
+                MSG="file_not_found",
+                EVT="file_download_not_found",
+            )
             return _json(404, {"error": "file_not_found"})
         if not is_download_path_allowed(Path(file_path), _roots(request.app)):
+            emit_audit_evt(
+                SUBMDL="file",
+                PROC="file_download",
+                MSG="forbidden_path",
+                EVT="file_download_forbidden",
+            )
             return _json(403, {"error": "forbidden_path"})
 
         file_size = os.path.getsize(file_path)
@@ -293,6 +331,12 @@ def register_file_compat_routes(app: FastAPI) -> None:
         if range_header:
             byte_range = parse_single_byte_range(range_header, file_size)
             if byte_range is None:
+                emit_audit_evt(
+                    SUBMDL="file",
+                    PROC="file_download",
+                    MSG="invalid_range",
+                    EVT="file_download_range_not_satisfiable",
+                )
                 return Response(
                     status_code=416,
                     headers={"Content-Range": f"bytes */{file_size}"},
@@ -311,6 +355,12 @@ def register_file_compat_routes(app: FastAPI) -> None:
         if byte_range is not None:
             headers["Content-Range"] = f"bytes {start}-{end}/{file_size}"
 
+        emit_audit_ua(
+            SUBMDL="file",
+            PROC="file_download",
+            file_name=file_name,
+            status_code=status_code,
+        )
         if head:
             return Response(status_code=status_code, headers=headers)
 

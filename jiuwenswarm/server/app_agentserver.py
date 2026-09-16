@@ -305,6 +305,23 @@ async def _run_with_telemetry(host: str, port: int, telemetry_lifecycle) -> None
 
     if is_enterprise():
         try:
+            from jiuwenswarm.gateway.config.audit.access import (
+                SERVICE_AGENTSERVER,
+                reload_audit_log_config_from_db,
+            )
+
+            await reload_audit_log_config_from_db(service=SERVICE_AGENTSERVER)
+            logger.info(
+                "[AgentServer] audit_log_config loaded from Gateway DB (if any)"
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning(
+                "[AgentServer] audit_log_config cold load skipped",
+                exc_info=True,
+            )
+
+    if is_enterprise():
+        try:
             from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
                 reload_permissions_from_gateway_db,
             )

@@ -22,6 +22,8 @@ from typing import Any, Optional
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.rails.security.tool_security_rail import PermissionInterruptRail
 
+from jiuwenswarm.common.audit_emit import emit_audit_evt
+
 logger = logging.getLogger(__name__)
 
 #: 由 SkillAuthorizationRail 专属门禁裁决的工具。
@@ -56,7 +58,16 @@ class SkillAuthorizationPermissionRail(PermissionInterruptRail):
     async def before_tool_call(self, ctx: AgentCallbackContext) -> None:
         if self._skill_authorization_gate_handled(ctx):
             return
-        await super().before_tool_call(ctx)
+        try:
+            await super().before_tool_call(ctx)
+        except Exception as exc:
+            emit_audit_evt(
+                SUBMDL="agent",
+                PROC="skill_authorize",
+                MSG=str(exc),
+                EVT="skill_authorize_denied",
+            )
+            raise
 
     async def resolve_interrupt(
         self,

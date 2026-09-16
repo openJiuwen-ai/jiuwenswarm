@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING, Any
 from openjiuwen.core.foundation.tool import tool
 
 from jiuwenswarm.agents.harness.common.rails.task_execution_rail import get_current_task_id
+from jiuwenswarm.common.audit_emit import audit_timer, emit_audit_evt, emit_audit_ua
 
 if TYPE_CHECKING:
     from openjiuwen.core.session.agent import Session
@@ -669,8 +670,19 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
     from openjiuwen.core.session.stream.base import OutputSchema
     from jiuwenswarm.server.runtime.skill_turbo.plan_node import AbortError
 
+    with audit_timer() as _audit:
+        return await _skill_turbo_audited(query, audit=_audit)
+
+
+async def _skill_turbo_audited(query: str, *, audit: audit_timer) -> dict[str, Any] | str:
     adapter = get_current_skill_turbo_adapter()
     if adapter is None:
+        emit_audit_evt(
+            SUBMDL="agent",
+            PROC="skill_acceleration_exec",
+            MSG="SkillAccelerationExec 未初始化",
+            EVT="skill_turbo_not_initialized",
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": "SkillAccelerationExec 未初始化"}
         )
@@ -943,10 +955,22 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
         release_checkpoint = True
         ppt_fail = _ppt_delivery_failed_error(skill_turbo_inst.artifact_holder)
         if ppt_fail:
+            emit_audit_evt(
+                SUBMDL="agent",
+                PROC="skill_acceleration_exec",
+                MSG=str(ppt_fail),
+                EVT="skill_turbo_delivery_failed",
+                COST=audit.cost_ms,
+            )
             return _wrap_skill_turbo_result(
                 {"success": False, "error": ppt_fail},
                 artifact_holder=skill_turbo_inst.artifact_holder,
             )
+        emit_audit_ua(
+            SUBMDL="agent",
+            PROC="skill_acceleration_exec",
+            COST=audit.cost_ms,
+        )
         return _wrap_skill_turbo_result(
             {"success": True, "result": "任务已完成"},
             artifact_holder=skill_turbo_inst.artifact_holder,
@@ -971,6 +995,13 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
             return _SKILL_TURBO_HITL_PLACEHOLDER
         # Fallback: AbortError 无 ToolInterruptException cause，返回错误
         logger.warning("[SkillTurboTool] AbortError without ToolInterruptException cause")
+        emit_audit_evt(
+            SUBMDL="agent",
+            PROC="skill_acceleration_exec",
+            MSG=f"任务中断: {e}",
+            EVT="skill_turbo_aborted",
+            COST=audit.cost_ms,
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"任务中断: {e}"},
             artifact_holder=skill_turbo_inst.artifact_holder,
@@ -978,12 +1009,26 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
     except SkillTurboNotHandled as exc:
         logger.info("[SkillTurboTool] SkillTurbo 未处理: %s", exc)
         release_checkpoint = True
+        emit_audit_evt(
+            SUBMDL="agent",
+            PROC="skill_acceleration_exec",
+            MSG=f"SkillAccelerationExec 未处理: {exc}",
+            EVT="skill_turbo_not_handled",
+            COST=audit.cost_ms,
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"SkillAccelerationExec 未处理: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,
         )
     except Exception as exc:
         logger.warning("[SkillTurboTool] 执行失败: %s", exc, exc_info=True)
+        emit_audit_evt(
+            SUBMDL="agent",
+            PROC="skill_acceleration_exec",
+            MSG=f"执行失败: {exc}",
+            EVT="skill_turbo_failed",
+            COST=audit.cost_ms,
+        )
         return _wrap_skill_turbo_result(
             {"success": False, "error": f"执行失败: {exc}"},
             artifact_holder=skill_turbo_inst.artifact_holder,

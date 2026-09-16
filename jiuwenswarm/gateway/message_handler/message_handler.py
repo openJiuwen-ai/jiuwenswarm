@@ -2940,6 +2940,14 @@ class MessageHandler(FileTransferMixin, ABC):
         try:
             chunk = parse_agent_server_wire_chunk(wire)
         except Exception as e:
+            from jiuwenswarm.common.audit_emit import emit_audit_evt
+
+            emit_audit_evt(
+                SUBMDL="gateway",
+                PROC="agent_push_handle",
+                MSG=str(e),
+                EVT="agent_push_parse_failed",
+            )
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
         rid = str(chunk.request_id or "")
