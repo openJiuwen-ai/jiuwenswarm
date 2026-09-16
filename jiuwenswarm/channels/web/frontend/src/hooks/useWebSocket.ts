@@ -118,27 +118,6 @@ import { NEW_CONVERSATION_ID } from '../multi-session/state/newConversationLifec
 
 const WS_RECONNECT_EVENT = 'jiuwenclaw:ws-reconnect-request';
 
-export function applyToolUpdatePayload(
-  sessionId: string,
-  payload: Record<string, unknown>,
-): void {
-  const update = normalizeToolUpdatePayload(payload);
-  if (!update.toolCallId) return;
-  if (update.beamSearch) {
-    useChatStore.getState().updateToolProgress(sessionId, update.toolCallId, {
-      toolName: update.toolName,
-      beamSearch: update.beamSearch,
-    });
-  }
-  if (update.reviewer) {
-    useChatStore.getState().updateToolReviewer(
-      sessionId,
-      update.toolCallId,
-      update.reviewer,
-    );
-  }
-}
-
 function streamDeltaBatchKey(sessionId: string, streamId: string): string {
   return `${sessionId}\u0000${streamId}`;
 }
@@ -3647,7 +3626,12 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.tool_update', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
-        applyToolUpdatePayload(sessionId, payload);
+        const update = normalizeToolUpdatePayload(payload);
+        if (!update.toolCallId || !update.beamSearch) return;
+        useChatStore.getState().updateToolProgress(sessionId, update.toolCallId, {
+          toolName: update.toolName,
+          beamSearch: update.beamSearch,
+        });
       }),
       webClient.on('chat.tool_result', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
@@ -3758,7 +3742,6 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             beamSearch: toolResult.beamSearch,
             ...(toolResult.mermaid ? { mermaid: toolResult.mermaid } : {}),
             ...(toolResult.timedOut ? { timedOut: true } : {}),
-            reviewer: toolResult.reviewer,
           },
           {
             updatedAt: normalizeEventTimestampIso(payload.timestamp),
