@@ -427,6 +427,14 @@ from jiuwenswarm.server.runtime.skill.skilldev.state_utils import (
     remove_skill_config,
     set_skill_enabled,
 )
+from jiuwenswarm.server.runtime.skill.skill_vetter.report import VetReport, run_vet  # noqa: E402
+from jiuwenswarm.server.runtime.skill.skill_vetter.scanner import compute_content_hash  # noqa: E402
+from jiuwenswarm.server.runtime.skill.skill_vetter.store import (  # noqa: E402
+    get_vet_approval,  # noqa: F401
+    get_vet_report,
+    set_vet_approval,  # noqa: F401
+    set_vet_report,
+)
 
 
 class SkillNetEmptyDownloadError(Exception):
@@ -5460,6 +5468,14 @@ class SkillManager:
         self._refresh_agent_data_indexes()
 
         skill_type = detect_skill_type(dest)
+        try:
+            self._ensure_vet_report(dest)
+        except Exception as exc:
+            logger.warning(
+                "[SkillManager] skill-vetter scan failed during install: skill=%s error=%s",
+                skill_name,
+                exc,
+            )
         description = str(meta.get("description") or "").strip()
         source = self._resolve_display_source_for_import(skill_name)
         logger.info(
@@ -8997,6 +9013,17 @@ class SkillManager:
     def set_skill_enabled(self, skill_name: str, enabled: bool) -> None:
         set_skill_enabled(self._state, skill_name, enabled)
         self._save_state()
+
+    def _ensure_vet_report(self, skill_dir: Path) -> VetReport:
+        """Return a fresh-or-cached vet report for *skill_dir*, persisting to state."""
+        content_hash = compute_content_hash(skill_dir)
+        stored = get_vet_report(self._state, content_hash)
+        if stored is not None:
+            return VetReport.from_dict(stored)
+        report = run_vet(skill_dir)
+        set_vet_report(self._state, report.to_dict())
+        self._save_state()
+        return report
 
     def remove_skill_config(self, skill_name: str) -> None:
         if remove_skill_config(self._state, skill_name):
