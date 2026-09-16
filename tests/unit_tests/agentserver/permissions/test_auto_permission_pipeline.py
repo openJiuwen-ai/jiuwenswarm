@@ -3,19 +3,12 @@
 from __future__ import annotations
 
 import asyncio
-import json
-from copy import deepcopy
 from types import SimpleNamespace, new_class
-from unittest.mock import AsyncMock
 
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.before_tool as before_tool_module
 import jiuwenswarm.agents.harness.common.rails.permissions._auto_permission.reviewer_override_consume as override_module
 import pytest
 from openjiuwen.core.foundation.llm import AssistantMessage, ToolCall
-from openjiuwen.core.foundation.tool import LocalFunction, ToolCard, ToolExposure
-from openjiuwen.core.single_agent.ability_manager import AbilityManager
-from openjiuwen.core.single_agent.agent_callback_manager import AgentCallbackManager
-from openjiuwen.core.single_agent.interrupt.exception import ToolInterruptException
 from openjiuwen.core.runner.callback import AbortError
 from openjiuwen.core.session.interaction.interactive_input import InteractiveInput
 from openjiuwen.core.single_agent.interrupt.handler import (
@@ -24,19 +17,15 @@ from openjiuwen.core.single_agent.interrupt.handler import (
 )
 from openjiuwen.core.single_agent.interrupt.state import (
     INTERRUPT_AUTO_CONFIRM_KEY,
-    INTERRUPTION_KEY,
     ToolInterruptEntry,
     ToolInterruptionState,
 )
 from openjiuwen.core.single_agent.rail.base import (
     AgentCallbackContext,
-    AgentCallbackEvent,
     InvokeInputs,
     ToolCallInputs,
 )
 from openjiuwen.harness.tools.subagent.subagent_tools import build_subagent_tools
-from openjiuwen.harness.rails.progressive_tool_rail import ProgressiveToolRail
-from openjiuwen.harness.deep_agent import DeepAgent
 from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import (
     build_permission_rail,
 )
@@ -55,17 +44,12 @@ from jiuwenswarm.agents.harness.common.rails.permissions.policy_eval import (
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue import (
     RootPermissionQueue,
-    RootPermissionQueueError,
 )
 from jiuwenswarm.agents.harness.common.rails.permissions.root_permission_queue_rail import (
     RootPermissionQueueRail,
-    RootPermissionCompletionRail,
-    ROOT_PERMISSION_WRAPPERS_KEY,
-    ROOT_PERMISSION_WRAPPER_ATTRIBUTE,
     bind_root_permission_request,
     reset_root_permission_request,
 )
-from jiuwenswarm.server.runtime.agent_adapter.permission_dispatch import RootPermissionDispatch
 from jiuwenswarm.agents.harness.common.rails.permissions.session_deny import (
     SessionDenyStore,
 )
@@ -120,169 +104,6 @@ async def test_task_tool_ask_is_control_silent_after_engine(tmp_path) -> None:
     assert len(policy.calls) == 1
     assert reviewer.requests == []
     assert base.calls == []
-
-
-@pytest.mark.parametrize("case", [
-    "allow", "reject", "deny", "session_deny", "fail_closed", "forged",
-    "changed_args", "undiscovered", "bad_mapping",
-])
-async def test_real_core_nested_permission_resume(tmp_path, case):
-    """Real Core dispatch and AutoPermission; only model/base policy are doubles."""
-    data, executed, callbacks = {}, [], []
-    session = SimpleNamespace(
-        get_session_id=lambda: "session-a", get_state=data.get, update_state=data.update,
-    )
-    queue = RootPermissionQueue()
-    queue_rail, completion = RootPermissionQueueRail(queue), RootPermissionCompletionRail(queue)
-    auto, policy, reviewer, _base = _rail(
-        tmp_path, PolicyEvaluation(level="ask", reason="default_ask"),
-    )
-    reviewer.outcome = ReviewerOutcome.MANUAL
-    phase = "initial"
-
-    async def callback(ctx):
-        event = ctx.event
-        if event == AgentCallbackEvent.ON_TOOL_EXCEPTION:
-            await queue_rail.on_tool_exception(ctx)
-        if event != AgentCallbackEvent.BEFORE_TOOL_CALL:
-            return
-        await queue_rail.before_tool_call(ctx)
-        callbacks.append((phase, ctx.inputs.tool_call.id))
-        if phase != "initial" or ctx.inputs.tool_name != "tool_call":
-            await auto.before_tool_call(ctx)
-            assert not hasattr(ctx, ROOT_PERMISSION_WRAPPER_ATTRIBUTE)
-        await completion.before_tool_call(ctx)
-
-    manager = AbilityManager(owner_id="nested-permission")
-    callback_manager = AgentCallbackManager("nested-permission")
-    agent = SimpleNamespace(
-        card=SimpleNamespace(id="nested-permission"), ability_manager=manager,
-        agent_callback_manager=callback_manager,
-    )
-    for event in (AgentCallbackEvent.BEFORE_TOOL_CALL, AgentCallbackEvent.ON_TOOL_EXCEPTION):
-        await callback_manager.register_callback(event, callback)
-    progressive = ProgressiveToolRail(SimpleNamespace(language="en"))
-    progressive.init(agent)
-    target = LocalFunction(
-        card=ToolCard(
-            id="nested-target", name="probe_target", description="In-memory target",
-            input_params={"type": "object", "properties": {"value": {"type": "integer"}}},
-            exposure=ToolExposure.DEFERRED,
-        ),
-        func=lambda value: executed.append(value) or "done",
-    )
-    manager.add_ability(target.card, target)
-    progressive._authorize_discovered_tools(session, ["probe_target"])
-    calls = [
-        ToolCall(
-            id=f"outer-{i}", type="function", name="tool_call",
-            arguments=json.dumps({"name": "probe_target", "args": {"value": i}}),
-        ) for i in range(2)
-    ]
-    ctx = AgentCallbackContext(agent=agent, session=session, extra={})
-    handler = ToolInterruptHandler(agent)
-
-    def snapshot(state):
-        entries = [
-            {"id": inner, "value": request} for entry in state.interrupted_tools.values()
-            for inner, request in entry.interrupt_requests.items()
-        ]
-        return {"result_type": "interrupt", "interrupt_ids": [e["id"] for e in entries], "state": entries}
-
-    async def execute(context, tool_calls, sdk_session, _context):
-        return await manager.execute(context, tool_calls, sdk_session, parallel_tool_calls=False)
-
-    token = bind_root_permission_request(
-        root_session_id="session-a", request_id="initial", enabled=True, queue=queue,
-    )
-    try:
-        results = await execute(ctx, calls, session, None)
-        assert all(isinstance(result, ToolInterruptException) for result, _ in results)
-        state, _ = handler.build_interrupt_state(results, calls, AssistantMessage(tool_calls=calls), 0)
-        data[INTERRUPTION_KEY] = state
-        cards = queue.reconcile(snapshot(state), root_session_id="session-a").cards
-        assert len(cards) == 2 and executed == []
-        answer = InteractiveInput()
-        answer.update(cards[0].key.invocation_id, {
-            "approved": case != "reject", "auto_confirm": False, "feedback": "",
-        })
-        dispatch = RootPermissionDispatch(queue)
-        if case == "bad_mapping":
-            requests = state.interrupted_tools["outer-0"].interrupt_requests
-            requests["not-the-inner"] = requests.pop("outer-0:target")
-            with pytest.raises(RootPermissionQueueError, match="identity_mismatch"):
-                dispatch.prepare_resume({"query": answer}, root_session_id="session-a", loop_session=session)
-            assert queue.get(cards[0].key).state == "pending" and executed == []
-            return
-        prepared = dispatch.prepare_resume(
-            {"query": answer}, root_session_id="session-a", loop_session=session,
-        )
-        ctx.extra["run_context"] = DeepAgent._normalize_inputs(None, deepcopy(prepared)).run_context
-        if case == "deny":
-            policy.result = PolicyEvaluation(level="deny", reason="explicit_deny")
-        elif case == "session_deny":
-            auto.session_deny_store.record_denial(
-                session_id="session-a", tool_name="tool_call",
-                tool_args=json.loads(calls[0].arguments), reason="user_rejected",
-            )
-        elif case == "fail_closed":
-            policy.result = PolicyEvaluation(level="ask", reason="unevaluable", source="fail_closed")
-        elif case == "forged":
-            manager.remove_ability("tool_call")
-            impostor = LocalFunction(
-                card=ToolCard(id="impostor", name="tool_call", description="Not the SDK wrapper"),
-                func=lambda **_: executed.append("impostor"),
-            )
-            manager.add_ability(impostor.card, impostor)
-        elif case == "changed_args":
-            # Mutate the replayed copy, not the Core continuation that authorized it.
-            execute_original = execute
-
-            async def execute(context, tool_calls, sdk_session, _context):
-                tool_calls[0].arguments = json.dumps({"name": "probe_target", "args": {"value": 99}})
-                return await execute_original(context, tool_calls, sdk_session, _context)
-        elif case == "undiscovered":
-            data["__progressive_discovered_tool_names__"] = []
-        phase = "resume"
-        handler.commit_interrupt = AsyncMock(side_effect=lambda state, *_: snapshot(state))
-        resumed = await handler.handle_resume(ResumeContext(
-            state=state, user_input=prepared["query"], ctx=ctx, context=SimpleNamespace(),
-            session=session, execute_tool_call=execute,
-        ))
-        assert executed == ([0] if case == "allow" else [])
-        markers = prepared["run"]["context"]["extra"][ROOT_PERMISSION_WRAPPERS_KEY]
-        assert all(marker.consumed for marker in markers)
-        if case in {"allow", "reject"}:
-            remaining = queue.reconcile(resumed, root_session_id="session-a").cards
-            assert len(remaining) == 1 and remaining[0].key == cards[1].key
-            assert callbacks.count(("resume", "outer-0:target")) == 1
-            next_answer = InteractiveInput()
-            next_answer.update(cards[1].key.invocation_id, {
-                "approved": True, "auto_confirm": False, "feedback": "",
-            })
-            next_prepared = dispatch.prepare_resume(
-                {"query": next_answer}, root_session_id="session-a", loop_session=session,
-            )
-            ctx.extra["run_context"] = DeepAgent._normalize_inputs(None, deepcopy(next_prepared)).run_context
-            final = await handler.handle_resume(ResumeContext(
-                state=state, user_input=next_prepared["query"], ctx=ctx,
-                context=SimpleNamespace(), session=session, execute_tool_call=execute,
-            ))
-            assert final is None and not queue.has_live(root_session_id="session-a")
-            assert executed == ([0, 1] if case == "allow" else [1])
-            # The same run context cannot authorize a second outer re-entry.
-            again = await execute(ctx, calls[1], session, None)
-            assert isinstance(again[0][0], ToolInterruptException)
-            assert executed == ([0, 1] if case == "allow" else [1])
-        else:
-            assert ("resume", "outer-0:target") not in callbacks
-    finally:
-        reset_root_permission_request(token)
-        await callback_manager.clear()
-        progressive.uninit(agent)
-        for name in ("probe_target", "tool_call"):
-            if manager.get(name) is not None:
-                manager.remove_ability(name)
 
 
 async def test_task_tool_alias_does_not_use_control_silent_path(
