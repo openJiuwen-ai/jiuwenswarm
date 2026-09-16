@@ -56,7 +56,9 @@ def test_default_ttse_config_is_enabled():
 
     assert react["ttse"]["enabled"] is True
     assert react["evolution"]["enabled"] is True
-    assert react["ttse"]["dream_interval"] == 50
+    assert "dream_interval" not in react["ttse"]
+    assert "dream_min_hours" not in react["ttse"]
+    assert "dream_ttl_days" not in react["ttse"]
     assert "trajectory_export_enabled" not in react["ttse"]
     assert "trajectory_export_path" not in react["ttse"]
     assert "ttse_consult" not in react["tool_lazy_load"]["eager_tools"]

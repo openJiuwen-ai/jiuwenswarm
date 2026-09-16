@@ -195,7 +195,7 @@ def test_progressive_eager_tools_skip_ttse_consult_when_enabled_unset(monkeypatc
     ("ttse", "expect_mounted", "expect_eager"),
     [
         ({}, False, False),
-        ({"dream_interval": 5}, False, False),
+        ({"dream_enabled": True}, False, False),
         ({"inject_enabled": True}, False, False),
         ({"inject_enabled": True, "evolve_enabled": True}, False, False),
         ({"enabled": False}, False, False),
@@ -3180,9 +3180,6 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
             "ttse": {
                 "evolve_enabled": False,
                 "dream_enabled": False,
-                "dream_interval": 5,
-                "dream_min_hours": 12,
-                "dream_ttl_days": 30,
             }
         }
     )
@@ -3196,9 +3193,9 @@ def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
     assert captured["config"]["trajectory_export_path"] == ""
     assert captured["config"]["embedding"] is None
     assert captured["config"]["dream_enabled"] is False
-    assert captured["config"]["dream_interval"] == 5
-    assert captured["config"]["dream_min_hours"] == 12.0
-    assert captured["config"]["dream_ttl_days"] == 30
+    assert captured["config"]["dream_interval"] == 50
+    assert captured["config"]["dream_min_hours"] == 24.0
+    assert captured["config"]["dream_ttl_days"] == 90
     assert captured["rail"]["model"] == "test-model"
     assert captured["rail"]["trajectory_span_processor"] is fake_processor
 
