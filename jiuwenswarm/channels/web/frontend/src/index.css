@@ -511,6 +511,10 @@ body.workspace-resize-active iframe {
   .page-scroll {
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
+    /* 顶部 16px 用 margin：让出滚动容器之外，滚动条/滚动区从工具栏下方开始（原各页面 card-grid-auto 内联 paddingTop 收编于此）；
+       底部 32px 用 padding：滚动内容末尾呼吸空间，最后一张卡/区块不贴滚动容器底缘 */
+    margin-top: 16px;
+    padding-bottom: 32px;
   }
 
   /* 滚动列/详情滚动体的内层限宽：滚动容器两侧已各让出 8px 滚动条槽，
