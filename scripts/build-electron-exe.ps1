@@ -15,6 +15,7 @@
 
 param(
     [string]$ElectronDir = $(if ($env:ELECTRON_DIR) { $env:ELECTRON_DIR } else { "" }),
+    [string]$NodeDir = "",
     [switch]$Test,
     [switch]$FrontendOnly
 )
@@ -26,6 +27,28 @@ $OutputEncoding = [System.Text.Encoding]::UTF8
 
 $ProjectRoot = Split-Path -Parent (Split-Path -Parent $MyInvocation.MyCommand.Path)
 Set-Location $ProjectRoot
+
+# ── Node/uv 运行时解析（与 build-exe.ps1 同一契约，共享 build-runtimes.psm1）──
+# 1) 构建前把解析到的 Node 前置到 PATH，前端/Electron/MCP 的 npm 构建与
+#    Python 打包链路使用同一个 Node 工具链；
+# 2) 组装阶段（步骤 5）把 node-runtime / uv-runtime 绑进后端 exe 目录
+#    （resources\backend），冻结入口 jiuwenswarm_exe_entry.py 会在
+#    <后端 exe 目录>\runtime\ 下查找并前置 PATH，Agent 技能（ppt-creation
+#    等 node 脚本）因此不依赖用户机器的 Node.js。
+Import-Module (Join-Path $PSScriptRoot "build-runtimes.psm1") -Force
+$RuntimeSettings = Get-RuntimeBundleSettings
+$BundleNode = $RuntimeSettings.BundleNode
+$BundleUv = $RuntimeSettings.BundleUv
+$NodeVersion = $RuntimeSettings.NodeVersion
+$NodeSource = $null
+
+if (Test-Truthy $BundleNode) {
+    $NodeSource = Resolve-NodeRuntimeDir `
+        -ProjectRoot $ProjectRoot `
+        -ExplicitNodeDir $NodeDir `
+        -NodeVersion $NodeVersion
+    Use-NodeRuntime -SourceDir $NodeSource
+}
 
 $FrontendDir = Join-Path $ProjectRoot "jiuwenswarm\channels\web\frontend"
 $DesktopDir = Join-Path $ProjectRoot "jiuwenswarm\channels\desktop\electron"
@@ -138,6 +161,17 @@ if (-not $FrontendOnly) {
     if ($VerifyProcess.ExitCode -ne 0) {
         throw "Frozen A2UI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
     }
+
+    $GitCodeVerifier = Join-Path $ProjectRoot "scripts\verify_gitcode_cli_bundle.py"
+    $GitCodeVerifyProcess = Start-Process `
+        -FilePath $FrozenExe `
+        -ArgumentList @($GitCodeVerifier) `
+        -Wait `
+        -PassThru `
+        -NoNewWindow
+    if ($GitCodeVerifyProcess.ExitCode -ne 0) {
+        throw "Frozen GitCode CLI bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+    }
 } else {
     Write-Host "`n[4/6] Skipping PyInstaller (FrontendOnly)" -ForegroundColor Gray
 }
@@ -210,6 +244,38 @@ if (-not $FrontendOnly) {
     $BackendDir = Join-Path $ElectronAppDir "resources\backend"
     New-Item -ItemType Directory -Path $BackendDir -Force | Out-Null
     Copy-Item -Path (Join-Path $BackendDist "*") -Destination $BackendDir -Recurse -Force
+
+    # Node/uv 运行时绑进后端 exe 目录（resources\backend），与 Python 独立包
+    # （dist\<包名>\runtime\...）同一契约：冻结入口统一在 <后端 exe 目录>\runtime\
+    # 下查找 node-runtime / uv-runtime。Electron 安装包递归打包
+    # resources\backend\*（installer-electron.iss），安装器无需额外改动。
+    if (Test-Truthy $BundleNode) {
+        Write-Host "  Bundling Node.js runtime into backend..." -ForegroundColor Gray
+        Copy-NodeRuntime -SourceDir $NodeSource -DistDir $BackendDir
+
+        # 与 build-exe.ps1 同款自检：此时 runtime\node-runtime 已就位，冻结入口会
+        # 把它前置到 PATH，验证包内 Playwright MCP + Node 真能跑起来。
+        $BackendFrozenExe = Join-Path $BackendDir $BuildExecutableNameWindows
+        $PlaywrightVerifier = Join-Path $ProjectRoot "scripts\verify_playwright_mcp_bundle.py"
+        $PlaywrightVerifyProcess = Start-Process `
+            -FilePath $BackendFrozenExe `
+            -ArgumentList @($PlaywrightVerifier) `
+            -Wait `
+            -PassThru `
+            -NoNewWindow
+        if ($PlaywrightVerifyProcess.ExitCode -ne 0) {
+            throw "Frozen Playwright MCP bundle verification failed. See ~/.jiuwenswarm/logs/$BuildErrorLogName"
+        }
+    } else {
+        Write-Host "  Skipping bundled Node.js runtime (BUNDLE_NODE=$BundleNode)" -ForegroundColor Yellow
+    }
+    if (Test-Truthy $BundleUv) {
+        Write-Host "  Bundling uv runtime into backend..." -ForegroundColor Gray
+        $UvExePath = Resolve-UvRuntimeDir -ProjectRoot $ProjectRoot
+        Copy-UvRuntime -UvExePath $UvExePath -DistDir $BackendDir
+    } else {
+        Write-Host "  Skipping bundled uv runtime (BUNDLE_UV=$BundleUv)" -ForegroundColor Yellow
+    }
 }
 
 # Create package.json for the Electron app (main.cjs is CommonJS)

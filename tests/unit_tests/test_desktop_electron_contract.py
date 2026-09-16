@@ -29,6 +29,15 @@ FRONTEND_SRC = REPO_ROOT / "jiuwenswarm" / "channels" / "web" / "frontend" / "sr
 INSTANCE_CONFIG_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "config.py"
 INSTANCE_LOCK_PY = REPO_ROOT / "jiuwenswarm" / "instance_manager" / "lock.py"
 STARTUP_DIAGNOSTICS_PY = REPO_ROOT / "jiuwenswarm" / "common" / "startup_diagnostics.py"
+EXE_ENTRY_PY = REPO_ROOT / "scripts" / "jiuwenswarm_exe_entry.py"
+BUILD_RUNTIMES_PSM1 = REPO_ROOT / "scripts" / "build-runtimes.psm1"
+BUILD_EXE_PS1 = REPO_ROOT / "scripts" / "build-exe.ps1"
+BUILD_ELECTRON_PS1 = REPO_ROOT / "scripts" / "build-electron-exe.ps1"
+BUILD_MACOS_SH = REPO_ROOT / "scripts" / "build-macos.sh"
+BUILD_ELECTRON_SH = REPO_ROOT / "scripts" / "build-electron-exe.sh"
+BUILD_RUNTIMES_SH = REPO_ROOT / "scripts" / "build-runtimes.sh"
+INSTALLER_PY_ISS = REPO_ROOT / "scripts" / "installer.iss"
+INSTALLER_ELECTRON_ISS = REPO_ROOT / "scripts" / "installer-electron.iss"
 
 
 def _read(path: Path) -> str:
@@ -478,3 +487,202 @@ def test_file_picker_whitelists_match() -> None:
 def test_desktop_env_flag_matches() -> None:
     python_flag = _py_literal(_desktop_app_assignments()["DESKTOP_ENV_FLAG"])
     assert python_flag in _read(MAIN_CJS)
+
+
+# ─── 打包运行时契约(build-exe.ps1 / build-electron-exe.ps1 的 node/uv 绑定) ─
+
+# 背景: Electron 打包曾长期不内置 Node 运行时, 而 Python 打包内置, 导致
+# Electron 版用户跑依赖 node 的 Agent 技能(如 ppt-creation 的 pptxgenjs 脚本)
+# 时被报告"环境没有 node"。node/uv 绑定实现已抽到 scripts/build-runtimes.psm1,
+# 两条 Windows 打包链路共同导入。本节钉住整条链路:
+#   共享模块 → 打包脚本调用 → runtime 落地路径 → 冻结入口查找 → 安装器递归打包,
+# 任一环节漂移即红灯, 迫使改动者同步两侧(或显式更新本文件)。
+
+RUNTIME_MODULE_FUNCTIONS = (
+    "Test-Truthy",
+    "Get-RuntimeBundleSettings",
+    "Get-NodeArch",
+    "Download-NodeRuntime",
+    "Resolve-NodeRuntimeDir",
+    "Use-NodeRuntime",
+    "Copy-NodeRuntime",
+    "Resolve-UvRuntimeDir",
+    "Copy-UvRuntime",
+)
+
+
+def test_runtime_bundling_impl_lives_only_in_shared_module() -> None:
+    """node/uv 绑定实现只允许存在于共享模块, 两条 Windows 打包链路只准导入。"""
+    module_source = _read(BUILD_RUNTIMES_PSM1)
+    for fn in RUNTIME_MODULE_FUNCTIONS:
+        assert f"function {fn}" in module_source, f"build-runtimes.psm1 缺少 {fn}"
+    for script in (BUILD_EXE_PS1, BUILD_ELECTRON_PS1):
+        source = _read(script)
+        assert "build-runtimes.psm1" in source, (
+            f"{script.name} 未导入 scripts/build-runtimes.psm1: node/uv 运行时绑定"
+            "必须单一来源, 禁止在打包脚本内复制实现(两条打包链路会再次漂移)"
+        )
+        for fn in RUNTIME_MODULE_FUNCTIONS:
+            assert f"function {fn}" not in source, (
+                f"{script.name} 内定义了 {fn}, 请删除并改用 build-runtimes.psm1 的共享实现"
+            )
+
+
+def test_runtime_bundle_defaults_live_in_shared_module() -> None:
+    """BUNDLE_NODE/BUNDLE_UV/NODE_VERSION 默认值只允许在共享模块出现一次。"""
+    module_source = _read(BUILD_RUNTIMES_PSM1)
+    assert re.search(
+        r"function Get-RuntimeBundleSettings", module_source
+    ), "共享模块缺少 Get-RuntimeBundleSettings"
+    for env_name in ("BUNDLE_NODE", "BUNDLE_UV"):
+        assert re.search(
+            rf"\$env:{env_name}\s*\)\s*\{{\s*\$env:{env_name}\s*\}}\s*else\s*\{{\s*\"1\"\s*\}}",
+            module_source,
+        ), f"{env_name} 的默认值应为 \"1\"(两条打包链路默认都绑定运行时)"
+    assert '"v22.11.0"' in module_source, "NODE_VERSION 默认值漂移, 请在共享模块统一调整"
+    for script in (BUILD_EXE_PS1, BUILD_ELECTRON_PS1):
+        source = _read(script)
+        assert "$env:BUNDLE_NODE" not in source and "$env:BUNDLE_UV" not in source and "v22.11.0" not in source, (
+            f"{script.name} 内出现了运行时绑定默认值, 请改从 Get-RuntimeBundleSettings 读取"
+        )
+
+
+def test_electron_build_bundles_runtime_into_backend_dir() -> None:
+    """Electron 打包必须像 Python 打包一样把 node/uv runtime 绑进后端 exe 目录。"""
+    source = _read(BUILD_ELECTRON_PS1)
+    assert re.search(
+        r'\$BackendDir\s*=\s*Join-Path\s+\$ElectronAppDir\s+"resources\\backend"', source
+    ), "Electron 后端目录不再是 resources\\backend, 请同步 jiuwenswarm_exe_entry.py 与本测试"
+    assert re.search(
+        r"Copy-NodeRuntime\s+-SourceDir\s+\$NodeSource\s+-DistDir\s+\$BackendDir", source
+    ), "build-electron-exe.ps1 缺少把 node-runtime 绑进后端目录的 Copy-NodeRuntime 调用"
+    assert re.search(
+        r"Copy-UvRuntime\s+-UvExePath\s+\$UvExePath\s+-DistDir\s+\$BackendDir", source
+    ), "build-electron-exe.ps1 缺少把 uv-runtime 绑进后端目录的 Copy-UvRuntime 调用"
+    # Python 独立包: node-runtime 落在 dist 根目录 = 后端 exe 所在目录。
+    assert re.search(
+        r"Copy-NodeRuntime\s+-SourceDir\s+\$NodeSource\s+-DistDir\s+\$FrozenDir",
+        _read(BUILD_EXE_PS1),
+    ), "build-exe.ps1 的 node-runtime 落地目录漂移(应为 dist 根目录=后端 exe 目录)"
+
+
+def test_frozen_entry_runtime_lookup_matches_bundled_layouts() -> None:
+    """冻结后端入口的 runtime 查找路径必须与各平台打包脚本的落地路径一致。"""
+    entry = _read(EXE_ENTRY_PY)
+    # Windows: <后端 exe 目录>\runtime\node-runtime\node.exe 与 ...\uv-runtime\uvx.exe
+    assert 'parent / "runtime" / "node-runtime"' in entry, (
+        "jiuwenswarm_exe_entry.py 的 Windows node-runtime 查找路径漂移"
+    )
+    assert '(_node_runtime / "node.exe").is_file()' in entry
+    assert 'parent / "runtime" / "uv-runtime"' in entry, (
+        "jiuwenswarm_exe_entry.py 的 Windows uv-runtime 查找路径漂移"
+    )
+    assert '(_uv_runtime / "uvx.exe").is_file()' in entry
+    # macOS: <.app>/Contents/Resources/node-runtime/bin
+    assert '"Resources" / "node-runtime" / "bin"' in entry, (
+        "jiuwenswarm_exe_entry.py 的 macOS node-runtime 查找路径漂移"
+    )
+    # build-macos.sh 落地: Contents/Resources/node-runtime(含 bin/)。
+    assert "$APP_PATH/Contents/Resources/node-runtime" in _read(BUILD_MACOS_SH)
+
+
+def test_installers_recursively_pack_runtime_into_app_dir() -> None:
+    """runtime 随 dist 递归进安装包; 两份 iss 都必须保留 recursesubdirs。"""
+    assert re.search(
+        r'\{#BuildDistDirName\}\\\*".*recursesubdirs', _read(INSTALLER_PY_ISS), re.DOTALL
+    ), "installer.iss 不再递归打包 dist 产物, runtime\node-runtime 将不会进 Python 安装包"
+    assert re.search(
+        r'\{#MyAppName\}-Electron\\\*".*recursesubdirs', _read(INSTALLER_ELECTRON_ISS), re.DOTALL
+    ), "installer-electron.iss 不再递归打包 Electron 产物, resources\\backend\\runtime 将不会进安装包"
+
+
+# ─── macOS 打包链路的 node 绑定对齐(build-macos.sh / build-electron-exe.sh) ─
+
+RUNTIME_SH_FUNCTIONS = (
+    "resolve_node_arch",
+    "node_runs",
+    "resolve_node_dir",
+    "copy_node_runtime",
+)
+
+
+def test_macos_runtime_bundling_impl_lives_only_in_shared_module() -> None:
+    """macOS 两条打包链路只准从 build-runtimes.sh 导入, 禁止复制实现。"""
+    module_source = _read(BUILD_RUNTIMES_SH)
+    for fn in RUNTIME_SH_FUNCTIONS:
+        assert re.search(rf"^{fn}\(\)", module_source, re.MULTILINE), (
+            f"build-runtimes.sh 缺少 {fn}"
+        )
+    for script in (BUILD_MACOS_SH, BUILD_ELECTRON_SH):
+        source = _read(script)
+        assert "build-runtimes.sh" in source, (
+            f"{script.name} 未 source scripts/build-runtimes.sh: node 运行时绑定"
+            "必须单一来源, 禁止在打包脚本内复制实现(两条打包链路会再次漂移)"
+        )
+        for fn in RUNTIME_SH_FUNCTIONS:
+            assert not re.search(rf"^{fn}\(\)", source, re.MULTILINE), (
+                f"{script.name} 内定义了 {fn}, 请删除并改用 build-runtimes.sh 的共享实现"
+            )
+        assert "NODE_VERSION:-" not in source and "BUNDLE_NODE:-" not in source, (
+            f"{script.name} 内出现了运行时绑定默认值, 默认值只在 build-runtimes.sh 维护"
+        )
+
+
+def test_macos_electron_build_bundles_node_runtime_into_app_resources() -> None:
+    """Electron macOS 构建必须像 build-macos.sh 一样把 node 绑进 .app 的
+    Contents/Resources/node-runtime(macOS 冻结入口按 parent.parent/Resources 查找)。"""
+    source = _read(BUILD_ELECTRON_SH)
+    assert re.search(
+        r'if \[ "\$BUNDLE_NODE" = "1" \]; then', source
+    ), "build-electron-exe.sh 缺少 BUNDLE_NODE 守卫"
+    assert re.search(
+        r'copy_node_runtime\s+"\$NODE_SRC"\s+'
+        r'"\$ELECTRON_APP_DIR/Electron\.app/Contents/Resources/node-runtime"',
+        source,
+    ), "build-electron-exe.sh 缺少把 node-runtime 绑进 .app/Contents/Resources 的调用"
+    assert re.search(
+        r'"\$BACKEND_DIR/\$BUILD_EXECUTABLE_NAME"\s+'
+        r'"\$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle\.py"',
+        source,
+    ), "build-electron-exe.sh 绑完 node 后没有跑 frozen Playwright MCP 验证"
+    assert re.search(
+        r'copy_node_runtime\s+"\$NODE_SRC"\s+"\$APP_PATH/Contents/Resources/node-runtime"',
+        _read(BUILD_MACOS_SH),
+    ), "build-macos.sh 的 node-runtime 落地目录漂移(应为 Contents/Resources/node-runtime)"
+
+
+def test_electron_builds_run_the_same_frozen_verifiers() -> None:
+    """Python 打包跑的每个 frozen 验证器, 对应 Electron 打包必须同样跑。
+
+    此前 Electron 打包只跑 a2ui 验证, gitcode/playwright 验证静默缺失,
+    打包损坏只能等用户侧报障。Python 两条链路的验证器集合也互相钉住。
+    """
+    for py_build, electron_build in (
+        (BUILD_EXE_PS1, BUILD_ELECTRON_PS1),
+        (BUILD_MACOS_SH, BUILD_ELECTRON_SH),
+    ):
+        python_verifiers = set(re.findall(r"verify_\w+\.py", _read(py_build)))
+        electron_verifiers = set(re.findall(r"verify_\w+\.py", _read(electron_build)))
+        assert python_verifiers <= electron_verifiers, (
+            f"{electron_build.name} 缺少 frozen 验证器: "
+            f"{sorted(python_verifiers - electron_verifiers)}(Python 打包有、Electron 打包没有)"
+        )
+    assert set(re.findall(r"verify_\w+\.py", _read(BUILD_EXE_PS1))) == set(
+        re.findall(r"verify_\w+\.py", _read(BUILD_MACOS_SH))
+    ), "build-exe.ps1 与 build-macos.sh 的 frozen 验证器集合不一致(Python 侧自身漂移)"
+
+
+def test_macos_electron_build_ships_tui_binary_next_to_backend() -> None:
+    """macOS Python 包在后端 exe 旁放 jiuwenswarm-tui(desktop_app 按
+    sys.executable 同目录查找并写入 ~/.zshrc PATH); Electron mac 包必须同样提供。"""
+    source = _read(BUILD_ELECTRON_SH)
+    assert "scripts/build_tui.py" in source, (
+        "build-electron-exe.sh 缺少 TUI 构建(build_tui.py), Electron mac 包将没有 jiuwenswarm-tui"
+    )
+    assert re.search(
+        r'cp\s+"\$TUI_BINARY"\s+"\$BACKEND_DIR/jiuwenswarm-tui"', source
+    ), "build-electron-exe.sh 缺少把 jiuwenswarm-tui 拷到后端 exe 旁的步骤"
+    assert re.search(
+        r'tui_binary = Path\(sys\.executable\)\.parent / "jiuwenswarm-tui"',
+        _read(DESKTOP_APP_PY),
+    ), "desktop_app.py 的 TUI 查找路径漂移, 请同步本测试与打包脚本"

@@ -36,6 +36,13 @@ DESKTOP_DIR="$PROJECT_ROOT/jiuwenswarm/channels/desktop/electron"
 DIST_DIR="$PROJECT_ROOT/dist"
 # ELECTRON_APP_DIR 依赖 build_config 的显示名，在下方 build_config 解析后定义。
 
+# Node 运行时解析/绑定实现在 scripts/build-runtimes.sh，与 build-macos.sh 单一来源；
+# 契约测试 tests/unit_tests/test_desktop_electron_contract.py 钉住两侧同步。
+# macOS 冻结后端入口在 <.app>/Contents/Resources/node-runtime/bin 查找并前置
+# PATH（jiuwenswarm_exe_entry.py），Agent 技能（ppt-creation 等 node 脚本）
+# 因此不依赖用户机器的 Node.js。
+source "$PROJECT_ROOT/scripts/build-runtimes.sh"
+
 cd "$PROJECT_ROOT"
 
 echo "=== WorkSwarm Electron Build (macOS) ==="
@@ -106,6 +113,34 @@ if [ ! -d "node_modules" ]; then
 fi
 cd "$PROJECT_ROOT"
 
+# ── 3.5 Build TUI native binary (Bun; same as build-macos.sh) ────────────────
+# macOS Python 包把 jiuwenswarm-tui 放在后端 exe 旁（desktop_app 按
+# sys.executable 同目录查找并写入 ~/.zshrc PATH），Electron 包必须同样提供。
+TUI_BINARY=""
+if [ "$FRONTEND_ONLY" = false ]; then
+    echo ""
+    echo "[3.5/6] Building TUI native binary (Bun)..."
+    if command -v bun &>/dev/null; then
+        pushd "$PROJECT_ROOT/jiuwenswarm/channels/tui/frontend" >/dev/null
+        bun install
+        popd >/dev/null
+        TUI_BINARY="$(uv run python scripts/build_tui.py --target current | tail -n1)"
+        if [ -z "$TUI_BINARY" ]; then
+            echo "  Warning: TUI build produced no output, skipping TUI."
+            TUI_BINARY=""
+        else
+            TUI_BINARY="$PROJECT_ROOT/$TUI_BINARY"
+            if [ ! -f "$TUI_BINARY" ]; then
+                echo "  Warning: TUI binary not found at $TUI_BINARY, skipping TUI."
+                TUI_BINARY=""
+            fi
+        fi
+    else
+        echo "  Warning: bun not found, skipping TUI build."
+        echo "  Install bun: curl -fsSL https://bun.sh/install | bash"
+    fi
+fi
+
 # ── 4. PyInstaller backend ───────────────────────────────────────────────────
 # COLLECT 输出目录、exe 名、版本号与捆绑标识均来自 build_config（改名后会变化），
 # 不能写死，否则可能命中 dist 下改名前的陈旧目录（如 dist/jiuwenswarm），把旧后端
@@ -137,6 +172,9 @@ if [ "$FRONTEND_ONLY" = false ]; then
     # Verify the actual frozen runtime, not only the source configuration
     # (same self-check as the Python packaging build in build-macos.sh).
     "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_a2ui_bundle.py"
+
+    # Same GitCode CLI self-check as build-macos.sh.
+    "$BACKEND_DIST/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_gitcode_cli_bundle.py"
 else
     echo ""
     echo "[4/6] Skipping PyInstaller (FrontendOnly)"
@@ -175,6 +213,27 @@ if [ "$FRONTEND_ONLY" = false ]; then
     BACKEND_DIR="$ELECTRON_APP_DIR/Electron.app/Contents/Resources/backend"
     mkdir -p "$BACKEND_DIR"
     cp -R "$BACKEND_DIST/"* "$BACKEND_DIR/"
+
+    # TUI binary sits next to the backend executable (same contract as
+    # build-macos.sh; desktop_app resolves it via sys.executable's directory).
+    if [ -n "$TUI_BINARY" ] && [ -f "$TUI_BINARY" ]; then
+        echo "  Copying TUI binary next to backend executable..."
+        cp "$TUI_BINARY" "$BACKEND_DIR/jiuwenswarm-tui"
+        chmod +x "$BACKEND_DIR/jiuwenswarm-tui"
+    fi
+
+    # Bundle the Node runtime (same contract as build-macos.sh; the frozen
+    # backend entry looks it up at <.app>/Contents/Resources/node-runtime/bin
+    # and prepends it to PATH, so Agent skills get node without a
+    # user-installed Node.js). Bundling happens before the .app rename, so the
+    # destination uses the pre-rename Electron.app path.
+    if [ "$BUNDLE_NODE" = "1" ]; then
+        echo "  Bundling Node.js runtime into app..."
+        NODE_SRC="$(resolve_node_dir)" || exit 1
+        copy_node_runtime "$NODE_SRC" "$ELECTRON_APP_DIR/Electron.app/Contents/Resources/node-runtime"
+        echo "  Verifying frozen Playwright MCP bundle and bundled Node..."
+        "$BACKEND_DIR/$BUILD_EXECUTABLE_NAME" "$PROJECT_ROOT/scripts/verify_playwright_mcp_bundle.py"
+    fi
 fi
 
 # Create package.json for the Electron app (main.cjs is CommonJS)
