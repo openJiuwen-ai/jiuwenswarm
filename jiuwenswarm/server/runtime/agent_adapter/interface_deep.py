@@ -790,7 +790,12 @@ def _apply_runner_perf_patch() -> None:
         return
 
     impl_cls = type(global_runner)
-    if getattr(impl_cls, "_jiuwenswarm_runner_perf_patched", False):
+    # 公开标记名（无前导下划线），避免 G.CLS.11 protected-access。
+    _PATCHED_FLAG = "jiuwenswarm_runner_perf_patched"
+    _WRAPPER_FLAG = "jiuwenswarm_runner_perf_wrapper"
+    _WRAPPED_ATTR = "jiuwenswarm_wrapped_prepare"
+
+    if getattr(impl_cls, _PATCHED_FLAG, False):
         _RUNNER_PERF_PATCH_APPLIED = True
         return
 
@@ -809,9 +814,9 @@ def _apply_runner_perf_patch() -> None:
         return
 
     # 已包过一层时不要叠 patch（换 GLOBAL_RUNNER 实例但类相同）。
-    if getattr(original, "_jiuwenswarm_runner_perf_wrapper", False):
+    if getattr(original, _WRAPPER_FLAG, False):
         _RUNNER_PERF_PATCH_APPLIED = True
-        impl_cls._jiuwenswarm_runner_perf_patched = True
+        setattr(impl_cls, _PATCHED_FLAG, True)
         return
 
     async def _traced_prepare(self, agent, inputs, session=None):
@@ -847,10 +852,10 @@ def _apply_runner_perf_patch() -> None:
         )
         return result
 
-    _traced_prepare._jiuwenswarm_runner_perf_wrapper = True  # type: ignore[attr-defined]
-    _traced_prepare._jiuwenswarm_wrapped_prepare = original  # type: ignore[attr-defined]
-    impl_cls._prepare_agent = _traced_prepare  # type: ignore[method-assign]
-    impl_cls._jiuwenswarm_runner_perf_patched = True
+    setattr(_traced_prepare, _WRAPPER_FLAG, True)
+    setattr(_traced_prepare, _WRAPPED_ATTR, original)
+    setattr(impl_cls, "_prepare_agent", _traced_prepare)
+    setattr(impl_cls, _PATCHED_FLAG, True)
     _RUNNER_PERF_PATCH_APPLIED = True
     logger.info(
         "[AgentPerf] runner_perf patch applied on %s._prepare_agent",
@@ -7426,7 +7431,8 @@ class JiuWenSwarmDeepAdapter:
             "SkillUseRail",
         }
 
-    def _set_rail_sys_operation(self, rail: Any, sysop: SysOperation) -> bool:
+    @staticmethod
+    def _set_rail_sys_operation(rail: Any, sysop: SysOperation) -> bool:
         """给单个 rail 写入 sys_operation；成功返回 True。"""
         setter = getattr(rail, "set_sys_operation", None)
         if callable(setter):

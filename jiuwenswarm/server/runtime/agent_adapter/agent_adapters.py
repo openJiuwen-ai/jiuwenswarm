@@ -8,13 +8,13 @@ internal structure.
 """
 
 from __future__ import annotations
-from jiuwenswarm.edition import is_enterprise
 
 import logging
 import os
 from typing import Any, AsyncIterator, Protocol, Type, runtime_checkable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
