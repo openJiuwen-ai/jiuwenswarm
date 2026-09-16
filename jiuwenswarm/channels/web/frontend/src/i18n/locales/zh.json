@@ -66,6 +66,7 @@
       "browser": "浏览器",
       "channels": "频道",
       "personalContext": "个人上下文",
+      "archivedTasks": "已归档的任务",
       "experimental": "实验功能"
     },
     "feedback": {
@@ -78,6 +79,39 @@
     },
     "access": {
       "readOnly": "当前为只读状态。"
+    },
+    "archivedTasks": {
+      "description": "管理已归档的对话：可恢复到工作区，或彻底删除。彻底删除不可恢复。",
+      "searchPlaceholder": "搜索对话",
+      "clearSearch": "清除搜索",
+      "unassignedProject": "未归属项目",
+      "restoreSession": "恢复对话",
+      "deletePermanently": "彻底删除",
+      "moreActions": "更多操作",
+      "loadMore": "加载更多",
+      "loadFailed": "归档列表加载失败",
+      "emptyTitle": "无归档内容",
+      "emptyDescription": "归档后的对话会显示在这里。",
+      "emptySearchTitle": "没有匹配的归档对话",
+      "stopPending": "任务停止处理中",
+      "stopPendingTooltip": "该任务的停止流程仍在处理中，完成后即可恢复。",
+      "sessionRestored": "对话已恢复",
+      "sessionDeleted": "对话已删除",
+      "deleteSessionTitle": "彻底删除对话",
+      "deleteSessionRecord": "确定要彻底删除对话“{{sessionTitle}}”吗？",
+      "deleteSessionIrreversible": "对话数据将永久删除，删除后不可恢复。",
+      "deleteArchivedSessions": "删除已归档会话",
+      "deleteArchivedSessionsTitle": "删除已归档对话",
+      "deleteArchivedSessionsRecord": "永久删除项目“{{projectName}}”下全部已归档对话，此操作不可恢复。",
+      "archivedSessionsDeleted": "已删除 {{count}} 个已归档对话",
+      "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。",
+      "errors": {
+        "forbidden": "该资源不支持此操作",
+        "notFound": "资源不存在或已发生变化，请刷新后重试",
+        "sessionGone": "该会话已不存在，无法恢复",
+        "requestFailed": "操作失败，请稍后重试",
+        "sessionRestoreFailed": "对话恢复失败，请刷新后重试"
+      }
     },
     "dialog": {
       "discardTitle": "放弃未保存的修改",
@@ -3256,12 +3290,15 @@
       "pinFailed": "置顶操作失败",
       "rename": "重命名",
       "renamePlaceholder": "输入新名称",
+      "archiveConversation": "归档",
+      "conversationArchived": "已归档任务会话",
+      "archiveView": "查看",
+      "archiveUndo": "撤销",
       "deleteProject": "删除项目",
       "deleteProjectDescription": "永久删除“<name>{{projectName}}</name>”及其下全部会话和定时任务，包括未归档会话。正在运行的任务将停止，不删除工作目录。此操作不可恢复。",
       "archiveSessions": "归档全部会话",
-      "deleteArchivedSessions": "删除已归档会话",
       "archiveSessionsDescription": "归档“<name>{{projectName}}</name>”下全部普通会话。运行中的会话将保留并提示失败，定时任务保持不变。",
-      "deleteArchivedSessionsDescription": "永久删除“<name>{{projectName}}</name>”下全部已归档会话，此操作不可恢复。",
+      "sessionsArchived": "已归档 {{count}} 个会话",
       "batchPartialFailure": "成功 {{succeeded}} 项，失败 {{failed}} 项。可重试失败项。",
       "defaultProjectName": "默认项目",
       "absolutePathError": "请输入绝对路径，例如 /Users/name/work/project",
@@ -3269,7 +3306,11 @@
         "pathExists": "该项目路径已存在，请选择其他目录或直接从现有项目开始新对话",
         "nameExists": "该项目名已存在，请换个名称",
         "pathMissing": "项目目录不存在，请选择已存在的目录",
-        "projectUnavailable": "项目不可用，请刷新后重试"
+        "projectUnavailable": "项目不可用，请刷新后重试",
+        "archiveSessionBusy": "会话运行中，请停止后再归档",
+        "archiveForbidden": "该任务不支持归档",
+        "archiveNotFound": "资源不存在或已发生变化，请刷新后重试",
+        "archiveFailed": "归档操作失败，请稍后重试"
       },
       "cancel": "取消",
       "confirm": "确定"
