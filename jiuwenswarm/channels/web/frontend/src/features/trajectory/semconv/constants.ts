@@ -90,7 +90,6 @@ export const STANDARD_ATTRIBUTES = {
  */
 export const OPENJIUWEN_ATTRIBUTES = {
   traceRoot: OPENJIUWEN_SEMCONV.OJ_TRACE_ROOT,
-  traceSchemaVersion: 'openjiuwen.trace.schema_version',
   traceComplete: OPENJIUWEN_SEMCONV.OJ_TRACE_COMPLETE,
   traceForcedClose: OPENJIUWEN_SEMCONV.OJ_TRACE_FORCED_CLOSE,
   spanForcedClose: OPENJIUWEN_SEMCONV.OJ_SPAN_FORCED_CLOSE,

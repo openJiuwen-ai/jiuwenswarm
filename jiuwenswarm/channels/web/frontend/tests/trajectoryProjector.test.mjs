@@ -1756,6 +1756,9 @@ test('an agent-kind span named llm.call is not projected as an inference', () =>
       stepNumber: 1,
     });
     setStringAttribute(spansOf([record])[0], 'openjiuwen.trajectory.record.kind', kind);
+    // Every canonical span states the span schema version; it must not make
+    // an ordinary span look like a v2 event.
+    setStringAttribute(spansOf([record])[0], 'openjiuwen.trajectory.schema_version', '2');
     return record;
   };
   const messages = snapshot => cellsOf(snapshot).filter(cell => cell.kind === 'message');

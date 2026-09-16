@@ -469,9 +469,11 @@ function recordedFacts(
   })
   const trace = nonEmpty({
     ...(root.traceRoot === undefined ? {} : { root: root.traceRoot }),
-    ...(root.traceSchemaVersion === undefined
-      ? attributes.traceSchemaVersion === undefined ? {} : { schemaVersion: attributes.traceSchemaVersion }
-      : { schemaVersion: root.traceSchemaVersion }),
+    ...(root.trajectorySchemaVersion === undefined
+      ? attributes.trajectorySchemaVersion === undefined
+        ? {}
+        : { schemaVersion: attributes.trajectorySchemaVersion }
+      : { schemaVersion: root.trajectorySchemaVersion }),
     ...(root.traceComplete === undefined ? {} : { complete: root.traceComplete }),
     ...(root.traceForcedClose === undefined ? {} : { forcedClose: root.traceForcedClose }),
   })

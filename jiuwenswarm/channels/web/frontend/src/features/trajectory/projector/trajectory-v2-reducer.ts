@@ -4,11 +4,9 @@
 
 import { OPENJIUWEN_ATTRIBUTES, STANDARD_ATTRIBUTES } from '../semconv/constants.ts'
 import { attributeMap } from '../shared/otlp.ts'
-import type { OtlpExportTraceServiceRequest, OtlpSpan } from '../shared/otlp.ts'
+import type { OtlpExportTraceServiceRequest, OtlpKeyValue, OtlpSpan } from '../shared/otlp.ts'
 import type { TrajectoryDiagnostic, TrajectoryPromptSnapshot } from '../trajectory/model.ts'
 import type { TrajectoryCell, TrajectoryCellKind } from '../trajectory/record.ts'
-
-export const TRAJECTORY_V2_SCHEMA_VERSION = '2'
 
 interface ContextMessage {
   message_id: string
@@ -200,16 +198,20 @@ function physicalInferenceIds(
     : []
 }
 
+/**
+ * A v2 event is whatever states an event kind. Every canonical span states
+ * the trajectory schema version, so the version alone marks nothing.
+ */
+export function isTrajectoryV2Event(attributes: readonly OtlpKeyValue[] | undefined): boolean {
+  return textAttribute(attributeMap(attributes), OPENJIUWEN_ATTRIBUTES.trajectoryEventKind) !== undefined
+}
+
 /** Detect schema v2 without consulting any compatibility or LangFuse attribute. */
 export function isTrajectoryV2Record(record: OtlpExportTraceServiceRequest): boolean {
   const span = soleSpan(record)
   if (span === undefined) return false
-  if (textAttribute(attributeMap(span.attributes), OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion)
-    === TRAJECTORY_V2_SCHEMA_VERSION) return true
-  return (span.events ?? []).some(event => (
-    textAttribute(attributeMap(event.attributes), OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion)
-      === TRAJECTORY_V2_SCHEMA_VERSION
-  ))
+  if (isTrajectoryV2Event(span.attributes)) return true
+  return (span.events ?? []).some(event => isTrajectoryV2Event(event.attributes))
 }
 
 export function trajectoryV2SubjectIds(record: OtlpExportTraceServiceRequest): string[] {
@@ -230,11 +232,9 @@ function trajectoryV2EventRecords(
   const span = soleSpan(record)
   if (span === undefined) return []
   const records: OtlpExportTraceServiceRequest[] = []
-  if (textAttribute(attributeMap(span.attributes), OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion)
-    === TRAJECTORY_V2_SCHEMA_VERSION) records.push(record)
+  if (isTrajectoryV2Event(span.attributes)) records.push(record)
   for (const event of span.events ?? []) {
-    if (textAttribute(attributeMap(event.attributes), OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion)
-      !== TRAJECTORY_V2_SCHEMA_VERSION) continue
+    if (!isTrajectoryV2Event(event.attributes)) continue
     const syntheticSpan: OtlpSpan = {
       ...span,
       name: event.name,

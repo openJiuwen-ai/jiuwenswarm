@@ -145,6 +145,7 @@ test('the first schema-v2 subagent event creates a tab without misusing the owne
   const span = subagentEvent.resourceSpans[0].scopeSpans[0].spans[0];
   span.attributes.push(
     attribute('openjiuwen.trajectory.schema_version', '2'),
+    attribute('openjiuwen.trajectory.event_kind', 'context.window.commit'),
     attribute('openjiuwen.trajectory.subject_id', 'subagent:v2-first'),
     attribute('openjiuwen.trajectory.session_id', 'session-main'),
   );
@@ -164,6 +165,25 @@ test('the first schema-v2 subagent event creates a tab without misusing the owne
   assert.equal(group.records.length, 1);
 });
 
+test('the span schema version alone does not make a span a v2 event', () => {
+  // Every canonical span states schema version 2; only the event kind marks an
+  // event, so an ordinary span stays with its execution subject.
+  const ordinary = record('000000000000001b', 'chat model', '450', main);
+  ordinary.resourceSpans[0].scopeSpans[0].spans[0].attributes.push(
+    attribute('openjiuwen.trajectory.schema_version', '2'),
+  );
+
+  const result = groupTrajectorySubjects(
+    [ordinary],
+    [detail(ordinary, 1)],
+    new Map(),
+    'session-main',
+  );
+
+  assert.equal(result.byId.get(MAIN_TRAJECTORY_SUBJECT_ID)?.records.length, 1);
+  assert.equal(result.byId.get(UNASSIGNED_TRAJECTORY_SUBJECT_ID), undefined);
+});
+
 test('schema-v2 team leader events remain in the leader lane', () => {
   const leader = {
     id: 'team-member:session-main:demo:leader',
@@ -176,6 +196,7 @@ test('schema-v2 team leader events remain in the leader lane', () => {
   const span = compacted.resourceSpans[0].scopeSpans[0].spans[0];
   span.attributes.push(
     attribute('openjiuwen.trajectory.schema_version', '2'),
+    attribute('openjiuwen.trajectory.event_kind', 'compaction.completed'),
     attribute('openjiuwen.trajectory.subject_id', leader.id),
     attribute('openjiuwen.trajectory.session_id', 'session-main'),
   );

@@ -80,11 +80,13 @@ export function trajectorySubjectOf(
 ): TrajectorySubject {
   const span = firstSpan(record);
   if (span === undefined) return unassignedSubject;
-  const trajectorySchemaVersion = stringAttribute(
+  const trajectoryEventKind = stringAttribute(
     span.attributes,
-    OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion,
+    OPENJIUWEN_ATTRIBUTES.trajectoryEventKind,
   );
-  if (trajectorySchemaVersion === '2') {
+  // Only a v2 event names its trajectory subject; every other span is owned
+  // through its execution subject below.
+  if (trajectoryEventKind?.trim()) {
     const trajectorySubjectId = stringAttribute(
       span.attributes,
       OPENJIUWEN_ATTRIBUTES.trajectorySubjectId,

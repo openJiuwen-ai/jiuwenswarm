@@ -30,7 +30,7 @@ export interface NormalizedTrajectoryAttributes {
   sources: Readonly<Record<string, string>>
   conversationId?: string
   traceRoot?: boolean
-  traceSchemaVersion?: string
+  trajectorySchemaVersion?: string
   traceComplete?: boolean
   traceForcedClose?: boolean
   spanForcedClose?: boolean
@@ -499,9 +499,8 @@ export function normalizeTrajectoryAttributes(
   assign(target, 'traceRoot', resolveBoolean(raw, [
     OPENJIUWEN_ATTRIBUTES.traceRoot,
   ]))
-  assign(target, 'traceSchemaVersion', resolveString(raw, [
-    OPENJIUWEN_ATTRIBUTES.traceSchemaVersion,
-    DSH_ATTRIBUTES.schemaVersion,
+  assign(target, 'trajectorySchemaVersion', resolveString(raw, [
+    OPENJIUWEN_ATTRIBUTES.trajectorySchemaVersion,
   ]))
   assign(target, 'traceComplete', resolveBoolean(raw, [
     OPENJIUWEN_ATTRIBUTES.traceComplete,
