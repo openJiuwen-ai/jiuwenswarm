@@ -1059,6 +1059,10 @@ class JiuWenSwarm:
         skill_manager: SkillManager | None = None,
     ) -> None:
         self._adapter: AgentAdapter | None = None
+        # PersonalContext Rail follows the Host runtime switch.  Keep the
+        # latest snapshot on the facade so a lazily-created adapter inherits
+        # the current state before its first rail synchronization.
+        self._personal_context_runtime_enabled: bool = False
         self._sdk_name: str | None = None
         # 多租户：user_workspace_dir 为 workspace_key 对应的用户根，再拼相对 workspace/sessions。
         enterprise = is_enterprise()
@@ -1207,6 +1211,11 @@ class JiuWenSwarm:
             )
             if hasattr(self._adapter, "set_skill_manager"):
                 self._adapter.set_skill_manager(self._skill_manager)
+            setter = getattr(
+                self._adapter, "set_personal_context_runtime_enabled", None
+            )
+            if callable(setter):
+                setter(self._personal_context_runtime_enabled)
             self._skill_manager.set_skillnet_install_complete_hook(
                 self._on_skillnet_install_complete
             )
@@ -1308,6 +1317,31 @@ class JiuWenSwarm:
         env_ns_token = bind_agent_env_ns(str(mem_sid), str(mem_aid))
         wk_token = bind_workspace_key(str(mem_wk))
         return tenant_tokens, (mem_ws_token, mem_aid_token, env_ns_token, wk_token)
+
+    def set_personal_context_runtime_enabled(self, enabled: bool) -> None:
+        """Store and forward the PersonalContext Host runtime switch."""
+
+        self._personal_context_runtime_enabled = bool(enabled)
+        adapter = self._adapter
+        setter = (
+            getattr(adapter, "set_personal_context_runtime_enabled", None)
+            if adapter is not None
+            else None
+        )
+        if callable(setter):
+            setter(self._personal_context_runtime_enabled)
+
+    async def refresh_personal_context_rail(self) -> None:
+        """Refresh the PersonalContext Rail without creating an Agent."""
+
+        adapter = self._adapter
+        refresher = (
+            getattr(adapter, "refresh_personal_context_rail", None)
+            if adapter is not None
+            else None
+        )
+        if callable(refresher):
+            await refresher()
 
     @staticmethod
     def _reset_tenant_request_context(tenant_tokens: Any, mem_token: Any) -> None:

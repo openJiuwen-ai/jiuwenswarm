@@ -31,6 +31,8 @@ from openjiuwen.agent_teams.rails.team_context import (
     get_team_backend,
 )
 
+from openjiuwen.harness.rails.personal_context import PersonalContextRail
+
 from jiuwenswarm.agents.harness.common.plugins.rail_manager import get_rail_manager
 from jiuwenswarm.server.runtime.runtime_scope import RuntimeScopeKey
 from jiuwenswarm.agents.harness.common.rails.runtime_prompt_rail import (
@@ -60,10 +62,12 @@ from jiuwenswarm.agents.harness.team.rails.team_workspace_report_path_rail impor
 from jiuwenswarm.agents.harness.team.team_runtime_inheritance import (
     _build_context_processor_rail,
 )
+
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
 
 logger = logging.getLogger(__name__)
 
+PERSONAL_CONTEXT = "swarm.personal_context"
 RUNTIME_PROMPT = "swarm.runtime_prompt"
 TEAM_SKILL_STORAGE_POLICY = "swarm.team_skill_storage_policy"
 TEAM_SHARED_SKILL_LINK_REFRESH = "swarm.team_shared_skill_link_refresh"
@@ -75,6 +79,27 @@ SYMPHONY_ORCHESTRATION_PROMPT = "swarm.symphony_orchestration_prompt"
 A2A_OUTBOUND_TOOLKIT = "swarm.a2a_outbound_toolkit"
 TEAM_PERMISSION_POLICY = "swarm.team_permission_policy"
 DISABLED_TOOLS = "swarm.disabled_tools"
+
+
+@harness_element(
+    kind=ElementKind.RAIL,
+    name=PERSONAL_CONTEXT,
+    description="Personal context shared with work/code, gated by the fixed-home Agent-use switch on each model call.",
+)
+def _build_personal_context_rail(
+    params: dict[str, Any],
+    context: SwarmBuildContext,
+) -> PersonalContextRail | None:
+    """Mount even when disabled so live members observe subsequent switch changes."""
+    del params, context
+    try:
+        return PersonalContextRail(Path.home() / ".jiuwenswarm" / ".personal_context")
+    except Exception as exc:
+        logger.warning(
+            "[swarm.personal_context] optional Rail construction failed (%s)",
+            type(exc).__name__,
+        )
+        return None
 
 
 def _workspace_root(ctx: SwarmBuildContext) -> str | None:

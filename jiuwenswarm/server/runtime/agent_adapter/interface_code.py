@@ -1172,6 +1172,9 @@ class JiuwenSwarmCodeAdapter(JiuWenSwarmDeepAdapter):
                     mode,
                 )
 
+        self._last_mode = mode
+        await self._sync_personal_context_rail(mode)
+
     async def _reconcile_evolution_rails(self) -> None:
         """Keep evolution rails disabled for every Code adapter reload."""
         if (
