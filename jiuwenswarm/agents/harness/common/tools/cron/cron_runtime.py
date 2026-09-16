@@ -292,6 +292,9 @@ def _extract_legacy_params(
             )
         elif is_valid_target_channel_id(context_channel):
             context_target = context_channel
+    # 扁平参数路径（新统一 schema：action + name/description/cron_expr/run_at/...
+    # 直接平铺在顶层）。仍会进来一些旧嵌套结构（schedule/payload/delivery），
+    # 那条分支在上面单独处理。
     if "schedule" in data or "payload" in data or "delivery" in data:
         schedule = data.get("schedule") if isinstance(data.get("schedule"), dict) else {}
         kind = str(schedule.get("kind") or "cron").strip().lower()
@@ -463,6 +466,74 @@ def _extract_legacy_params(
             mode_resolved = CRON_JOB_DEFAULT_MODE
         out["mode"] = coerce_cron_job_mode(mode_resolved, default=CRON_JOB_DEFAULT_MODE)
         return _attach_xiaoyi_device_route(out, context=context)
+
+    # ── 扁平参数路径（统一 cron 工具的新 schema）──────────────────────────
+    # run_at：一次性任务（ISO 8601 本地时间）→ 5 段 cron + delete_after_run=True，
+    # 与嵌套分支 kind=at 的处理对齐（5 段 cron 无年份，触发后必须删除否则次年重复）。
+    run_at_raw = str(data.get("run_at") or "").strip()
+    if run_at_raw:
+        timezone = str(data.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+        from jiuwenswarm.gateway.cron.cron_expr import iso_to_five_field_cron
+
+        try:
+            data["cron_expr"] = iso_to_five_field_cron(run_at_raw, timezone=timezone)
+        except Exception as conv_exc:
+            raise ValueError(
+                f"Cannot convert run_at='{run_at_raw}' to cron expression: {conv_exc}"
+            ) from conv_exc
+        data["delete_after_run"] = True
+        logger.info(
+            "[CronRuntimeBridge] flat params: converted run_at '%s' to cron_expr='%s' (one-shot)",
+            run_at_raw,
+            data["cron_expr"],
+        )
+    elif data.get("cron_expr"):
+        # 显式 cron_expr 为周期任务：清除一次性语义，避免遗留 delete_after_run
+        # 在首次触发后把任务标记为禁用/过期（对齐嵌套分支 kind=cron 处理）。
+        data["delete_after_run"] = False
+
+    # 扁平路径此前不吃会话 mode（嵌套分支有，扁平没有），导致团队会话经统一
+    # 工具建的 cron 落成 agent 模式。这里补齐：context mode 优先，其次显式入参
+    # （与嵌套分支 resolve 顺序一致）；profile mode（design / code.normal）等
+    # 非法值回落默认 agent。
+    #
+    # 仅 create（require_schedule=True）注入：update patch 若无条件带 mode，
+    # 会在普通会话里把既有 team 任务静默改成 agent。
+    if require_schedule:
+        context_mode = getattr(context, "mode", None)
+        payload_mode = data.get("mode")
+        if is_cron_job_mode(context_mode):
+            mode_resolved = context_mode
+        elif is_cron_job_mode(payload_mode):
+            mode_resolved = payload_mode
+        else:
+            mode_resolved = CRON_JOB_DEFAULT_MODE
+        data["mode"] = coerce_cron_job_mode(mode_resolved, default=CRON_JOB_DEFAULT_MODE)
+
+    # 扁平路径同样需要钉钉 session 绑定（与嵌套分支一致，Issue #2449）。
+    context_session_id = getattr(context, "session_id", None)
+    context_metadata = getattr(context, "metadata", None) or {}
+    if not isinstance(context_metadata, dict):
+        context_metadata = {}
+    target_channel = str(
+        data.get("targets") or (context.channel_id if context else "") or ""
+    ).strip()
+    if target_channel == "dingtalk" or target_channel.startswith("dingtalk:"):
+        bound_sid = build_dingtalk_cron_session_id_from_context(
+            session_id=context_session_id if isinstance(context_session_id, str) else None,
+            metadata=context_metadata,
+        )
+        if bound_sid:
+            data["session_id"] = bound_sid
+        elif isinstance(context_session_id, str) and context_session_id.strip():
+            data["session_id"] = context_session_id.strip()
+    elif isinstance(context_session_id, str) and context_session_id.strip():
+        data["session_id"] = context_session_id.strip()
+
+    # 飞书多应用：传递 app_id（与嵌套分支一致）。
+    context_app_id = str(context_metadata.get("app_id") or "").strip()
+    if context_app_id:
+        data["app_id"] = context_app_id
 
     return _attach_xiaoyi_device_route(data, context=context)
 

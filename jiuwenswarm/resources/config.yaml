@@ -993,13 +993,7 @@ permissions:
     mcp_free_search: allow
     mcp_paid_search: allow
     mcp_fetch_webpage: allow
-    cron_list_jobs: allow
-    cron_get_job: allow
-    cron_create_job: allow
-    cron_update_job: allow
-    cron_delete_job: allow
-    cron_toggle_job: allow
-    cron_preview_job: allow
+    cron: allow
     configure_channel: allow
     get_wechat_login_status: allow
     acp_chat: ask
