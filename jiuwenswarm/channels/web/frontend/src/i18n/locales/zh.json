@@ -2670,5 +2670,18 @@
   },
   "qaSummary": {
     "title": "问题澄清"
+  },
+  "trajectory": {
+    "loading": "正在加载轨迹界面…",
+    "tabs": {
+      "aria": "单 Agent 内容视图",
+      "trajectory": "轨迹"
+    },
+    "layout": {
+      "hideSessions": "收起会话栏",
+      "showSessions": "展开会话栏",
+      "hideTasks": "收起任务栏",
+      "showTasks": "展开任务栏"
+    }
   }
 }

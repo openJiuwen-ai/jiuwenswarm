@@ -2680,5 +2680,18 @@
   },
   "qaSummary": {
     "title": "Clarifications"
+  },
+  "trajectory": {
+    "loading": "Loading trajectory UI…",
+    "tabs": {
+      "aria": "Single-Agent content view",
+      "trajectory": "Trajectory"
+    },
+    "layout": {
+      "hideSessions": "Collapse sessions",
+      "showSessions": "Show sessions",
+      "hideTasks": "Collapse tasks",
+      "showTasks": "Show tasks"
+    }
   }
 }

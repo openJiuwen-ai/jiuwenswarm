@@ -560,6 +560,32 @@ async def test_config_get_returns_setup_guide_switch(monkeypatch, raw_config, ex
     ("raw_config", "expected"),
     [
         ({}, "false"),
+        ({"trajectory_ui": {"enabled": True}}, "true"),
+        ({"trajectory_ui": {"enabled": False}}, "false"),
+    ],
+)
+async def test_config_get_returns_trajectory_ui_switch(monkeypatch, raw_config, expected):
+    channel = FakeWebChannel()
+    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: raw_config)
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: raw_config)
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+
+    await channel.methods["config.get"](
+        object(),
+        "req-get-trajectory-ui",
+        {},
+        "sess-get-trajectory-ui",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert channel.responses[-1]["payload"]["trajectory_ui_enabled"] == expected
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("raw_config", "expected"),
+    [
+        ({}, "false"),
         ({"react": {"evolution": {"enabled": True}}}, "true"),
         ({"react": {"evolution": {"enabled": False}}}, "false"),
         ({"evolution": {"enabled": True}}, "true"),

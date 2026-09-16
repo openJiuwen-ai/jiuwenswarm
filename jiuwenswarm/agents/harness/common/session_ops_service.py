@@ -751,6 +751,9 @@ async def rewind_session_context(
     chat round does not reload stale pre-rewind messages from memory.
     """
     from openjiuwen.core.foundation.llm.schema.message import (
+        OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+        OPENJIUWEN_MESSAGE_ORIGIN_METADATA,
+        OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA,
         UserMessage,
         AssistantMessage,
         ToolMessage,
@@ -863,7 +866,15 @@ async def rewind_session_context(
         # ── User message ──
         if role == "user":
             if content.strip():
-                context_messages.append(UserMessage(content=content))
+                source_kind = str(record.get("channel_id") or "history").strip()
+                context_messages.append(UserMessage(
+                    content=content,
+                    metadata={
+                        OPENJIUWEN_MESSAGE_ORIGIN_METADATA:
+                            OPENJIUWEN_MESSAGE_ORIGIN_EXTERNAL_USER,
+                        OPENJIUWEN_MESSAGE_SOURCE_KIND_METADATA: source_kind,
+                    },
+                ))
             continue
 
         # ── Only process assistant events below ──

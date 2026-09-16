@@ -38,7 +38,7 @@ from openjiuwen.harness.rails import (
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
 
 from jiuwenswarm.agents.swarm.context import SwarmBuildContext
-from jiuwenswarm.agents.harness.observability_runtime import (
+from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 from jiuwenswarm.server.runtime.agent_adapter.evolution_helpers import (

@@ -26,25 +26,26 @@ import sys
 from functools import partial
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from typing import Any
+from urllib.parse import unquote, urlparse, urlsplit
 
 # --- Early --dotenv parsing (before jiuwenswarm imports) ---
 from jiuwenswarm.dotenv_early import parse_dotenv_early
 parse_dotenv_early("jiuwenswarm-web")
 
 # --- Now safe to import jiuwenswarm modules ---
-from jiuwenswarm.agents.harness.common.tools.ssl_config import get_insecure_ssl_context, get_ssl_verify
-from jiuwenswarm.common.debug_dump import install_async_dump_handler
-from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics
-from jiuwenswarm.edition import is_enterprise
-from jiuwenswarm.common.utils import (
+from jiuwenswarm.agents.harness.common.tools.ssl_config import get_insecure_ssl_context, get_ssl_verify  # noqa: E402
+from jiuwenswarm.common.debug_dump import install_async_dump_handler  # noqa: E402
+from jiuwenswarm.common.ws_diagnostics import describe_ws_exception, format_ws_diagnostics  # noqa: E402
+from jiuwenswarm.edition import is_enterprise  # noqa: E402
+from jiuwenswarm.common.utils import (  # noqa: E402
     get_logs_dir,
     get_root_dir,
     get_user_workspace_dir,
     wait_for_tcp_port,
     SensitiveDataFilter,
 )
-from jiuwenswarm.gateway.channel_manager.web.web_http_server import resolve_web_http_port
+from jiuwenswarm.gateway.channel_manager.web.web_http_server import resolve_web_http_port  # noqa: E402
 
 
 def _get_package_dir() -> Path:
@@ -175,6 +176,12 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         "trailers",
         "transfer-encoding",
         "upgrade",
+    }
+    _UNTRUSTED_FORWARD_HEADERS = {
+        "forwarded",
+        "x-forwarded-host",
+        "x-original-host",
+        "x-jiuwenswarm-original-host",
     }
     _WS_LOG_MAX_CHARS = 2000
     _HTTP_PROXY_TIMEOUT = 30
@@ -353,6 +360,46 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
         connection = self.headers.get("Connection", "")
         return "websocket" in upgrade.lower() and "upgrade" in connection.lower()
 
+    def _clean_outer_host(self) -> str | None:
+        """Return one canonical browser-facing Host authority, if valid."""
+        host_values = self.headers.get_all("Host", [])
+        if len(host_values) != 1:
+            return None
+        raw_host = str(host_values[0] or "").strip()
+        if (
+            not raw_host
+            or len(raw_host) > 512
+            or not raw_host.isascii()
+            or raw_host.endswith(":")
+            or any(character.isspace() for character in raw_host)
+            or any(separator in raw_host for separator in ("/", "\\", "?", "#", "@", ","))
+        ):
+            return None
+        try:
+            parsed_host = urlsplit(f"//{raw_host}")
+            hostname = parsed_host.hostname
+            port = parsed_host.port
+        except ValueError:
+            return None
+        if (
+            hostname is None
+            or parsed_host.username is not None
+            or parsed_host.password is not None
+            or parsed_host.path
+            or parsed_host.query
+            or parsed_host.fragment
+        ):
+            return None
+        normalized_hostname = hostname.lower().rstrip(".")
+        if not normalized_hostname or "%" in normalized_hostname:
+            return None
+        authority = (
+            f"[{normalized_hostname}]"
+            if ":" in normalized_hostname
+            else normalized_hostname
+        )
+        return f"{authority}:{port}" if port is not None else authority
+
     def _proxy_http(self) -> None:
         parsed = urlparse(self.api_target)
         if parsed.scheme == "https":
@@ -378,12 +425,15 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
 
             forward_headers: dict[str, str] = {}
             for key, value in self.headers.items():
-                if key.lower() in self._HOP_BY_HOP_HEADERS:
+                normalized_key = key.lower()
+                if normalized_key in self._HOP_BY_HOP_HEADERS:
                     continue
-                if key.lower() == "host":
+                if normalized_key == "host":
+                    continue
+                if normalized_key in self._UNTRUSTED_FORWARD_HEADERS:
                     continue
                 forward_headers[key] = value
-            forward_headers["Host"] = parsed.netloc
+            forward_headers["Host"] = self._clean_outer_host() or parsed.netloc
 
             conn.request(self.command, self.path, body=body, headers=forward_headers)
             resp = conn.getresponse()
@@ -828,7 +878,6 @@ class _SpaStaticHandler(SimpleHTTPRequestHandler):
                        ".webp", ".gif", ".woff", ".woff2", ".ttf", ".eot",
                        ".map", ".json", ".webmanifest")
         if req_path.endswith(static_exts) and "/" in rel_path:
-            basename = rel_path.rsplit("/", 1)[-1]
             # Try progressively shorter prefixes (e.g. chat/assets/x.js ->
             # assets/x.js -> x.js).
             parts = rel_path.split("/")

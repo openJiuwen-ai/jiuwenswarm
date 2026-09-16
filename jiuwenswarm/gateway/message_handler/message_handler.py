@@ -2942,6 +2942,26 @@ class MessageHandler(FileTransferMixin, ABC):
         except Exception as e:
             logger.exception("[MessageHandler] server_push 解析失败: %s", e)
             return
+        payload = chunk.payload
+        if isinstance(payload, dict) and payload.get("event_type") == "trace.updated":
+            from jiuwenswarm.observability.models import CommittedTraceUpdate
+
+            try:
+                update = CommittedTraceUpdate(
+                    session_id=str(payload["session_id"]),
+                    trace_id=str(payload["trace_id"]),
+                    revision=int(payload["revision"]),
+                    store_epoch=payload.get("store_epoch"),
+                    lifecycle=str(payload.get("lifecycle") or "final"),
+                )
+            except (KeyError, TypeError, ValueError):
+                logger.warning("[MessageHandler] ignored invalid trace update push")
+                return
+            web_channel = self._resolve_web_channel()
+            schedule = getattr(web_channel, "schedule_trajectory_updates", None)
+            if callable(schedule):
+                schedule((update,))
+            return
         rid = str(chunk.request_id or "")
         sid_raw = wire.get("session_id")
         if sid_raw is not None and str(sid_raw).strip():

@@ -39,7 +39,7 @@ from jiuwenswarm.common.config import (
     get_passive_skill_evolution_triggers,
     get_skill_create_enabled,
 )
-from jiuwenswarm.agents.harness.observability_runtime import (
+from openjiuwen.extensions.observability.demand import (
     get_trajectory_span_processor,
 )
 from jiuwenswarm.common.reasoning_injector import build_reasoning_model_request_kwargs

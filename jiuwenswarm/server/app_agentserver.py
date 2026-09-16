@@ -168,6 +168,11 @@ from jiuwenswarm.server.runtime.debug_trace.task_tool_patch import (
 
 apply_task_tool_debug_patch()
 
+# Ensure every harness-created subagent receives the SDK observability rail.
+from openjiuwen.harness.observability import install_subagent_observability_hook
+
+install_subagent_observability_hook()
+
 # Subagent thinking control (task_tool optional ``thinking`` param).
 # Requires openjiuwen core with llm_call_kwargs + thinking_hook; otherwise no-op.
 from jiuwenswarm.common.thinking.register_hook import register_thinking_hook

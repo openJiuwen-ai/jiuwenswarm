@@ -366,7 +366,7 @@ def test_legacy_root_span_still_uses_agentcore_tracer_and_registry(
     span_context.clear_team_span()
 
 
-def test_real_adapter_call_sites_forward_request_and_channel_ids() -> None:
+def test_real_adapter_call_sites_match_core_run_span_signature() -> None:
     source_path = (
         Path(__file__).parents[3]
         / "jiuwenswarm/server/runtime/agent_adapter/interface_deep.py"
@@ -382,9 +382,16 @@ def test_real_adapter_call_sites_forward_request_and_channel_ids() -> None:
 
     assert len(calls) == 2
     for node_call in calls:
-        assert {keyword.arg for keyword in node_call.keywords} >= {
+        keyword_names = {keyword.arg for keyword in node_call.keywords}
+        assert keyword_names >= {
             "session_id",
             "request_id",
-            "channel_id",
             "mode",
         }
+        assert "channel_id" not in keyword_names
+        mode_keyword = next(
+            keyword for keyword in node_call.keywords if keyword.arg == "mode"
+        )
+        assert isinstance(mode_keyword.value, ast.Call)
+        assert isinstance(mode_keyword.value.func, ast.Name)
+        assert mode_keyword.value.func.id == "_resolve_observability_mode"

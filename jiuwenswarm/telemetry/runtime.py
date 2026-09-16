@@ -322,7 +322,7 @@ class TelemetryRuntime:
             # Skill / team evolution rails subscribe to this processor; without
             # registering it on the unified TracerProvider, after_invoke never
             # receives LLM/tool spans and run_evolution is skipped silently.
-            from jiuwenswarm.agents.harness.observability_runtime import (
+            from openjiuwen.extensions.observability.demand import (
                 get_trajectory_span_processor,
             )
 
