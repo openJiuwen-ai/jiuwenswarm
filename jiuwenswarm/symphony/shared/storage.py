@@ -2,9 +2,12 @@ from __future__ import annotations
 
 from contextlib import suppress
 from dataclasses import dataclass
+import getpass
 from hashlib import sha1
 import os
 from pathlib import Path
+import re
+import stat
 import tempfile
 from typing import Dict, Sequence
 from urllib.parse import urlparse
@@ -148,6 +151,52 @@ def upload_local_dir_to_s3(local_dir: str | Path, base_uri: str) -> None:
             raise last_error
 
 
+def _current_user_tag() -> str:
+    """Return a filesystem-safe token identifying the current OS account."""
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None:
+        return str(getuid())
+    name = ""
+    with suppress(Exception):
+        name = getpass.getuser()
+    return re.sub(r"[^A-Za-z0-9_.-]", "_", name) or "unknown"
+
+
+def user_cache_root(cache_namespace: str) -> Path:
+    """Return the private, per-account root for ``cache_namespace``."""
+    # A fixed name under the shared temp directory belongs to whichever account
+    # creates it first, and every other account then fails with EACCES beneath
+    # it. Entries under this root are addressed by a hash of the remote URI, so
+    # an account holding the name can also plant files that a later index build
+    # would read instead of downloading. Scoping the name to the account keeps
+    # them apart; 0o700 keeps one account's cache out of the others' reach.
+    root = Path(tempfile.gettempdir()) / f"{cache_namespace}-{_current_user_tag()}"
+    root.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        # The name is still predictable, so the mode is set at creation: a
+        # separate chmod afterwards races whoever else holds the name and fails
+        # with EPERM when they win. exist_ok=False sends a name that is already
+        # taken to the checks below instead of adopting it.
+        root.mkdir(mode=0o700, exist_ok=False)
+        return root
+    except FileExistsError:
+        pass
+
+    # Reuse is the ordinary case, so an existing root is inspected rather than
+    # refused outright -- with lstat, which describes a symlink itself rather
+    # than following it to wherever whoever planted it aimed.
+    info = root.lstat()
+    if not stat.S_ISDIR(info.st_mode):
+        raise RuntimeError(f"cache root is not a directory: {root}")
+    getuid = getattr(os, "getuid", None)
+    if getuid is not None and info.st_uid != getuid():
+        raise RuntimeError(f"cache root belongs to another account: {root}")
+    if info.st_mode & (stat.S_IRWXG | stat.S_IRWXO):
+        # Reachable by other accounts, so nothing under it can be trusted.
+        raise RuntimeError(f"cache root is not private: {root}")
+    return root
+
+
 def materialize_s3_dir(
     base_uri: str,
     *,
@@ -155,8 +204,7 @@ def materialize_s3_dir(
     cache_namespace: str = "s3-dir-cache",
 ) -> Path:
     normalized_base = str(base_uri).rstrip("/")
-    cache_root = Path(tempfile.gettempdir()) / cache_namespace
-    cache_root.mkdir(parents=True, exist_ok=True)
+    cache_root = user_cache_root(cache_namespace)
     cache_key = sha1(normalized_base.encode("utf-8")).hexdigest()[:16]
     local_dir = cache_root / cache_key
     local_dir.mkdir(parents=True, exist_ok=True)
@@ -295,4 +343,5 @@ __all__ = [
     "read_s3_text",
     "upload_local_dir_to_s3",
     "upload_s3_bytes",
+    "user_cache_root",
 ]

@@ -1,13 +1,24 @@
 #!/usr/bin/env bash
 set -euo >/dev/null 2>&1
 
-gateway_get_config_dir() {
+gateway_get_data_dir() {
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]}"
     if [ -n "${instance_name}" ]; then
-        echo "/root/.jiuwenswarm-instances/${instance_name}/config"
+        echo "/root/.jiuwenswarm-instances/${instance_name}"
     else
-        echo "/root/.jiuwenswarm/config"
+        echo "/root/.jiuwenswarm"
     fi
+}
+
+gateway_get_config_dir() {
+    echo "$(gateway_get_data_dir)/config"
+}
+
+# 网关日志写在 /root 下的数据目录里，不放共享临时目录：`>` 会跟随符号链接，
+# 而网关以 root 拉起，任何能写临时目录的账号都可以事先放一个链接把日志重定向
+# 到别处，从而覆盖任意文件。
+gateway_get_log_file() {
+    echo "$(gateway_get_data_dir)/gateway.log"
 }
 
 # yuanrong 部署固定使用 /root；若目标机 JIUWENSWARM_HOME（或 $HOME）不是 /root 则提示，
@@ -216,10 +227,12 @@ gateway_start_nohup() {
     local master_host="$1"
     local home_prefix="${2:-}"
     local instance_name="${DEPLOY_VARS["JIUWENSWARM_INSTANCE_NAME"]:-}"
+    local log_file
+    log_file=$(gateway_get_log_file)
 
-    local start_cmd="${home_prefix}nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+    local start_cmd="${home_prefix}nohup jiuwenswarm-gateway </dev/null > ${log_file} 2>&1 &"
     if [ -n "${instance_name}" ]; then
-        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > /tmp/jiuwenswarm-gateway.log 2>&1 &"
+        start_cmd="${home_prefix}JIUWENSWARM_DATA_DIR=/root/.jiuwenswarm-instances/${instance_name} nohup jiuwenswarm-gateway </dev/null > ${log_file} 2>&1 &"
     fi
 
     info "Starting jiuwenswarm-gateway on ${master_host} (nohup)..."
@@ -237,7 +250,7 @@ gateway_start_nohup() {
         info "Waiting for gateway to start... (${retry}/${max_retry})"
     done
 
-    error "Gateway process failed to start on ${master_host}, check /tmp/jiuwenswarm-gateway.log"
+    error "Gateway process failed to start on ${master_host}, check ${log_file}"
 }
 
 gateway_deploy_process() {
