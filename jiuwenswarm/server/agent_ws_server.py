@@ -6972,6 +6972,11 @@ class AgentWebSocketServer:
             if agent is None:
                 raise ValueError("Failed to get agent")
 
+            # command.compact_partial 同 /compact、/btw：非 chat 通道 RPC 需先
+            # ensure_instance 懒构建根 DeepAgent，否则 self._instance 为 None 时
+            # 压缩逻辑直接 noop（误报"无需压缩"）。
+            await agent.ensure_instance()
+
             result_data = await agent.compact_partial(
                 session_id=session_id,
                 turn_index=turn_index,
