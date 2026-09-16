@@ -604,7 +604,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     env = tool_config.get("env")
     cwd = tool_config.get("cwd")
     # timeout_s 兼容两种下发形状：顶层（config.yaml 风格）与嵌套 params.timeout_s
-    # （relay buildMcpRequestFields 下发的 {"params": {"timeout_s": N}}）。
+    # （前端下发的 {"params": {"timeout_s": N}}）。
     timeout_s = tool_config.get("timeout_s")
     if timeout_s is None:
         nested_params = tool_config.get("params")
@@ -617,7 +617,7 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
     url = _pick_mcp_url(tool_config)
     client_type = _normalize_mcp_client_type(tool_config.get("type"))
     params = {}
-    # 前端（Relay/officeAce）下发的单连接器调用超时（秒）：透传到 params，
+    # 前端下发的单连接器调用超时（秒）：透传到 params，
     # 供 _run_mcp_worker 按 call_tool 超时使用；非法值忽略，回落到默认 300s。
     if isinstance(timeout_s, (int, float)) and not isinstance(timeout_s, bool) and timeout_s > 0:
         params["timeout_s"] = timeout_s
@@ -916,7 +916,7 @@ async def _run_mcp_worker(
     """
 
     client_type = str(params.get("_mcp_client_type") or "").lower() or "stdio"
-    # 单连接器调用超时：前端（Relay/officeAce）下发的 timeout_s 经 create_mcp_tool
+    # 单连接器调用超时：前端下发的 timeout_s 经 create_mcp_tool
     # 透传进 params；未下发或非法时回落到 300s 默认值。
     _timeout_raw = params.get("timeout_s")
     call_timeout_s = (
@@ -1054,7 +1054,7 @@ async def _enter_remote_mcp_session(
     """sse/streamable-http transport：复用 openjiuwen 高层 client，长连接复用。
 
     connect 时 ``Runner.callback_framework.trigger(TOOL_AUTH)`` 注入 auth_headers
-    （relay 下发的 ``Authorization: Bearer xxx`` 经 HeaderQueryAuthStrategy 加到请求头）。
+    （前端下发的 ``Authorization: Bearer xxx`` 经 HeaderQueryAuthStrategy 加到请求头）。
     把 disconnect 注册进 stack，使 worker 退出时统一关连接。
     """
     client_cls = _remote_mcp_client_cls(client_type)
@@ -1620,7 +1620,7 @@ def extract_office_claw_mcp(params: Any) -> dict[str, Any] | None:
 def extract_request_mcp_servers(params: Any) -> dict[str, dict[str, Any]] | None:
     """取 ``request_mcp_servers.mcpServers`` 的用户连接器 map。
 
-    Relay 的 buildMcpRequestFields 把用户配置的连接器放这里，值仅含启动配置
+    前端 的 buildMcpRequestFields 把用户配置的连接器放这里，值仅含启动配置
     （stdio: {command,args,cwd,env?}；remote: {type,url,auth_headers?}），无 tool schema，
     需由 list_request_mcp_server_tools 发现。无该字段返回 None。
     """
@@ -1882,7 +1882,7 @@ async def _list_remote_mcp_connector_tools(
     ``SseClient`` / ``StreamableHttpClient`` 自带 owner-task/cancel-scope/超时/重连，
     且 connect 时经 ``Runner.callback_framework.trigger(TOOL_AUTH)`` 注入 auth_headers
     （由 ``auth_callback`` 的 ``HeaderQueryAuthStrategy`` 转 ``AuthHeaderAndQueryProvider``，
-    把 relay 下发的 ``Authorization: Bearer xxx`` 加到请求头）。import 链自动注册 handler。
+    把 前端 下发的 ``Authorization: Bearer xxx`` 加到请求头）。import 链自动注册 handler。
     """
     client_cls = _remote_mcp_client_cls(client_type)
     if client_cls is None:
