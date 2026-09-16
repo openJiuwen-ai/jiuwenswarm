@@ -229,6 +229,7 @@ const REQUEST_TABS: readonly DetailTabItem[] = [
   { id: 'facts', label: 'Facts' },
   { id: 'usage', label: 'Usage' },
   { id: 'timing', label: 'Timing' },
+  { id: 'otel', label: 'OTel' },
 ]
 
 type TrajectorySplitStyle = CSSProperties & {
@@ -461,7 +462,12 @@ function indexRequestBoundaries(records: readonly TableRecord[]): ReadonlyMap<st
     const key = recordRequestKey(record)
     if (boundaries.has(key)) continue
     if (requestStep(record.group) === undefined) {
-      if (record.groupStart) boundaries.set(key, record.cell.index)
+      // Outside a step, a record that names its model request marks that
+      // request, so a compaction retried several times marks every attempt.
+      // A record that names none marks only the group it opens.
+      if (record.cell.requestRecordId !== undefined || record.groupStart) {
+        boundaries.set(key, record.cell.index)
+      }
       continue
     }
     if (
@@ -1882,7 +1888,10 @@ export function TrajectoryTable({
   const selectedRequestSubtoolCalls = selectedRequestRecords.filter(
     record => record.cell.kind === 'subtool',
   ).length
-  const selectedRequestResult = selectedRequestAssistant
+  // A compaction request has no assistant reply; its result is the outcome row.
+  const selectedRequestResult = selectedRequestAssistant ?? selectedRequestRecords.find(
+    record => record.cell.kind === 'compacted' && record.cell.requestOnly !== true,
+  )
   const selectedRequestUsage = selectedRequestInfo?.usage ?? (
     selectedRequestAssistant === undefined
       ? undefined
@@ -1918,6 +1927,7 @@ export function TrajectoryTable({
     ? REQUEST_TABS.filter(tab => (
       (tab.id !== 'options' || selectedRequestOptions !== undefined)
       && (tab.id !== 'facts' || selectedRequestFacts !== undefined)
+      && (tab.id !== 'otel' || selectedRequestInfo?.traceDetail !== undefined)
     ))
     : selected === undefined ? [] : detailTabs(selected)
   const selectedParents: ParentRecords = selected === undefined
@@ -1925,18 +1935,19 @@ export function TrajectoryTable({
     : parentRecords(allRecords, selected)
   const selectedParentMessage = selectedParents.message
   const selectedParentTool = selectedParents.tool
-  const selectedAssistantRequest = selected?.cell.kind === 'message'
+  // The model request an assistant reply or a compaction outcome came from.
+  const selectedSourceRequest = selected?.cell.kind === 'message' || selected?.cell.kind === 'compacted'
     ? requestNumbers.get(recordRequestKey(selected))
     : undefined
-  const selectedAssistantRequestTarget: SelectedRequest | undefined =
-    selected !== undefined && selectedAssistantRequest !== undefined
+  const selectedSourceRequestTarget: SelectedRequest | undefined =
+    selected !== undefined && selectedSourceRequest !== undefined
       ? {
         recordId: recordRequestKey(selected),
         turn: selected.turn,
         group: selected.group,
       }
       : undefined
-  const hasSelectedHierarchy = selectedAssistantRequestTarget !== undefined
+  const hasSelectedHierarchy = selectedSourceRequestTarget !== undefined
     || selectedParents.message !== undefined
     || selectedParents.tool !== undefined
   const splitStyle: TrajectorySplitStyle | undefined = toolRequestOffset === null
@@ -2758,6 +2769,12 @@ export function TrajectoryTable({
                 request={selectedRequestInfo}
               />
             )}
+            {selectedRequest !== null
+              && typeof selectedRequestInfo?.traceDetail === 'object'
+              && selectedRequestInfo.traceDetail !== null
+              && activeTab === 'otel' && (
+              <JsonTree data={selectedRequestInfo.traceDetail} label="OTLP export request" />
+            )}
             {promptSelected
               && selectedPreviousPrompt !== undefined
               && activeTab === 'diff' && (
@@ -2815,6 +2832,26 @@ export function TrajectoryTable({
                       {statusLabel(selectedState)}
                     </dd>
                   </div>
+                  {selectedSourceRequestTarget !== undefined && (
+                    <div>
+                      <dt>Source</dt>
+                      <dd className={css.overviewParentLinks}>
+                        <button
+                          type="button"
+                          className={css.overviewHierarchyNavLink}
+                          onClick={() => {
+                            selectRequest(selectedSourceRequestTarget)
+                          }}
+                        >
+                          <span>Request #{selectedSourceRequest ?? '—'}</span>
+                          <IconChevronRightOutline14
+                            className={css.overviewHierarchyJumpIconTight}
+                            size={11}
+                          />
+                        </button>
+                      </dd>
+                    </div>
+                  )}
                   <div>
                     <dt>Duration</dt>
                     <dd>{formatElapsedSeconds(selected.cell.timeSeconds)}</dd>
@@ -2871,20 +2908,20 @@ export function TrajectoryTable({
                   {hasSelectedHierarchy && (
                     <div>
                       <dt>
-                        {selectedAssistantRequestTarget !== undefined
+                        {selectedSourceRequestTarget !== undefined
                           ? 'Source'
                           : 'Hierarchy'}
                       </dt>
                       <dd className={css.overviewParentLinks}>
-                        {selectedAssistantRequestTarget !== undefined && (
+                        {selectedSourceRequestTarget !== undefined && (
                           <button
                             type="button"
                             className={css.overviewHierarchyNavLink}
                             onClick={() => {
-                              selectRequest(selectedAssistantRequestTarget)
+                              selectRequest(selectedSourceRequestTarget)
                             }}
                           >
-                            <span>Request #{selectedAssistantRequest ?? '—'}</span>
+                            <span>Request #{selectedSourceRequest ?? '—'}</span>
                             <IconChevronRightOutline14
                               className={css.overviewHierarchyJumpIconTight}
                               size={11}
@@ -2969,11 +3006,11 @@ export function TrajectoryTable({
                         </OverviewSection>
                       </>
                     )}
-                  {selectedAssistantRequestTarget !== undefined && (
+                  {selectedSourceRequestTarget !== undefined && (
                     <OverviewSection
                       label="Request Timing"
                       onOpen={() => {
-                        selectRequest(selectedAssistantRequestTarget, 'timing')
+                        selectRequest(selectedSourceRequestTarget, 'timing')
                       }}
                     >
                       <RecordTiming record={selected} />

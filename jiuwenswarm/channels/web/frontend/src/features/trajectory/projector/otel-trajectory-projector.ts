@@ -32,6 +32,7 @@ import type {
 import type {
   TrajectoryPromptSnapshot,
   TrajectoryDiagnostic,
+  TrajectoryGroupModel,
   TrajectoryRecordedFacts,
   TrajectoryRequest,
   TrajectoryRequestConfig,
@@ -1323,31 +1324,61 @@ function projectInferenceInputs(
   return { inputsBySpanId, toolResultById, toolResultBySpanId, diagnostics }
 }
 
-/** One model call a compaction spent, stated as its own cell. */
-function compactionAttemptCell(span: ProjectedSpan, attempt: number): TrajectoryCell {
+/**
+ * Mark one model call a compaction spent that no compaction event accounts for.
+ *
+ * The call is not a reply, so it takes no assistant row. It marks its request
+ * instead, and the request detail holds what the call recorded. A call that a
+ * compaction.completed event names needs no marker of its own: the event's
+ * COMPACTED cell already marks that request.
+ */
+function compactionRequestCell(span: ProjectedSpan): TrajectoryCell {
   const error = statusError(span)
-  const usageValue = usage(span.attributes)
-  const label = `Attempt ${attempt}`
   return {
-    ...spanCellBase(span, `compaction-attempt-${attempt}`),
-    kind: 'message',
-    text: error === undefined ? `${label} · summarized` : `${label} · failed`,
-    ...(error === undefined ? {} : { isError: true, result: error }),
-    assistantMetrics: {
-      timingRecorded: true,
-      streaming: span.attributes.requestStream ?? null,
-      stepStartTime: startedAt(span),
-      ...(usageValue === undefined ? {} : { usage: usageValue }),
+    ...spanCellBase(span, 'compaction-request'),
+    kind: 'compacted',
+    text: '',
+    requestOnly: true,
+    messageSource: {
+      kind: 'trajectory_compaction_request',
+      ...(span.attributes.contextOperationId === undefined
+        ? {}
+        : { operationId: span.attributes.contextOperationId }),
+      ...(span.attributes.inferenceId === undefined
+        ? {}
+        : { inferenceId: span.attributes.inferenceId }),
     },
+    ...(error === undefined ? {} : { isError: true, result: error }),
   } as TrajectoryCell
 }
 
-/** Title one compaction by its number, so a reader can place it in the run. */
-function compactionGroupTitle(attempts: readonly ProjectedSpan[]): string {
-  const numbered = attempts
-    .map(span => positiveSafeInteger(span.attributes.compactionNumber))
-    .find(value => value !== undefined)
-  return numbered === undefined ? 'Compaction' : `Compaction #${numbered}`
+/**
+ * Split compaction cells into one group per compaction operation.
+ *
+ * One run can compact more than once: a manual /compact runs every processor
+ * that applies, and each one is a compaction of its own with its own model
+ * calls and outcome. Each becomes a group titled by its number, its request
+ * markers ahead of its outcome.
+ */
+function compactionGroups(
+  cells: readonly TrajectoryCell[],
+  numberByOperationId: ReadonlyMap<string, number>,
+): TrajectoryGroupModel[] {
+  const cellsByOperationId = new Map<string, TrajectoryCell[]>()
+  for (const cell of [...cells].sort(compareTrajectoryCells)) {
+    const source = object(cell.messageSource)
+    const operationId = typeof source?.operationId === 'string' ? source.operationId : ''
+    const operationCells = cellsByOperationId.get(operationId) ?? []
+    operationCells.push(cell)
+    cellsByOperationId.set(operationId, operationCells)
+  }
+  return [...cellsByOperationId].map(([operationId, operationCells]) => {
+    const number = numberByOperationId.get(operationId)
+    return {
+      title: number === undefined ? 'Compaction' : `Compaction #${number}`,
+      cells: operationCells,
+    }
+  })
 }
 
 function requestFor(
@@ -1362,6 +1393,9 @@ function requestFor(
   const facts = recordedFacts(span.attributes, rootAttributes)
   const base = {
     recordId: requestRecordIdentity(span),
+    // The request's own record, so its raw data stays reachable from the
+    // request detail even when no row in the trajectory carries it.
+    traceDetail: span.request,
     group: purpose === 'compaction' ? 'Compaction' : `Step ${step}`,
     number: requestNumber,
     status: status(span),
@@ -1732,6 +1766,8 @@ export function projectOtelTrajectory(
     ) rootByTrace.set(span.traceId, span)
   }
   const compactionInferences = new Map<string, ProjectedSpan[]>()
+  // The number each compaction operation was given, read from its model calls.
+  const compactionNumberByOperationId = new Map<string, number>()
   // Turns that made a conversational model call. A run that names no turn and
   // made none of these ran outside every turn.
   const conversationTurnKeys = new Set<string>()
@@ -1769,6 +1805,10 @@ export function projectOtelTrajectory(
         const attempts = compactionInferences.get(span.turnKey) ?? []
         attempts.push(span)
         compactionInferences.set(span.turnKey, attempts)
+        const compactionNumber = positiveSafeInteger(span.attributes.compactionNumber)
+        if (span.attributes.contextOperationId !== undefined && compactionNumber !== undefined) {
+          compactionNumberByOperationId.set(span.attributes.contextOperationId, compactionNumber)
+        }
         requests.push(requestFor(
           span,
           'compaction',
@@ -1835,7 +1875,14 @@ export function projectOtelTrajectory(
   }
 
   const v2CompactionEvents: TrajectoryV2EventProjection[] = []
+  // Model calls a schema-v2 cell already marks, by trace and inference id.
+  const markedInferenceKeys = new Set<string>()
   for (const event of v2Subjects.flatMap(subject => [...subject.events])) {
+    for (const cell of event.cells) {
+      if (cell.physicalInferenceId !== undefined) {
+        markedInferenceKeys.add(`${event.traceId} ${cell.physicalInferenceId}`)
+      }
+    }
     if (event.turn === null) {
       v2CompactionEvents.push(event)
       continue
@@ -1926,35 +1973,32 @@ export function projectOtelTrajectory(
         cells: [...value.cells].sort(compareTrajectoryCells),
       }))
       .filter(value => value.cells.length > 0)
-    const attempts = compactionInferences.get(turnKey) ?? []
-    const ordered = [...attempts].sort(comparePhysicalInference)
-    // The attempts come first and the outcome last, so the group reads as
-    // what the compaction actually did rather than only how it ended.
-    const compactionGroup = attempts.length === 0
-      ? undefined
-      : {
-          title: compactionGroupTitle(ordered),
-          cells: ordered.map((span, index) => compactionAttemptCell(span, index + 1)),
-        }
+    // Every attempt is kept, as a marker on its request, unless a compaction
+    // event already marks that request.
+    const requestCells = (compactionInferences.get(turnKey) ?? [])
+      .filter(span => !markedInferenceKeys.has(`${span.traceId} ${span.attributes.inferenceId}`))
+      .sort(comparePhysicalInference)
+      .map(compactionRequestCell)
     if (fact?.stated === false && !conversationTurnKeys.has(turnKey)) {
       // A run that names no turn and made no conversational model call ran
       // outside every turn, such as a manual /compact. It takes no turn
       // number of its own: it shows between the turns it happened between,
       // and the context it rewrote shows at the next request that reads it.
-      const betweenGroups = compactionGroup === undefined
-        ? groups
-        : [{
-            ...compactionGroup,
-            cells: [...compactionGroup.cells, ...groups.flatMap(value => value.cells)],
-          }]
+      const runCells = [...requestCells, ...groups.flatMap(value => value.cells)]
+      const betweenGroups = runCells.some(cell => cell.kind === 'compacted')
+        ? compactionGroups(runCells, compactionNumberByOperationId)
+        : groups
       if (betweenGroups.length > 0) {
         betweenTurnEntries.push({ startedAt, model: { turn: null, groups: betweenGroups } })
       }
       continue
     }
     if (groups.length > 0) turnEntries.push({ startedAt, model: { turn: turn.turn, groups } })
-    if (compactionGroup !== undefined) {
-      turnEntries.push({ startedAt, model: { turn: null, groups: [compactionGroup] } })
+    if (requestCells.length > 0) {
+      turnEntries.push({
+        startedAt,
+        model: { turn: null, groups: compactionGroups(requestCells, compactionNumberByOperationId) },
+      })
     }
   }
   // Turns keep their numbered order. A run outside every turn goes ahead of

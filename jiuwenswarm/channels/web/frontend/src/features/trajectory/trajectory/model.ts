@@ -112,6 +112,8 @@ export interface TrajectoryUsage {
 interface TrajectoryRequestBase {
   /** Stable identity of one physical model request, independent from its Step group. */
   recordId?: string
+  /** The raw record of the physical model request, shown as OTel in its detail. */
+  traceDetail?: unknown
   group: string
   number: number
   status?: 'complete' | 'running' | 'error'

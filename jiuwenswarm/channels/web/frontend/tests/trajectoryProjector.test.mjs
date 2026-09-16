@@ -2834,8 +2834,14 @@ test('every attempt of one compaction is shown under its own numbered group', ()
   assert.deepEqual(groups[0].cells.map(cell => cell.isError === true), [
     true, true, true, true, false,
   ]);
-  assert.ok(groups[0].cells[0].text.includes('Attempt 1'));
-  assert.ok(groups[0].cells[4].text.includes('Attempt 5'));
+  // An attempt is a model call, not a reply: it marks its own request and
+  // takes no assistant row.
+  assert.ok(groups[0].cells.every(cell => cell.kind === 'compacted' && cell.requestOnly === true));
+  assert.equal(new Set(groups[0].cells.map(cell => cell.requestRecordId)).size, 5);
+  // Each request keeps its raw record for the request detail.
+  const compactionRequests = snapshot.requests.filter(request => request.purpose === 'compaction');
+  assert.equal(compactionRequests.length, 5);
+  assert.ok(compactionRequests.every(request => typeof request.traceDetail === 'object'));
 });
 
 function withoutTurn(record) {
@@ -2951,8 +2957,13 @@ test('a manual compaction shows between the turns it ran between, and its contex
   assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, null, 2]);
   const between = snapshot.turns[1];
   assert.deepEqual(between.groups.map(group => group.title), ['Compaction #1']);
-  assert.deepEqual(between.groups[0].cells.map(cell => cell.kind), ['message', 'compacted']);
-  assert.ok(between.groups[0].cells[0].text.includes('Attempt 1'));
+  // The COMPACTED outcome marks the compaction's model request; the request
+  // itself takes no assistant row.
+  assert.deepEqual(between.groups[0].cells.map(cell => cell.kind), ['compacted']);
+  assert.equal(
+    between.groups[0].cells[0].requestRecordId,
+    `${compactTrace}:inference:inference-compaction-2`,
+  );
   const nextTurnInputs = snapshot.turns[2].groups
     .flatMap(group => group.cells)
     .filter(cell => cell.kind !== 'message')
@@ -2986,6 +2997,49 @@ test('a compaction inside a conversation turn still follows that turn between tu
     snapshot.turns.map(turn => [turn.turn, turn.groups.map(group => group.title)]),
     [[1, ['Step 1']], [null, ['Compaction #1']]],
   );
+});
+
+test('each compaction of one manual run is its own group marking its own request', () => {
+  // The real shape of a manual /compact that ran two processors back to back:
+  // two operations, each with one model call and one outcome. They used to
+  // share one group as "Attempt 1" and "Attempt 2" assistant rows, and only
+  // the group's first row marked a request.
+  const trace = '77777777777777777777777777777777';
+  const records = [
+    [1, 2, 'Compressed 103 -> 92 messages'],
+    [2, 3, 'Compressed 92 -> 8 messages'],
+  ].flatMap(([compactionNumber, sequence, summary]) => [
+    withoutTurn(compactionAttemptRecord({
+      sequence,
+      compactionNumber,
+      failed: false,
+      traceId: trace,
+    })),
+    withoutTurn(v2Record({
+      eventId: `event-compaction-${compactionNumber}`,
+      eventKind: 'compaction.completed',
+      sequence: compactionNumber,
+      time: sequence * 1_000_000 + 500_000,
+      traceId: trace,
+      payload: {
+        operation_id: `operation-${compactionNumber}`,
+        status: 'completed',
+        model_requests: [{ request_id: `request-${sequence}`, inference_id: `inference-compaction-${sequence}` }],
+        summary,
+        compact_summary: `summary ${compactionNumber}`,
+      },
+    })),
+  ]);
+
+  const snapshot = projectOtelTrajectory(records);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [null]);
+  const groups = snapshot.turns[0].groups;
+  assert.deepEqual(groups.map(group => group.title), ['Compaction #1', 'Compaction #2']);
+  assert.deepEqual(groups.map(group => group.cells.map(cell => [cell.kind, cell.requestRecordId])), [
+    [['compacted', `${trace}:inference:inference-compaction-2`]],
+    [['compacted', `${trace}:inference:inference-compaction-3`]],
+  ]);
 });
 
 test('a compaction still groups when its number is absent', () => {
