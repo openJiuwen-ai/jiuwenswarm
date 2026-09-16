@@ -122,6 +122,7 @@ from jiuwenswarm.common.config import (
     get_skill_create_enabled,
 )
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+    JiuWenSwarmDeepAdapter,
     _CRON_TOOL_NAMES,
     _DEFAULT_PROGRESSIVE_EAGER_TOOLS,
     _RailBuildInfo,
@@ -333,14 +334,17 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
     async def _get_tool_cards(self, agent_id: str):
         """Build flash tool cards.
 
-        这是 :meth:`JiuWenSwarmDeepAdapter._get_tool_cards` 的逐字副本，唯一差异：
-        web 工具段由父类的 ``build_jiuwen_harness_named_web_tools``（web_search +
-        fetch_webpage 多卡）换成 flash 的 ``self._build_web_tools``（单张 web_flash
-        卡）。整方法复制而非 super(). 后处理，是为避免父类把 Deep web 卡注册进
-        ability_manager 后再移除的 add+remove 噪声，也避免动 interface_deep.py。
-        其余工具段（wiki/vision/audio/video/image_gen/xiaoyi/skill/symphony/acp/
-        deepresearch/extra）与父类逐字一致——flash 的能力裁剪在 rail 白名单层做，
-        不在 tool_cards 注册层做。
+        这是 :meth:`JiuWenSwarmDeepAdapter._get_tool_cards` 的逐字副本，两处差异：
+        1. web 工具段由父类的 ``build_jiuwen_harness_named_web_tools``（web_search +
+           fetch_webpage 多卡）换成 flash 的 ``self._build_web_tools``（单张 web_flash
+           卡）。整方法复制而非 super(). 后处理，是为避免父类把 Deep web 卡注册进
+           ability_manager 后再移除的 add+remove 噪声，也避免动 interface_deep.py。
+        2. 尾部追加 flash 工具面裁剪：按名剔除（wiki/acp 与 stock 技能三卡）并
+           换装 SlimSkillToolkit 的折叠版 search_skill（独立 id，不受共享注册
+           表先到先得影响）。被剔除的工具已注册进共享注册表对其他 adapter 无害
+           （agent 模式本就注册它们），剔除只影响本会话的可见卡面。
+           cron_flash 不经本方法（由 ``_ensure_cron_tools_registered`` 按会话
+           生命周期注册）。
         """
         tool_cards = []
 
@@ -543,6 +547,35 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
 
         # 动态加载环境变量配置的非侵入式工具扩展（AGENT_EXTRA_TOOLS，仅企业版）
         self._append_extra_tool_cards(tool_cards)
+
+        # flash 工具面裁剪（见方法 docstring 差异 2）：按名剔除 + slim 换装。
+        drop_names = self._FLASH_TOOL_CARD_DROP_NAMES
+        tool_cards = [
+            card
+            for card in tool_cards
+            if str(getattr(card, "name", "") or "") not in drop_names
+        ]
+        try:
+            slim_toolkit = SlimSkillToolkit(
+                manager=self._skill_manager,
+                service_id=self._service_id,
+                agent_id=self._agent_id,
+                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
+            )
+            slim_names: list[str] = []
+            for tool in slim_toolkit.get_tools():
+                registered = self._register_shared_tool(tool)
+                tool_cards.append(registered.card)
+                slim_names.append(registered.card.name)
+            logger.info(
+                "[JiuwenSwarmFlashAdapter] SlimSkillToolkit registered: tools=%s",
+                slim_names,
+            )
+        except Exception as exc:
+            logger.warning(
+                "[JiuwenSwarmFlashAdapter] slim skill tools registration failed: %s",
+                exc,
+            )
 
         return tool_cards
 
@@ -819,48 +852,7 @@ class JiuwenSwarmFlashAdapter(JiuWenSwarmDeepAdapter):
             )
         )
 
-    async def _get_tool_cards(self, agent_id: str) -> list[Any]:
-        """flash 工具面：super() 全量采集后按名裁剪，再换装 slim 技能面。
-
-        super() 会把 stock 技能三卡（search_skill / install_skill / uninstall_skill）
-        "先注册后剔除"：注册进共享注册表对其他 adapter 无害（agent 模式本就注册
-        它们），剔除只影响本会话的可见卡面。slim 版 search_skill 卡用独立 id
-        （search_skill_slim）注册，不会被先到先得的 stock 实例顶掉。
-        """
-        tool_cards = await super()._get_tool_cards(agent_id)
-
-        drop_names = self._FLASH_TOOL_CARD_DROP_NAMES
-        kept = [
-            card
-            for card in tool_cards
-            if str(getattr(card, "name", "") or "") not in drop_names
-        ]
-
-        try:
-            slim_toolkit = SlimSkillToolkit(
-                manager=self._skill_manager,
-                service_id=self._service_id,
-                agent_id=self._agent_id,
-                on_installed_skills_changed=self.refresh_enabled_skills_from_db,
-            )
-            slim_names: list[str] = []
-            for tool in slim_toolkit.get_tools():
-                registered = self._register_shared_tool(tool)
-                kept.append(registered.card)
-                slim_names.append(registered.card.name)
-            logger.info(
-                "[JiuwenSwarmFlashAdapter] SlimSkillToolkit registered: tools=%s",
-                slim_names,
-            )
-        except Exception as exc:
-            logger.warning(
-                "[JiuwenSwarmFlashAdapter] slim skill tools registration failed: %s",
-                exc,
-            )
-
-        return kept
-
-    async def _update_runtime_config(self, runtime_config: "_RuntimeConfig") -> None:
+    async def _update_runtime_config(self, runtime_config: Any) -> None:
         """每回合 super() 后修正统一 memory 卡的可见性。
 
         super() 的群聊块只认 stock 五件套（对 flash 全是 no-op），且其恢复分支

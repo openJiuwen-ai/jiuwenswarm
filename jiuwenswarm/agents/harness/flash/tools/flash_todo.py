@@ -12,7 +12,6 @@ stream_event_rail / task_execution_rail，其工具名常量已含 ``todo``）�
 from __future__ import annotations
 
 import logging
-from typing import Any
 
 from openjiuwen.core.foundation.tool.base import Tool, ToolCard
 from openjiuwen.harness.tools.base_tool import ToolOutput
