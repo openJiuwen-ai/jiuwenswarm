@@ -1179,6 +1179,12 @@ def _apply_llm_io_trace_patch() -> None:
                 except Exception:
                     logger.debug("[llm_trace] log_stream_input failed", exc_info=True)
                 _log_latency_pre_llm_once(trace_rid)
+                # AgentPerf：补齐 first_token / http_done（deep 流式原先只有 start）
+                import time as _time_mod
+
+                _llm_http_t0 = _time_mod.perf_counter()
+                _llm_first_token_logged = False
+                _llm_chunk_count = 0
                 accumulated: Any = None
                 reasoning_seq = 0
                 reasoning_trace_pending: List[Tuple[int, str]] = []
@@ -1199,39 +1205,70 @@ def _apply_llm_io_trace_patch() -> None:
                         logger.debug("[llm_trace] log_reasoning_delta failed", exc_info=True)
                     reasoning_trace_pending.clear()
 
-                async for chunk in original_stream(
-                    self, messages, tools=tools, model=model, **kwargs
-                ):
-                    if accumulated is None:
-                        accumulated = chunk
-                    else:
-                        try:
-                            accumulated = accumulated + chunk
-                        except Exception:
+                try:
+                    async for chunk in original_stream(
+                        self, messages, tools=tools, model=model, **kwargs
+                    ):
+                        _llm_chunk_count += 1
+                        if not _llm_first_token_logged:
+                            _llm_first_token_logged = True
+                            try:
+                                from jiuwenswarm.server.runtime.agent_perf import (
+                                    log_llm_first_token_ms,
+                                )
+
+                                log_llm_first_token_ms(_llm_http_t0)
+                            except Exception:
+                                logger.debug(
+                                    "[AgentPerf] llm_first_token log skipped",
+                                    exc_info=True,
+                                )
+                        if accumulated is None:
                             accumulated = chunk
+                        else:
+                            try:
+                                accumulated = accumulated + chunk
+                            except Exception:
+                                accumulated = chunk
 
-                    reasoning_content = (
-                        getattr(chunk, "reasoning_content", None)
-                        or (
-                            chunk.get("reasoning_content")
-                            if isinstance(chunk, dict)
-                            else None
+                        reasoning_content = (
+                            getattr(chunk, "reasoning_content", None)
+                            or (
+                                chunk.get("reasoning_content")
+                                if isinstance(chunk, dict)
+                                else None
+                            )
+                            or (
+                                (
+                                    chunk.payload.get("reasoning_content")
+                                    or chunk.payload.get("reasoning")
+                                )
+                                if isinstance(getattr(chunk, "payload", None), dict)
+                                else None
+                            )
                         )
-                        or (
-                            (chunk.payload.get("reasoning_content") or chunk.payload.get("reasoning"))
-                            if isinstance(getattr(chunk, "payload", None), dict)
-                            else None
-                        )
-                    )
-                    if reasoning_content:
-                        reasoning_trace_pending.append(
-                            (reasoning_seq, str(reasoning_content))
-                        )
-                        if len(reasoning_trace_pending) >= _REASONING_TRACE_LOG_BATCH:
-                            emit_reasoning_trace_batch()
-                        reasoning_seq += 1
+                        if reasoning_content:
+                            reasoning_trace_pending.append(
+                                (reasoning_seq, str(reasoning_content))
+                            )
+                            if len(reasoning_trace_pending) >= _REASONING_TRACE_LOG_BATCH:
+                                emit_reasoning_trace_batch()
+                            reasoning_seq += 1
 
-                    yield chunk
+                        yield chunk
+                finally:
+                    try:
+                        from jiuwenswarm.server.runtime.agent_perf import (
+                            log_llm_http_done,
+                        )
+
+                        log_llm_http_done(
+                            _llm_http_t0, chunk_count=_llm_chunk_count
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[AgentPerf] llm_http_done log skipped", exc_info=True
+                        )
 
                 emit_reasoning_trace_batch()
 
@@ -20085,12 +20122,7 @@ class JiuWenSwarmDeepAdapter:
         finally:
             active_error = sys.exc_info()[1]
             cleanup_error: BaseException | None = None
-            try:
-                from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
-
-                _perf_clear(rid)
-            except Exception:
-                pass
+            # AgentPerf clear 挪到 usage_summary / checkpoint 打点之后，否则 since_request 会丢
             if perf_context_initialized:
                 perf_usage_fallback = snapshot_perf_summary_usage(request.request_id)
             if interaction_stream is not None:
@@ -20235,54 +20267,105 @@ class JiuWenSwarmDeepAdapter:
                         "step=pending_reload error_type=%s",
                         type(exc).__name__,
                     )
-            # 流式 chat 收尾补 commit：把本轮 context_engine 内存 context 落盘到 checkpointer。
-            # 根因：流式路径 session.commit() 挂在 need_cleanup 下，而 adapter 预绑定 session 致
-            # need_cleanup=False，commit 被跳过 → 跨重启/跨 channel 下一轮 restore 出来历史为空，
-            # agent 从头重新调研。对齐 _persist_cron_checkpoint 显式补一次落盘，覆盖 officeclaw
-            # 等非 cron 普通会话。失败不阻断清理（仅记 cleanup_error），对齐周围姿势。
+            # session checkpoint 故意挪到 usage_summary / is_complete 之后：
+            # pickle+DB 落盘是同步重活，30 并发时若卡在 summary 前，客户端收尾会被拉到十几秒。
+            # 历史仍会落盘，只是先让用户侧结束，再写 checkpointer（失败仅打日志）。
+            if active_error is None and cleanup_error is not None:
+                try:
+                    from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
+
+                    _perf_clear(rid)
+                except Exception:
+                    pass
+                raise cleanup_error
+
+        try:
+            try:
+                from jiuwenswarm.server.runtime.agent_perf import (
+                    elapsed_from_request as _perf_since_req,
+                    log_event as _perf_log_event,
+                )
+
+                _perf_log_event(
+                    "usage_summary_emit",
+                    request_id=rid,
+                    since_request_ms=_perf_since_req(),
+                )
+            except Exception:
+                logger.debug("[AgentPerf] usage_summary_emit log skipped", exc_info=True)
+
+            summary_chunk = self._log_and_make_usage_summary_chunk(
+                request_id=rid,
+                channel_id=cid,
+                session_id=session_id,
+                usage_accumulator=usage_accumulator,
+                perf_usage_fallback=perf_usage_fallback,
+            )
+            if summary_chunk is not None:
+                yield summary_chunk
+
+            if hitl_pending_stream:
+                # HITL 暂停：以 awaiting_user_input 终结帧收尾，网关出站会把该帧转成
+                # is_final=False 的 in_progress 帧，前端流保持开启等待用户作答。
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload={
+                        "event_type": "chat.invocation_paused",
+                        "awaiting_user_input": True,
+                    },
+                    is_complete=True,
+                )
+            else:
+                yield AgentResponseChunk(
+                    request_id=rid,
+                    channel_id=cid,
+                    payload=None,
+                    is_complete=True,
+                )
+
+            # 让出事件循环，确保 usage_summary / is_complete 先被下游写出，
+            # 再跑同步感很强的 checkpoint（pickle），避免“假收尾”拖死本路 WS 发送。
+            await asyncio.sleep(0)
+
+            # 流式 chat 收尾补 commit（在客户端收齐之后）：把本轮 context 落盘到 checkpointer。
+            # 根因：流式路径 session.commit() 挂在 need_cleanup 下，adapter 预绑定 session 致
+            # need_cleanup=False，commit 被跳过 → 跨重启历史为空。对齐 cron 显式补一次落盘。
             if initialization_complete:
+                import time as _ckpt_time
+
+                _ckpt_t0 = _ckpt_time.perf_counter()
                 try:
                     await self._persist_session_checkpoint(session_id, rid)
                 except BaseException as exc:
-                    if cleanup_error is None:
-                        cleanup_error = exc
                     logger.warning(
                         "[JiuWenSwarmDeepAdapter] cleanup failed: "
                         "step=session_checkpoint error_type=%s",
                         type(exc).__name__,
                     )
-            if active_error is None and cleanup_error is not None:
-                raise cleanup_error
+                else:
+                    try:
+                        from jiuwenswarm.server.runtime.agent_perf import (
+                            log_event as _perf_log_event,
+                        )
 
-        summary_chunk = self._log_and_make_usage_summary_chunk(
-            request_id=rid,
-            channel_id=cid,
-            session_id=session_id,
-            usage_accumulator=usage_accumulator,
-            perf_usage_fallback=perf_usage_fallback,
-        )
-        if summary_chunk is not None:
-            yield summary_chunk
+                        _perf_log_event(
+                            "session_checkpoint",
+                            request_id=rid,
+                            elapsed_ms=(_ckpt_time.perf_counter() - _ckpt_t0) * 1000.0,
+                        )
+                    except Exception:
+                        logger.debug(
+                            "[AgentPerf] session_checkpoint log skipped",
+                            exc_info=True,
+                        )
+        finally:
+            try:
+                from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
 
-        if hitl_pending_stream:
-            # HITL 暂停：以 awaiting_user_input 终结帧收尾，网关出站会把该帧转成
-            # is_final=False 的 in_progress 帧，前端流保持开启等待用户作答。
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload={
-                    "event_type": "chat.invocation_paused",
-                    "awaiting_user_input": True,
-                },
-                is_complete=True,
-            )
-        else:
-            yield AgentResponseChunk(
-                request_id=rid,
-                channel_id=cid,
-                payload=None,
-                is_complete=True,
-            )
+                _perf_clear(rid)
+            except Exception:
+                pass
 
     @staticmethod
     def _stream_text_payload(
