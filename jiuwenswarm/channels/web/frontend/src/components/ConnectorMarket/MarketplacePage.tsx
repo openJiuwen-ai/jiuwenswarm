@@ -257,7 +257,19 @@ export function MarketplacePage({
     const cs = mcpCardStates[connector.runtimePackageName];
     const action = nextMcpQuickAction(connector.installed, cs);
     if (action === 'install') {
-      await installConnector(connector.id);
+      const response = await installConnector(connector.id);
+      const connectResult = response?.connect;
+      const connectName = connectResult?.name ?? connector.runtimePackageName;
+      if (connectResult?.credentialsRequired) {
+        setTokenTarget({
+          name: connectName,
+          displayName: connector.displayName,
+          icon: connector.icon ?? undefined,
+          response: connectResult,
+        });
+      } else if (connectResult?.type === 'auth_required') {
+        setAuthTarget({ name: connectName, response: connectResult });
+      }
       return;
     }
     if (action !== 'connect') return;

@@ -31,8 +31,12 @@ def _make_seed_zip(
     zip_path: Path,
     version: str = "v0.1",
     nested: bool = True,
+    packages: bool = True,
 ) -> None:
-    """造一个种子 zip; nested=True 时顶层带 mcp_builtins/ 目录."""
+    """造一个种子 zip; nested=True 时顶层带 mcp_builtins/ 目录.
+
+    packages=False 造零内置包的空种子(预置全部下线时发布的就是它)。
+    """
     files = {
         ".mcp_builtins_version": version,
         "huaweiyun-mcp/manifest.json": (
@@ -52,6 +56,8 @@ def _make_seed_zip(
         ),
         "harmonyos-mcp/mcp.json": '{"mcpServers":{"y":{"url":"http://hm/mcp"}}}',
     }
+    if not packages:
+        files = {".mcp_builtins_version": version}
     prefix = "mcp_builtins/" if nested else ""
     with zipfile.ZipFile(zip_path, "w", zipfile.ZIP_DEFLATED) as zf:
         for name, body in files.items():
@@ -218,6 +224,45 @@ def test_first_install_extracts_nested(seed_dir: Path, tmp_path: Path) -> None:
     assert not (dest / "index.json").exists()
     assert (dest / "huaweiyun-mcp" / "mcp.json").is_file()
     assert not (dest / "mcp_builtins").exists()
+
+
+def test_empty_seed_installs_version_marker_only(seed_dir: Path, tmp_path: Path) -> None:
+    """零内置包的空种子合法(预置全部下线): 只落版本标记, 不阻断启动."""
+    _make_seed_zip(seed_dir / "mcp_builtins_v0.2.zip", "v0.2", packages=False)
+    dest = tmp_path / "ws" / "mcp" / "mcp_builtins"
+
+    _ensure_mcp_builtins(seed_dir, dest, overwrite=False, cumulative_diff=_new_diff())
+
+    assert (dest / ".mcp_builtins_version").read_text(encoding="utf-8") == "v0.2"
+    assert [p.name for p in dest.iterdir() if p.is_dir()] == []
+
+
+def test_empty_seed_upgrade_wipes_previously_installed_packages(
+    seed_dir: Path, tmp_path: Path
+) -> None:
+    """空种子升级到新版号时, 旧版装进去的内置包必须被清掉（下线通道）."""
+    _make_seed_zip(seed_dir / "mcp_builtins_v0.1.zip", "v0.1")
+    dest = tmp_path / "ws" / "mcp" / "mcp_builtins"
+    _ensure_mcp_builtins(seed_dir, dest, overwrite=False, cumulative_diff=_new_diff())
+
+    (seed_dir / "mcp_builtins_v0.1.zip").unlink()
+    _make_seed_zip(seed_dir / "mcp_builtins_v0.2.zip", "v0.2", packages=False)
+    _ensure_mcp_builtins(seed_dir, dest, overwrite=False, cumulative_diff=_new_diff())
+
+    assert not (dest / "huaweiyun-mcp").exists()
+    assert (dest / ".mcp_builtins_version").read_text(encoding="utf-8") == "v0.2"
+
+
+def test_seed_with_unloadable_package_is_rejected(seed_dir: Path, tmp_path: Path) -> None:
+    """有包目录但清单读不出来仍是坏种子: 整包拒绝, 不落地半残目录."""
+    with zipfile.ZipFile(seed_dir / "mcp_builtins_v0.2.zip", "w") as zf:
+        zf.writestr("mcp_builtins/.mcp_builtins_version", "v0.2")
+        zf.writestr("mcp_builtins/broken/manifest.json", "{}")
+    dest = tmp_path / "ws" / "mcp" / "mcp_builtins"
+
+    _ensure_mcp_builtins(seed_dir, dest, overwrite=False, cumulative_diff=_new_diff())
+
+    assert not dest.exists()
 
 
 def test_version_match_skips(seed_dir: Path, tmp_path: Path) -> None:

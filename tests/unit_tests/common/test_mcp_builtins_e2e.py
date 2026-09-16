@@ -10,36 +10,12 @@
 
 from __future__ import annotations
 
-from collections import Counter
-import json
-import os
 from pathlib import Path
 
 import pytest
 
 from jiuwenswarm.common.utils import prepare_workspace
 from jiuwenswarm.server.runtime.mcp.package_manifest import load_mcp_package
-
-
-EXPECTED_BUILTIN_MCPS = {
-    "amap",
-    "baidu-map",
-    "ctrip-wendao",
-    "dingtalk",
-    "feishu",
-    "gitcode",
-    "github",
-    "harmonyos-mcp",
-    "huaweiyun-mcp",
-    "netease-mail",
-    "qcc-company",
-    "ssh-mcp-server",
-    "tmeet",
-    "tyc-mcp",
-    "wecom",
-    "wind-finance",
-    "yingmi-mcp",
-}
 
 
 @pytest.fixture()
@@ -73,85 +49,48 @@ def temp_workspace(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Path:
 
 
 def test_prepare_workspace_extracts_mcp_builtins(temp_workspace: Path) -> None:
-    """prepare_workspace 跑完后, mcp_builtins 应从 seed zip 解压就位."""
+    """prepare_workspace 跑完后, mcp_builtins 应从 seed zip 解压就位.
+
+    种子里当前零内置包, 因此只断言目录/版本标记就位与「目录名 == 包 id」的
+    一致性; 包内容由 test_ensure_mcp_builtins 的合成种子覆盖.
+    """
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
 
     mcp_builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
     assert mcp_builtins.is_dir(), "mcp_builtins 未解压"
     assert not (mcp_builtins / "index.json").exists()
     assert not (mcp_builtins / "manifest.json").exists()
-    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip() == "v0.2.5"
+    assert (mcp_builtins / ".mcp_builtins_version").read_text(encoding="utf-8").strip()
     pkg_dirs = [p for p in mcp_builtins.iterdir() if p.is_dir() and not p.name.startswith(".")]
-    assert {package.name for package in pkg_dirs} == EXPECTED_BUILTIN_MCPS
     packages = [load_mcp_package(package) for package in pkg_dirs]
-    assert {package.package_id for package in packages} == EXPECTED_BUILTIN_MCPS
-    assert Counter(package.integration_type for package in packages) == {
-        "stdio-mcp": 5,
-        "remote-mcp": 5,
-        "cli": 5,
-        "skill-only": 2,
-    }
-    assert Counter(package.credentials_type for package in packages) == {
-        "token": 12,
-        "cli-oauth": 4,
-        "none": 1,
-    }
-    assert sum(package.icon_file is not None for package in packages) == 17
-    assert sum(
-        len(list(skill_dir.rglob("SKILL.md")))
-        for package in packages
-        for skill_dir in package.skill_dirs
-    ) == 71
+    assert {package.package_id for package in packages} == {p.name for p in pkg_dirs}
     assert not any(
         path.name in {"index.json", "connector-meta.json"}
         for path in mcp_builtins.rglob("*")
     )
 
 
-def test_huawei_cloud_pins_compatible_mcp_sdk(temp_workspace: Path) -> None:
-    """The shipped Huawei Cloud command must keep the legacy server on MCP 1.x."""
-    prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-
-    config_path = (
-        temp_workspace
-        / "agent"
-        / "workspace"
-        / "mcp"
-        / "mcp_builtins"
-        / "huaweiyun-mcp"
-        / "mcp.json"
-    )
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    server = config["mcpServers"]["huaweicloud-mcp-server"]
-
-    assert server["command"] == "uvx"
-    assert server["args"][:4] == [
-        "--with",
-        "mcp<2",
-        "--from",
-        "huaweicloud-mcp-server",
-    ]
-
-
-def test_list_marketplace_orders_huawei_first(temp_workspace: Path) -> None:
-    """解压后 mcp.list 应把 huaweiyun-mcp / harmonyos-mcp 排在最前."""
+def test_list_marketplace_loads_extracted_packages(temp_workspace: Path) -> None:
+    """marketplace 的 builtin 列表应恰好来自解压出来的内置包目录."""
     prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
     # 重置 registry 缓存路径指向临时工作区.
     import jiuwenswarm.server.runtime.mcp.registry as reg
     # registry 的 _packages_dir 依赖 get_workspace_dir, 已被 fixture 重定向.
     items = reg.list_marketplace_mcps("builtin")
     names = [item["name"] for item in items]
-    assert names, "空列表"
-    assert set(names) == EXPECTED_BUILTIN_MCPS
+    installed = {
+        path.name
+        for path in (
+            temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
+        ).iterdir()
+        if path.is_dir() and not path.name.startswith(".")
+    }
+    assert set(names) == installed
     assert all(item["source"] == "built_in" for item in items)
     details = [reg.get_mcp(name) for name in names]
     assert all(detail is not None for detail in details)
     assert all(detail["display_name"] for detail in details if detail is not None)
     assert all(detail["examples"] for detail in details if detail is not None)
-    assert names[0] in ("huaweiyun-mcp", "harmonyos-mcp"), f"置顶失效, 首: {names[0]}"
-    assert names[1] in ("huaweiyun-mcp", "harmonyos-mcp"), f"第二非华为系: {names[1]}"
-    # 确认两个华为系都在且相邻置顶.
-    assert set(names[:2]) == {"huaweiyun-mcp", "harmonyos-mcp"}
 
 
 def test_second_prepare_skips_when_version_matches(temp_workspace: Path) -> None:
@@ -178,65 +117,7 @@ def test_prepare_workspace_leaves_no_seed_zip_leftover(temp_workspace: Path) -> 
     ws_root = temp_workspace / "agent" / "workspace"
     leftovers = list(ws_root.glob("mcp_builtins*.zip"))
     assert not leftovers, f"seed zip leaked to workspace root: {leftovers}"
-    # 解压目录仍在, 且内容完整。
+    # 解压目录仍在。
     mcp_builtins = ws_root / "mcp" / "mcp_builtins"
-    assert (mcp_builtins / "huaweiyun-mcp" / "manifest.json").is_file()
+    assert mcp_builtins.is_dir()
     assert not (mcp_builtins / "index.json").exists()
-
-
-def test_gitcode_init_works_without_bare_pip_on_path(
-    temp_workspace: Path, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """GitCode 初始化应通过 Python 模块调用 pip，不依赖不存在的 ``pip`` 命令。"""
-    prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-
-    from jiuwenswarm.server.runtime.mcp import cli_driver
-
-    monkeypatch.setattr(cli_driver, "get_workspace_dir", lambda: temp_workspace / "agent" / "workspace")
-    manifest = cli_driver.load_cli_manifest("gitcode")
-    assert manifest is not None
-
-    shim_dir = tmp_path / "bin"
-    shim_dir.mkdir()
-    captured_args = tmp_path / "python3-args.txt"
-    python3_shim = shim_dir / "python3"
-    python3_shim.write_text(
-        f'#!/bin/sh\nprintf "%s\\n" "$@" > "{captured_args}"\n',
-        encoding="utf-8",
-    )
-    python3_shim.chmod(0o755)
-
-    # install() pins the init command via the `{version}` placeholder, so mirror
-    # that here: the runner must receive the concrete `gitcode-cli==<pin>` target.
-    init_cmd = cli_driver._pin_init_command(manifest.init_cmd, manifest.min_version)
-    result = cli_driver.default_runner(
-        init_cmd,
-        env={"PATH": str(shim_dir), **({"SYSTEMROOT": os.environ["SYSTEMROOT"]} if "SYSTEMROOT" in os.environ else {})},
-    )
-
-    assert result.succeeded
-    assert captured_args.read_text(encoding="utf-8").splitlines() == [
-        "-m",
-        "pip",
-        "install",
-        f"gitcode-cli=={manifest.min_version}",
-    ]
-
-
-@pytest.mark.parametrize("previous_version", ["v0.2.2", "v0.2.3", "v0.2.4"])
-def test_upgrade_removes_retired_canva_builtin(
-    temp_workspace: Path, previous_version: str
-) -> None:
-    """Updating an existing workspace removes Canva from the built-in marketplace."""
-    prepare_workspace(overwrite=True, preferred_language="zh", workspace_dir=temp_workspace)
-    builtins = temp_workspace / "agent" / "workspace" / "mcp" / "mcp_builtins"
-    (builtins / ".mcp_builtins_version").write_text(f"{previous_version}\n", encoding="utf-8")
-    retired = builtins / "canva"
-    retired.mkdir(exist_ok=True)
-    (retired / "manifest.json").write_text("{}", encoding="utf-8")
-
-    prepare_workspace(overwrite=False, preferred_language="zh", workspace_dir=temp_workspace)
-
-    assert not retired.exists()
-    from jiuwenswarm.server.runtime.mcp import registry
-    assert {item["name"] for item in registry.list_marketplace_mcps("builtin")} == EXPECTED_BUILTIN_MCPS

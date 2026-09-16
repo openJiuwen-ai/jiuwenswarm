@@ -2966,7 +2966,8 @@
         "cli": "CLI 授权",
         "stdioMcp": "本地连接器",
         "remoteMcp": "远程连接器",
-        "skillOnly": "仅技能"
+        "skillOnly": "仅技能",
+        "hub": "OpenJiuwen Agentic Hub"
       },
       "cliSpecPresentHint": "支持命令行驱动",
       "config": {

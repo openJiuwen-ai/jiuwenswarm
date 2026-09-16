@@ -99,14 +99,17 @@ async def list_mcps_with_hub(
         record = _state().get_by_package_id(name)
         if record is not None and record.kind == "mcp":
             installed_asset_ids.add(record.asset_id)
-            card = {
-                **card,
-                "id": record.asset_id,
-                "package_name": name,
-                "source": "hub",
-                "installed": True,
-                "version": record.version,
-            }
+            if card.get("source") == "hub":
+                card = {
+                    **card,
+                    "id": record.asset_id,
+                    "package_name": name,
+                    "source": "hub",
+                    "installed": True,
+                    "version": record.version,
+                }
+            else:
+                card = {**card, "id": name, "package_name": name, "installed": True}
         else:
             card = {**card, "id": name, "package_name": name, "installed": True}
         cards[name] = card
@@ -125,7 +128,15 @@ async def list_mcps_with_hub(
         ):
             continue
         cards[item.package_name] = _remote_card(item)
-    return list(cards.values())
+    # Use the same marketplace sort as registry.list_marketplace_mcps.
+    priority = {"huaweiyun-mcp": 0, "harmonyos-mcp": 0}
+    return sorted(
+        cards.values(),
+        key=lambda card: (
+            priority.get(str(card.get("name") or ""), 1),
+            str(card.get("name") or ""),
+        ),
+    )
 
 
 async def show_mcp_with_hub(
@@ -134,6 +145,20 @@ async def show_mcp_with_hub(
     hub_port: HubAssetPort | None = None,
 ) -> dict[str, Any] | None:
     target = str(identifier or "").strip()
+    local = registry.get_mcp(target)
+    if local is not None:
+        record = _state().get(target) or _state().get_by_package_id(target)
+        if record is not None and local.get("source") == "hub":
+            return {
+                **local,
+                "id": record.asset_id,
+                "package_name": record.package_id,
+                "source": "hub",
+                "installed": True,
+                "version": record.version,
+            }
+        return {**local, "id": target, "package_name": target, "installed": True}
+
     record = _state().get(target) or _state().get_by_package_id(target)
     if record is not None and (_hub_root() / record.package_id).is_dir():
         detail = registry.get_mcp(record.package_id)
@@ -146,9 +171,6 @@ async def show_mcp_with_hub(
                 "installed": True,
                 "version": record.version,
             }
-    local = registry.get_mcp(target)
-    if local is not None:
-        return {**local, "id": target, "package_name": target, "installed": True}
     port = hub_port or create_default_hub_asset_port()
     detail = await port.query_asset(HubAssetQuery(kind="mcp", asset_id=target))
     if detail.kind != "mcp" or detail.asset_id != target:

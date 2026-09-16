@@ -59,6 +59,8 @@ export interface ConnectorSummary {
 export interface ConnectorInstallResponse {
   type: 'installed';
   item: { id: string; name: string; installed: boolean };
+  /** Connect result from the combined Hub download + connect request. */
+  connect?: ConnectorConnectResponse;
 }
 
 export interface ConnectorUninstallResponse {
