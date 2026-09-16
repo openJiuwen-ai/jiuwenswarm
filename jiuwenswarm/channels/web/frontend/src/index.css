@@ -534,7 +534,7 @@ body.workspace-resize-active iframe {
     gap: 32px;
     scrollbar-gutter: stable;
     scrollbar-gutter: stable both-edges;
-    padding-top: 25px;
+    padding-top: 16px;
   }
 
   .detail-body>* {
@@ -578,7 +578,7 @@ body.workspace-resize-active iframe {
     width: min(1400px, calc(100% - 96px));
     margin-right: auto;
     margin-left: auto;
-    margin-bottom: 10px;
+    margin-bottom: 16px;
     flex-shrink: 0;
   }
 
@@ -2562,7 +2562,6 @@ body.workspace-resize-active iframe {
   box-sizing: border-box;
   max-width: 320px;
   padding: 7px 16px;
-  border: 1px solid var(--color-border-default);
   border-radius: 6px;
   background: var(--color-surface-popover);
   box-shadow: var(--effect-shadow-lg);
