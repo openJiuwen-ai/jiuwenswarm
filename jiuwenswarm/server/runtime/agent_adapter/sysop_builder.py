@@ -6,6 +6,7 @@ import hashlib
 import json
 import logging
 import os
+import time
 from pathlib import Path
 from typing import Any, Literal
 
@@ -636,10 +637,12 @@ def create_sandbox_sysop_card(
     shared_dir: str | Path | None = None,
 ) -> SysOperationCard | None:
     """Create sandbox SysOperationCard (jiuwenbox or yuanrong)."""
+    _t0 = time.monotonic()
     # 触发 sandbox provider 注册（@SandboxRegistry.provider 装饰器副作用）
     import openjiuwen.extensions.sys_operation.sandbox.providers  # noqa: F401
 
     normalized_type = str(sandbox_type or "").strip().lower()
+    isolation_custom_id = ""
     try:
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()
@@ -676,8 +679,15 @@ def create_sandbox_sysop_card(
                 len(extra_params.get("mounts") or []),
                 extra_params.get("mounts") or [],
             )
+            logger.info(
+                "[SandboxPerf] sysop_builder.create_sandbox_card: agent_id=%s "
+                "sandbox_type=yuanrong total_ms=%.1f",
+                isolation_custom_id,
+                (time.monotonic() - _t0) * 1000,
+            )
             return sysop_card
 
+        _t_policy0 = time.monotonic()
         policy, upload_list = build_filesystem_policy(
             files_runtime,
             project_dir=project_dir,
@@ -685,6 +695,7 @@ def create_sandbox_sysop_card(
             startup_mode=startup_mode,
             shared_dir=shared_dir,
         )
+        policy_ms = (time.monotonic() - _t_policy0) * 1000
         if is_enterprise():
             process_policy = build_process_policy()
             if process_policy:
@@ -743,18 +754,50 @@ def create_sandbox_sysop_card(
             upload_list or [],
             extra_params["policy_mode"],
         )
+        logger.info(
+            "[SandboxPerf] sysop_builder.create_sandbox_card: agent_id=%s "
+            "policy_ms=%.1f total_ms=%.1f",
+            isolation_custom_id,
+            policy_ms,
+            (time.monotonic() - _t0) * 1000,
+        )
         return sysop_card
     except Exception as exc:  # noqa: BLE001
         logger.warning("[sysop_builder] create sandbox sysop card failed: %s", exc)
+        logger.info(
+            "[SandboxPerf] sysop_builder.create_sandbox_card: agent_id=%s ok=0 "
+            "total_ms=%.1f",
+            isolation_custom_id or "-",
+            (time.monotonic() - _t0) * 1000,
+        )
         return None
 
 
-def create_local_sysop_card() -> SysOperationCard:
-    """构造本地模式 SysOperationCard."""
-    logger.info("[sysop_builder] local SysOperationCard created (mode=LOCAL)")
+def create_local_sysop_card(work_dir: str | None = None) -> SysOperationCard:
+    """构造本地模式 SysOperationCard.
+
+    Args:
+        work_dir: 本地 work_dir；为空时不在 ``LocalWorkConfig`` 中显式设置。
+    """
+    _t0 = time.monotonic()
+    work_config = (
+        LocalWorkConfig(work_dir=work_dir, shell_allowlist=None)
+        if work_dir
+        else LocalWorkConfig(shell_allowlist=None)
+    )
+    logger.info(
+        "[sysop_builder] local SysOperationCard created (mode=LOCAL, work_dir=%s)",
+        work_dir or "<default>",
+    )
+    logger.info(
+        "[SandboxPerf] sysop_builder.create_local_sysop_card: work_dir=%s "
+        "elapsed_ms=%.1f",
+        work_dir or "<default>",
+        (time.monotonic() - _t0) * 1000,
+    )
     return SysOperationCard(
         mode=OperationMode.LOCAL,
-        work_config=LocalWorkConfig(shell_allowlist=None),
+        work_config=work_config,
     )
 
 

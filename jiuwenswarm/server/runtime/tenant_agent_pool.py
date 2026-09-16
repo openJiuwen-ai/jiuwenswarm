@@ -1028,6 +1028,9 @@ class TenantAgentPool:
         guard = self.require_officeclaw_agent(request)
         if guard is not None:
             return guard
+        from jiuwenswarm.server.runtime.agent_perf import bind_request
+
+        bind_request(getattr(request, "request_id", None))
         agent_id, service_id, workspace_key = self.extract_ids(request)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)
@@ -1054,6 +1057,9 @@ class TenantAgentPool:
                 is_complete=True,
             )
             return
+        from jiuwenswarm.server.runtime.agent_perf import bind_request
+
+        bind_request(getattr(request, "request_id", None))
         agent_id, service_id, workspace_key = self.extract_ids(request)
         agent_id, service_id = self.resolve_control_rpc_tenant(request, agent_id, service_id)
         cache_key = self._build_cache_key(agent_id, service_id, workspace_key)

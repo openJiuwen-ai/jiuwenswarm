@@ -462,6 +462,8 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.common.config import (
     _get_evolution_config,
+    agent_file_read_backend_is_local,
+    get_agent_file_read_backend,
     get_config,
     get_default_models,
     get_evolution_enabled,
@@ -669,6 +671,12 @@ _RUNTIME_TOOL_A2A_POLICY_ID: ContextVar[str] = ContextVar(
     "runtime_tool_a2a_policy_id", default=""
 )
 
+_DEFERRED_INTERRUPT_CLEAR: ContextVar[dict[str, Any] | None] = ContextVar(
+    "deferred_interrupt_clear",
+    default=None,
+)
+_RUNNER_PERF_PATCH_APPLIED = False
+
 _LLM_TRACE_SESSION_ID: ContextVar[str] = ContextVar(
     "llm_trace_session_id",
     default="",
@@ -695,15 +703,134 @@ _REASONING_TRACE_LOG_BATCH = 5
 _LLM_IO_TRACE_PATCH_APPLIED = False
 
 
+async def _apply_deferred_interrupt_clear_after_prepare(agent_session: Any) -> None:
+    """Runner ``_prepare_agent``（已含 pre_run）之后，在内存清理挂起的 interrupt。"""
+    spec = _DEFERRED_INTERRUPT_CLEAR.get()
+    if not spec:
+        return
+    _DEFERRED_INTERRUPT_CLEAR.set(None)
+
+    session_id = spec.get("session_id")
+    reason = str(spec.get("reason") or "deferred_clear")
+    t0 = time.monotonic()
+    outcome = "merged_runner_prepare"
+    try:
+        if agent_session is not None:
+            clear_session_interrupt_state(agent_session)
+            clear_interrupt_recovery_injected(agent_session)
+            if spec.get("clear_todo_resume_snapshot_pending"):
+                set_todo_resume_snapshot_pending(agent_session, pending=False)
+            try:
+                await _skill_turbo_clear_resume_ctx(agent_session)
+            except Exception:
+                logger.debug(
+                    "[JiuWenSwarmDeepAdapter] deferred skill_turbo resume clear failed",
+                    exc_info=True,
+                )
+    except Exception:
+        outcome = "error"
+        logger.warning(
+            "[JiuWenSwarmDeepAdapter] deferred clear after prepare failed session_id=%s",
+            session_id,
+            exc_info=True,
+        )
+
+    from jiuwenswarm.server.runtime.agent_perf import log_event, current_request_id
+
+    log_event(
+        "clear_interrupt",
+        request_id=current_request_id() or "",
+        session_id=session_id or "",
+        total_ms=(time.monotonic() - t0) * 1000,
+        cleared="interrupt",
+        outcome=outcome,
+        reason=reason,
+    )
+
+
+def _apply_runner_perf_patch() -> None:
+    """Patch GLOBAL_RUNNER ``_prepare_agent``: deferred clear + runner_prepare 打点。"""
+    global _RUNNER_PERF_PATCH_APPLIED
+    if _RUNNER_PERF_PATCH_APPLIED:
+        return
+    try:
+        import openjiuwen.core.runner.runner as runner_mod
+    except ImportError:
+        logger.warning("[AgentPerf] runner_perf patch skipped: runner module unavailable")
+        return
+
+    global_runner = getattr(runner_mod, "GLOBAL_RUNNER", None)
+    if global_runner is None:
+        logger.warning("[AgentPerf] runner_perf patch skipped: GLOBAL_RUNNER missing")
+        return
+
+    impl_cls = type(global_runner)
+    original = getattr(impl_cls, "_prepare_agent", None)
+    if not callable(original):
+        logger.warning(
+            "[AgentPerf] runner_perf patch skipped: %s has no _prepare_agent",
+            impl_cls.__name__,
+        )
+        return
+
+    async def _traced_prepare(self, agent, inputs, session=None):
+        from jiuwenswarm.server.runtime.agent_perf import (
+            current_request_id,
+            event_loop_lag_ms,
+            log_event,
+        )
+
+        t0 = time.monotonic()
+        lag0 = await event_loop_lag_ms()
+        result = await original(self, agent, inputs, session)
+        agent_session = (
+            result[1] if isinstance(result, tuple) and len(result) >= 2 else None
+        )
+        await _apply_deferred_interrupt_clear_after_prepare(agent_session)
+        log_event(
+            "runner_prepare",
+            request_id=current_request_id() or "",
+            elapsed_ms=(time.monotonic() - t0) * 1000,
+            lag_before_ms=lag0,
+        )
+        return result
+
+    impl_cls._prepare_agent = _traced_prepare  # type: ignore[method-assign]
+    _RUNNER_PERF_PATCH_APPLIED = True
+    logger.info(
+        "[AgentPerf] runner_perf patch applied on %s._prepare_agent",
+        impl_cls.__name__,
+    )
+
+
 def _log_latency_pre_llm_once(request_id: str | None) -> None:
     """Mark ③ endpoint once per request, right before provider call."""
     if _LATENCY_PRE_LLM_MARKED.get():
         return
     _LATENCY_PRE_LLM_MARKED.set(True)
+    rid = (request_id or "").strip() or "-"
     logger.info(
         "[latency] stage=3 name=pre_llm request_id=%s",
-        (request_id or "").strip() or "-",
+        rid,
     )
+    try:
+        from jiuwenswarm.server.runtime.agent_perf import (
+            elapsed_from_request,
+            elapsed_from_runner,
+            log_event,
+            log_phase,
+        )
+
+        pre_llm = elapsed_from_runner()
+        log_phase("pre_llm_ms", pre_llm)
+        log_event(
+            "llm_http_start",
+            request_id=rid if rid != "-" else None,
+            pre_llm_ms=pre_llm,
+            since_request_ms=elapsed_from_request(),
+        )
+    except Exception:
+        logger.debug("[AgentPerf] pre_llm log skipped", exc_info=True)
 
 
 @dataclass(slots=True)
@@ -2250,6 +2377,7 @@ class JiuWenSwarmDeepAdapter:
         apply_mcp_call_timeout_patch()
         # 绑定交互续轮的 task id 到 TaskPlan 任务，使外层循环收敛。幂等。
         apply_deepagent_task_plan_binding_patch()
+        _apply_runner_perf_patch()
         self._instance: DeepAgent | None = None
         self._project_dir: str | None = None
         # 企业多租户：企业版下可用外部传入的隔离 workspace / 租户 ID
@@ -2356,6 +2484,8 @@ class JiuWenSwarmDeepAdapter:
         self._evolution_watcher_tasks: set[asyncio.Task] = set()
         self._sys_operation = None
         self._sys_operation_card: SysOperationCard | None = None
+        # 读盘类 rail 专用本地 sysop（与可能为沙箱的 _sys_operation 分离）
+        self._local_sys_operation = None
         # Ids of the sys operations this adapter currently holds a reference on,
         # in acquisition order. ``cleanup`` releases them so a disposed adapter
         # stops pinning its SysOperation (and the ~16 tools derived from it) in
@@ -5440,6 +5570,11 @@ class JiuWenSwarmDeepAdapter:
         if routing is None:
             return
         try:
+            from jiuwenswarm.server.runtime.enterprise_config import (
+                invalidate_enterprise_config_caches,
+            )
+
+            invalidate_enterprise_config_caches()
             request = AgentRequest(
                 request_id="enterprise-config-refresh",
                 channel_id="default",
@@ -7047,6 +7182,337 @@ class JiuWenSwarmDeepAdapter:
         except Exception as exc:
             logger.warning("[JiuWenSwarmDeepAdapter] add sys_operation failed: %s", exc)
             return None
+
+    def _create_local_sys_operation(self) -> SysOperation | None:
+        """只创建/复用本地 SysOperation，给读盘类 rail 用；与沙箱实例分离。"""
+        _t0 = time.monotonic()
+        if self._local_sys_operation is not None:
+            logger.info(
+                "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse=1 elapsed_ms=%.1f",
+                self._agent_id,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return self._local_sys_operation
+        existing = self._sys_operation
+        if existing is not None and getattr(existing, "mode", None) == OperationMode.LOCAL:
+            self._local_sys_operation = existing
+            logger.info(
+                "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse_agent=1 "
+                "elapsed_ms=%.1f",
+                self._agent_id,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return existing
+        try:
+            work_dir = self._workspace_dir or str(get_agent_root_dir())
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] create local-only sys_operation (work_dir=%s)",
+                work_dir,
+            )
+            sysop_card = create_local_sysop_card(work_dir=work_dir)
+            if sysop_card is None:
+                logger.info(
+                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
+                    "elapsed_ms=%.1f reason=card_none",
+                    self._agent_id,
+                    (time.monotonic() - _t0) * 1000,
+                )
+                return None
+            isolation_key = self._sys_operation_isolation_key(sysop_card)
+            if isolation_key:
+                registered = self._get_registered_sys_operation_by_isolation_key(
+                    isolation_key
+                )
+                if registered is not None:
+                    self._retain_sys_operation(str(registered.id))
+                    self._local_sys_operation = registered
+                    logger.info(
+                        "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=1 "
+                        "reuse_registered=1 elapsed_ms=%.1f",
+                        self._agent_id,
+                        (time.monotonic() - _t0) * 1000,
+                    )
+                    return registered
+            result = Runner.resource_mgr.add_sys_operation(sysop_card)
+            if result.is_err():
+                registered = (
+                    self._get_registered_sys_operation_by_isolation_key(isolation_key)
+                    if isolation_key
+                    else None
+                )
+                if registered is not None:
+                    self._retain_sys_operation(str(registered.id))
+                    self._local_sys_operation = registered
+                    return registered
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] add local sys_operation failed: %s",
+                    result.msg(),
+                )
+                logger.info(
+                    "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
+                    "elapsed_ms=%.1f reason=add_err",
+                    self._agent_id,
+                    (time.monotonic() - _t0) * 1000,
+                )
+                return None
+            sysop_obj = Runner.resource_mgr.get_sys_operation(sysop_card.id)
+            if sysop_obj is not None:
+                self._retain_sys_operation(str(sysop_obj.id))
+            self._local_sys_operation = sysop_obj
+            logger.info(
+                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=%s "
+                "elapsed_ms=%.1f",
+                self._agent_id,
+                1 if sysop_obj is not None else 0,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return sysop_obj
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] create local sys_operation failed: %s", exc
+            )
+            logger.info(
+                "[SandboxPerf] create_local_sys_operation: agent_id=%s ok=0 "
+                "elapsed_ms=%.1f reason=exc",
+                self._agent_id,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return None
+
+    def _iter_adapter_rails(self) -> list[Any]:
+        """收集 adapter 上持有的 rail 实例。"""
+        rail_attrs = (
+            "_filesystem_rail",
+            "_skill_rail",
+            "_stream_event_rail",
+            "_task_execution_rail",
+            "_task_planning_rail",
+            "_context_assemble_rail",
+            "_context_processor_rail",
+            "_runtime_prompt_rail",
+            "_response_prompt_rail",
+            "_skill_protocol_prompt_rail",
+            "_security_rail",
+            "_memory_rail",
+            "_external_memory_rail",
+            "_heartbeat_rail",
+            "_skill_evolution_rail",
+            "_subagent_rail",
+            "_disabled_tools_rail",
+            "_permission_rail",
+            "_avatar_rail",
+            "_progressive_tool_rail",
+            "_skill_authorization_rail",
+            "_skill_active_state_rail",
+            "_skill_credential_injection_rail",
+            "_llm_retry_rail",
+            "_skill_create_rail",
+            "_ask_user_rail",
+        )
+        rails: list[Any] = []
+        for attr in rail_attrs:
+            rail = getattr(self, attr, None)
+            if rail is not None:
+                rails.append(rail)
+        return rails
+
+    @staticmethod
+    def _is_sandbox_bound_rail(rail: Any) -> bool:
+        """动手类 rail：必须跟 deep_config / 沙箱 sysop，不能强制本地。"""
+        if isinstance(rail, (SysOperationRail, SkillUseRail)):
+            return True
+        try:
+            if isinstance(rail, ConcurrentSafeSysOperationRail):
+                return True
+        except Exception:
+            pass
+        return type(rail).__name__ in {
+            "SysOperationRail",
+            "FileSystemRail",
+            "ConcurrentSafeFileSystemRail",
+            "ConcurrentSafeSysOperationRail",
+            "SkillUseRail",
+        }
+
+    def _set_rail_sys_operation(self, rail: Any, sysop: SysOperation) -> bool:
+        """给单个 rail 写入 sys_operation；成功返回 True。"""
+        setter = getattr(rail, "set_sys_operation", None)
+        if callable(setter):
+            setter(sysop)
+            return True
+        if hasattr(rail, "sys_operation"):
+            rail.sys_operation = sysop
+            return True
+        return False
+
+    def _apply_local_sysop_to_all_rails(self) -> None:
+        """按 ``AGENT_FILE_READ_BACKEND`` 把读文件类 rail 切到本地 sysop。"""
+        _t0 = time.monotonic()
+        backend = get_agent_file_read_backend()
+        if not agent_file_read_backend_is_local():
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] AGENT_FILE_READ_BACKEND=%s, skip local "
+                "sysop rail override (agent_id=%s)",
+                backend,
+                self._agent_id,
+            )
+            logger.info(
+                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
+                "elapsed_ms=%.1f",
+                self._agent_id,
+                backend,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return
+
+        local_sysop = self._create_local_sys_operation()
+        if local_sysop is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] skip applying local sysop to rails: "
+                "local sysop unavailable"
+            )
+            logger.info(
+                "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s skipped=1 "
+                "elapsed_ms=%.1f",
+                self._agent_id,
+                backend,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return
+
+        agent_sysop = self._sys_operation
+        if self._instance is not None:
+            deep_cfg = getattr(self._instance, "deep_config", None)
+            if deep_cfg is not None and agent_sysop is not None:
+                deep_cfg.sys_operation = agent_sysop
+
+        rails: list[Any] = []
+        if self._instance is not None:
+            configured = getattr(self._instance, "configured_rails", None)
+            if callable(configured):
+                try:
+                    rails.extend(configured() or [])
+                except Exception as exc:  # noqa: BLE001
+                    logger.warning(
+                        "[JiuWenSwarmDeepAdapter] configured_rails() failed: %s", exc
+                    )
+        rails.extend(self._iter_adapter_rails())
+
+        seen: set[int] = set()
+        local_applied = 0
+        sandbox_kept = 0
+        for rail in rails:
+            rid = id(rail)
+            if rid in seen:
+                continue
+            seen.add(rid)
+            if self._is_sandbox_bound_rail(rail):
+                if agent_sysop is not None and self._set_rail_sys_operation(
+                    rail, agent_sysop
+                ):
+                    sandbox_kept += 1
+                continue
+            if self._set_rail_sys_operation(rail, local_sysop):
+                local_applied += 1
+
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] rail sysop: backend=%s local=%d sandbox_bound=%d "
+            "(deep_config keeps agent sysop)",
+            backend,
+            local_applied,
+            sandbox_kept,
+        )
+        logger.info(
+            "[SandboxPerf] apply_rail_sysop: agent_id=%s backend=%s local=%d "
+            "sandbox_bound=%d elapsed_ms=%.1f",
+            self._agent_id,
+            backend,
+            local_applied,
+            sandbox_kept,
+            (time.monotonic() - _t0) * 1000,
+        )
+
+    async def _init_workspace_on_host(self) -> None:
+        """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
+
+        仅当 ``AGENT_FILE_READ_BACKEND=local``（默认）时执行。同步落盘（无 to_thread）。
+        """
+        _t0 = time.monotonic()
+        backend = get_agent_file_read_backend()
+        if not agent_file_read_backend_is_local():
+            logger.info(
+                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
+                "skipped=1 reason=backend_sandbox elapsed_ms=%.1f",
+                self._agent_id,
+                backend,
+                (time.monotonic() - _t0) * 1000,
+            )
+            return
+
+        instance = self._instance
+        if instance is None:
+            return
+        deep_cfg = getattr(instance, "deep_config", None)
+        if deep_cfg is None:
+            return
+        if not getattr(deep_cfg, "auto_create_workspace", True):
+            return
+        workspace = getattr(deep_cfg, "workspace", None)
+        if workspace is None:
+            return
+
+        root_path = getattr(workspace, "root_path", None) or self._workspace_dir
+        if not root_path:
+            return
+
+        directories = list(getattr(workspace, "directories", None) or [])
+        language = str(
+            getattr(workspace, "language", None)
+            or self._resolve_runtime_language()
+            or "cn"
+        )
+        try:
+            from jiuwenswarm.server.runtime.agent_adapter.workspace_host_init import (
+                host_init_workspace_sync,
+            )
+
+            result = host_init_workspace_sync(
+                str(root_path),
+                directories,
+                language=language,
+            )
+            status = str((result or {}).get("status") or "")
+            if status == "skipped_marker":
+                logger.info(
+                    "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s "
+                    "skipped=1 reason=marker_exists elapsed_ms=%.1f",
+                    self._agent_id,
+                    backend,
+                    (time.monotonic() - _t0) * 1000,
+                )
+                return
+            logger.info(
+                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=1 "
+                "mode=%s dirs=%d elapsed_ms=%.1f path=%s",
+                self._agent_id,
+                backend,
+                status,
+                int((result or {}).get("dirs") or len(directories)),
+                (time.monotonic() - _t0) * 1000,
+                root_path,
+            )
+        except Exception as exc:  # noqa: BLE001
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] init_workspace_on_host failed: %s",
+                exc,
+            )
+            logger.info(
+                "[SandboxPerf] init_workspace_on_host: agent_id=%s backend=%s ok=0 "
+                "elapsed_ms=%.1f reason=exc",
+                self._agent_id,
+                backend,
+                (time.monotonic() - _t0) * 1000,
+            )
 
     async def apply_sandbox_runtime_patch(
         self, runtime: dict[str, Any], *, files_changed: bool
@@ -9779,6 +10245,12 @@ class JiuWenSwarmDeepAdapter:
         self._session_instance_mode = mode
         self._session_instance_sub_mode = sub_mode
 
+        _t_total = time.monotonic()
+        bootstrap_request = None
+        if isinstance(config, dict):
+            bootstrap_request = config.get("request")
+        _rid = getattr(bootstrap_request, "request_id", None) or _LLM_TRACE_REQUEST_ID.get() or "?"
+
         await self.set_checkpoint()
         await asyncio.sleep(0)
 
@@ -9818,35 +10290,46 @@ class JiuWenSwarmDeepAdapter:
                     is_skill_prebuilt_tenant(self._agent_id, self._service_id)
                     and self._enterprise_config is not None
                 ):
-                    enterprise_skills: list[dict[str, Any]] = (
-                        getattr(self._enterprise_config, "skill_prebuilt", None) or []
+                    enterprise_skills = getattr(
+                        self._enterprise_config, "skill_prebuilt", None
                     )
-                    skill_config = parse_agent_skill_prebuilt(
-                        self._agent_id, self._service_id, enterprise_skills
-                    )
-                    sync_result = await SkillPrebuiltSynchronizer(
-                        self._workspace_dir,
-                        self._service_id,
-                        self._agent_id,
-                        skill_manager=self._skill_manager,
-                    ).sync(skill_config)
-                    if sync_result.errors:
-                        logger.warning(
-                            "[SkillPrebuilt] sync partial errors: agent_id=%s service_id=%s errors=%s",
+                    # None=未配置预置模板 → 跳过 sync；[]=空模板仍走短路逻辑
+                    if enterprise_skills is None:
+                        logger.info(
+                            "[AgentPerf] skill_sync skipped: no skill_prebuilt template "
+                            "agent_id=%s service_id=%s",
                             self._agent_id,
                             self._service_id,
-                            sync_result.errors,
                         )
-                    if sync_result.enabled_skill_dirs is not None:
-                        self._enabled_skills = [
-                            str(name) for name in sync_result.enabled_skill_dirs if str(name).strip()
-                        ]
-                    # 预置 Skill 名快照：供动态授权 trust 判定（approve_session 仅内置可选）。
-                    self._prebuilt_skills = {
-                        str(name).strip()
-                        for name in (sync_result.prebuilt_skill_dirs or [])
-                        if str(name).strip()
-                    }
+                    else:
+                        skill_config = parse_agent_skill_prebuilt(
+                            self._agent_id, self._service_id, enterprise_skills
+                        )
+                        sync_result = await SkillPrebuiltSynchronizer(
+                            self._workspace_dir,
+                            self._service_id,
+                            self._agent_id,
+                            skill_manager=self._skill_manager,
+                        ).sync(skill_config)
+                        if sync_result.errors:
+                            logger.warning(
+                                "[SkillPrebuilt] sync partial errors: agent_id=%s service_id=%s errors=%s",
+                                self._agent_id,
+                                self._service_id,
+                                sync_result.errors,
+                            )
+                        if sync_result.enabled_skill_dirs is not None:
+                            self._enabled_skills = [
+                                str(name)
+                                for name in sync_result.enabled_skill_dirs
+                                if str(name).strip()
+                            ]
+                        # 预置 Skill 名快照：供动态授权 trust 判定（approve_session 仅内置可选）。
+                        self._prebuilt_skills = {
+                            str(name).strip()
+                            for name in (sync_result.prebuilt_skill_dirs or [])
+                            if str(name).strip()
+                        }
                 self._project_dir = self._instance_overrides.get(
                     "project_dir", config.get("project_dir")
                 )
@@ -9943,8 +10426,23 @@ class JiuWenSwarmDeepAdapter:
 
                 _apply_llm_io_trace_patch()
 
+                # AGENT_FILE_READ_BACKEND=local：读盘 rail 切本地 sysop；宿主机先建工作区
+                _t_sysop_apply0 = time.monotonic()
+                self._apply_local_sysop_to_all_rails()
+                await self._init_workspace_on_host()
+                self._apply_local_sysop_to_all_rails()
+
                 await asyncio.sleep(0)
                 await self._instance.ensure_initialized()
+                self._apply_local_sysop_to_all_rails()
+                logger.info(
+                    "[SandboxPerf] rail_sysop_bind+ensure_init: request_id=%s agent=%s "
+                    "backend=%s elapsed_ms=%.1f",
+                    _rid,
+                    self._agent_name,
+                    get_agent_file_read_backend(),
+                    (time.monotonic() - _t_sysop_apply0) * 1000,
+                )
                 initial_runtime_workspace = self._project_dir or str(
                     get_default_project_session_workspace_dir()
                 )
@@ -9984,6 +10482,14 @@ class JiuWenSwarmDeepAdapter:
                 # 动态加载用户自定义的 Rail 扩展
                 await self.load_user_rails()
                 self._register_extension_tools()
+                logger.info(
+                    "[AgentPerf] deep_create_instance: request_id=%s agent=%s total_ms=%.1f "
+                    "mode=%s",
+                    _rid,
+                    self._agent_name,
+                    (time.monotonic() - _t_total) * 1000,
+                    mode,
+                )
             finally:
                 reset_permissions_agent_base(token_perm_agent)
         finally:
@@ -11281,7 +11787,12 @@ class JiuWenSwarmDeepAdapter:
                 bind_request=bind_request,
             )
         finally:
+            from jiuwenswarm.server.runtime.agent_perf import (
+                log_runtime_config_ms,
+            )
+
             total_ms = stage_timer.total_ms()
+            log_runtime_config_ms(total_ms)
             log_runtime_config_stages = _stage_breakdown_logger(
                 total_ms, _SLOW_RUNTIME_CONFIG_MS
             )
@@ -12245,10 +12756,39 @@ class JiuWenSwarmDeepAdapter:
         *,
         reason: str,
         clear_todo_resume_snapshot_pending: bool = False,
+        defer_to_runner: bool = False,
     ) -> None:
+        """清理持久化中断状态。
+
+        普通聊天可传 ``defer_to_runner=True``：只挂 ContextVar，立刻返回；真正清理由
+        Runner ``_prepare_agent``（已含 pre_run）之后在内存完成。
+        """
         if not session_id:
             return
         if self._instance is None:
+            return
+
+        if defer_to_runner:
+            _DEFERRED_INTERRUPT_CLEAR.set(
+                {
+                    "reason": reason,
+                    "clear_todo_resume_snapshot_pending": clear_todo_resume_snapshot_pending,
+                    "adapter": self,
+                    "session_id": session_id,
+                }
+            )
+            _apply_runner_perf_patch()
+            from jiuwenswarm.server.runtime.agent_perf import log_event, current_request_id
+
+            log_event(
+                "clear_interrupt",
+                request_id=current_request_id() or "",
+                session_id=session_id,
+                total_ms=0.0,
+                cleared="none",
+                outcome="deferred_to_runner",
+                reason=reason,
+            )
             return
 
         try:
@@ -12282,6 +12822,28 @@ class JiuWenSwarmDeepAdapter:
                 session_id,
                 exc,
             )
+
+    @staticmethod
+    def _plain_chat_should_clear_stale_interrupt(request: AgentRequest) -> bool:
+        """普通用户消息（非权限/问答结构化回复）进入 Agent 前应清空 checkpoint 内工具中断。"""
+        sid = str(getattr(request, "session_id", "") or "")
+        if sid.startswith("heartbeat"):
+            return False
+        params = request.params if isinstance(getattr(request, "params", None), dict) else {}
+        q = params.get("query")
+        try:
+            from openjiuwen.core.session.interaction.interactive_input import (
+                InteractiveInput,
+            )
+
+            if isinstance(q, InteractiveInput):
+                return False
+        except ImportError:
+            pass
+        answers = params.get("answers") or []
+        if answers:
+            return False
+        return True
 
     async def prepare_interrupt_artifacts_for_request(
         self, request: AgentRequest
@@ -17189,6 +17751,14 @@ class JiuWenSwarmDeepAdapter:
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
 
+        if self._plain_chat_should_clear_stale_interrupt(request):
+            await self._clear_session_persisted_interrupt_state(
+                session_id,
+                reason="plain_user_message_before_agent_run",
+                clear_todo_resume_snapshot_pending=False,
+                defer_to_runner=True,
+            )
+
         # [CRON-CTX] 非流式入口：与流式对称，跨 channel 时强制 recover cron 历史。
         if str(session_id).startswith("cron_") and self._instance is not None:
             _cron_sess = getattr(self._instance, "_interaction_session", None)
@@ -17418,6 +17988,15 @@ class JiuWenSwarmDeepAdapter:
                     continue
             raise
         try:
+            from jiuwenswarm.server.runtime.agent_perf import (
+                clear as _perf_clear,
+                log_invoke_start as _perf_invoke_start,
+                log_runner_start as _perf_runner_start,
+                restore as _perf_restore,
+            )
+
+            _perf_restore(request.request_id)
+            await _perf_invoke_start()
             await self._update_runtime_config(
                 self._RuntimeConfig(
                     session_id=session_id,
@@ -17436,6 +18015,7 @@ class JiuWenSwarmDeepAdapter:
                     request_system_prompt=self._extract_request_system_prompt(request),
                 )
             )
+            await _perf_runner_start()
             html_followup_result = None
             if self._is_stream_rewrite_fast_path_eligible(
                 request,
@@ -17596,6 +18176,12 @@ class JiuWenSwarmDeepAdapter:
         finally:
             active_error = sys.exc_info()[1]
             cleanup_error: BaseException | None = None
+            try:
+                from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
+
+                _perf_clear(request.request_id)
+            except Exception:
+                pass
             if interaction_stream is not None:
                 try:
                     await interaction_stream.close(
@@ -17908,6 +18494,14 @@ class JiuWenSwarmDeepAdapter:
         cid = request.channel_id
         query = request.params.get("query", "")
         mode = request.params.get("mode", "agent")
+
+        if self._plain_chat_should_clear_stale_interrupt(request):
+            await self._clear_session_persisted_interrupt_state(
+                session_id,
+                reason="plain_user_message_before_agent_run",
+                clear_todo_resume_snapshot_pending=False,
+                defer_to_runner=True,
+            )
 
         # [CRON-CTX] 跨 channel（cron 写 / web 读）恢复：cron 与 web 是不同 channel_key，
         # 各自持有独立 JiuWenSwarm → 独立 adapter → 独立 _session_adapters 缓存。web adapter
@@ -18442,6 +19036,15 @@ class JiuWenSwarmDeepAdapter:
             )
             perf_context_initialized = True
             initialization_complete = True
+            from jiuwenswarm.server.runtime.agent_perf import (
+                clear as _perf_clear,
+                log_invoke_start as _perf_invoke_start,
+                log_runner_start as _perf_runner_start,
+                restore as _perf_restore,
+            )
+
+            _perf_restore(rid)
+            await _perf_invoke_start()
             await self._update_runtime_config(
                 self._RuntimeConfig(
                     session_id=session_id,
@@ -18460,6 +19063,7 @@ class JiuWenSwarmDeepAdapter:
                     request_system_prompt=self._extract_request_system_prompt(request),
                 )
             )
+            await _perf_runner_start()
             direct_path_eligible = self._is_stream_rewrite_fast_path_eligible(
                 request,
                 pending_goal_op=pending_goal_op,
@@ -19377,6 +19981,12 @@ class JiuWenSwarmDeepAdapter:
         finally:
             active_error = sys.exc_info()[1]
             cleanup_error: BaseException | None = None
+            try:
+                from jiuwenswarm.server.runtime.agent_perf import clear as _perf_clear
+
+                _perf_clear(rid)
+            except Exception:
+                pass
             if perf_context_initialized:
                 perf_usage_fallback = snapshot_perf_summary_usage(request.request_id)
             if interaction_stream is not None:

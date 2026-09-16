@@ -9,6 +9,7 @@ import json
 import logging
 import re
 import threading
+import time
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -197,6 +198,8 @@ class SkillPrebuiltSynchronizer:
         workspace = Path(workspace_dir)
         self._skills_dir = workspace / "skills"
         self._skills_dir.mkdir(parents=True, exist_ok=True)
+        self._service_id = service_id
+        self._agent_id = agent_id
         self._manager = skill_manager or SkillManager(
             workspace_dir=str(workspace),
             persist_skills_state=True,
@@ -217,6 +220,41 @@ class SkillPrebuiltSynchronizer:
             return False
         path = skills_dir / skill_name
         return path.is_dir() and (path / "SKILL.md").is_file()
+
+    def _has_ready_skill_dirs(self) -> bool:
+        """skills/ 下是否已有含 SKILL.md 的有效目录（列目录失败时保守返回 True）."""
+        if not self._skills_dir.is_dir():
+            return False
+        try:
+            for child in self._skills_dir.iterdir():
+                name = child.name
+                if name in _RESERVED_SKILL_DIR_NAMES or not child.is_dir():
+                    continue
+                if self._skill_dir_ready(self._skills_dir, name):
+                    return True
+        except OSError:
+            return True
+        return False
+
+    def _probe_template_disk_ready(
+        self,
+        items: list[SkillPrebuiltItem],
+        installed_skills_map: dict[str, dict[str, Any]],
+    ) -> tuple[bool, set[str]]:
+        """探测模板项是否全部盘已就绪且无需下载。返回 (all_ready, kept_names)."""
+        kept: set[str] = set()
+        if not items:
+            return False, kept
+        for item in items:
+            need_download, db_skill_name = self._should_download_prebuilt(
+                item, installed_skills_map
+            )
+            if need_download or not db_skill_name:
+                return False, set()
+            if not self._skill_dir_ready(self._skills_dir, db_skill_name):
+                return False, set()
+            kept.add(db_skill_name)
+        return True, kept
 
     def _should_download_prebuilt(
         self,
@@ -320,42 +358,74 @@ class SkillPrebuiltSynchronizer:
     async def _run_sync(self, config: AgentSkillPrebuiltConfig) -> SkillPrebuiltSyncResult:
         """持锁同步：对齐模板预置 → 剔除多余 → 刷新启用集."""
         result = SkillPrebuiltSyncResult()
+        items = [item for item in config.skills if item.install_mode() is not None]
+        items_n = len(items)
+        _t_total0 = time.monotonic()
+
+        # 空模板 + 盘上无有效 skill：跳过 list（冷启动主耗时之一）
+        if items_n == 0 and not config.skills:
+            if not self._has_ready_skill_dirs():
+                logger.info(
+                    "[AgentPerf] skill_sync_detail: step=run_sync "
+                    "total_ms=%.1f items=0 enabled=0 skipped_empty_disk=1 "
+                    "agent_id=%s service_id=%s",
+                    (time.monotonic() - _t_total0) * 1000,
+                    self._agent_id,
+                    self._service_id,
+                )
+                return result
+
         installed_skills_map = await self._fetch_installed_skills_map(result)
         if installed_skills_map is None:
             return result
 
-        kept_prebuilt_names: set[str] = set()
-        for item in config.skills:
-            mode = item.install_mode()
-            if mode is None:
-                self._mark_failed(
-                    result,
-                    skill_name="",
-                    error_code="invalid_template",
-                    error_message=(
-                        f"cannot infer install path for skill_id={item.id}: "
-                        "need source_id+version_id or http(s) package_url"
-                    ),
-                )
-                continue
-            try:
-                outcome = await self._ensure_prebuilt_installed(item, installed_skills_map)
-            except Exception as exc:  # noqa: BLE001
-                msg = (
-                    f"sync failed id={item.id} mode={mode} "
-                    f"source={item.package_url or item.source_id}: {exc}"
-                )
-                logger.warning("[SkillPrebuilt] %s", msg)
-                self._mark_failed(
-                    result,
-                    skill_name="",
-                    error_code="sync_exception",
-                    error_message=msg,
-                )
-                continue
-            self._apply_prebuilt_outcome(
-                outcome, installed_skills_map, kept_prebuilt_names, result
+        # 盘已就绪短路：模板项均无需下载时跳过 ensure 循环
+        all_ready, kept_prebuilt_names = self._probe_template_disk_ready(
+            items, installed_skills_map
+        )
+        if all_ready:
+            logger.info(
+                "[SkillPrebuilt] disk-ready short-circuit: agent_id=%s skills=%d",
+                self._agent_id,
+                len(kept_prebuilt_names),
             )
+            for name in kept_prebuilt_names:
+                result.succeeded.append(name)
+        else:
+            kept_prebuilt_names = set()
+            for item in config.skills:
+                mode = item.install_mode()
+                if mode is None:
+                    self._mark_failed(
+                        result,
+                        skill_name="",
+                        error_code="invalid_template",
+                        error_message=(
+                            f"cannot infer install path for skill_id={item.id}: "
+                            "need source_id+version_id or http(s) package_url"
+                        ),
+                    )
+                    continue
+                try:
+                    outcome = await self._ensure_prebuilt_installed(
+                        item, installed_skills_map
+                    )
+                except Exception as exc:  # noqa: BLE001
+                    msg = (
+                        f"sync failed id={item.id} mode={mode} "
+                        f"source={item.package_url or item.source_id}: {exc}"
+                    )
+                    logger.warning("[SkillPrebuilt] %s", msg)
+                    self._mark_failed(
+                        result,
+                        skill_name="",
+                        error_code="sync_exception",
+                        error_message=msg,
+                    )
+                    continue
+                self._apply_prebuilt_outcome(
+                    outcome, installed_skills_map, kept_prebuilt_names, result
+                )
 
         await self._remove_prebuilt_not_in_template(
             installed_skills_map, kept_prebuilt_names, result

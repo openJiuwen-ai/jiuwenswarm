@@ -25,6 +25,16 @@ import sys
 from jiuwenswarm.dotenv_early import parse_dotenv_early, load_dotenv_runtime
 parse_dotenv_early("jiuwenswarm-agentserver")
 
+try:
+    from jiuwenswarm.server.runtime.agent_adapter.agent_adapters import (
+        warmup_adapter_imports,
+    )
+
+    warmup_adapter_imports()
+except ImportError:
+    # Fallback: deep adapter deps may be unavailable at import time.
+    pass
+
 
 from jiuwenswarm.common.utils import (
     get_env_file,

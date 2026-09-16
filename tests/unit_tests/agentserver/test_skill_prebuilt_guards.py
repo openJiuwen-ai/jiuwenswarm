@@ -642,3 +642,116 @@ def test_workspace_state_cleanup_removes_only_prebuilt(tmp_path: Path) -> None:
     assert (workspace / "skills" / "user-skill" / "SKILL.md").is_file()
     assert [row["name"] for row in manager.list_skill_installations()] == ["user-skill"]
     assert result.enabled_skill_dirs == ["user-skill"]
+
+
+def test_empty_prebuilt_empty_disk_skips_installed_list(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """空模板 + 空盘：跳过 list_skill_installations，直接返回空启用集."""
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
+        AgentSkillPrebuiltConfig,
+        SkillPrebuiltSynchronizer,
+    )
+
+    workspace = tmp_path / "tenant_ws"
+    skills_dir = workspace / "skills"
+    skills_dir.mkdir(parents=True)
+
+    class _BoomManager:
+        def list_skill_installations(self):
+            raise AssertionError("list_skill_installations should be skipped on empty disk")
+
+        def list_enabled_skill_names(self):
+            return []
+
+    result = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace,
+            "svc",
+            "bot",
+            skill_manager=_BoomManager(),  # type: ignore[arg-type]
+        ).sync(AgentSkillPrebuiltConfig(agent_id="bot", service_id="svc"))
+    )
+
+    assert result.ok is True
+    assert result.enabled_skill_dirs == []
+    assert result.prebuilt_skill_dirs == []
+
+
+def test_disk_ready_short_circuit_skips_ensure(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """模板项盘已就绪时短路，不进入 ensure 下载循环."""
+    from jiuwenswarm.server.runtime.skill.skill_prebuilt import (
+        AgentSkillPrebuiltConfig,
+        SkillPrebuiltItem,
+        SkillPrebuiltSynchronizer,
+    )
+
+    workspace = tmp_path / "tenant_ws"
+    skills_dir = workspace / "skills"
+    skill_dir = skills_dir / "ready-skill"
+    skill_dir.mkdir(parents=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: ready-skill\n---\n", encoding="utf-8")
+
+    ensure_calls = {"count": 0}
+
+    async def _forbidden_ensure(self, *args, **kwargs):
+        ensure_calls["count"] += 1
+        raise AssertionError("ensure should be skipped on disk-ready")
+
+    async def _fetch(self, result):
+        return {
+            "ready-skill": {
+                "name": "ready-skill",
+                "source_type": "prebuilt",
+                "skill_id": "id-1",
+            }
+        }
+
+    monkeypatch.setattr(
+        SkillPrebuiltSynchronizer,
+        "_ensure_prebuilt_installed",
+        _forbidden_ensure,
+    )
+    monkeypatch.setattr(
+        SkillPrebuiltSynchronizer,
+        "_probe_template_disk_ready",
+        lambda self, items, installed: (True, {"ready-skill"}),
+    )
+    monkeypatch.setattr(SkillPrebuiltSynchronizer, "_fetch_installed_skills_map", _fetch)
+
+    class _Mgr:
+        def list_skill_installations(self):
+            return []
+
+        def list_enabled_skill_names(self):
+            return ["ready-skill"]
+
+        def set_enabled_skills(self, names):
+            return None
+
+    result = asyncio.run(
+        SkillPrebuiltSynchronizer(
+            workspace,
+            "svc",
+            "bot",
+            skill_manager=_Mgr(),  # type: ignore[arg-type]
+        ).sync(
+            AgentSkillPrebuiltConfig(
+                agent_id="bot",
+                service_id="svc",
+                skills=[
+                    SkillPrebuiltItem(
+                        id="id-1",
+                        source="https://example.com/ready.zip",
+                        version="1.0.0",
+                    )
+                ],
+            )
+        )
+    )
+
+    assert ensure_calls["count"] == 0
+    assert "ready-skill" in result.succeeded
+    assert result.ok is True

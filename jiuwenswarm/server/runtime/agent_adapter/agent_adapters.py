@@ -12,7 +12,7 @@ from jiuwenswarm.edition import is_enterprise
 
 import logging
 import os
-from typing import Any, AsyncIterator, Protocol, runtime_checkable
+from typing import Any, AsyncIterator, Protocol, Type, runtime_checkable
 
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 
@@ -20,6 +20,35 @@ logger = logging.getLogger(__name__)
 
 _SDK_ENV_VAR = "JIUWENSWARM_AGENT_SDK"
 _DEFAULT_SDK = "harness"
+
+_HarnessAdapterCls: Type[Any] | None = None
+_ADAPTER_IMPORT_WARMED = False
+
+
+def _load_harness_adapter_cls() -> Type[Any]:
+    """Import JiuWenSwarmDeepAdapter once and cache the class object."""
+    global _HarnessAdapterCls
+    if _HarnessAdapterCls is not None:
+        return _HarnessAdapterCls
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+        JiuWenSwarmDeepAdapter,
+    )
+
+    _HarnessAdapterCls = JiuWenSwarmDeepAdapter
+    return _HarnessAdapterCls
+
+
+def warmup_adapter_imports() -> None:
+    """进程启动时预热 Deep 适配器 import，避免首批并发请求冷导入抢事件循环。"""
+    global _ADAPTER_IMPORT_WARMED
+    if _ADAPTER_IMPORT_WARMED:
+        return
+    try:
+        _load_harness_adapter_cls()
+        _ADAPTER_IMPORT_WARMED = True
+        logger.info("[SDK] harness adapter import warmed")
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("[SDK] harness adapter warmup skipped: %s", exc)
 
 
 @runtime_checkable
@@ -193,8 +222,10 @@ def create_adapter(
                 agent_id=enterprise_agent_id,
                 service_id=enterprise_service_id,
             )
-        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
-        return JiuWenSwarmDeepAdapter(
+        cls = _load_harness_adapter_cls()
+        global _ADAPTER_IMPORT_WARMED
+        _ADAPTER_IMPORT_WARMED = True
+        return cls(
             workspace_dir=enterprise_workspace,
             agent_id=enterprise_agent_id,
             service_id=enterprise_service_id,

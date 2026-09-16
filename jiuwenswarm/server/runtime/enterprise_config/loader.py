@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
+import time
 from collections.abc import Collection
+from dataclasses import dataclass
 from typing import Any
 
 from jiuwenswarm.edition import is_enterprise
@@ -13,6 +16,7 @@ from . import db_queries
 from .schemas import (
     DEFAULT_AGENT_LOAD_SLOTS,
     MODEL_SLOT_KEYS,
+    SLOT_ENTITY_TABLE,
     EffectiveEnterpriseConfig,
     RoutingContext,
     TemplateRefSlot,
@@ -79,11 +83,171 @@ def _any_requested_slot_loaded(
     return False
 
 
+@dataclass
+class _CacheEntry:
+    value: Any
+    fetched_at: float
+
+
+class _TtlSingleFlightCache:
+    """简单进程级 TTL + 单飞缓存（按 key）。"""
+
+    def __init__(self, ttl_seconds: float = 3600.0) -> None:
+        self._ttl = ttl_seconds
+        self._entries: dict[str, _CacheEntry] = {}
+        self._locks: dict[str, asyncio.Lock] = {}
+        self._meta_lock: asyncio.Lock | None = None
+
+    def invalidate(self) -> None:
+        self._entries.clear()
+
+    def invalidate_key(self, key: str) -> None:
+        self._entries.pop(key, None)
+
+    async def _lock_for(self, key: str) -> asyncio.Lock:
+        if self._meta_lock is None:
+            self._meta_lock = asyncio.Lock()
+        async with self._meta_lock:
+            lock = self._locks.get(key)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._locks[key] = lock
+            return lock
+
+    def _fresh(self, key: str) -> Any | None:
+        entry = self._entries.get(key)
+        if entry is not None and time.monotonic() - entry.fetched_at <= self._ttl:
+            return entry.value
+        return None
+
+    async def get_or_fetch(self, key: str, fetcher) -> Any:
+        hit = self._fresh(key)
+        if hit is not None:
+            return hit
+        lock = await self._lock_for(key)
+        async with lock:
+            hit = self._fresh(key)
+            if hit is not None:
+                return hit
+            value = await fetcher()
+            self._entries[key] = _CacheEntry(value=value, fetched_at=time.monotonic())
+            return value
+
+
+class TemplateEntityCache:
+    """进程级模板实体缓存：按 (表, template_id) + 单飞补齐 + TTL。"""
+
+    def __init__(self, ttl_seconds: float = 3600.0) -> None:
+        self._ttl = ttl_seconds
+        self._entries: dict[tuple[str, str], _CacheEntry] = {}
+        self._table_locks: dict[str, asyncio.Lock] = {}
+        self._meta_lock: asyncio.Lock | None = None
+
+    def invalidate(self) -> None:
+        self._entries.clear()
+        logger.info("[AgentPerf] template entity cache invalidated")
+
+    async def _lock_for(self, table: str) -> asyncio.Lock:
+        if self._meta_lock is None:
+            self._meta_lock = asyncio.Lock()
+        async with self._meta_lock:
+            lock = self._table_locks.get(table)
+            if lock is None:
+                lock = asyncio.Lock()
+                self._table_locks[table] = lock
+            return lock
+
+    def _fresh_row(self, table: str, template_id: str) -> dict[str, Any] | None:
+        entry = self._entries.get((table, template_id))
+        if entry is not None and time.monotonic() - entry.fetched_at <= self._ttl:
+            return entry.value
+        return None
+
+    async def get_by_ids(
+        self,
+        slot: str,
+        template_ids: list[str],
+    ) -> list[dict[str, Any]]:
+        try:
+            slot_key = TemplateRefSlot(slot)
+        except ValueError as exc:
+            raise ValueError(
+                f"unknown template_ref slot {slot!r} "
+                f"(known: {[s.value for s in TemplateRefSlot]})"
+            ) from exc
+
+        table = SLOT_ENTITY_TABLE[slot_key]
+        id_field = (
+            "policy_id"
+            if slot_key is TemplateRefSlot.A2A_ACCESS_POLICY
+            else "template_id"
+        )
+        refs: list[str] = []
+        for raw in template_ids:
+            tid = str(raw or "").strip()
+            if tid and tid not in refs:
+                refs.append(tid)
+        if not refs:
+            return []
+
+        result: dict[str, dict[str, Any]] = {}
+        missing: list[str] = []
+        for tid in refs:
+            row = self._fresh_row(table, tid)
+            if row is not None:
+                result[tid] = row
+            else:
+                missing.append(tid)
+
+        if missing:
+            lock = await self._lock_for(table)
+            async with lock:
+                still_missing: list[str] = []
+                for tid in missing:
+                    row = self._fresh_row(table, tid)
+                    if row is not None:
+                        result[tid] = row
+                    else:
+                        still_missing.append(tid)
+                if still_missing:
+                    fetched = await db_queries.fetch_templates_by_slot(
+                        slot, still_missing
+                    )
+                    now = time.monotonic()
+                    for row in fetched:
+                        tid = str(row.get(id_field) or "").strip()
+                        if not tid:
+                            continue
+                        self._entries[(table, tid)] = _CacheEntry(
+                            value=row, fetched_at=now
+                        )
+                        result[tid] = row
+
+        return [result[tid] for tid in refs if tid in result]
+
+
+_template_entity_cache = TemplateEntityCache()
+_resource_row_cache = _TtlSingleFlightCache(ttl_seconds=600.0)
+_agent_template_cache = _TtlSingleFlightCache(ttl_seconds=600.0)
+
+
+def invalidate_template_entity_cache() -> None:
+    _template_entity_cache.invalidate()
+
+
+def invalidate_enterprise_config_caches() -> None:
+    """失效企业配置相关进程缓存（模板实体 + 实例/模板行）。"""
+    _template_entity_cache.invalidate()
+    _resource_row_cache.invalidate()
+    _agent_template_cache.invalidate()
+    logger.info("[AgentPerf] enterprise config caches invalidated")
+
+
 async def _fetch_slot_entities(
     slot: str,
     template_ids: list[str],
 ) -> list[dict[str, Any]]:
-    entities = await db_queries.fetch_templates_by_slot(slot, template_ids)
+    entities = await _template_entity_cache.get_by_ids(slot, template_ids)
     requested = {str(tid or "").strip() for tid in template_ids} - {""}
     id_field = (
         "policy_id"
@@ -105,22 +269,30 @@ async def _fetch_instance_agent_resource(resource_id: str) -> dict[str, Any] | N
     rid = str(resource_id or "").strip()
     if not rid:
         return None
-    rows = await db_queries.list_records(
-        "instance_agent_resource",
-        filters={"enabled": True, "resource_id": rid},
-    )
-    return rows[0] if rows else None
+
+    async def _load() -> dict[str, Any] | None:
+        rows = await db_queries.list_records(
+            "instance_agent_resource",
+            filters={"enabled": True, "resource_id": rid},
+        )
+        return rows[0] if rows else None
+
+    return await _resource_row_cache.get_or_fetch(f"iar:{rid}", _load)
 
 
 async def _fetch_agent_template_row(template_id: str) -> dict[str, Any] | None:
     tid = str(template_id or "").strip()
     if not tid:
         return None
-    rows = await db_queries.list_records(
-        "agent_template",
-        filters={"enabled": True, "template_id": tid},
-    )
-    return rows[0] if rows else None
+
+    async def _load() -> dict[str, Any] | None:
+        rows = await db_queries.list_records(
+            "agent_template",
+            filters={"enabled": True, "template_id": tid},
+        )
+        return rows[0] if rows else None
+
+    return await _agent_template_cache.get_or_fetch(f"at:{tid}", _load)
 
 
 def _literal_slot_template_id_map(
@@ -270,6 +442,8 @@ __all__ = (
     "DEFAULT_AGENT_LOAD_SLOTS",
     "EffectiveEnterpriseConfig",
     "TemplateRefSlot",
+    "invalidate_enterprise_config_caches",
+    "invalidate_template_entity_cache",
     "load_effective_enterprise_config",
     "routing_context_from_request",
 )
