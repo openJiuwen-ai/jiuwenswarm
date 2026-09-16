@@ -105,7 +105,7 @@ async def test_core_processor_delivers_child_then_complete_root_without_reencodi
             "agent.agent.session-core-swarm",
             attributes={
                 "openjiuwen.trace.root": True,
-                "openjiuwen.trace.schema_version": "1",
+                "openjiuwen.trajectory.schema_version": "2",
                 "openjiuwen.trajectory.record.kind": "turn",
                 "gen_ai.conversation.id": session_id,
                 "openjiuwen.request.id": request_id,
@@ -117,7 +117,7 @@ async def test_core_processor_delivers_child_then_complete_root_without_reencodi
             "llm.call",
             context=set_span_in_context(root),
             attributes={
-                "openjiuwen.trace.schema_version": "1",
+                "openjiuwen.trajectory.schema_version": "2",
                 "openjiuwen.trajectory.record.kind": "inference",
                 "gen_ai.input.messages": json.dumps(
                     [{"role": "user", "parts": [{"type": "text", "content": "hello"}]}]
@@ -179,7 +179,7 @@ async def test_core_snapshot_is_visible_before_end_and_finalizes_same_identity(
     processor.register_consumer(sink)
     try:
         routing = {
-            "openjiuwen.trace.schema_version": "1",
+            "openjiuwen.trajectory.schema_version": "2",
             "gen_ai.conversation.id": session_id,
             "openjiuwen.request.id": "request-live",
             "openjiuwen.run.id": "run-live",
@@ -280,7 +280,7 @@ async def test_native_context_event_is_queryable_before_parent_request_ends(
         parent = tracer.start_span(
             "llm.call",
             attributes={
-                "openjiuwen.trace.schema_version": "2",
+                "openjiuwen.trajectory.schema_version": "2",
                 "gen_ai.conversation.id": session_id,
                 "openjiuwen.request.id": "request-native-event",
                 "openjiuwen.run.id": "run-native-event",

@@ -30,7 +30,7 @@ from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
     load_trajectory_store_settings,
 )
-from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryCursorError
+from jiuwenswarm.observability.store import AsyncTrajectoryReader
 from jiuwenswarm.server.runtime.session.session_history import is_valid_session_id
 
 if TYPE_CHECKING:

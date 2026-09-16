@@ -84,7 +84,7 @@ def _record(*, span_id: str = _SPAN_ID) -> SimpleNamespace:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
 
 
@@ -116,7 +116,7 @@ def _frame(sequence: int, *, text: str | None = None) -> SimpleNamespace:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
 
 

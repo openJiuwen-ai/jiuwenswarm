@@ -90,7 +90,7 @@ def _record(
         request_id=f"request-{session_id}",
         run_id=f"run-{session_id}",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
         record_revision=revision,
         observed_time_unix_nano=100 + revision,
     )
