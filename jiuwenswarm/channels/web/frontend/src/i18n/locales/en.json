@@ -72,6 +72,7 @@
     "noTasks": "No tasks",
     "noMemberData": "No member data",
     "selectMember": "Select a team member",
+    "noMembers": "No members yet",
     "detailTabs": {
       "members": "Members",
       "group": "Group Chat"

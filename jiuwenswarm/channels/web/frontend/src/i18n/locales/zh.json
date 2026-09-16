@@ -72,6 +72,7 @@
     "noTasks": "暂无任务",
     "noMemberData": "暂无成员数据",
     "selectMember": "请选择 Team 成员",
+    "noMembers": "暂无成员",
     "detailTabs": {
       "members": "成员",
       "group": "群聊"
