@@ -12,9 +12,11 @@ import time
 from collections import OrderedDict
 from collections.abc import Callable
 from dataclasses import dataclass, replace
+from pathlib import Path
 
 from jiuwenswarm.observability.config import (
     TrajectoryStoreSettings,
+    database_files,
     session_database_path,
 )
 from jiuwenswarm.observability.models import (
@@ -33,6 +35,10 @@ logger = logging.getLogger(__name__)
 
 CommitCallback = Callable[[tuple[CommittedTraceUpdate, ...]], None]
 _RETENTION_INTERVAL_SECONDS = 3600
+# How often the router looks for session databases nobody has written to within
+# the retention window. A writer only exists while its session is active, so
+# the per-writer retention pass never reaches a session that went quiet.
+_STALE_DATABASE_SWEEP_INTERVAL_SECONDS = 3600
 # One retry keeps the two five-second SQLite busy waits below the default
 # fifteen-second shutdown deadline, including the retry delay.
 _WRITE_RETRY_DELAYS_SECONDS = (0.05,)
@@ -604,6 +610,9 @@ class TrajectorySessionSinkRouter:
         self._dropped = 0
         self._failed = 0
         self._dropped_final = 0
+        # Monotonic time of the next stale-database sweep; zero sweeps at the
+        # router's first idle moment after start.
+        self._next_sweep_at = 0.0
 
     def start(self, *, timeout: float = 10.0) -> None:
         """Start the lightweight routing thread without opening SQLite."""
@@ -743,12 +752,64 @@ class TrajectorySessionSinkRouter:
             raise ValueError("session_id is required")
         self.begin_session_delete(resolved)
         database_path = session_database_path(self.settings.database_path, resolved)
-        for candidate in (
-            database_path,
-            database_path.with_name(f"{database_path.name}-wal"),
-            database_path.with_name(f"{database_path.name}-shm"),
-        ):
+        for candidate in database_files(database_path):
             candidate.unlink(missing_ok=True)
+
+    def sweep_stale_databases(self, *, now: float | None = None) -> int:
+        """Delete session databases untouched for the whole retention window.
+
+        Retention inside a database runs on that session's writer, and a writer
+        exists only while its session is active, so a session that went quiet
+        keeps its file forever. Every commit updates the file's mtime, which
+        makes mtime the last write without opening anything.
+
+        Runs on the router thread, the only thread that creates writers, so a
+        session cannot gain a writer between the check and the unlink.
+
+        Args:
+            now: Wall-clock seconds to measure age against; defaults to now.
+
+        Returns:
+            Number of session databases removed.
+        """
+        root = Path(self.settings.database_path)
+        if not root.is_dir():
+            return 0
+        cutoff = (time.time() if now is None else now) - self.settings.retention_days * 86400
+        with self._routes_lock:
+            live = {
+                session_database_path(root, session_id) for session_id in self._writers
+            }
+        removed = 0
+        for database in root.glob("*/*.sqlite3"):
+            if database in live:
+                continue
+            try:
+                if database.stat().st_mtime >= cutoff:
+                    continue
+            except FileNotFoundError:
+                continue
+            for candidate in database_files(database):
+                candidate.unlink(missing_ok=True)
+            removed += 1
+            try:
+                database.parent.rmdir()
+            except OSError:
+                # Other sessions still share this shard directory.
+                pass
+        if removed:
+            logger.info("Trajectory swept %d stale session database(s)", removed)
+        return removed
+
+    def _sweep_if_due(self) -> None:
+        now = time.monotonic()
+        if now < self._next_sweep_at:
+            return
+        self._next_sweep_at = now + _STALE_DATABASE_SWEEP_INTERVAL_SECONDS
+        try:
+            self.sweep_stale_databases()
+        except Exception:
+            logger.exception("Trajectory stale session database sweep failed")
 
     def _consume(
         self,
@@ -810,6 +871,7 @@ class TrajectorySessionSinkRouter:
                 session_id, item = self._queue.get(timeout=0.1)
             except queue.Empty:
                 self._retire_idle_routes()
+                self._sweep_if_due()
                 continue
             try:
                 if not session_id:
