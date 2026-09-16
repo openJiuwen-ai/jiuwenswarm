@@ -106,11 +106,8 @@ def apply_task_tool_event_patch() -> None:
         sub_session_id = str(kwargs.get("sub_session_id") or "").strip()
         normalized_type = str(kwargs.get("normalized_type") or "").strip()
         parent_session_id = str(kwargs.get("parent_session_id") or "").strip()
-        if (
-            parent_session is None
-            or not sub_session_id
-            or not normalized_type
-            or not parent_session_id
+        if parent_session is None or not all(
+            (sub_session_id, normalized_type, parent_session_id)
         ):
             return await original_invoke(self, subagent, **kwargs)
 

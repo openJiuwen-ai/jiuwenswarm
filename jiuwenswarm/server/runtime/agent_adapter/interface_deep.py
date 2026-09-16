@@ -483,6 +483,7 @@ from jiuwenswarm.common.mcp_config import (
     preflight_mcp_server_reachable,
 )
 from jiuwenswarm.server.runtime.mcp.call_timeout_patch import apply_mcp_call_timeout_patch
+from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import apply_task_tool_event_patch
 from jiuwenswarm.common.task_loop_config import (
     resolve_task_loop_completion_timeout,
 )
@@ -630,16 +631,6 @@ def _permission_user_text_for_request(request: AgentRequest) -> str:
     return query.strip() if isinstance(query, str) else ""
 
 logger = logging.getLogger(__name__)
-
-# SDK TaskTool creates ephemeral subagents (browser_agent included) without
-# emitting roster events, so Web clients never learn the browser agent exists
-# and the desktop browser tab never appears. The patch is idempotent and only
-# wraps the narrow dispatch seam; apply it before the first request runs.
-from jiuwenswarm.server.runtime.agent_adapter.task_tool_events import (  # noqa: E402
-    apply_task_tool_event_patch,
-)
-
-apply_task_tool_event_patch()
 
 
 def _diag_auth_headers(cfg: Any) -> str:
@@ -1752,6 +1743,13 @@ class JiuWenSwarmDeepAdapter:
         # killed remote MCP server fails fast instead of hanging on the MCP
         # SDK's 300s SSE read timeout. Idempotent (module-level _PATCHED guard).
         apply_mcp_call_timeout_patch()
+        # SDK TaskTool creates ephemeral subagents (browser_agent included)
+        # without emitting roster events, so Web clients never learn the
+        # browser agent exists and the desktop browser tab never appears.
+        # Applied here (not at module import) so importing this adapter has
+        # no global side effects; idempotent, and guaranteed to run before
+        # any DeepAgent/TaskTool is created below.
+        apply_task_tool_event_patch()
         self._instance: DeepAgent | None = None
         self._interaction_output_handoff: OutputHandoff | None = None
         self._project_dir: str | None = None
@@ -4204,19 +4202,19 @@ class JiuWenSwarmDeepAdapter:
     def _resolve_headless_from_config(
         config_base: dict[str, Any] | None = None,
     ) -> bool:
-        """Read browser.headless from config (default False = visible browser)."""
+        """Read browser.headless from config (default True = headless)."""
         try:
             if config_base is None:
                 config_base = get_config()
             if not isinstance(config_base, dict):
-                return False
+                return True
             browser_cfg = config_base.get("browser", {})
             if not isinstance(browser_cfg, dict):
-                return False
-            headless = browser_cfg.get("headless", False)
-            return bool(headless) if isinstance(headless, bool) else False
+                return True
+            headless = browser_cfg.get("headless", True)
+            return bool(headless) if isinstance(headless, bool) else True
         except Exception:
-            return False
+            return True
 
     @staticmethod
     def _sync_mcp_credentials_environment() -> bool:

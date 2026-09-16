@@ -2324,7 +2324,7 @@ async def _restart_agent_browser_runtime(
     agent_client=None,
     *,
     previous_chrome_path: str = "",
-    previous_headless: bool = False,
+    previous_headless: bool = True,
 ) -> None:
     """Stop active agent-side browser runtimes so the next task uses new config."""
     if agent_client is None:
@@ -5122,7 +5122,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 ws,
                 req_id,
                 ok=True,
-                payload={"chrome_path": "", "headless": False},
+                payload={"chrome_path": "", "headless": True},
             )
             return
 
@@ -5132,13 +5132,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         config = _resolve_env_vars(config_base)
         browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
         chrome_path = ""
-        headless = False
+        headless = True
         if isinstance(browser_cfg, dict):
             value = browser_cfg.get("chrome_path", "")
             if isinstance(value, str):
                 chrome_path = value
-            raw_headless = browser_cfg.get("headless", False)
-            headless = bool(raw_headless) if isinstance(raw_headless, bool) else False
+            raw_headless = browser_cfg.get("headless", True)
+            headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
         await channel.send_response(
             ws, req_id, ok=True,
@@ -5157,8 +5157,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return
         chrome_path = chrome_path.strip()
 
-        raw_headless = params.get("headless", False)
-        headless = bool(raw_headless) if isinstance(raw_headless, bool) else False
+        raw_headless = params.get("headless", True)
+        headless = bool(raw_headless) if isinstance(raw_headless, bool) else True
 
         from jiuwenswarm.gateway.routing.e2a_proxy import (
             fetch_agent_unary,
@@ -5172,7 +5172,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             # Fetch current browser config so the restart callback can match the
             # old runtime identity (custom binary / headed mode).
             previous_chrome_path = ""
-            previous_headless = False
+            previous_headless = True
             try:
                 prev_ok, prev_payload = await fetch_agent_unary(
                     agent_client=resolved_client,
@@ -5187,9 +5187,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                     prev_chrome = prev_payload.get("chrome_path")
                     if isinstance(prev_chrome, str):
                         previous_chrome_path = prev_chrome
-                    prev_headless_val = prev_payload.get("headless", False)
+                    prev_headless_val = prev_payload.get("headless", True)
                     previous_headless = (
-                        bool(prev_headless_val) if isinstance(prev_headless_val, bool) else False
+                        bool(prev_headless_val) if isinstance(prev_headless_val, bool) else True
                     )
             except Exception as e:  # noqa: BLE001
                 logger.warning("[path.set] failed to fetch previous browser config: %s", e)
@@ -5225,11 +5225,11 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         previous_chrome_path = current_browser_cfg.get("chrome_path", "")
         if not isinstance(previous_chrome_path, str):
             previous_chrome_path = ""
-        raw_previous_headless = current_browser_cfg.get("headless", False)
+        raw_previous_headless = current_browser_cfg.get("headless", True)
         previous_headless = (
             bool(raw_previous_headless)
             if isinstance(raw_previous_headless, bool)
-            else False
+            else True
         )
 
         try:

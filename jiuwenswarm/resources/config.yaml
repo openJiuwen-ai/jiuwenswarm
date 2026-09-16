@@ -1292,8 +1292,7 @@ browser:
   #   linux: "/usr/bin/google-chrome"
   chrome_path: ""
   # true runs Chrome without a visible window; false opens a managed window.
-  # Default false: the managed browser stays visible so users can watch it work.
-  headless: false
+  headless: true
 
 updater:
   enabled: true

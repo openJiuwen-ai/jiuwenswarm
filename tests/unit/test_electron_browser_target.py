@@ -167,8 +167,10 @@ def test_electron_persists_session_urls_across_restart() -> None:
     await_main = source.index("await createMainWindow()", when_ready)
     assert when_ready < load_call < await_main
 
-    # 退出路径（before-quit）先冲刷 URL 再清理服务，保证最后一次导航不丢。
+    # 退出路径（before-quit）先冲刷 URL，再在 blob 落盘与服务的并行清理完成后退出。
     quit_handler = source.index("app.on('before-quit'")
     flush = source.index("saveSessionLastUrls();", quit_handler)
-    teardown = source.index("void stopServices()", quit_handler)
+    teardown = source.index(
+        "void Promise.all([abortAllBlobSaves(), stopServices()])", quit_handler
+    )
     assert quit_handler < flush < teardown
