@@ -2643,7 +2643,7 @@
   transition: opacity 0.15s ease;
 }
 
-.chat-work-select__clear .chat-work-icon.chat-work-dialog__close .chat-work-icon {
+.chat-work-select__clear .chat-work-icon {
   width: 10px;
   height: 10px;
 }
@@ -2776,7 +2776,7 @@
   width: 84px;
   height: 28px;
   padding: 0;
-  border: 1px solid #191919;
+  border: 1px solid var(--color-control-emphasis);
   border-radius: 999px;
   background: var(--color-surface-card);
   color: var(--color-text-primary);
@@ -2787,7 +2787,7 @@
 
 .chat-work-dialog__actions button[type="submit"] {
   border-color: var(--color-action-primary);
-  background: #191919;
+  background: var(--color-control-emphasis);
   color: var(--color-action-primary-text);
 }
 
