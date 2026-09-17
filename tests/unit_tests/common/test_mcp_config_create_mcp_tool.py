@@ -270,8 +270,37 @@ class TestCreateMcpToolStdio:
         monkeypatch.setattr(
             "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
         )
-        cfg = json.dumps({"name": "local", "command": "node", "args": ["s.js"]})
+        cfg = json.dumps({
+            "name": "local",
+            "type": "stdio",
+            "command": "node",
+            "args": ["s.js"],
+        })
         with pytest.raises(ValueError, match="不支持本地 stdio"):
+            create_mcp_tool(cfg)
+
+    def test_enterprise_unknown_type_not_misreported_as_stdio(self, monkeypatch):
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
+        )
+        cfg = json.dumps({
+            "name": "weird",
+            "type": "websocket",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        with pytest.raises(ValueError, match="不支持 type=") as exc_info:
+            create_mcp_tool(cfg)
+        assert "本地 stdio" not in str(exc_info.value)
+
+    def test_unknown_type_rejected_in_personal(self):
+        cfg = json.dumps({
+            "name": "weird",
+            "type": "websocket",
+            "command": "node",
+            "args": ["s.js"],
+        })
+        with pytest.raises(ValueError, match="不支持 type="):
             create_mcp_tool(cfg)
 
     def test_enterprise_still_allows_remote(self, monkeypatch):
@@ -506,19 +535,26 @@ class TestBuildMcpServerConfigStdio:
         assert cfg.client_type == "stdio"
         assert cfg.params["command"] == "node"
 
-    def test_enterprise_rejects_stdio_transport(self, monkeypatch):
+    def test_enterprise_rejects_stdio_transport(self, monkeypatch, caplog):
+        import logging
+
         monkeypatch.setattr(
             "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
         )
-        cfg = build_mcp_server_config(
-            {
-                "name": "local",
-                "transport": "stdio",
-                "command": "node",
-                "args": ["s.js"],
-            }
-        )
+        with caplog.at_level(logging.WARNING):
+            cfg = build_mcp_server_config(
+                {
+                    "name": "local",
+                    "transport": "stdio",
+                    "command": "node",
+                    "args": ["s.js"],
+                }
+            )
         assert cfg is None
+        assert any(
+            "rejects local stdio" in record.message and "local" in record.message
+            for record in caplog.records
+        )
 
 
 class TestBuildMcpServerConfigAuthHeaders:

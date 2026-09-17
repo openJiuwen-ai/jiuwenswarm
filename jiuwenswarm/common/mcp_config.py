@@ -28,8 +28,6 @@ from openjiuwen.core.common.exception.errors import build_error
 from openjiuwen.core.common.logging import logger
 from openjiuwen.core.foundation.tool import McpServerConfig, Tool, ToolCard
 
-from jiuwenswarm.edition import is_enterprise
-
 try:
     from openjiuwen.core.foundation.tool.mcp.client import (
         sse_client as _sse_client,  # noqa: F401
@@ -38,6 +36,8 @@ try:
     )
 except ImportError:
     pass
+
+from jiuwenswarm.edition import is_enterprise
 
 _HTTP_MCP_TRANSPORTS = frozenset({"sse", "http", "streamable-http", "streamable_http"})
 
@@ -144,6 +144,11 @@ def build_mcp_server_config(
     if transport == "stdio":
         # 个人版可用本地 stdio（mcp.servers / mcp.server）；企业版仅远程模板。
         if is_enterprise():
+            logger.warning(
+                "enterprise edition rejects local stdio MCP server %r; "
+                "use remote MCP template from management console",
+                name,
+            )
             return None
         command = str(entry.get("command", "")).strip()
         if not command:
@@ -693,10 +698,21 @@ def create_mcp_tool(config_str: str) -> McpServerConfig:
             params=params,
         )
 
+    # 仅缺省 type / 显式 stdio 才走本地进程；未知 type 单独报错，避免企业版误报成 stdio。
+    if client_type != "stdio":
+        if is_enterprise():
+            raise ValueError(
+                f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+                "企业版仅支持 sse / streamable-http / playwright / openapi"
+            )
+        raise ValueError(
+            f"工具 '{tool_name}' 不支持 type={tool_config.get('type')!r}；"
+            "请使用 sse / streamable-http / playwright / openapi / stdio"
+        )
+
     if not isinstance(args, list):
         raise ValueError(f"工具 '{tool_name}' 的 args 必须是列表类型")
 
-    # 缺省 type / 显式 stdio：个人版放行本地 mcp.server；企业版拒绝。
     if is_enterprise():
         raise ValueError(
             f"工具 '{tool_name}' 不支持本地 stdio；"
