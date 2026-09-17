@@ -821,7 +821,7 @@ class TestConfigFunctions:
     def test_ttse_enabled_config_values(self, config, expected):
         assert get_ttse_enabled(config) is expected
 
-    def test_shipped_template_ttse_enabled_by_default(self):
+    def test_shipped_template_ttse_disabled_by_default(self):
         config_path = (
             Path(__file__).resolve().parents[2]
             / "jiuwenswarm"
@@ -829,8 +829,8 @@ class TestConfigFunctions:
             / "config.yaml"
         )
         config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
-        assert config["react"]["ttse"]["enabled"] is True
-        assert get_ttse_enabled(config) is True
+        assert config["react"]["ttse"]["enabled"] is False
+        assert get_ttse_enabled(config) is False
 
     @pytest.mark.parametrize(
         ("config", "expected"),

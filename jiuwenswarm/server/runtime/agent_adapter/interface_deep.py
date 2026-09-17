@@ -8025,15 +8025,14 @@ class JiuWenSwarmDeepAdapter:
                 import inspect
 
                 params = inspect.signature(TTSEConfig).parameters
-                explicit = {
-                    name
-                    for name, param in params.items()
-                    if param.kind
-                    in (
-                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
-                        inspect.Parameter.KEYWORD_ONLY,
-                    )
-                }
+                allowed_kinds = (
+                    inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                    inspect.Parameter.KEYWORD_ONLY,
+                )
+                explicit = set()
+                for name, param in params.items():
+                    if param.kind in allowed_kinds:
+                        explicit.add(name)
                 # Only filter when the constructor declares named fields.
                 # ``**kwargs``-only fakes (and some stubs) must receive the full dict.
                 if explicit:

@@ -253,7 +253,7 @@ TTSE is independent of Skill-body evolution and is controlled by `react.ttse` (a
 
 | Setting | Path | Default | Description |
 |---------|------|---------|-------------|
-| **Enable TTSE** | `react.ttse.enabled` | `true` | Mount `TTSERail` (Host skips if agent-core lacks it) |
+| **Enable TTSE** | `react.ttse.enabled` | `false` | Mount `TTSERail` (Host skips if agent-core lacks it); also auto-acquires `agent_observability` for trajectory capture |
 | **Induce** | `react.ttse.evolve_enabled` | `true` | Induce FACT/TIP from trajectories |
 | **Inject** | `react.ttse.inject_enabled` | `true` | Inject system-prompt guidance |
 | **Auto-dream** | `react.ttse.dream_enabled` | `true` | Silent bank hygiene |

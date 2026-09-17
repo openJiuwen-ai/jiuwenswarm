@@ -86,13 +86,13 @@ def test_default_skill_evolution_switch_is_disabled():
         assert evolution["review_feedback_min_confidence"] == 0.7
 
 
-def test_default_ttse_config_is_enabled():
+def test_default_ttse_config_is_disabled():
     repo_root = Path(__file__).resolve().parents[2]
     config_file = repo_root / "jiuwenswarm" / "resources" / "config.yaml"
 
     react = yaml.safe_load(config_file.read_text(encoding="utf-8"))["react"]
 
-    assert react["ttse"]["enabled"] is True
+    assert react["ttse"]["enabled"] is False
     assert react["ttse"]["evolve_enabled"] is True
     assert react["ttse"]["inject_enabled"] is True
     assert react["ttse"]["dream_enabled"] is True
