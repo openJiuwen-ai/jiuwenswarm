@@ -49,6 +49,10 @@ type AgentManagementPanelProps = {
   onUseAgentGroup?: (id: string) => void;
   onUseGroupPrompt?: (id: string, prompt: string) => void;
   onCreateGroupViaChat?: () => void;
+  navigationRequest?: {
+    target: 'agent' | 'group';
+    requestId: number;
+  } | null;
   onViewChange?: (view: PanelView) => void;
 };
 
@@ -214,6 +218,7 @@ export function AgentManagementPanel({
   onUseAgentGroup,
   onUseGroupPrompt,
   onCreateGroupViaChat,
+  navigationRequest,
   onViewChange,
 }: AgentManagementPanelProps) {
   const { t } = useTranslation();
@@ -290,11 +295,29 @@ export function AgentManagementPanel({
   const groupDetailRevisionRef = useRef(0);
   const groupFilesRevisionRef = useRef(0);
   const groupFileRevisionRef = useRef(0);
+  const lastNavigationRequestIdRef = useRef<number | null>(null);
   const actionNoticeTimerRef = useRef<number | null>(null);
   const installFlowTargetRef = useRef<string | null>(null);
   const reconnectFlowTargetRef = useRef<string | null>(null);
   const connectorError = useConnectorStore((state) => state.error);
   const clearConnectorError = useConnectorStore((state) => state.clearError);
+  useEffect(() => {
+    const request = navigationRequest;
+    if (!request || request.requestId === lastNavigationRequestIdRef.current) return;
+    lastNavigationRequestIdRef.current = request.requestId;
+    setCreateMenuOpen(false);
+    setActionError(null);
+    setActionNotice(null);
+    setView('mine');
+    setMineKind(request.target);
+    if (request.target === 'group') {
+      setGroupMineQuery('');
+      setGroupMinePage(1);
+    } else {
+      setMineQuery('');
+      setMinePage(1);
+    }
+  }, [navigationRequest]);
   const formatActionError = useCallback(
     (error: unknown, fallback: string) => getFriendlyErrorMessage(error, fallback, t),
     [t],
@@ -916,6 +939,7 @@ export function AgentManagementPanel({
       setActionNotice(null);
       try {
         const result = await groupClient.createGroup({ ...groupDraft, id: groupDraft.id || deriveAgentGroupId(groupDraft.name) });
+        await groupClient.installGroup(result.id);
         await loadGroups('mine');
       setGroupMineQuery('');
       setGroupMinePage(1);
@@ -959,6 +983,7 @@ export function AgentManagementPanel({
         ? await groupClient.importGroup(path)
         : await client.importAgentTemplate(path);
       if (kind === 'group') {
+        await groupClient.installGroup(result.id);
         await loadGroups('mine');
         setMineKind('group');
         setGroupMineQuery('');
@@ -1202,7 +1227,6 @@ export function AgentManagementPanel({
               onOpen={openGroupDetail}
               onUse={handleUseGroup}
               onInstall={handleInstallGroup}
-              onUninstall={handleUninstallGroup}
               onCreate={openGroupCreate}
             />
           ) : (

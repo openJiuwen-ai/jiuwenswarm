@@ -97,6 +97,9 @@ export function AgentGroupDetailPage({
   const canUse = detail.installed && detail.capabilities.canUse;
   const canDelete = detail.source === 'local' && !detail.installed;
   const canPreviewFiles = detail.capabilities.canPreviewFiles && (detail.source === 'local' || detail.installed);
+  const category = detail.category?.trim() || '';
+  const categoryLabel = category ? t(`agentManagement.categories.${category}`, { defaultValue: category }) : null;
+  const detailTags = detail.tags;
   return (
     <div className="agent-management-detail agent-group-detail" data-testid="agent-group-detail">
       <button type="button" className="detail-back" data-testid="agent-group-detail-back" onClick={onBack}>
@@ -110,9 +113,7 @@ export function AgentGroupDetailPage({
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[
-            t(`agentManagement.categories.${detail.category}`, {
-              defaultValue: detail.category || t('agentManagement.categoryOther'),
-            }),
+            ...(categoryLabel ? [categoryLabel] : []),
             t('agentManagement.detail.sourcePrefix', {
               source: t(`agentManagement.source.${detail.source}`),
             }),
@@ -239,12 +240,12 @@ export function AgentGroupDetailPage({
             ))}
           </div>
         </DetailSection>
-        {detail.tags.length > 0 || detail.skills.length > 0 ? (
+        {detailTags.length > 0 || detail.skills.length > 0 ? (
           <>
-            {detail.tags.length > 0 ? (
-              <DetailSection key="tags" title={t('agentManagement.detail.tags')}>
+            {detailTags.length > 0 ? (
+              <DetailSection key="tags" testId="agent-group-detail-tags" title={t('agentManagement.detail.tags')}>
                 <div className="detail-chip-row">
-                  {detail.tags.map((tag) => (
+                  {detailTags.map((tag) => (
                     <span key={tag.id} className="detail-chip">
                       {tag.label}
                     </span>

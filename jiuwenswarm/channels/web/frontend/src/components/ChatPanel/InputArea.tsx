@@ -261,8 +261,8 @@ interface InputAreaProps {
   autoFocusKey?: string | null;
   /** 跳转到技能管理页 */
   onNavigateToSkills?: () => void;
-  /** 跳转到智能体管理页 */
-  onNavigateToAgents?: () => void;
+  /** 跳转到专家管理页，可指定“我的专家”下的资产类型 */
+  onNavigateToAgents?: (target?: 'agent' | 'group') => void;
   /** Keeps the selected Expert Team identity available to the conversation surface. */
   onAgentGroupIdentityChange?: (identity: AgentGroupIdentity | null) => void;
   permissionsEnabled: boolean;
@@ -872,11 +872,11 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
   const agentGroupSelectionDisabled = isAgentMode || agentGroupPickerLocked;
 
   useEffect(() => {
-    if (!isTeamMode) return;
+    if (!isTeamMode && !isAgentMode) return;
     setAgentPickerOpen(false);
     setAgentPickerQuery('');
-    setPickerTab('group');
-  }, [isTeamMode]);
+    setPickerTab(isTeamMode ? 'group' : 'agent');
+  }, [isAgentMode, isTeamMode]);
 
   const isWorkContextLocked = Boolean(activeSessionId && activeSessionId !== NEW_CONVERSATION_ID);
   const showWorkContextRow = activeSessionId === NEW_CONVERSATION_ID;
@@ -3138,7 +3138,9 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                   >
                                     <AgentPickerIcon aria-hidden="true" />
                                   </span>
-                                  <span className="chat-mode-select__label">{t('chat.agent')}</span>
+                                  <span className="chat-mode-select__label">
+                                    {t(isTeamMode ? 'chat.agentGroup' : 'chat.agent')}
+                                  </span>
                                 </span>
                                 <ChevronRight
                                   className="chat-agent-picker-trigger__chevron"
@@ -3150,16 +3152,22 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                 <PickerPanel
                                   className="chat-agent-picker"
                                   direction={attachMenuDirection}
-                                  ariaLabel={t('chat.agent')}
+                                  ariaLabel={t(isTeamMode ? 'chat.agentGroup' : 'chat.agent')}
                                   testId="chat-panel-agent-picker-panel"
                                   onMouseEnter={() => setAgentPickerOpen(true)}
                                   rowHeight={pickerTab === 'group' ? GROUP_PICKER_ROW_HEIGHT : AGENT_PICKER_ROW_HEIGHT}
                                   itemCount={pickerTab === 'group' ? filteredGroupOptions.length : filteredAgentOptions.length}
                                   tabs={
-                                    <div className="chat-picker-panel__tabs" role="tablist" aria-label={t('agentManagement.tabsLabel')}>
-                                      <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
-                                      <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
-                                    </div>
+                                    !isAgentMode && !isTeamMode ? (
+                                      <div className="chat-picker-panel__tabs" role="tablist" aria-label={t('agentManagement.tabsLabel')}>
+                                        {!isTeamMode ? (
+                                          <button type="button" role="tab" aria-selected={pickerTab === 'agent'} aria-disabled={agentSelectionDisabled} className={pickerTab === 'agent' ? 'is-active' : ''} disabled={agentSelectionDisabled} data-testid="chat-panel-agent-picker-agent-tab" title={agentSelectionDisabled ? t('chat.agentOnlyInSingleAgentMode') : undefined} onClick={() => { setPickerTab('agent'); setAgentPickerQuery(''); }}>{t('chat.agent')}</button>
+                                        ) : null}
+                                        {!isAgentMode ? (
+                                          <button type="button" role="tab" aria-selected={pickerTab === 'group'} aria-disabled={agentGroupSelectionDisabled} className={pickerTab === 'group' ? 'is-active' : ''} disabled={agentGroupSelectionDisabled} data-testid="chat-panel-agent-picker-agent-group-tab" title={isAgentMode ? t('chat.agentGroupOnlyInTeamMode') : existingTeamGroupSelectionDisabled ? t('chat.agentGroupFirstBuildOnly') : agentGroupLocked ? t('chat.agentGroupBinding') : undefined} onClick={() => { setPickerTab('group'); setAgentPickerQuery(''); }}>{t('chat.agentGroup')}</button>
+                                        ) : null}
+                                      </div>
+                                    ) : null
                                   }
                                   search={
                                     <label className="chat-picker-panel__search">
@@ -3179,7 +3187,7 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
                                     label: t('chat.agentMore'),
                                     onClick: () => {
                                       setAttachMenuOpen(false);
-                                      onNavigateToAgents?.();
+                                      onNavigateToAgents?.(isTeamMode ? 'group' : 'agent');
                                     },
                                   }}
                                 >
