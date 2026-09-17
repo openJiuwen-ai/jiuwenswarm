@@ -24,7 +24,7 @@ function DialogShell({ title, children, onCancel }: DialogShellProps) {
     <div className="conversation-dialog" role="dialog" aria-modal="true" aria-label={title} data-testid="multi-session-dialog" data-variant="delete">
       <button type="button" className="conversation-dialog__backdrop" onClick={onCancel} aria-label={t('common.cancel')} data-testid="multi-session-dialog-backdrop" />
       <div className="conversation-dialog__panel" data-testid="multi-session-dialog-panel">
-        <button type="button" className="conversation-dialog__close" onClick={onCancel} aria-label={t('common.close')} data-testid="multi-session-dialog-close"><X size={16} /></button>
+        <button type="button" className="conversation-dialog__close" onClick={onCancel} aria-label={t('common.close')} data-testid="multi-session-dialog-close"><X size={20} /></button>
         <h2 data-testid="multi-session-dialog-title">{title}</h2>
         {children}
       </div>

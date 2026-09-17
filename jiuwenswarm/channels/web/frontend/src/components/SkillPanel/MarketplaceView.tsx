@@ -1,7 +1,7 @@
 /**
  * 技能广场视图（默认列表 / 「更多」专页）
  *
- * 广场技能详情页�?SkillDetailView（mode 'hub'）渲染�?
+ * 广场技能详情页由 SkillDetailView（mode 'hub'）渲染。
  */
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
@@ -63,9 +63,7 @@ export function MarketplaceView({
           className="detail-back"
           onClick={onBackFromMore}
           data-testid={
-            marketplaceSubView === 'team'
-              ? 'skill-panel-team-skills-back-btn'
-              : 'skill-panel-featured-skills-back-btn'
+            marketplaceSubView === 'team' ? 'skill-panel-team-skills-back-btn' : 'skill-panel-featured-skills-back-btn'
           }
         >
           <BackIcon aria-hidden="true" />

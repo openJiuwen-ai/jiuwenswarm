@@ -52,6 +52,7 @@
   --color-text-placeholder: #808080;
   --color-text-meta: #808080;
   --color-text-meta-rgb: 128, 128, 128;
+  --color-text-disabled: #c2c2c2;
   --color-text-suggestion-label: #282828;
   --color-text-card: #18181b;
   --color-text-inverse: #ffffff;
@@ -262,7 +263,7 @@
   --effect-chat-control-shadow: 0 6px 18px rgba(15, 23, 42, 0.08);
   --effect-chat-modal-shadow: 0 24px 72px rgba(15, 23, 42, 0.24);
   --effect-chat-select-shadow: 0 18px 48px rgba(15, 23, 42, 0.16);
-  --effect-chat-tooltip-shadow: 0 2px 12px rgba(0, 0, 0, 0.12);
+  --effect-chat-tooltip-shadow: 0 2px 12px rgba(0, 0, 0, 0.16);
   --effect-chat-toolbar-shadow: 0 1px 2px rgba(15, 23, 42, 0.04);
   --effect-chat-menu-shadow: 0 1px 4px rgba(15, 23, 42, 0.14);
   --effect-chat-popover-shadow: 0 10px 28px rgba(15, 23, 42, 0.16);

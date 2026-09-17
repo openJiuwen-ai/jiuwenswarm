@@ -6,6 +6,7 @@ import {
   FilePreviewContent,
   FilePreviewPanel,
   FilePreviewTree,
+  findDefaultPreviewFile,
   getPreviewFileLabel,
   type FilePreviewContentFile,
   type FilePreviewTreeNode,
@@ -35,6 +36,11 @@ function toPreviewTreeNodes(entries: DefinitionFileEntry[]): FilePreviewTreeNode
     highlight: entry.kind === 'file' && getPreviewFileLabel(entry.relativePath).toLowerCase() === 'skill.md',
     children: entry.children ? toPreviewTreeNodes(entry.children) : undefined,
   }));
+}
+
+/** 默认预览文件：树展示顺序里第一个目录下的第一个可预览文件；无目录则取第一个可预览文件 */
+export function findDefaultDefinitionFile(entries: DefinitionFileEntry[]): string | null {
+  return findDefaultPreviewFile(toPreviewTreeNodes(entries))?.path ?? null;
 }
 
 export function DefinitionFilePreview({
