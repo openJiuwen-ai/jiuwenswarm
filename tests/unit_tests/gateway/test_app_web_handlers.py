@@ -32,6 +32,7 @@ from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
 from jiuwenswarm.gateway.heartbeat import HeartbeatServiceUnavailableError
 from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
 from jiuwenswarm.extensions.registry import ExtensionRegistry
+from jiuwenswarm.gateway.routing.keys import AgentRef, RoutingKey
 
 
 class FakeWebChannel:
@@ -43,6 +44,7 @@ class FakeWebChannel:
         self.connect_handler = None
         self.disconnect_handler = None
         self.busy_sessions: set[str] = set()
+        self.routing_keys: list[RoutingKey] = []
 
     def register_method(self, name, handler):
         self.methods[name] = handler
@@ -70,6 +72,65 @@ class FakeWebChannel:
     async def send_event(self, ws, event, payload=None):
         # lifecycle_handlers 在 session.delete 等成功后广播完成事件（§5.10.11）。
         self.events.append((event, dict(payload or {})))
+
+    async def routing_keys_for_ws(self, ws):
+        return list(self.routing_keys)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.authorization.complete", "a4p.config.get", "a4p.config.update"])
+async def test_a4p_rpc_uses_current_websocket_route(method) -> None:
+    class _AgentClient:
+        server_ready = True
+
+        def __init__(self) -> None:
+            self.envelope = None
+
+        async def send_request(self, envelope):
+            self.envelope = envelope
+            return SimpleNamespace(ok=True, payload={"ok": True})
+
+    channel = FakeWebChannel()
+    channel.routing_keys = [
+        RoutingKey(
+            user_id="local",
+            channel_id="web",
+            app_id="app-1",
+            agent_ref=AgentRef(mode="team", id="research"),
+            session_id="session-1",
+        )
+    ]
+    agent_client = _AgentClient()
+    _register_web_handlers(WebHandlersBindParams(channel=channel, agent_client=agent_client))
+    ws = SimpleNamespace(_jiuwen_ws_id="ws-1")
+
+    await channel.methods[method](
+        ws,
+        "rpc-1",
+        {"requestId": "intent-1", "agent_ref": {"mode": "agent", "id": "untrusted"}},
+        "session-1",
+    )
+
+    assert channel.responses[-1]["ok"] is True
+    assert agent_client.envelope.channel_context == {
+        "ws_id": "ws-1",
+        "app_id": "app-1",
+        "agent_ref": {"mode": "team", "id": "research"},
+    }
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.authorization.pending", "a4p.config.get", "a4p.config.update"])
+async def test_a4p_rpc_rejects_websocket_without_session_route(method) -> None:
+    channel = FakeWebChannel()
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=SimpleNamespace(server_ready=True))
+    )
+    await channel.methods[method](
+        SimpleNamespace(_jiuwen_ws_id="ws-1"), "rpc-1", {}, "session-1"
+    )
+    assert channel.responses[-1]["ok"] is False
+    assert channel.responses[-1]["code"] == "A4P_WEB_SESSION_REQUIRED"
 
 
 class FakeAgentClient:
@@ -925,8 +986,8 @@ async def test_models_list_returns_exact_vendor_identity(monkeypatch) -> None:
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "qwen3.8-max",
                 # Reserved test-only endpoint and synthetic credential.
@@ -961,8 +1022,8 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
     monkeypatch.setattr(
         app_web_handlers,
-        "get_default_models",
-        lambda _config: [{
+        "get_available_models",
+        lambda _config, _auth_session=None: [{
             "model_client_config": {
                 "model_name": "",
                 "api_base": "",
@@ -985,12 +1046,38 @@ async def test_models_list_omits_context_for_empty_template_model(monkeypatch) -
 
 
 @pytest.mark.asyncio
+async def test_models_list_builds_the_list_off_the_event_loop(monkeypatch) -> None:
+    seen: dict[str, object] = {}
+
+    def fake_available(config, auth_session=None):
+        try:
+            asyncio.get_running_loop()
+            seen["on_event_loop"] = True
+        except RuntimeError:
+            seen["on_event_loop"] = False
+        seen["auth_session"] = auth_session
+        return [{"model_client_config": {"model_name": "m", "api_key": "k"}, "model_config_obj": {}}]
+
+    monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
+    monkeypatch.setattr(app_web_handlers, "get_available_models", fake_available)
+    channel = FakeWebChannel()
+    _register_web_handlers(WebHandlersBindParams(channel=channel))
+    ws = SimpleNamespace(_jiuwen_auth_session="auth-sess-1")
+
+    await channel.methods["models.list"](ws, "req-models", {}, "session-1")
+
+    assert channel.responses[-1]["ok"] is True
+    assert seen["on_event_loop"] is False, "get_available_models 不能在事件循环线程上执行"
+    assert seen["auth_session"] == "auth-sess-1", "登录会话仍要按这条连接传进去"
+
+
+@pytest.mark.asyncio
 async def test_models_list_includes_cached_zen_free_models(monkeypatch) -> None:
     """Free models are in-memory entries but must remain selectable in new sessions."""
     from jiuwenswarm.server.runtime import opencode_zen
 
     monkeypatch.setattr(app_web_handlers, "get_config", lambda: {"models": {}})
-    monkeypatch.setattr(app_web_handlers, "get_default_models", lambda _config: [])
+    monkeypatch.setattr(app_web_handlers, "get_available_models", lambda _config, _auth_session=None: [])
     monkeypatch.setattr(
         opencode_zen,
         "get_zen_free_model_entries",
@@ -3981,3 +4068,166 @@ async def test_pre_persist_large_media_splits_or_keeps_oversized_images(
     assert "_persisted" not in items[1]
     assert items[1]["base64Data"] == small_b64
     assert 1 not in uploaded
+
+
+def _a4p_config_request(method, params, channel="web", session="session"):
+    from jiuwenswarm.common.schema.agent import AgentRequest
+    from jiuwenswarm.common.schema.message import ReqMethod
+    return AgentRequest(request_id="rpc", channel_id=channel, session_id=session,
+                        req_method=ReqMethod(method), params=params)
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_disabled_partial_update_and_get(monkeypatch):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+    config = {"enabled": False, "require_user_signature": True, "server_id": "private"}
+    events = []
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: dict(config))
+    def persist(updates):
+        events.append("persist")
+        config.update(updates)
+    async def apply():
+        events.append("apply")
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
+    monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {"session_id": "session"}))
+    assert response.ok and response.payload == {"enabled": False, "require_user_signature": True}
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True, "session_id": "session"}))
+    assert response.ok and response.payload == {"enabled": True, "require_user_signature": True}
+    assert events == ["persist", "apply"]
+    assert config["server_id"] == "private"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [{}, {"session_id": "session"}, {"enabled": "false"}, {"enabled": 1}, {"enabled": None}, {"unknown": True}, {"enabled": True, "unknown": False}])
+async def test_a4p_config_rejects_invalid_updates_without_writing(monkeypatch, params):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", params))
+    assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
+async def test_a4p_config_requires_web_route(monkeypatch, method):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected config access"))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, {"enabled": True}, channel="cli"))
+    assert not response.ok and response.payload["code"] == "A4P_WEB_SESSION_REQUIRED"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("stage,code", [("persist", "INTERNAL_ERROR"), ("apply", "A4P_CONFIG_APPLY_FAILED")])
+async def test_a4p_config_errors_are_reported(monkeypatch, stage, code):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+    events = []
+    def persist(updates):
+        events.append("persist")
+        if stage == "persist":
+            raise OSError("disk unavailable")
+    async def apply():
+        events.append("apply")
+        raise RuntimeError("apply failed")
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
+    monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": False}))
+    assert not response.ok and response.payload["code"] == code
+    assert events == (["persist"] if stage == "persist" else ["persist", "apply"])
+
+
+@pytest.mark.asyncio
+async def test_a4p_config_serializes_updates_and_reads(monkeypatch):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+    monkeypatch.setattr(a4p_rpc, "_CONFIG_LOCK", asyncio.Lock())
+    entered, release = asyncio.Event(), asyncio.Event()
+    events = []
+    config = {"enabled": False}
+    def persist(updates):
+        events.append(dict(updates))
+        config.update(updates)
+    async def apply():
+        entered.set()
+        await release.wait()
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", persist)
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: dict(config))
+    monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
+    first = asyncio.create_task(a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"enabled": True})))
+    await entered.wait()
+    second = asyncio.create_task(a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.update", {"require_user_signature": True})))
+    read = asyncio.create_task(a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", {})))
+    await asyncio.sleep(0)
+    assert events == [{"enabled": True}]
+    assert not second.done() and not read.done()
+    release.set()
+    responses = await asyncio.gather(first, second, read)
+    assert all(response.ok for response in responses)
+    assert responses[-1].payload == {"enabled": True, "require_user_signature": True}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("field", ["enabled", "require_user_signature"])
+@pytest.mark.parametrize("value", ["true", "false", 0, 1, 0.0, None, [], {}])
+async def test_a4p_config_boolean_fields_are_strict(monkeypatch, field, value):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.update", {field: value})
+    )
+    assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("method", ["a4p.config.get", "a4p.config.update"])
+@pytest.mark.parametrize("params", [None, [], "invalid"])
+async def test_a4p_config_requires_object_params(monkeypatch, method, params):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+
+    monkeypatch.setattr(a4p_rpc, "update_a4p_in_config", lambda _: pytest.fail("unexpected write"))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request(method, params))
+    assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("params", [{"enabled": True}, {"unknown": True}, {"a4p_enabled": True}])
+async def test_a4p_config_get_rejects_business_fields(monkeypatch, params):
+    from jiuwenswarm.agents.harness.common import a4p_rpc
+
+    monkeypatch.setattr(a4p_rpc, "get_a4p_config", lambda: pytest.fail("unexpected read"))
+    response = await a4p_rpc.dispatch_a4p_request(_a4p_config_request("a4p.config.get", params))
+    assert not response.ok and response.payload["code"] == "BAD_REQUEST"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("updates", [
+    {"enabled": True},
+    {"require_user_signature": True},
+    {"enabled": True, "require_user_signature": True},
+    {"enabled": False, "require_user_signature": False},
+])
+async def test_a4p_config_round_trip_uses_persisted_values(monkeypatch, tmp_path, updates):
+    from jiuwenswarm.agents.harness.common import a4p_rpc, a4p_runtime
+    from jiuwenswarm.common import config as config_module
+
+    path = tmp_path / "config.yaml"
+    path.write_text("a4p:\n  enabled: false\n  require_user_signature: false\n  server_id: private\nother: preserved\n")
+    monkeypatch.setattr(config_module, "CONFIG_YAML_PATH", path)
+    monkeypatch.setattr(a4p_runtime, "get_config", config_module.get_config_raw)
+    applied = []
+
+    async def apply():
+        applied.append(a4p_runtime.get_a4p_config())
+
+    monkeypatch.setattr(a4p_rpc, "reconfigure_a4p_runtime", apply)
+    response = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.update", {**updates, "session_id": "session"})
+    )
+    expected = {"enabled": False, "require_user_signature": False, **updates}
+    assert response.ok and response.payload == expected
+    assert applied == [{**expected, "server_id": "private"}]
+    persisted = config_module.get_config_raw()
+    assert persisted == {"a4p": {**expected, "server_id": "private"}, "other": "preserved"}
+    read = await a4p_rpc.dispatch_a4p_request(
+        _a4p_config_request("a4p.config.get", {"session_id": "session"})
+    )
+    assert read.ok and read.payload == expected

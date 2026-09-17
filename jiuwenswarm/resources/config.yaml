@@ -30,6 +30,10 @@ a2ui:
 rsi:
   enabled: true
 
+a4p:
+  enabled: false
+  require_user_signature: false
+
 symphony:
   enabled: false
   paths:

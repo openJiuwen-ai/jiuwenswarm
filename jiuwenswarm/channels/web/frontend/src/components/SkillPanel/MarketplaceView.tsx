@@ -1,7 +1,7 @@
 /**
  * 技能广场视图（默认列表 / 「更多」专页）
  *
- * 广场技能详情页由 SkillDetailView（mode 'hub'）渲染。
+ * 广场技能详情页�?SkillDetailView（mode 'hub'）渲染�?
  */
 import { useTranslation } from 'react-i18next';
 import { ChevronRight, Loader2 } from 'lucide-react';
@@ -146,7 +146,7 @@ export function MarketplaceView({
             {t('skills.noMatches')}
           </div>
         ) : (
-          <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+          <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
             <div className="card-grid-auto">
               {hubSkills.map((skill) => (
                 <HubSkillCard
@@ -164,7 +164,7 @@ export function MarketplaceView({
           {t('skills.noMatches')}
         </div>
       ) : (
-        <div className="page-scroll mt-4 flex-1 min-h-0 overflow-y-auto">
+        <div className="page-scroll flex-1 min-h-0 overflow-y-auto">
           {teamSkills.length > 0 && (
             <>
               <div className="flex items-center justify-between mb-3">

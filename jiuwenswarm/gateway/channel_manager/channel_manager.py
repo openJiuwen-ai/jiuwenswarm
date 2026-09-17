@@ -119,6 +119,7 @@ class SessionSender:
         for attempt in range(1, _SEND_MAX_ATTEMPTS + 1):
             try:
                 await channel.send(msg)
+                self._log_delivered_if_a4p(msg)
                 return
             except asyncio.CancelledError:
                 raise
@@ -133,6 +134,22 @@ class SessionSender:
                     getattr(msg, "id", "?"), e,
                 )
                 await asyncio.sleep(backoff)
+
+    def _log_delivered_if_a4p(self, msg: "Message") -> None:
+        """A4P 事件投递确认日志（授权弹窗是否送达前端的排查依据）.
+
+        上游原先在兜底路径 await channel.send 成功后记录；SessionSender 化后
+        移到这里——发送实际完成处，语义不变且覆盖所有经 SessionSender 的事件。
+        """
+        payload = msg.payload if isinstance(msg.payload, dict) else {}
+        event_type = str(payload.get("event_type") or "").strip()
+        if event_type.startswith("a4p."):
+            logger.info(
+                "[ChannelManager] A4P robot_message delivered: channel_id=%s id=%s event_type=%s",
+                msg.channel_id,
+                msg.id,
+                event_type,
+            )
 
     async def _handle_permanent_failure(self, msg: "Message", error: Exception) -> None:
         """重试耗尽后的收尾：记录跳过，并触发 on_permanent_failure 回调（如 cron 失败通知）。"""
@@ -710,7 +727,8 @@ class ChannelManager(ABC):
                     # issue #1548：兜底路径也走 SessionSender（串行保序 + 失败重试），
                     # 而非直接 await channel.send。cron 推送失败的通知改由
                     # SessionSender 的重试/告警兜底（_notify_cron_delivery_error
-                    # 需要 send 异常才能触发，这里不再有 await send 的同步异常）。
+                    # 经 on_permanent_failure 回调触发）；A4P 事件的投递确认
+                    # 日志在 SessionSender._send_with_retry 的发送成功处。
                     self._submit_to_session_sender(channel, msg)
                 else:
                     logger.warning(

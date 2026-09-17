@@ -34,11 +34,17 @@ from jiuwenswarm.server.runtime.agent_adapter.interface import _SKILL_ROUTES
 from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     JiuWenSwarmDeepAdapter,
 )
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
+from jiuwenswarm.server.runtime.skill.skill_manager import (
+    ERROR_SKILL_INVALID_PACKAGE,
+    SkillManager,
+    SkillRpcError,
+)
+from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack
 from jiuwenswarm.symphony.config import symphony_config_from_dict
 from jiuwenswarm.symphony.experience import (
     JiuwenSwarmSkillAdapter,
     PublishedCapabilitySnapshotProvider,
+    SkillPackNotInstallableError,
 )
 from jiuwenswarm.symphony.llm import LLMConfig
 from jiuwenswarm.symphony.service import (
@@ -107,7 +113,65 @@ def _server_package(monkeypatch, package_id, integrity="sha256:value"):
         "jiuwenswarm.symphony.service.CapabilityPackager.verify_package_integrity",
         lambda _package: True,
     )
-    return {"package_id": package_id, "integrity": integrity, "materials": {}}
+    return {
+        "package_id": package_id,
+        "integrity": integrity,
+        "meta_name": "search-writer-pack",
+        "materials": {
+            "recipe": {
+                "applicability": {"task_description": "先检索再生成报告"},
+                "combination_structure": {
+                    "nodes": {
+                        "search": {"metadata": {"capability_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill"}},
+                    },
+                    "edges": [
+                        {
+                            "source": "search",
+                            "target": "writer",
+                            "relation": "can_feed",
+                        }
+                    ],
+                },
+                "execution_narrative": "先检索，再生成报告。",
+            }
+        },
+    }
+
+
+def _write_member_skills(workspace: Path) -> None:
+    for name in ("search", "writer"):
+        skill_dir = workspace / "skills" / name
+        skill_dir.mkdir(parents=True, exist_ok=True)
+        (skill_dir / "SKILL.md").write_text(
+            f"---\nname: {name}\ndescription: {name} skill\n---\n# {name}\n",
+            encoding="utf-8",
+        )
+
+
+def _write_skillpack_artifact(root: Path, name: str, *, marker: str = "") -> None:
+    root.mkdir(parents=True, exist_ok=True)
+    (root / "SKILL.md").write_text(
+        "---\n"
+        f"name: {name}\n"
+        "kind: skillpack\n"
+        "description: combined\n"
+        "skills:\n"
+        "  - search\n"
+        "  - writer\n"
+        "---\n"
+        f"# {name}\n\n"
+        "## When to use\n\nComplete tasks.\n\n"
+        "## Do not use\n\nSingle tasks.\n\n"
+        "## Required inputs\n\nUser goal.\n\n"
+        "## Side effects and confirmation\n\nFollow permissions.\n\n"
+        "## Included Skills\n\n- `search`\n- `writer`\n\n"
+        "## Execution Process\n\nSearch then write.\n\n"
+        "## Failure handling\n\nReturn partial results.\n\n"
+        "## Final output\n\nReturn the report.\n"
+        f"{marker}",
+        encoding="utf-8",
+    )
 
 
 def _reject_install_manager(message):
@@ -190,7 +254,17 @@ def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:
             "recipe": {
                 "applicability": {"task_description": "先检索再生成报告"},
                 "combination_structure": {
-                    "nodes": {"search": {}, "writer": {}},
+                    "nodes": {
+                        "search": {"metadata": {"capability_type": "skill"}},
+                        "writer": {"metadata": {"capability_type": "skill"}},
+                    },
+                    "edges": [
+                        {
+                            "source": "search",
+                            "target": "writer",
+                            "relation": "can_feed",
+                        }
+                    ],
                 },
                 "execution_narrative": "按顺序执行。",
             },
@@ -201,9 +275,59 @@ def test_target_adapter_adds_installable_frontmatter(tmp_path: Path) -> None:
     JiuwenSwarmSkillAdapter.render(package, tmp_path)
 
     text = (tmp_path / "SKILL.md").read_text(encoding="utf-8")
+    definition = load_skillpack(tmp_path, expected_name="research-writer")
     assert text.startswith("---\n")
     assert "name: research-writer" in text
+    assert "kind: skillpack" in text
+    assert "skills:\n- search\n- writer" in text
     assert "description:" in text
+    assert "## Execution Process" in text
+    assert '"type": "skillpack_workflow"' in text
+    assert definition.members == ("search", "writer")
+    assert definition.workflow_graph is not None
+    assert not (tmp_path / "swarmflow").exists()
+    assert not (tmp_path / "dependencies.yaml").exists()
+
+
+def test_target_adapter_rejects_non_skill_nodes(monkeypatch, tmp_path: Path) -> None:
+    package = _server_package(
+        monkeypatch,
+        "cap-tool",
+    )
+    package["materials"]["recipe"]["combination_structure"]["nodes"]["search"][
+        "metadata"
+    ]["capability_type"] = "tool"
+
+    with pytest.raises(SkillPackNotInstallableError):
+        JiuwenSwarmSkillAdapter.render(package, tmp_path)
+
+
+@pytest.mark.parametrize(
+    "edges",
+    [
+        [
+            {"source": "search", "target": "writer", "relation": "can_feed"},
+            {"source": "search", "target": "reviewer", "relation": "can_feed"},
+        ],
+        [
+            {"source": "search", "target": "writer", "relation": "can_feed"},
+            {"source": "writer", "target": "search", "relation": "can_feed"},
+        ],
+    ],
+)
+def test_target_adapter_rejects_branch_and_loop_structures(
+    monkeypatch,
+    tmp_path: Path,
+    edges: list[dict[str, str]],
+) -> None:
+    package = _server_package(monkeypatch, "cap-graph")
+    nodes = package["materials"]["recipe"]["combination_structure"]["nodes"]
+    if any(edge["target"] == "reviewer" for edge in edges):
+        nodes["reviewer"] = {"metadata": {"capability_type": "skill"}}
+    package["materials"]["recipe"]["combination_structure"]["edges"] = edges
+
+    with pytest.raises(SkillPackNotInstallableError):
+        JiuwenSwarmSkillAdapter.render(package, tmp_path)
 
 
 def _otlp_span(name: str, span_id: int, *, skill: str | None = None) -> dict:
@@ -635,7 +759,9 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 
     real_save = service_module._save_install_receipt
     first = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
-    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
+    manager = SkillManager(workspace_dir=str(workspace))
     monkeypatch.setattr(
         service_module,
         "_save_install_receipt",
@@ -655,7 +781,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 
     monkeypatch.setattr(service_module, "_save_install_receipt", real_save)
     restarted = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
-    restarted_manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    restarted_manager = SkillManager(workspace_dir=str(workspace))
     monkeypatch.setattr(
         restarted_manager,
         "install_symphony_skill_artifact",
@@ -673,7 +799,7 @@ async def test_receipt_write_crash_recovers_installed_skill_after_restart(
 
     assert receipt["installed"] is True
     assert receipt["newly_installed"] is True
-    assert receipt["skill"]["name"] == "symphony-combination"
+    assert receipt["skill"]["name"] == "search-writer-pack"
 
 
 @pytest.mark.asyncio
@@ -757,12 +883,10 @@ def test_skill_manager_installs_only_server_owned_artifact(
 ) -> None:
     root = tmp_path / "flow"
     artifact = root / "packages" / "cap-1" / "skill"
-    artifact.mkdir(parents=True)
-    (artifact / "SKILL.md").write_text(
-        "---\nname: combo-skill\ndescription: combined\n---\nbody\n",
-        encoding="utf-8",
-    )
-    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    _write_skillpack_artifact(artifact, "combo-skill")
+    workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
+    manager = SkillManager(workspace_dir=str(workspace))
 
     result = manager.install_symphony_skill_artifact(
         artifact,
@@ -775,17 +899,91 @@ def test_skill_manager_installs_only_server_owned_artifact(
     assert (tmp_path / "workspace" / "skills" / "combo-skill" / "SKILL.md").is_file()
 
 
+def test_skill_manager_does_not_install_pack_with_missing_member(
+    tmp_path: Path,
+    allow_macos_pytest_temp_sources,
+) -> None:
+    root = tmp_path / "flow"
+    artifact = root / "packages" / "cap-missing" / "skill"
+    _write_skillpack_artifact(artifact, "missing-member-pack")
+    workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
+    (workspace / "skills" / "writer" / "SKILL.md").unlink()
+    manager = SkillManager(workspace_dir=str(workspace))
+
+    with pytest.raises(SkillRpcError) as exc:
+        manager.install_symphony_skill_artifact(
+            artifact,
+            expected_root=root,
+            package_id="cap-missing",
+            integrity="sha256:value",
+        )
+
+    assert exc.value.code == ERROR_SKILL_INVALID_PACKAGE
+    assert not (workspace / "skills" / "missing-member-pack").exists()
+
+
+def test_skill_manager_installs_pack_with_disabled_member_as_unavailable(
+    tmp_path: Path,
+    allow_macos_pytest_temp_sources,
+) -> None:
+    root = tmp_path / "flow"
+    artifact = root / "packages" / "cap-disabled" / "skill"
+    _write_skillpack_artifact(artifact, "disabled-member-pack")
+    workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
+    manager = SkillManager(workspace_dir=str(workspace))
+    manager.set_skill_enabled("search", False)
+
+    result = manager.install_symphony_skill_artifact(
+        artifact,
+        expected_root=root,
+        package_id="cap-disabled",
+        integrity="sha256:value",
+    )
+
+    assert result["success"] is True
+    assert result["skill"]["skill_type"] == "skillpack"
+    assert manager.get_skill_enabled("disabled-member-pack") is True
+    assert "disabled-member-pack" in manager.list_execution_disabled_skills()
+
+
+@pytest.mark.asyncio
+async def test_install_candidate_reports_missing_member_as_not_installable(
+    monkeypatch,
+    tmp_path: Path,
+    allow_macos_pytest_temp_sources,
+) -> None:
+    _enable_evolution_config(monkeypatch, tmp_path)
+    package = _server_package(monkeypatch, "cap-missing")
+    service = _install_service(monkeypatch, _review_flow(tmp_path, package=package))
+    workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
+    (workspace / "skills" / "writer" / "SKILL.md").unlink()
+    manager = SkillManager(workspace_dir=str(workspace))
+
+    result = await service.install_candidate(
+        request_id=experience_request_id("recipe-1", 2),
+        recipe_id="recipe-1",
+        recipe_version=2,
+        package_id=None,
+        integrity=None,
+        skill_manager=manager,
+    )
+
+    assert result["installed"] is False
+    assert result["reason"] == "not_installable"
+    assert not (workspace / "skills" / "search-writer-pack").exists()
+
+
 def test_skill_install_recovers_copy_before_state_crash(
     monkeypatch, tmp_path: Path, allow_macos_pytest_temp_sources
 ) -> None:
     root = tmp_path / "flow"
     artifact = root / "staging"
-    artifact.mkdir(parents=True)
-    (artifact / "SKILL.md").write_text(
-        "---\nname: recovered-combo\ndescription: combined\n---\nbody\n",
-        encoding="utf-8",
-    )
+    _write_skillpack_artifact(artifact, "recovered-combo")
     workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
     first = SkillManager(workspace_dir=str(workspace))
     monkeypatch.setattr(
         first,
@@ -822,18 +1020,11 @@ def test_skill_install_does_not_rebind_different_local_content(
 ) -> None:
     root = tmp_path / "flow"
     artifact = root / "staging"
-    artifact.mkdir(parents=True)
-    (artifact / "SKILL.md").write_text(
-        "---\nname: local-combo\ndescription: expected\n---\nexpected\n",
-        encoding="utf-8",
-    )
+    _write_skillpack_artifact(artifact, "local-combo", marker="expected\n")
     workspace = tmp_path / "workspace"
+    _write_member_skills(workspace)
     local = workspace / "skills" / "local-combo"
-    local.mkdir(parents=True)
-    (local / "SKILL.md").write_text(
-        "---\nname: local-combo\ndescription: local\n---\nlocal\n",
-        encoding="utf-8",
-    )
+    _write_skillpack_artifact(local, "local-combo", marker="local\n")
     manager = SkillManager(workspace_dir=str(workspace))
 
     assert (

@@ -26,6 +26,7 @@ import { ToolPanel } from './components/ToolPanel';
 import { UpdatePanel } from './components/UpdatePanel';
 import { ExternalCliInstallDialog, type ExternalCliInstallStatuses } from './components/ExternalCliInstallDialog';
 import { PersonalContextPanel } from './components/PersonalContext';
+import { ToastStack } from './components/ui';
 import { SettingsPage } from './features/settings/SettingsPage';
 import type { SettingsPageDefinition } from './features/settings/registry/types';
 import type { SettingsRequest } from './features/settings/services/settingsContract';
@@ -35,6 +36,7 @@ import {
   type SettingsModuleTarget,
 } from './features/settings/settingsNavigation';
 import { ConnectorMarketPanel } from './components/ConnectorMarket';
+import { LoginDialog } from './components/LoginDialog';
 import type { CodeReviewTarget } from './features/code-mode/types';
 
 import { FEATURE_APP_UPDATER_UI, FEATURE_PERSONAL_CONTEXT_UI } from './featureFlags';
@@ -106,11 +108,9 @@ import {
 } from './stores';
 import { useChatRoute } from './multi-session/routing/useChatRoute';
 import { ConversationSidebar, type NewConversationOptions } from './multi-session/sidebar/ConversationSidebar';
-import { DeleteDialog } from './multi-session/dialogs/Dialogs';
 import {
   NEW_CONVERSATION_ID,
   createConversationTitle,
-  forgetCreatedConversation,
   isConversationMissing,
   registerCreatedConversation,
   resolveNewConversationEntrySettings,
@@ -413,6 +413,7 @@ function AppContent({
   const [appliedWithoutRestart, setAppliedWithoutRestart] = useState(false);
   const [saveToastVisible, setSaveToastVisible] = useState(false);
   const [proactiveToastVisible, setProactiveToastVisible] = useState(false);
+  const [authToastVisible, setAuthToastVisible] = useState(false);
   const [proactiveToastMessage, setProactiveToastMessage] = useState('');
   const [securityAlertVisible, setSecurityAlertVisible] = useState(false);
   const [securityAlertContent, setSecurityAlertContent] = useState('');
@@ -441,9 +442,6 @@ function AppContent({
   } = useResponsiveLayout();
 
   const [modelSetupGuideStep, setModelSetupGuideStep] = useState<ModelSetupGuideStep | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<Session | null>(null);
-  const [dialogBusy, setDialogBusy] = useState(false);
-  const [dialogError, setDialogError] = useState<string | null>(null);
   const [composerFocusNonce, setComposerFocusNonce] = useState(0);
   const [missingSessionId, setMissingSessionId] = useState<string | null>(null);
   const startupUpdateCheckRef = useRef(false);
@@ -523,6 +521,7 @@ function AppContent({
   const restartAutoCloseTimerRef = useRef<number | null>(null);
   const saveToastTimerRef = useRef<number | null>(null);
   const proactiveToastTimerRef = useRef<number | null>(null);
+  const authToastTimerRef = useRef<number | null>(null);
   const settingsHasChangesRef = useRef(false);
   const [historyLoadingMore, setHistoryLoadingMore] = useState(false);
   const [historyPrepending, setHistoryPrepending] = useState(false);
@@ -1830,6 +1829,24 @@ function AppContent({
       console.warn('Failed to refresh models list:', error);
     }
   }, [request, setAvailableModels]);
+
+  useEffect(() => {
+    const onAuthChanged = (event: Event) => {
+      void handleModelsRefresh();
+      if (!(event as CustomEvent<{ islogin?: boolean }>).detail?.islogin) return;
+      setAuthToastVisible(true);
+      if (authToastTimerRef.current != null) window.clearTimeout(authToastTimerRef.current);
+      authToastTimerRef.current = window.setTimeout(() => {
+        setAuthToastVisible(false);
+        authToastTimerRef.current = null;
+      }, 3000);
+    };
+    window.addEventListener('jiuwen:auth-changed', onAuthChanged);
+    return () => {
+      window.removeEventListener('jiuwen:auth-changed', onAuthChanged);
+      if (authToastTimerRef.current != null) window.clearTimeout(authToastTimerRef.current);
+    };
+  }, [handleModelsRefresh]);
 
   const detectExternalCli = useCallback(async (cliAgent: ExternalCliAgentKind, cliPath?: string) => {
     return request<{
@@ -3433,45 +3450,6 @@ function AppContent({
     void handleRestoreSession(target.session_id, target.mode, target);
   }, [enterNewConversation, handleRestoreSession, isToolPanelAutoHideViewport, mode, setSingleAgentPanelExpanded, setTeamAreaExpanded, setToolPanelHidden]);
 
-  const handleDeleteConversation = useCallback(async () => {
-    if (!deleteTarget) return;
-    const runtime = useChatStore.getState().getRuntime(deleteTarget.session_id);
-    if (runtime?.isProcessing || runtime?.pendingQuestions[0]) {
-      setDialogError(t('multiSession.deleteRunningDisabled'));
-      return;
-    }
-    setDialogBusy(true); setDialogError(null);
-    try {
-      const deletedSession = deleteTarget;
-      await request('session.delete', { session_id: deleteTarget.session_id });
-      forgetCreatedConversation(deleteTarget.session_id);
-      useSessionStore.getState().removeSession(deleteTarget.session_id);
-      useSessionStore.getState().removeRuntime(deleteTarget.session_id);
-      useChatStore.getState().removeRuntime(deleteTarget.session_id);
-      useSubagentStore.getState().removeRuntime(deleteTarget.session_id);
-      useTodoStore.getState().removeRuntime(deleteTarget.session_id);
-      useHarnessStore.getState().removeRuntime(deleteTarget.session_id);
-      useGoalStore.getState().removeRuntime(deleteTarget.session_id);
-      const deletingCurrent = sessionIdRef.current === deleteTarget.session_id;
-      setDeleteTarget(null);
-      await useWorkspaceStore.getState().refreshSessionWorkspace(deletedSession);
-      // 删除 session 后刷新所属定时任务的触发会话列表
-      const cronStore = useCronStore.getState();
-      for (const [jobId, sessions] of Object.entries(cronStore.cronSessions)) {
-        if (sessions.some((s) => s.session_id === deletedSession.session_id)) {
-          const job = cronStore.jobs.find((j) => j.id === jobId);
-          void cronStore.loadCronSessions(job?.project_id || 'default', jobId);
-        }
-      }
-      if (deletingCurrent) {
-        // session.delete already owns B's KVC eviction. Do not carry the
-        // deleted Session into C's session.create as previous_session_id.
-        enterNewConversation(mode, {}, { clearPreviousSession: true });
-      }
-    } catch { setDialogError(t('multiSession.errors.delete')); }
-    finally { setDialogBusy(false); }
-  }, [deleteTarget, enterNewConversation, mode, request, t]);
-
   const handleNavigate = useCallback(
     (nav: MainNavKey) => {
       if (
@@ -3707,7 +3685,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
                 activeSessionId={sessionId === NEW_CONVERSATION_ID ? null : sessionId}
                 onNew={(options) => requestSessionNavigation('new', options)}
                 onSelect={requestSessionNavigation}
-                onDelete={(session) => { setDialogError(null); setDeleteTarget(session); }}
                 onOpenCron={() => handleNavigate('cron')}
                 isCronActive={false}
                 collapsed={conversationSidebarCollapsed}
@@ -3922,7 +3899,6 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
               activeSessionId={null}
               onNew={(options) => requestSessionNavigation('new', options)}
               onSelect={requestSessionNavigation}
-              onDelete={(session) => { setDialogError(null); setDeleteTarget(session); }}
               onOpenCron={() => handleNavigate('cron')}
               isCronActive
               collapsed={conversationSidebarCollapsed}
@@ -4053,15 +4029,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         )}
       </main>
 
-      {deleteTarget && (
-        <DeleteDialog
-          title={deleteTarget.title || t('multiSession.untitled')}
-          deleting={dialogBusy}
-          error={dialogError}
-          onCancel={() => setDeleteTarget(null)}
-          onDelete={() => { void handleDeleteConversation(); }}
-        />
-      )}
+      {/* 全局命令式 toast 渲染出口（toast.open） */}
+      <ToastStack />
 
       {/* 连接状态提示 */}
       {!isConnected && (
@@ -4076,6 +4045,14 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-save-toast">
           <div className="app-session-toast animate-rise" data-testid="app-save-toast-message">
             {t('common.saveSuccess')}
+          </div>
+        </div>
+      )}
+
+      {authToastVisible && (
+        <div className="app-toast-wrapper app-toast-wrapper--top-center" data-testid="app-auth-toast">
+          <div className="app-session-toast animate-rise" data-testid="app-auth-toast-message">
+            {t('auth.huawei.loginSuccessToast')}
           </div>
         </div>
       )}
@@ -4176,6 +4153,8 @@ const showWorkspaceDivider = effectiveTeamAreaExpanded && !showConversationNotFo
         onStatusChange={updateExternalCliInstallStatus}
       />
 
+      {/* 登录弹窗：默认不显示，由 requestLogin() 等事件唤起 */}
+      <LoginDialog />
     </div>
   );
 }

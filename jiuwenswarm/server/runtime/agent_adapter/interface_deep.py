@@ -31,6 +31,7 @@ from typing import TYPE_CHECKING, Any, AsyncIterator, Callable, List, Optional, 
 if TYPE_CHECKING:
     from jiuwenswarm.server.runtime.agent_config_service import AgentDefinition
     from jiuwenswarm.server.runtime.agent_adapter.output_handoff import OutputHandoff
+    from jiuwenswarm.common.auth.login_credentials import LoginAuth
 
 import yaml
 from pydantic import ValidationError
@@ -342,6 +343,10 @@ from jiuwenswarm.agents.harness.common.rails.permissions.tool_permission_context
     TOOL_PERMISSION_CHANNEL_ID,
     TOOL_PERMISSION_REQUEST_ID,
 )
+from jiuwenswarm.agents.harness.common.a4p_execution_context import (
+    AUTHORIZATION_EXECUTION_CONTEXTS,
+    build_authorization_execution_context,
+)
 from jiuwenswarm.server.runtime.session.session_metadata import build_server_push_message
 from jiuwenswarm.server.runtime.session.session_history import append_history_record, load_history_records
 from jiuwenswarm.server.runtime import extension_package_manager as equipment
@@ -462,7 +467,7 @@ from jiuwenswarm.agents.harness.common.tools.xiaoyi_phone_tools import (
 )
 from jiuwenswarm.common.config import (
     get_config,
-    get_default_models,
+    get_available_models,
     get_model_names,
     get_evolution_auto_save_enabled,
     get_progressive_tool_enabled,
@@ -1151,7 +1156,7 @@ def _build_deep_agent_context_engine_config(
     仅承接 ContextEngine 自身配置；KV cache affinity 由独立
     Application 级 ``kv_cache_affinity_config`` 管理。
 
-    context_window（模型支持的上下文总长度）由 ``_build_model_from_entry`` 放进
+    context_window（模型支持的上下文总长度）由 ``build_model_from_entry`` 放进
     core 的 ``ModelRequestConfig``，再由 ReActAgent 注入当前 ContextEngine 的模型级
     元数据。本函数只承接全局覆盖和显式手工映射；未配置模型值时使用固定的
     JiuwenSwarm 默认窗口，不按模型名查询官方表、OpenRouter 或 core 内置表。
@@ -1905,6 +1910,8 @@ class JiuWenSwarmDeepAdapter:
         self._paid_search_tool: WebPaidSearchTool | None = None
         self._symphony_tools: list[Any] = []
         self._symphony_tools_registered: bool = False
+        self._a4p_tools: list[Any] = []
+        self._a4p_tools_registered: bool = False
         self._symphony_orchestration_rail = None
         self._skill_retrieval_tools_registered: bool = False
         self._skill_retrieval_tools: list[Any] = []
@@ -5982,6 +5989,30 @@ class JiuWenSwarmDeepAdapter:
             warn_label="symphony tools",
         )
 
+    def _sync_a4p_tools_for_runtime(
+        self,
+        config_base: dict[str, Any],
+        channel: str,
+        session_id: str | None,
+    ) -> None:
+        """Expose A4P only when this session has an interactive Web authorizer."""
+        from jiuwenswarm.agents.harness.common.a4p_runtime import is_a4p_enabled
+        from jiuwenswarm.agents.harness.common.tools.a4p_tools import get_tools
+
+        execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
+        authorizer_available = bool(
+            channel == "web"
+            and execution_context is not None
+            and execution_context.is_interactive_web
+        )
+        self._a4p_tools, self._a4p_tools_registered = self._sync_tool_group(
+            current_tools=self._a4p_tools,
+            registered=self._a4p_tools_registered,
+            enabled=is_a4p_enabled(config_base) and authorizer_available,
+            create_fn=lambda: get_tools(session_id=session_id),
+            warn_label="A4P intent authorization tool",
+        )
+
     @staticmethod
     async def set_checkpoint() -> None:
         await ensure_persistent_checkpointer()
@@ -6176,7 +6207,8 @@ class JiuWenSwarmDeepAdapter:
         self._global_index_to_cache_key.clear()
         name_counter: dict[str, int] = {}
 
-        for global_idx, entry in enumerate(get_default_models(config)):
+        # 含登录后自动获得的模型
+        for global_idx, entry in enumerate(get_available_models(config)):
             cache_key = self._register_model_cache_entry(entry, name_counter)
             if cache_key is not None:
                 self._global_index_to_cache_key[global_idx] = cache_key
@@ -6422,8 +6454,8 @@ class JiuWenSwarmDeepAdapter:
         )
         logger.warning(
             "[JiuWenSwarmDeepAdapter] requested model %r not found in "
-            "configured models or zen free-model cache; falling back to "
-            "default model %r",
+            "configured models or zen free-model cache; "
+            "falling back to default model %r",
             requested,
             fallback_name or type(self._model).__name__,
         )
@@ -6455,6 +6487,9 @@ class JiuWenSwarmDeepAdapter:
         → 适配器默认模型。避免 command.goal / 中断恢复在适配器重建后掉回默认。
         """
         requested = self._requested_model_name(request)
+        scoped = self._request_scoped_login_model(request, requested)
+        if scoped is not None:
+            return scoped
         if not requested:
             last = getattr(self, "_last_resolved_model", None)
             if last is not None:
@@ -6491,6 +6526,96 @@ class JiuWenSwarmDeepAdapter:
         run.setdefault("kind", "normal")
         updated["run"] = run
         return updated
+
+    @staticmethod
+    def _scoped_login_auth(request: AgentRequest) -> LoginAuth | None:
+        """Gateway 随请求带下来的登录凭据；没带返回 ``None``。
+
+        这是 AgentServer 拿到登录模型凭据的**唯一**途径——它自己不读会话存储。读的同时
+        把 id_token 登记进本进程的凭据表：每个请求的模型检查都会先走到这里，所以集群
+        模式的追问（不重建模型）也能把在跑成员的 token 续上。
+        """
+        from jiuwenswarm.common.auth.login_credentials import login_auth_from_params
+
+        return login_auth_from_params(request.params)
+
+    @staticmethod
+    def _note_session_model(request: AgentRequest, *, uses_login_model: bool) -> None:
+        from jiuwenswarm.common.auth.login_credentials import note_session_model
+
+        params = request.params if isinstance(request.params, dict) else {}
+        if not uses_login_model and not str(params.get("model_name") or "").strip():
+            return
+        note_session_model(getattr(request, "session_id", None), uses_login_model=uses_login_model)
+
+    def _is_uncredentialed_login_model(self, request: AgentRequest, requested: str) -> bool:
+        if not requested or self._scoped_login_auth(request) is not None:
+            return False
+        from jiuwenswarm.common.auth.login_credentials import bare_model_name
+
+        bare_name = bare_model_name(requested)
+        if bare_name in self._model_cache or self._model_name_to_keys.get(bare_name):
+            return False
+        try:
+            from jiuwenswarm.common.auth.model_catalog import get_models
+
+            return bare_name in {m.model_name for m in get_models(allow_refresh=False)}
+        except Exception:  # noqa: BLE001 — 目录读不到就按普通模型处理
+            logger.debug("[JiuWenSwarmDeepAdapter] login model catalog unavailable", exc_info=True)
+            return False
+
+    def _model_config_error(self, request: AgentRequest) -> tuple[str, str] | None:
+        requested = self._requested_model_name(request)
+        scoped = self._scoped_login_auth(request)
+        self._note_session_model(request, uses_login_model=scoped is not None)
+        if scoped is not None:
+            return None
+        if self._is_uncredentialed_login_model(request, requested):
+            return "login_required", "该模型需要登录华为账号后使用（未登录或登录已过期），请登录后重试"
+        if not self._has_valid_model_config(requested):
+            # 包括默认模型还是 .env 模板占位值的情况（新装、没配过模型）。Opencode Zen 停用后
+            # 没有免费模型兜底了，所以要把"登录拿免费模型"这条路也告诉用户。
+            return "model_not_configured", "还没有配置可用的模型：请在设置里配置模型，或登录获取限时免费模型"
+        return None
+
+    def _request_scoped_login_model(
+        self, request: AgentRequest, requested: str
+    ) -> Model | None:
+        """用 Gateway 随请求带下来的凭据构建模型；没带就返回 ``None``。
+
+        **为什么不走 _model_cache。** 缓存是按模型名建的、进程内共享的；而这份凭据
+        是**这一次调用、这一个用户**的。写进缓存就会串号——下一个用户的请求命中同名
+        key，用上前一个用户的句柄，计费也记到别人头上。所以每次现造，不缓存。
+
+        模型里的 api_key 是占位值，真 token 在凭据表里、发请求时才换上（见
+        ``login_credentials``）。所以 ``_last_resolved_model`` 被中断恢复等不带模型名的
+        请求复用时，用的也总是最新登记的 token。
+        """
+        from jiuwenswarm.common.auth.login_credentials import build_login_model_entry
+
+        entry = build_login_model_entry(request.params, requested)
+        if entry is None:
+            return None
+        bare_name = entry["model_client_config"]["model_name"]
+        try:
+            model = build_model_from_entry(
+                entry["model_client_config"], entry["model_config_obj"]
+            )
+        except Exception:  # noqa: BLE001 — 构建失败就退回普通解析路径
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] 请求级登录模型构建失败 model=%r，"
+                "回退到进程内模型缓存",
+                bare_name,
+                exc_info=True,
+            )
+            return None
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] 使用请求级登录凭据 model=%s api_base=%s",
+            bare_name,
+            entry["model_client_config"]["api_base"],
+        )
+        self._last_resolved_model = model
+        return model
 
     @staticmethod
     def _prepare_multimodal_image_inputs(
@@ -11374,9 +11499,27 @@ class JiuWenSwarmDeepAdapter:
         )
         stage_timer.mark("cwd_seed")
 
+        self._sync_a4p_tools_for_runtime(
+            get_config(),
+            resolved_channel,
+            runtime_config.session_id,
+        )
+
         if self._runtime_prompt_rail:
+            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(
+                runtime_config.session_id
+            )
             self._runtime_prompt_rail.set_language(resolved_language)
             self._runtime_prompt_rail.set_channel(resolved_channel)
+            self._runtime_prompt_rail.set_a4p_authorizer_available(
+                bool(
+                    execution_context is not None
+                    and execution_context.is_interactive_web
+                )
+            )
+            self._runtime_prompt_rail.set_request_metadata(
+                runtime_config.request_metadata if bind_request else None
+            )
             self._runtime_prompt_rail.set_trusted_dirs(
                 runtime_config.trusted_dirs if bind_request else None
             )
@@ -14382,13 +14525,13 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
-        _req_model = self._requested_model_name(request)
-        if not self._has_valid_model_config(_req_model):
+        _model_error = self._model_config_error(request)
+        if _model_error is not None:
             return AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=False,
-                payload={"error": "模型未正确配置，请先配置模型信息"},
+                payload={"error": _model_error[1], "code": _model_error[0]},
                 metadata=request.metadata,
             )
 
@@ -14486,6 +14629,11 @@ class JiuWenSwarmDeepAdapter:
         if equipment_error is not None:
             return equipment_error
 
+        authorization_context = build_authorization_execution_context(
+            request,
+            agent_id=self._agent_name,
+            mode=mode,
+        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -14535,6 +14683,7 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
+        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -14743,6 +14892,10 @@ class JiuWenSwarmDeepAdapter:
             cleanup_permission_context(token_perm)
             self._reset_runtime_cron_context(cron_context_tokens)
             reset_session_messaging_route(session_message_context_token)
+            AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                authorization_context.session_id,
+                authorization_context.request_id,
+            )
             self._unmark_session_active(session_id)
 
         content = "".join(collected_content) if collected_content else ""
@@ -14816,12 +14969,12 @@ class JiuWenSwarmDeepAdapter:
         if self._instance is None:
             raise RuntimeError("JiuWenSwarmDeepAdapter 未初始化，请先调用 create_instance()")
 
-        _req_model = self._requested_model_name(request)
-        if not self._has_valid_model_config(_req_model):
+        _model_error = self._model_config_error(request)
+        if _model_error is not None:
             yield AgentResponseChunk(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
-                payload={"event_type": "chat.error", "error": "模型未正确配置，请先配置模型信息"},
+                payload={"event_type": "chat.error", "error": _model_error[1], "code": _model_error[0]},
                 is_complete=True,
             )
             return
@@ -14840,6 +14993,11 @@ class JiuWenSwarmDeepAdapter:
                 reset_team_heartbeat_service,
             )
 
+            authorization_context = build_authorization_execution_context(
+                request,
+                agent_id=self._agent_name,
+                mode=mode,
+            )
             resolved_model = self._resolve_model_for_request(request)
             self._apply_model_to_react_agent(
                 resolved_model,
@@ -14908,6 +15066,11 @@ class JiuWenSwarmDeepAdapter:
                 self._runtime_prompt_rail.set_model_name(self._resolve_model_name())
                 self._runtime_prompt_rail.set_mode(mode)
                 self._runtime_prompt_rail.set_session_id(session_id)
+                self._runtime_prompt_rail.set_channel(resolved_channel)
+                self._runtime_prompt_rail.set_a4p_authorizer_available(
+                    authorization_context.is_interactive_web
+                )
+                self._runtime_prompt_rail.set_request_metadata(request.metadata)
             self._write_runtime_state(
                 mode=mode,
                 language=resolved_language,
@@ -14922,6 +15085,7 @@ class JiuWenSwarmDeepAdapter:
             token_heartbeat_service = bind_team_heartbeat_service(
                 getattr(self, "_heartbeat_service", None)
             )
+            AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
             try:
                 team_stream = process_team_message_stream(request, inputs, self._instance)
                 async with aclosing(team_stream):
@@ -14935,6 +15099,10 @@ class JiuWenSwarmDeepAdapter:
                 reset_current_multimodal_image_files(image_files_token)
                 reset_team_heartbeat_service(token_heartbeat_service)
                 cleanup_permission_context(token_perm)
+                AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                    authorization_context.session_id,
+                    authorization_context.request_id,
+                )
             return
 
         # Auto-Harness 模式处理
@@ -15215,6 +15383,11 @@ class JiuWenSwarmDeepAdapter:
             )
             return
 
+        authorization_context = build_authorization_execution_context(
+            request,
+            agent_id=self._agent_name,
+            mode=mode,
+        )
         cron_context_tokens = self._bind_runtime_cron_context(
             channel_id=request.channel_id,
             session_id=request.session_id,
@@ -15264,6 +15437,7 @@ class JiuWenSwarmDeepAdapter:
         inputs = with_session_messaging_route(
             inputs, current_session_messaging_route()
         )
+        AUTHORIZATION_EXECUTION_CONTEXTS.activate(authorization_context)
         try:
             await self._update_runtime_config(
                 self._RuntimeConfig(
@@ -16113,6 +16287,10 @@ class JiuWenSwarmDeepAdapter:
             self._permission_dispatch.finalize(inputs)
             self._unregister_session_agent_task(session_id)
             cleanup_permission_context(token_perm)
+            AUTHORIZATION_EXECUTION_CONTEXTS.release(
+                authorization_context.session_id,
+                authorization_context.request_id,
+            )
             if not stream_consumer_cancelled:
                 self._reset_runtime_cron_context(cron_context_tokens)
                 reset_session_messaging_route(session_message_context_token)
@@ -16135,12 +16313,11 @@ class JiuWenSwarmDeepAdapter:
             cache_tokens = usage_accumulator["cache_tokens"]
             summary["cache_tokens"] = cache_tokens
             summary["cache_hit_rate"] = f"{cache_tokens / input_tokens:.1%}"
-        if usage_accumulator["input_cost"] > 0:
-            summary["input_cost"] = round(usage_accumulator["input_cost"], 6)
-        if usage_accumulator["output_cost"] > 0:
-            summary["output_cost"] = round(usage_accumulator["output_cost"], 6)
-        if usage_accumulator["total_cost"] > 0:
-            summary["total_cost"] = round(usage_accumulator["total_cost"], 6)
+        # 免费模型不报金额：用户这边按积分计量，SDK 按单价算出来的是服务端成本
+        if self._scoped_login_auth(request) is None:
+            for field in ("input_cost", "output_cost", "total_cost"):
+                if usage_accumulator[field] > 0:
+                    summary[field] = round(usage_accumulator[field], 6)
 
         logger.info(
             "[JiuWenSwarmDeepAdapter] llm_usage summary: request_id=%s session_id=%s usage=%s",

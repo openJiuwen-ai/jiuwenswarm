@@ -459,9 +459,20 @@ test('default and deletion operations preserve identity, group semantics, and re
   const target = { model_name: 'same', alias: 'second', is_default: false };
   const other = { model_name: 'other', alias: 'third', is_default: true };
   const agentOs = { model_name: 'backup', alias: 'backup', is_agentos: true };
-  const models = [primary, target, other, agentOs];
+  const loginFree = {
+    model_name: 'GLM-5.3',
+    alias: 'GLM-5.3',
+    is_free: true,
+    source: 'huawei-maas-login',
+    is_default: true,
+  };
+  const models = [loginFree, primary, target, other, agentOs];
 
   assert.deepEqual(getEditableModels(models), [primary, target, other]);
+  assert.equal(
+    getModelDisplayGroups(models).some((group) => group.items.some(({ model }) => model === loginFree)),
+    false,
+  );
   const displayGroups = getModelDisplayGroups([primary, other, target, agentOs]);
   assert.equal(displayGroups.length, 3);
   assert.deepEqual(
@@ -546,6 +557,7 @@ test('model Settings sources use the required RPCs without hardcoded vendor opti
   assert.doesNotMatch(dialog, /accountMode/);
   assert.doesNotMatch(page, /Promise\.all\(\[loadModels\(\), loadCatalog\(\)\]\)/);
   assert.doesNotMatch(page, /resolveModelPreset|flattenVendorCatalog/);
+  assert.match(operations, /isRuntimeGrantedModel/);
   assert.match(operations, /model\.is_agentos !== true/);
   assert.doesNotMatch(page, /config\.save_all/);
   assert.match(dialog, /'vendors\.fetch_models'/);

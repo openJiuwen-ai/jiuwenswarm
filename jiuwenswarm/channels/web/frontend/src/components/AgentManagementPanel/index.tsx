@@ -41,7 +41,7 @@ import {
 } from '../../features/agentManagement';
 import './agentManagement.css';
 import { equipmentListFilter } from '../../features/equipmentMarketplace';
-import { PageHeader, PageToolbarSearch, Tabs } from '../ui';
+import { CategoryTabs, PageHeader, PageToolbarSearch, Tabs } from '../ui';
 
 type PanelView = 'catalog' | 'teams' | 'mine' | 'detail' | 'group-detail' | 'create' | 'group-create';
 
@@ -1026,12 +1026,10 @@ export function AgentManagementPanel({
 
             />
             {isMine ? (
-              <Tabs
-                role="tablist"
-                ariaLabel={t('agentManagement.tabs.mineLabel')}
+              <CategoryTabs
                 wrapperTestId="agent-management-secondary-tabs"
                 itemTestId="agent-management-secondary-tab"
-                className="agent-management-secondary-tabs text-base"
+                className="agent-management-secondary-tabs"
                 value={mineKind}
                 onChange={(nextKind) => setMineKind(nextKind as 'agent' | 'group')}
                 items={[

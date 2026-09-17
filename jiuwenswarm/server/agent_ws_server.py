@@ -125,10 +125,12 @@ from jiuwenswarm.common.mode_matrix import (
 from jiuwenswarm.agents.harness.common.rails.permissions.permissions_config_rpc import (
     get_permissions_config_req_methods,
 )
+from jiuwenswarm.agents.harness.common.a4p_rpc import get_a4p_req_methods
 from jiuwenswarm.common.config import (
     DEFAULT_SANDBOX_POLICY_FILE,
     DEFAULT_SANDBOX_STARTUP_MODE,
     get_config,
+    get_available_models,
     get_default_models,
     get_config_yaml_mcp_servers,
     get_mcp_server_config,
@@ -913,6 +915,7 @@ def _payload_to_request(data: dict[str, Any]) -> AgentRequest:
         timestamp=data.get("timestamp", 0.0),
         metadata=metadata,
         user_id=str(data.get("user_id") or "").strip(),
+        agent_ref=data.get("agent_ref"),
     )
 
 
@@ -1173,6 +1176,7 @@ class AgentWebSocketServer:
         self._image_modality_refresh_task: Optional[asyncio.Task] = None
         # Archive service for session/project lifecycle management
         self._archive_service = None
+        self._login_credential_refresh_task: Optional[asyncio.Task] = None
         # Proactive recommendation engine (set by app_agentserver for debug trigger)
         self._proactive_engine: Any = None
         get_acp_output_manager().set_send_push_callback(
@@ -1435,6 +1439,16 @@ class AgentWebSocketServer:
         self._personal_context_start_task = asyncio.create_task(
             self._start_personal_context_best_effort(),
             name="personal-context-host-start",
+        )
+        # 登录模型的 id_token 一小时过期：在用且快过期的，请Gateway续期后推回来
+        from jiuwenswarm.common.auth.login_credentials import run_refresh_requests
+        from jiuwenswarm.common.auth.remote_config import warm_up_in_background
+
+        # 官网配置在后台先拉一次：AgentServer 读它的地方都在逐请求的热路径上，
+        # 不预热的话第一个请求拿到的是空配置（认不出免费模型）
+        warm_up_in_background()
+        self._login_credential_refresh_task = asyncio.create_task(
+            run_refresh_requests(self.send_push), name="login-credential-refresh"
         )
         # WS 监听已经开放, 现在按 config.yaml::sandbox 的 runtime.enabled +
         # startup_mode 决定要不要自动把 jiuwenbox 子进程也拉起来。失败不阻塞
@@ -1825,6 +1839,11 @@ class AgentWebSocketServer:
                 pass
             except Exception as exc:  # noqa: BLE001
                 logger.warning("[AgentWebSocketServer] MCP prewarm cancel failed: %s", exc)
+        credential_refresh = self._login_credential_refresh_task
+        self._login_credential_refresh_task = None
+        if credential_refresh is not None and not credential_refresh.done():
+            credential_refresh.cancel()
+            await asyncio.gather(credential_refresh, return_exceptions=True)
         # 同理取消图像模态重探任务.
         image_modality_refresh = self._image_modality_refresh_task
         self._image_modality_refresh_task = None
@@ -2367,6 +2386,9 @@ class AgentWebSocketServer:
             if request.req_method in get_permissions_config_req_methods():
                 await self._handle_permissions_config(ws, request, send_lock)
                 return
+            if request.req_method in get_a4p_req_methods():
+                await self._handle_a4p_request(ws, request, send_lock)
+                return
             if request.req_method == ReqMethod.HISTORY_GET:
                 if request.is_stream:
                     await self._handle_history_get_stream(ws, request, send_lock)
@@ -2492,6 +2514,9 @@ class AgentWebSocketServer:
                 return
             if request.req_method == ReqMethod.AGENT_PREWARM_SYNC:
                 await self._handle_agent_prewarm_sync(ws, request, send_lock)
+                return
+            if request.req_method == ReqMethod.AUTH_CREDENTIALS_UPDATE:
+                await self._handle_auth_credentials_update(ws, request, send_lock)
                 return
             if request.req_method == ReqMethod.EXTENSIONS_LIST:
                 await self._handle_extensions_list(ws, request, send_lock)
@@ -4156,6 +4181,9 @@ class AgentWebSocketServer:
                 payload = dict(payload or {})
                 payload["event_type"] = "chat.error"
                 payload.setdefault("error", "Runtime execution failed")
+            if isinstance(payload, dict) and payload.get("event_type") == "chat.error":
+                # 集群的失败是 ok 事件里的 chat.error（team.error 转过来的），也要分类
+                self._annotate_model_error(payload, event.session_id)
             message = AgentResponseChunk(
                 request_id=event.request_id,
                 channel_id=event.channel_id,
@@ -5720,6 +5748,20 @@ class AgentWebSocketServer:
             # Preserve develop's capture time and outer request error handling.
             self._agent_manager.schedule_permissions_reload(get_config())
 
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
+    async def _handle_a4p_request(
+        self,
+        ws: Any,
+        request: AgentRequest,
+        send_lock: asyncio.Lock,
+    ) -> None:
+        """Handle a4p.* requests forwarded from the Web User Authorizer."""
+        from jiuwenswarm.agents.harness.common.a4p_rpc import dispatch_a4p_request
+
+        resp = await dispatch_a4p_request(request)
         wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
         async with send_lock:
             await send_wire_payload(ws, wire)
@@ -10269,6 +10311,23 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _handle_auth_credentials_update(
+        self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
+    ) -> None:
+        """Gateway 推回的登录模型凭据：续期后的新 token，或会话注销后的撤销。"""
+        from jiuwenswarm.common.auth.login_credentials import apply_credential_update
+
+        applied = apply_credential_update(request.params)
+        resp = AgentResponse(
+            request_id=request.request_id,
+            channel_id=request.channel_id,
+            ok=applied,
+            payload={"applied": applied},
+        )
+        wire = encode_agent_response_for_wire(resp, response_id=request.request_id)
+        async with send_lock:
+            await send_wire_payload(ws, wire)
+
     async def _handle_agent_reload_config(self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock) -> None:
         try:
             params = request.params or {}
@@ -10290,6 +10349,13 @@ class AgentWebSocketServer:
                 reload_kwargs["target_session_id"] = target_session_id
             if reload_scopes:
                 reload_kwargs["reload_scopes"] = reload_scopes
+            if isinstance(config_payload, dict) and "a4p" in config_payload:
+                from jiuwenswarm.agents.harness.common.a4p_runtime import (
+                    get_a4p_config,
+                )
+
+                # Gateway snapshots may predate an AgentServer-owned config RPC.
+                config_payload = {**config_payload, "a4p": get_a4p_config()}
             agent_reload_scopes = {
                 "model",
                 "multimodal",
@@ -10577,6 +10643,11 @@ class AgentWebSocketServer:
             return False
 
         try:
+            payload = msg.get("payload") if isinstance(msg, dict) else None
+            if isinstance(payload, dict) and payload.get("event_type") == "chat.error":
+                # 集群在没有进行中的请求时（自主轮次）失败，走的是这条推送
+                msg = {**msg, "payload": dict(payload)}
+                self._annotate_model_error(msg["payload"], msg.get("session_id"))
             wire = build_server_push_wire(msg)
             async with self._current_send_lock:
                 sent_original = await send_wire_payload(self._current_ws, wire)
@@ -11667,6 +11738,24 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    @staticmethod
+    def _annotate_model_error(payload: dict, session_id: Optional[str]) -> None:
+        if payload.get("code"):
+            return
+        try:
+            from jiuwenswarm.common.auth.apig import classify_model_error
+            from jiuwenswarm.common.auth.login_credentials import session_uses_login_model
+
+            code = classify_model_error(
+                str(payload.get("error") or ""),
+                login_model=session_uses_login_model(session_id),
+            )
+        except Exception:  # noqa: BLE001 — 分类失败不该影响错误本身的上报
+            return
+        if code:
+            payload["code"] = code
+            payload["upstream"] = True
+
     def _resolve_model(self, model_name: Optional[str] = None) -> Optional[Any]:
         """Resolve model from jiuwenswarm config.
 
@@ -11683,6 +11772,17 @@ class AgentWebSocketServer:
         # Resolve by name or use default
         if model_name and model_name in self._model_cache:
             return self._model_cache[model_name]
+        if model_name:
+            # 缓存是启动时的一次性快照，登录后新拿到的模型不在里面；静默回退到默认模型会让
+            # 用户"选了 A 却跑了 B"。所以未命中时重建一次再查，仍然没有才回退。
+            self._build_model_cache()
+            if model_name in self._model_cache:
+                return self._model_cache[model_name]
+            logger.warning(
+                "[_resolve_model] 模型 %r 不在可用列表里，回退到默认模型；可用模型: %s",
+                model_name,
+                sorted(self._model_cache),
+            )
         return self._default_model
 
     def reset_model_cache(self) -> None:
@@ -11704,7 +11804,8 @@ class AgentWebSocketServer:
         config = get_config()
 
         # Build from models.defaults list
-        for entry in get_default_models(config):
+        # 用 get_available_models：配置的模型 + 登录后自动获得的模型都要能选中
+        for entry in get_available_models(config):
             mcc = entry.get("model_client_config") or {}
             model_name = mcc.get("model_name")
             if not model_name:

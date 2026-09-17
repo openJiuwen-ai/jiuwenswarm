@@ -21,28 +21,12 @@
   margin-bottom: 0;
 }
 
+/* 二级类型切换（我的专家内 专家/专家团）：已改用 ui/CategoryTabs，
+   这里只保留 page-toolbar 网格里的定位，视觉交给 categoryTabs 自身样式 */
 .page-content[data-variant="mine"] .agent-management-secondary-tabs {
   grid-row: 2;
   grid-column: 1 / -1;
   justify-self: start;
-  margin-left: 0;
-  border: 0;
-  gap: var(--space-agent-group-grid);
-}
-
-.page-content[data-variant="mine"] .agent-management-secondary-tabs button {
-  padding: 0;
-  font-size: 16px;
-  line-height: 24px;
-}
-
-.page-content[data-variant="mine"] .agent-management-secondary-tabs button + button {
-  border-left: 1px solid var(--color-border-default);
-  padding-left: var(--space-agent-group-grid);
-}
-
-.page-content[data-variant="mine"] .agent-management-secondary-tabs button::after {
-  content: none;
 }
 
 .page-content[data-variant="mine"] .agent-management-primary-actions {
@@ -160,45 +144,6 @@
 
 .agent-management-toolbar {
   min-height: 24px;
-}
-
-.agent-management-secondary-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  margin-left: 18px;
-  border-bottom: 1px solid var(--color-border-default);
-}
-
-.agent-management-secondary-tabs button {
-  position: relative;
-  border: 0;
-  background: transparent;
-  color: var(--color-text-secondary);
-  padding: 7px 10px 8px;
-  cursor: pointer;
-  font-size: 13px;
-}
-
-.agent-management-secondary-tabs button:hover,
-.agent-management-secondary-tabs button:focus-visible,
-.agent-management-secondary-tabs button.is-active {
-  color: var(--color-text-primary);
-  outline: 0;
-}
-
-.agent-management-secondary-tabs button.is-active {
-  font-weight: 600;
-}
-
-.agent-management-secondary-tabs button.is-active::after {
-  position: absolute;
-  right: 8px;
-  bottom: -1px;
-  left: 8px;
-  height: 2px;
-  background: var(--color-action-primary);
-  content: '';
 }
 
 [data-testid="agent-management-panel"][data-variant="mine"] .agent-management-card {
@@ -2234,10 +2179,6 @@
     padding-bottom: 16px;
   }
 
-  .agent-management-secondary-tabs {
-    margin-left: 0;
-  }
-
   .agent-group-detail__members {
     grid-template-columns: 1fr;
   }
@@ -2279,10 +2220,6 @@
 }
 /* 0807 high-fidelity alignment: keep the existing live seams and tune only
    the Agent/AgentGroup surfaces covered by the design exports. */
-.page-content[data-testid="agent-management-panel"] .card-grid-auto {
-  padding-top: 32px !important;
-}
-
 .page-content[data-testid="agent-management-panel"] [data-testid="agent-management-search"] {
   width: 360px !important;
 }

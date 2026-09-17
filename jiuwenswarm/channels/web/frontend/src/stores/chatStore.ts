@@ -72,6 +72,15 @@ interface TaskItem {
   mediaItems?: MediaItem[];
 }
 
+export interface A4PAuthorizationRequest {
+  requestId: string;
+  kind: string;
+  mandate: Record<string, unknown>;
+  signingOptions: Record<string, unknown>;
+  uiContext?: Record<string, unknown>;
+  sessionId?: string;
+}
+
 export interface HistoryPagerMeta {
   nextCursor: string | null;
   hasMore: boolean;
@@ -137,6 +146,7 @@ export interface ChatRuntime {
   taskQueue: TaskItem[];
   queuePaused: boolean;
   pendingQuestions: AskUserQuestionPayload[];
+  pendingA4PAuthorization: A4PAuthorizationRequest | null;
   /**
    * 忙碌时设目标：用户气泡暂存在此（界面不立刻显示）；
    * 空 chat.final / processing 结束再正式入 messages。
@@ -183,6 +193,7 @@ function createEmptyRuntime(): ChatRuntime {
     taskQueue: [],
     queuePaused: false,
     pendingQuestions: [],
+    pendingA4PAuthorization: null,
     pendingGoalObjectiveBubble: null as ChatRuntime['pendingGoalObjectiveBubble'],
     inputValue: '',
     evolutionStatusClearTimer: null,
@@ -295,6 +306,10 @@ interface ChatState {
   enqueuePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   consumePendingQuestion: (sessionId: string, question: AskUserQuestionPayload) => void;
   clearPendingQuestions: (sessionId: string) => void;
+  setPendingA4PAuthorization: (
+    sessionId: string,
+    request: A4PAuthorizationRequest | null,
+  ) => void;
   setPendingGoalObjectiveBubble: (sessionId: string, content: string | null) => void;
   flushPendingGoalObjectiveBubble: (sessionId: string) => void;
   queueOrAddGoalObjectiveMessage: (sessionId: string, content: string) => void;
@@ -426,6 +441,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             },
             taskQueue: [],
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1376,6 +1392,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
               orphanResults: new Map(),
               interruptResult: null,
               pendingQuestions: [],
+              pendingA4PAuthorization: null,
               toolMetrics: {
                 toolCallDedupDropped: 0,
                 toolResultDedupDropped: 0,
@@ -1394,6 +1411,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             orphanResults: new Map(),
             interruptResult: null,
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             toolMetrics: {
               toolCallDedupDropped: 0,
               toolResultDedupDropped: 0,
@@ -1457,6 +1475,7 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
             },
             taskQueue: [],
             pendingQuestions: [],
+            pendingA4PAuthorization: null,
             pendingGoalObjectiveBubble: null,
           },
         },
@@ -1578,6 +1597,19 @@ export const useChatStore = create<ChatState>()(subscribeWithSelector((set, get)
         runtimes: {
           ...state.runtimes,
           [sessionId]: { ...runtime, pendingQuestions: [] },
+        },
+      };
+    });
+  },
+
+  setPendingA4PAuthorization: (sessionId, request) => {
+    set((state) => {
+      const runtime = state.runtimes[sessionId];
+      if (!runtime) return state;
+      return {
+        runtimes: {
+          ...state.runtimes,
+          [sessionId]: { ...runtime, pendingA4PAuthorization: request },
         },
       };
     });

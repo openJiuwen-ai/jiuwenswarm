@@ -976,6 +976,7 @@ class TeamManager:
         session_id: str,
         *,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
         template_id: str | None = None,
         template_snapshot: dict[str, Any] | None = None,
         strict_template: bool = False,
@@ -1005,6 +1006,7 @@ class TeamManager:
         spec_dict = load_team_spec_dict(
             config_base=config_base,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
             template_id=template_id,
             template_snapshot=template_snapshot,
             strict_template=strict_template,
@@ -1014,11 +1016,12 @@ class TeamManager:
             spec_dict = TeamManager._normalize_distributed_transport_fields(config_base, spec_dict)
 
         # Populate the pool from valid configured entries plus the effective
-        # page-selected model. The latter may be an in-memory Zen model that
-        # is intentionally absent from config.yaml.
+        # page-selected model. The latter may be an in-memory Zen model or a
+        # login model, both intentionally absent from config.yaml.
         effective_models = get_effective_team_model_entries(
             config_base,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
         )
         if effective_models:
             from openjiuwen.agent_teams.schema.team import ModelPoolEntry
@@ -1100,11 +1103,14 @@ class TeamManager:
         session_id: str,
         *,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
     ) -> tuple[TeamAgentSpec, bool]:
         team_name, template_id, template_snapshot = self._lookup_bound_team_identity(session_id)
         load_kwargs: dict[str, Any] = {}
         if requested_model_name is not None:
             load_kwargs["requested_model_name"] = requested_model_name
+        if login_model_entry is not None:
+            load_kwargs["login_model_entry"] = login_model_entry
         if template_id is not None:
             load_kwargs["template_id"] = template_id
             load_kwargs["strict_template"] = template_snapshot is None
@@ -1129,6 +1135,7 @@ class TeamManager:
         channel_id: str | None = None,
         request_metadata: dict[str, Any] | None = None,
         requested_model_name: str | None = None,
+        login_model_entry: dict[str, Any] | None = None,
         agent_group_name: str | None = None,
         swarmflow_config: dict | None = None,
     ) -> TeamAgentSpec:
@@ -1147,6 +1154,9 @@ class TeamManager:
             channel_id: Raw channel id from the request, if any.
             request_metadata: Request metadata mapping.
             agent_group_name: Optional AgentGroup package bound to the session.
+            login_model_entry: Model entry for a page-selected login model,
+                built from the request's forwarded credentials (placeholder
+                api_key; the real token is swapped in per HTTP request).
 
         Returns:
             The enriched ``TeamAgentSpec`` ready to build (``build_context`` set;
@@ -1160,6 +1170,7 @@ class TeamManager:
         spec, has_binding = self._load_session_team_spec(
             session_id,
             requested_model_name=requested_model_name,
+            login_model_entry=login_model_entry,
         )
         if not has_binding:
             self._apply_session_scoped_team_name(spec, session_id=session_id)

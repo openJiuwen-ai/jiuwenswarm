@@ -495,9 +495,9 @@ def get_zen_free_model_entries() -> list[dict[str, Any]]:
     Returns an empty list when fetching is disabled, failed, or found nothing.
     The entries are in-memory only (never written to config.yaml).
 
-    Honors the live toggle: when ``models.enable_free_models`` is ``false``,
-    returns ``[]`` immediately even if a previously-warmed cache exists, so
-    disabling via ``config.set`` takes effect without a restart.
+    Honors the live toggle: when Zen is disabled (always, after login models
+    replaced it), returns ``[]`` immediately even if a previously-warmed cache
+    exists.
     """
     if not _zen_free_models_enabled():
         return []

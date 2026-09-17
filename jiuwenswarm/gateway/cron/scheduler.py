@@ -1292,7 +1292,13 @@ class CronSchedulerService:
                     is_stream=is_team_cron_mode(mode),
                     timestamp=self._now_fn(),
                     metadata={
-                        "cron": {"job_id": job.id, "run_id": run_id},
+                        "cron": {
+                            "job_id": job.id,
+                            "run_id": run_id,
+                            # 传给 UserTurn 信封：让「打印当前时间」类任务按任务
+                            # 时区渲染 timezone/timestamp，而非固定 Asia/Shanghai。
+                            "timezone": job.timezone,
+                        },
                         # 真实推送渠道（普通模式 channel 是内部 "__cron__"）。
                         # AgentServer 用它注册 send_file 等按渠道开关的工具，并作为
                         # 文件推送的 channel_id，与 cron 文本结果推送到同一批渠道。
@@ -1620,6 +1626,14 @@ class CronSchedulerService:
 
         async def _consume() -> tuple[str, bool]:
             publish_chunk = getattr(self._message_handler, "publish_stream_chunk", None)
+            # 本轮实际收到的事件类型（去重，取值域天然有界）。仅在兜底成
+            # 无细节文案时写进日志，用于定位后端报错为何没有透传出来。
+            seen_event_types: list[str] = []
+
+            def note_seen_event(event_type: str) -> None:
+                if event_type and event_type not in seen_event_types:
+                    seen_event_types.append(event_type)
+
             if publish_chunk is None:
                 logger.warning(
                     "[Cron] message_handler.publish_stream_chunk unavailable; "
@@ -1636,9 +1650,13 @@ class CronSchedulerService:
                         )
                     payload = chunk.payload if isinstance(chunk.payload, dict) else None
                     event_type = str((payload or {}).get("event_type") or "").strip()
+                    note_seen_event(event_type)
                     if payload:
                         apply_cron_team_round_event(round_state, payload)
-                        if event_type in ("chat.error", "execution.error"):
+                        # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
+                        # chat.error；它同样是终端失败信号，漏认会让真实报错丢失，
+                        # 只剩「未产生有效报告」这种无因由的兜底文案。
+                        if event_type in ("chat.error", "execution.error", "team.error"):
                             consume_meta["ok"] = False
                             err = str(
                                 (payload.get("error") or payload.get("message") or "").strip()
@@ -1684,6 +1702,16 @@ class CronSchedulerService:
                 # 以免用户将不完整内容误认为成功报告。
                 return f"[cron] 任务执行失败: {consume_meta['error_text']}", False
             if _is_cron_team_result_insufficient(text=text):
+                # 兜底文案不含任何原因。若此处不记日志，gateway 日志里连失败痕迹
+                # 都没有，后端报错就彻底无声丢失。记录本轮见过的事件类型与 leader
+                # 原文，便于反查失败究竟停在哪一步。
+                logger.warning(
+                    "[Cron] team stream produced no usable report: request_id=%s "
+                    "seen_events=%s leader_text=%r",
+                    getattr(envelope, "request_id", ""),
+                    seen_event_types or ["<none>"],
+                    str(round_state.get("leader_text") or "")[:300],
+                )
                 return "[cron] 定时任务未产生有效报告", False
             return text, bool(consume_meta["ok"])
 

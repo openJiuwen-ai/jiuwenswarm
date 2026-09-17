@@ -55,6 +55,16 @@ wheels = [
 ]
 
 [[package]]
+name = "a4p"
+version = "0.2.0"
+source = { git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0#1699ea352a08430731c6dddac0fc46a1b1a385f2" }
+dependencies = [
+    { name = "cryptography" },
+    { name = "tzdata" },
+    { name = "webauthn" },
+]
+
+[[package]]
 name = "agentdescent"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -543,6 +553,36 @@ source = { registry = "https://pypi.org/simple" }
 sdist = { url = "https://files.pythonhosted.org/packages/76/7b/1755ed2c6bfabd1d98b37ae73152f8dcf94aa40fee119d163c19ed484704/cachetools-7.0.6.tar.gz", hash = "sha256:e5d524d36d65703a87243a26ff08ad84f73352adbeafb1cde81e207b456aaf24", size = 37526, upload-time = "2026-04-20T19:02:23.289Z" }
 wheels = [
     { url = "https://files.pythonhosted.org/packages/fe/c4/cf76242a5da1410917107ff14551764aa405a5fd10cd10cf9a5ca8fa77f4/cachetools-7.0.6-py3-none-any.whl", hash = "sha256:4e94956cfdd3086f12042cdd29318f5ced3893014f7d0d059bf3ead3f85b7f8b", size = 13976, upload-time = "2026-04-20T19:02:21.187Z" },
+]
+
+[[package]]
+name = "cbor2"
+version = "5.9.0"
+source = { registry = "https://pypi.org/simple" }
+sdist = { url = "https://files.pythonhosted.org/packages/bd/cb/09939728be094d155b5d4ac262e39877875f5f7e36eea66beb359f647bd0/cbor2-5.9.0.tar.gz", hash = "sha256:85c7a46279ac8f226e1059275221e6b3d0e370d2bb6bd0500f9780781615bcea", size = 111231, upload-time = "2026-03-22T15:56:50.638Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/43/aa/317c7118b8dda4c9563125c1a12c70c5b41e36677964a49c72b1aac061ec/cbor2-5.9.0-cp311-cp311-macosx_11_0_arm64.whl", hash = "sha256:0485d3372fc832c5e16d4eb45fa1a20fc53e806e6c29a1d2b0d3e176cedd52b9", size = 70578, upload-time = "2026-03-22T15:56:03.835Z" },
+    { url = "https://files.pythonhosted.org/packages/31/43/fe29b1f897770011a5e7497f4523c2712282ee4a6cbf775ea6383fb7afb9/cbor2-5.9.0-cp311-cp311-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:a9d6e4e0f988b0e766509a8071975a8ee99f930e14a524620bf38083106158d2", size = 268738, upload-time = "2026-03-22T15:56:05.222Z" },
+    { url = "https://files.pythonhosted.org/packages/0a/1a/e494568f3d8aafbcdfe361df44c3bcf5cdab5183e25ea08e3d3f9fcf4075/cbor2-5.9.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:5326336f633cc89dfe543c78829c16c3a6449c2c03277d1ddba99086c3323363", size = 262571, upload-time = "2026-03-22T15:56:06.411Z" },
+    { url = "https://files.pythonhosted.org/packages/42/2e/92acd6f87382fd44a34d9d7e85cc45372e6ba664040b72d1d9df648b25d0/cbor2-5.9.0-cp311-cp311-musllinux_1_2_aarch64.whl", hash = "sha256:5e702b02d42a5ace45425b595ffe70fe35aebaf9a3cdfdc2c758b6189c744422", size = 262356, upload-time = "2026-03-22T15:56:08.236Z" },
+    { url = "https://files.pythonhosted.org/packages/3f/68/52c039a28688baeeb78b0be7483855e6c66ea05884a937444deede0c87b8/cbor2-5.9.0-cp311-cp311-musllinux_1_2_x86_64.whl", hash = "sha256:2372d357d403e7912f104ff085950ffc82a5854d6d717f1ca1ce16a40a0ef5a7", size = 257604, upload-time = "2026-03-22T15:56:09.835Z" },
+    { url = "https://files.pythonhosted.org/packages/5b/e4/10d96a7f73ed9227090ce6e3df5d73329eb6a267dab7d5b989e6fbf6c504/cbor2-5.9.0-cp311-cp311-win_amd64.whl", hash = "sha256:1d02b65f070fd726bdc310d927228975bb655d155bf059b6eb7cacefb3dca86f", size = 69388, upload-time = "2026-03-22T15:56:11.28Z" },
+    { url = "https://files.pythonhosted.org/packages/d4/c6/eea5829aa5a649db540f47ea35f4bf2313383d28246f0cbc50432cfad6b3/cbor2-5.9.0-cp311-cp311-win_arm64.whl", hash = "sha256:837754ece9052b3f607047e1741e5f852a538aa2b0ee3db11c82a8fa11804aa4", size = 65315, upload-time = "2026-03-22T15:56:12.326Z" },
+    { url = "https://files.pythonhosted.org/packages/ee/39/72d8a5a4b06565561ec28f4fcb41aff7bb77f51705c01f00b8254a2aca4f/cbor2-5.9.0-cp312-cp312-macosx_11_0_arm64.whl", hash = "sha256:1f223dffb1bcdd2764665f04c1152943d9daa4bc124a576cd8dee1cad4264313", size = 71223, upload-time = "2026-03-22T15:56:13.68Z" },
+    { url = "https://files.pythonhosted.org/packages/09/fd/7ddf3d3153b54c69c3be77172b8d9aa3a9d74f62a7fbde614d53eaeed9a4/cbor2-5.9.0-cp312-cp312-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ae6c706ac1d85a0b3cb3395308fd0c4d55e3202b4760773675957e93cdff45fc", size = 287865, upload-time = "2026-03-22T15:56:14.813Z" },
+    { url = "https://files.pythonhosted.org/packages/db/9d/7ede2cc42f9bb4260492e7d29d2aab781eacbbcfb09d983de1e695077199/cbor2-5.9.0-cp312-cp312-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:4cd43d8fc374b31643b2830910f28177a606a7bc84975a62675dd3f2e320fc7b", size = 288246, upload-time = "2026-03-22T15:56:16.113Z" },
+    { url = "https://files.pythonhosted.org/packages/ce/9d/588ebc7c5bc5843f609b05fe07be8575c7dec987735b0bbc908ac9c1264a/cbor2-5.9.0-cp312-cp312-musllinux_1_2_aarch64.whl", hash = "sha256:4aa07b392cc3d76fb31c08a46a226b58c320d1c172ff3073e864409ced7bc50f", size = 280214, upload-time = "2026-03-22T15:56:17.519Z" },
+    { url = "https://files.pythonhosted.org/packages/f7/a1/6fc8f4b15c6a27e7fbb7966c30c2b4b18c274a3221fa2f5e6235502d34bc/cbor2-5.9.0-cp312-cp312-musllinux_1_2_x86_64.whl", hash = "sha256:971d425b3a23b75953d8853d5f9911bdeefa09d759ee3b5e6b07b5ff3cbd9073", size = 282162, upload-time = "2026-03-22T15:56:18.975Z" },
+    { url = "https://files.pythonhosted.org/packages/cf/20/9a22cfe08be16ddfeef2542cf4eeed1b29f3f57ddbba0b42f7e0bb8331fd/cbor2-5.9.0-cp312-cp312-win_amd64.whl", hash = "sha256:34a6cb15e6ab6a8eae94ad2041731cd3ef786af43a8df99f847969af5b902ee7", size = 70049, upload-time = "2026-03-22T15:56:20.502Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/9e/695f92d09006614034e25a9f5b10620f3b219f79c1bec3c37b7c6f27a7a9/cbor2-5.9.0-cp312-cp312-win_arm64.whl", hash = "sha256:7d1ddc4541e7367ac58c2470cc0df847f7137167fe4f5729e2d3cc0b993d7da4", size = 65382, upload-time = "2026-03-22T15:56:21.526Z" },
+    { url = "https://files.pythonhosted.org/packages/81/c5/4901e21a8afe9448fd947b11e8f383903207cd6dd0800e5f5a386838de5b/cbor2-5.9.0-cp313-cp313-macosx_11_0_arm64.whl", hash = "sha256:fbb06f34aa645b4deca66643bba3d400d20c15312d1fe88d429be60c1ab50f27", size = 71284, upload-time = "2026-03-22T15:56:22.836Z" },
+    { url = "https://files.pythonhosted.org/packages/1b/10/df643a381aebc3f05486de4813662bc58accb640fc3275cb276a75e89694/cbor2-5.9.0-cp313-cp313-manylinux2014_aarch64.manylinux_2_17_aarch64.manylinux_2_28_aarch64.whl", hash = "sha256:ac684fe195c39821fca70d18afbf748f728aefbfbf88456018d299e559b8cae0", size = 287682, upload-time = "2026-03-22T15:56:24.024Z" },
+    { url = "https://files.pythonhosted.org/packages/c6/0c/8aa6b766059ae4a0ca1ec3ff96fe3823a69a7be880dba2e249f7fbe2700b/cbor2-5.9.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.manylinux_2_28_x86_64.whl", hash = "sha256:2a54fbb32cb828c214f7f333a707e4aec61182e7efdc06ea5d9596d3ecee624a", size = 288009, upload-time = "2026-03-22T15:56:25.305Z" },
+    { url = "https://files.pythonhosted.org/packages/74/07/6236bc25c183a9cf7e8062e5dddf9eae9b0b14ebf14a58a69fe5a1e872c6/cbor2-5.9.0-cp313-cp313-musllinux_1_2_aarch64.whl", hash = "sha256:4753a6d1bc71054d9179557bc65740860f185095ccb401d46637fff028a5b3ec", size = 280437, upload-time = "2026-03-22T15:56:26.479Z" },
+    { url = "https://files.pythonhosted.org/packages/4e/0a/84328d23c3c68874ac6497edb9b1900579a1028efa54734df3f1762bbc15/cbor2-5.9.0-cp313-cp313-musllinux_1_2_x86_64.whl", hash = "sha256:380e534482b843e43442b87d8777a7bf9bed20cb7526f89b780c3400f617304b", size = 282247, upload-time = "2026-03-22T15:56:28.644Z" },
+    { url = "https://files.pythonhosted.org/packages/9b/f6/89b4627e09d028c8e5fcaf7cb55f225c33ce6e037ec1844e65d02bcfa945/cbor2-5.9.0-cp313-cp313-win_amd64.whl", hash = "sha256:dcf0f695873e5c94bd072d6af8698e72b8fb7f7a18f37e0bced1041b7111a6cf", size = 70089, upload-time = "2026-03-22T15:56:29.801Z" },
+    { url = "https://files.pythonhosted.org/packages/e2/7c/efadcd5f0102db692490e4e206988a2f98d39a09912090db497a2b800885/cbor2-5.9.0-cp313-cp313-win_arm64.whl", hash = "sha256:f7c9751a9611601ab326d8f5837f01379195bbf06175fb4effeb552140e7c9e8", size = 65466, upload-time = "2026-03-22T15:56:30.823Z" },
+    { url = "https://files.pythonhosted.org/packages/42/ff/b83492b096fbef26e9cb62c1a4bf2d3cef579ea7b33138c6c37c4ae66f67/cbor2-5.9.0-py3-none-any.whl", hash = "sha256:27695cbd70c90b8de5c4a284642c2836449b14e2c2e07e3ffe0744cb7669a01b", size = 24627, upload-time = "2026-03-22T15:56:48.847Z" },
 ]
 
 [[package]]
@@ -2954,7 +2994,7 @@ wheels = [
 [[package]]
 name = "openjiuwen"
 version = "0.1.18"
-source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23#7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" }
+source = { git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790#13ed6c2d33cc34142be6736f2c88d8ef9a733790" }
 dependencies = [
     { name = "agentdescent" },
     { name = "aiofiles" },
@@ -5575,6 +5615,22 @@ wheels = [
 ]
 
 [[package]]
+name = "webauthn"
+version = "2.8.0"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cbor2" },
+    { name = "cryptography" },
+    { name = "pyasn1" },
+    { name = "pyasn1-modules" },
+    { name = "pyopenssl" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/aa/5c/8ad4e9c8e2eb97f434f74058ff7de955aa47e255ab549d7381c80262318e/webauthn-2.8.0.tar.gz", hash = "sha256:cb3a49abbddb3a757e60c58f8b2b10ca20ef451935b97dfd7e9beedaabff7b10", size = 134197, upload-time = "2026-06-13T03:05:02.148Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/0c/3d/3f63c83078ba9e5f95674192c3f6913453ee42c8aff2b1678fbe292dcfe9/webauthn-2.8.0-py3-none-any.whl", hash = "sha256:357f068a9eaa95455d97e6aa4d89c9893f4fec2cff32bba74b0fc73b5cb743b7", size = 73409, upload-time = "2026-06-13T03:05:01.148Z" },
+]
+
+[[package]]
 name = "websocket-client"
 version = "1.9.0"
 source = { registry = "https://pypi.org/simple" }
@@ -5654,6 +5710,7 @@ version = "0.2.5b1"
 source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
+    { name = "a4p" },
     { name = "aiosqlite" },
     { name = "certifi" },
     { name = "chromadb" },
@@ -5663,6 +5720,7 @@ dependencies = [
     { name = "faiss-cpu" },
     { name = "fastapi" },
     { name = "gitcode-api" },
+    { name = "gitcode-cli" },
     { name = "google-genai" },
     { name = "greenlet" },
     { name = "httpx", extra = ["http2", "socks"] },
@@ -5714,7 +5772,6 @@ desktop = [
     { name = "pywebview" },
 ]
 dev = [
-    { name = "gitcode-cli" },
     { name = "pyinstaller" },
     { name = "pywebview" },
 ]
@@ -5817,6 +5874,7 @@ requires-dist = [
     { name = "a2a-sdk", extras = ["http-server"], marker = "extra == 'test'", specifier = "==1.0.0" },
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
+    { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
@@ -5835,7 +5893,7 @@ requires-dist = [
     { name = "fastapi", marker = "extra == 'harmony'", specifier = ">=0.115" },
     { name = "gitcode-api", specifier = ">=1.2.20,<2" },
     { name = "gitcode-api", marker = "extra == 'harmony'", specifier = ">=1.2.20" },
-    { name = "gitcode-cli", marker = "extra == 'dev'", specifier = "==0.12.0" },
+    { name = "gitcode-cli", specifier = "==0.12.0" },
     { name = "google-genai", specifier = ">=1.68.0,<2" },
     { name = "google-genai", marker = "extra == 'harmony'", specifier = ">=1.68.0" },
     { name = "greenlet", specifier = ">=3.3.2,<4" },
@@ -5854,11 +5912,11 @@ requires-dist = [
     { name = "mutagen", specifier = ">=1.47.0,<2" },
     { name = "mutagen", marker = "extra == 'harmony'", specifier = ">=1.47.0" },
     { name = "numpy", specifier = ">=1.24.0,<3" },
-    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
-    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
-    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
-    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
-    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=7e98a60f96a6fa988c55af38c5eb1a2b6108bb23" },
+    { name = "openjiuwen", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790" },
+    { name = "openjiuwen", marker = "extra == 'harmony'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790" },
+    { name = "openjiuwen", extras = ["claude"], marker = "extra == 'claude'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790" },
+    { name = "openjiuwen", extras = ["codex"], marker = "extra == 'codex'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790" },
+    { name = "openjiuwen", extras = ["postgres", "zmq"], marker = "extra == 'distribute'", git = "https://gitcode.com/openJiuwen/agent-core.git?rev=13ed6c2d33cc34142be6736f2c88d8ef9a733790" },
     { name = "opentelemetry-api", specifier = ">=1.28.0,<2" },
     { name = "opentelemetry-api", marker = "extra == 'harmony'", specifier = ">=1.28.0" },
     { name = "opentelemetry-exporter-otlp-proto-grpc", specifier = ">=1.28.0,<2" },

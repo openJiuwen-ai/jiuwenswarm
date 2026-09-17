@@ -56,6 +56,8 @@ import {
   pendingQuestionIdentity,
   shouldClearPermissionQuestionsForLifecycleEvent,
 } from '../stores/pendingQuestionQueue';
+import { requestLogin } from '../stores/authStore';
+import { describeChatError } from '../features/free-models/chatError';
 import { webClient, requestGoalAction, sendGoalStreamCommand } from '../services/webClient';
 import { createStreamDeltaBatcher } from '../services/streamDeltaBatcher';
 import {
@@ -944,6 +946,15 @@ function stringifyCompact(value: unknown): string {
     return String(value ?? '');
   }
 }
+
+/** 归档相关事件的负载；事件仅用于同步刷新，按资源 ID 幂等处理，不替代请求结果。 */
+type ArchiveResourceEventPayload = {
+  session_id?: string;
+  project_id?: string;
+  work_mode?: string;
+};
+
+const ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS = 300;
 
 export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
   const { t } = useTranslation();
@@ -2579,6 +2590,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       });
     };
 
+    // 归档事件去抖句柄：同一时间窗内成串到达的事件只触发一次工作区刷新
+    let archiveRefreshTimer: number | null = null;
+    const scheduleArchiveWorkspaceRefresh = (includeCron: boolean) => {
+      if (archiveRefreshTimer !== null) window.clearTimeout(archiveRefreshTimer);
+      archiveRefreshTimer = window.setTimeout(() => {
+        archiveRefreshTimer = null;
+        void useWorkspaceStore.getState().refreshWorkspaceData();
+        if (includeCron) void useCronStore.getState().loadJobs();
+      }, ARCHIVE_EVENT_REFRESH_DEBOUNCE_MS);
+    };
+
     const unsubs = [
       webClient.on('connection.ack', ({ payload }) => {
         handleConnectionAck(payload);
@@ -3863,6 +3885,22 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           useSessionStore.getState().setMode(sessionId, normalizeAgentMode(payload.mode));
         }
       }),
+      // 归档相关事件：集中在此分发，刷新活跃工作区数据（项目/会话/置顶）；
+      // project.deleted 还会级联删除会话与 cron，因此同步 cron 列表。
+      // 归档管理页自行订阅同名事件刷新归档列表。项目归档事件已随协议移除。
+      // 事件可能早于响应到达，去抖合并后按当前状态幂等刷新。
+      webClient.on<ArchiveResourceEventPayload>('session.archived', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('session.unarchived', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('session.deleted', () => {
+        scheduleArchiveWorkspaceRefresh(false);
+      }),
+      webClient.on<ArchiveResourceEventPayload>('project.deleted', () => {
+        scheduleArchiveWorkspaceRefresh(true);
+      }),
       // 用户点"执行"后，后端在 exit_plan_mode 内部已恢复普通模式。这里同步关掉
       // 本地 Plan 开关，否则下一条消息仍会带 .plan 而重新进入 Plan。
       webClient.on('plan.mode_exited', ({ payload }) => {
@@ -4126,11 +4164,17 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // 而非结束帧，若不清 isLoadingHistory 会永久吞掉后续
         // chat.processing_status(is_processing=false)，表现为「一直加载中」。
         useChatStore.getState().setLoadingHistory(sessionId, false);
-        const errorMsg =
+        const rawErrorMsg =
           typeof payload.error === 'string' ? payload.error : t('network.unknownError');
+        const errorMsg = describeChatError(payload, rawErrorMsg, t);
         // 忽略 "invalid page_idx or session history not found" 错误，因为这是新会话的正常情况
-        if (errorMsg.includes('invalid page_idx or session history not found')) {
+        if (rawErrorMsg.includes('invalid page_idx or session history not found')) {
           return;
+        }
+        // 选了免费模型但没登录 / 登录已过期（后端预检 interface_deep._model_config_error，
+        // 或推理时被 APIG 认证器拒绝）：直接把登录框顶到用户面前，错误文案照常进对话。
+        if (payload.code === 'login_required') {
+          requestLogin('login_required');
         }
         // §8 步骤4：Heartbeat 轮的 chat.error 按 run_id 去重（id=heartbeat-error-<run_id>），
         // 并关掉该 run 的 assistant streaming，避免光标永久闪烁。
@@ -4457,6 +4501,58 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
           });
         }
         useChatStore.getState().enqueuePendingQuestion(sessionId, normalizedPayload);
+      }),
+      webClient.on('a4p.authorization_request', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const mandate = requestPayload.mandate;
+        const signingOptions = requestPayload.signingOptions;
+        if (
+          !requestId
+          || !mandate
+          || typeof mandate !== 'object'
+          || Array.isArray(mandate)
+          || !signingOptions
+          || typeof signingOptions !== 'object'
+          || Array.isArray(signingOptions)
+        ) {
+          return;
+        }
+        const uiContext =
+          requestPayload.uiContext && typeof requestPayload.uiContext === 'object'
+            ? requestPayload.uiContext as Record<string, unknown>
+            : {};
+        useChatStore.getState().setPendingA4PAuthorization(sessionId, {
+          requestId,
+          kind: typeof requestPayload.kind === 'string' ? requestPayload.kind : 'intent',
+          mandate: mandate as Record<string, unknown>,
+          signingOptions: signingOptions as Record<string, unknown>,
+          uiContext,
+          sessionId: getPayloadSessionId(requestPayload),
+        });
+      }),
+      webClient.on('a4p.authorization_terminated', ({ payload }) => {
+        const requestPayload = payload as Record<string, unknown>;
+        const sessionId = resolveEventSessionId(requestPayload);
+        if (!sessionId) return;
+        const requestId =
+          typeof requestPayload.requestId === 'string'
+            ? requestPayload.requestId
+            : typeof requestPayload.request_id === 'string'
+              ? requestPayload.request_id
+              : '';
+        const pending = useChatStore.getState()
+          .runtimes[sessionId]?.pendingA4PAuthorization;
+        if (!requestId || pending?.requestId === requestId) {
+          useChatStore.getState().setPendingA4PAuthorization(sessionId, null);
+        }
       }),
       // 同时监听 session_result 事件，以处理后端可能发送的不同格式
       webClient.on('session_result', ({ payload }) => {
@@ -4841,6 +4937,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
 
     return () => {
       streamDeltaBatcherRef.current?.flushAll();
+      if (archiveRefreshTimer !== null) window.clearTimeout(archiveRefreshTimer);
       unsubs.forEach((fn) => fn());
     };
   }, [

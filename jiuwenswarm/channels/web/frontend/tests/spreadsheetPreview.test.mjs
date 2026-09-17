@@ -85,6 +85,13 @@ test('previews only explicitly supported browser image formats', () => {
   assert.equal(previewKind({ name: 'image.bin', mimeType: 'image/heic' }), 'unsupported');
 });
 
+test('previews video MIME types supported by chat file cards', () => {
+  for (const mimeType of ['video/mp4', 'video/webm', 'video/quicktime']) {
+    assert.equal(previewKind({ name: 'sample.bin', mimeType }), 'video');
+  }
+  assert.equal(previewKind({ name: 'sample.mp4', mimeType: 'application/octet-stream' }), 'unsupported');
+});
+
 test('uses signed download URLs without decoding them into local file paths', () => {
   const signedResource = {
     downloadUrl: '/file-api/download?token=signed-token',

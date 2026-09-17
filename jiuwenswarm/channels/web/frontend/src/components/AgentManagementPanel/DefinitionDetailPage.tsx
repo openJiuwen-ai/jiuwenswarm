@@ -12,7 +12,6 @@ import UninstallIcon from '../../assets/agent-management/uninstall.svg?react';
 import PromptSendIcon from '../../assets/agent-management/prompt-send.svg?react';
 import BackIcon from '../../assets/work-mode/arrow-left.svg?react';
 import { DetailPromptChip, DetailSection, EntityHeader, MarkdownPane, PageToolbar, Tabs } from '../ui';
-import { getSkillAvatar } from '../../utils/skillAvatar';
 import { DefinitionFilePreview } from './DefinitionFilePreview';
 
 type DefinitionDetailPageProps = {
@@ -124,7 +123,7 @@ export function DefinitionDetailPage({
         <PublicationDetailStatus kind="agent_template" localId={detail.runtimePackageName} />
         <EntityHeader
           testId="agent-management-detail-header"
-          avatar={avatarUrl ? <img src={avatarUrl} alt="" /> : getSkillAvatar(detail.displayName)}
+          avatar={{ name: detail.displayName, iconUrl: avatarUrl, testId: 'agent-management-detail-avatar' }}
           title={detail.displayName}
           titleTestId="agent-management-detail-name"
           tags={[

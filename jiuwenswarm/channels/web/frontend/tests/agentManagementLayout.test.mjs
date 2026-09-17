@@ -137,7 +137,7 @@ for (const name of ['MarketCard', 'MyMarketCard']) {
     test(`${name} ${state}/${quickAction} exposes one text action`, async () => {
       const module = await import(`../node_modules/.cache/agent-management-layout/${name}.mjs`);
       const { JSDOM } = await import('jsdom');
-      const html = renderToStaticMarkup(React.createElement(module[name], { title: 'Test', tags: ['变更审查', '行为覆盖', '合入就绪'], description: '', avatar: { firstChar: "T", style: {} }, state, quickAction, onUse() {}, onQuickAdd() {}, onQuickInstall() {} }));
+      const html = renderToStaticMarkup(React.createElement(module[name], { title: 'Test', tags: ['变更审查', '行为覆盖', '合入就绪'], description: '', state, quickAction, onUse() {}, onQuickAdd() {}, onQuickInstall() {} }));
       const document = new JSDOM(html).window.document;
       assert.ok(document.querySelector('.entity-header__tags').textContent.includes('变更审查'));
       assert.ok(document.querySelector('.entity-header__tags').textContent.includes('行为覆盖'));
@@ -155,7 +155,10 @@ test('Expert and Expert Team management keep the shared page shell and field lim
   assert.match(groupCatalogSource, /className="page-scroll min-h-0 flex-1 overflow-y-auto"/);
   assert.match(groupCardSource, /<PageCard[\s\S]*className="agent-management-page-card agent-group-card"/);
   assert.match(groupCardSource, /headerTestId="agent-group-card-open"/);
+  assert.match(groupCardSource, /<PageCard[\s\S]*testId=\{`agent-group-card-\$\{item\.id\}`\}/);
+  assert.match(groupCardSource, /interactive\s*\n?\s*ariaLabel/);
   assert.match(groupCardSource, /className="agent-management-card__actions"/);
+  assert.doesNotMatch(groupCardSource, /<article/);
   assert.match(groupEditorSource, /id="agent-management-group-name"[\s\S]*maxLength=\{AGENT_NAME_MAX_LENGTH\}/);
   assert.match(
     groupEditorSource,
@@ -280,6 +283,6 @@ for (const status of ['success', 'loading', 'error']) {
 }
 
 test('expert selection matches Hub identity or runtime package without clearing a missing catalog entry', () => {
-  assert.match(inputAreaSource, /item\.id === selectedAgentId \|\| item\.runtimePackageName === selectedAgentId/);
-  assert.match(inputAreaSource, /if \(selectedItem && \(selectedItem\.enabled === false/);
+  assert.match(inputAreaSource, /item\.id === selectedId \|\| item\.runtimePackageName === selectedId/);
+  assert.match(inputAreaSource, /selectedItem &&\s*\(selectedItem\.enabled === false/);
 });

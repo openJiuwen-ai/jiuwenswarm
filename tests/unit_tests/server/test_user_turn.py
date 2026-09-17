@@ -186,3 +186,30 @@ def test_render_prefixes_interaction_context():
     rendered = turn.render()
 
     assert rendered.startswith("\n上一轮被中断\n\n")
+
+
+def test_render_uses_cron_job_timezone_for_envelope_clock():
+    # The cron scheduler stamps the job timezone into metadata.cron so scheduled
+    # tasks like "print the current time" render in the job's timezone.
+    turn = _turn(
+        channel="__cron__",
+        metadata={"cron": {"job_id": "j1", "run_id": "r1", "timezone": "Asia/Tokyo"}},
+    )
+
+    envelope = _envelope(turn.render())
+
+    assert envelope["timezone"] == "Asia/Tokyo"
+    shanghai = _envelope(_turn().render())
+    assert shanghai["timezone"] == "Asia/Shanghai"
+    # Tokyo is UTC+9: same instant renders one wall-clock hour ahead of Shanghai.
+    tokyo_hh = int(envelope["timestamp"][11:13])
+    shanghai_hh = int(shanghai["timestamp"][11:13])
+    assert (tokyo_hh - shanghai_hh) % 24 == 1
+
+
+def test_render_falls_back_to_shanghai_for_invalid_timezone():
+    turn = _turn(metadata={"timezone": "Invalid/Zone"})
+
+    envelope = _envelope(turn.render())
+
+    assert envelope["timezone"] == "Asia/Shanghai"

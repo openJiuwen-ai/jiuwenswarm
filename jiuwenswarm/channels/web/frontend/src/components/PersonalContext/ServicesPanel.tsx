@@ -363,15 +363,16 @@ export function PersonalContextServicesPanel({
                 </span>
                 <h3 className="pc-services__list-title">{t(PROVIDER_LABEL_KEYS[selectedProvider])}</h3>
               </div>
-              <button
-                type="button"
-                className="pc-services__collect-all"
-                onClick={() => categoryServices.forEach((s) => handleRun(s.service_id))}
-                disabled={!isConnected || categoryServices.length === 0}
-              >
-                <PlayCircle size={16} />
-                {t('personalContext.services.collectAll')}
-              </button>
+              {false && <button
+                  type="button"
+                  className="pc-services__collect-all"
+                  onClick={() => categoryServices.forEach((s) => handleRun(s.service_id))}
+                  disabled={!isConnected || categoryServices.length === 0}
+                >
+                  <PlayCircle size={16} />
+                  {t('personalContext.services.collectAll')}
+                </button>
+              }
             </div>
 
             {categoryServices.length === 0 ? (
@@ -580,15 +581,18 @@ function ServiceCard({
           <div className="pc-services__card-freq">
             {freqText}
           </div>
-          {lastRun && lastRunText && (
-            <span className="pc-services__card-schedule-divider" aria-hidden="true" />
-          )}
-          {lastRun && lastRunText && (
-            <div className="pc-services__card-last-run" title={lastRunTitle}>
-              <span>{t('personalContext.services.lastRun')}</span>
-              <span>{lastRunText}</span>
-            </div>
-          )}
+          <span
+            className="pc-services__card-schedule-divider"
+            aria-hidden={!lastRun || !lastRunText}
+            style={{ visibility: !lastRun || !lastRunText ? 'hidden' : 'visible' }}
+          />
+          <div
+            className={`pc-services__card-last-run${!lastRun || !lastRunText ? ' pc-services__card-last-run--empty' : ''}`}
+            title={lastRun && lastRunText ? lastRunTitle : undefined}
+          >
+            <span>{t('personalContext.services.lastRun')}</span>
+            <span>{lastRunText || ''}</span>
+          </div>
         </div>
 
         {/* 中：采集状态 */}

@@ -219,6 +219,20 @@ class WebClient {
     return this.connectPromise;
   }
 
+  /**
+   * 断开后立刻用同一组参数重连。
+   *
+   * 登录态变化时必须调这个：登录会话 id 是 **WS 握手时**从 cookie / 请求头读的，
+   * 之后这条连接就一直用那份值。而登录走的是 HTTP，发生在握手之后——不重连的话，
+   * 连接上停留的还是登录前那份，服务端据此取凭据会取不到，
+   * 表现为"选了免费模型却跑了配置的模型"。
+   */
+  async reconnect(reason = 'Auth changed'): Promise<void> {
+    const options = this.lastConnectOptions;
+    await this.disconnect(reason);
+    await this.connect(options);
+  }
+
   disconnect(reason = 'User disconnect'): Promise<void> {
     this.manualClose = true;
     this.clearReconnectTimer();
