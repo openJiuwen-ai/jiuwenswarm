@@ -88,6 +88,7 @@ import { getInputProjectOptions, isDefaultInputProject } from './projectSelectio
 import {
   DESKTOP_CLIPBOARD_IMAGES_EVENT,
   getClipboardImageFiles,
+  inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
   shouldAlertImagePasteDisabled,
@@ -2584,8 +2585,12 @@ export const InputArea = forwardRef<InputAreaHandle, InputAreaProps>(function In
       }
       if (handleDesktopFilePaste(event)) return;
 
-      const imageFiles = getClipboardImageFiles(event.clipboardData);
-      if (imageFiles.length && !hasText) {
+      const { files: imageFiles, hasUnsupportedFiles } = inspectClipboardImageFiles(event.clipboardData);
+      if (hasUnsupportedFiles) {
+        event.preventDefault();
+        pushAttachmentAlert(t('chat.unsupportedImagePaste'));
+      }
+      if (imageFiles.length) {
         event.preventDefault();
         if (shouldAlertImagePasteDisabled(imageInputDisabled, true)) {
           pushAttachmentAlert(t(IMAGE_INPUT_DISABLED_ALERT_KEY));

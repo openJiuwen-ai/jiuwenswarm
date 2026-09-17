@@ -714,6 +714,7 @@
     "addImageDisabled": "Cannot add images while processing or recording",
     "addFile": "Add file",
     "addFileDisabled": "Cannot add files while processing or recording",
+    "unsupportedImagePaste": "Unsupported file format. You can only paste PNG, JPG/JPEG, WebP, and GIF images.",
     "addFileTooltip": "Add files, experts, skills, connectors",
     "addAttachment": "Add attachment",
     "removeImage": "Remove image",

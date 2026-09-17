@@ -4,10 +4,58 @@ import test from 'node:test';
 import {
   ensureClipboardImageFilename,
   getClipboardImageFiles,
+  inspectClipboardImageFiles,
   IMAGE_INPUT_DISABLED_ALERT_KEY,
   isImageInputDisabled,
   shouldAlertImagePasteDisabled,
 } from '../node_modules/.cache/clipboard-image-paste/clipboardImagePaste.js';
+
+test('supported image formats are accepted, including extension fallback without a MIME type', () => {
+  const files = [
+    ...['png', 'jpeg', 'webp', 'gif'].map((type) => new File(['image'], '', { type: `image/${type}` })),
+    new File(['image'], 'photo.JPG'),
+    new File(['image'], 'photo.JPEG', { type: 'application/octet-stream' }),
+  ];
+  const result = inspectClipboardImageFiles({ files });
+  assert.equal(result.files.length, files.length);
+  assert.equal(result.hasUnsupportedFiles, false);
+});
+
+test('unsupported images and other files are rejected even with a misleading image extension', () => {
+  for (const [name, type] of [
+    ['photo.bmp', 'image/bmp'],
+    ['photo.svg', 'image/svg+xml'],
+    ['photo.heic', 'image/heic'],
+    ['document.pdf', 'application/pdf'],
+    ['archive.zip', 'application/zip'],
+    ['photo.png', 'text/plain'],
+    ['unknown', ''],
+  ]) {
+    assert.deepEqual(inspectClipboardImageFiles({ files: [new File(['data'], name, { type })] }), {
+      files: [],
+      hasUnsupportedFiles: true,
+    });
+  }
+});
+
+test('mixed clipboard keeps supported images and reports rejected files without duplicating mirrored files', () => {
+  const image = new File(['image'], 'photo.png', { type: 'image/png' });
+  const document = new File(['document'], 'document.pdf', { type: 'application/pdf' });
+  assert.deepEqual(inspectClipboardImageFiles({
+    items: [image, document].map((file) => ({ kind: 'file', getAsFile: () => file })),
+    files: [image, document],
+  }), { files: [image], hasUnsupportedFiles: true });
+});
+
+test('ordinary text does not trigger a format warning; unreadable file items do', () => {
+  assert.deepEqual(inspectClipboardImageFiles({
+    items: [{ kind: 'string', getAsFile: () => null }],
+  }), { files: [], hasUnsupportedFiles: false });
+  assert.deepEqual(inspectClipboardImageFiles({
+    items: [{ kind: 'file', getAsFile: () => null }],
+  }), { files: [], hasUnsupportedFiles: true });
+  assert.deepEqual(inspectClipboardImageFiles(null), { files: [], hasUnsupportedFiles: false });
+});
 
 test('Agent mode keeps image input enabled while interruptible so attachments can queue', () => {
   assert.equal(

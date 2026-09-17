@@ -696,6 +696,7 @@
     "addImageDisabled": "处理中或录音中不可添加图片",
     "addFile": "上传文件",
     "addFileDisabled": "处理中或录音中不可上传文件",
+    "unsupportedImagePaste": "不支持粘贴该文件格式，仅支持粘贴 PNG、JPG/JPEG、WebP、GIF 图片。",
     "addFileTooltip": "可添加文件、专家、技能、连接器",
     "addAttachment": "添加附件",
     "removeImage": "移除图片",
