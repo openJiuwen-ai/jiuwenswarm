@@ -139,6 +139,9 @@ function findQuotedMapping(raw: string, field: string): Record<string, string> {
   return values;
 }
 
+// Reads the compatibility `result` string (str() of the structured tool result)
+// that the subagent history parsers below scan; removed once the UI reads
+// structured data instead.
 function extractToolResultText(payload: Record<string, unknown>): string {
   const nested = isRecord(payload.tool_result) ? payload.tool_result : payload;
   return typeof nested.result === 'string' ? nested.result : '';
