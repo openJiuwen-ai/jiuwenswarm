@@ -641,6 +641,7 @@ function stateOf(record: TableRecord): RecordState {
   if (
     (record.cell.kind === 'tool' || record.cell.kind === 'subtool')
     && record.cell.outputDetail === undefined
+    && record.cell.rawOutputDetail === undefined
   ) return 'running'
   return 'complete'
 }
@@ -931,7 +932,9 @@ function detailTabs(record: TableRecord): readonly DetailTabItem[] {
   return [
     { id: 'overview', label: 'Summary' },
     ...(record.cell.inputDetail ? [{ id: 'input', label: 'Payload' } as const] : []),
-    ...(record.cell.outputDetail ? [{ id: 'output', label: 'Result' } as const] : []),
+    ...(record.cell.outputDetail || record.cell.rawOutputDetail
+      ? [{ id: 'output', label: 'Result' } as const]
+      : []),
     { id: 'schema', label: 'Schema' },
     { id: 'timing', label: 'Timing' },
     ...otel,
@@ -1523,15 +1526,27 @@ function RecordPayload({
   preview = false,
 }: {
   record: TableRecord
-  direction: 'input' | 'output'
+  /**
+   * ``output`` is the result the model was given; ``raw-output`` is what a
+   * tool invocation returned before the harness rendered it for the model.
+   */
+  direction: 'input' | 'output' | 'raw-output'
   preview?: boolean
 }) {
-  const value = direction === 'input' ? record.cell.inputDetail : record.cell.outputDetail
+  const value = direction === 'input'
+    ? record.cell.inputDetail
+    : direction === 'output'
+      ? record.cell.outputDetail
+      : record.cell.rawOutputDetail
   const missing = direction === 'input'
     ? 'No payload captured'
-    : 'No result captured'
+    : direction === 'raw-output'
+      ? 'No raw result captured'
+      : record.cell.rawOutputDetail === undefined
+        ? 'No result captured'
+        : 'The result given to the model was not recorded; see Raw Result'
   if (!value) return <p className={css.noPayload}>{missing}</p>
-  const error = direction === 'output' && record.cell.isError === true
+  const error = direction !== 'input' && record.cell.isError === true
   const payloadClass = preview ? css.jsonPreview : css.jsonPayload
   const payloadClassName = error ? `${payloadClass} ${css.errorPayload}` : payloadClass
 
@@ -1584,7 +1599,7 @@ function RecordPayload({
     return (
       <JsonTree
         data={json}
-        label={`${direction === 'input' ? 'Payload' : 'Result'} JSON`}
+        label={`${direction === 'input' ? 'Payload' : direction === 'output' ? 'Result' : 'Raw result'} JSON`}
         className={payloadClassName}
       />
     )
@@ -1599,6 +1614,29 @@ function RecordPayload({
     >
       {value}
     </pre>
+  )
+}
+
+/**
+ * A tool call's two results, the one the model read first.
+ *
+ * The Result is the tool message the harness rendered for the model, which is
+ * what the next step acted on. The Raw Result is what the invocation returned;
+ * the two differ whenever the harness drops or reshapes fields, and reading
+ * the raw return as the model's view misleads.
+ */
+function ToolResult({ record }: { record: TableRecord }) {
+  return (
+    <div className={css.toolResult}>
+      <section className={css.toolResultSection}>
+        <h4 className={css.toolResultTitle}>Result</h4>
+        <RecordPayload record={record} direction="output" />
+      </section>
+      <section className={css.toolResultSection}>
+        <h4 className={css.toolResultTitle}>Raw Result</h4>
+        <RecordPayload record={record} direction="raw-output" />
+      </section>
+    </div>
   )
 }
 
@@ -3010,7 +3048,7 @@ export function TrajectoryTable({
                             <RecordPayload record={selected} direction="input" preview />
                           </OverviewSection>
                         )}
-                        {selected.cell.outputDetail && (
+                        {(selected.cell.outputDetail || selected.cell.rawOutputDetail) && (
                           <OverviewSection label="Result" onOpen={() => { activateTab('output') }}>
                             <RecordPayload record={selected} direction="output" preview />
                           </OverviewSection>
@@ -3073,7 +3111,9 @@ export function TrajectoryTable({
               <RecordPayload record={selected} direction="input" />
             )}
             {!promptSelected && selected !== undefined && activeTab === 'output' && (
-              <RecordPayload record={selected} direction="output" />
+              selected.cell.kind === 'tool' || selected.cell.kind === 'subtool'
+                ? <ToolResult record={selected} />
+                : <RecordPayload record={selected} direction="output" />
             )}
             {!promptSelected && selected !== undefined && activeTab === 'schema' && (
               <RecordSchema record={selected} />

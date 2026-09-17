@@ -865,20 +865,36 @@ function assistantCell(span: ProjectedSpan): TrajectoryCell {
   }
 }
 
+/**
+ * Project one tool call.
+ *
+ * A tool call has two results. What the invocation returned is recorded on
+ * the tool span; what the model was given is the tool message the harness
+ * rendered from it, which can drop or reshape fields. The model's view is the
+ * call's Result, since that is what the next step acted on, and the raw return
+ * is kept beside it. A call whose tool message was never recorded has only
+ * its raw return.
+ *
+ * Args:
+ *   span: The tool span.
+ *   toolSpanIds: Span ids of every tool span, to tell a nested call.
+ *   schemaDetail: The tool's definition from its request, when recorded.
+ *   modelResult: The tool message content the model read for this call.
+ */
 function toolCell(
   span: ProjectedSpan,
   toolSpanIds: ReadonlySet<string>,
   schemaDetail: string | undefined,
-  correlatedResult: ToolResultFact | undefined,
+  modelResult: unknown,
 ): TrajectoryCell {
   const name = span.attributes.toolName ?? span.span.name
   const callId = span.attributes.toolCallId ?? `${span.traceId}:${span.span.spanId}`
   const input = span.attributes.toolCallArguments
-  const result = span.attributes.toolCallResult === undefined
-    ? correlatedResult?.response
-    : span.attributes.toolCallResult
+  const rawResult = span.attributes.toolCallResult
   const inputText = toolArgumentsDetail(input)
-  const resultText = result === undefined ? undefined : formatted(result)
+  const modelResultText = modelResult === undefined ? undefined : formatted(modelResult)
+  const rawResultText = rawResult === undefined ? undefined : formatted(rawResult)
+  const resultText = modelResultText ?? rawResultText
   const nested = span.parentSpanId !== undefined && toolSpanIds.has(span.parentSpanId)
   const error = statusError(span)
   const description = span.attributes.toolDescription
@@ -910,7 +926,11 @@ function toolCell(
     text: inputText === undefined ? name : `${name} · ${inputText.replace(/\s+/g, ' ').slice(0, 160)}`,
     callId,
     ...(inputText === undefined ? {} : { inputDetail: inputText }),
-    ...(resultText === undefined ? {} : { outputDetail: resultText, result: resultText }),
+    ...(modelResultText === undefined ? {} : { outputDetail: modelResultText }),
+    ...(rawResultText === undefined ? {} : { rawOutputDetail: rawResultText }),
+    // The row's preview prefers what the model read and falls back to the
+    // raw return, so a call whose tool message was not recorded still shows.
+    ...(resultText === undefined ? {} : { result: resultText }),
     ...(error === undefined ? {} : { isError: true, result: error }),
     ...(detail === undefined ? {} : { schemaDetail: detail }),
   }
@@ -1783,6 +1803,9 @@ export function projectOtelTrajectory(
   const mutableTurns = new Map<string, MutableTurn>()
   const requests: TrajectoryRequest[] = []
   const inputProjection = projectInferenceInputs(spans, v2InferenceIds)
+  const modelToolResultByCallId = new Map(v2Subjects.flatMap(subject => (
+    [...subject.modelToolResults]
+  )))
   const toolSpanIds = new Set(spans.filter(isTool).map(span => span.span.spanId))
   const toolBySpanId = new Map(spans.filter(isTool).map(span => [span.span.spanId, span]))
   const authoritativeToolCallIds = new Set(spans
@@ -1899,14 +1922,18 @@ export function projectOtelTrajectory(
         && authoritativeToolCallIds.has(`${span.traceId}\u0000${span.attributes.toolCallId}`)
       ) continue
       const name = span.attributes.toolName ?? span.span.name
-      const correlatedResult = span.attributes.toolCallId === undefined
-        ? inputProjection.toolResultBySpanId.get(span.span.spanId)
-        : inputProjection.toolResultById.get(`${span.traceId}\u0000${span.attributes.toolCallId}`)
+      // What the model was given for this call: the tool message of the first
+      // request that read it. Joined by tool call id; a call with no id has
+      // only the legacy input projection's positional match.
+      const modelResult = span.attributes.toolCallId === undefined
+        ? inputProjection.toolResultBySpanId.get(span.span.spanId)?.response
+        : modelToolResultByCallId.get(span.attributes.toolCallId)
+          ?? inputProjection.toolResultById.get(`${span.traceId}\u0000${span.attributes.toolCallId}`)?.response
       group(turn, step, span.attributes.stepId, startedAt(span)).cells.push(toolCell(
         span,
         toolSpanIds,
         toolSchemaByTurnAndName.get(`${span.turnKey}\u0000${name}`),
-        correlatedResult,
+        modelResult,
       ))
       continue
     }

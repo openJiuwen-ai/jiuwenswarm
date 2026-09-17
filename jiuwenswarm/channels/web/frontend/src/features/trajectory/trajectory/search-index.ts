@@ -58,6 +58,7 @@ function recordSources(
     cell.previewMarkdown ?? '',
     cell.inputDetail ?? '',
     cell.outputDetail ?? '',
+    cell.rawOutputDetail ?? '',
     cell.thinkingDetail ?? '',
     cell.schemaDetail ?? '',
     cell.result ?? '',

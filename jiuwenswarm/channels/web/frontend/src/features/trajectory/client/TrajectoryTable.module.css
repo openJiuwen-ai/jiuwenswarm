@@ -1499,6 +1499,31 @@
   margin: 0 6px 8px 0;
 }
 
+.toolResult {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  min-height: 100%;
+}
+
+.toolResultSection {
+  min-width: 0;
+}
+
+.toolResultTitle {
+  margin: 0;
+  padding: 8px 14px 4px;
+  color: var(--dsw-alias-label-tertiary);
+  font: 600 11px/16px var(--dsw-font-family);
+  user-select: none;
+}
+
+/* Two results stack in one panel, so neither may claim the panel's height. */
+.toolResultSection .payload,
+.toolResultSection .jsonPayload {
+  min-height: 0;
+}
+
 .payload {
   box-sizing: border-box;
   min-height: 100%;

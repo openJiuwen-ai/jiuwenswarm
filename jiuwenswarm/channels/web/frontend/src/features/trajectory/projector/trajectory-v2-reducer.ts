@@ -90,6 +90,12 @@ export interface TrajectoryV2SubjectProjection {
   diagnostics: readonly TrajectoryDiagnostic[]
   events: readonly TrajectoryV2EventProjection[]
   handledInferenceIds: ReadonlySet<string>
+  /**
+   * The tool message content the model first read for each tool call, by
+   * tool call id. This is the result as the harness rendered it for the
+   * model, which can differ from what the tool invocation returned.
+   */
+  modelToolResults: ReadonlyMap<string, string>
   subjectId: string
 }
 
@@ -107,6 +113,7 @@ interface SubjectAccumulator {
   diagnostics: TrajectoryDiagnostic[]
   events: TrajectoryV2EventProjection[]
   handledInferenceIds: Set<string>
+  modelToolResults: Map<string, string>
   windows: Map<string, ContextMessage[]>
 }
 
@@ -443,6 +450,25 @@ function displayContent(message: ContextMessage | undefined): string {
   if (message.content !== undefined) return JSON.stringify(message.content, null, 2) ?? ''
   if (message.tool_calls !== undefined) return JSON.stringify(message.tool_calls, null, 2) ?? ''
   return ''
+}
+
+/**
+ * Record the tool messages a window carries that no earlier window did.
+ *
+ * The first window holding a tool message is the model request that first
+ * read the result, so its content there is what the model was given. A later
+ * rewrite of the same message, such as a compaction trimming it, does not
+ * change what the model read when it acted on the result.
+ */
+function recordModelToolResults(
+  results: Map<string, string>,
+  window: readonly ContextMessage[],
+): void {
+  for (const message of window) {
+    const callId = message.tool_call_id?.trim()
+    if (message.role !== 'tool' || !callId || results.has(callId)) continue
+    results.set(callId, displayContent(message))
+  }
 }
 
 function cellKind(message: ContextMessage | undefined): TrajectoryCellKind {
@@ -1100,6 +1126,7 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
     diagnostics: [],
     events: [],
     handledInferenceIds: new Set(),
+    modelToolResults: new Map(),
     windows: new Map(),
   }
   const bySequenceByEpoch = new Map<string, Map<number, ParsedEvent>>()
@@ -1256,6 +1283,7 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
       for (const inferenceId of event.inferenceIds) {
         accumulator.handledInferenceIds.add(inferenceId)
       }
+      recordModelToolResults(accumulator.modelToolResults, window)
       const referencedOperationId = payload.caused_by_operation_id?.trim()
       if (referencedOperationId) {
         referencedCompactionOperationIds.add(referencedOperationId)
@@ -1426,6 +1454,7 @@ function rebuildSubject(subjectId: string, events: readonly ParsedEvent[]): Traj
     diagnostics: accumulator.diagnostics,
     events: accumulator.events,
     handledInferenceIds: accumulator.handledInferenceIds,
+    modelToolResults: accumulator.modelToolResults,
   }
 }
 

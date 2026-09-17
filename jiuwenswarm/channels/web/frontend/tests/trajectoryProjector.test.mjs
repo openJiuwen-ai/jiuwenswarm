@@ -374,7 +374,10 @@ test('ownerless ask_user result remains one routed TOOL while other ownerless to
   assert.match(askUserCells[0].text, /^ask_user/);
   assert.equal(askUserCells[0].callId, 'call-ask-user');
   assert.match(askUserCells[0].inputDetail, /Keep local/);
-  assert.match(askUserCells[0].outputDetail, /Keep local/);
+  // The span records what the invocation returned. No request recorded the
+  // tool message the model read, so the call has only its raw result.
+  assert.match(askUserCells[0].rawOutputDetail, /Keep local/);
+  assert.equal(askUserCells[0].outputDetail, undefined);
   assert.equal(askUserCells[0].requestRecordId, undefined);
   assert.equal(askUserCells[0].requestless, true);
 
@@ -2722,6 +2725,84 @@ test('a resumed tool rejoins the step the interrupt paused', () => {
 
   assert.equal(snapshot.turns.length, 1);
   assert.deepEqual(snapshot.turns[0].groups.map(group => group.title), ['Step 4']);
+});
+
+test('a tool result is the tool message the model read, with the invocation return kept raw', () => {
+  // The real shape of a bash call: the invocation returns a structured result,
+  // and the harness renders only its content into the tool message the model
+  // reads. Reading the raw return as the model's view misleads, so the Result
+  // is the tool message and the raw return sits beside it.
+  const traceId = '4'.repeat(32);
+  const rawReturn = '{"success": true, "data": {"content": "Command: pwd\\nStdout: /tmp"}}';
+  const modelView = 'Command: pwd\nStdout: /tmp';
+  const toolSpan = (spanId, name, callId, result) => turnSpanRecord({
+    name: `execute_tool ${name}`,
+    spanId,
+    startTimeUnixNano: 2_000_000,
+    traceId,
+    attributes: [
+      v2Attribute('gen_ai.conversation.id', 'session-v2'),
+      v2Attribute('openjiuwen.trajectory.record.kind', 'tool'),
+      v2Attribute('gen_ai.operation.name', 'execute_tool'),
+      v2Attribute('gen_ai.tool.name', name),
+      ...(callId === undefined ? [] : [v2Attribute('gen_ai.tool.call.id', callId)]),
+      v2Attribute('gen_ai.tool.call.result', result),
+      v2Attribute('openjiuwen.turn.number', 1, true),
+      v2Attribute('openjiuwen.step.number', 1, true),
+    ],
+  });
+  const user = contextMessage('user-1', 'user', 'where am I');
+  const toolMessage = {
+    ...contextMessage('tool-1', 'tool', modelView, 'harness_internal'),
+    tool_call_id: 'call-bash',
+  };
+  const baseline = v2Record({
+    eventId: 'event-tool-baseline',
+    sequence: 1,
+    traceId,
+    payload: contextCommit('window-1', null, [user], []),
+  });
+  const withToolResult = v2Record({
+    eventId: 'event-tool-result',
+    sequence: 2,
+    traceId,
+    payload: contextCommit('window-2', 'window-1', [user, toolMessage], [
+      { op: 'insert', message_id: toolMessage.message_id, index: 1, message: toolMessage },
+    ]),
+  });
+  // A later rewrite of the same message, such as a compaction trimming it,
+  // does not change what the model read when it acted on the result.
+  const trimmed = { ...toolMessage, content: '[trimmed]' };
+  const rewritten = v2Record({
+    eventId: 'event-tool-trimmed',
+    sequence: 3,
+    traceId,
+    payload: contextCommit('window-3', 'window-2', [user, trimmed], [
+      { op: 'replace', message_id: toolMessage.message_id, index: 1, message: trimmed },
+    ]),
+  });
+  const records = [
+    baseline,
+    withToolResult,
+    rewritten,
+    toolSpan('ccccccccccccccc1', 'bash', 'call-bash', rawReturn),
+    // A Team member's tool span names no call id, so no tool message can be
+    // joined to it and it has only its raw return.
+    toolSpan('ccccccccccccccc2', 'write_file', undefined, 'success=True data={}'),
+  ];
+
+  const reduction = createTrajectoryV2Reducer().apply(records.slice(0, 3));
+  assert.equal(reduction.subjects.get('main').modelToolResults.get('call-bash'), modelView);
+
+  const tools = cellsOf(projectOtelTrajectory(records)).filter(cell => cell.kind === 'tool');
+  const bash = tools.find(cell => cell.text.startsWith('bash'));
+  assert.equal(bash.outputDetail, modelView);
+  assert.deepEqual(JSON.parse(bash.rawOutputDetail), JSON.parse(rawReturn));
+  assert.equal(bash.result, modelView);
+  const writeFile = tools.find(cell => cell.text.startsWith('write_file'));
+  assert.equal(writeFile.outputDetail, undefined);
+  assert.equal(writeFile.rawOutputDetail, 'success=True data={}');
+  assert.equal(writeFile.result, 'success=True data={}');
 });
 
 test('schema-v2 rebuilds a window from a delta-only commit', () => {
