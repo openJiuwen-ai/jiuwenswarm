@@ -3898,8 +3898,6 @@
       "subtypePaper": "论文",
       "subtypeProgram": "程序",
       "optimizerModelLabel": "优化模型",
-      "pluginLabel": "初始插件",
-      "pluginDefault": "当前 Harness（未安装时使用原生基线）",
       "evaluationMethodLabel": "评测方法",
       "evaluationMethodAgent": "Agent评测",
       "evaluationMethodScript": "脚本评测",

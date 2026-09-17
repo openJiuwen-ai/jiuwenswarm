@@ -3917,8 +3917,6 @@
       "subtypePaper": "Paper",
       "subtypeProgram": "Program",
       "optimizerModelLabel": "Optimizer model",
-      "pluginLabel": "Initial plugin",
-      "pluginDefault": "Current Harness (native baseline when none is active)",
       "evaluationMethodLabel": "Evaluation method",
       "evaluationMethodAgent": "Agent evaluation",
       "evaluationMethodScript": "Script evaluation",
