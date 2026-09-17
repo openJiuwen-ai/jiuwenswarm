@@ -3230,12 +3230,18 @@ def test_config_panel_flatten_reads_symphony_enabled_and_skill_retrieval():
     flat = _flatten_symphony_for_config_panel(raw)
 
     assert flat["symphony_enabled"] == "true"
+    assert flat["symphony_evolution_enabled"] == "false"
     assert "symphony_dynamic_graph_enabled" not in flat
     assert "symphony_orchestration_mode" not in flat
     assert flat["skill_retrieval_enabled"] == "true"
     assert flat["skill_retrieval_index_enabled"] == "true"
     assert flat["skill_retrieval_max_results"] == "17"
     assert "skill_retrieval_build_branching_factor" not in flat
+
+    missing = _flatten_symphony_for_config_panel(
+        {"symphony": {"enabled": True}}
+    )
+    assert missing["symphony_evolution_enabled"] == "false"
 
 
 @pytest.mark.asyncio
@@ -3269,13 +3275,14 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         {
             "symphony_enabled": "true",
             "symphony_dynamic_graph_enabled": "false",
+            "symphony_evolution_enabled": "true",
             "skill_retrieval_enabled": "false",
             "skill_retrieval_index_enabled": "true",
         },
         "sess-3",
     )
 
-    assert recorded_symphony == [{"enabled": True}]
+    assert recorded_symphony == [{"enabled": True, "evolution": {"enabled": True}}]
     assert recorded_skill_retrieval == [
         {"enabled": False, "index": {"enabled": True}}
     ]
@@ -3285,6 +3292,7 @@ async def test_config_set_routes_symphony_payload_to_config_helper(monkeypatch):
         "payload": {
             "updated": [
                 "symphony_enabled",
+                "symphony_evolution_enabled",
                 "skill_retrieval_enabled",
                 "skill_retrieval_index_enabled",
             ],
