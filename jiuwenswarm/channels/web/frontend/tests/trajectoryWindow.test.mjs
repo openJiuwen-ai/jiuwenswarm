@@ -652,6 +652,7 @@ test('checkpoint lines become view seeds and are accepted only before the first 
         kind: 'main_agent',
         parent_id: null,
         session_id: null,
+        projected: true,
         first_observed_time_unix_nano: '5',
       },
       turns: { max_number: 2, unnumbered: 1, trace_turn_ids: { ['a'.repeat(32)]: ['turn-2'] } },

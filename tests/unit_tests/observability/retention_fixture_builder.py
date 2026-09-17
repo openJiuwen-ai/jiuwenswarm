@@ -32,6 +32,7 @@ from __future__ import annotations
 import asyncio
 import hashlib
 import json
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from types import SimpleNamespace
@@ -57,6 +58,7 @@ FIXTURE_DIRECTORY = (
 )
 SINGLE_SESSION_ID = "retention-single"
 TEAM_SESSION_ID = "retention-team"
+QUIRKS_SESSION_ID = "retention-quirks"
 
 # Records of turn n are written at _CREATED_AT_ORIGIN + n * _TURN_SECONDS; the
 # spans of a Team still running are written as turn 10, after every turn.
@@ -100,8 +102,27 @@ class _Recorder:
         end: float,
         turn: int,
         attributes: dict[str, Any],
+        overrides: dict[str, Any] | None = None,
+        payload: Callable[[dict[str, Any]], bytes] | None = None,
+        observed: float | None = None,
     ) -> None:
-        """Encode one ended span and queue its record."""
+        """Encode one ended span and queue its record.
+
+        Args:
+            name: Span name.
+            trace: Label the trace id is derived from.
+            span: Label the span id is derived from.
+            parent: Label of the parent span, if any.
+            start: Start, in seconds after the fixture's origin.
+            end: End, in seconds after the fixture's origin.
+            turn: Turn index the record is written in.
+            attributes: Span attributes, encoded the way Agent Core encodes them.
+            overrides: OTLP AnyValue objects stated in place of encoded
+                attributes, for value shapes no SDK produces.
+            payload: Builds the stored bytes from the encoded OTLP document,
+                however malformed; its content is then not addressed.
+            observed: When the record was observed, if not at its end.
+        """
         trace_id = _hex_id(f"{self.session_id}:trace:{trace}", 32)
         span_id = _hex_id(f"{self.session_id}:span:{span}", 16)
         parent_id = None if parent is None else _hex_id(f"{self.session_id}:span:{parent}", 16)
@@ -121,6 +142,19 @@ class _Recorder:
             end_time=_TIME_ORIGIN_NANO + int(end * _SECOND_NANO),
         )
         raw_json, sequences = encode_span_with_addressed_sequences(readable)
+        if overrides:
+            document = json.loads(raw_json)
+            entries = document["resourceSpans"][0]["scopeSpans"][0]["spans"][0].setdefault("attributes", [])
+            for key, value in overrides.items():
+                replaced = [entry for entry in entries if entry["key"] == key]
+                if replaced:
+                    replaced[0]["value"] = value
+                else:
+                    entries.append({"key": key, "value": value})
+            raw_json = json.dumps(document, ensure_ascii=False).encode("utf-8")
+        if payload is not None:
+            raw_json = payload(json.loads(encode_span_with_addressed_sequences(readable)[0]))
+            sequences = ()
         stated = readable.attributes or {}
         self.records.append(TraceRecordData.from_core_record(
             SimpleNamespace(
@@ -132,7 +166,9 @@ class _Recorder:
                 parent_span_id=parent_id,
                 start_time_unix_nano=readable.start_time,
                 end_time_unix_nano=readable.end_time,
-                observed_time_unix_nano=readable.end_time,
+                observed_time_unix_nano=(
+                    readable.end_time if observed is None else _TIME_ORIGIN_NANO + int(observed * _SECOND_NANO)
+                ),
                 session_id=self.session_id,
                 request_id=stated.get("openjiuwen.request.id"),
                 run_id=stated.get("openjiuwen.run.id"),
@@ -157,12 +193,17 @@ class _Recorder:
         subject_id: str,
         messages: list[dict[str, Any]],
         compaction: str | None = None,
+        corrupt: Callable[[dict[str, Any]], None] | None = None,
+        overrides: dict[str, Any] | None = None,
+        encode_sequence: Callable[[int], dict[str, Any]] | None = None,
     ) -> None:
         """Commit a window through Agent Core's window state.
 
         A request's commit hangs off the model call that read the window. A
         compaction's hangs off the live agent span instead and names the
         compaction operation that produced it, the way Agent Core states both.
+        ``corrupt`` rewrites the payload after Agent Core advanced its state,
+        the way a malformed commit reaches a reader.
         """
         self.windows += 1
         window_id = f"{subject_id}:window-{self.windows}"
@@ -193,6 +234,8 @@ class _Recorder:
                 "model_requests": [],
             })
             payload["correlation_kind" if baseline else "transition_kind"] = "compaction"
+        if corrupt is not None:
+            corrupt(payload)
         self._event(
             "context.window.commit",
             trace=trace,
@@ -203,6 +246,8 @@ class _Recorder:
             subject_id=subject_id,
             position=(epoch, sequence),
             payload=payload,
+            overrides=overrides,
+            encode_sequence=encode_sequence,
         )
 
     def compaction_completed(
@@ -216,6 +261,7 @@ class _Recorder:
         subject_id: str,
         operation_id: str,
         summary: str,
+        encode_sequence: Callable[[int], dict[str, Any]] | None = None,
     ) -> None:
         """Record a model-free compaction finishing."""
         self._event(
@@ -237,6 +283,7 @@ class _Recorder:
                 "compact_summary": summary,
                 "model_requests": [],
             },
+            encode_sequence=encode_sequence,
         )
 
     def _event(
@@ -251,8 +298,12 @@ class _Recorder:
         subject_id: str,
         position: tuple[str, int],
         payload: dict[str, Any],
+        overrides: dict[str, Any] | None = None,
+        encode_sequence: Callable[[int], dict[str, Any]] | None = None,
     ) -> None:
         epoch, sequence = position
+        if encode_sequence is not None:
+            overrides = {**(overrides or {}), "openjiuwen.trajectory.subject_sequence": encode_sequence(sequence)}
         sequence_epoch = self.epochs.setdefault(epoch, f"epoch-{len(self.epochs) + 1}")
         event_id = f"{subject_id}:{sequence_epoch}:{sequence}"
         self.span(
@@ -275,6 +326,7 @@ class _Recorder:
                 "openjiuwen.trajectory.payload": json.dumps(payload, ensure_ascii=False),
                 "openjiuwen.trajectory.record.kind": "event",
             },
+            overrides=overrides,
         )
 
 
@@ -325,6 +377,7 @@ def _inference(
     input_messages: str,
     output_messages: str,
     usage: tuple[int, int],
+    overrides: dict[str, Any] | None = None,
 ) -> None:
     recorder.span(
         "llm.call",
@@ -355,6 +408,7 @@ def _inference(
             "gen_ai.usage.input_tokens": usage[0],
             "gen_ai.usage.output_tokens": usage[1],
         },
+        overrides=overrides,
     )
 
 
@@ -748,6 +802,410 @@ def team_records() -> list[TraceRecordData]:
     return recorder.records
 
 
+def _first_span(document: dict[str, Any]) -> dict[str, Any]:
+    return document["resourceSpans"][0]["scopeSpans"][0]["spans"][0]
+
+
+def _encoded(document: dict[str, Any]) -> bytes:
+    return json.dumps(document, ensure_ascii=False).encode("utf-8")
+
+
+def _without_attributes(document: dict[str, Any]) -> bytes:
+    _first_span(document).pop("attributes", None)
+    return _encoded(document)
+
+
+def _deeply_nested(document: dict[str, Any]) -> bytes:
+    nested: list[Any] = []
+    for _ in range(300):
+        nested = [nested]
+    document["nested"] = nested
+    return _encoded(document)
+
+
+def _foreign_identity(document: dict[str, Any]) -> bytes:
+    _first_span(document)["spanId"] = "f" * 16
+    return _encoded(document)
+
+
+def _two_spans(document: dict[str, Any]) -> bytes:
+    spans = document["resourceSpans"][0]["scopeSpans"][0]["spans"]
+    spans.append(dict(spans[0]))
+    return _encoded(document)
+
+
+def _unparsable(_document: dict[str, Any]) -> bytes:
+    return b'{"resourceSpans": ['
+
+
+def _not_utf8(_document: dict[str, Any]) -> bytes:
+    return b'{"resourceSpans": [], "note": "\xff"}'
+
+
+def _not_otlp(_document: dict[str, Any]) -> bytes:
+    return b'{"foo": 1}'
+
+
+def _bad_insert_index(payload: dict[str, Any]) -> None:
+    payload["delta"] = [
+        {**operation, "index": 999} if operation["op"] == "insert" else operation
+        for operation in payload["delta"]
+    ]
+
+
+def _restating(window: list[dict[str, Any]]) -> Callable[[dict[str, Any]], None]:
+    """Make a delta commit also state the window it rebuilds, numbers spelled differently.
+
+    A reader parses 1 and 1.0 into one number, and two integers beyond 2^53
+    that round to one double into one number, so the stated window agrees with
+    the rebuilt one.
+    """
+
+    def restate(payload: dict[str, Any]) -> None:
+        payload["messages"] = [
+            {**message, "metadata": {**message["metadata"], "weight": 1.0, "big": 9007199254740992}}
+            if "weight" in (message.get("metadata") or {})
+            else message
+            for message in window
+        ]
+
+    return restate
+
+
+def _unknown_baseline_reason(payload: dict[str, Any]) -> None:
+    payload["baseline_reason"] = "unknown_reason"
+
+
+def quirk_records() -> list[TraceRecordData]:
+    """Record the edge-case session, in commit order.
+
+    Six turns, retired one at a time, exercise what the store and the viewer
+    must read identically:
+
+    * turn numbers stated in conflict (one turn id stating several numbers
+      across records and traces, two turn ids stating one number, a turn
+      stating none) and in every shape an int64 attribute can take: a JSON
+      number or string, whitespace, a hexadecimal prefix, a boolean, a double,
+      a string attribute, zero, negative, beyond 2^53, and malformed;
+    * one subject whose requests alternate between schema-v2 commits and
+      schema v1, so each boundary falls on either side of a change;
+    * malformed records: unparsable, not UTF-8, not OTLP, nested too deeply,
+      stating two spans, a span of another identity, a span without
+      attributes; and malformed commits (a delta that does not apply, an
+      unknown baseline reason, sequences and timestamps in other shapes);
+    * a commit restating its window with numbers spelled differently;
+    * token usage in the same shapes as turn numbers;
+    * a subagent whose records disagree on its display name, beside another
+      of that name whose earliest observation is a record the viewer only lists.
+    """
+    recorder = _Recorder(QUIRKS_SESSION_ID, "agent.work.normal")
+    session = QUIRKS_SESSION_ID
+    main = _subject("main", "Main Agent", "main_agent", session_id=session)
+    broken = _subject("subagent:broken", "Broken", "subagent", parent_id="main", session_id=f"{session}_sub_broken")
+
+    def helper(subject_id: str, display_name: str) -> dict[str, Any]:
+        suffix = subject_id.removeprefix("subagent:")
+        return _subject(subject_id, display_name, "subagent", parent_id="main", session_id=f"{session}_sub_{suffix}")
+
+    def routing(subject: dict[str, Any], turn_id: str, turn: int) -> dict[str, Any]:
+        return {
+            **subject,
+            "openjiuwen.turn.id": turn_id,
+            "openjiuwen.request.id": f"request-{turn}",
+            "openjiuwen.run.id": f"request-{turn}",
+        }
+
+    main_window: list[dict[str, Any]] = [
+        _context("openjiuwen:request-system-slot:main", "system", "You are a careful assistant."),
+        _context("memory-1", "system", "Remembered facts.", metadata={"weight": 1, "big": 9007199254740993}),
+    ]
+    broken_window: list[dict[str, Any]] = []
+    history: list[tuple[str, str]] = []
+
+    def main_request(
+        trace: str,
+        start: float,
+        turn: int,
+        turn_id: str,
+        *,
+        schema_v2: bool,
+        overrides: dict[str, Any],
+        restate: bool = False,
+    ) -> None:
+        number = len(history) // 2 + 1
+        question = f"Question {number}"
+        history.append(("user", question))
+        main_window.append(_context(f"user-{number}", "user", question, source_kind="query"))
+        span = f"{trace}:main-{number}"
+        route = routing(main, turn_id, turn)
+        _inference(
+            recorder,
+            trace=trace,
+            span=span,
+            parent=f"{trace}:root",
+            start=start,
+            turn=turn,
+            routing=route,
+            request_number=number,
+            step=1,
+            input_messages=_genai_messages(*history),
+            output_messages=_genai_messages(("assistant", f"Answer {number}")),
+            usage=(10 * number, number),
+            overrides=overrides,
+        )
+        if schema_v2:
+            window = [dict(message) for message in main_window]
+            recorder.commit(
+                trace=trace,
+                parent=span,
+                at=start + 1,
+                turn=turn,
+                routing=route,
+                subject_id="main",
+                messages=window,
+                corrupt=_restating(window) if restate else None,
+            )
+        history.append(("assistant", f"Answer {number}"))
+        main_window.append(_context(f"assistant-{number}", "assistant", f"Answer {number}"))
+
+    def subagent_request(trace: str, start: float, turn: int, turn_id: str, subject: dict[str, Any]) -> None:
+        subject_id = subject["openjiuwen.execution.subject.id"]
+        _inference(
+            recorder,
+            trace=trace,
+            span=f"{trace}:{subject_id}",
+            parent=f"{trace}:root",
+            start=start,
+            turn=turn,
+            routing=routing(subject, turn_id, turn),
+            request_number=turn,
+            step=1,
+            input_messages=_genai_messages(("user", f"Help with turn {turn}")),
+            output_messages=_genai_messages(("assistant", f"Helped with turn {turn}")),
+            usage=(5, 1),
+        )
+
+    def broken_request(
+        trace: str,
+        start: float,
+        turn: int,
+        turn_id: str,
+        *,
+        corrupt: Callable[[dict[str, Any]], None] | None = None,
+        encode_sequence: Callable[[int], dict[str, Any]] | None = None,
+        overrides: dict[str, Any] | None = None,
+    ) -> None:
+        route = routing(broken, turn_id, turn)
+        subagent_request(trace, start, turn, turn_id, broken)
+        broken_window.append(_context(f"broken-{turn}", "user", f"Broken step {turn}", source_kind="query"))
+        recorder.commit(
+            trace=trace,
+            parent=f"{trace}:{broken['openjiuwen.execution.subject.id']}",
+            at=start + 1,
+            turn=turn,
+            routing=route,
+            subject_id="subagent:broken",
+            messages=[dict(message) for message in broken_window],
+            corrupt=corrupt,
+            encode_sequence=encode_sequence,
+            overrides=overrides,
+        )
+
+    def extra(
+        trace: str,
+        label: str,
+        start: float,
+        turn: int,
+        turn_id: str,
+        *,
+        subject: dict[str, Any] | None = None,
+        overrides: dict[str, Any] | None = None,
+        payload: Callable[[dict[str, Any]], bytes] | None = None,
+        observed: float | None = None,
+        parent: str | None = "root",
+    ) -> None:
+        recorder.span(
+            f"tool.{label}",
+            trace=trace,
+            span=f"{trace}:{label}",
+            parent=None if parent is None else f"{trace}:{parent}",
+            start=start,
+            end=start + 0.5,
+            turn=turn,
+            attributes={
+                **routing(subject or main, turn_id, turn),
+                "openjiuwen.trajectory.record.kind": "tool",
+                "gen_ai.operation.name": "execute_tool",
+                "gen_ai.tool.name": label,
+                "gen_ai.tool.call.id": f"{trace}:{label}",
+                "gen_ai.tool.call.result": "done",
+            },
+            overrides=overrides,
+            payload=payload,
+            observed=observed,
+        )
+
+    def root(trace: str, start: float, turn: int, turn_id: str, number: dict[str, Any] | None) -> None:
+        recorder.span(
+            f"agent.agent.{session}",
+            trace=trace,
+            span=f"{trace}:root",
+            parent=None,
+            start=start,
+            end=start + 9,
+            turn=turn,
+            attributes={
+                **routing(main, turn_id, turn),
+                "openjiuwen.trace.root": True,
+                "openjiuwen.trajectory.record.kind": "turn",
+            },
+            overrides=None if number is None else {"openjiuwen.turn.number": number},
+        )
+
+    span_context.reset_state()
+
+    # Turn 1 states 2 on its request, 1 on its root and 3 on the root of the
+    # trace its answer resumes in; the last one written wins.
+    main_request(
+        "Q1",
+        1,
+        1,
+        "q-1",
+        schema_v2=True,
+        overrides={
+            "openjiuwen.turn.number": {"intValue": "2"},
+            "openjiuwen.execution.subject.request.number": {"doubleValue": 2.0},
+            "gen_ai.usage.input_tokens": {"doubleValue": 100.0},
+            "gen_ai.usage.output_tokens": {"intValue": True},
+        },
+    )
+    subagent_request("Q1", 2, 1, "q-1", helper("subagent:helper-x", "Helper"))
+    broken_request("Q1", 3, 1, "q-1")
+    extra("Q1", "bare", 3.5, 1, "q-1", payload=_without_attributes)
+    extra("Q1", "unparsable", 3.7, 1, "q-1", payload=_unparsable)
+    root("Q1", 0, 1, "q-1", {"intValue": 1})
+    main_request("Q1R", 6, 1, "q-1", schema_v2=True, overrides={})
+    root("Q1R", 5.5, 1, "q-1", {"intValue": "3"})
+
+    # Turn 2 states 3 as well, and numbers in shapes that state nothing.
+    main_request(
+        "Q2",
+        11,
+        2,
+        "q-2",
+        schema_v2=False,
+        overrides={
+            "openjiuwen.turn.number": {"intValue": "3"},
+            "gen_ai.usage.input_tokens": {"stringValue": "100"},
+            "gen_ai.usage.output_tokens": {"intValue": "-5"},
+        },
+    )
+    subagent_request("Q2", 12, 2, "q-2", helper("subagent:helper-y", "Helper"))
+    broken_request("Q2", 13, 2, "q-2", corrupt=_bad_insert_index)
+    extra("Q2", "double-number", 14, 2, "q-2", overrides={"openjiuwen.turn.number": {"doubleValue": 9.0}})
+    extra("Q2", "nested", 14.5, 2, "q-2", payload=_deeply_nested)
+    extra("Q2", "not-utf8", 15, 2, "q-2", payload=_not_utf8)
+    root("Q2", 10, 2, "q-2", {"stringValue": "9"})
+
+    # Turn 3 is numbered by a boolean, then by a padded hexadecimal string.
+    main_request(
+        "Q3",
+        21,
+        3,
+        "q-3",
+        schema_v2=True,
+        restate=True,
+        overrides={
+            "openjiuwen.turn.number": {"intValue": True},
+            "openjiuwen.execution.subject.request.number": {"stringValue": "3"},
+            "gen_ai.usage.input_tokens": {"intValue": 2**60},
+        },
+    )
+    broken_request("Q3", 23, 3, "q-3")
+    extra(
+        "Q3",
+        "listed-helper",
+        0.01,
+        3,
+        "q-3",
+        subject=helper("subagent:helper-y", "Helper"),
+        payload=_foreign_identity,
+        observed=0.05,
+    )
+    extra("Q3", "two-spans", 24, 3, "q-3", payload=_two_spans)
+    root("Q3", 20, 3, "q-3", {"intValue": " 0x4 "})
+
+    # The runtime restarts. Turn 4 states only numbers that are not numbers.
+    span_context.reset_state()
+    main_request(
+        "Q4",
+        31,
+        4,
+        "q-4",
+        schema_v2=False,
+        overrides={"openjiuwen.turn.number": {"intValue": "1.0"}},
+    )
+    subagent_request("Q4", 32, 4, "q-4", helper("subagent:helper-x", "Assistant"))
+    broken_request("Q4", 33, 4, "q-4", corrupt=_unknown_baseline_reason)
+    extra("Q4", "beyond-double", 34, 4, "q-4", overrides={"openjiuwen.turn.number": {"intValue": 9007199254740993}})
+    extra("Q4", "negative", 34.2, 4, "q-4", overrides={"openjiuwen.turn.number": {"intValue": "-4"}})
+    extra("Q4", "boolean", 34.4, 4, "q-4", overrides={"openjiuwen.turn.number": {"boolValue": True}})
+    extra("Q4", "not-otlp", 34.6, 4, "q-4", payload=_not_otlp)
+    root("Q4", 30, 4, "q-4", {"intValue": "0"})
+
+    # Turn 5 opens the new epoch's main window, and states a padded number.
+    main_request(
+        "Q5",
+        41,
+        5,
+        "q-5",
+        schema_v2=True,
+        overrides={"openjiuwen.turn.number": {"intValue": "  5 "}},
+    )
+    subagent_request("Q5", 42, 5, "q-5", helper("subagent:helper-y", "Helper"))
+    broken_request(
+        "Q5",
+        43,
+        5,
+        "q-5",
+        encode_sequence=lambda sequence: {"stringValue": str(sequence)},
+    )
+    extra("Q5", "orphan", 44, 5, "q-5", parent="missing", payload=_without_attributes)
+    extra("Q5", "underscored", 44.5, 5, "q-5", overrides={"openjiuwen.turn.number": {"intValue": "1_0"}})
+    extra("Q5", "unparsable", 45, 5, "q-5", payload=_unparsable)
+    root("Q5", 40, 5, "q-5", None)
+
+    # Turn 6 states no number at all.
+    main_request("Q6", 51, 6, "q-6", schema_v2=False, overrides={})
+    broken_request(
+        "Q6",
+        53,
+        6,
+        "q-6",
+        corrupt=_bad_insert_index,
+        encode_sequence=lambda sequence: {"doubleValue": float(sequence)},
+        overrides={
+            "openjiuwen.trajectory.recorded_at_unix_nano": {"stringValue": str(_TIME_ORIGIN_NANO + 54 * _SECOND_NANO)},
+        },
+    )
+    recorder.compaction_completed(
+        trace="Q6",
+        parent="Q6:root",
+        at=55,
+        turn=6,
+        routing=routing(broken, "q-6", 6),
+        subject_id="subagent:broken",
+        operation_id="broken-compaction",
+        summary="Never readable.",
+        encode_sequence=lambda _sequence: {"boolValue": True},
+    )
+    extra("Q6", "not-utf8", 56, 6, "q-6", payload=_not_utf8)
+    root("Q6", 50, 6, "q-6", None)
+    span_context.reset_state()
+    return recorder.records
+
+
+
 async def _archive_lines(reader: AsyncTrajectoryReader, session_id: str) -> list[dict[str, Any]]:
     lines = [line async for line in reader.iter_session_archive_lines(session_id)]
     # The export instant and the store epoch are the only facts of an archive
@@ -764,7 +1222,7 @@ def _encode_lines(lines: list[dict[str, Any]]) -> bytes:
 
 
 def build_fixtures(work_directory: Path) -> dict[str, bytes]:
-    """Record both sessions, run retention, and return every archive by file name.
+    """Record every session, run retention, and return every archive by file name.
 
     Args:
         work_directory: Empty directory the stores are created in.
@@ -776,6 +1234,7 @@ def build_fixtures(work_directory: Path) -> dict[str, bytes]:
     scenarios = (
         ("single", SINGLE_SESSION_ID, single_agent_records(), (1, 2)),
         ("team", TEAM_SESSION_ID, team_records(), (2,)),
+        ("quirks", QUIRKS_SESSION_ID, quirk_records(), (1, 2, 3, 4)),
     )
     for name, session_id, records, removals in scenarios:
         database_path = work_directory / f"{name}.sqlite3"

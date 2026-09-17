@@ -91,8 +91,15 @@ function assertRemainingViewUnchanged(before, after, { teamMode }) {
       priorSnapshot.requests.filter(request => after.recordIds.has(recordIdentity(request.traceDetail))),
       `requests of ${group.subject.id} changed`,
     );
-    assert.equal(priorSnapshot.diagnostics, undefined);
-    assert.equal(snapshot.diagnostics, undefined, `retention added diagnostics to ${group.subject.id}`);
+    // Retention may take diagnostics away with the events they were about,
+    // but never adds one: every diagnostic left was already there.
+    const priorDiagnostics = (priorSnapshot.diagnostics ?? []).map(item => JSON.stringify(item));
+    for (const item of snapshot.diagnostics ?? []) {
+      assert.ok(
+        priorDiagnostics.includes(JSON.stringify(item)),
+        `retention added ${item.code} to ${group.subject.id}`,
+      );
+    }
   }
   assert.ok(removedTurns > 0, 'the fixture removed no turn');
   const keptOrder = before.groups.groups
@@ -111,6 +118,16 @@ function assertRemainingViewUnchanged(before, after, { teamMode }) {
   }
   assert.ok(after.archive.sessionCumulativeUsageByRequestIdentity.size > 0);
 }
+
+test('the well-formed fixtures render without any diagnostic', async () => {
+  for (const [name, teamMode] of [
+    ['trajectory-retention-single.before.jsonl', false],
+    ['trajectory-retention-team.before.jsonl', true],
+  ]) {
+    const replayed = await replay(name, { teamMode });
+    for (const snapshot of replayed.snapshots.values()) assert.equal(snapshot.diagnostics, undefined);
+  }
+});
 
 test('a single Agent renders its remaining turns unchanged after each retention pass', async () => {
   const before = await replay('trajectory-retention-single.before.jsonl', { teamMode: false });
@@ -155,4 +172,58 @@ test('the remaining turns would not render unchanged without their checkpoints',
     withCheckpoints: false,
   });
   assert.throws(() => assertRemainingViewUnchanged(teamBefore, teamAfter, { teamMode: true }));
+});
+
+test('edge-case records render their remaining turns unchanged after each retention pass', async () => {
+  const before = await replay('trajectory-retention-quirks.before.jsonl', { teamMode: false });
+  // The edge cases are really there: malformed records reach the view only
+  // as raw records, and the malformed commits are diagnosed.
+  assert.ok(before.archive.view.rawRecords.length > before.archive.view.records.length);
+  assert.ok(before.archive.view.invalidRecordSeen);
+  assert.ok((before.snapshots.get('subagent:broken').diagnostics ?? []).length > 0);
+  for (const pass of [1, 2, 3, 4]) {
+    const after = await replay(`trajectory-retention-quirks.after-${pass}.jsonl`, { teamMode: false });
+    assertRemainingViewUnchanged(before, after, { teamMode: false });
+  }
+});
+
+test('conflicting and malformed turn numbers keep every remaining turn number', async () => {
+  const numbers = replayed => replayed.snapshots.get('main').turns.map(turn => turn.turn);
+  const before = await replay('trajectory-retention-quirks.before.jsonl', { teamMode: false });
+  // Turn 1 ends on 3, turn 2 states 3 too, turn 3 a padded hexadecimal 4,
+  // turn 5 a padded 5; turns 4 and 6 state nothing valid and follow them.
+  assert.deepEqual(numbers(before), [3, 3, 4, 5, 6, 7]);
+  const after = await replay('trajectory-retention-quirks.after-4.jsonl', { teamMode: false });
+  assert.deepEqual(numbers(after), [5, 7]);
+});
+
+test('a subagent keeps the name its earliest record gave it once that record is retired', async () => {
+  const labels = replayed => Object.fromEntries(replayed.groups.groups.map(group => [group.subject.id, group.label]));
+  const before = await replay('trajectory-retention-quirks.before.jsonl', { teamMode: false });
+  // helper-x called itself Helper, later Assistant; helper-y is first seen
+  // through a record the view only lists, so it sorts first.
+  assert.equal(labels(before)['subagent:helper-y'], 'Helper 1');
+  assert.equal(labels(before)['subagent:helper-x'], 'Helper 2');
+  // Pass 1 retires the record that named helper-x Helper, pass 3 the record
+  // that listed helper-y first; pass 4 retires helper-x altogether.
+  for (const pass of [1, 3]) {
+    const after = await replay(`trajectory-retention-quirks.after-${pass}.jsonl`, { teamMode: false });
+    assert.deepEqual(labels(after), labels(before));
+  }
+  const after = await replay('trajectory-retention-quirks.after-4.jsonl', { teamMode: false });
+  assert.equal(after.groups.byId.has('subagent:helper-x'), false);
+  assert.equal(labels(after)['subagent:helper-y'], 'Helper 1');
+});
+
+test('cumulative usage adds up the usage each request shows, whatever shape its tokens take', async () => {
+  const before = await replay('trajectory-retention-quirks.before.jsonl', { teamMode: false });
+  for (const snapshot of before.snapshots.values()) {
+    const running = {};
+    const requests = [...snapshot.requests]
+      .sort((left, right) => left.startedAt - right.startedAt || left.number - right.number);
+    for (const request of requests) {
+      for (const [key, value] of Object.entries(request.usage)) running[key] = (running[key] ?? 0) + value;
+      assert.deepEqual({ ...request.cumulativeUsage }, { ...running });
+    }
+  }
 });

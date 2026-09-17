@@ -17,12 +17,15 @@ from typing import Any
 import pytest
 
 from jiuwenswarm.observability.models import TraceRecordData
-from jiuwenswarm.observability.retention import checkpoint_sequence_heads
+from jiuwenswarm.observability.otlp_payload import js_bigint
+from jiuwenswarm.observability.retention import checkpoint_sequence_heads, record_view_facts
 from jiuwenswarm.observability.store import AsyncTrajectoryReader, TrajectoryStore
 from tests.unit_tests.observability.retention_fixture_builder import (
     FIXTURE_DIRECTORY,
+    QUIRKS_SESSION_ID,
     SINGLE_SESSION_ID,
     build_fixtures,
+    quirk_records,
     retention_now,
     single_agent_records,
 )
@@ -136,6 +139,24 @@ def _span_names(database_path: Path) -> list[str]:
             payload = json.loads(zlib.decompress(raw_json))
             names.append(payload["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["name"])
         return names
+    finally:
+        connection.close()
+
+
+def _raw_payloads(database_path: Path) -> list[bytes]:
+    connection = sqlite3.connect(database_path)
+    try:
+        return [
+            zlib.decompress(raw_json)
+            for (raw_json,) in connection.execute(
+                """
+                SELECT COALESCE(NULLIF(current.raw_json, X''), archive.raw_json)
+                FROM trajectory_current_records AS current
+                LEFT JOIN otlp_span_records AS archive
+                    ON archive.trace_id = current.trace_id AND archive.span_id = current.span_id
+                """
+            )
+        ]
     finally:
         connection.close()
 
@@ -406,6 +427,104 @@ def test_retention_rotates_the_epoch_and_shrinks_the_file(tmp_path: Path) -> Non
     assert pages_after < pages_before
     assert database_path.stat().st_size < size_before
     test_logger.info("retention rotated the epoch and handed freed pages back")
+
+
+@pytest.mark.parametrize(
+    ("value", "expected"),
+    [
+        (1, 1),
+        (1.0, 1),
+        (1.5, None),
+        ("1", 1),
+        ("  7 ", 7),
+        (" 0x4 ", 4),
+        ("0b11", 3),
+        ("-4", -4),
+        ("", 0),
+        ("1.0", None),
+        ("1_0", None),
+        ("-0x4", None),
+        (True, 1),
+        (False, 0),
+        (None, None),
+        (9007199254740993, 9007199254740992),
+        (float("inf"), None),
+    ],
+)
+def test_integers_read_the_way_the_viewer_reads_them(value: Any, expected: int | None) -> None:
+    assert js_bigint(value) == expected
+    test_logger.info("BigInt(%r) read as %r", value, expected)
+
+
+def test_only_records_the_viewer_projects_belong_to_a_turn() -> None:
+    trace_id, span_id = "a" * 32, "b" * 16
+    span = {
+        "traceId": trace_id,
+        "spanId": span_id,
+        "name": "tool.search",
+        "attributes": [
+            {"key": "openjiuwen.turn.id", "value": {"stringValue": "t1"}},
+            {"key": "openjiuwen.turn.number", "value": {"intValue": True}},
+        ],
+    }
+
+    def payload(*spans: dict[str, Any], **extra: Any) -> bytes:
+        document = {"resourceSpans": [{"scopeSpans": [{"spans": list(spans)}]}], **extra}
+        return json.dumps(document).encode("utf-8")
+
+    deep: list[Any] = []
+    for _ in range(300):
+        deep = [deep]
+    projected = record_view_facts(payload(span), trace_id, span_id)
+    assert (projected.projected, projected.subject_id, projected.turn_id, projected.turn_number) == (
+        True,
+        "main",
+        "t1",
+        1,
+    )
+    listed = record_view_facts(payload({**span, "spanId": "c" * 16}), trace_id, span_id)
+    assert (listed.projected, listed.subject_id) == (False, "main")
+    for unprojectable in (
+        payload(span, span),
+        payload(span, nested=deep),
+        b'{"resourceSpans": [',
+        b'{"resourceSpans": [], "note": "\xff"}',
+        b'{"foo": 1}',
+    ):
+        facts = record_view_facts(unprojectable, trace_id, span_id)
+        assert (facts.projected, facts.subject_id) == (False, "__unassigned__")
+    test_logger.info("records the viewer cannot project were kept out of every turn")
+
+
+@pytest.mark.asyncio
+async def test_edge_case_records_retire_by_the_viewer_rules(tmp_path: Path) -> None:
+    database_path = tmp_path / "trajectory.sqlite3"
+    _write(database_path, quirk_records())
+    reader = AsyncTrajectoryReader(database_path)
+    usage, _epoch = await reader.get_session_request_usage(QUIRKS_SESSION_ID)
+    # Only int64 token counts the viewer can represent are counted: a double,
+    # a string, a negative count and one beyond 2^53 are not.
+    main_usage = [item["usage"] for item in usage if item["subject_id"] == "main"]
+    assert main_usage[:4] == [{"output": 1}, {"input": 20, "output": 2, "total": 22}, {}, {"output": 4}]
+
+    for removed_turns in (1, 2, 3):
+        assert _retire(database_path, retention_now(removed_turns)) > 0
+    states = _checkpoint_states(database_path, QUIRKS_SESSION_ID)
+    # Turn 1 ended on 3, turn 2 stated 3 and turn 3 a padded hexadecimal 4.
+    assert states["main"]["turns"] == {"max_number": 4, "unnumbered": 0, "trace_turn_ids": {}}
+    # The earliest observation of helper-y was a record the viewer only lists.
+    helper = states["subagent:helper-y"]["subject"]
+    assert (helper["display_name"], helper["projected"]) == ("Helper", True)
+    assert helper["first_observed_time_unix_nano"] == "1760000000050000000"
+
+    assert _retire(database_path, retention_now(4)) > 0
+    states = _checkpoint_states(database_path, QUIRKS_SESSION_ID)
+    assert states["main"]["turns"]["unnumbered"] == 1
+    assert states["subagent:helper-x"]["subject"]["display_name"] == "Helper"
+    unparsable = [payload for payload in _raw_payloads(database_path) if payload == b'{"resourceSpans": [']
+    # The unparsable record of turn 1 went with its trace; turn 5's remains.
+    assert len(unparsable) == 1
+    test_logger.info("edge-case records were retired and checkpointed by the viewer's rules")
 
 
 def test_committed_retention_fixtures_are_current() -> None:

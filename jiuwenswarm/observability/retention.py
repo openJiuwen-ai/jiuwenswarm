@@ -27,9 +27,10 @@ sequence reference ``{"hash": str | None, "depth": int}``; depth 0 with a null
 hash is the empty list. A reader resolves them exactly as it resolves the
 references a record carries.
 
-* ``subject``: how the viewer grouped the subject's earliest record
-  (``display_name``, ``kind``, ``parent_id``, ``session_id``) and the earliest
-  time any of its records was observed (``first_observed_time_unix_nano``,
+* ``subject``: how the viewer grouped the subject's removed records
+  (``display_name``, ``kind``, ``parent_id``, ``session_id``), whether that
+  came from a ``projected`` record rather than one it only lists, and the
+  earliest time any of them was observed (``first_observed_time_unix_nano``,
   decimal string). Tabs are ordered and numbered with retired subjects in
   place, as though their records were still there.
 * ``turns``: ``max_number`` is the highest turn number a deleted page stated,
@@ -62,6 +63,7 @@ for function, and the cross-language fixtures under
 from __future__ import annotations
 
 import json
+import math
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
@@ -72,6 +74,12 @@ from openjiuwen.extensions.observability.content_addressing import (
 )
 
 from jiuwenswarm.common.mode_matrix import is_team_mode
+from jiuwenswarm.observability.otlp_payload import (
+    MAX_SAFE_INTEGER,
+    int64_attribute_value,
+    js_bigint,
+    parse_otlp_payload,
+)
 
 CHECKPOINT_STATE_VERSION = 1
 
@@ -103,7 +111,6 @@ _SYSTEM_INSTRUCTIONS = "gen_ai.system_instructions"
 _TOOL_DEFINITIONS = "gen_ai.tool.definitions"
 
 _CONTEXT_WINDOW_COMMIT = "context.window.commit"
-_MAX_SAFE_INTEGER = (1 << 53) - 1
 _TRAJECTORY_RECORD_KINDS = frozenset({"turn", "step", "inference", "reasoning", "tool", "agent", "event"})
 _INFERENCE_OPERATIONS = frozenset({"chat", "generate_content", "text_completion"})
 _KNOWN_OPERATIONS = frozenset({
@@ -180,31 +187,8 @@ def _text_value(attributes: Mapping[str, Any], key: str) -> str | None:
     return None
 
 
-def _int64_value(attributes: Mapping[str, Any], key: str) -> int | None:
-    """Read an OTLP int64 attribute from its intValue arm."""
-    value = attributes.get(key)
-    if not isinstance(value, dict) or "intValue" not in value:
-        return None
-    return _integer(value["intValue"])
-
-
-def _integer(value: Any) -> int | None:
-    if isinstance(value, bool):
-        return None
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float):
-        return int(value) if value.is_integer() else None
-    if isinstance(value, str):
-        try:
-            return int(value.strip())
-        except ValueError:
-            return None
-    return None
-
-
 def _positive_safe_integer(value: int | None) -> int | None:
-    if value is None or value <= 0 or value > _MAX_SAFE_INTEGER:
+    if value is None or value <= 0 or value > MAX_SAFE_INTEGER:
         return None
     return value
 
@@ -223,21 +207,6 @@ def sole_span(otlp: Any) -> dict[str, Any] | None:
     if len(spans) != 1 or not isinstance(spans[0], dict):
         return None
     return spans[0]
-
-
-def parse_record_payload(raw_json: bytes) -> dict[str, Any] | None:
-    """Parse one stored payload the way a reader accepts it, or return None."""
-
-    def _reject_constant(value: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {value}")
-
-    try:
-        payload = json.loads(raw_json, parse_constant=_reject_constant)
-    except (RecursionError, TypeError, ValueError):
-        return None
-    if not isinstance(payload, dict) or not isinstance(payload.get("resourceSpans"), list):
-        return None
-    return payload
 
 
 def record_sequence_heads(otlp: Any) -> dict[str, dict[str, Any]]:
@@ -355,38 +324,50 @@ class RecordViewFacts:
 
     Extracted once when the record is written, so resolving a session's turn
     pages reads columns instead of every payload.
+
+    Attributes:
+        subject_id: The subject the viewer lists the record under. A record
+            it cannot parse is listed as unassigned.
+        subject_kind: That subject's kind.
+        subject_session_id: That subject's execution session, if stated.
+        projected: Whether the viewer projects the record at all: its payload
+            parses as strict OTLP stating exactly one span, of the record's
+            own identity. Only a projected record belongs to a turn.
+        turn_id: The turn id the span states.
+        turn_number: The turn number the span states.
     """
 
-    subject_id: str | None
-    subject_kind: str | None
+    subject_id: str
+    subject_kind: str
     subject_session_id: str | None
+    projected: bool
     turn_id: str | None
     turn_number: int | None
 
 
-_UNPROJECTABLE_FACTS = RecordViewFacts(None, None, None, None, None)
-
-
-def record_view_facts(raw_json: bytes) -> RecordViewFacts:
+def record_view_facts(raw_json: bytes, trace_id: str, span_id: str) -> RecordViewFacts:
     """Extract the grouping and turn facts of one stored payload.
 
     Args:
         raw_json: The record's OTLP payload as stored.
+        trace_id: The record's trace id.
+        span_id: The record's span id.
 
     Returns:
-        The facts, all None when the viewer cannot project the payload.
+        The facts, as the viewer's subject grouping and turn resolution read them.
     """
-    span = sole_span(parse_record_payload(raw_json))
-    if span is None:
-        return _UNPROJECTABLE_FACTS
+    span = sole_span(parse_otlp_payload(raw_json))
     subject = view_subject_of(span)
+    if span is None:
+        return RecordViewFacts(subject.subject_id, subject.kind, subject.session_id, False, None, None)
     attributes = _attribute_entries(span.get("attributes"))
     return RecordViewFacts(
         subject_id=subject.subject_id,
         subject_kind=subject.kind,
         subject_session_id=subject.session_id,
+        projected=span.get("traceId") == trace_id and span.get("spanId") == span_id,
         turn_id=_string_value(attributes, _TURN_ID),
-        turn_number=_positive_safe_integer(_int64_value(attributes, _TURN_NUMBER)),
+        turn_number=_positive_safe_integer(int64_attribute_value(attributes.get(_TURN_NUMBER))),
     )
 
 
@@ -404,9 +385,10 @@ class RetentionRow:
     span_id: str
     parent_span_id: str | None
     agent_mode: str | None
-    subject_id: str | None
-    subject_kind: str | None
+    subject_id: str
+    subject_kind: str
     subject_session_id: str | None
+    projected: bool
     turn_id: str | None
     turn_number: int | None
     start_time_unix_nano: int
@@ -529,10 +511,13 @@ class GroupRetention:
     Attributes:
         subject_id: The subject, as the viewer groups it.
         deleted_keys: Turn page keys removed, oldest first.
-        deleted_rows: Every record removed from the subject, in commit order.
+        deleted_rows: Every projected record removed from the subject, in
+            commit order.
         max_number: Highest turn number a removed page stated, or 0.
         unnumbered: Removed pages that stated no number.
-        remaining_trace_ids: Traces still holding records of the subject.
+        remaining_trace_ids: Traces still holding projected records of the subject.
+        listed_rows: Every removed record the viewer lists under the subject,
+            projected or not, in commit order.
     """
 
     subject_id: str
@@ -541,6 +526,7 @@ class GroupRetention:
     max_number: int
     unnumbered: int
     remaining_trace_ids: frozenset[str]
+    listed_rows: tuple[RetentionRow, ...]
 
 
 @dataclass(frozen=True, slots=True)
@@ -571,10 +557,8 @@ def _eligible_traces(rows: Sequence[RetentionRow], modes: frozenset[str]) -> set
     return known - rejected
 
 
-def _grouped(row: RetentionRow, *, team_mode: bool, session_id: str | None) -> bool:
-    """Whether the viewer projects a record under a subject (groupTrajectorySubjects)."""
-    if row.subject_id is None:
-        return False
+def _listed(row: RetentionRow, *, team_mode: bool, session_id: str | None) -> bool:
+    """Whether the viewer lists a record under its subject (groupTrajectorySubjects)."""
     if team_mode and row.subject_kind not in _TEAM_SUBJECT_KINDS:
         return False
     foreign_subagent = (
@@ -677,11 +661,15 @@ def plan_session_retention(
     """
     eligible = _eligible_traces(rows, trajectory_modes)
     team_mode = any(is_team_mode(row.agent_mode) for row in rows if row.agent_mode)
+    listed_rows: dict[str, list[RetentionRow]] = {}
     grouped_rows: dict[str, list[RetentionRow]] = {}
     ungrouped: list[RetentionRow] = []
     for row in rows:
-        if row.trace_id in eligible and _grouped(row, team_mode=team_mode, session_id=session_id):
-            grouped_rows.setdefault(str(row.subject_id), []).append(row)
+        listed = row.trace_id in eligible and _listed(row, team_mode=team_mode, session_id=session_id)
+        if listed:
+            listed_rows.setdefault(row.subject_id, []).append(row)
+        if listed and row.projected:
+            grouped_rows.setdefault(row.subject_id, []).append(row)
         else:
             ungrouped.append(row)
 
@@ -719,12 +707,14 @@ def plan_session_retention(
             deleted.update(row.identity for row in trace_rows)
 
     groups: dict[str, GroupRetention] = {}
-    for subject_id, subject_rows in grouped_rows.items():
-        removed_rows = tuple(row for row in subject_rows if row.identity in deleted)
-        if not removed_rows:
+    for subject_id, subject_listed_rows in listed_rows.items():
+        removed_listed = [row for row in subject_listed_rows if row.identity in deleted]
+        if not removed_listed:
             continue
+        subject_rows = grouped_rows.get(subject_id, [])
+        removed_rows = tuple(row for row in subject_rows if row.identity in deleted)
         removed_pages = [
-            page for page in pages_by_group[subject_id] if page.rows[0].identity in deleted
+            page for page in pages_by_group.get(subject_id, ()) if page.rows[0].identity in deleted
         ]
         stated = [page.number for page in removed_pages if page.number is not None]
         groups[subject_id] = GroupRetention(
@@ -736,6 +726,7 @@ def plan_session_retention(
             remaining_trace_ids=frozenset(
                 row.trace_id for row in subject_rows if row.identity not in deleted
             ),
+            listed_rows=tuple(removed_listed),
         )
     return SessionRetentionPlan(
         session_id=session_id,
@@ -949,10 +940,11 @@ class _V2Event:
 
 
 def _bigint_value(attributes: Mapping[str, Any], key: str) -> int | None:
+    """Read an attribute of any arm as an integer (the reducer's bigintAttribute)."""
     value = _otlp_value(attributes.get(key))
     if isinstance(value, bool) or not isinstance(value, (str, int, float)):
         return None
-    return _integer(value)
+    return js_bigint(value)
 
 
 def _physical_inference_ids(
@@ -1066,7 +1058,7 @@ def _safe_index(value: Any) -> int | None:
     if isinstance(value, float) and not value.is_integer():
         return None
     index = int(value)
-    return index if 0 <= index <= _MAX_SAFE_INTEGER else None
+    return index if 0 <= index <= MAX_SAFE_INTEGER else None
 
 
 def context_message(value: Any) -> dict[str, Any] | None:
@@ -1210,7 +1202,32 @@ def apply_context_delta(
 
 
 def _canonical(value: Any) -> str:
-    return json.dumps(value, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    """Identity of a JSON value as the reducer's sameCheckpoint compares it.
+
+    Keys are sorted, and every number is compared as the double the viewer
+    parses it into, so 1 and 1.0 are one value and integers beyond 2^53 lose
+    the precision they lose there.
+    """
+    if isinstance(value, dict):
+        members = ",".join(
+            f"{json.dumps(key, ensure_ascii=False)}:{_canonical(value[key])}"
+            for key in sorted(value)
+        )
+        return f"{{{members}}}"
+    if isinstance(value, list):
+        return f"[{','.join(_canonical(item) for item in value)}]"
+    if isinstance(value, bool) or value is None or isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False)
+    if isinstance(value, (int, float)):
+        try:
+            number = float(value)
+        except OverflowError:
+            return "null"
+        if not math.isfinite(number):
+            return "null"
+        # The viewer states negative zero as 0.
+        return repr(number + 0.0)
+    return json.dumps(value, ensure_ascii=False, default=str)
 
 
 def _hold_compaction_context(
@@ -1388,12 +1405,17 @@ MessageDecoder = Callable[[Any], list[dict[str, Any]] | None]
 
 @dataclass(slots=True)
 class RetiredSubject:
-    """How the viewer grouped a subject's earliest record, and when it was first seen."""
+    """How the viewer grouped a subject's removed records, and when it first saw one.
+
+    ``projected`` tells whether the subject came from a projected record,
+    which the viewer prefers over any record it only lists.
+    """
 
     display_name: str
     kind: str
     parent_id: str | None
     session_id: str | None
+    projected: bool
     first_observed_time_unix_nano: int
 
 
@@ -1445,6 +1467,7 @@ class RetentionCheckpoint:
                 "kind": self.subject.kind,
                 "parent_id": self.subject.parent_id,
                 "session_id": self.subject.session_id,
+                "projected": self.subject.projected,
                 "first_observed_time_unix_nano": str(self.subject.first_observed_time_unix_nano),
             }
         v2: dict[str, Any] = {}
@@ -1515,6 +1538,7 @@ class RetentionCheckpoint:
                 kind=str(subject["kind"]),
                 parent_id=subject.get("parent_id"),
                 session_id=subject.get("session_id"),
+                projected=bool(subject["projected"]),
                 first_observed_time_unix_nano=int(subject["first_observed_time_unix_nano"]),
             )
         turns = state.get("turns") or {}
@@ -1599,6 +1623,51 @@ def _merge_lineage(seeds: Sequence[LineageSeed]) -> list[LineageSeed]:
     return [seed for index, seed in enumerate(seeds) if index in kept]
 
 
+def _retire_subject(
+    checkpoint: RetentionCheckpoint,
+    retention: GroupRetention,
+    facts: Sequence[_SpanFacts],
+    payloads: Mapping[tuple[str, str], dict[str, Any]],
+) -> None:
+    """Record how the viewer grouped a subject's removed records, and when it saw them.
+
+    The viewer takes a subject from its first projected record, and from its
+    first listed record only when none is projected. It orders subjects by the
+    earliest observation of any record listed under them: a projected record by
+    when its span started or when it was observed, any other by the latter.
+    """
+    if not retention.listed_rows:
+        return
+    first_observed = min(
+        min(row.start_time_unix_nano, row.observed_time_unix_nano)
+        if row.projected
+        else row.observed_time_unix_nano
+        for row in retention.listed_rows
+    )
+    if facts and (checkpoint.subject is None or not checkpoint.subject.projected):
+        subject = view_subject_of(facts[0].span)
+        projected = True
+    elif checkpoint.subject is None:
+        subject = view_subject_of(sole_span(payloads.get(retention.listed_rows[0].identity)))
+        projected = False
+    else:
+        checkpoint.subject.first_observed_time_unix_nano = min(
+            checkpoint.subject.first_observed_time_unix_nano,
+            first_observed,
+        )
+        return
+    if checkpoint.subject is not None:
+        first_observed = min(first_observed, checkpoint.subject.first_observed_time_unix_nano)
+    checkpoint.subject = RetiredSubject(
+        display_name=subject.display_name,
+        kind=subject.kind,
+        parent_id=subject.parent_id,
+        session_id=subject.session_id,
+        projected=projected,
+        first_observed_time_unix_nano=first_observed,
+    )
+
+
 def advance_checkpoint(
     previous: RetentionCheckpoint | None,
     retention: GroupRetention,
@@ -1629,24 +1698,7 @@ def advance_checkpoint(
         resolved = _resolve_span(span, resolve_value)
         facts.append(_SpanFacts(row, otlp, resolved, _attribute_entries(resolved.get("attributes"))))
 
-    first_observed = min(
-        (min(row.start_time_unix_nano, row.observed_time_unix_nano) for row in rows),
-        default=None,
-    )
-    if checkpoint.subject is None and facts:
-        subject = view_subject_of(facts[0].span)
-        checkpoint.subject = RetiredSubject(
-            display_name=subject.display_name,
-            kind=subject.kind,
-            parent_id=subject.parent_id,
-            session_id=subject.session_id,
-            first_observed_time_unix_nano=first_observed or 0,
-        )
-    elif checkpoint.subject is not None and first_observed is not None:
-        checkpoint.subject.first_observed_time_unix_nano = min(
-            checkpoint.subject.first_observed_time_unix_nano,
-            first_observed,
-        )
+    _retire_subject(checkpoint, retention, facts, payloads)
 
     checkpoint.turns.max_number = max(checkpoint.turns.max_number, retention.max_number)
     checkpoint.turns.unnumbered += retention.unnumbered
@@ -1661,7 +1713,7 @@ def advance_checkpoint(
         checkpoint.boundary_turn_key = retention.deleted_keys[-1]
     checkpoint.boundary_change_seq = max(
         checkpoint.boundary_change_seq,
-        max(row.change_seq for row in rows),
+        max((row.change_seq for row in rows), default=0),
     )
 
     v2_facts = [item for item in facts if _is_v2_record(item.span)]
@@ -1726,7 +1778,6 @@ __all__ = [
     "apply_context_delta",
     "checkpoint_sequence_heads",
     "context_message",
-    "parse_record_payload",
     "plan_session_retention",
     "record_sequence_heads",
     "record_view_facts",

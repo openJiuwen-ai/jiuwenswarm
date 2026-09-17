@@ -133,6 +133,7 @@ function retiredSubject(subjectId: string, value: unknown): TrajectoryRetiredSub
     || typeof subject.display_name !== 'string'
     || typeof subject.kind !== 'string'
     || !SUBJECT_KINDS.has(subject.kind as TrajectorySubjectKind)
+    || typeof subject.projected !== 'boolean'
     || typeof subject.first_observed_time_unix_nano !== 'string'
     || !/^\d+$/.test(subject.first_observed_time_unix_nano)) {
     throw new Error('Trajectory checkpoint states an invalid subject');
@@ -145,6 +146,7 @@ function retiredSubject(subjectId: string, value: unknown): TrajectoryRetiredSub
       parentId: optionalText(subject.parent_id),
       sessionId: optionalText(subject.session_id),
     },
+    projected: subject.projected,
     firstObservedTimeUnixNano: subject.first_observed_time_unix_nano,
   };
 }

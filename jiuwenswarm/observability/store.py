@@ -40,12 +40,17 @@ from jiuwenswarm.observability.models import (
     TraceRecordData,
     WriteBatchResult,
 )
+from jiuwenswarm.observability.otlp_payload import (
+    MAX_SAFE_INTEGER,
+    int64_attribute_value,
+    parse_otlp_payload,
+    strict_otlp_payload,
+)
 from jiuwenswarm.observability.retention import (
     RetentionCheckpoint,
     RetentionRow,
     advance_checkpoint,
     checkpoint_sequence_heads,
-    parse_record_payload,
     plan_session_retention,
     record_view_facts,
 )
@@ -55,10 +60,8 @@ logger = logging.getLogger(__name__)
 # A database written under any other version is discarded, not migrated:
 # trajectories are diagnostic data with a retention window of days, and every
 # migration kept here was code that outlived the data it existed for.
-_SCHEMA_VERSION = 5
+_SCHEMA_VERSION = 6
 _BUSY_TIMEOUT_MS = 5000
-_MAX_SQLITE_INTEGER = (1 << 63) - 1
-_MAX_JSON_NESTING_DEPTH = 256
 # Serialized name of the OTLP span status code, used to skip parsing a payload
 # that cannot carry an error status. See ``_record_has_error``.
 _STATUS_CODE_KEY = b'"code"'
@@ -176,11 +179,12 @@ CREATE TABLE IF NOT EXISTS trajectory_current_records (
     raw_sha256 TEXT NOT NULL,
     update_kind TEXT NOT NULL,
     -- What retention groups and pages this record by, read from its payload
-    -- once when it is written: the subject the viewer shows it under (NULL
-    -- when the viewer cannot project it) and the turn it states.
-    view_subject_id TEXT,
-    view_subject_kind TEXT,
+    -- once when it is written: the subject the viewer lists it under, whether
+    -- the viewer projects it at all, and the turn it states.
+    view_subject_id TEXT NOT NULL,
+    view_subject_kind TEXT NOT NULL,
     view_subject_session_id TEXT,
+    view_projected INTEGER NOT NULL DEFAULT 0,
     turn_id TEXT,
     turn_number INTEGER,
     PRIMARY KEY(trace_id, span_id)
@@ -730,7 +734,7 @@ class TrajectoryStore:
         # reader budgets pages by it before it fetches any payload.
         is_final = record.lifecycle == "final"
         stored_raw_json = b"" if is_final else _encode_payload(record.raw_json)
-        view_facts = record_view_facts(record.raw_json)
+        view_facts = record_view_facts(record.raw_json, record.trace_id, record.span_id)
         connection.execute(
             """
             INSERT INTO trajectory_current_records (
@@ -742,9 +746,9 @@ class TrajectoryStore:
                 end_time_unix_nano, schema_version, source, created_at,
                 has_error, raw_json, raw_size_bytes, raw_sha256, update_kind,
                 view_subject_id, view_subject_kind, view_subject_session_id,
-                turn_id, turn_number
+                view_projected, turn_id, turn_number
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
                 ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
             ON CONFLICT(trace_id, span_id) DO UPDATE SET
@@ -783,6 +787,7 @@ class TrajectoryStore:
                 view_subject_id = excluded.view_subject_id,
                 view_subject_kind = excluded.view_subject_kind,
                 view_subject_session_id = excluded.view_subject_session_id,
+                view_projected = excluded.view_projected,
                 turn_id = excluded.turn_id,
                 turn_number = excluded.turn_number
             """,
@@ -815,6 +820,7 @@ class TrajectoryStore:
                 view_facts.subject_id,
                 view_facts.subject_kind,
                 view_facts.subject_session_id,
+                int(view_facts.projected),
                 view_facts.turn_id,
                 view_facts.turn_number,
             ),
@@ -992,7 +998,7 @@ class TrajectoryStore:
         for row in connection.execute(
             """
             SELECT session_id, trace_id, span_id, parent_span_id, agent_mode,
-                   view_subject_id, view_subject_kind, view_subject_session_id,
+                   view_subject_id, view_subject_kind, view_subject_session_id, view_projected,
                    turn_id, turn_number, start_time_unix_nano,
                    observed_time_unix_nano, lifecycle, created_at, change_seq
             FROM trajectory_current_records
@@ -1776,7 +1782,7 @@ class AsyncTrajectoryReader:
                     for row in rows:
                         raw_json = _decode_payload(row["raw_json"])
                         try:
-                            otlp: dict[str, Any] | None = _strict_otlp_payload(raw_json)
+                            otlp: dict[str, Any] | None = strict_otlp_payload(raw_json)
                         except (RecursionError, TypeError, ValueError, OverflowError):
                             otlp = None
                         decoded.append((row, raw_json, otlp))
@@ -2506,9 +2512,10 @@ def _retention_row(row: sqlite3.Row) -> RetentionRow:
         span_id=str(row["span_id"]),
         parent_span_id=row["parent_span_id"],
         agent_mode=row["agent_mode"],
-        subject_id=row["view_subject_id"],
-        subject_kind=row["view_subject_kind"],
+        subject_id=str(row["view_subject_id"]),
+        subject_kind=str(row["view_subject_kind"]),
         subject_session_id=row["view_subject_session_id"],
+        projected=bool(row["view_projected"]),
         turn_id=row["turn_id"],
         turn_number=None if row["turn_number"] is None else int(row["turn_number"]),
         start_time_unix_nano=int(row["start_time_unix_nano"]),
@@ -2542,7 +2549,7 @@ def _retired_payloads(
         ):
             if stored["raw_json"] is None:
                 continue
-            payload = parse_record_payload(_decode_payload(stored["raw_json"]))
+            payload = parse_otlp_payload(_decode_payload(stored["raw_json"]))
             if payload is not None:
                 payloads[(str(stored["trace_id"]), str(stored["span_id"]))] = payload
     return payloads
@@ -2726,7 +2733,7 @@ def _record_has_error(raw_json: bytes) -> bool:
     if _STATUS_CODE_KEY not in raw_json:
         return False
     try:
-        payload = _strict_otlp_payload(raw_json)
+        payload = strict_otlp_payload(raw_json)
     except Exception:
         return False
     resource_spans = payload.get("resourceSpans")
@@ -2779,7 +2786,7 @@ def _request_usage_fact(
     start_time_unix_nano: int,
 ) -> dict[str, Any] | None:
     try:
-        payload = _strict_otlp_payload(raw_json)
+        payload = strict_otlp_payload(raw_json)
     except Exception:
         return None
     return _request_usage_fact_from_payload(
@@ -2805,45 +2812,42 @@ def _request_usage_fact_from_payload(
                 spans.extend(scope_span.get("spans", []))
     if len(spans) != 1 or not isinstance(spans[0], dict):
         return None
-    attributes = {
-        str(attribute.get("key")): _otlp_attribute_value(attribute.get("value"))
+    attribute_entries = {
+        str(attribute.get("key")): attribute.get("value")
         for attribute in spans[0].get("attributes", [])
         if isinstance(attribute, dict) and isinstance(attribute.get("key"), str)
     }
+    attributes = {
+        key: _otlp_attribute_value(value) for key, value in attribute_entries.items()
+    }
     if attributes.get("gen_ai.operation.name") not in {"chat", "generate_content", "text_completion"}:
         return None
-    inference_id = str(attributes.get("openjiuwen.inference.id") or "").strip()
-    if not inference_id:
+    # The viewer joins cumulative usage to a request by the inference id it
+    # reads, which is the exact string value, so it is keyed the same way.
+    inference_value = attribute_entries.get("openjiuwen.inference.id")
+    inference_id = inference_value.get("stringValue") if isinstance(inference_value, dict) else None
+    if not isinstance(inference_id, str) or not inference_id.strip():
         return None
     subject_id = str(attributes.get("openjiuwen.execution.subject.id") or "main").strip()
     usage_keys = {
-        "input": ("gen_ai.usage.input_tokens",),
-        "cacheRead": ("gen_ai.usage.cache_read.input_tokens",),
-        "cacheWrite": ("gen_ai.usage.cache_write.input_tokens",),
-        "output": ("gen_ai.usage.output_tokens",),
-        "reasoning": ("gen_ai.usage.reasoning.output_tokens",),
+        "input": "gen_ai.usage.input_tokens",
+        "cacheRead": "gen_ai.usage.cache_read.input_tokens",
+        "cacheWrite": "gen_ai.usage.cache_write.input_tokens",
+        "output": "gen_ai.usage.output_tokens",
+        "reasoning": "gen_ai.usage.reasoning.output_tokens",
     }
+    # Token counts are read as the viewer reads a request's own usage: the
+    # int64 arm only, as a non-negative integer it can represent exactly.
     usage: dict[str, int] = {}
-    for output_key, attribute_keys in usage_keys.items():
-        raw_value = next(
-            (
-                attributes[key]
-                for key in attribute_keys
-                if attributes.get(key) is not None
-            ),
-            None,
-        )
-        try:
-            value = int(raw_value)
-        except (TypeError, ValueError, OverflowError):
-            continue
-        if 0 <= value <= _MAX_SQLITE_INTEGER:
+    for output_key, attribute_key in usage_keys.items():
+        value = int64_attribute_value(attribute_entries.get(attribute_key))
+        if value is not None and 0 <= value <= MAX_SAFE_INTEGER:
             usage[output_key] = value
     input_tokens = usage.get("input")
     output_tokens = usage.get("output")
     if input_tokens is not None and output_tokens is not None:
         total_tokens = input_tokens + output_tokens
-        if total_tokens <= _MAX_SQLITE_INTEGER:
+        if total_tokens <= MAX_SAFE_INTEGER:
             usage["total"] = total_tokens
     return {
         "trace_id": trace_id,
@@ -2931,7 +2935,7 @@ def _record_sequence_references(otlp: Any) -> dict[str, dict[str, Any]]:
 def _detail_record_from_row(row: aiosqlite.Row) -> dict[str, Any]:
     raw_json = _decode_payload(row["raw_json"])
     try:
-        otlp = _strict_otlp_payload(raw_json)
+        otlp = strict_otlp_payload(raw_json)
     except (RecursionError, TypeError, ValueError, OverflowError):
         otlp = None
     references = _record_sequence_references(otlp)
@@ -3124,57 +3128,6 @@ def _archive_record_line(
     if references:
         line["sequences"] = references
     return line
-
-
-def _strict_otlp_payload(raw_json: bytes) -> dict[str, Any]:
-    """Parse strict finite JSON and validate the minimum OTLP envelope shape."""
-
-    _validate_json_nesting(raw_json)
-
-    def _reject_constant(value: str) -> Any:
-        raise ValueError(f"non-finite JSON constant: {value}")
-
-    def _finite_float(value: str) -> float:
-        parsed = float(value)
-        if not math.isfinite(parsed):
-            raise ValueError("non-finite JSON number")
-        return parsed
-
-    payload = json.loads(
-        raw_json,
-        parse_constant=_reject_constant,
-        parse_float=_finite_float,
-    )
-    if not isinstance(payload, dict):
-        raise ValueError("OTLP record must be a JSON object")
-    if not isinstance(payload.get("resourceSpans"), list):
-        raise ValueError("OTLP record resourceSpans must be an array")
-    return payload
-
-
-def _validate_json_nesting(raw_json: bytes) -> None:
-    """Reject excessive JSON nesting without decoding or recursive traversal."""
-    depth = 0
-    in_string = False
-    escaped = False
-    for character in raw_json:
-        if in_string:
-            if escaped:
-                escaped = False
-            elif character == 0x5C:
-                escaped = True
-            elif character == 0x22:
-                in_string = False
-            continue
-        if character == 0x22:
-            in_string = True
-            continue
-        if character in (0x5B, 0x7B):
-            depth += 1
-            if depth > _MAX_JSON_NESTING_DEPTH:
-                raise ValueError("JSON nesting depth exceeds projection limit")
-        elif character in (0x5D, 0x7D):
-            depth -= 1
 
 
 __all__ = [

@@ -1523,13 +1523,13 @@ def test_error_probe_skips_parsing_when_no_status_code_is_present(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     parses: list[bytes] = []
-    original = store_module._strict_otlp_payload
+    original = store_module.strict_otlp_payload
 
     def _counting(raw_json: bytes) -> Any:
         parses.append(raw_json)
         return original(raw_json)
 
-    monkeypatch.setattr(store_module, "_strict_otlp_payload", _counting)
+    monkeypatch.setattr(store_module, "strict_otlp_payload", _counting)
     # Core serializes an unset span status as {}, so the whole payload can be
     # ruled out without decoding it.
     without_code = json.dumps(
