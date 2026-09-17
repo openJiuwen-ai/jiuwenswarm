@@ -18,7 +18,24 @@ from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
 
-_MEMORY_WRITE_TOOLS = frozenset({"write_memory", "edit_memory"})
+_MEMORY_WRITE_TOOLS = frozenset({
+    "write_memory",
+    "edit_memory",
+    "coding_memory_write",
+    "coding_memory_edit",
+    "experience_learn",
+})
+
+# 与 memory_forbidden_rail._MEMORY_WRITE_TOOLS 保持一致：若只拦截
+# write_memory/edit_memory，群聊数字分身可通过编码记忆/经验学习工具
+# 绕过"禁止写入记忆"约束。读取工具单独列出，供"记忆完全禁用"场景使用。
+_MEMORY_READ_TOOLS = frozenset({
+    "read_memory",
+    "memory_search",
+    "memory_get",
+})
+
+_MEMORY_TOOLS = _MEMORY_WRITE_TOOLS | _MEMORY_READ_TOOLS
 
 _AVATAR_PROMPT_PRIORITY = 110
 
@@ -145,10 +162,7 @@ class AvatarPromptRail(DeepAgentRail):
 
         # 场景2：记忆完全禁用 - 禁止读取和写入
         if should_disable_memory:
-            all_memory_tools = frozenset({
-                "write_memory", "edit_memory", "read_memory", "memory_search", "memory_get"
-            })
-            if tool_name in all_memory_tools:
+            if tool_name in _MEMORY_TOOLS:
                 self._reject_tool(ctx, "[PERMISSION_DENIED] 记忆系统已禁用，禁止访问")
             return
 
