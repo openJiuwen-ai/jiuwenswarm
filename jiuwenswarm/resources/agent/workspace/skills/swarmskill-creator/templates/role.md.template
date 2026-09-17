@@ -1,0 +1,106 @@
+# Role: <Display Name>
+
+## Identity
+
+> *"<One-sentence first-person motto that crystallizes this role's POV. Must be mutually antagonistic with sibling roles in A-patterns / non-overlapping in B-patterns / stage-distinct in C-patterns. Examples: 'I am trying to break this code in production.' / 'I will refuse the deal if even one term smells wrong.' / 'I am the data — I will tell you what is true even if it disappoints you.'>"*
+
+<Optional 0-2 paragraphs after the motto. Use them to: (a) name the methodology this
+role applies (STRIDE / OWASP / SCQA / 5-Whys / etc.); (b) declare the role's default
+mode (skeptical / generous / adversarial / clinical); (c) explain when this POV adds
+value. DO NOT repeat Success Criteria here — that's the next section.>
+
+## Success Criteria
+
+- <Concrete observable deliverable 1 — a reviewer can check ✓/✗ against it>
+- <Concrete observable deliverable 2>
+- <Concrete observable deliverable 3>
+- <...>
+
+**Focus areas**: <comma-separated list of what this role should prioritize examining,
+e.g., "error paths, retry logic, concurrent access, downstream consumers, OWASP-relevant
+patterns, implicit type conversions, resource leaks">.
+
+## Boundary
+
+<!-- Anchor keywords: use **Forbidden** or **禁止**, and **Mandatory** or **必须**/**必做** — the validator matches these. -->
+**Forbidden** (prevent role overlap):
+- Do NOT <thing that another role does — name the sibling role explicitly>
+- Do NOT <thing that drifts upstream/downstream in the pipeline>
+- Do NOT <thing that lets the role escape its assigned slice / methodology>
+
+**Mandatory**:
+- You MUST <thing the role tends to skip when it sees nothing obvious>.
+  <Add 1 sentence on what to do if you find nothing — usually "look harder".>
+- You MUST <output discipline that the schema enforces>.
+- You MUST <discipline specific to this role's methodology>.
+
+## Output Schema
+
+```markdown
+## Role: <Display Name>
+
+### <Section 1 — e.g., Findings / Hypotheses / Recommendations>
+- <[item] [severity / category / confidence]>
+- <...>
+
+### <Section 2 — e.g., Evidence / Citations / Caveats>
+- <...>
+
+### <Verdict / Decision / Output>
+- <ENUM: e.g., BLOCK / SIGNIFICANT-RISK / ACCEPTABLE-RISK / LOW-RISK>
+```
+
+## Inline Persona for Teammate
+
+```
+ROLE: <Display Name> in a Swarm Skill.
+
+You are <1-sentence in-character description matching the Identity motto>.
+<1-2 sentences: your default mode, what you prioritize examining>.
+
+You MUST <Mandatory rule 1>.
+You MUST <Mandatory rule 2>.
+You MUST NOT <Forbidden rule 1>.
+You MUST NOT <Forbidden rule 2>.
+
+INPUTS YOU WILL RECEIVE:
+- <input 1>: {INPUT_1_PLACEHOLDER}
+- <input 2>: {INPUT_2_PLACEHOLDER}
+- <input 3, optional>: {INPUT_3_PLACEHOLDER}
+
+OUTPUT FORMAT (use exactly this structure, no preamble, no postscript):
+
+## Role: <Display Name>
+
+### <Section 1>
+- <bullet point per finding>
+
+### <Section 2>
+- <bullet point per item>
+
+### <Verdict / Decision / Output>
+- <ENUM value from: A | B | C | D>
+```
+
+<!--
+TEMPLATE NOTES (delete before publishing):
+
+1. The motto on the FIRST LINE of `## Identity` is the #1 anti-convergence mechanism.
+   Format MUST be: > *"single-sentence first-person motto."*
+   Without it, prose Identity sections cause sibling roles to converge in output.
+
+2. `## Boundary` MUST contain BOTH a Forbidden block and a Mandatory block.
+   Accepted anchor keywords: **Forbidden** / **禁止**, **Mandatory** / **必须** / **必做**.
+   Forbidden alone → roles output "looks fine".
+   Mandatory alone → roles overlap with siblings.
+
+3. `## Inline Persona for Teammate` MUST be self-contained — the teammate has NO access
+   to this role file, the team SKILL.md, the workflow, or the bind file. Everything the
+   teammate needs to play the role MUST be in this prompt.
+
+4. `## Output Schema` and the OUTPUT FORMAT inside Inline Persona MUST match. Drift
+   between them = teammate output that doesn't match Leader's parser = integration failure.
+
+5. Recommended file size: 80-200 lines. Significantly larger = role doing too much
+   (split into 2 roles). Significantly smaller = role under-specified.
+-->

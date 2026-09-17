@@ -1,0 +1,49 @@
+<svg viewBox="0 0 16 16" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="16.000000" height="16.000000" fill="none" customFrame="#000000">
+	<mask id="mask_61" width="16.000000" height="16.000008" x="0.000000" y="0.000000" maskUnits="userSpaceOnUse">
+		<g filter="url(#pixso_custom_mask_type_alpha)">
+			<g id="mask431_5756">
+				<path id="减去顶层" d="M16 0L0 0L0 16L16 16L16 0ZM8.5 7.67367L8.5 3.32405C8.5 3.04411 8.27993 2.82405 8 2.82405C7.7199 2.82405 7.5 3.04411 7.5 3.32405L7.5 7.87224C7.5 7.93847 7.51123 8.00017 7.53403 8.05744C7.55663 8.11458 7.59083 8.16731 7.63623 8.21534L9.81673 10.5267C10.0088 10.7303 10.3198 10.7394 10.5234 10.5474C10.7272 10.3551 10.7362 10.0441 10.5441 9.84051L8.5 7.67367Z" fill="rgb(255,255,255)" fill-opacity="0" fill-rule="evenodd" />
+			</g>
+		</g>
+	</mask>
+	<mask id="mask_60" width="16.000000" height="16.000000" x="0.000000" y="0.000000" maskUnits="userSpaceOnUse">
+		<g filter="url(#pixso_custom_mask_type_outline)">
+			<g id="clip431_5747">
+				<rect id="support" width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" />
+			</g>
+		</g>
+	</mask>
+	<defs>
+		<filter id="pixso_custom_mask_type_outline">
+			<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 " />
+		</filter>
+		<filter id="pixso_custom_mask_type_alpha">
+			<feColorMatrix type="matrix" values="0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 0 0 0 1 0 " />
+		</filter>
+	</defs>
+	<mask id="mask_59" width="16.000000" height="16.000000" x="0.000000" y="0.000000" maskUnits="userSpaceOnUse">
+		<g filter="url(#pixso_custom_mask_type_outline)">
+			<g id="clip431_5746">
+				<rect id="ic_public_clock-时钟/base/ic_public_clock" width="16.000000" height="16.000000" x="0.000000" y="0.000000" fill="rgb(255,255,255)" />
+			</g>
+		</g>
+	</mask>
+	<g id="等待" mask="url(#mask_59)">
+		<g id="Group 725">
+			<g id="clip path group" mask="url(#mask_60)">
+				<g id="Group 727">
+					<path id="path1" d="M1.66377e-05 7.99338C1.66377e-05 6.74338 -0.0033167 5.49338 1.66377e-05 4.24338C-0.0033167 3.63671 0.07335 3.03338 0.220017 2.45005C0.546683 1.21005 1.35335 0.470047 2.59668 0.186714C3.21335 0.0533806 3.85335 -0.00995275 4.48668 4.72466e-05C6.88002 4.72466e-05 9.27668 4.72466e-05 11.68 4.72466e-05C12.2833 -0.00328609 12.8867 0.0600472 13.4767 0.206714C14.7533 0.516714 15.52 1.32338 15.81 2.60005C15.9433 3.20005 16.0033 3.81005 15.9967 4.43005C15.9967 6.85338 15.9967 9.27671 15.9967 11.6967C16 12.2967 15.9333 12.8934 15.79 13.4767C15.4767 14.7567 14.6667 15.5167 13.3933 15.81C12.77 15.9434 12.1367 16.0067 11.5033 15.9967C9.11668 15.9967 6.72668 15.9967 4.34335 15.9967C3.73335 16.0034 3.12335 15.9334 2.53335 15.7934C1.25002 15.4834 0.476683 14.67 0.186683 13.3867C0.0400166 12.74 1.66377e-05 12.09 1.66377e-05 11.4334C1.66377e-05 10.2867 1.66377e-05 9.13671 1.66377e-05 7.99338Z" fill="rgb(255,255,255)" fill-opacity="0" fill-rule="evenodd" />
+					<circle id="path2" cx="8" cy="8" r="8" fill="rgb(255,255,255)" fill-opacity="0" />
+				</g>
+			</g>
+			<ellipse id="path3" rx="7.333333" ry="7.333102" cx="7.99983692" cy="8.00009346" stroke="rgb(119,119,119)" stroke-width="1.000000" />
+			<path id="path4" d="M8 3.32031L8 7.87031L10.18 10.1803" fill-rule="nonzero" stroke="rgb(119,119,119)" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.000000" />
+			<g id="mask" mask="url(#mask_61)">
+				<g id="Group 729">
+					<ellipse id="path4" rx="8.000000" ry="7.999748" cx="8" cy="7.99974775" fill="rgb(255,255,255)" fill-opacity="0" />
+				</g>
+			</g>
+			<path id="path4 (边框)" d="M8.5 3.32031L8.5 7.67031L10.5433 9.83698C10.7333 10.0403 10.7267 10.3536 10.5233 10.5436C10.3167 10.737 10.0067 10.727 9.81667 10.5236L7.63333 8.21365C7.59 8.16364 7.55667 8.11031 7.53333 8.05365C7.51 7.99698 7.5 7.93698 7.5 7.87031L7.5 3.32031C7.5 3.04031 7.72 2.82031 8 2.82031C8.27667 2.82031 8.5 3.04031 8.5 3.32031Z" fill="rgb(255,255,255)" fill-opacity="0" fill-rule="evenodd" />
+		</g>
+	</g>
+</svg>

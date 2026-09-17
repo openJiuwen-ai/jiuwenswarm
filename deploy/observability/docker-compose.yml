@@ -1,0 +1,178 @@
+# Langfuse v3 最简配置 (基于官方 docker-compose.yml)
+# 启动: docker-compose up -d
+# 访问: http://localhost:3000
+
+services:
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.154.0
+    container_name: langfuse-otel-collector
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"
+      - "4318:4318"
+    depends_on:
+      langfuse-web:
+        condition: service_started
+
+  langfuse-web:
+    image: langfuse/langfuse:3
+    container_name: langfuse-web
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    ports:
+      - "3000:3000"
+    environment:
+      NEXTAUTH_URL: http://localhost:3000
+      NEXTAUTH_SECRET: mysecret
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: mysalt
+      ENCRYPTION_KEY: d2192b67e7e22a8c46df7b96d3699dc91a710fc0d6e0bff0894a0b8308e3971e
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: false
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: myredissecret
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: true
+      TELEMETRY_ENABLED: "false"
+
+      LANGFUSE_INIT_ORG_ID: jiuwen-org
+      LANGFUSE_INIT_ORG_NAME: Jiuwen Organization
+      LANGFUSE_INIT_PROJECT_ID: jiuwen-project
+      LANGFUSE_INIT_PROJECT_NAME: Jiuwen Project
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-jiuwen
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-jiuwen
+      LANGFUSE_INIT_USER_EMAIL: jiuwenswarm@jiuwen.local
+      LANGFUSE_INIT_USER_NAME: jiuwenswarm
+      LANGFUSE_INIT_USER_PASSWORD: jiuwenswarm
+
+      LANGFUSE_DEFAULT_ORG_ID: jiuwen-org
+      LANGFUSE_DEFAULT_ORG_ROLE: ADMIN
+      LANGFUSE_DEFAULT_PROJECT_ID: jiuwen-project
+      LANGFUSE_DEFAULT_PROJECT_ROLE: ADMIN
+
+  langfuse-worker:
+    image: langfuse/langfuse-worker:3
+    container_name: langfuse-worker
+    depends_on:
+      postgres:
+        condition: service_healthy
+      clickhouse:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://postgres:postgres@postgres:5432/postgres
+      SALT: mysalt
+      ENCRYPTION_KEY: d2192b67e7e22a8c46df7b96d3699dc91a710fc0d6e0bff0894a0b8308e3971e
+      CLICKHOUSE_URL: http://clickhouse:8123
+      CLICKHOUSE_MIGRATION_URL: clickhouse://clickhouse:9000
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+      CLICKHOUSE_CLUSTER_ENABLED: false
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_AUTH: myredissecret
+      LANGFUSE_S3_EVENT_UPLOAD_BUCKET: langfuse
+      LANGFUSE_S3_EVENT_UPLOAD_REGION: auto
+      LANGFUSE_S3_EVENT_UPLOAD_ACCESS_KEY_ID: minio
+      LANGFUSE_S3_EVENT_UPLOAD_SECRET_ACCESS_KEY: miniosecret
+      LANGFUSE_S3_EVENT_UPLOAD_ENDPOINT: http://minio:9000
+      LANGFUSE_S3_EVENT_UPLOAD_FORCE_PATH_STYLE: true
+      TELEMETRY_ENABLED: "false"
+
+      LANGFUSE_INIT_ORG_ID: jiuwen-org
+      LANGFUSE_INIT_ORG_NAME: Jiuwen Organization
+      LANGFUSE_INIT_PROJECT_ID: jiuwen-project
+      LANGFUSE_INIT_PROJECT_NAME: Jiuwen Project
+      LANGFUSE_INIT_PROJECT_PUBLIC_KEY: pk-lf-jiuwen
+      LANGFUSE_INIT_PROJECT_SECRET_KEY: sk-lf-jiuwen
+      LANGFUSE_INIT_USER_EMAIL: jiuwenswarm@jiuwen.local
+      LANGFUSE_INIT_USER_NAME: jiuwenswarm
+      LANGFUSE_INIT_USER_PASSWORD: jiuwenswarm
+
+      LANGFUSE_DEFAULT_ORG_ID: jiuwen-org
+      LANGFUSE_DEFAULT_ORG_ROLE: ADMIN
+      LANGFUSE_DEFAULT_PROJECT_ID: jiuwen-project
+      LANGFUSE_DEFAULT_PROJECT_ROLE: ADMIN
+
+  postgres:
+    image: postgres:17
+    container_name: langfuse-postgres
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: postgres
+    volumes:
+      - langfuse_pg:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 3s
+      timeout: 3s
+      retries: 10
+
+  clickhouse:
+    image: clickhouse/clickhouse-server
+    container_name: langfuse-clickhouse
+    user: "101:101"
+    environment:
+      CLICKHOUSE_DB: default
+      CLICKHOUSE_USER: clickhouse
+      CLICKHOUSE_PASSWORD: clickhouse
+    volumes:
+      - langfuse_ch:/var/lib/clickhouse
+    healthcheck:
+      test: wget --no-verbose --tries=1 --spider http://localhost:8123/ping || exit 1
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7
+    container_name: langfuse-redis
+    command: --requirepass myredissecret --maxmemory-policy noeviction
+    healthcheck:
+      test: ["CMD", "redis-cli", "-a", "myredissecret", "ping"]
+      interval: 3s
+      timeout: 10s
+      retries: 10
+
+  minio:
+    image: minio/minio:latest
+    container_name: langfuse-minio
+    entrypoint: sh
+    # create the 'langfuse' bucket before starting the service
+    command: -c 'mkdir -p /data/langfuse && minio server --address ":9000" --console-address ":9001" /data'
+    environment:
+      MINIO_ROOT_USER: minio
+      MINIO_ROOT_PASSWORD: miniosecret
+    volumes:
+      - langfuse_minio:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:9000/minio/health/live"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  langfuse_pg:
+  langfuse_ch:
+  langfuse_minio:

@@ -1,9 +1,7 @@
-# 包含 config 目录
-recursive-include config *
-
-# 包含 workspace 目录
-recursive-include workspace *
+# 包含 package resources 目录
+recursive-include jiuwenswarm/resources *
+prune jiuwenswarm/resources/agent/workspace/skills/project-maintainer
 
 # 排除 node_modules，避免打包进 wheel
-prune jiuwenclaw/web/node_modules
+prune jiuwenswarm/channels/web/frontend/node_modules
 global-exclude node_modules

@@ -1,0 +1,11 @@
+<svg viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg" width="24" height="24" fill="none">
+	<defs>
+		<linearGradient id="html-fold" x1="15.34" x2="22" y1="1.64" y2="8.45" gradientUnits="userSpaceOnUse">
+			<stop stop-color="rgb(255,255,255)" />
+			<stop offset="1" stop-color="rgb(255,255,255)" stop-opacity="0" />
+		</linearGradient>
+	</defs>
+	<path d="M22 6.92V21C22 22.66 20.66 24 19 24H5C3.34 24 2 22.66 2 21V3C2 1.34 3.34 0 5 0H14.93C15.19 0 15.44 0.1 15.62 0.28L21.7 6.21C21.89 6.39 22 6.65 22 6.92Z" fill="rgb(228,77,38)" />
+	<path d="M15.34 0L22 6.5H17.34C16.24 6.5 15.34 5.6 15.34 4.5V0Z" fill="url(#html-fold)" opacity="0.6" />
+	<path d="M9.75 10.25L6.75 13L9.75 15.75M14.25 10.25L17.25 13L14.25 15.75" stroke="rgb(255,255,255)" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" />
+</svg>

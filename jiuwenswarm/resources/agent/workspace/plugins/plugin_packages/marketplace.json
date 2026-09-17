@@ -1,0 +1,34 @@
+{
+  "plugins": [
+    {
+      "id": "content-creation-assistant",
+      "name": {
+        "en": "Content Creation Assistant Plugin",
+        "zh": "内容创作辅助插件"
+      },
+      "description": {
+        "en": "Full-chain content creation assistant covering drafting, enhancement, and review across seven scenes.",
+        "zh": "从材料启动到成稿收口的全链路内容创作辅助，覆盖起草、增强、审阅三大阶段七个场景。"
+      },
+      "version": "1.0.0",
+      "source": "builtin",
+      "installed": false,
+      "enabled": false
+    },
+    {
+      "id": "office-document-toolkit",
+      "name": {
+        "en": "Office Document Toolkit",
+        "zh": "办公文档能力包"
+      },
+      "description": {
+        "en": "Comprehensive office document toolkit: parse, convert, batch-process, edit, transform, manipulate PDFs, style reports, mail merge, compare, archive and redact across PDF, Word, Excel, PPT.",
+        "zh": "支持PDF、Word、Excel、PPT文档解析、格式互转、批量处理、编辑修改、数据变换、PDF操控、高级排版、邮件合并、文档比较、打包与脱敏"
+      },
+      "version": "1.0.0",
+      "source": "builtin",
+      "installed": false,
+      "enabled": false
+    }
+  ]
+}

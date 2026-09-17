@@ -1,0 +1,68 @@
+.toolpanel-status-card {
+  padding: 1rem 0 0 0;
+  overflow-y: auto;
+  max-height: 13rem;
+}
+
+.toolpanel-status-card:hover {
+  border-color: var(--color-border-strong);
+  box-shadow: var(--effect-tool-panel-shadow);
+  transform: translateY(-1px);
+}
+
+.toolpanel-status-card__title {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.25rem;
+  font-size: 0.75rem;
+  font-weight: 500;
+  color: var(--color-text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-bottom: 0.75rem;
+}
+
+.toolpanel-status-card__row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  font-size: 0.75rem;
+}
+
+/* ===========================
+   Harness Extension Tree
+   =========================== */
+
+.harness-extension-tree-container {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  overflow: hidden;
+}
+
+.harness-extension-tree-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.5rem;
+  padding: 0.75rem;
+  border-bottom: 1px solid var(--color-border-default);
+  background: var(--color-action-secondary);
+}
+
+.harness-extension-tree-title {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--color-text-primary);
+}
+
+.harness-extension-tree-path {
+  font-size: 0.75rem;
+  color: var(--color-text-secondary);
+}
+
+.harness-extension-tree-content {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.5rem;
+}

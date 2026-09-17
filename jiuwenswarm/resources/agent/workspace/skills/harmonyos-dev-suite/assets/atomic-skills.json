@@ -1,0 +1,588 @@
+{
+  "name": "harmonyos-dev-suite-atomic-skills",
+  "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills",
+  "count": 83,
+  "skills": [
+    {
+      "name": "hmos-account-kit-quicklogin-client",
+      "category": "Application services",
+      "description": "基于 HarmonyOS Account Kit 提供华为账号一键登录客户端接入指引，实现获取匿名手机号接口与华为账号一键登录组件集成。支持获取匿名手机号后一键登录页面跳转、失败Toast提示等。在用户提及\"华为账号一键登录\"、\"接入华为账号一键登录\"、\"Account Kit一键登录\"或要求实现华为账号一键登录功能时使用（当前仅支持原生ArkTS框架）",
+      "path": "04-development/05-application-services/account-kit/hmos-account-kit-quicklogin-client",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-live-view-kit-build-location",
+      "category": "Application services",
+      "description": "HarmonyOS实况窗（LiveView）代码生成助手，支持创建、更新、停止实况窗。用户输入创建/更新/结束/完整/补全实况窗代码时触发，覆盖即时配送、打车、排队、计时、航班、高铁、共享租赁、运动锻炼、导航九大场景。",
+      "path": "04-development/05-application-services/live-view-kit/hmos-live-view-kit-build-location",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-push-kit",
+      "category": "Application services",
+      "description": "华为Push Kit推送服务集成助手（Master Skill/大路由）。帮助开发者快速集成HarmonyOS推送功能，获取Push Token， 配置推送服务，开通场景化消息权益。支持发送通知消息、应用内通话消息、后台消息等场景。 ============================================================ 触发条件（只有满足以下意图时才触发）： ============================================================ ✅ 正确触发场景（开发者需要接入/开发推送功能）： - \"帮我在项目中接入华为推送\" - \"我要实现推送通知功能\" - \"如何接入push kit\" - \"帮我接入voip消息\" - \"接入后台消息\" - \"发送推送通知\" - \"获取push token\" - \"配置推送服务\" - \"开通推送消息权益\" ❌ 不触发场景（仅为询问、比较、测试、排查等）： - 询问对比/优缺点：\"鸿蒙push和苹果push区别\"、\"推送有什么优点\" - 否定意图：\"我不想接入推送\"、\"不需要推送…",
+      "path": "04-development/05-application-services/push-kit/hmos-push-kit",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-push-kit-background",
+      "category": "Application services",
+      "description": "推送后台消息助手。当开发者需要实现后台消息接收、数据静默更新、或消息缓存功能时触发。 ============================================================ 触发条件（只有满足以下意图时才触发）： ============================================================ ✅ 正确触发场景： - \"帮接入后台消息\" - \"实现数据静默更新\" - \"添加推送后台消息功能\" - \"推送后台消息\" - \"消息缓存到数据库\" - \"进程不在前台接收消息\" - \"需要接入后台消息功能\" ❌ 不触发场景： - 询问/概念：\"后台消息是什么\" - 否定意图：\"不需要后台消息\" - 仅输入关键词：\"后台\"、\"消息\" - 测试/调试：\"后台消息测试\" - 带引号输入：\"后台消息\" - 配置咨询：\"后台消息怎么配置\" ⚠️ 重要提醒： - 只要需要接入后台消息功能，**必须加载本 skill** - 本 skill 提供完整的后台消息接入指导，包括消息接收、数据处理、缓存策略等 - 后台消息接入涉及数据静默更…",
+      "path": "04-development/05-application-services/push-kit/hmos-push-kit/hmos-push-kit-background",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-push-kit-notification",
+      "category": "Application services",
+      "description": "发送通知消息助手。当开发者需要实现推送通知功能、发送消息提醒、配置通知样式或点击动作时触发。 ============================================================ 触发条件（只有满足以下意图时才触发）： ============================================================ ✅ 正确触发场景： - \"帮我在项目中接入推送通知\" - \"实现推送消息功能\" - \"添加推送消息功能\" - \"接入通知消息\" - \"发送通知消息\" - \"配置推送前台接收\" ❌ 不触发场景： - 询问/概念：\"通知消息是什么\"、\"推送有啥优点\" - 否定意图：\"不需要通知消息\" - 仅输入关键词：\"通知\"、\"推送消息\" - 测试/调试：\"测试推送通知\" - 问题排查：\"推送失败\"、\"通知异常\" - 带引号输入：\"推送通知\" - 配置咨询：\"通知怎么配置\" 此 Skill 专注于帮助开发者实现通知消息的发送和配置。 前置检查： - 在继续之前，会自动检查开发者是否已接入Push Token - 如果未接入Toke…",
+      "path": "04-development/05-application-services/push-kit/hmos-push-kit/hmos-push-kit-notification",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-push-kit-token",
+      "category": "Application services",
+      "description": "Push Token 获取助手。可作为单独接入能力使用。当开发者需要集成华为推送服务、首次获取 Push Token、或 Token 获取失败时触发。 ============================================================ 触发条件（只有满足以下意图时才触发）： ============================================================ ✅ 正确触发场景： - \"帮我接入push token\" - \"获取push token\" - \"首次集成推送功能\" - \"getToken调用失败\" - \"token获取报错1000900010\" - 需要在项目中添加getToken代码 ❌ 不触发场景： - 询问/概念：\"token是什么\"、\"为什么需要token\" - 对比问题：\"华为push和苹果push区别\" - 仅输入关键词：\"token\"、\"push\" - 否定意图：\"不想接入token\" - 带引号输入：\"push token\" - 配置咨询：\"token怎么配置\" 此 Skill 专注于…",
+      "path": "04-development/05-application-services/push-kit/hmos-push-kit/hmos-push-kit-token",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-push-kit-voip",
+      "category": "Application services",
+      "description": "推送应用内通话消息助手（VOIP）。当开发者需要实现语音/视频来电通知、voip功能、或呼叫接听界面时触发。 ============================================================ 触发条件（只有满足以下意图时才触发）： ============================================================ ✅ 正确触发场景： - \"帮接入voip消息\" - \"实现语音来电通知\" - \"添加推送应用内通话消息功能\" - \"接入视频通话功能\" - \"应用内通话消息\" - \"voip呼叫接听界面\" - \"需要接入voip功能\" ❌ 不触发场景： - 询问/概念：\"voip是什么\"、\"语音通话怎么实现\" - 否定意图：\"不需要voip\" - 仅输入关键词：\"voip\"、\"通话\" - 测试/调试：\"voip测试\" - 带引号输入：\"voip\"、\"语音通话\" - 配置咨询：\"voip怎么配置\" ⚠️ 重要提醒： - 只要需要接入 voip 功能，**必须加载本 skill** - 本 skill 提供完整的 v…",
+      "path": "04-development/05-application-services/push-kit/hmos-push-kit/hmos-push-kit-voip",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-scan-kit-customscan",
+      "category": "Application services",
+      "description": "帮助开发者快速接入华为 Scan Kit 自定义界面扫码能力，仅在需要支持完全自定义相机预览流 UI 界面、闪光灯控制、变焦、对焦等功能的场景使用",
+      "path": "04-development/03-media/scan-kit/hmos-scan-kit-customscan",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkts-deprecated-interface-checker",
+      "category": "ArkTS",
+      "description": "检查 HarmonyOS 项目中的废弃 SDK 接口并提供修复建议。当需要清理废弃 API、升级 API 版本、优化代码质量或进行静态语法检查时使用。提供详细的迁移方案、修复优先级分类和代码示例。",
+      "path": "04-development/01-application-framework/ArkTS/hmos-arkts-deprecated-interface-checker",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkts-syntax-checker",
+      "category": "ArkTS",
+      "description": "检查并修复 HarmonyOS 项目的 ArkTS 语法错误，自动化构建项目。当需要编译项目、修复编译错误、生成 HAP/App 产物时使用。提供静态语法检查、错误自动修复、循环构建直到成功的完整工作流程。支持错误优先级分类（P0/P1/P2）、最大重试机制、构建产物自动定位。",
+      "path": "04-development/01-application-framework/ArkTS/hmos-arkts-syntax-checker",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_arkts",
+      "category": "ArkTS",
+      "description": "HarmonyOS ArkTS 基础能力集使用规范。包含并发编程（TaskPool、Worker）、工具类（util、buffer、process）、数据结构（ArrayList、HashMap等）、XML处理、URI/URL处理、UUID生成等核心能力。Use when: (1) 多线程并发，(2) Worker线程，(3) 工具函数，(4) 数据结构，(5) XML解析，(6) 生成UUID。Triggers: 并发、Worker、taskpool、util、buffer、process、ArrayList、HashMap、xml、uri、url、UUID、uuid、generateRandomUUID。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_arkts",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "lang-syntax",
+      "category": "ArkTS",
+      "description": "HarmonyOS ArkTS 语言语法规范知识库，涵盖类型约束、类约束、函数约束、模块约束、声明式UI语法、状态管理等核心规则。When to use: 在实现任何 HarmonyOS ArkTS 代码时都必须使用本 Skill，包括 - 编写或生成 ArkTS 代码、 - 编写/修改 struct/@Component、 - 使用或接入组件、 - 查阅或校验 ArkTS 规范、 - 评审 ArkTS 代码、 - 排查与 ArkTS 约束相关的问题。 trigger：ArkTS、HarmonyOS、鸿蒙、struct、@Component、@State、@Prop、@Link、声明式UI、类型约束、核心约束。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/lang-syntax",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "component_basic_ui",
+      "category": "ArkUI",
+      "description": "HarmonyOS ArkTS 基础 UI 组件使用规范。包含 Text、Button、Image、Toggle、Slider、Progress、Checkbox、Radio、Rating、LoadingProgress、Marquee、Qrcode、Badge 等基础显示和交互组件。Use when: (1) 实现文本显示，(2) 实现按钮交互，(3) 实现图片展示，(4) 实现选择控件，(5) 实现进度显示。Triggers: Text、Button、Image、图片、文本、按钮、开关、滑块、进度条、复选框、单选、评分、加载、跑马灯、二维码、徽标。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/component_basic_ui",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "component_container",
+      "category": "ArkUI",
+      "description": "HarmonyOS ArkTS 容器组件使用规范。包含 Column、Row、Stack、Flex、List、Grid、Scroll、Swiper、Tabs、Refresh、RelativeContainer 等布局容器组件。Use when: (1) 实现页面布局，(2) 实现列表滚动，(3) 实现层叠布局，(4) 实现网格布局，(5) 实现轮播切换，(6) 下拉刷新，(7) 上拉加载更多。Triggers: Column、Row、Stack、Flex、List、Grid、Scroll、Swiper、Tabs、Refresh、布局、容器、列表、网格、滚动、堆叠、轮播、标签页、下拉刷新、上拉加载。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/component_container",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkui-longtake-transition",
+      "category": "ArkUI",
+      "description": "为鸿蒙(HarmonyOS)应用添加一镜到底转场效果。当用户提到一镜到底、转场动画、页面跳转动画、Navigation转场、卡片展开动画、图片查看大图动画、ezcustomtransition、自定义NavContentTransition、longtake、连续转场、沉浸式转场等关键词时，务必使用此skill。也适用于用户想要在鸿蒙应用中实现类似iOS的卡片展开、图片预览等流畅过渡效果的场景，即使他们没有明确提到\"一镜到底\"这个术语。",
+      "path": "04-development/01-application-framework/ArkUI/hmos-arkui-longtake-transition",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkui-mvvm-pattern",
+      "category": "ArkUI",
+      "description": "HarmonyOS ArkUI 的 MVVM 架构技能。适用于：(1) 项目分层设计 Model/ViewModel/View (2) 目录结构规划 (3) 组件职责与数据流规范 (4) 视图架构检视以及整改项目为MVVM模式等场景",
+      "path": "04-development/01-application-framework/ArkUI/hmos-arkui-mvvm-pattern",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkui-statemgt-migration",
+      "category": "ArkUI",
+      "description": "帮助开发者将ArkUI状态管理从V1迁移到V2。触发场景：(1) V1项目升级到V2；(2) 迁移@Component/@State/@Prop/@Link/@Observed/@ObjectLink/@Provide/@Consume/@Watch/@Reusable装饰器；(3) 迁移LocalStorage/AppStorage/PersistentStorage/Environment应用级状态；(4) 将ForEach/LazyForEach迁移到Repeat；(5) 解决animateTo在V2中的兼容问题；(6) 处理V1与V2混用场景；(7) 询问V1和V2装饰器对应关系或差异。",
+      "path": "04-development/01-application-framework/ArkUI/hmos-arkui-statemgt-migration",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_ui",
+      "category": "ArkUI",
+      "description": "HarmonyOS ArkUI UI能力集使用规范。包含 Router、PromptAction、动画、媒体查询、组件快照、拖拽等 UI 相关能力。Use when: (1) 系统提示弹窗，(2) 动画效果，(3) 响应式布局，(4) 组件截图。Triggers: promptAction、Toast、Dialog、动画、curves、animator、媒体查询、mediaquery、组件截图、@ohos.arkui。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_ui",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-ascf-assistant",
+      "category": "Atomic service",
+      "description": "辅助开发者使用 ASCF 工具链开发 HarmonyOS 元服务。触发场景：(1) 任何提到 ASCF 的问题；(2) 检测到项目包含 ascf/ascf_src 目录（即 ASCF 项目）；(3) 需要生成元服务睫毛图；(4) 将小程序转换为 ASCF 元服务；(5) 开发ASCF元服务页面/组件/平台能力（华为账号登录、隐私托管、授权、支付、分享、web-view、定位等）；(6) 将 Taro/uni-app 项目适配为 ASCF 元服务；(7) HarmonyOS 4及以下版本元服务适配与发布。",
+      "path": "04-development/01-application-framework/atomic-service/hmos-ascf-assistant",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-ascf-convert-taro",
+      "category": "Atomic service",
+      "description": "辅助开发者将 Taro 项目适配（转换）为 ASCF 元服务。当需要在 Taro（React/Vue）项目中支持 ASCF 元服务平台，或将现有 Taro 项目迁移到 ASCF 时使用此技能。提供完整的环境搭建、项目配置、package.json 脚本、常见问题排查和发布流程。",
+      "path": "04-development/01-application-framework/atomic-service/hmos-ascf-convert-taro",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-ascf-convert-uniapp",
+      "category": "Atomic service",
+      "description": "辅助开发者将 uni-app 项目适配(转换)为 ASCF 元服务。当需要使用 uni-app（HBuilderX 或 CLI）开发 HarmonyOS 元服务（MP-HARMONY），或将现有 uni-app 项目迁移(转换)到 ASCF 时使用此技能。提供完整的环境搭建、HBuilderX 开发流程、CLI 配置、常见问题排查和上架审核指引。",
+      "path": "04-development/01-application-framework/atomic-service/hmos-ascf-convert-uniapp",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-atomicservice-assistant",
+      "category": "Atomic service",
+      "description": "辅助鸿蒙开发者构建元服务（Atomic Service / 免安装应用）。只要用户提到元服务、atomicService、免安装、atomic service，或遇到以下任意问题，都必须使用本 Skill：创建/改造元服务项目、@atomicservice API 报错、配置隐私托管、设置可信域名、静默登录/免密登录、接入鸿蒙支付、包大小超限、AtomicServiceEnhancedWeb vs ArkWeb、Navigation 分包路由、睫毛图标、ICP备案、上架审核被拒。提供规范说明、合规检查清单、代码示例和上架最佳实践。",
+      "path": "04-development/01-application-framework/atomic-service/hmos-atomicservice-assistant",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-design-visual-mobile",
+      "category": "Design",
+      "description": "HarmonyOS 移动端页面视觉还原技能。基于仓库内设计规范文档与组件模板，生成符合 HarmonyOS Design Token 标准的高保真移动端 HTML 页面。触发场景：(1) 用户要求生成/还原 HarmonyOS 移动端页面 (2) 用户提供设计稿/截图/参考图，要求还原为 HarmonyOS 风格 HTML 页面 (3) 用户提到\"视觉还原\"/\"高保真页面\"/\"移动端页面\"并涉及 HarmonyOS，用于需要生成符合鸿蒙规范的移动端设计稿的场景",
+      "path": "02-design/mobile/hmos-design-visual-mobile",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-autobugfix",
+      "category": "DevEco tools",
+      "description": "自动执行鸿蒙应用 Bug 全流程修复，涵盖问题复现、根因分析、最小化代码修复、构建编译与运行验证。 依赖 deveco-mcp 提供 verify_ui/build_project/start_app 等能力。 使用场景：用户要求自动修复鸿蒙项目 Bug，或输入触发词：自动修复、auto fix、auto-fix、自动bug修复、autofix。 提供熔断保护、3 次构建重试上限、修复经验沉淀机制。",
+      "path": "07-tools/tools/deveco-studio/deveco-autobugfix",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-requirement-development",
+      "category": "DevEco tools",
+      "description": "覆盖鸿蒙/HarmonyOS/ArkTS 应用需求开发流程。在用户要落地新功能/新页面/新模块、PRD、端到端需求开发或鸿蒙应用开发时使用。不用于仅询问 API 语法用法、或未声明走完整链路的单文件 Bug 修复。用户意图模糊时先澄清是否需要端到端交付。",
+      "path": "07-tools/tools/deveco-studio/deveco-requirement-development",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-studio-codelinter",
+      "category": "DevEco tools",
+      "description": "对 HarmonyOS（鸿蒙）项目运行 DevEco Studio CodeLinter 静态代码检查，解读检查结果并提供修复建议。支持 ArkTS、TS、JS 文件，涵盖性能、安全、代码规范、正确性、跨设备适配、API 兼容性等规则集。当用户提到 codelinter、code linting、鸿蒙代码检查、鸿蒙应用质量、HarmonyOS 代码质量检查、静态代码分析、规范扫描、性能检查、安全扫描、代码审查、规则检查、lint 报告时使用。",
+      "path": "07-tools/tools/deveco-studio/deveco-studio-codelinter",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-studio-emulator",
+      "category": "DevEco tools",
+      "description": "HarmonyOS模拟器管理助手。**首次使用必须先运行 `node scripts/setup.js --force` 配置路径**，然后才能执行模拟器启动、应用安装调试等操作。包含完整的场景化设备控制命令（旋转、电源、截屏、音量、摇一摇、折叠）。支持Windows/macOS/Linux。触发词：模拟器、emulator、hdc、推包、安装应用、启动模拟器、构建推包。",
+      "path": "07-tools/tools/deveco-studio/deveco-studio-emulator",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-studio-hilog",
+      "category": "DevEco tools",
+      "description": "HarmonyOS日志分析助手，专注于hilog日志查看、崩溃日志分析、日志导出(-logZip)、手动日志分析。包含完整的hilog命令、hidumper堆栈转储、崩溃日志自动解压分析功能。支持Windows/macOS/Linux跨平台。",
+      "path": "07-tools/tools/deveco-studio/deveco-studio-hilog",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-studio-hvigor",
+      "category": "DevEco tools",
+      "description": "HarmonyOS应用构建工具助手，专注于使用Hvigor命令行工具构建HarmonyOS应用。包含完整的构建命令、参数说明、清理操作和CI/CD集成指南。触发词：hvigor、构建、编译、assembleHap、clean、build。",
+      "path": "07-tools/tools/deveco-studio/deveco-studio-hvigor",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-studio-verify",
+      "category": "DevEco tools",
+      "description": "HarmonyOS 设备验证工具 - 支持多设备类型验证（手机/折叠屏/平板）、应用安装、UI自动化操作、截图验证、日志收集和 Journey 测试框架。使用 hdc 命令行工具直接操作设备。适用于测试 HarmonyOS 应用在不同设备类型上的表现、验证 UI 在不同屏幕尺寸下的适配、执行 Journey 自动化测试、收集设备日志进行调试、构建产物发布前的完整验证。",
+      "path": "07-tools/tools/deveco-studio/deveco-studio-verify",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "harmony-build-fix",
+      "category": "DevEco tools",
+      "description": "Incrementally build and fix HarmonyOS project errors after code generation. Use when: (1) HarmonyOS ArkTS code was just generated and needs to compile, (2) user asks to build and fix HAR/HAP, run hvigorw and fix errors, (3) fix build errors in a HarmonyOS project. Triggers: build and fix, hvigorw assembleHar, assembleHap, fix build errors, 构建修复, 编译鸿蒙.",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/harmony-build-fix",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "harmony-verify",
+      "category": "DevEco tools",
+      "description": "HarmonyOS 设备验证助手 - 支持模拟器管理、获取应用UI结构、执行UI自动化操作、打开网址、截图验证和日志获取。使用 hdc 命令行工具直接操作设备。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/harmony-verify",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-ability-insight-intent-generator",
+      "category": "General",
+      "description": "Generates OpenHarmony intent decorator code from user requirements with automatic decorator selection. Use when the user mentions \"intent\", \"@InsightIntent\", or needs to integrate app functionality with AI entry points. Provides decorator selection decision tree, parameter validation, build config checking, and compilation verification with auto-fix.",
+      "path": "04-development/01-application-framework/ability/hmos-ability-insight-intent-generator",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_ability",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS AbilityKit 应用能力集使用规范。包含 UIAbility、Want、Router、权限管理、应用生命周期等应用核心能力。Use when: (1) 页面路由跳转，(2) 应用生命周期管理，(3) 权限申请，(4) Ability 启动与通信。Triggers: Ability、UIAbility、Want、Router、页面跳转、生命周期、权限、AbilityStage、@ohos.app.ability。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_ability",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_accessibility",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS AccessibilityKit 无障碍能力集使用规范。包含 AccessibilityExtensionAbility、accessibility、AccessibilityElement 等无障碍服务开发能力。Use when: (1) 开发无障碍服务，(2) 屏幕阅读，(3) 无障碍事件监听，(4) 辅助功能开发。Triggers: 无障碍、accessibility、AccessibilityExtensionAbility、屏幕阅读、辅助功能、GesturePath、GesturePoint。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_accessibility",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_avsession",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS AVSessionKit 音视频会话能力集使用规范。包含 avSession 媒体会话、AVCastPicker 投播组件等音视频会话管理能力。Use when: (1) 媒体会话管理，(2) 后台音乐控制，(3) 蓝牙耳机控制，(4) 多设备投播。Triggers: AVSession、avSession、AVCastPicker、媒体会话、后台音乐、投播、蓝牙控制、媒体控制。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_avsession",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_basic_services",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS BasicServicesKit 基础服务能力集使用规范。包含账号管理、剪贴板、电源管理、打印、下载上传、系统设置、日期时间、USB、壁纸、压缩等。Use when: (1) 剪贴板操作，(2) 下载上传文件，(3) 系统设置，(4) 电源管理。Triggers: 剪贴板、粘贴板、下载、上传、打印、电源、USB、壁纸、压缩、pasteboard、request、print、power、settings、usb、zlib。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_basic_services",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_connectivity",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS ConnectivityKit 连接能力集使用规范。包含蓝牙（BLE、A2DP、HFP等）、NFC、WiFi等连接能力。Use when: (1) 蓝牙通信，(2) BLE设备连接，(3) NFC读写，(4) WiFi管理。Triggers: 蓝牙、BLE、NFC、WiFi、连接、bluetooth、wifi、nfc、@ohos.bluetooth、@ohos.wifi。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_connectivity",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_data",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS ArkData 数据能力集使用规范。包含 Preferences、RelationalStore、KVStore、分布式数据、数据共享等数据存储能力。Use when: (1) 本地数据存储，(2) 关系型数据库，(3) 键值对存储，(4) 分布式数据同步。Triggers: 数据库、存储、Preferences、RdbStore、KVStore、分布式数据、preferences、relationalStore、@ohos.data。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_data",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_device",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS 设备能力集使用规范。包含 SensorServiceKit（传感器、振动）、LocationKit（定位）、NotificationKit（通知）、BackgroundTasksKit（后台任务）等设备相关能力。Use when: (1) 使用传感器，(2) 获取位置信息，(3) 发送通知，(4) 后台任务。Triggers: 传感器、振动、定位、GPS、通知、后台任务、sensor、vibrator、geolocation、notification、background。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_device",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_distributed",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS DistributedServiceKit 分布式能力集使用规范。包含分布式设备管理、设备发现、跨设备协同、设备认证等功能。Use when: (1) 设备发现，(2) 跨设备协同，(3) 分布式数据同步，(4) 设备认证。Triggers: 分布式、跨设备、设备发现、协同、distributed、deviceManager、多设备。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_distributed",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_file",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS CoreFileKit 文件能力集使用规范。包含文件读写、文件选择器、文件管理、云同步等文件操作能力。Use when: (1) 读写文件，(2) 选择文件/保存文件，(3) 文件管理，(4) 获取存储信息。Triggers: 文件操作、读写文件、文件选择、picker、fs、fileIo、存储、@ohos.file。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_file",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_form",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS FormKit 卡片能力集使用规范。包含 FormExtensionAbility、formProvider、formBindingData 等卡片开发核心能力。Use when: (1) 开发服务卡片，(2) 更新卡片数据，(3) 卡片生命周期管理，(4) 桌面小组件。Triggers: 卡片、FormExtensionAbility、formProvider、卡片服务、桌面小组件、Widget、formBindingData。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_form",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_graphics2d",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS ArkGraphics2D 2D图形能力集使用规范。包含 drawing 绑制、effectKit 特效、colorSpaceManager 色彩空间、displaySync 显示同步等2D图形绑制能力。Use when: (1) 自定义绑制，(2) Canvas绘图，(3) 图像特效，(4) 颜色管理。Triggers: drawing、Canvas、绑定、graphic、effectKit、颜色空间、colorSpace、displaySync、2D图形、自定义渲染。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_graphics2d",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_ime",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS IMEKit 输入法能力集使用规范。包含 InputMethodExtensionAbility、inputMethod、inputMethodEngine 等输入法开发和调用能力。Use when: (1) 开发输入法应用，(2) 管理系统输入法，(3) 输入法设置，(4) 自定义键盘。Triggers: 输入法、InputMethod、IME、键盘、inputMethod、InputMethodExtensionAbility、软键盘、输入法切换。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_ime",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_input",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS InputKit 多模态输入能力集使用规范。包含 KeyEvent 按键事件、MouseEvent 鼠标事件、TouchEvent 触摸事件、inputDevice 输入设备管理等能力。Use when: (1) 处理键盘事件，(2) 处理鼠标事件，(3) 处理触摸事件，(4) 输入设备管理。Triggers: KeyEvent、MouseEvent、TouchEvent、键盘、鼠标、触摸、inputDevice、onKeyEvent、按键事件、手势识别。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_input",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_ipc",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS IPCKit 进程间通信能力集使用规范。包含 RPC 远程过程调用、IPC 进程间通信、序列化反序列化等核心能力。Use when: (1) 跨进程通信，(2) IPC 数据传递，(3) 远程服务调用，(4) 进程间数据序列化。Triggers: IPC、RPC、跨进程、rpc、MessageSequence、RemoteObject、进程通信、Parcelable。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_ipc",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_localization",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS LocalizationKit 本地化能力集使用规范。包含 i18n 国际化、intl 格式化、resourceManager 资源管理等能力。Use when: (1) 多语言国际化，(2) 日期时间格式化，(3) 数字货币格式化，(4) 资源管理。Triggers: 国际化、多语言、i18n、intl、resourceManager、locale、本地化、翻译、格式化。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_localization",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_media",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS MediaKit、AudioKit、ImageKit、CameraKit 媒体能力集使用规范。包含音视频播放录制、图片处理、相机等功能。Use when: (1) 播放音视频，(2) 录制音视频，(3) 图片编解码，(4) 相机功能。Triggers: 音频、视频、播放器、录制、相机、图片处理、audio、media、camera、image、@ohos.multimedia。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_media",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_network",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS NetworkKit 网络能力集使用规范。包含 HTTP 请求、WebSocket、Socket 连接、网络状态检测、VPN 等网络相关能力。Use when: (1) 发送 HTTP 请求，(2) 实现 WebSocket 通信，(3) 检测网络状态，(4) 处理网络连接。Triggers: HTTP、fetch、axios、网络请求、WebSocket、Socket、网络状态、连接、VPN、@ohos.net.http。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_network",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_security",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS 安全能力集使用规范。包含 CryptoArchitectureKit 加密解密、UserAuthenticationKit 用户认证（指纹、人脸）、UniversalKeystoreKit 密钥库等安全功能。Use when: (1) 数据加密解密，(2) 用户认证，(3) 指纹/人脸识别，(4) 密钥管理。Triggers: 加密、解密、指纹、人脸、认证、密码、密钥、crypto、cipher、userAuth、fingerprint、face。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_security",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_telephony",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS TelephonyKit 电话能力集使用规范。包含电话拨打、短信发送、SIM卡管理、网络状态监听等功能。Use when: (1) 拨打电话，(2) 发送短信，(3) 读取SIM卡信息，(4) 监听通话状态。Triggers: 电话、拨打、短信、SMS、SIM卡、通话、telephony、call、sms、sim、@ohos.telephony。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_telephony",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_web",
+      "category": "HarmonyOS kits",
+      "description": "HarmonyOS ArkWeb Web组件能力集使用规范。包含 Web 组件、WebView 控制器、网页加载、JavaScript交互、Cookie管理等功能。Use when: (1) 加载网页，(2) WebView交互，(3) JS桥接，(4) 网页调试。Triggers: 网页、WebView、浏览器、HTML、JavaScript、Web组件、webview、@ohos.web.webview。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_web",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "harmony-learner",
+      "category": "Knowledge",
+      "description": "HarmonyOS 知识学习助手 - 基于已加载的本地知识，按需搜索云端文档，以结构化格式回答学习咨询类问题（新特性、版本差异、API 对比、概念解释、迁移指南等）。Triggers: 新特性, 版本差异, target区别, API对比, 最佳实践, 设计理念, 变更说明, 迁移指南, 有什么区别, 怎么理解, 是什么意思",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/harmony-learner",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkts-knowledge-retriever",
+      "category": "Knowledge",
+      "description": "Retrieve grounded ArkTS references for pure non-UI ArkTS work and ArkTS API usage. Use this skill whenever the user is writing, reviewing, testing, validating, running, or debugging ArkTS code and the answer should be backed by repository sources such as `docs/ArkTS-Language-Guide/`, `docs/ArkTS-API-Reference/`, the linter-derived `docs/linter/ArkTS_Syntax_Knowledge_From_Linter.md`, and the bundled lightweight lint tool docs `docs/linter/linter-cli.md` plus `linter-cli/` instead of model memory…",
+      "path": "04-development/01-application-framework/ArkTS/hmos-arkts-knowledge-retriever",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkui-develop-skill",
+      "category": "Knowledge",
+      "description": "ArkUI 代码开发助手，面向 HarmonyOS UI 开发，提供基于知识库的UI开发能力。内部调用 hmos-arkui-knowledge-retriever 的检索能力获取 API 证据。包含编码约束规则和最佳实践参考。触发场景：(1) 用户要求生成 ArkUI 页面或组件 (2) 用户在现有 .ets 工程上要求增删改功能 (3) 用户提供报错/截图要求修复 ArkUI 代码 (4) 用户提到 HarmonyOS/ArkUI/ArkTS/.ets (5) 用户提到状态管理、组件、布局等界面相关的开发任务，并且期望得到可运行代码。",
+      "path": "04-development/01-application-framework/ArkUI/hmos-arkui-develop-skill",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-arkui-knowledge-retriever",
+      "category": "Knowledge",
+      "description": "ArkUI 知识检索层，按问题语境自动路由到 ArkTS 声明式或 NDK(C-API)知识库进行精准检索，不涉及代码生成或修改。触发场景：(1) 用户查询 ArkUI/ArkTS API 用法、参数细节或版本支持 (2) 验证组件/装饰器的正确用法 (3) 排查 ArkUI 编译错误码或运行时异常 (4) 询问状态管理 V1/V2 差异或迁移 (5) 查询 NDK / Native / C-API 接口或头文件 (6) 其他 skill 调用检索获取 API 证据。",
+      "path": "04-development/01-application-framework/ArkUI/hmos-arkui-knowledge-retriever",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "knowledge_search",
+      "category": "Knowledge",
+      "description": "HarmonyOS 知识搜索能力。通过 MCP 工具 harmonyos_knowledge_search（按后缀匹配）搜索鸿蒙官方文档和知识库。Use when: (1) 用户对鸿蒙问题进行提问，(2) 现有知识不足以支撑 HarmonyOS 功能开发，(3) 需要查询最新的 API 文档或最佳实践，(4) 遇到未知错误或问题需要查找解决方案。Triggers: 搜索、查询、文档、API文档、官方文档、不知道、不了解、怎么用、如何实现、帮助文档。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/knowledge_search",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-avoid-areas",
+      "category": "Multi-device",
+      "description": "Handle HarmonyOS avoid-area adaptation through a declarative scene and resource index. Use when the task involves safe area expansion, status bar or navigation bar avoidance, notch or cutout handling, immersive full-screen layouts, or soft keyboard overlap handling.",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-avoid-areas",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-fold-state",
+      "category": "Multi-device",
+      "description": "HarmonyOS foldable-device adaptation skill for requirements, development, bug-fix, and verification phases. Activate when the task involves fold status detection, hover-mode split-screen layouts, crease avoidance, fold continuity, multi-fold form-factor mapping (e.g. F/M/G), inner/outer screen ratio differences, or fold-related issue remediation.",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-fold-state",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-hardware-access",
+      "category": "Multi-device",
+      "description": "Handle HarmonyOS hardware-capability adaptation through a declarative scene and resource index. Use when the task involves camera selection, camera rotation/stride/foldable adaptation, canIUse or SysCap checks, hardware fallback strategy, or multi-device hardware behavior differences.",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-hardware-access",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-interaction-methods",
+      "category": "Multi-device",
+      "description": "HarmonyOS应用多设备交互适配开发方案skill，提供触摸、鼠标、键盘、手写笔等多输入方式的交互方案和事件归一策略。当涉及触摸、鼠标、键盘、手写笔等设备的交互以及实现交互归一化、悬停效果、右键菜单、焦点导航、键盘快捷键、手写板输入和压感等功能时调用。",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-interaction-methods",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-natural-orientation",
+      "category": "Multi-device",
+      "description": "鸿蒙 HarmonyOS 屏幕方向与旋转相关的需求分析、开发实现、问题修复和功能验证。当任务涉及以下场景时使用：setPreferredOrientation、屏幕旋转(rotation)、屏幕方向(orientation)、自然方向、折叠屏方向、三折叠G态、follow_desktop、视频横竖屏切换、短视频自适应旋转、多设备方向策略、module.json5方向配置、方向监听、旋转检测、分屏旋转、折叠屏展开态方向、窗口方向设置、方向Bug修复。",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-natural-orientation",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-scenario-entry",
+      "category": "Multi-device",
+      "description": "Entry skill for HarmonyOS multi-device adaptation. Use when the task broadly concerns HarmonyOS multi-device adaptation, the task involves foldable device verification or when the correct scenario is still unclear. This skill classifies the request by phase and scenario type, then routes to one or more scenario files for screen and window size, fold state, avoid areas, interaction methods, natural orientation, hardware access, or HDS (UI Design Kit) enhanced components.",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-scenario-entry",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-multidevice-screen-window-size",
+      "category": "Multi-device",
+      "description": "HarmonyOS 多设备屏幕窗口尺寸适配。当任务涉及以下任一场景时必须调用：（1）比价与分屏：比价/比价场景/比价窗口/价格对比/创建新窗口/多窗口并行/双窗口；（2）平行视界与分栏：平行视界/EasyGo/easy_go.json/分栏效果/分栏布局/列表详情分栏/navigationSplit/routerSplit/Navigation分栏；（3）响应式与自适应布局：响应式布局/自适应布局/断点/GridRow/GridCol/WidthBreakpoint/HeightBreakpoint/重复布局/分栏布局/挪移布局/缩进布局；（4）窗口监听：windowSizeChange/窗口尺寸变化/布局未同步更新；（5）组件自适应：layoutWeight/Blank/aspectRatio/displayPriority/FlexWrap/拉伸/均分/隐藏/折行/缩放/占比/百分比宽度；（6）多设备适配：手机/平板/2in1/穿戴/折叠屏/双折/三折/大屏/横竖屏/密度/字体缩放/滚动延伸；（7）布局异常：截断/留白/溢出/遮挡/错位/对齐异常/GridRow不降列/断点不切换…",
+      "path": "03-solutions/HMOS-technologies/multi-device/hmos-multidevice-screen-window-size",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "deveco-native-flow",
+      "category": "Native",
+      "description": "三端一致开发流水线（HarmonyOS/Android/iOS）：analyse → plan → coding → build → verify。 自包含：内嵌 HarmonyOS ArkTS 知识路由，无需外部 skill 依赖。 支持正向开发和翻译开发两种模式。 执行流程： 1. 自动检测项目类型和平台 2. 执行 analyse 阶段生成跨端技术方案（读取 references/native-analyse/SKILL.md） 3. 逐端执行 plan 阶段生成实施计划（读取 references/native-plan/SKILL.md） 4. 逐端执行 coding 阶段完成编码（读取 references/native-coding/SKILL.md） 5. 构建验证 + UI 验证 Triggers: 三端开发, native pipeline, deveco pipeline, cross-platform, 跨端开发, 技术方案, 实施计划, 编码实施",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "native-analyse",
+      "category": "Native",
+      "description": "跨端技术方案分析专家 - 综合多端代码和知识库，产出全平台通用的技术方案，指导后续各端 plan 细化。 工作流程： 1. 需求澄清：brain-storm 式迭代问询，消除歧义 2. 现有流程分析：逐端读取代码/知识库，合并为统一业务流程全貌 3. 整体设计：目标架构图/交互图/数据流/前后台交互/技术选型 4. 子任务拆分：结合模块和代码，定义跨端通用契约和产出链 5. 三板斧：切流方案、监控方案、应急预案 6. 输出持久化：写入 tech-spec.md，等待用户确认 使用场景： - 多端功能开发前的整体技术方案设计 - 跨平台改动的统一架构规划 - 为各端 plan 提供通用技术输入 <example> user: \"/native-analyse 新增用户资料编辑功能，支持三端\" assistant: \"综合 iOS/Android/HarmonyOS 各端代码和知识库，产出跨端统一技术方案...\" </example>",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/native-analyse",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "native-build-fix",
+      "category": "Native",
+      "description": "原生多平台构建错误修复专家 - 增量修复 Android/iOS/HarmonyOS/KMP 项目的编译错误 工作流程： 1. 检测构建系统：根据平台参数或特征文件自动识别 2. 执行构建并捕获错误：运行平台对应的构建命令 3. 解析和分组错误：按 bundle → 文件路径 → 依赖层次排序 4. 逐个修复：Read → Diagnose → Fix → Re-build → Next 循环 5. 护栏机制：满足停止条件时暂停并报告 6. 输出摘要：修复数、剩余错误、恢复建议 使用场景： - 编码完成后构建失败，需要逐个修复编译错误 - 依赖升级后出现类型不兼容或 API 变更 - 跨平台共享层修改引发多平台编译失败 <example> user: \"/native-build-fix android\" assistant: \"检测到 Gradle 构建系统，执行 compileDebugKotlin，发现 3 个错误，开始逐个修复...\" </example>",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/native-build-fix",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "native-coding",
+      "category": "Native",
+      "description": "原生开发编码实施专家 - 基于 tech-spec 和 plan 产物，按子任务依赖链自下而上编码，每个子任务完成后自动构建验证。 工作流程： 1. 上下文恢复：检查已有编码进度和 plan-{platform}.md 2. 依赖分析：解析子任务依赖 DAG，拓扑排序生成自下而上执行顺序 3. 知识库加载：加载平台规范、架构文档、项目知识库 4. 逐子任务编码：读取上下文 → 脑暴新增设计 → 编码实施 → 构建验证 → 记录进度 5. 完成总结：输出变更文件清单、脑暴决策记录、构建状态 使用场景： - plan 确认后，按计划逐步编码实施 - 编码中断后恢复，继续未完成的子任务 - 多端逐平台编码（每次聚焦一个平台） <example> user: \"/native-coding\" assistant: \"读取 plan-{platform}.md，解析 6 个子任务，按依赖链排序后开始编码...\" </example>",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/native-coding",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "native-plan",
+      "category": "Native",
+      "description": "原生开发实施规划专家 - 基于跨端技术方案（tech-spec），生成端级细化实施计划，持久化到本地支持上下文恢复。 工作流程： 1. 上下文恢复：检测项目结构、已有计划和 tech-spec.md 2. 需求重述：引用 tech-spec 或独立分析（向后兼容） 3. 影响分析：有 tech-spec 时精简，聚焦当前端特有细节 4. 架构设计：有 tech-spec 时精简，聚焦端内实现架构 5. 变更流程：从 tech-spec 子任务出发，细化为端内文件级变更（保留端内流程图） 6. 分阶段拆解：按依赖关系拆分为可独立交付的阶段 7. 风险评估：有 tech-spec 时聚焦当前端特有风险 8. 等待确认：必须获得用户明确确认后才能开始编码 使用场景： - 有 tech-spec 时：基于跨端技术方案，细化单端实施计划 - 无 tech-spec 时：独立分析需求，生成完整实施计划（向后兼容） <example> user: \"/native-plan 新增交易确认弹窗，iOS 端\" assistant: \"读取 tech-spec.md，基于跨端技术方案细化 iOS 端实施…",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/native-plan",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "refactoring",
+      "category": "Refactoring",
+      "description": "Safe ArkTS code refactoring using LSP-powered reference finding. Use when: (1) renaming a function/class/variable, (2) moving code between files, (3) deleting code and verifying no remaining usage, (4) analyzing call graphs, (5) understanding symbol type info. Triggers: refactor, rename, find references, find usages, move function, safe delete, call hierarchy, impact analysis, 重构, 重命名, 引用查找, 调用链",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/refactoring",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-skill-reviewer",
+      "category": "Skill quality",
+      "description": "Review and validate Agent Skills for compliance with Claude Skills specification. Use when evaluating SKILL.md files, checking naming conventions, validating content structure, or ensuring skills follow best practices. Provides comprehensive analysis of metadata format, content organization, progressive disclosure, and actionable vs knowledge-based content.",
+      "path": ".hmos-skill-reviewer",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-apifault-analysis",
+      "category": "Stability",
+      "description": "DFX Skills，定位开发者问题。当用户输入错误码、错误信息、错误日志、执行失败或需要定位问题时使用。",
+      "path": "03-solutions/quality/stability/hmos-apifault-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-appfreeze-analysis",
+      "category": "Stability",
+      "description": "DFX Skills，自动分析 HarmonyOS / OpenHarmony Freeze（冻屏/卡死）故障日志，定位根因并输出完整证据链。 当用户提供完整的faultlog 文件和采样栈文件、询问应用无响应/卡死/ANR 问题的根因， 或上传包含 APPFREEZE / INPUT_BLOCK / LIFECYCLE_TIMEOUT 等关键字的日志时，必须使用此技能。 即使用户只说\"帮我分析这个 freeze 日志\"、\"应用卡死了是什么原因\"，也应立即触发此技能。 技能会按优先级逐步排除整机低内存、高负载、热限频等系统级异常，再深入分析线程堆栈、 Binder 通信链路、EventHandler 队列，最终输出唯一根因模块与修复建议。",
+      "path": "03-solutions/quality/stability/hmos-appfreeze-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-cppcrash-analysis",
+      "category": "Stability",
+      "description": "DFX Skills，分析 HarmonyOS/OpenHarmony 应用的 CppCrash（Native 层崩溃）故障日志，定位根因并给出修复建议。当用户提供 cppcrash 日志、粘贴 Native 崩溃堆栈、询问 SIGSEGV/SIGABRT/SIGILL/SIGBUS 崩溃原因、或上传含有信号值/寄存器/调用栈的故障日志时，必须使用此技能。即使用户只说\"帮我分析这个崩溃日志\"、\"应用崩溃了是什么原因\"、\"空指针崩溃怎么排查\"，也应立即触发此技能。",
+      "path": "03-solutions/quality/stability/hmos-cppcrash-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-jscrash-analysis",
+      "category": "Stability",
+      "description": "DFX Skills，分析 HarmonyOS/OpenHarmony 应用的 JS Crash（ArkTS/JS 层闪退）faultlogger 日志， 按 Reason、Error name、Error message、Error code 和 Stacktrace 定位根因并给出修复建议。 当用户提供包含 JS Crash、Reason:Error/TypeError/SyntaxError/ReferenceError/RangeError/ BusinessError/OutOfMemoryError/URIError/TerminationError/AggregateError、Error message、 Stacktrace、HybridStack、faultlogger、Cannot get SourceMap info 等字段的日志， 或询问 HarmonyOS 应用启动/点击后闪退、ArkTS 崩溃、JS Crash 怎么定位、OOM 闪退原因时， 必须使用此技能。即使用户只说“帮分析这个 JS Crash 日志”“应用闪退了是什么原因” “ArkTS 报错导…",
+      "path": "03-solutions/quality/stability/hmos-jscrash-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-jsleak-analysis",
+      "category": "Stability",
+      "description": "DFX Skills，分析 rawheap / heapsnapshot 聚类后的内存对象数据，识别疑似内存泄漏。当用户提供 .rawheap 文件、.heapsnapshot 文件、堆内存聚类报告、heap_cluster.mjs 输出结果，或询问\"哪些对象在泄漏\"\"哪些对象没有释放\"\"分析这份内存报告\"\"帮看下内存泄漏\"\"为什么内存涨这么多\"时，必须使用此技能。即使用户只贴出一段包含\"引用链 / Retainer Chain / Retained Size / 聚类 / GC Root\"的报告或表格，也应立即触发此技能。技能内置 rawheap_translator 与 heap_cluster 聚类脚本，能先把 .rawheap 转成 .heapsnapshot，再处理 .heapsnapshot 原始文件，并按 Detached、全局引用、闭包、异常大小四类规则进行根因定位，输出结构化的泄漏嫌疑清单。",
+      "path": "03-solutions/quality/stability/hmos-jsleak-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-memleak-analysis",
+      "category": "Stability",
+      "description": "Analyzes HarmonyOS source code (ArkTS, JS, C/C++) to detect memory leaks.Use when (1) Performing static code analysis to catch potential leaks before deployment, (2) Reviewing PRs involving complex UI lifecycles or NAPI implementations,(3) Developing NAPI bridges between ArkTS and C++. Maps code to official specifications and applies heuristics for NAPI reference management and lifecycle synchronization.",
+      "path": "03-solutions/quality/stability/hmos-memleak-analysis",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-scan-kit-defaultscan",
+      "category": "Stability",
+      "description": "帮助开发者快速接入华为 Scan Kit 默认界面扫码能力，在不需要完全自定义相机界面、闪光灯控制、变焦、对焦等高级功能时优先使用",
+      "path": "04-development/03-media/scan-kit/hmos-scan-kit-defaultscan",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_performance",
+      "category": "Stability",
+      "description": "HarmonyOS PerformanceAnalysisKit 性能分析能力集使用规范。包含 hilog 日志、hiAppEvent 事件、hidebug 调试、FaultLogger 故障日志、bytrace/hiTraceMeter 性能追踪等能力。Use when: (1) 日志输出，(2) 性能分析，(3) 故障排查，(4) 事件打点。Triggers: hilog、日志、性能、调试、debug、trace、FaultLogger、hiAppEvent、性能分析、打点。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_performance",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-instrument-test",
+      "category": "Testing",
+      "description": "在 HarmonyOS 应用/服务开发中执行模块的 Instrument Test（包括 ArkTS/JS 和 C++ 测试），支持运行、覆盖率统计、ASan 检测等模式，并可指定测试范围（模块、测试套件、单个用例）。",
+      "path": "05-test/hmos-instrument-test",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "hmos-local-test",
+      "category": "Testing",
+      "description": "在 HarmonyOS 应用/服务开发中执行模块的 Local Test（ArkTS/JS 单元测试），支持运行、覆盖率统计等模式，并可指定测试范围（模块、测试套件、单个用例）。",
+      "path": "05-test/hmos-local-test",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    },
+    {
+      "name": "kits_test",
+      "category": "Testing",
+      "description": "HarmonyOS TestKit 测试能力集使用规范。包含UI自动化测试、单元测试、测试驱动、组件查找和操作等功能。Use when: (1) 编写UI测试，(2) 自动化测试脚本，(3) 组件查找和操作，(4) 测试运行器。Triggers: 测试、UI测试、自动化、单元测试、uitest、Driver、testRunner。",
+      "path": "07-tools/tools/deveco-studio/deveco-native-flow/references/kits_test",
+      "source": "https://gitcode.com/HarmonyOS_Skills/harmonyos-agent-skills"
+    }
+  ]
+}

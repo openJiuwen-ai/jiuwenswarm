@@ -1,0 +1,63 @@
+name: 🐞 Bug report
+description: Create a report to help us reproduce and fix the bug
+title: "[Bug]: "
+labels: ["bug"]
+type: "Bug-Report"
+body:
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Checklist
+      options:
+        - label: I have searched for related issues but did not get the expected help.
+        - label: This bug has not been fixed in the latest version.
+        - label: Please note that if your bug description lacks corresponding environment information and a minimal reproducible demo, it will be difficult for us to reproduce and resolve the issue, which will reduce the possibility of receiving feedback, or even lead to the issue being closed.
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: 🐞 Detailed Description of the Problem
+      description: |
+        Please provide a clear and concise description of what the bug is.
+        
+        Please add a minimal example to help us reproduce the error by running the code. It is crucial that the code snippet is as concise (minimalized) as possible, so please take the time to simplify any irrelevant code to help us debug efficiently. Your example should be completely self-contained and not rely on any components that need to be downloaded. **Otherwise, this issue will be closed**
+        
+        Please paste or describe the results you observed. If you encountered an error, please paste the error message including the **complete** stack trace of the exception, and wrap the error information in ```` ```triple quotes blocks``` ````.
+      placeholder: |
+        A clear and concise description of the bug.
+
+
+            ```python
+            # Sample code to reproduce the problem
+            ```
+
+            ```
+            The error message you got, with the full traceback and the error logs.
+            ```
+    validations:
+      required: true
+  - type: textarea
+    attributes:
+      label: Detailed Environment Information Description
+      description:
+                   Please provide all necessary environment information, including details of all software, hardware, drivers, etc. **Otherwise, this issue will be closed**.
+      placeholder: "Including but not limited to the software and their versions, hardware, drivers that this issue depends on, please provide as detailed information as possible."
+    validations:
+       required: true
+  - type: textarea
+    attributes:
+      label: Additional Information
+      description: |
+                   Please provide any other information that helps.
+      placeholder: "Any other things you would like to mention."
+  - type: textarea
+    attributes:
+      label: Version Information
+      description: |
+                   If multiple versions are involved, please inform us of all corresponding version numbers to facilitate our reproduction of the issue.
+      validations:
+      required: true
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for your contribution 🎉!

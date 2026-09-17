@@ -1,0 +1,31 @@
+name: 📚 文档反馈
+description: |
+  反馈一个与openJiuwen/docs或openJiuwen/community相关的问题。
+title: "[Doc]: "
+labels: ["documentation"]
+type: "Documentation"
+
+body:
+- type: textarea
+  attributes:
+    label: 📚 文档问题描述
+    description: |
+      请清晰、简洁地描述在openJiuwen/docs或openJiuwen/community中，具体是哪部分内容存在问题，并提供对于文档的链接地址。
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: 改进与修复建议
+    description: |
+      请告诉我们，我们可以如何在这方面改进这份文档。
+- type: textarea
+  attributes:
+    label: 版本信息
+    description: | 
+      如果涉及多个版本，请悉数告知我们对应的版本号信息，以方便我们复现问题。
+  validations:
+    required: true
+- type: markdown
+  attributes:
+    value: |
+      感谢你的贡献 🎉!

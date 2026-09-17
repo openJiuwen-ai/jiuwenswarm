@@ -1,0 +1,1370 @@
+# 前端显示语言：zh（中文）/ en（英文），与 Web 界面语言切换同步
+preferred_language: zh
+
+# Agent 模式是否启用渐进式工具暴露（tool_search + deferred 工具）
+# true：只向模型暴露 direct 工具和 tool_search，其他工具按需搜索；
+# false：不挂载 ProgressiveToolRail，未显式声明 exposure 的工具按 direct 暴露。
+# ToolCard 自己显式声明的 exposure 优先级更高。
+progressive_tool_enabled: true
+
+# Web 首次模型配置引导；用户确认完成后会自动关闭，可通过侧栏问号再次打开
+setup_guide:
+  enabled: true
+
+# auto-recap：用户空闲5分钟后自动生成会话摘要（TUI 端）
+auto_recap:
+  enabled: true
+
+a2ui:
+  enabled: false
+  protocol_version: "0.8"
+  stream_validation_enabled: true
+  non_web_fallback_enabled: false
+  dev_smoke_tools_enabled: false
+
+symphony:
+  enabled: false
+  paths:
+    skills_root: ""
+    graph_dir: ""
+
+  fingerprint:
+    scan:
+      max_depth:
+    extraction:
+      workers: 4
+      batch_size: 2
+      body_limit:
+
+  build:
+    workers: 4
+    batch_size: 16
+    max_candidates_per_skill_relation: 32
+    require_consensus: false
+    min_edge_confidence: 0.5
+
+  evolution:
+    enabled: false  # true = 消费 Session 轨迹并使用动态 overlay
+
+  orchestration:
+    # fast is the default one-shot path; beam enables bidirectional search.
+    mode: fast
+    # Beam-only candidate count retained after each search round.
+    top_k: 3
+    max_depth: 4
+    min_edge_confidence: 0.5
+
+  skill_retrieval:
+    enabled: false
+    artifact_root: ${SYMPHONY_SKILL_RETRIEVAL_ROOT:-}
+    build:
+      branching_factor: 12
+      max_depth: 6
+      root_categories: ""
+      max_workers: 2
+      max_retries: 2
+      request_timeout_seconds: 420
+      classification_batch_limit: 32
+      discovery_seed: 42
+      postprocess_enabled: true
+      postprocess_max_passes: 1
+      postprocess_min_skills: 6
+      equivalence_enabled: false
+    retrieve:
+      compact_codes_enabled: false
+      flatten_tree: false
+      max_exposure_depth: 1
+
+# Auto Memory：对话结束后自动提取记忆，按项目隔离存储
+# 存储路径：~/.jiuwenswarm/projects/{sanitized-project-path}/memory/
+# 类似 Claude Code 的 auto-memory 功能
+auto_memory_enabled: false
+
+# 日志目录：~/.jiuwenswarm/agent/.logs/
+# gateway.log / channel.log / agent_server.log 按源码路径分流；full.log 为汇总。
+# level：未单独指定时的默认级别。console_level：控制台；可省略则用 level。
+# 环境变量 LOG_LEVEL 仅覆盖控制台级别（不覆盖各日志文件）。
+logging:
+  level: INFO
+  console_level: INFO
+  gateway: INFO
+  channel: INFO
+  agent_server: INFO
+  full: INFO
+
+memory:
+  # ============================================================
+  # 记忆系统配置
+  # ============================================================
+  # 两个正交开关：
+  #   1) engine — 挂载哪套 rail（内置 / 外接 / 都挂 / 都不挂）
+  #   2) mode   — 内置记忆的存储位置（local | cloud），不影响外接
+  #
+  # 外接 rail 的启用 = (engine ∈ {external, both}) AND (external.provider 非空)
+  # 内置 rail 的启用 = (engine ∈ {builtin, both})  AND (mode=local)
+  #                    AND modes.agent.memory.enabled=true
+  # ============================================================
+
+  mode: ${MEMORY_MODE:-local}            # 内置记忆存储位置：local | cloud
+  # 记忆引擎总开关：builtin | external | both | none
+  #   builtin  — 仅内置记忆（默认，兼容旧配置）
+  #   external — 仅外接记忆（LTM / Mem0 / OpenViking / 插件）
+  #   both     — 内置 + 外接并存
+  #   none     — 全部关闭
+  engine: ${MEMORY_ENGINE:-builtin}
+  forbidden_memory_definition:
+    enabled: false
+    patterns: []
+    description:
+      zh: "以下内容禁止记忆：（用户自行补充，如身高、体重、姓名等，建议用逗号分隔）"
+      en: "The following content is forbidden to remember: (To be supplemented by users, e.g., height, weight, name, etc. Separate items with commas recommended)"
+
+  # ------------------------------------------------------------
+  # 外接记忆（External Memory）
+  # ------------------------------------------------------------
+  # 启用方式（任选一种）：
+  #
+  # 【方案 1：YAML 直接改】
+  #   memory.engine: external   # 或 both
+  #   memory.external.provider: mem0   # 选一个：openjiuwen | mem0 | openviking | jiuwenmemory
+  #   # 然后在下方对应的 mem0/openjiuwen/openviking 子段填 api_key 或 endpoint
+  #
+  # 【方案 2：环境变量覆盖】
+  #   export MEMORY_ENGINE=external
+  #   export MEMORY_EXTERNAL_PROVIDER=mem0
+  #   export MEM0_API_KEY=sk-xxx
+  #
+  # 【关闭外接记忆】
+  #   把 memory.engine 改回 builtin 或 none；
+  #   或把 memory.external.provider 留空（两者任一生效即可禁用）
+  #
+  # 【挂载模式常见组合】
+  #   ┌─────────────┬───────────────┬──────────────────────────────────────┐
+  #   │ engine      │ provider      │ 效果                                 │
+  #   ├─────────────┼───────────────┼──────────────────────────────────────┤
+  #   │ builtin     │ *             │ 只挂内置（默认；外接即使填了也不挂） │
+  #   │ external    │ openjiuwen    │ 只挂外接 LTM                         │
+  #   │ external    │ mem0          │ 只挂外接 Mem0                        │
+  #   │ external    │ openviking    │ 只挂外接 OpenViking                  │
+  #   │ external    │ jiuwenmemory │ 只挂外接 Jiuwen（远程 agent-memory） │
+  #   │ external    │ <plugin-name> │ 只挂用户安装的插件                   │
+  #   │ both        │ 任一          │ 内置 + 外接同时挂（LLM 两套工具并列）│
+  #   │ none        │ *             │ 全关，任何记忆 rail 都不挂           │
+  #   └─────────────┴───────────────┴──────────────────────────────────────┘
+  #
+  # 说明：
+  # - 外接记忆 mode-independent：配置一次，agent 模式全程生效，
+  #   跨 config 热重载持久存活（保留 prefetch 缓存、电路断路器、会话状态）
+  # - 单 provider 策略：同一时刻 provider 只能选一个
+  # - 失败降级：provider 构建失败或网络异常不阻塞主流程
+  external:
+    # 选哪家 provider。空字符串 = 禁用外接（等价于 engine=builtin）
+    provider: ${MEMORY_EXTERNAL_PROVIDER:-}   # '' | openjiuwen | mem0 | openviking | lakebase | jiuwenmemory | <plugin-name>
+    # 数据隔离标识（所有 provider 共用）
+    user_id: ${MEMORY_USER_ID:-__default__}
+    scope_id: ${MEMORY_SCOPE_ID:-__default__}
+
+    # -- OpenJiuwen LTM（本地长期记忆：KV + 向量 + DB）--
+    # 生效条件：provider='openjiuwen'
+    # 依赖顶层 embed 段提供 embedding 配置（不单独配置 api_key）
+    openjiuwen:
+      kv_type: shelve                                    # shelve | in_memory | sqlite
+      kv_path: ${MEMORY_KV_PATH:-}                       # 默认 ~/.jiuwenswarm/memory/ltm/kv
+      vector_type: chroma                                # chroma
+      vector_persist_dir: ${MEMORY_VECTOR_DIR:-}         # 默认 ~/.jiuwenswarm/memory/ltm/chroma
+      db_type: sqlite
+      db_path: ${MEMORY_DB_PATH:-}                       # 默认 ~/.jiuwenswarm/memory/ltm/ltm.db
+
+    # -- Mem0（云端事实抽取+语义检索）--
+    # 生效条件：provider='mem0'
+    # 必填：api_key（从 mem0.ai 获取）
+    mem0:
+      api_key: ${MEM0_API_KEY:-}
+      user_id: ${MEM0_USER_ID:-jiuwenswarm-user}
+      agent_id: ${MEM0_AGENT_ID:-jiuwenswarm}
+      rerank: true                                       # 搜索结果重排序（更准但更慢）
+
+    # -- OpenViking（字节上下文数据库）--
+    # 生效条件：provider='openviking'
+    # 必填：endpoint 可访问
+    openviking:
+      endpoint: ${OPENVIKING_ENDPOINT:-http://127.0.0.1:1933}
+      api_key: ${OPENVIKING_API_KEY:-}
+      account: ${OPENVIKING_ACCOUNT:-root}
+      user: ${OPENVIKING_USER:-default}
+
+    lakebase:
+      api_key: ${LAKEBASE_API_KEY:-}
+      base_url: ${LAKEBASE_API_URL:-}
+      base_id: ${LAKEBASE_MEM_BASE_ID:-}
+      database_id: ${LAKEBASE_DATABASE_ID:-}
+
+    # -- Jiuwen Memory（agent-memory 引擎，server 或 sdk 两种接入）--
+    jiuwen:
+      # 接入方式：server = 调远程 HTTP 服务；sdk = 进程内装配内核直连后端
+      mode: ${JIUWEN_MEMORY_MODE:-server}            # server | sdk
+      tenant_id: ${JIUWEN_MEMORY_TENANT_ID:-default} # org 轴
+      infer_turns: true                               # true=对话提炼为去重事实；false=原文存储
+      save_assistant_turns: false                     # 是否一并存助手回复（默认只存用户轮）
+
+      # ---- server 模式专用（mode=server）----
+      server:
+        base_url: ${JIUWEN_MEMORY_BASE_URL:-http://127.0.0.1:8137}
+        api_key: ${JIUWEN_MEMORY_API_KEY:-}
+        read_timeout: 30.0
+        write_timeout: 120.0
+
+      # ---- sdk 模式专用（mode=sdk）----
+      # 进程内装配 agent-memory 内核，直连后端。
+      # 只需配三个后端的 type + url；LLM/embedding 复用 jiuwenswarm 顶层配置
+      # （models.defaults[is_default=true] + embed 段），不在此重复配。
+      # rerank/graph 等不开放，由 builder 写死关闭。
+      # 需要 agent-memory 已安装（pip install JiuwenMemory）。
+      sdk:
+        # KV 真源：sqlite（落盘文件） | redis（远程） | memory（进程内，重启丢）
+        kv_type: ${JIUWEN_KV_TYPE:-redis}
+        kv_url: ${JIUWEN_KV_URL:-redis://localhost:6379/0}   # sqlite=文件路径；redis=redis://host:port/db
+        # 向量索引：milvus（远程 ANN） | memory（进程内暴力余弦）
+        vector_type: ${JIUWEN_VECTOR_TYPE:-milvus}
+        vector_url: ${JIUWEN_VECTOR_URL:-http://localhost:19530}   # milvus=http://host:19530
+        # 全文/关系：elasticsearch（BM25） | memory（进程内倒排）
+        db_type: ${JIUWEN_DB_TYPE:-elasticsearch}
+        db_url: ${JIUWEN_DB_URL:-http://localhost:9200}   # elasticsearch=http://host:9200
+        # 可选覆盖（缺省复用顶层 embed 配置）
+        embedder_dim: ${JIUWEN_EMBEDDER_DIM:-1024}     # 须与向量库 dim 一致
+
+proactive_recommendation:
+  enabled: false                # 总开关
+  max_recommend_per_day: 10               # 每天最多推荐次数
+  max_rounds_per_tick: 20                # 每次 Tick 读取最近几轮对话
+
+models:
+  # 开启后实时拉取可用的免费模型，注意免费模型可能有限流、限窗口大小等限制。
+  enable_free_models: true
+  defaults:
+    - model_client_config:
+        api_base: ${API_BASE}
+        api_key: ${API_KEY}
+        model_name: ${MODEL_NAME}
+        client_provider: ${MODEL_PROVIDER}
+        # HTTP 请求超时（秒）。需严格 > stream_first_chunk_timeout，确保先触发应用层流超时（可被 ModelAnomalyDetectionRail 重试）
+        timeout: 360
+        # 流式：等待首个分片的最大时间（秒）。放宽以兼容 reasoning/思考模型思考期的静默
+        stream_first_chunk_timeout: 300
+        # 流式：分片之间的最大空闲等待时间（秒）
+        stream_idle_timeout: 120
+        verify_ssl: true
+        custom_headers: {}
+      model_config_obj:
+        temperature: 0.95
+      is_default: true
+  video:
+      model_client_config:
+        api_base: ${VIDEO_API_BASE}
+        api_key: ${VIDEO_API_KEY}
+        model_name: ${VIDEO_MODEL_NAME}
+        client_provider: ${VIDEO_PROVIDER}
+        timeout: 1800
+        verify_ssl: true
+      model_config_obj:
+        temperature: 0.95
+  audio:
+      model_client_config:
+        api_base: ${AUDIO_API_BASE}
+        api_key: ${AUDIO_API_KEY}
+        model_name: ${AUDIO_MODEL_NAME}
+        client_provider: ${AUDIO_PROVIDER}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
+  vision:
+      model_client_config:
+        api_base: ${VISION_API_BASE}
+        api_key: ${VISION_API_KEY}
+        model_name: ${VISION_MODEL_NAME}
+        client_provider: ${VISION_PROVIDER}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
+  image_gen:
+      model_client_config:
+        api_base: ${IMAGE_GEN_API_BASE}
+        api_key: ${IMAGE_GEN_API_KEY}
+        model_name: ${IMAGE_GEN_MODEL_NAME}
+        client_provider: ${IMAGE_GEN_PROVIDER}
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
+  # ---- AgentOS 模型（备份切换用，不参与主对话）----
+  # 列表结构，可配多个备份模型，凭证直接填在 YAML，无环境变量。
+  # 每个元素一个模型；model_name 为空 = 该条未配置，跳过不入缓存。
+  # 填入后通过 models.list 可见、可按名切换，但不带 is_default，
+  # 绝不抢主对话，仅在被显式选中时使用。
+  # 可配多条备份模型。填写约束：(model_name, api_base, api_key) 三元组唯一，
+  # 即不存在完全相同的两条；同名（base 或 key 不同）可共存，靠缓存
+  # {model_name}#{index} 区分。
+  # max_tokens：输入侧上下文窗口上限，映射到 core 的 ContextEngineConfig.context_window_tokens
+  #   （上下文压缩阈值，不发往厂商）。仅作用于选中的 agentos 条目，不影响 defaults：
+  #   build_model_from_entry 会把它的值挪到 ModelRequestConfig 的 extra 键
+  #   _agentos_ctx_window（随选中 Model 带入缓存），并从输出侧 kwargs 里 pop 掉，
+  #   绝不作为输出 token 上限发往厂商。_deep_agent_context_engine_config 从选中
+  #   Model 读该 extra 做覆盖，因此同名条目也能精确"选中哪个用哪个的 max_tokens"。
+  agentos:
+    - model_client_config:
+        api_base: ""
+        api_key: ""
+        model_name: ""
+        client_provider: ""
+        verify_ssl: true
+        timeout: 1800
+      model_config_obj:
+        temperature: 0.95
+        max_tokens: 131072
+
+# 外接 ACP Agent（stdio），供工具 acp_chat 使用。按需取消注释并填写；command/args 可指向任意兼容 ACP 的包（与 VS Code formulahendry.acp-client 预置列表一致）。
+acp_agents:
+   codex:
+     command: npx
+     args: ["@zed-industries/codex-acp@latest"]
+     cwd:
+     env:
+       OPENAI_API_KEY: ${OPENAI_API_KEY}   # 仅由此 env 注入子进程（不读 workspace .env / 父进程）
+
+# ============================================================
+# Agent 配置（可被 team.agents / modes.team.<name>.agents 引用）
+# ============================================================
+# 每个 agent 定义一个可复用的 agent 配置模板，支持以下字段（均可选）：
+#
+#   model:                  # 不配则继承 models.default
+#     model_client_config:
+#       client_provider: OpenAI
+#       api_base: https://api.deepseek.com
+#       api_key: sk-xxx
+#       timeout: 1800
+#       verify_ssl: true
+#       custom_headers: {}
+#     model_request_config:
+#       model: deepseek-chat
+#   skills:                 # 不配则不自动填充
+#     - skill_a
+#     - skill_b
+#   workspace:              # 默认 {"stable_base": true}
+#     stable_base: true
+#   max_iterations: 200     # 默认 200
+#   completion_timeout: 600.0  # 默认 600.0
+#
+# 示例：给不同 agent 配置不同模型和技能
+#   agent_coder:
+#     model:
+#       model_client_config:
+#         client_provider: OpenAI
+#         api_base: https://api.deepseek.com
+#         api_key: sk-xxx
+#       model_request_config:
+#         model: deepseek-chat
+#     skills:
+#       - code_review
+#       - unit_test
+#     max_iterations: 300
+#
+agents:
+  agent_leader:
+    workspace:
+      stable_base: true
+    max_iterations: 200
+    completion_timeout: 6000.0
+
+  agent_teammate:
+    workspace:
+      stable_base: true
+    max_iterations: 200
+    completion_timeout: 6000.0
+
+telemetry:
+  enabled: false                    # 总开关（环境变量 OTEL_ENABLED 优先）
+  exporter: otlp                    # otlp / console / none
+  endpoint: http://localhost:4317   # OTLP endpoint
+  protocol: grpc                    # grpc / http
+  headers: {}                       # 公共 OTLP headers，可被 traces/metrics 覆盖
+  log_messages: true                # 是否在 span event 中记录完整消息内容
+  service_name: jiuwenswarm
+  provider_factory:                 # 自定义 provider factory，格式：module:function
+  traces:
+    exporter:                       # trace exporter，默认回退到 telemetry.exporter
+    endpoint:                       # trace endpoint，默认回退到 telemetry.endpoint
+    protocol:                       # trace protocol，默认回退到 telemetry.protocol
+    headers: {}                     # trace headers，默认回退到 telemetry.headers
+  metrics:
+    exporter:                       # metrics exporter，默认回退到 telemetry.exporter
+    endpoint:                       # metrics endpoint，默认回退到 telemetry.endpoint
+    protocol:                       # metrics protocol，默认回退到 telemetry.protocol
+    headers: {}                     # metrics headers，默认回退到 telemetry.headers
+
+# ============================================================
+# Team 可观测性配置（OTel + Langfuse）
+# ============================================================
+# 与 telemetry 不同，team_observability 专门用于 TeamAgent 的
+# 可观测性追踪，包括 team/member/task/message 级别的 span。
+# 启用后会自动将 OtelTeamMonitorHandler 注册到 TeamAgent，
+# 将事件转为 OTel span 导出到 Langfuse / OTLP Collector。
+#
+# 前置条件：
+#   1. 启动 OTel Collector + Langfuse
+#   2. 在用户配置中设置 team_observability.enabled: true
+# ============================================================
+team_observability:
+  enabled: true                    # Team observability 总开关
+  exporter: file                    # otlp_grpc / otlp_http / file
+  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
+  service_name: jiuwenswarm         # 服务名称（OTel resource service.name）
+  sample_rate: 1.0                  # 采样率 (0.0-1.0)
+  redact_prompts: false             # 是否脱敏 prompt 内容
+  redact_completions: false         # 是否脱敏 completion 内容
+  attribute_value_max_length: 10240 # OTel attribute value 最大长度
+  langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
+  langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
+  traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
+  file_retention_days: 7            # file exporter 文件保留天数
+
+# ============================================================
+# 单 Agent / Coding Agent 可观测性配置
+# ============================================================
+# 与 team_observability 对应，但作用于非 team 的运行路径
+#（Runner.run_agent / Runner.run_agent_streaming，即 agent.* 与 code.* 模式）。
+# 启用后会调用 init_observability() 注册全局 OtelCallbackHandler，
+# 自动为 LLM 调用与工具调用生成 span（不含 team/member/task 级 span，
+# 那是 team 模式专属）。
+#
+# 注意：OTel 一个进程只允许一个全局 TracerProvider。若本进程内 team 与
+# agent 可观测性同时开启，先初始化的一方生效，另一方复用同一个 provider
+#（其 exporter/endpoint 会被忽略）。代码层面用 demand 状态保证
+# 关闭时不会误拆对方依赖的 provider。
+#
+# 前置条件（otlp 模式）：启动 OTel Collector + Langfuse。
+# ============================================================
+agent_observability:
+  enabled: false                    # 单 agent 可观测性总开关
+  exporter: file                    # otlp_grpc / otlp_http / file
+  endpoint: http://localhost:4317   # OTLP gRPC endpoint（file 模式不需要）
+  service_name: jiuwenswarm-agent   # 服务名称（OTel resource service.name）
+  sample_rate: 1.0                  # 采样率 (0.0-1.0)
+  redact_prompts: false             # 是否脱敏 prompt 内容
+  redact_completions: false         # 是否脱敏 completion 内容
+  attribute_value_max_length: 10240 # OTel attribute value 最大长度
+  langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
+  langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
+  traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
+  file_retention_days: 7            # file exporter 文件保留天数
+
+# ============================================================
+# Agent / Code 调试链路追踪（Debug Trace）配置
+# ============================================================
+# 控制非 team 模式（agent.* / code.*）的人类可读本地 dump。
+# 生效逻辑（resolve_debug_trace_settings）：
+#   debug_enabled = 请求带 /debug OR debug_trace.<mode>.enabled
+#   dump_enabled  = debug_enabled AND debug_trace.<mode>.dump_enabled != false
+# dump 写入 ~/.jiuwenswarm/.agent/traces/ 或 .code/traces/（按模式）。
+# 与 agent_observability（OTel span）相互独立：本块只管本地文本 dump，
+# OTel 接入在后续阶段。
+# ============================================================
+debug_trace:
+  agent:                            # agent 模式（agent.plan / agent.fast …）
+    enabled: false                  # 仅 agent 模式开关
+    dump_enabled: true              # debug 开启时是否写本地 dump
+    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    include_model_output: true      # 记录模型文本输出
+    include_reasoning: true         # 记录推理片段
+    include_tool_args: true         # 记录工具参数
+    include_tool_result: true       # 记录工具结果
+    include_subagent_flow: true     # 采集子 agent chunk 进同一 dump（内置 task / 自定义 / 后台子 agent）
+  code:                             # code 模式（code.normal / code.plan …）
+    enabled: false
+    dump_enabled: true
+    otel_enabled: false             # debug 时是否顺带 force-enable agent_observability（产 OTel span）
+    include_model_output: true
+    include_reasoning: true
+    include_tool_args: true
+    include_tool_result: true
+    include_subagent_flow: true     # 采集子 agent chunk 进同一 dump（内置 task / 自定义 / 后台子 agent）
+  limits:
+    tool_args_max_chars: 2000       # 工具参数截断阈值
+    tool_result_max_chars: 8000     # 工具结果截断阈值
+    generic_payload_max_chars: 4000 # 通用载荷/run input 截断阈值
+    max_model_output_chars:         # 空=不截模型输出；填数字则截断
+  redaction:
+    redact_prompts: false           # 脱敏 prompt/completion（密钥字段始终打码）
+    redact_completions: false
+
+react:
+  agent_name: main_agent
+  enable_task_loop: true
+  # 单轮任务循环等待上限（秒）；null 表示不限时，避免长任务被静默截断
+  completion_timeout: null
+  max_iterations: 100
+  model_name: ${MODEL_NAME}
+  skill_mode: all
+  # code_agent / research_agent 默认不启用；只有显式配置 enabled: true 才会显示并可被 task_tool 调用
+  # browser_agent: code.team 路径通过此 key 门控（单 agent 路径仍由 browser runtime 开关决定）
+  subagents:
+    statusline-setup:
+      enabled: true
+      max_iterations: 15
+    general_agent:
+      enabled: true
+    code_agent:
+      enabled: false
+      # max_iterations: 15
+    research_agent:
+      enabled: false
+      # max_iterations: 15
+    browser_agent:
+      enabled: true
+      # Browser Agent 独立轮次预算；未配置时默认 100。
+      # max_iterations: 100
+  answer_chunk_size: 500
+  stream_chunk_threshold: 50
+  stream_character_threshold: 2000
+  kv_cache_affinity_config:
+    enable_kv_cache_release: false
+    enable_kv_cache_affinity: false
+  # ============ 上下文引擎（上下文压缩/召回/会话记忆）============
+  context_engine_config:
+    enabled: true # 全局开关：false 时整个上下文引擎（含下列所有处理器）不生效
+    enable_openrouter_model_context_window_tokens: true # 从 OpenRouter 拉取模型的上下文窗口大小；false 时按内置模型表解析
+    # 显式覆盖上下文窗口 token 上限（正整数）；注释掉或留空则按模型自动解析
+    # context_window_tokens: 131072
+    enable_reload: true    # 卸载重载：开启后模型可通过 [[HANDLE:xxx]] 标记把已卸载的大消息原文拉回上下文
+
+    enable_context_debug: false     # 上下文压缩 debug 模式：开启后各处理器在阈值判断、片段切分、压缩重试、 前后对比等每个阶段落盘 JSONL 记录，便于排查压缩问题。关闭时零开销。默认关闭
+    # debug 记录目录；留空则按环境变量 OPENJIUWEN_CONTEXT_DEBUG_DIR，
+    # 再缺省落到 {workspace}/context/{session_id}_context/context_debug/
+    # context_debug_dir:
+
+    # 压缩召回：压缩器替换原始消息时，把原文分块归档到会话目录 compression_recall/，
+    # 模型可通过 [[COMPRESSION_RECALL: id=...]] 标记按需召回原文。默认关闭。
+    compression_recall_config:
+      enabled: false               # true 开启压缩召回（仅对对话/当前轮/轮次级三个压缩器生效）
+      chunk_size_tokens: 3000      # 归档分块大小（tokens）
+      chunk_overlap_tokens: 500    # 相邻分块重叠（tokens，须小于 chunk_size_tokens）
+
+    # 消息摘要卸载器：把超大的工具消息摘要化卸载（保留 [[OFFLOAD:...]] 索引，可重载）
+    message_summary_offloader_config:
+      protected_tool_names: ["read_file", "read_pdf"]  # 这些工具的输出保持原文，不卸载
+      add_message_threshold_ratio: 0.1      # 新增工具消息超过上下文窗口容量的该比例时，立即卸载
+      ttl_seconds: 300                      # 距上次模型请求空闲超过该秒数后，才允许做 TTL（闲时）卸载
+      ttl_context_occupancy_ratio: 0.5      # 上下文占用超过该比例时，才允许做 TTL 卸载
+      ttl_message_threshold_ratio: 0.05     # TTL 卸载时，单条工具消息超过窗口容量的该比例才被处理
+
+    # 会话记忆：压缩发生前把已提交的关键信息沉淀为 session memory 笔记，
+    # 后续作为压缩上下文块注入。默认关闭。
+    # 配置分两层：外层是压缩器本体（何时触发、笔记多大）；
+    # 内层 memory 是异步更新器（SessionMemoryManager，由独立 agent/模型后台更新笔记）的行为参数。
+    session_memory_compressor_config:
+      enabled: false               # true 开启会话记忆
+      trigger_context_ratio: 0.8   # 上下文占用达到该比例时使用更新的笔记替换上下文、建议sessionmemory的阈值要小于等于下面的compressor，开启是下面的compressor作为兜底设计
+      memory:
+        update_trigger_context_ratio: 0.1   # 上下文占用达到该比例时异步更新记忆
+
+    # 对话压缩器：整体对话历史超长时，把旧对话压缩成摘要
+    dialogue_compressor_config:
+      trigger_context_ratio: 0.8      # 上下文占用达到该比例时触发压缩
+      min_target_context_ratio: 0.1   # 压缩目标下限（占窗口比例）
+
+    # 当前轮次压缩器：单轮对话（含工具调用链）过长时压缩当前轮
+    current_round_compressor_config:
+      trigger_context_ratio: 0.8      # 上下文占用达到该比例时触发压缩
+      min_target_context_ratio: 0.1   # 压缩目标下限（占窗口比例）
+      keep_recent_messages: 4         # 保留最近消息数
+
+    # 轮次级别压缩器：多轮长对话的三轮渐进式压缩（最强力，最后触发）
+    round_level_compressor_config:
+      trigger_context_ratio: 0.8      # 上下文占用达到该比例时触发压缩
+      min_target_context_ratio: 0.1   # 压缩目标下限（占窗口比例）
+      keep_recent_messages: 4         # 保留最近消息数
+  # Skills 在线自演进配置
+  evolution:
+    skill_evolution: false     # true = 启用技能演进与创建（自动及手动）
+    auto_save: false           # true = 自演进审批无需用户点击自动通过
+  a2x_registry:
+    base_url: "http://127.0.0.1:8000"
+    timeout: 30.0
+    api_key: ""
+    # null uses the SDK default ownership store under the process HOME.
+    # Keep ownership persistent so teardown can call replace_agent_card safely.
+    ownership_file:
+    # Allowed values: teammate / teamleader
+    role: "teammate"
+    # When role=teammate, automatic blank-agent registration during agent
+    # initialization calls AsyncA2XRegistryClient.register_blank_agent(...).
+    # endpoint may be omitted in distributed mode; it defaults to
+    # team.transport.params.bootstrap_direct_addr when available.
+    dataset: "team_pool"
+    endpoint: ""
+
+tools:
+  - todo
+  - skill
+
+email_settings:
+  email_address: ${EMAIL_ADDRESS}
+  token: ${EMAIL_TOKEN}
+  smtp_server: ${SMTP_SERVER:-smtp.gmail.com}
+  port: ${EMAIL_PORT:-587}
+
+embed:
+  embed_api_key: ${EMBED_API_KEY}
+  embed_base_url: ${EMBED_API_BASE}
+  embed_model: ${EMBED_MODEL}
+
+task_memory:
+  # Set enabled: true to activate TaskMemoryService skill tools
+  # (experience_retrieve, experience_learn, experience_clear)
+  enabled: true
+  # Override defaults below if task memory uses a different model/key than the main agent
+  llm_model: ${TASK_MEMORY_LLM_MODEL}
+  embedding_model: ${TASK_MEMORY_EMBED_MODEL}
+  api_key: ${TASK_MEMORY_API_KEY}
+  api_base: ${TASK_MEMORY_API_BASE}
+  # Retrieval and summary algorithms: ACE | ReasoningBank | ReMe
+  retrieval_algo: ACE
+  summary_algo: ACE
+
+gateway:
+  # SessionMap 仅用于企业claw场景，如 feishu_enterprise 等通道：将平台身份映射为 Agent 的 session_id。
+  # 取值：per_chat_bot（默认，同 chat+bot 共享会话）, per_chat_bot_user（按 user 分会话）
+  session_map_scope: per_chat_bot
+
+  # AgentClient 配置 - Gateway 连接到 AgentServer 的方式
+  # type: websocket（默认） | yuanrong（直接函数调用） | agentos_router（AgentOS 扩展）
+  agent_client:
+    type: websocket # websocket | yuanrong | agentos_router
+    # yuanrong 函数模式配置下面参数
+    frontend_endpoint:
+    function_version_urn:
+    concurrency: 1
+    invoke_timeout_s: 60
+    # POST/DELETE /api/agent 超时（秒）；create 含镜像拉取/容器启动，建议明显大于 invoke_timeout_s
+    agent_timeout_s: 300
+    # create 请求的 namespace，默认 default
+    agent_namespace: default
+
+  # AgentOS Router Extension 配置；agent_client.type=agentos_router 时生效。
+  agentos:
+    creating_timeout_seconds: 60
+    # Agent create 时宿主机 workspace 父目录；实际路径为 {workspace_root}/{user_id}
+    workspace_root: "/home/agentos/users"
+    # Agent 复用 key 字段，默认 user_id + agent_type。
+    # 可选字段：user_id、agent_type、session_id（必须包含前两项）。
+    # 示例：加入 session_id 后同一用户每个会话独立 Agent。
+    agent_key_fields:
+      - user_id
+      - agent_type
+    registry:
+      # Agent OS 注册中心地址（空=本地 stub，不发 HTTP）。一体机默认 http://127.0.0.1:8000
+      endpoint:
+      request_timeout_s: 10
+      # 本机 nodeIP，供 POST /api/nodes/{node}/heartbeat
+      node:
+    # SSH 南向接入 YuanRong 实例（配合 channels.ssh 北向使用）：
+    # ssh -p <port> 'yr:instance:<instance_id>'@<frontend-host>
+    # 主机取自 agent_client.frontend_endpoint；<instance_id> 为 create agent 返回的实例 id。
+    # 客户端私钥目录（默认 /root/.ssh；若模板含 {user_id} 则按用户替换）。
+    ssh:
+      port: 2222
+      user_template: "yr:instance:{instance}"
+      connect_timeout_s: 30
+      client_keys_dir: "/root/.ssh"
+    auth_service_url: ${AGENTOS_AUTH_SERVICE_URL:-http://iam-agentos:8090}
+    timeout: ${AGENTOS_AUTH_TIMEOUT:-10}
+    # Web/TUI token 鉴权总开关；默认关闭。true 时创建 AgentOSAuthenticator 校验连接。
+    auth_enabled: false
+
+heartbeat:
+  # 心跳间隔（秒），默认 3600
+  every: 3600
+  # 心跳结果回传的 channel（如 "web"），
+  target: web
+  # 心跳生效时间段（本地时间），start <= now < end 时心跳生效
+  active_hours:
+    start: 08:00
+    end: 22:00
+
+# 执行护栏：工具循环检测与主动中断
+execution_guard:
+  # 模型异常检测护栏：重复输出/流式帧超时重试，以及连续相同工具调用压缩
+  model_anomaly_detection_rail:
+    # 总开关。关闭后不注册 ModelAnomalyDetectionRail
+    enabled: true
+    # 单次 invoke 内同一类异常最多重试次数；超过后把异常继续抛给上层
+    max_retries: 2
+    # 重复片段检测的最短长度，单位：字符；用于检测短句/短片段循环输出
+    repeat_min_pattern_chars: 2
+    # 重复片段检测的最长长度，单位：字符；过长片段不作为循环模式检测
+    repeat_max_pattern_chars: 64
+    # 同一片段至少连续重复多少次才认为疑似死循环
+    repeat_min_count: 6
+    # 多字符重复输出的最小总长度，避免正常短文本重复误触发
+    repeat_min_total_chars: 160
+    # 滑动检测窗口大小，单位：字符；仅保留最近窗口内容用于重复判断
+    repeat_window_chars: 1024
+    # 单字符连续重复阈值，用于检测分隔线等场景，默认较高以减少误判
+    single_char_repeat_count: 90
+    # 连续相同工具名+入参+返回值时，折叠重复轮次；第 N 次命中时兜底中止
+    tool_loop_compact:
+      enabled: true                        # 是否启用循环压缩（openjiuwen 默认关闭）
+      consecutive_threshold: 4             # 工具名+入参+返回值连续相同几轮触发压缩
+      bailout_threshold: 3                 # 第几次命中时抛异常（默认最多压缩 2 次）
+
+  # 断路器：检测工具重复/交替/无进展循环，critical 级会强制结束当次回答
+  circuit_breaker:
+    # 总开关。断路器会主动中断 agent（force-finish），默认关闭，需显式开启
+    enabled: false
+    # 相同工具+参数重复达到该次数时告警（仅日志，不中断）
+    warning_threshold: 10
+    # Ping-Pong 两工具交替且无进展达到该次数时中断
+    critical_threshold: 20
+    # 工具连续无进展（结果不变）达到该次数时兜底中断
+    global_breaker_threshold: 30
+    # 未知/错误工具连续调用达到该次数时停止重试并中断
+    unknown_tool_threshold: 10
+
+channels:
+  web:
+    send_file_allowed: true
+  feishu:
+    send_file_allowed: true
+    apps:
+      - name: 飞书默认应用
+      # 飞书应用配置
+        app_id:
+        app_secret:
+        encrypt_key:
+        verification_token:
+        allow_from:
+        enable_streaming: false
+        enabled: false
+        # 群聊数字分身（默认关闭）
+        group_digital_avatar: false
+        my_user_id: ""
+        bot_name: ""
+        enable_memory: false
+        # 飞书开放平台 API 域名前缀（留空走官方默认，支持国际版/私有化切换）
+        api_base: https://open.feishu.cn
+  feishu_enterprise:
+    # 企业飞书多 Bot 配置（每个 bot 会注册为独立 channel: feishu_enterprise:<app_id>）
+    # bot_a:
+    #   app_id:
+    #   app_secret:
+    #   encrypt_key:
+    #   verification_token:
+    #   allow_from: []
+    #   enable_streaming: true
+    #   chat_id:
+    #   enabled: false
+  xiaoyi:
+    send_file_allowed: true
+    apps:
+      - name: 小艺默认应用
+        # 华为小艺 A2A 配置
+        app_id:
+        mode: xiaoyi_channel
+        ak:
+        sk:
+        api_id:
+        push_id:
+        agent_id:
+        ws_url1: wss://hag.cloud.huawei.com/openclaw/v1/ws/link
+        ws_url2: wss://116.63.174.231/openclaw/v1/ws/link
+        enable_streaming: true
+        enabled: false
+        # xiaoyi_claw配置
+        uid:
+        api_key:
+        push_url: https://hag.cloud.huawei.com/open-ability-agent/v1/agent-webhook
+        file_upload_url:
+        # 小艺手机端插件tools调用，会添加相关tools到系统提示词
+        phone_tools_enabled: false
+  dingtalk:
+    # 钉钉应用配置
+    client_id:
+    client_secret:
+    allow_from: []
+    enabled: false
+    send_file_allowed: true
+    # API 域名前缀（留空走官方默认，支持私有化/国际版切换）
+    api_base: https://api.dingtalk.com      # 新版 v1.0 接口域名
+    oapi_base: https://oapi.dingtalk.com    # 旧版 media 接口域名
+  telegram:
+    # Telegram Bot 配置
+    # 从 @BotFather 获取 bot_token
+    bot_token:
+    # 用户白名单（Telegram user_id），为空则允许所有用户
+    allow_from: []
+    # 消息解析模式: Markdown, HTML, None
+    parse_mode: Markdown
+    # 群聊模式: mention(仅响应@提及), reply(仅响应回复), all(响应所有), off(禁用群聊)
+    group_chat_mode: mention
+    enabled: false
+  discord:
+    # Discord Bot 配置（当前版本仅支持参数管理）
+    # 可与用户私聊（DM）：仍受 allow_from 约束
+    # Bot Token（Discord Developer Portal -> Bot）
+    bot_token:
+    # Application ID（Discord Developer Portal -> General Information）
+    application_id:
+    # 目标服务器 ID（Guild ID）
+    guild_id:
+    # 目标频道 ID（Channel ID）
+    channel_id:
+    # 用户白名单（Discord user_id），为空则允许所有用户
+    allow_from: []
+    # 是否关闭私信功能
+    block_dm: false
+    enabled: false
+  slack:
+    # Slack Bot via Socket Mode. Tokens are created in the Slack app settings.
+    bot_token:
+    app_token:
+    # Slack user IDs allowed to use the bot. Empty allows all users.
+    allow_from: []
+    # Channel IDs allowed to mention the bot. Empty allows all channels.
+    allowed_channel_ids: []
+    # Optional fallback channel for messages without request metadata.
+    default_channel_id:
+    reply_in_thread: true
+    enabled: false
+  whatsapp:
+    # WhatsApp 配置（通过本地 Baileys bridge）
+    bridge_ws_url: ws://127.0.0.1:19600/ws
+    default_jid:
+    allow_from: []
+    enable_streaming: true
+    auto_start_bridge: false
+    bridge_command: node scripts/whatsapp-bridge.js
+    bridge_workdir:
+    enabled: false
+  wechat:
+    # 个人微信 iLink Bot API 配置
+    enable_streaming: false
+    base_url: https://ilinkai.weixin.qq.com
+    bot_token:
+    ilink_bot_id:
+    ilink_user_id:
+    allow_from: []
+    auto_login: true
+    qrcode_poll_interval_sec: 2.0
+    long_poll_timeout_sec: 45
+    backoff_base_sec: 1.0
+    backoff_max_sec: 30.0
+    credential_file: ~/.wx-ai-bridge/credentials.json
+    enabled: false
+  wecom:
+    # 企业微信 AI 机器人配置
+    bot_id:
+    secret:
+    ws_url: wss://openws.work.weixin.qq.com
+    allow_from: []
+    enable_streaming: true
+    send_thinking_message: false
+    enabled: false
+    send_file_allowed: true
+    # 群聊数字分身（默认关闭）
+    group_digital_avatar: false
+    my_user_id: ""
+    bot_name: ""
+    enable_memory: false
+  ssh:
+    # SSH channel -> MessageHandler（北向）；南向经 gateway.agent_client
+    # （type=agentos_router 时由 AgentOS Router 创建 YuanRong 实例并
+    # 以 yr:instance:<instance_id> 中继到 frontend）。
+    # 启用前请安装可选依赖: pip install "jiuwenswarm[ssh]" 或 uv sync --extra ssh
+    # 客户端: ssh -p <listen_port> user@<gateway-host>
+    # 南向连接参数见 gateway.agentos.ssh；agent_type 跟随用户当前值（3rdagent.switch）。
+    enabled: false
+    listen_host: "0.0.0.0"
+    listen_port: 2222
+    host_key_path: ~/.jiuwenswarm/config/ssh_host_key
+    relay_timeout_sec: 3600
+    auth:
+      # 公钥认证开关。true 时校验客户端公钥并签发临时密钥；false 为宽松认证。
+      enabled: true
+      # TUI 场景: 临时密钥有效期（秒）
+      ephemeral_key_ttl_sec: 300
+      # 临时密钥类型
+      ephemeral_key_type: "ssh-ed25519"
+      # 过期清理间隔（秒）
+      cleanup_interval_sec: 60
+
+# ========== 细粒度权限管控（tiered_policy）==========
+#
+# schema: tiered_policy（或兼容 v_cc / v4.2）时由 tiered_policy.evaluate_tiered_policy 求值；
+# permission_mode: normal|strict 决定 severity 映射，见 agentserver/permissions/tiered_policy.py。
+# severity（normal）：LOW/MEDIUM→allow，HIGH/CRITICAL→ask；strict 下 MEDIUM→ask、CRITICAL→deny。
+# rules[*].action: 可选显式动作 allow|ask|deny；配置后优先于 severity 映射，适合敏感文件读取、
+# 系统控制等不希望随 permission_mode 漂移的规则。
+# 内置参数规则 > 用户 rules；整工具存在则不用 defaults；详见 tiered_policy 模块说明。
+#
+# 三种动作: allow / ask / deny
+permissions:
+  enabled: false
+  schema: tiered_policy
+  permission_mode: normal
+
+  defaults:
+    "*": "allow"
+
+  tools:
+    bash: ask
+    mcp_exec_command: ask
+    create_terminal: ask
+    write: allow
+    write_file: allow
+    edit_file: allow
+    search_replace: allow
+    # ask_user 只向用户提问，不修改系统，自动放行避免权限中断阻塞问题选项呈现
+    ask_user: allow
+    write_memory: allow
+    edit_memory: allow
+    read_memory: allow
+    memory_search: allow
+    memory_get: allow
+    todo_create: allow
+    todo_insert: allow
+    todo_complete: allow
+    todo_remove: allow
+    todo_list: allow
+    # Coding Memory 工具权限
+    coding_memory_write: allow
+    coding_memory_edit: allow
+    coding_memory_read: allow
+    # 外接记忆工具（External Memory — OpenJiuwen / Mem0 / OpenViking）
+    ltm_search: allow
+    ltm_search_summary: allow
+    mem0_profile: allow
+    mem0_search: allow
+    mem0_conclude: allow
+    viking_search: allow
+    viking_read: allow
+    viking_browse: allow
+    viking_remember: allow
+    viking_add_resource: allow
+    mcp_free_search: allow
+    mcp_paid_search: allow
+    mcp_fetch_webpage: allow
+    cron_list_jobs: allow
+    cron_get_job: allow
+    cron_create_job: allow
+    cron_update_job: allow
+    cron_delete_job: allow
+    cron_toggle_job: allow
+    cron_preview_job: allow
+    acp_chat: ask
+
+  rules:
+    - id: shell_allow_dir
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "dir *"
+      severity: LOW
+    - id: shell_allow_ls
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "ls *"
+      severity: LOW
+    - id: shell_allow_pwd
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "pwd *"
+      severity: LOW
+    - id: shell_allow_cd
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "cd *"
+      severity: LOW
+    - id: shell_allow_echo
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "echo *"
+      severity: LOW
+    - id: shell_allow_cat
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "cat *"
+      severity: LOW
+    - id: shell_allow_type
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "type *"
+      severity: LOW
+    - id: shell_allow_head
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "head *"
+      severity: LOW
+    - id: shell_allow_tail
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "tail *"
+      severity: LOW
+    - id: shell_allow_git_status
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "git status *"
+      severity: LOW
+    - id: shell_allow_git_log
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "git log *"
+      severity: LOW
+    - id: shell_allow_git_diff
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "git diff *"
+      severity: LOW
+    - id: shell_allow_git_branch
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "git branch *"
+      severity: LOW
+    - id: shell_ask_rm
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "rm *"
+      severity: HIGH
+    - id: shell_ask_del
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "del *"
+      severity: HIGH
+    - id: shell_ask_rd
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "rd *"
+      severity: HIGH
+    - id: shell_ask_mv
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "mv *"
+      severity: HIGH
+    - id: shell_ask_cp
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "cp *"
+      severity: HIGH
+    - id: shell_ask_chmod
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "chmod *"
+      severity: HIGH
+    - id: shell_ask_chown
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: "chown *"
+      severity: HIGH
+    - id: shell_ask_sensitive_file_reads
+      tools: [bash, mcp_exec_command, create_terminal]
+      pattern: 're:(?i)(^|[\s;&|()])((cat|type|less|more|head|tail|grep|find|Get-Content|Select-String)\b[^;&|]*(id_rsa|id_ed25519|\.pem\b|\.pfx\b|\.key\b|\.kube/config|\.aws/(credentials|config)|\.npmrc\b|\.env(\.[A-Za-z0-9_-]+)?\b|authorized_keys|\.ssh/))'
+      severity: HIGH
+    # path_ask_* 已迁到 file_guard.paths（match: glob）；Pipeline A 不再重复匹配。
+    # - id: path_ask_ssh / path_ask_env → 见下方 file_guard.paths
+
+  # 数字分身 owner-scoped 权限（默认空，不生效）
+  owner_scopes: {}
+  deny_guidance_message: ""
+
+  # Native 路径层（agent-core FileGuard）：defaults + workspace 绑定运行时 workspace_root
+  # trusted_dirs（TUI 项目 cwd / /add-dir）由引擎运行时编译，不必写进 YAML。
+  file_guard:
+    enabled: true
+    defaults:
+      read: ask
+      write: ask
+      exec: ask
+    workspace:
+      read: allow
+      write: allow
+      exec: ask
+    paths:
+      - path: "**/.ssh/**"
+        match: glob
+        read: ask
+        write: ask
+        exec: ask
+      - path: "**/.env*"
+        match: glob
+        read: ask
+        write: ask
+        exec: ask
+
+  # Legacy external_directory：仅作兼容；启用上方 Native file_guard 后 "*" 不再驱动路径层。
+  # 新信任目录写入 file_guard.paths（/add-dir），勿再写本键具名 allow。
+  external_directory:
+    "*": "ask"
+
+browser:
+  # chrome_path can be a string or per-OS map.
+  # Example:
+  # chrome_path:
+  #   windows: "C:\\Users\\YOUR_USER\\AppData\\Local\\Google\\Chrome\\Application\\chrome.exe"
+  #   macos: "/Applications/Google Chrome.app"
+  #   linux: "/usr/bin/google-chrome"
+  chrome_path: ""
+  # true runs Chrome without a visible window; false opens a managed window.
+  headless: true
+
+updater:
+  enabled: true
+  # 桌面端版本检查源类型：gitcode / github
+  desktop_release_api_type: "gitcode"
+  repo_owner: openJiuwen
+  repo_name: jiuwenswarm 
+  release_api_url: ""
+  # Windows/macOS use .exe/.dmg; multiple candidates prefer a unique WorkSwarm name.
+  asset_name_pattern_linux: "JiuwenSwarm-{version}.tar.gz"
+  timeout_seconds: 20
+  pypi_mirror: "https://mirrors.aliyun.com/pypi"
+
+extensions:
+  # 扩展包搜索目录（字符串），用 ';' 分割多个目录：
+  # EXTENSION_DIRS="E:/a;D:/b"
+  extension_dirs: ${EXTENSION_DIRS:-jiuwenswarm/extensions}
+
+# ============================================================
+# Hooks 配置
+# 17 个事件类型，支持 command / prompt 两种 hook 类型
+# 字段说明：
+#   - disable_all_hooks: 全局关闭所有 hooks
+#   - <事件名>:
+#       - matcher: 匹配表达式（工具名|管道OR|正则|"*"）
+#       - hooks:
+#           - type: command | prompt
+#           - command / prompt: 执行的命令或 prompt 模板
+#             支持 $ARGUMENTS（hook input JSON）和 $TOOL_NAME 变量
+#           - timeout: 超时秒数（默认 30s）
+#           - shell: bash | sh | zsh（仅 command 类型）
+#           - model: LLM 模型名（仅 prompt 类型，空则用默认轻量模型）
+#           - status_message: 执行时显示的提示信息
+# 退出码语义（command 类型）：
+#   0 = 成功继续  2 = 阻止执行  其他 = 非阻塞错误
+# ============================================================
+hooks:
+  disable_all_hooks: false
+
+  # PreToolUse: 工具执行前拦截
+  # PreToolUse:
+  #   - matcher: "Write|Edit"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'about to write file'"
+  #         timeout: 30
+  #         shell: "bash"
+  #         status_message: "Running pre-write hook..."
+
+  # PostToolUse: 工具执行后拦截
+  # PostToolUse:
+  #   - matcher: "Bash"
+  #     hooks:
+  #       - type: prompt
+  #         prompt: "审查命令输出安全性: $ARGUMENTS"
+  #         timeout: 15
+
+  # SessionStart: 会话开始时
+  # SessionStart:
+  #   - matcher: "*"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'session started'"
+
+  # Stop: Agent 结束前
+  # Stop:
+  #   - matcher: "*"
+  #     hooks:
+  #       - type: command
+  #         command: "echo 'agent stopping'"
+
+
+mcp:
+  servers: []
+  # 示例：
+  # servers:
+  #   - name: playwright
+  #     enabled: true
+  #     transport: stdio
+  #     command: python
+  #     args: ["path/to/server.py", "--transport", "stdio"]
+  #     cwd: .
+  #     env:
+  #       LOG_LEVEL: INFO
+  #   - name: local-sse
+  #     enabled: false
+  #     transport: sse
+  #     url: http://127.0.0.1:9000/sse
+  #     headers:
+  #       Authorization: Bearer ${MCP_TOKEN}
+  #     timeout_s: 30
+
+
+modes:
+  # 一级模式 agent / code / team
+  agent:
+    # plan / fast 已合并为单一 agent 模式：记忆固定被动（is_proactive 开关已下线）。
+    memory:
+      enabled: true
+    rails:
+    tools:
+  code:
+    # 记忆开关 — 控制 CodingMemoryRail 和 ProjectMemoryRail 加载
+    # 关闭后，coding_memory_read/write/edit 工具不可用，项目记忆文件不自动加载
+    memory:
+      enabled: true
+
+    # 动态 Rails — 列表中出现的 = 启用；不出现的 = 不启用
+    # 固定 Rails（以下 Rails 已在代码中固定挂载，无需在此配置）：
+    #   RuntimePromptRail, ResponsePromptRail, JiuSwarmStreamEventRail, SecurityRail,
+    #   PermissionInterruptRail, SysOperationRail(FileSystemRail), LspRail,
+    #   AgentModeRail, StructuredAskUserRail, ConfirmInterruptRail, ContextProcessorRail
+    # 注意：ProjectMemoryRail, CodingMemoryRail 受 memory.enabled 开关控制，
+    #       开关关闭时不加载，开关开启时固定挂载。
+    rails:
+      - SkillUseRail
+      - WorktreeRail
+
+    # 动态 Tools — 列表中出现的 = 启用
+    # send_file_to_user 由运行时 _update_session_tools 注册，不在此配置
+    # coding_memory_read/write/edit 由 CodingMemoryRail 在 subagent 内部注册，不在此配置
+    tools:
+      - web_free_search
+      - web_fetch_webpage
+      - web_paid_search
+      - user_todos
+      - skill_toolkit
+      - skill_retrieval
+
+    embedding_config:
+      model_name: null
+      base_url: null
+      api_key: null
+  team:
+    jiuwen_team:
+      team_name: jiuwen_team
+      lifecycle: persistent
+      teammate_mode: build_mode
+      spawn_mode: inprocess
+      enable_swarmflow: false
+
+      # Team-level token budget ceiling for swarmflow runs.
+      # Unset / null = unbounded (no ceiling).  Set to a positive integer to
+      # cap total tokens across ALL swarmflow runs spawned by this team.
+      # swarmflow_budget: 500000
+
+      # Proactive reliability monitoring for team leaders and teammates.
+      reliability:
+        enabled: false
+        monitor_roles:
+          - leader
+          - teammate
+
+        detectors:
+          tool_error:
+            enabled: true
+            window_seconds: 60.0
+            rate_threshold: 5
+            consecutive_threshold: 3
+
+          repeat_tool:
+            enabled: true
+            history_size: 30
+            repeat_warn: 10
+            pingpong_warn: 10
+            loop_block: 20
+            global_stop: 30
+
+          model_error:
+            enabled: true
+            window_seconds: 120.0
+            rate_threshold: 3
+            consecutive_threshold: 2
+
+          output_length:
+            enabled: true
+            text_threshold: 32000
+            thinking_threshold: 16000
+
+          compaction:
+            enabled: true
+            window_seconds: 300.0
+            frequency_threshold: 3
+            drop_ratio: 0.3
+
+          pingpong:
+            enabled: true
+            min_volleys: 6
+
+        policy:
+          severity_actions:
+            low:
+              - observe_only
+            medium:
+              - report_leader
+            high:
+              - local_steer
+              - report_leader
+            critical:
+              - local_steer
+              - escalate_user
+
+        restart_intensity:
+          intensity: 5
+          period_seconds: 60.0
+
+      # SwarmFlow per-Leader concurrency caps (three-layer governor).
+      # Only effective when enable_swarmflow is true.
+      #   max_workflows:    L1 — max concurrent workflow runs under one leader (>=1).
+      #   agents_per_run:   L2 — per-run agent admission cap (optional; None uses
+      #                          the engine's default agents-per-run resolution).
+      #   max_agents_total: L3 — global agent admission across all runs (>=1).
+      swarmflow_concurrency:
+        max_workflows: 16
+        agents_per_run: null
+        max_agents_total: 64
+
+      # Enable the host-managed worktree capability used by team members and
+      # SwarmFlow agent calls with options.isolation="worktree".
+      worktree:
+        enabled: true
+
+      leader:
+        member_name: team-leader
+        display_name: 团队领导
+        persona: "天才项目管理专家，擅长任务分解和团队协调"
+
+      agents:
+        leader: $agent_leader
+
+      workspace:
+        enabled: true
+
+      transport:
+        type: inprocess
+
+      storage:
+        type: sqlite
+
+      # ============================================================
+      # Team 级共享记忆（TeamMemoryConfig）
+      # ============================================================
+      # 与常规 Agent 的 per-session 记忆不同，Team 记忆是一个独立的、
+      # 跨成员的共享记忆系统，由 TeamMemoryManager 统一管理。
+      #
+      # 启用后，每个 Team 成员的记忆操作不再是孤立的个人记忆，
+      # 而是读写同一份 TEAM_MEMORY.md（位于 team_memory_dir 下）。
+      # 这允许成员之间通过记忆文件共享上下文（如项目背景、决策记录等）。
+      # ============================================================
+      memory:
+        # ---------- 总开关 ----------
+        # 关闭时 TeamMemoryManager 不创建，成员记忆回退到各自独立的 MemoryRail
+        enabled: false
+
+        # ---------- 场景标识 ----------
+        # "general" — 通用场景，记忆提取 prompt 偏重项目背景与决策
+        # "coding"  — 编码场景，记忆提取 prompt 偏重技术方案与架构决策
+        scenario: "general"
+
+        # ---------- 自动提取 ----------
+        # true  — 每轮对话结束后，后台自动总结并写入 TEAM_MEMORY.md
+        # false — 仅当 LLM 主动调用记忆工具时才写入
+        # 仅在 lifecycle=persistent 时生效；temporary 团队不触发自动提取
+        auto_extract: true
+
+        # ---------- 共享记忆 ----------
+        # true  — 所有成员共享同一份 TEAM_MEMORY.md（默认）
+        # false — 每个成员维护独立记忆文件（按 member_name 分目录）
+        shared_memory: true
+
+        # ---------- 记忆注入模式 ----------
+        # 控制记忆内容如何注入到每个成员的 system prompt 中：
+        #   "proactive" — 每轮对话开始时主动注入最新记忆摘要
+        member_memory_prompt_mode: "proactive"

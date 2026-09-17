@@ -1,0 +1,162 @@
+/* Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved. */
+
+/* A2UI Component Styles */
+
+body .a2ui-surface,
+body .a2ui-surface *,
+body .a2ui-surface *::before,
+body .a2ui-surface *::after {
+  box-sizing: border-box;
+}
+
+body .a2ui-surface {
+  max-width: 100%;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+body .a2ui-surface section {
+  max-width: 100%;
+  min-width: 0;
+}
+
+body .a2ui-surface button,
+body .a2ui-surface [role="button"] {
+  max-width: 100%;
+  min-width: 2.5rem;
+  white-space: normal;
+  overflow-wrap: anywhere;
+}
+
+/* ─── Horizontal scrollable containers (utility class) ─── */
+.a2ui-horizontal-scroll {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: #888 #f1f1f1;
+}
+
+.a2ui-horizontal-scroll::-webkit-scrollbar {
+  height: 8px;
+}
+
+.a2ui-horizontal-scroll::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 4px;
+}
+
+.a2ui-horizontal-scroll::-webkit-scrollbar-thumb {
+  background: #888;
+  border-radius: 4px;
+}
+
+.a2ui-horizontal-scroll::-webkit-scrollbar-thumb:hover {
+  background: #555;
+}
+
+/* ─── Row component ─── */
+/* Use body prefix to exceed library specificity (.a2ui-surface .a2ui-row) */
+
+body .a2ui-surface .a2ui-row {
+  max-width: 100%;
+  min-width: 0;
+}
+
+body .a2ui-surface .a2ui-row > section {
+  max-width: 100%;
+  min-width: 0;
+  flex-wrap: nowrap;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scrollbar-width: thin;
+  scrollbar-color: #888 #f1f1f1;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Distribution alignment (keep data-attribute selectors) */
+body .a2ui-surface .a2ui-row[data-distribution="spaceBetween"] > section {
+  justify-content: space-between;
+}
+
+body .a2ui-surface .a2ui-row[data-distribution="spaceAround"] > section {
+  justify-content: space-around;
+}
+
+body .a2ui-surface .a2ui-row[data-distribution="spaceEvenly"] > section {
+  justify-content: space-evenly;
+}
+
+body .a2ui-surface .a2ui-row[data-distribution="center"] > section {
+  justify-content: center;
+}
+
+body .a2ui-surface .a2ui-row[data-distribution="end"] > section {
+  justify-content: flex-end;
+}
+
+/* Item alignment */
+body .a2ui-surface .a2ui-row[data-alignment="center"] > section {
+  align-items: center;
+}
+
+body .a2ui-surface .a2ui-row[data-alignment="end"] > section {
+  align-items: flex-end;
+}
+
+body .a2ui-surface .a2ui-row[data-alignment="stretch"] > section {
+  align-items: stretch;
+}
+
+/* ─── Horizontal List component ─── */
+/* Override library's scrollbar-width: none on the inner <section> */
+
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] {
+  max-width: 100%;
+  min-width: 0;
+}
+
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section {
+  max-width: 100%;
+  min-width: 0;
+  overflow-x: auto !important;
+  overflow-y: hidden;
+  padding-bottom: 8px;
+  scrollbar-width: thin !important;
+  scrollbar-color: #888 #f1f1f1;
+  -webkit-overflow-scrolling: touch;
+}
+
+/* Override library's flex: 1 0 fit-content and max-width on List children */
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section > * {
+  flex: 0 0 auto;
+  max-width: none;
+}
+
+/* ─── WebKit scrollbar styles (Edge / Chrome) ─── */
+body .a2ui-surface .a2ui-row > section::-webkit-scrollbar,
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section::-webkit-scrollbar {
+  height: 8px;
+}
+
+body .a2ui-surface .a2ui-row > section::-webkit-scrollbar-track,
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section::-webkit-scrollbar-track {
+  background: rgba(0, 0, 0, 0.08);
+  border-radius: 999px;
+}
+
+body .a2ui-surface .a2ui-row > section::-webkit-scrollbar-thumb,
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section::-webkit-scrollbar-thumb {
+  background: rgba(0, 0, 0, 0.28);
+  border-radius: 999px;
+}
+
+body .a2ui-surface .a2ui-row > section::-webkit-scrollbar-thumb:hover,
+body .a2ui-surface .a2ui-list[data-direction="horizontal"] > section::-webkit-scrollbar-thumb:hover {
+  background: rgba(0, 0, 0, 0.38);
+}
+
+/* ─── TextField obscured type (password) ─── */
+.a2ui-textfield input[type="password"] {
+  font-family: 'password';
+  letter-spacing: 0.125em;
+}

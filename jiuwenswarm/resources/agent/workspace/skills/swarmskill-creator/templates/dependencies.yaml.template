@@ -1,0 +1,52 @@
+# dependencies.yaml — Swarm Skill startup dependency check
+#
+# Agent reads this file in SKILL.md Workflow Step 0 (pre-flight).
+# Each entry is checked. Results are reported to the user, who decides go/no-go.
+#
+# THIS FILE IS POPULATED FROM STAGE 2 AUTO-MATCHING RESULTS.
+# Do NOT fill it from scratch — it codifies what was discovered during the
+# local scan in Stage 2 (and optional post-generation community enrichment).
+#
+# RULES:
+# - Both `skills:` and `tools:` segments are MANDATORY (write `[]` if empty).
+# - Empty lists are valid ONLY when the auto-matching scan confirms no matches
+#   — they signal "checked, confirmed none", which is different from "never looked".
+# - Every entry in `roles[].skills` and `roles[].tools` (in SKILL.md frontmatter)
+#   MUST appear here. The validator script enforces this consistency.
+# - `purpose` is shown to the user when the dep is missing — write user-facing
+#   prose explaining the consequence, not internal jargon.
+
+skills:
+  # --- Local skills (discovered in Stage 2 auto-matching) ---
+  - name: <skill-name-1>
+    source: local                       # found in .claude/skills/ or .cursor/skills/ locally
+    required: true                       # true = run will likely fail without; false = degraded mode.
+    purpose: <one-line user-facing explanation of what this skill does for the team>
+
+  # --- Community skills (added via post-generation community enrichment, user-authorized) ---
+  - name: <skill-name-2>
+    source: "https://github.com/<org>/<repo>"   # community URL where this skill was installed from
+    required: false
+    purpose: <e.g., "Visualize cross-module dependency impact (skipped if unavailable)">
+
+  # Use `skills: []` ONLY after Stage 2 auto-matching confirms no skill matches for any role.
+
+tools:
+  # --- Local tools (probed in Stage 2 auto-matching via `where`/`which`) ---
+  - name: <tool-name-1>                 # e.g., gh, rg, python, jq, curl, docker
+    required: true
+    purpose: <one-line user-facing explanation>
+
+  - name: <tool-name-2>
+    required: false
+    purpose: <one-line user-facing explanation>
+
+  # Use `tools: []` ONLY after Stage 2 auto-matching confirms no tool matches for any role.
+
+# EXAMPLES OF VALID EMPTY SEGMENTS (after auto-matching yields no matches):
+#
+# skills: []
+# tools: []
+#
+# An empty list signals "checked, confirmed no dependency of this type" — DIFFERENT
+# from omitting the segment, which is a spec violation.

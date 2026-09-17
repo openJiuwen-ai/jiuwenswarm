@@ -1,0 +1,30 @@
+name: 📚 Documentation
+description: Report an issue related to openJiuwen/docs or openJiuwen/community
+title: "[Doc]: "
+labels: ["documentation"]
+type: "Documentation"
+
+body:
+- type: textarea
+  attributes:
+    label: 📚 Documentation Issue Description
+    description: |
+      Please clearly and concisely describe which specific part of the content in openJiuwen/docs or openJiuwen/community is problematic, and provide the link address to the relevant document.
+  validations:
+    required: true
+- type: textarea
+  attributes:
+    label: Improvement and Fix Suggestions
+    description: |
+      Please tell us how we can improve this document in this regard
+- type: textarea
+  attributes:
+    label: Version Information
+    description: |
+      If multiple versions are involved, please inform us of all corresponding version numbers to facilitate our reproduction of the issue
+  validations:
+    required: true
+- type: markdown
+  attributes:
+    value:
+      Thanks for your contribution 🎉!

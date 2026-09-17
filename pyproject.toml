@@ -3,53 +3,205 @@ requires = ["setuptools>=61.0"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "jiuwenclaw"
-optional-dependencies = { dev = ["pyinstaller>=6.0.0"] }
-version = "0.1.5"
-description = "JiuwenClaw"
+name = "workswarm"
+version = "0.2.5.beta1"
+description = "WorkSwarm"
 requires-python = ">=3.11,<3.14"
+license = { text = "Apache-2.0" }
+classifiers = [
+    "License :: OSI Approved :: Apache Software License",
+]
 dependencies = [
-    "chromadb>=1.5.0",
-    "ruamel.yaml>=0.18.0",
-    "lark-oapi>=1.5.3",
-    "loguru>=0.7.3",
-    "openjiuwen==0.1.7",
-    "pip==26.0.1",
-    "pgvector>=0.4.2",
-    "websockets>=12.0",
-    "psutil>=7.2.2",
-    "aiosqlite>=0.22.1",
-    "croniter>=2.0.0",
-    "dingtalk-stream>=0.24.3",
-    "python-socks>=2.8.1",
-    "greenlet>=3.3.2",
+    "a2ui-agent-sdk==0.2.1",
+    "chromadb>=1.5.0,<2",
+    "ruamel.yaml>=0.18.0,<0.20",
+    "lark-oapi>=1.5.3,<2",
+    "loguru>=0.7.3,<0.8",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@develop",
+    "pgvector>=0.4.2,<0.5",
+    "portalocker>=3.2.0,<4",
+    "websockets>=12.0,<16",
+    "psutil>=7.2.2,<8",
+    "aiosqlite>=0.22.1,<0.23",
+    "croniter>=2.0.0,<7",
+    "python-telegram-bot>=20.0,<23",
+    "discord.py>=2.4.0,<3",
+    "slack-bolt>=1.30.0,<2",
+    "dingtalk-stream>=0.24.3,<0.25",
+    "wecom-aibot-sdk>=1.0.5,<2",
+    "python-socks>=2.8.1,<3",
+    "greenlet>=3.3.2,<4",
+    "skillnet-ai==0.0.16",
+    "mutagen>=1.47.0,<2",
+    "google-genai>=1.68.0,<2",
+    "opentelemetry-api>=1.28.0,<2",
+    "opentelemetry-sdk>=1.28.0,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<2",
+    "sqlite-vec==0.1.6",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "python-multipart>=0.0.31,<0.1",  # CVE-2026-42561 MultipartParser DoS
+    # Transitive dep floors for known CVEs (prevent resolve downgrade)
+    "lxml>=6.1.0,<7",  # CVE-2026-41066 XXE
+    "pillow>=12.2.0,<13",  # CVE-2026-40192 FITS gzip bomb DoS
+    "pydantic>=2.0,<3.0",
+    "pyyaml>=6.0,<7",
+    "httpx[socks]>=0.27,<1.0",
+    "json-repair>=0.30.0,<0.60",
+    "gitcode-api>=1.2.20,<2",
+    "faiss-cpu>=1.7.0,<2",
+    "numpy>=1.24.0,<3",
+    "tree-sitter>=0.25.0,<0.26.0",
+    "tree-sitter-bash>=0.25.0,<0.26.0",
+    "playwright>=1.40,<2",
+    "uv>=0.4.0,<0.13",
+]
+
+[project.optional-dependencies]
+# HarmonyOS-compatible reduced dependencies;
+# excludes packages with C extensions or system deps unavailable on HarmonyOS.
+# Usage: pip install jiuwenswarm --no-deps, then install each dep in this group manually,
+# or reference this list in a deployment script / requirements-harmony.txt.
+harmony = [
+    "a2ui-agent-sdk==0.2.1",
+    "ruamel.yaml>=0.18.0,<0.20",
+    "lark-oapi>=1.5.3,<2",
+    "loguru>=0.7.3,<0.8",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@develop",
+    "pgvector>=0.4.2,<0.5",
+    "aiosqlite>=0.22.1,<0.23",
+    "croniter>=2.0.0,<7",
+    "python-telegram-bot>=20.0,<23",
+    "discord.py>=2.4.0,<3",
+    "slack-bolt>=1.30.0,<2",
+    "dingtalk-stream>=0.24.3,<0.25",
+    "wecom-aibot-sdk>=1.0.5,<2",
+    "python-socks>=2.8.1,<3",
+    "greenlet>=3.3.2,<4",
+    "skillnet-ai==0.0.16",
+    "mutagen>=1.47.0,<2",
+    "google-genai>=1.68.0,<2",
+    "opentelemetry-api>=1.28.0,<2",
+    "opentelemetry-sdk>=1.28.0,<2",
+    "opentelemetry-exporter-otlp-proto-grpc>=1.28.0,<2",
+    "opentelemetry-exporter-otlp-proto-http>=1.28.0,<2",
+    "fastapi>=0.115,<1.0",
+    "uvicorn[standard]>=0.30,<1.0",
+    "httptools>=0.6.3,<0.8",
+    "python-multipart>=0.0.31,<0.1",  # CVE-2026-42561
+    "lxml>=6.1.0,<7",  # CVE-2026-41066
+    "pillow>=12.2.0,<13",  # CVE-2026-40192
+    "pydantic>=2.0,<3.0",
+    "pyyaml>=6.0,<7",
+    "httpx[socks]>=0.27,<1.0",
+    "json-repair>=0.30.0,<0.60",
+]
+a2a = ["a2a-sdk[http-server]==1.0.0"]
+ssh = ["asyncssh>=2.14.0,<2.24"]
+desktop = ["pywebview>=5.4,<7"]
+dev = ["pyinstaller>=6.0.0", "pywebview>=5.4,<7"]
+tui = ["workswarm-tui==0.2.5.beta1"]  # build-config: tui-dependency
+distribute = ["openjiuwen[postgres,zmq]"]
+claude = ["openjiuwen[claude]"]
+codex = ["openjiuwen[codex]"]
+shell-ast = []
+# Same packages as [dependency-groups] test (pip install -e ".[test]")
+test = [
+    "a2a-sdk[http-server]==1.0.0",
+    "asyncssh>=2.14.0,<2.24",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.0.0",
+    "pytest-html>=4.1.1",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=7.0.0",
+    "coverage>=7.7.1",
+    "pyyaml>=6.0",
 ]
 
 [project.scripts]
-jiuwenclaw-app = "jiuwenclaw.app:main"
-jiuwenclaw-web = "jiuwenclaw.app_web:main"
-jiuwenclaw-start = "jiuwenclaw.start_services:main"
-jiuwenclaw-init = "jiuwenclaw.init_workspace:main"
+jiuwenswarm = "jiuwenswarm.cli.main:main"
+jiuwenswarm-app = "jiuwenswarm.app:main"
+jiuwenswarm-agentserver = "jiuwenswarm.server.app_agentserver:main"
+jiuwenswarm-gateway = "jiuwenswarm.gateway.app_gateway:main"
+jiuwenswarm-web = "jiuwenswarm.channels.web.app_web:main"
+jiuwenswarm-start = "jiuwenswarm.start_services:main"
+jiuwenswarm-stop = "jiuwenswarm.debug_launcher:main"
+jiuwenswarm-init = "jiuwenswarm.init_workspace:main"
+jiuwenswarm-desktop = "jiuwenswarm.channels.desktop.desktop_app:main"
+jiuwenswarm-acp = "jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect:main"
+jiuwenswarm-acp-chat = "jiuwenswarm.acp.cli:main"
+jiuwenbox = "jiuwenbox.cli.jiuwenbox:main"
+jiuwenbox-server = "jiuwenbox.server.launcher:main"
 
 [tool.setuptools]
-# 入口脚本现在是 jiuwenclaw 包内的一部分，不需要 py-modules
+# 入口脚本现在是 jiuwenswarm 包内的一部分，不需要 py-modules
 py-modules = []
+include-package-data = true
+package-dir = {"jiuwenbox" = "jiuwenbox/src/jiuwenbox"}
 
 [tool.setuptools.packages.find]
-where = ["."]
-include = ["jiuwenclaw*"]
+where = [".", "jiuwenbox/src"]
+include = ["jiuwenswarm*", "jiuwenbox*"]
+exclude = ["jiuwenswarm.web*"]
+namespaces = false
 
 [tool.setuptools.package-data]
-jiuwenclaw = [
-    "web/dist/**/*",
-    "web/dist/*",
+"*" = ["LICENSE"]
+jiuwenswarm = [
+    "channels/web/frontend/dist/**/*",
+    "channels/web/frontend/dist/*",
     # config / env 模板放在 resources 目录
     "resources/**/*",
     "resources/*",
     "resources/.env.template",
-    "workspace/**/*",
-    "workspace/*",
+    "symphony/**/*.yaml",
+    "symphony/**/*.yml",
+    "symphony/**/*.json",
+    "symphony/**/*.md",
+    "extensions/**/*.yaml",
+    "extensions/**/*.yml",
+    "extensions/**/*.md",
+]
+jiuwenbox = [
+    "configs/**/*",
+    "configs/*",
 ]
 
 [tool.setuptools.exclude-package-data]
-jiuwenclaw = ["web/node_modules/**", "web/node_modules/*"]
+jiuwenswarm = [
+    "channels/web/frontend/node_modules/**",
+    "channels/web/frontend/node_modules/*",
+    "resources/agent/workspace/skills/project-maintainer/**/*",
+    "resources/agent/workspace/skills/project-maintainer/*",
+]
+
+[tool.uv]
+default-groups = ['dev']
+
+[tool.uv.sources]
+workswarm-tui = { path = "./packages/jiuwenswarm-tui" }  # build-config: tui-source
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", branch = "develop" }
+
+[dependency-groups]
+# Testing (keep in sync with optional-dependencies.test)
+test = [
+    "a2a-sdk[http-server]==1.0.0",
+    "asyncssh>=2.14.0,<2.24",
+    "pytest>=8.3.5",
+    "pytest-asyncio>=1.0.0",
+    "pytest-html>=4.1.1",
+    "pytest-mock>=3.14.0",
+    "pytest-cov>=7.0.0",
+    "coverage>=7.7.1",
+    "pyyaml>=6.0",
+]
+# Linting & formatting
+lint = [
+    "ruff>=0.11.2",
+    "pylint>=3.0.0",
+    "mypy>=1.12.0",
+    "codespell>=2.2.4",
+    "httpx[socks]>=0.28.1",
+]
+dev = [{ include-group = "test" }, { include-group = "lint" }]

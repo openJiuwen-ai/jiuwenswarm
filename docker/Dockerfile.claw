@@ -1,31 +1,36 @@
-ARG BASE_IMAGE
+ARG BASE_IMAGE=python:3.11.4-slim-bookworm
 FROM ${BASE_IMAGE}
+
+# Frontend build dependencies and git (required by the openjiuwen VCS dependency).
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    ca-certificates \
+    git \
+    nodejs \
+    npm \
+    && rm -rf /var/lib/apt/lists/*
 
 # Create app user and set up working directory
 RUN useradd --create-home --shell /bin/bash app
 RUN mkdir -p /app
 
 # Copy project files
-COPY . /app/jiuwenclaw/
-RUN chown -R app:app /app
+COPY --chown=app:app . /app/jiuwenswarm/
 
 USER app
 
 # Build web
-WORKDIR /app/jiuwenclaw/jiuwenclaw/web
+WORKDIR /app/jiuwenswarm/jiuwenswarm/channels/web/frontend
 RUN npm install
 RUN npm run build
 
 # Install server dependencies
-WORKDIR /app/jiuwenclaw
-RUN sed -i '/--host/ s/default="localhost"/default="0.0.0.0"/' /app/jiuwenclaw/jiuwenclaw/app_web.py
-RUN pip install -e ".[all]" --no-cache-dir
-
+WORKDIR /app/jiuwenswarm
 ENV PATH=$PATH:/home/app/.local/bin
-
-# Initialize claw configuration (skip language selection with empty input)
-RUN jiuwenclaw-init
+# Bind outside the container without changing the localhost default used by
+# source, desktop, and pip installations.
+ENV FRONTEND_HOST=0.0.0.0
+RUN pip install -i https://pypi.tuna.tsinghua.edu.cn/simple . --no-cache-dir
 
 # Start claw app
 EXPOSE 5173
-CMD ["jiuwenclaw-start"]
+CMD ["jiuwenswarm-start"]

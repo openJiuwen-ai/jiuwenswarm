@@ -1,0 +1,303 @@
+"""Read and derive the build identity from the root ``pyproject.toml``.
+
+The root ``[project].name`` and ``[project].version`` are authoritative.
+Product-facing names stay explicit because distribution names cannot be
+reliably transformed into display names or platform identifiers.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import logging
+import re
+import shlex
+import sys
+from dataclasses import asdict, dataclass
+from pathlib import Path
+from typing import Mapping, TextIO
+
+import tomllib
+
+
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+RUNTIME_CONFIG_PATH = Path("jiuwenswarm/common/_build_config.py")
+
+
+def _emit(message: str, stream: TextIO) -> None:
+    """Emit CLI output through logging without changing its wire format."""
+    cli_logger = logging.Logger("workswarm.build_config.cli", level=logging.INFO)
+    handler = logging.StreamHandler(stream)
+    handler.setFormatter(logging.Formatter("%(message)s"))
+    handler.terminator = ""
+    cli_logger.addHandler(handler)
+    cli_logger.info("%s", message)
+
+
+@dataclass(frozen=True)
+class ProductNames:
+    display_name: str
+    executable_name: str
+    bundle_identifier: str
+    error_log_name: str
+    tui_package_name: str
+
+
+PRODUCT_NAMES: Mapping[str, ProductNames] = {
+    "workswarm": ProductNames(
+        display_name="WorkSwarm",
+        executable_name="workswarm",
+        bundle_identifier="com.workswarm.desktop",
+        error_log_name="workswarm_exe_error.log",
+        tui_package_name="workswarm-tui",
+    ),
+}
+
+
+class BuildConfigError(ValueError):
+    """Raised when the canonical project identity is missing or unsupported."""
+
+
+@dataclass(frozen=True)
+class BuildConfig:
+    package_name: str
+    version: str
+    display_name: str
+    executable_name: str
+    bundle_identifier: str
+    error_log_name: str
+    tui_package_name: str
+
+    @property
+    def app_full_name(self) -> str:
+        return f"{self.display_name} {self.version}"
+
+    @property
+    def app_bundle_name(self) -> str:
+        return f"{self.display_name}.app"
+
+    @property
+    def executable_name_windows(self) -> str:
+        return f"{self.executable_name}.exe"
+
+    @property
+    def dist_dir_name(self) -> str:
+        return self.executable_name
+
+    @property
+    def dmg_filename(self) -> str:
+        return f"{self.display_name}-{self.version}.dmg"
+
+    @property
+    def setup_base_name(self) -> str:
+        return f"{self.display_name}-setup-{self.version}"
+
+    @property
+    def setup_filename(self) -> str:
+        return f"{self.setup_base_name}.exe"
+
+    def values(self) -> dict[str, str]:
+        values = asdict(self)
+        values.update(
+            app_full_name=self.app_full_name,
+            app_bundle_name=self.app_bundle_name,
+            executable_name_windows=self.executable_name_windows,
+            dist_dir_name=self.dist_dir_name,
+            dmg_filename=self.dmg_filename,
+            setup_base_name=self.setup_base_name,
+            setup_filename=self.setup_filename,
+        )
+        return values
+
+
+def load_build_config(project_root: Path = PROJECT_ROOT) -> BuildConfig:
+    pyproject_path = project_root / "pyproject.toml"
+    try:
+        pyproject = tomllib.loads(pyproject_path.read_text(encoding="utf-8"))
+        project = pyproject["project"]
+        package_name = project["name"]
+        version = project["version"]
+    except (OSError, KeyError, tomllib.TOMLDecodeError) as exc:
+        raise BuildConfigError(f"cannot read [project] identity from {pyproject_path}: {exc}") from exc
+
+    if not isinstance(package_name, str) or not package_name.strip():
+        raise BuildConfigError(f"[project].name must be a non-empty string in {pyproject_path}")
+    if not isinstance(version, str) or not version.strip():
+        raise BuildConfigError(f"[project].version must be a non-empty string in {pyproject_path}")
+    if any(char.isspace() for char in version):
+        raise BuildConfigError(f"[project].version must not contain whitespace: {version!r}")
+
+    try:
+        product = PRODUCT_NAMES[package_name]
+    except KeyError as exc:
+        supported = ", ".join(sorted(PRODUCT_NAMES))
+        raise BuildConfigError(
+            f"no explicit product-name mapping for {package_name!r}; supported names: {supported}"
+        ) from exc
+
+    return BuildConfig(
+        package_name=package_name,
+        version=version,
+        display_name=product.display_name,
+        executable_name=product.executable_name,
+        bundle_identifier=product.bundle_identifier,
+        error_log_name=product.error_log_name,
+        tui_package_name=product.tui_package_name,
+    )
+
+
+def _constant_values(config: BuildConfig) -> dict[str, str]:
+    return {key.upper(): value for key, value in config.values().items()}
+
+
+def render_runtime_python(config: BuildConfig) -> str:
+    lines = [
+        '"""Generated by scripts/build_config.py --sync; do not edit manually."""',
+        "",
+        "from __future__ import annotations",
+        "",
+    ]
+    lines.extend(f"{key} = {value!r}" for key, value in _constant_values(config).items())
+    return "\n".join(lines) + "\n"
+
+
+def render_shell(config: BuildConfig) -> str:
+    lines = [f"BUILD_{key}={shlex.quote(value)}" for key, value in _constant_values(config).items()]
+    return "\n".join(lines) + "\n"
+
+
+def render_batch(config: BuildConfig) -> str:
+    lines = []
+    for key, value in _constant_values(config).items():
+        if any(char in value for char in '\r\n%!"&|<>^'):
+            raise BuildConfigError(f"batch build value contains unsupported characters: {key}")
+        lines.append(f'set "BUILD_{key}={value}"')
+    return "\n".join(lines) + "\n"
+
+
+def _replace_marker(text: str, marker: str, expected_line: str, path: Path) -> str:
+    pattern = re.compile(rf"^.*# build-config: {re.escape(marker)}$", re.MULTILINE)
+    updated, count = pattern.subn(expected_line, text)
+    if count != 1:
+        raise BuildConfigError(f"expected exactly one '# build-config: {marker}' marker in {path}, found {count}")
+    return updated
+
+
+def _synchronized_pyprojects(project_root: Path, config: BuildConfig) -> dict[Path, str]:
+    root_relative = Path("pyproject.toml")
+    root_text = (project_root / root_relative).read_text(encoding="utf-8")
+    root_text = _replace_marker(
+        root_text,
+        "tui-dependency",
+        f'tui = ["{config.tui_package_name}=={config.version}"]  # build-config: tui-dependency',
+        root_relative,
+    )
+    root_text = _replace_marker(
+        root_text,
+        "tui-source",
+        f'{config.tui_package_name} = {{ path = "./packages/jiuwenswarm-tui" }}  # build-config: tui-source',
+        root_relative,
+    )
+
+    tui_relative = Path("packages/jiuwenswarm-tui/pyproject.toml")
+    tui_text = (project_root / tui_relative).read_text(encoding="utf-8")
+    tui_text = _replace_marker(
+        tui_text,
+        "tui-name",
+        f'name = "{config.tui_package_name}"  # build-config: tui-name',
+        tui_relative,
+    )
+    tui_text = _replace_marker(
+        tui_text,
+        "tui-version",
+        f'version = "{config.version}"  # build-config: tui-version',
+        tui_relative,
+    )
+    return {root_relative: root_text, tui_relative: tui_text}
+
+
+def expected_files(project_root: Path) -> dict[Path, str]:
+    config = load_build_config(project_root)
+    expected = _synchronized_pyprojects(project_root, config)
+    expected[RUNTIME_CONFIG_PATH] = render_runtime_python(config)
+    return expected
+
+
+def find_drift(project_root: Path) -> list[Path]:
+    drift = []
+    for relative_path, expected in expected_files(project_root).items():
+        path = project_root / relative_path
+        actual = path.read_text(encoding="utf-8") if path.is_file() else None
+        if actual != expected:
+            drift.append(relative_path)
+    return drift
+
+
+def write_expected(project_root: Path) -> list[Path]:
+    changed = []
+    for relative_path, expected in expected_files(project_root).items():
+        path = project_root / relative_path
+        actual = path.read_text(encoding="utf-8") if path.is_file() else None
+        if actual == expected:
+            continue
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(expected, encoding="utf-8", newline="\n")
+        changed.append(relative_path)
+    return changed
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--root", type=Path, default=PROJECT_ROOT, help="Repository root containing pyproject.toml.")
+    action = parser.add_mutually_exclusive_group()
+    action.add_argument("--sync", action="store_true", help="Synchronize tracked consumers before building.")
+    action.add_argument("--check", action="store_true", help="Fail when a tracked consumer is out of date.")
+    output = parser.add_mutually_exclusive_group()
+    output.add_argument("--version", action="store_true", help="Print only the canonical version.")
+    output.add_argument("--name", action="store_true", help="Print only the canonical distribution name.")
+    output.add_argument("--emit-json", action="store_true", help="Print all build values as JSON.")
+    output.add_argument("--emit-shell", action="store_true", help="Print shell assignments for macOS builds.")
+    output.add_argument("--emit-batch", action="store_true", help="Print set commands for Windows batch builds.")
+    return parser.parse_args()
+
+
+def main() -> None:
+    args = _parse_args()
+    project_root = args.root.resolve()
+    try:
+        if args.sync:
+            for path in write_expected(project_root):
+                _emit(f"updated {path}\n", sys.stderr)
+        elif args.check:
+            drift = find_drift(project_root)
+            if drift:
+                details = "\n".join(f"  - {path}" for path in drift)
+                raise BuildConfigError(
+                    "tracked consumers are out of date; run an official build wrapper "
+                    f"or scripts/build_config.py --sync:\n{details}"
+                )
+
+        config = load_build_config(project_root)
+    except (BuildConfigError, OSError) as exc:
+        raise SystemExit(f"build config error: {exc}") from exc
+
+    output_requested = args.version or args.name or args.emit_shell or args.emit_batch or args.emit_json
+    if (args.sync or args.check) and not output_requested:
+        if args.check:
+            _emit("Build config is synchronized.\n", sys.stdout)
+        return
+    if args.version:
+        _emit(f"{config.version}\n", sys.stdout)
+    elif args.name:
+        _emit(f"{config.package_name}\n", sys.stdout)
+    elif args.emit_shell:
+        _emit(render_shell(config), sys.stdout)
+    elif args.emit_batch:
+        _emit(render_batch(config), sys.stdout)
+    else:
+        output = json.dumps(config.values(), ensure_ascii=True, sort_keys=True)
+        _emit(f"{output}\n", sys.stdout)
+
+
+if __name__ == "__main__":
+    main()

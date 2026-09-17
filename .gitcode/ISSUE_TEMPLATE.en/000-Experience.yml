@@ -1,0 +1,93 @@
+name: 📝 Experience feedback
+description: Submit problems, suggestions, or feedback encountered during usage
+title: "[Experience Feedback]: "
+labels: ["Experience feedback"]
+type: "Experience-Feedback"
+body:
+  - type: dropdown
+    id: device_type
+    attributes:
+      label: Device Type
+      options:
+        - Windows(ARM)
+        - Windows(X86)
+        - Linux(ARM)
+        - Linux(X86)
+        - Mac(ARM)
+        - Mac(X86)
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: Operating System Version
+      placeholder: e.g. Windows 11, Ubuntu 22.04, Huawei Cloud EulerOS 2.0, macOS 15 Sequoia
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: Browser
+      placeholder: e.g. Chrome, Edge
+    validations:
+      required: false
+  - type: input
+    id: project_version
+    attributes:
+      label: Project Version
+      placeholder: e.g. v0.1.1
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem_description
+    attributes:
+      label: Problem Description
+      description: Please clearly and concisely describe the issue encountered, including steps to reproduce, expected result, and actual result. It is recommended to upload screenshots (paste image links or attachments).
+      placeholder: e.g. When performing XX operation, clicking the button shows no response; the expected behavior is to pop up a confirmation window...
+    validations:
+      required: true
+
+  - type: textarea
+    id: improvement_suggestion
+    attributes:
+      label: Improvement & Fix Suggestions
+      description: Let us know how we can improve
+      placeholder: e.g. It is recommended to optimize the position of the XX button, or add XX prompt information...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: experience_score
+    attributes:
+      label: Please Rate Your Current Experience
+      options:
+        - 1 - Very Dissatisfied
+        - 2 - Dissatisfied
+        - 3 - Neutral
+        - 4 - Satisfied
+        - 5 - Very Satisfied
+    validations:
+      required: true
+
+  # Experience Role
+  - type: dropdown
+    id: user
+    attributes:
+      label: User Role
+      options:
+        - Project Management
+        - Software Engineer
+        - Algorithm Engineer
+        - Security & Compliance
+        - Product Design
+        - Administrative Staff
+        - Other
+    validations:
+      required: false
+
+  # Closing Note
+  - type: markdown
+    attributes:
+      value: >
+        Thanks for your feedback!

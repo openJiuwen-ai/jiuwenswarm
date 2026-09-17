@@ -1,0 +1,59 @@
+# Yuanrong (Edge/Remote) configuration.
+# This file extends the default policy with inference privacy proxy enabled.
+# The proxy runs on the edge server and routes LLM API requests.
+
+version: 1
+name: "inference-policy"
+
+inference_privacy_proxies:
+  listen_host: "0.0.0.0"  # MUST, bind to all interfaces for edge server access
+  listen_port: 8322  # MUST, set to enable proxy. 0 or omit to disable.
+  
+  # OPTIONAL: here starts example forwarding rule.
+  # routes can be configured with REST API dynamically instead.
+  routes:
+    # example OpenAI API route
+    - path_prefix: "openai"
+      target_endpoint: "https://api.openai.com"
+      api_key: "sk_sandbox_managed_key"  # Set your sandbox-managed API key here
+      # example:
+      # curl -X POST http://127.0.0.1:8322/openai/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_fake_key" ...
+      # ==> https://api.openai.com/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_sandbox_managed_key" ...
+
+    # example Custom LLM endpoint
+    - path_prefix: "custom"
+      target_endpoint: "http://192.168.1.100:9000"
+      api_key: "sk_sandbox_managed_key"
+      skip_cert_verify: false # for self_signed cert server, debug only
+      # example:
+      # curl -X POST http://127.0.0.1:8322/custom/v1/chat/completions \
+      #   -H "Authorization: Bearer sk_fake_key" ...
+      # ==> http://192.168.1.100:9000/v1/chat/completions
+      #   -H "Authorization: Bearer sk_sandbox_managed_key" ...
+
+    # example HTTP Basic auth route (Neo4j / MindsDB / other HTTP services).
+    # Sandbox scripts call the proxy WITHOUT any credentials; the proxy injects
+    #   Authorization: Basic base64(username:password)
+    # and overwrites any client-supplied Authorization header.
+    # NOTE: only HTTP Basic is supported (not Digest/OAuth, not Neo4j Bolt).
+    # `api_key` and `basic_auth` are mutually exclusive on a route.
+    # Uncomment and fill in a real endpoint + password source to enable:
+    #
+    # - path_prefix: "neo4j"
+    #   target_endpoint: "http://neo4j.internal:7474"
+    #   basic_auth:
+    #     username: "neo4j"
+    #     # Inline `password` is dev/test only (stored in YAML plaintext).
+    #     # password: "dev-only-password"
+    #     # Production: read the password from a server-side file (Kubernetes
+    #     # Secret / Docker Secret / Linux 0600 file). Recommend 0600; 0640/0644
+    #     # are accepted with a warning. Only the trailing newline is stripped.
+    #     password_file: "/run/secrets/neo4j_password"
+    #   # example:
+    #   # curl -X POST http://127.0.0.1:8322/neo4j/db/neo4j/tx/commit \
+    #   #   -H 'Content-Type: application/json' \
+    #   #   -d '{"statements":[{"statement":"RETURN 1"}]}'
+    #   # ==> http://neo4j.internal:7474/db/neo4j/tx/commit
+    #   #   -H "Authorization: Basic <base64(neo4j:<password-from-file>)>"

@@ -1,0 +1,94 @@
+name: 📝 大赛反馈
+description: 提交使用过程中遇到的问题、建议或反馈
+title: "[Competition Feedback]: "
+labels: ["Competition feedback"]
+type: "Competition-Feedback"
+
+body:
+  - type: dropdown
+    id: device_type
+    attributes:
+      label: "设备类型"
+      options:
+        - Windows(ARM)
+        - Windows(X86)
+        - Linux(ARM)
+        - Linux(X86)
+        - Mac(ARM)
+        - Mac(X86)
+    validations:
+      required: true
+  - type: input
+    id: os_version
+    attributes:
+      label: "系统版本"
+      placeholder: "例：Windows 11、Ubuntu 22.04、Huawei Cloud EulerOS 2.0、macOS 15 Sequoia"
+    validations:
+      required: true
+  - type: input
+    id: browser
+    attributes:
+      label: "浏览器"
+      placeholder: "例：Chrome、Edge"
+    validations:
+      required: false
+  - type: input
+    id: project_version
+    attributes:
+      label: "项目版本"
+      placeholder: "例：v0.1.1"
+    validations:
+      required: false
+
+  - type: textarea
+    id: problem_description
+    attributes:
+      label: "问题描述"
+      description: 请清晰、简洁地描述遇到的问题，包括操作步骤、预期结果、实际结果，建议上传问题截图（可粘贴图片链接或附件）
+      placeholder: 例：在执行XX操作时，点击按钮后无响应，预期应弹出确认窗口...
+    validations:
+      required: true
+
+  - type: textarea
+    id: improvement_suggestion
+    attributes:
+      label: "改进与修复建议"
+      description: 请告诉我们如何改进
+      placeholder: 例：建议优化XX按钮的位置，或增加XX提示信息...
+    validations:
+      required: false
+
+  - type: dropdown
+    id: experience_score
+    attributes:
+      label: 请对当前体验打分
+      options:
+        - 1分（非常不满意）
+        - 2分（不满意）
+        - 3分（一般）
+        - 4分（满意）
+        - 5分（非常满意）
+    validations:
+      required: true
+
+  # 体验人员角色
+  - type: dropdown
+    id: user
+    attributes:
+      label: 体验人员角色
+      options:
+        - 项目管理
+        - 软件工程师
+        - 算法工程师
+        - 安全合规
+        - 产品设计
+        - 行政人员
+        - 其他
+    validations:
+      required: false
+
+  # 结尾提示
+  - type: markdown
+    attributes:
+      value: >
+        感谢您的反馈！
