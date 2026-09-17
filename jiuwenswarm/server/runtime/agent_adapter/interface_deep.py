@@ -98,6 +98,14 @@ from openjiuwen.harness.rails import (
 )
 from openjiuwen.harness.rails.personal_context import PersonalContextRail
 from openjiuwen.harness.rails.evolution import EvolutionReviewRuntime
+try:
+    from openjiuwen.harness.rails.evolution import (
+        TTSEConfig,
+        TTSERail,
+    )
+except ImportError:
+    TTSEConfig = None  # type: ignore[misc, assignment]
+    TTSERail = None  # type: ignore[misc, assignment]
 from openjiuwen.harness.rails.context_engineer.context_assemble_rail import ContextAssembleRail
 from openjiuwen.harness.rails.context_engineer.context_processor_rail import ContextProcessorRail
 from openjiuwen.harness.subagents.browser_agent import build_browser_agent_config
@@ -164,6 +172,66 @@ _ROUND_TERMINAL_CHUNK_TYPES = frozenset(
 # demoted goal attempt final. Long enough for a full answer, bounded so a
 # many-step round cannot grow it without limit.
 _ROUND_VISIBLE_TEXT_MAX_CHARS = 256 * 1024
+
+# TTSE Auto-dream knobs are Host-fixed (not user yaml).
+_TTSE_DREAM_INTERVAL = 50
+_TTSE_DREAM_MIN_HOURS = 24.0
+_TTSE_DREAM_TTL_DAYS = 90
+_TTSE_CONSULT_TOOL_NAME = "ttse_consult"
+
+
+def _merge_ttse_config(runtime_config: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Yaml ``react.ttse`` plus runtime overlay (runtime keys win).
+
+    Same merge used by TTSERail mount and ``ttse_consult`` eager gating so a
+    sparse runtime cache (OfficeAce sync snapshot omitting ``ttse``) still
+    inherits the on-disk default. An explicit runtime ``enabled: false`` wins.
+    """
+    merged: dict[str, Any] = {}
+    try:
+        yaml_ttse = _get_ttse_config(get_config())
+    except Exception:
+        yaml_ttse = {}
+    if isinstance(yaml_ttse, dict):
+        merged.update(yaml_ttse)
+    runtime = _get_ttse_config(runtime_config)
+    if isinstance(runtime, dict):
+        merged.update(runtime)
+    return merged
+
+
+def _ttse_consult_should_be_eager(react_config: dict[str, Any] | None) -> bool:
+    """True when TTSE is opted in and inject is on, so ``ttse_consult`` stays visible."""
+    if not isinstance(react_config, dict):
+        return False
+    merged = _merge_ttse_config(react_config)
+    if not get_ttse_enabled({"ttse": merged}):
+        return False
+    return coerce_config_bool(merged.get("inject_enabled"), True)
+
+
+def _ensure_ttse_consult_eager_tool(
+    eager_tools: list[str],
+    react_config: dict[str, Any] | None,
+) -> list[str]:
+    """Insert or strip ``ttse_consult`` for first-turn visibility helpers.
+
+    This repo's ProgressiveToolRail uses ToolCard exposure (not an eager_tools
+    list). The helper remains for tests / future callers that still pass a list.
+    """
+    if not _ttse_consult_should_be_eager(react_config):
+        return [name for name in eager_tools if name != _TTSE_CONSULT_TOOL_NAME]
+    if _TTSE_CONSULT_TOOL_NAME in eager_tools:
+        return eager_tools
+    if "skill_acceleration_exec" in eager_tools:
+        eager_tools.insert(
+            eager_tools.index("skill_acceleration_exec"),
+            _TTSE_CONSULT_TOOL_NAME,
+        )
+    else:
+        insert_at = 2 if len(eager_tools) >= 2 else len(eager_tools)
+        eager_tools.insert(insert_at, _TTSE_CONSULT_TOOL_NAME)
+    return eager_tools
 
 
 def _strip_whitespace(text: str) -> str:
@@ -478,6 +546,10 @@ from jiuwenswarm.common.config import (
     is_subagent_runtime_enabled,
     get_mcp_server_config,
     get_config_yaml_mcp_servers,
+    coerce_config_bool,
+    _get_ttse_config,
+    get_ttse_embedding_config,
+    get_ttse_enabled,
     resolve_env_vars,
 )
 from jiuwenswarm.common.mcp_config import (
@@ -1838,6 +1910,7 @@ class JiuWenSwarmDeepAdapter:
         self._heartbeat_service: Any | None = None
         self._skill_evolution_rail: SkillEvolutionRail | None = None
         self._evolution_interrupt_rail: EvolutionInterruptRail | None = None
+        self._ttse_rail: Any | None = None
         self._skill_create_rail: SkillCreateRail | None = None
         self._symphony_graph_evolution_rail: Any = None
         self._subagent_rail: SubagentRail | None = None
@@ -7867,6 +7940,273 @@ class JiuWenSwarmDeepAdapter:
             skill_evolution_rail = None
         return skill_evolution_rail
 
+    def _ttse_bank_path(self) -> str:
+        """FACT/TIP bank is always ``workspace/.ttse/bank.json``; not a user knob."""
+        root = Path(self._workspace_dir) if self._workspace_dir else get_agent_workspace_dir()
+        return str(root / ".ttse" / "bank.json")
+
+    def _resolved_ttse_config(self, config: dict[str, Any] | None = None) -> dict[str, Any]:
+        """User yaml ``react.ttse`` plus adapter cache (runtime cache wins)."""
+        return _merge_ttse_config(config if config is not None else self._config_cache)
+
+    def _build_ttse_rail(self, config: dict[str, Any]) -> Any | None:
+        """Build TTSERail for FACT/TIP dual-track self-evolution.
+
+        Returns None when agent-core lacks TTSE, construction fails, or
+        TrajectorySpanProcessor is unavailable. Does not register the rail.
+        """
+        if TTSERail is None or TTSEConfig is None:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSERail unavailable: agent-core missing ttse"
+            )
+            return None
+        try:
+            from jiuwenswarm.agents.harness.common.memory.embeddings import (
+                OpenAICompatibleEmbeddingProvider,
+            )
+
+            ttse_cfg = self._resolved_ttse_config(config)
+            store_path = self._ttse_bank_path()
+            evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
+            inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
+            dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
+            try:
+                consult_top_k = int(ttse_cfg.get("consult_top_k", 8) or 8)
+            except (TypeError, ValueError):
+                consult_top_k = 8
+            try:
+                consult_rrf_k = int(ttse_cfg.get("consult_rrf_k", 60) or 60)
+            except (TypeError, ValueError):
+                consult_rrf_k = 60
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] TTSEConfig: store_path=%s evolve_enabled=%s "
+                "inject_enabled=%s dream_enabled=%s dream_interval=%s "
+                "dream_min_hours=%s dream_ttl_days=%s",
+                store_path,
+                evolve_enabled,
+                inject_enabled,
+                dream_enabled,
+                _TTSE_DREAM_INTERVAL,
+                _TTSE_DREAM_MIN_HOURS,
+                _TTSE_DREAM_TTL_DAYS,
+            )
+            emb_cfg = get_ttse_embedding_config({"react": {"ttse": ttse_cfg}})
+            embedding = None
+            if emb_cfg:
+                embedding = OpenAICompatibleEmbeddingProvider(
+                    api_key=emb_cfg["api_key"],
+                    base_url=emb_cfg["base_url"],
+                    model=emb_cfg["model"],
+                )
+            from openjiuwen.extensions.observability.demand import (
+                get_trajectory_span_processor,
+            )
+
+            trajectory_span_processor = get_trajectory_span_processor()
+            if trajectory_span_processor is None:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] TTSERail create skipped: "
+                    "TrajectorySpanProcessor unavailable"
+                )
+                return None
+            ttse_kwargs: dict[str, Any] = {
+                "store_path": store_path,
+                "evolve_enabled": evolve_enabled,
+                "inject_enabled": inject_enabled,
+                "embedding": embedding,
+                "dream_enabled": bool(dream_enabled),
+                "dream_interval": _TTSE_DREAM_INTERVAL,
+                "dream_min_hours": _TTSE_DREAM_MIN_HOURS,
+                "dream_ttl_days": _TTSE_DREAM_TTL_DAYS,
+                "consult_top_k": consult_top_k,
+                "consult_rrf_k": consult_rrf_k,
+            }
+            try:
+                import inspect
+
+                params = inspect.signature(TTSEConfig).parameters
+                explicit = {
+                    name
+                    for name, param in params.items()
+                    if param.kind
+                    in (
+                        inspect.Parameter.POSITIONAL_OR_KEYWORD,
+                        inspect.Parameter.KEYWORD_ONLY,
+                    )
+                }
+                # Only filter when the constructor declares named fields.
+                # ``**kwargs``-only fakes (and some stubs) must receive the full dict.
+                if explicit:
+                    ttse_kwargs = {
+                        k: v for k, v in ttse_kwargs.items() if k in explicit
+                    }
+            except (TypeError, ValueError):
+                pass
+            ttse_rail = TTSERail(
+                llm=self._model,
+                model=self._default_model_name or config.get("model_name", "gpt-4"),
+                ttse_config=TTSEConfig(**ttse_kwargs),
+                trajectory_span_processor=trajectory_span_processor,
+            )
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] TTSERail create success, "
+                "store_path=%s evolve_enabled=%s inject_enabled=%s has_embedding=%s",
+                store_path,
+                evolve_enabled,
+                inject_enabled,
+                embedding is not None,
+            )
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail create failed: %s", exc)
+            ttse_rail = None
+        return ttse_rail
+
+    def _sync_ttse_rail_config(self, config: dict[str, Any] | None = None) -> None:
+        """Refresh live TTSERail flags/store from current react.ttse (no remount)."""
+        rail = self._ttse_rail
+        if rail is None:
+            return
+        ttse_cfg = self._resolved_ttse_config(config)
+        store_path = self._ttse_bank_path()
+        evolve_enabled = coerce_config_bool(ttse_cfg.get("evolve_enabled"), True)
+        inject_enabled = coerce_config_bool(ttse_cfg.get("inject_enabled"), True)
+        dream_enabled = coerce_config_bool(ttse_cfg.get("dream_enabled"), True)
+        apply_config = getattr(rail, "apply_runtime_config", None)
+        if callable(apply_config):
+            # Older agent-core apply_runtime_config only accepts store/evolve/inject.
+            apply_config(
+                store_path=store_path,
+                evolve_enabled=evolve_enabled,
+                inject_enabled=inject_enabled,
+            )
+        cfg_obj = getattr(rail, "_ttse_config", None)
+        if cfg_obj is not None:
+            for attr, value in (
+                ("dream_enabled", bool(dream_enabled)),
+                ("dream_interval", _TTSE_DREAM_INTERVAL),
+                ("dream_min_hours", _TTSE_DREAM_MIN_HOURS),
+                ("dream_ttl_days", _TTSE_DREAM_TTL_DAYS),
+            ):
+                if hasattr(cfg_obj, attr):
+                    setattr(cfg_obj, attr, value)
+        logger.info(
+            "[JiuWenSwarmDeepAdapter] TTSERail config synced: "
+            "store_path=%s evolve_enabled=%s inject_enabled=%s",
+            store_path,
+            evolve_enabled,
+            inject_enabled,
+        )
+
+    def _mark_ttse_consult_direct_exposure(self) -> None:
+        """Keep ``ttse_consult`` visible under ProgressiveToolRail when inject is on.
+
+        This repo's ProgressiveToolRail filters by ToolCard exposure rather than
+        an eager_tools list. Mark the consult tool DIRECT after rail register.
+        """
+        if self._instance is None or self._ttse_rail is None:
+            return
+        if not _ttse_consult_should_be_eager(
+            self._config_base_cache or self._config_cache
+        ):
+            return
+        if not get_progressive_tool_enabled(
+            self._config_base_cache or get_config()
+        ):
+            return
+        ability_manager = getattr(self._instance, "ability_manager", None)
+        if ability_manager is None:
+            return
+        try:
+            from openjiuwen.core.foundation.tool import ToolExposure
+        except ImportError:
+            return
+        card = None
+        get_ability = getattr(ability_manager, "get_ability", None)
+        if callable(get_ability):
+            try:
+                card = get_ability(_TTSE_CONSULT_TOOL_NAME)
+            except Exception:
+                card = None
+        if card is None:
+            list_abilities = getattr(ability_manager, "list", None)
+            if callable(list_abilities):
+                try:
+                    for item in list_abilities() or []:
+                        name = getattr(item, "name", None) or getattr(
+                            getattr(item, "card", None), "name", None
+                        )
+                        if name == _TTSE_CONSULT_TOOL_NAME:
+                            card = getattr(item, "card", item)
+                            break
+                except Exception:
+                    card = None
+        if card is None:
+            return
+        try:
+            card.exposure = ToolExposure.DIRECT
+            set_declared = getattr(card, "set_exposure_declared", None)
+            if callable(set_declared):
+                set_declared(True)
+            logger.info(
+                "[JiuWenSwarmDeepAdapter] marked %s as DIRECT for progressive tools",
+                _TTSE_CONSULT_TOOL_NAME,
+            )
+        except Exception as exc:
+            logger.debug(
+                "[JiuWenSwarmDeepAdapter] failed to mark %s DIRECT: %s",
+                _TTSE_CONSULT_TOOL_NAME,
+                exc,
+            )
+
+    async def _ensure_ttse_rail_registered(self) -> None:
+        """Build and register TTSERail when missing; else refresh flags from yaml."""
+        if self._instance is None:
+            return
+        if self._ttse_rail is not None:
+            self._sync_ttse_rail_config(self._config_cache)
+            self._mark_ttse_consult_direct_exposure()
+            return
+        rail = self._build_ttse_rail(self._config_cache)
+        if rail is None:
+            return
+        await self._instance.register_rail(rail)
+        self._ttse_rail = rail
+        self._mark_ttse_consult_direct_exposure()
+        logger.info("[JiuWenSwarmDeepAdapter] TTSERail registered for agent mode")
+
+    async def _unconfigure_ttse_rail(self) -> None:
+        """Unregister TTSERail if it is currently mounted."""
+        rail = self._ttse_rail
+        self._ttse_rail = None
+        if self._instance is None or rail is None:
+            return
+        unregister = getattr(self._instance, "unregister_rail", None)
+        if not callable(unregister):
+            return
+        try:
+            await unregister(rail)
+            logger.info("[JiuWenSwarmDeepAdapter] TTSERail unregistered")
+        except Exception as exc:
+            logger.warning("[JiuWenSwarmDeepAdapter] TTSERail unregister failed: %s", exc)
+
+    async def _cleanup_ttse_background_tasks(self, rid: str, session_id: str) -> None:
+        """Wait for TTSE background induction without draining approval events."""
+        rail = self._ttse_rail
+        if rail is None:
+            return
+        try:
+            cleanup = getattr(rail, "cleanup_background_tasks", None)
+            if cleanup is not None:
+                await cleanup()
+        except Exception as exc:
+            logger.warning(
+                "[JiuWenSwarmDeepAdapter] TTSE cleanup failed: request_id=%s "
+                "session_id=%s error=%s",
+                rid,
+                session_id,
+                exc,
+            )
+
     async def _ensure_active_evolution_rails_registered(self) -> None:
         """Configure, register, and cache single-agent skill evolution rails."""
         if self._instance is None:
@@ -8774,7 +9114,7 @@ class JiuWenSwarmDeepAdapter:
             ),
         ]
 
-        # SkillEvolutionRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
+        # SkillEvolutionRail / TTSERail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
         # 智能模式下关闭自演进，plan 模式下按配置启用
 
         # MemoryRail 不在冷启动时挂载，由 _update_rails_for_mode 按 mode 按需注册/注销
@@ -9429,6 +9769,14 @@ class JiuWenSwarmDeepAdapter:
             self._skill_evolution_rail.auto_save = get_evolution_auto_save_enabled(
                 config_base or self._config_base_cache or config
             )
+
+        if self._ttse_rail is not None:
+            update_llm = getattr(self._ttse_rail, "update_llm", None)
+            if callable(update_llm):
+                update_llm(
+                    self._model,
+                    self._default_model_name or config.get("model_name", "gpt-4"),
+                )
 
         # Reuse existing SkillUseRail to preserve dynamically loaded skills
         # from activate_package() / load_harness_config(). When directory
@@ -10856,6 +11204,16 @@ class JiuWenSwarmDeepAdapter:
             self._evolution_watcher_tasks.clear()
             logger.info("[JiuWenSwarmDeepAdapter] evolution stack unregistered (skill_evolution=false)")
 
+        ttse_wrap = {"react": {"ttse": self._resolved_ttse_config()}}
+        if get_ttse_enabled(ttse_wrap):
+            if self._ttse_rail is None:
+                await self._ensure_ttse_rail_registered()
+            else:
+                self._sync_ttse_rail_config(self._config_cache)
+                self._mark_ttse_consult_direct_exposure()
+        elif self._ttse_rail is not None:
+            await self._unconfigure_ttse_rail()
+
         # SkillCreateRail
         skill_create_enabled = evolution_enabled
         if skill_create_enabled:
@@ -11848,17 +12206,28 @@ class JiuWenSwarmDeepAdapter:
         """Drain detached evolution work before adapter-owned state is released."""
         rail = getattr(self, "_skill_evolution_rail", None)
         cleanup = getattr(rail, "cleanup_background_tasks", None)
-        if not callable(cleanup):
-            return
-        try:
-            await cleanup()
-        except Exception as exc:
-            logger.warning(
-                "[JiuWenSwarmDeepAdapter] evolution cleanup failed during "
-                "adapter teardown: %s",
-                exc,
-            )
-            raise
+        if callable(cleanup):
+            try:
+                await cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] evolution cleanup failed during "
+                    "adapter teardown: %s",
+                    exc,
+                )
+                raise
+        ttse_rail = getattr(self, "_ttse_rail", None)
+        ttse_cleanup = getattr(ttse_rail, "cleanup_background_tasks", None)
+        if callable(ttse_cleanup):
+            try:
+                await ttse_cleanup()
+            except Exception as exc:
+                logger.warning(
+                    "[JiuWenSwarmDeepAdapter] TTSE cleanup failed during "
+                    "adapter teardown: %s",
+                    exc,
+                )
+                raise
 
     def _teardown_agent_owned_tools(self) -> None:
         """Drop this agent's stateful tool registrations from the global resource manager.
@@ -16215,6 +16584,12 @@ class JiuWenSwarmDeepAdapter:
                 )
                 task.add_done_callback(self._on_evolution_watcher_done)
                 self._evolution_watcher_tasks.add(task)
+            if self._ttse_rail is not None:
+                ttse_task = asyncio.create_task(
+                    self._cleanup_ttse_background_tasks(rid, session_id)
+                )
+                ttse_task.add_done_callback(self._on_evolution_watcher_done)
+                self._evolution_watcher_tasks.add(ttse_task)
             if _debug_logger is not None:
                 if run_failure is not None:
                     _debug_logger.end_run(

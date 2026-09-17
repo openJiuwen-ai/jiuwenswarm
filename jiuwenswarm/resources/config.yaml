@@ -700,6 +700,20 @@ react:
     skill_evolution: false     # true = 启用技能演进与创建（自动及手动）
     auto_save: false           # true = 自演进审批无需用户点击自动通过
     review_feedback_min_confidence: 0.7
+  # TTSE（Two-Track Self-Evolution）FACT/TIP 双轨自演进；与 skill 演进独立
+  # 默认开启；agent 模式挂载 TTSERail。dream_interval / dream_min_hours /
+  # dream_ttl_days 由实现固定（50 / 24.0 / 90），不对用户开放。
+  ttse:
+    enabled: true           # 默认开启；true 才挂载 TTSERail（仅 agent 模式）
+    evolve_enabled: true    # 是否从轨迹归纳 FACT/TIP
+    inject_enabled: true    # 是否注入系统 prompt
+    # Auto-dream（经验库卫生：TTL 剪枝 / 近重合并 / TIP 清洗）
+    dream_enabled: true     # 是否启用静默 Auto-dream
+    # 语义检索 / dedup；变量名与 embed.* 一致。三段解析非空时混合召回，否则 BM25 兜底
+    embedding:
+      api_key: ${EMBED_API_KEY}
+      base_url: ${EMBED_API_BASE}
+      model: ${EMBED_MODEL}
   a2x_registry:
     base_url: "http://127.0.0.1:8000"
     timeout: 30.0
