@@ -535,26 +535,31 @@ class TestBuildMcpServerConfigStdio:
         assert cfg.client_type == "stdio"
         assert cfg.params["command"] == "node"
 
-    def test_enterprise_rejects_stdio_transport(self, monkeypatch, caplog):
-        import logging
+    def test_enterprise_rejects_stdio_transport(self, monkeypatch):
+        warned: list[tuple] = []
+
+        def _capture_warning(msg, *args, **kwargs):
+            warned.append((msg, args))
 
         monkeypatch.setattr(
             "jiuwenswarm.common.mcp_config.is_enterprise", lambda: True
         )
-        with caplog.at_level(logging.WARNING):
-            cfg = build_mcp_server_config(
-                {
-                    "name": "local",
-                    "transport": "stdio",
-                    "command": "node",
-                    "args": ["s.js"],
-                }
-            )
-        assert cfg is None
-        assert any(
-            "rejects local stdio" in record.message and "local" in record.message
-            for record in caplog.records
+        monkeypatch.setattr(
+            "jiuwenswarm.common.mcp_config.logger.warning", _capture_warning
         )
+        cfg = build_mcp_server_config(
+            {
+                "name": "local",
+                "transport": "stdio",
+                "command": "node",
+                "args": ["s.js"],
+            }
+        )
+        assert cfg is None
+        assert len(warned) == 1
+        msg, args = warned[0]
+        assert "rejects local stdio" in msg
+        assert args == ("local",)
 
 
 class TestBuildMcpServerConfigAuthHeaders:
