@@ -16,6 +16,7 @@ import {
   shouldRenderStructuredPayloadByDefault,
   summarizePath,
   summarizeToolResultByKind,
+  toolResultText,
   toolStateColor,
 } from "./tool-render-shared.js";
 
@@ -76,7 +77,7 @@ export function renderRunTool(
       lines.push(
         ...renderToolTail(
           width,
-          summaryText || summarize(tool.result, 120),
+          summaryText || summarize(toolResultText(tool), 120),
           toolStateColor(tool),
         ),
       );
@@ -117,7 +118,7 @@ export function renderRunTool(
       lines.push(
         ...renderPreviewLines(
           width,
-          nonEmptyLines(tool.result),
+          nonEmptyLines(toolResultText(tool)),
           tool.isError ? palette.status.error : palette.text.assistant,
           8,
           4,
@@ -162,8 +163,8 @@ export function renderFetchTool(
       ...renderToolTail(
         width,
         tool.summary ??
-          summarizeToolResultByKind(tool.name, tool.result) ??
-          summarize(tool.result, 120),
+          summarizeToolResultByKind(tool.name, toolResultText(tool)) ??
+          summarize(toolResultText(tool), 120),
         toolStateColor(tool),
       ),
     );
