@@ -70,7 +70,8 @@ class InProcessAgentServerClient:
 
         return TenantAgentPool.get_instance()
 
-    def _make_dispatch_ctx(self, request: Any) -> Any | None:
+    @staticmethod
+    def _make_dispatch_ctx(request: Any) -> Any | None:
         """Build a ``RequestContext`` over a capturing sink, or ``None``.
 
         ``None`` means the dispatch entry is unavailable in this process

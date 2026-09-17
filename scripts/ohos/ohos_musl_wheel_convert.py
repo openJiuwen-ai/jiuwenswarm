@@ -24,7 +24,7 @@ a musllinux_*_aarch64 wheel installable & loadable on HarmonyOS by:
    RECORD.
 
 Usage:
-    python ohos-musl-wheel-convert.py INPUT.whl [-o OUTPUT.whl]
+    python ohos_musl_wheel_convert.py INPUT.whl [-o OUTPUT.whl]
         [--sign-tool /data/service/hnp/bin/binary-sign-tool]
         [--libpython libpython3.12.so.1.0]
 
@@ -36,6 +36,7 @@ from __future__ import annotations
 import argparse
 import base64
 import hashlib
+import logging
 import os
 import re
 import shutil
@@ -45,18 +46,27 @@ import sys
 import tempfile
 import zipfile
 
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    stream=sys.stderr,
+)
+
 PAGE = 4096
 MUSL_SO_RE = re.compile(r"^(.*\.cpython-\d+)-[a-z0-9_]+-linux-musl\.so$")
 DEFAULT_SIGN_TOOL = "/data/service/hnp/bin/binary-sign-tool"
 
 
-def die(msg: str) -> "None":
-    print(f"[convert] ERROR: {msg}", file=sys.stderr)
-    sys.exit(1)
+class ConvertError(Exception):
+    """Fatal conversion error; ``main`` logs it and exits non-zero."""
+
+
+def die(msg: str) -> None:
+    raise ConvertError(msg)
 
 
 def info(msg: str) -> None:
-    print(f"[convert] {msg}")
+    logging.info("[convert] %s", msg)
 
 
 # ---------------------------------------------------------------- ELF utils
@@ -78,16 +88,16 @@ class Elf:
 
     def phdrs(self):
         out = []
-        for i in range(self.e_phnum):
-            o = self.e_phoff + i * self.e_phentsize
-            p_type, p_flags = struct.unpack_from("<II", self.data, o)
+        for idx in range(self.e_phnum):
+            off = self.e_phoff + idx * self.e_phentsize
+            p_type, p_flags = struct.unpack_from("<II", self.data, off)
             p_offset, p_vaddr, _pa, p_filesz, p_memsz, p_align = struct.unpack_from(
-                "<QQQQQQ", self.data, o + 8
+                "<QQQQQQ", self.data, off + 8
             )
             out.append(
                 {
-                    "idx": i,
-                    "hdr_off": o,
+                    "idx": idx,
+                    "hdr_off": off,
                     "type": p_type,
                     "flags": p_flags,
                     "offset": p_offset,
@@ -106,19 +116,19 @@ class Elf:
 
     def sections(self):
         out = []
-        for i in range(self.e_shnum):
-            o = self.e_shoff + i * self.e_shentsize
-            sh_offset = struct.unpack_from("<Q", self.data, o + 0x18)[0]
-            sh_size = struct.unpack_from("<Q", self.data, o + 0x20)[0]
-            out.append({"idx": i, "hdr_off": o, "offset": sh_offset, "size": sh_size})
+        for idx in range(self.e_shnum):
+            off = self.e_shoff + idx * self.e_shentsize
+            sh_offset = struct.unpack_from("<Q", self.data, off + 0x18)[0]
+            sh_size = struct.unpack_from("<Q", self.data, off + 0x20)[0]
+            out.append({"idx": idx, "hdr_off": off, "offset": sh_offset, "size": sh_size})
         return out
 
     def find_dynamic(self):
-        for i in range(self.e_shnum):
-            o = self.e_shoff + i * self.e_shentsize
-            if struct.unpack_from("<I", self.data, o + 4)[0] == 6:  # SHT_DYNAMIC
-                return struct.unpack_from("<Q", self.data, o + 0x18)[0], struct.unpack_from(
-                    "<Q", self.data, o + 0x20
+        for idx in range(self.e_shnum):
+            off = self.e_shoff + idx * self.e_shentsize
+            if struct.unpack_from("<I", self.data, off + 4)[0] == 6:  # SHT_DYNAMIC
+                return struct.unpack_from("<Q", self.data, off + 0x18)[0], struct.unpack_from(
+                    "<Q", self.data, off + 0x20
                 )[0]
         return None, None
 
@@ -162,7 +172,7 @@ def fix_congruence(elf: Elf) -> list[str]:
             continue
         # extend last section so align8(new_end) == b.offset
         delta = b["offset"] - landing
-        gap = bytes(elf.data[last_end : b["offset"]])
+        gap = bytes(elf.data[last_end:b["offset"]])
         if gap != b"\x00" * len(gap):
             info(
                 f"  !! {os.path.basename(elf.path)}: gap not zeros "
@@ -197,15 +207,15 @@ PREFERRED_VICTIMS = (
 
 def _locate_dynstr(elf: Elf):
     """Return (file_offset, size) of .dynstr via SHT_DYNSYM's sh_link."""
-    for i in range(elf.e_shnum):
-        o = elf.e_shoff + i * elf.e_shentsize
-        if struct.unpack_from("<I", elf.data, o + 4)[0] != 11:  # SHT_DYNSYM
+    for idx in range(elf.e_shnum):
+        off = elf.e_shoff + idx * elf.e_shentsize
+        if struct.unpack_from("<I", elf.data, off + 4)[0] != 11:  # SHT_DYNSYM
             continue
-        sh_link = struct.unpack_from("<I", elf.data, o + 0x28)[0]
-        lo = elf.e_shoff + sh_link * elf.e_shentsize
+        sh_link = struct.unpack_from("<I", elf.data, off + 0x28)[0]
+        linked_off = elf.e_shoff + sh_link * elf.e_shentsize
         return (
-            struct.unpack_from("<Q", elf.data, lo + 0x18)[0],
-            struct.unpack_from("<Q", elf.data, lo + 0x20)[0],
+            struct.unpack_from("<Q", elf.data, linked_off + 0x18)[0],
+            struct.unpack_from("<Q", elf.data, linked_off + 0x20)[0],
         )
     return None, None
 
@@ -223,7 +233,7 @@ def has_needed(elf: Elf, libname: str) -> bool:
             break
         if tag == 1:
             end = elf.data.index(b"\x00", str_off + val)
-            if bytes(elf.data[str_off + val : end]) == libname.encode():
+            if bytes(elf.data[str_off + val:end]) == libname.encode():
                 return True
         j += 16
     return False
@@ -248,18 +258,18 @@ def add_needed(elf: Elf, libname: str) -> str:
         return ""
     # --- locate dynsym/dynstr via section headers ---
     dynsym = dynstr = None
-    for i in range(elf.e_shnum):
-        o = elf.e_shoff + i * elf.e_shentsize
-        sh_type = struct.unpack_from("<I", elf.data, o + 4)[0]
-        sh_offset = struct.unpack_from("<Q", elf.data, o + 0x18)[0]
-        sh_size = struct.unpack_from("<Q", elf.data, o + 0x20)[0]
+    for idx in range(elf.e_shnum):
+        off = elf.e_shoff + idx * elf.e_shentsize
+        sh_type = struct.unpack_from("<I", elf.data, off + 4)[0]
+        sh_offset = struct.unpack_from("<Q", elf.data, off + 0x18)[0]
+        sh_size = struct.unpack_from("<Q", elf.data, off + 0x20)[0]
         if sh_type == 11:  # SHT_DYNSYM
-            sh_link = struct.unpack_from("<I", elf.data, o + 0x28)[0]
+            sh_link = struct.unpack_from("<I", elf.data, off + 0x28)[0]
             dynsym = (sh_offset, sh_size)
-            lo = elf.e_shoff + sh_link * elf.e_shentsize
+            linked_off = elf.e_shoff + sh_link * elf.e_shentsize
             dynstr = (
-                struct.unpack_from("<Q", elf.data, lo + 0x18)[0],
-                struct.unpack_from("<Q", elf.data, lo + 0x20)[0],
+                struct.unpack_from("<Q", elf.data, linked_off + 0x18)[0],
+                struct.unpack_from("<Q", elf.data, linked_off + 0x20)[0],
             )
             break
     if dynsym is None or dynstr is None:
@@ -285,25 +295,25 @@ def add_needed(elf: Elf, libname: str) -> str:
     entsz = 24
     n_syms = sym_sz // entsz
     for want in PREFERRED_VICTIMS:
-        for k in range(n_syms):
-            o = sym_off + k * entsz
+        for sym_idx in range(n_syms):
+            off = sym_off + sym_idx * entsz
             st_name, st_info, _st_other, st_shndx = struct.unpack_from(
-                "<IBBH", elf.data, o
+                "<IBBH", elf.data, off
             )
             if st_shndx != 0 or (st_info >> 4) != 2:  # undefined + weak
                 continue
             end = elf.data.index(b"\x00", str_off + st_name)
-            nm = bytes(elf.data[str_off + st_name : end])
+            nm = bytes(elf.data[str_off + st_name:end])
             if nm == want and len(nm) + 1 >= len(need):
                 victim = (st_name, len(nm) + 1)
                 break
         if victim:
             break
     if victim is None:  # any weak undefined with a long-enough name
-        for k in range(n_syms):
-            o = sym_off + k * entsz
+        for sym_idx in range(n_syms):
+            off = sym_off + sym_idx * entsz
             st_name, st_info, _st_other, st_shndx = struct.unpack_from(
-                "<IBBH", elf.data, o
+                "<IBBH", elf.data, off
             )
             if st_shndx != 0 or (st_info >> 4) != 2:
                 continue
@@ -314,7 +324,7 @@ def add_needed(elf: Elf, libname: str) -> str:
     j, old_tag = sacrifice
     if victim is not None:
         st_name, old_len = victim
-        elf.data[str_off + st_name : str_off + st_name + len(need)] = need
+        elf.data[str_off + st_name:str_off + st_name + len(need)] = need
         struct.pack_into("<qQ", elf.data, dyn_off + j, 1, st_name)
         tagname = {
             13: "DT_FINI",
@@ -327,7 +337,7 @@ def add_needed(elf: Elf, libname: str) -> str:
     note = next((p for p in elf.phdrs() if p["type"] == 4), None)
     if note is None or note["filesz"] < len(need) or str_va is None:
         return "DT_NEEDED: skipped (no slot)"
-    elf.data[note["offset"] : note["offset"] + len(need)] = need
+    elf.data[note["offset"]:note["offset"] + len(need)] = need
     str_off_wrapped = (note["vaddr"] - str_va) & 0xFFFFFFFFFFFFFFFF
     struct.pack_into("<qQ", elf.data, dyn_off + j, 1, str_off_wrapped)
     return f"DT_NEEDED={libname} (note+wraparound @ {hex(str_off_wrapped)})"
@@ -356,9 +366,9 @@ def rename_needed(elf: Elf, old: str, new: str) -> int:
             break
         if tag == 1:
             end = elf.data.index(b"\x00", str_off + val)
-            name = bytes(elf.data[str_off + val : end])
+            name = bytes(elf.data[str_off + val:end])
             if name == old_b:
-                elf.data[str_off + val : str_off + val + len(new_b)] = new_b
+                elf.data[str_off + val:str_off + val + len(new_b)] = new_b
                 n += 1
         j += 16
     return n
@@ -457,7 +467,8 @@ def convert_wheel(src: str, dst: str, sign_tool: str, libpython: str, renames=()
         for so in sorted(so_files):
             rel = os.path.relpath(so, tmp)
             # 1. rename musl extension suffix
-            mm = MUSL_SO_RE.match(fn := os.path.basename(so))
+            fn = os.path.basename(so)
+            mm = MUSL_SO_RE.match(fn)
             if mm:
                 new = os.path.join(os.path.dirname(so), mm.group(1) + ".so")
                 os.rename(so, new)
@@ -548,7 +559,7 @@ def convert_single_so(path: str, sign_tool: str, renames=()) -> None:
             info(f"  {f}")
 
 
-def main() -> None:
+def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("wheel", nargs="?")
     ap.add_argument("--so", help="process a single shared object (sign in place)")
@@ -563,6 +574,15 @@ def main() -> None:
         help="rewrite DT_NEEDED entries from OLD to NEW (NEW must be shorter)",
     )
     args = ap.parse_args()
+    try:
+        _run(args)
+    except ConvertError as exc:
+        logging.error("[convert] ERROR: %s", exc)
+        return 1
+    return 0
+
+
+def _run(args: argparse.Namespace) -> None:
     if not os.path.exists(args.sign_tool):
         die(f"sign tool not found: {args.sign_tool}")
     renames = []
@@ -582,4 +602,4 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())

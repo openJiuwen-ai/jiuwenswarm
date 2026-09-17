@@ -452,16 +452,12 @@ def _bind_requested_team(
         list_team_template_summaries,
     )
     from jiuwenswarm.server.handlers.team import _create_team_binding_from_template
-    from jiuwenswarm.common.schema.agent import AgentRequest
     from jiuwenswarm.server.runtime.session.session_metadata import (
         update_session_metadata,
     )
     from jiuwenswarm.server.runtime.team_binding_store import (
         TeamBindingStoreError,
         get_team_binding_store,
-    )
-    from jiuwenswarm.server.runtime.team_entity_store import (
-        get_team_entity_store,
     )
 
     def _write_team_identity(bound: Any) -> None:
@@ -488,7 +484,6 @@ def _bind_requested_team(
 
     try:
         binding_store = get_team_binding_store()
-        entity_store = get_team_entity_store()
         binding = binding_store.get(team_name)
         if binding is None:
             config_base = _effective_config_for_request(request)

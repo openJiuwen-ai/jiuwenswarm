@@ -12,7 +12,7 @@
 #      harmonyos 原生 wheel 与 deepsearch-deps 纯 Python 包，克隆仓库即得；
 #      把整个 jiuwenswarm 目录复制到新机器亦可）。
 #   2. 离线 wheel 里的 .so 若因代码签名（本机 binary-sign-tool 自签）不被新机器
-#      接受，自动用新机器的签名工具重签（scripts/ohos/ohos-musl-wheel-convert.py）。
+#      接受，自动用新机器的签名工具重签（scripts/ohos/ohos_musl_wheel_convert.py）。
 #   3. 仍失败时从清华镜像下载 musl wheel 现场转换（需要网络）。
 #   4. 幂等可重跑：已装好且功能正常的组件自动跳过。
 #   5. matplotlib/seaborn 故意不装（仅图表沙箱使用）；Milvus 向量检索用桩替代
@@ -28,7 +28,7 @@ VENV_PY="$REPO_ROOT/.venv/bin/python"
 WHEELS="$REPO_ROOT/wheels"
 DEPS_DIR="$WHEELS/deepsearch-deps"
 MUSL_DIR="$WHEELS/musl-sources"
-CONVERTER="$REPO_ROOT/scripts/ohos/ohos-musl-wheel-convert.py"
+CONVERTER="$REPO_ROOT/scripts/ohos/ohos_musl_wheel_convert.py"
 # 签名工具探测（2026-09-14）：老布局在 /data/service/hnp/bin；部分机型 HNP 在
 # /data/app/el1/bundle/100/hnppublic（ohos-env.sh 已自动探测到 OHOS_HNP_BIN）。
 # 显式设置 SIGN_TOOL 时完全尊重；未设置时按 候选探测。
@@ -107,7 +107,7 @@ if [ -x "$SIGN_TOOL" ]; then
 else
     warn "未找到 $SIGN_TOOL —— 若离线 wheel 需要重签将无法兜底"
 fi
-[ -f "$CONVERTER" ] || warn "未找到 scripts/ohos/ohos-musl-wheel-convert.py —— wheel 重签/转换兜底不可用"
+[ -f "$CONVERTER" ] || warn "未找到 scripts/ohos/ohos_musl_wheel_convert.py —— wheel 重签/转换兜底不可用"
 
 # ---------- 执行环境探测（hmdfs 任务级限制金丝雀）----------
 # 实测：系统终端等上下文无法 mmap-exec hmdfs 上的任何 .so（dlopen 一律

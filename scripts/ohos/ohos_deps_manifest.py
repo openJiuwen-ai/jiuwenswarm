@@ -14,6 +14,7 @@ Profile:
 """
 from __future__ import annotations
 
+import logging
 import os
 import re
 import sys
@@ -23,6 +24,12 @@ try:
     import tomllib
 except ImportError:
     import tomli as tomllib  # type: ignore[no-redef]
+
+logging.basicConfig(
+    level=logging.INFO,
+    format="%(message)s",
+    stream=sys.stderr,
+)
 
 # pip 包名 -> import 模块（与 verify-ohos-openjiuwen-deps 对齐）
 IMPORT_BY_PACKAGE: dict[str, str] = {
@@ -263,7 +270,12 @@ def collect_project_deps(
     proj = data.get("project", {})
     for spec in proj.get("dependencies") or []:
         s = str(spec)
-        if project == "jiuwenswarm" and "openjiuwen" in s and ("git+" in s or "git://" in s):
+        is_jiuwenswarm_git_openjiuwen = (
+            project == "jiuwenswarm"
+            and "openjiuwen" in s
+            and ("git+" in s or "git://" in s)
+        )
+        if is_jiuwenswarm_git_openjiuwen:
             continue
         add_row(rows, seen, project, "core", s, dedupe_by_spec=dedupe_by_spec)
     if include_optional:
@@ -407,10 +419,10 @@ def collect_agentcore_minimal(
         )
 
     if harmonyos_path is None or not harmonyos_path.is_file():
-        print(
-            f"WARN: harmonyos pyproject not found (set AGENT_CORE_PATH); "
-            f"fallback AGENTCORE_MINIMAL_SPECS ({len(AGENTCORE_MINIMAL_SPECS)} pkgs)",
-            file=sys.stderr,
+        logging.warning(
+            "WARN: harmonyos pyproject not found (set AGENT_CORE_PATH); "
+            "fallback AGENTCORE_MINIMAL_SPECS (%d pkgs)",
+            len(AGENTCORE_MINIMAL_SPECS),
         )
         for spec, _mod, note in AGENTCORE_MINIMAL_SPECS:
             add_row(
@@ -549,7 +561,9 @@ def main() -> int:
                 seen,
                 "agent-core",
                 "extra:intelli-router",
-                "intelli-router @ git+https://gitcode.com/openJiuwen/agent-protocol.git@feature/intelliRouter#subdirectory=intelli_router",
+                "intelli-router @ "
+                "git+https://gitcode.com/openJiuwen/agent-protocol.git"
+                "@feature/intelliRouter#subdirectory=intelli_router",
                 "git optional",
             )
 
@@ -601,13 +615,15 @@ def main() -> int:
                 )
 
     if pypi_only:
-        rows = [
-            r
-            for r in rows
-            if not r[2].strip().startswith("-e ")
-            and " @ git+" not in r[2]
-            and "git+https" not in r[2]
-        ]
+        filtered_rows = []
+        for row in rows:
+            pip_spec = row[2].strip()
+            if pip_spec.startswith("-e "):
+                continue
+            if " @ git+" in row[2] or "git+https" in row[2]:
+                continue
+            filtered_rows.append(row)
+        rows = filtered_rows
 
     out_path = os.environ.get("MANIFEST_OUT")
     lines = ["project\tcategory\tpip_spec\timport_module\tnote"]
@@ -617,7 +633,7 @@ def main() -> int:
         Path(out_path).write_text(text, encoding="utf-8")
     else:
         sys.stdout.write(text)
-    print(f"# manifest profile={profile}: {len(rows)} rows", file=sys.stderr)
+    logging.info("# manifest profile=%s: %d rows", profile, len(rows))
     return 0
 
 

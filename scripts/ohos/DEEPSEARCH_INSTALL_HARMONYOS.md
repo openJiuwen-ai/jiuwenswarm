@@ -88,17 +88,17 @@ pandas 的 musl wheel 里本来就把 `libstdc++-1f1a71be.so.6.0.33` /
 
 ## 一键工具
 
-`scripts/ohos/ohos-musl-wheel-convert.py` 封装了以上全部手术：
+`scripts/ohos/ohos_musl_wheel_convert.py` 封装了以上全部手术：
 
 ```sh
 # 整个 wheel 转换（改名扩展后缀 + 同余预修 + DT_NEEDED libpython + 签名 + 改标签 + 重打 RECORD）
-.venv/bin/python scripts/ohos/ohos-musl-wheel-convert.py \
+.venv/bin/python scripts/ohos/ohos_musl_wheel_convert.py \
     /path/to/foo-cp312-cp312-musllinux_1_2_aarch64.whl \
     --rename-needed "libstdc++-1f1a71be.so.6.0.33=libstdc++.so.6" \
     --rename-needed "libgcc_s-69c45f16.so.1=libgcc_s.so.1"
 
 # 单个 .so 就地签名（比如 Alpine 的 libstdc++/libgcc_s）
-.venv/bin/python scripts/ohos/ohos-musl-wheel-convert.py --so /path/to/libstdc++.so.6.0.33
+.venv/bin/python scripts/ohos/ohos_musl_wheel_convert.py --so /path/to/libstdc++.so.6.0.33
 ```
 
 ## 完整安装步骤（手动方式，脚本内部即此流程）
@@ -122,7 +122,7 @@ pip install --no-deps wheels/openjiuwen_deepsearch-0.2.0-py3-none-any.whl
 pip install --no-deps wheels/pypdfium2-4.30.0-py3-none-harmonyos_aarch64.whl
 pip install --no-deps wheels/pandas-2.3.1-cp312-cp312-harmonyos_aarch64.whl
 # 手动转换 musl 源（如需要）：
-.venv/bin/python scripts/ohos/ohos-musl-wheel-convert.py \
+.venv/bin/python scripts/ohos/ohos_musl_wheel_convert.py \
     wheels/musl-sources/pandas-2.3.1-cp312-cp312-musllinux_1_2_aarch64.whl
 # （pandas.libs/ 里的哈希名 C++ 库由脚本自动签名，RPATH 自包含，无需系统部署）
 

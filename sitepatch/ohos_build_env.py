@@ -276,37 +276,6 @@ def _patch_setuptools_rust_rustc_info(mod) -> None:
 
     rustc_dir = os.path.dirname(rustc_bin)
 
-    def _make_rust_subprocess(cmd_args_fn):
-        """Return a patched function that calls rustc with correct PATH.
-        cmd_args_fn(extra_args) returns the full command list."""
-        import subprocess as _sp
-
-        def _patched(*args, **kwargs):
-            # All these functions accept (env=...) as kwarg
-            env_arg = kwargs.get("env") or (args[0] if args else None)
-            out_env = dict(os.environ)
-            if env_arg:
-                try:
-                    out_env.update(env_arg)
-                except (TypeError, ValueError):
-                    if hasattr(env_arg, "items"):
-                        out_env.update(dict(env_arg.items()))
-                    elif hasattr(env_arg, "__getitem__"):
-                        try:
-                            out_env.update(dict(env_arg))
-                        except Exception:
-                            pass
-            out_env["PATH"] = rustc_dir + os.pathsep + out_env.get("PATH", "")
-            out_env["RUSTC"] = rustc_bin
-            kwargs["env"] = out_env
-            # Replace "rustc" with absolute path in cmd
-            cmd = cmd_args_fn()
-            if cmd and cmd[0] == "rustc":
-                cmd = [rustc_bin] + cmd[1:]
-            return _sp.check_output(cmd, text=True, **{k: v for k, v in kwargs.items() if k != "env"} if False else None)  # noqa
-
-        return _patched
-
     # Simpler approach: just replace the functions that call rustc
     import subprocess as _sp
 
@@ -487,8 +456,12 @@ def apply() -> None:
         # 完全正常，只有触发源码构建才需要它。
         _diag.append("setuptools_rust absent (informational; only needed for source builds)")
 
-    # 输出诊断到 stderr
-    _sys.stderr.write("[ohos_build_env] " + " | ".join(_diag) + "\n")
+    # 输出诊断到 stderr（logging 未配置前 stdlib logging 默认 WARNING 级且
+    # 无 handler，这里用 basicConfig 显式落到 stderr、保持纯文本格式）
+    import logging
+
+    logging.basicConfig(level=logging.INFO, format="%(message)s", stream=_sys.stderr)
+    logging.info("[ohos_build_env] " + " | ".join(_diag))
     _sys.stderr.flush()
 
 
