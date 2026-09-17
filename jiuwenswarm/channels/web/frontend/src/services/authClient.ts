@@ -146,6 +146,24 @@ export async function claim(state: string, claimToken: string): Promise<ClaimOut
   return { kind: 'done', status: { ...data, enabled: true } };
 }
 
+/**
+ * 放弃这次登录，让Gateway别再替它向鉴权服务认领。发不出去时Gateway也会在state过期后自己停。
+ * `keepalive` 让页面关闭时发起的这次请求也能送达。
+ */
+export async function cancelLogin(state: string, claimToken: string): Promise<void> {
+  try {
+    await fetch(authUrl('/cancel'), {
+      method: 'POST',
+      credentials: 'include',
+      keepalive: true,
+      headers: stateChangingHeaders({ 'Content-Type': 'application/json' }),
+      body: JSON.stringify({ state, claimToken }),
+    });
+  } catch {
+    /* 见上 */
+  }
+}
+
 /** 查询当前登录状态。后端未开启登录时返回 `enabled: false`。 */
 export async function status(): Promise<AuthStatus> {
   const response = await fetch(authUrl('/status'), {
