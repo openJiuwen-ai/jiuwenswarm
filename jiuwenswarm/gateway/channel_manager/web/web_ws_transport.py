@@ -76,6 +76,8 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.processing_status",
         "chat.interrupt_result",
         "chat.evolution_status",
+        "chat.evolution_generated",
+        "chat.evolution_published",
         "chat.error",
         "heartbeat.relay",
         "context.usage",

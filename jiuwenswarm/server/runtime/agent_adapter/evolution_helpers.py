@@ -72,6 +72,47 @@ class EvolutionPushContext:
     session_id: str
 
 
+AUTO_REBUILD_SOURCE_WATCHER = "auto_watcher"
+AUTO_REBUILD_SOURCE_MANUAL = "manual_approval"
+
+
+@dataclass(frozen=True)
+class AutoRebuildJob:
+    """One queued auto rebuild, with the delivery context captured at enqueue.
+
+    Adapter instances are shared across requests; persist the session/channel
+    on the job so published metrics cannot be overwritten by a later session.
+    """
+
+    skill_name: str
+    source: str
+    session_id: str = ""
+    channel_id: str = ""
+    request_id: str = ""
+    push_metrics: bool = False
+
+
+def auto_rebuild_job(
+    skill_name: str,
+    *,
+    source: str = AUTO_REBUILD_SOURCE_MANUAL,
+    session_id: str = "",
+    channel_id: str | None = None,
+    request_id: str = "",
+    push_metrics: bool | None = None,
+) -> AutoRebuildJob:
+    src = str(source or AUTO_REBUILD_SOURCE_MANUAL).strip() or AUTO_REBUILD_SOURCE_MANUAL
+    should_push = AUTO_REBUILD_SOURCE_WATCHER == src if push_metrics is None else bool(push_metrics)
+    return AutoRebuildJob(
+        skill_name=str(skill_name or "").strip(),
+        source=src,
+        session_id=str(session_id or "").strip(),
+        channel_id=str(channel_id or "").strip(),
+        request_id=str(request_id or "").strip(),
+        push_metrics=should_push,
+    )
+
+
 @dataclass(frozen=True)
 class EvolutionStatusUpdate:
     request_id: str
@@ -889,6 +930,136 @@ async def push_evolution_status(
         build_push_message(
             session_id=push_context.session_id,
             request_id=status_update.request_id,
+            fallback_channel_id=push_context.channel_id,
+            payload=payload,
+        )
+    )
+
+
+def _entry_metric_summary(entry: Any) -> str:
+    # Mirrors EvolutionLog.refresh_summary fallbacks; SDK does not expose a helper.
+    summary = str(getattr(entry, "summary", None) or "").strip()
+    if summary:
+        return summary
+    change = getattr(entry, "change", None)
+    change_summary = str(getattr(change, "summary", None) or "").strip() if change is not None else ""
+    if change_summary:
+        return change_summary
+    content = str(getattr(change, "content", None) or "").strip() if change is not None else ""
+    if content:
+        return content.splitlines()[0].strip()
+    return ""
+
+
+def evolution_entry_metric_items(entries: Any) -> list[dict[str, str]]:
+    """Map live evolution entries to AOM generated ledger items.
+
+    Prefers ``review_status=auto``; also keeps entries with missing/empty status
+    (legacy writes). Suggest entries are left to the suggest sync path.
+    """
+    items: list[dict[str, str]] = []
+    if not entries:
+        return items
+    for entry in entries:
+        entry_id = str(getattr(entry, "id", None) or "").strip()
+        if not entry_id:
+            continue
+        review_status = str(getattr(entry, "review_status", None) or "").strip().lower()
+        if review_status and review_status not in {"auto"}:
+            continue
+        timestamp = str(getattr(entry, "timestamp", None) or "").strip()
+        item: dict[str, str] = {
+            "id": entry_id,
+            "summary": _entry_metric_summary(entry),
+        }
+        if timestamp:
+            item["timestamp"] = timestamp
+        items.append(item)
+    return items
+
+
+async def snapshot_auto_evolution_metric_items(
+    store: Any,
+    skill_name: str,
+    *,
+    subject_kind: str | None = None,
+    request_id: str | None = None,
+) -> list[dict[str, str]]:
+    """Read live evolutions.json and return auto (or status-less) metric items."""
+    name = str(skill_name or "").strip()
+    if not name or store is None:
+        return []
+    try:
+        kwargs: dict[str, Any] = {}
+        if subject_kind:
+            kwargs["subject_kind"] = subject_kind
+        evo_log = await store.load_full_evolution_log(name, **kwargs)
+    except Exception as exc:
+        logger.warning(
+            "snapshot_auto_evolution_metric_items failed: skill=%s request_id=%s error=%s",
+            name,
+            str(request_id or "").strip(),
+            exc,
+        )
+        return []
+    return evolution_entry_metric_items(getattr(evo_log, "entries", None) or [])
+
+
+async def push_evolution_generated(
+    push_context: EvolutionPushContext,
+    *,
+    request_id: str,
+    skill_name: str,
+    items: list[dict[str, str]],
+    build_push_message: Callable[..., dict[str, Any]],
+    source: str = "auto",
+) -> None:
+    """Push auto-generated experience ids for relay-claw AOM ``generated`` metrics."""
+    name = str(skill_name or "").strip()
+    if not name or not items:
+        return
+    payload: dict[str, Any] = {
+        "event_type": "chat.evolution_generated",
+        "skill_name": name,
+        "items": items,
+        "source": source,
+        "request_id": request_id,
+    }
+    await push_context.transport.send_push(
+        build_push_message(
+            session_id=push_context.session_id,
+            request_id=request_id,
+            fallback_channel_id=push_context.channel_id,
+            payload=payload,
+        )
+    )
+
+
+async def push_evolution_published(
+    push_context: EvolutionPushContext,
+    *,
+    request_id: str,
+    skill_name: str,
+    version: str,
+    build_push_message: Callable[..., dict[str, Any]],
+    source: str = "auto",
+) -> None:
+    """Push auto rebuild SemVer bump for relay-claw AOM ``published`` metrics."""
+    name = str(skill_name or "").strip()
+    ver = str(version or "").strip()
+    if not name or not ver:
+        return
+    payload: dict[str, Any] = {
+        "event_type": "chat.evolution_published",
+        "skill_name": name,
+        "version": ver,
+        "source": source,
+        "request_id": request_id,
+    }
+    await push_context.transport.send_push(
+        build_push_message(
+            session_id=push_context.session_id,
+            request_id=request_id,
             fallback_channel_id=push_context.channel_id,
             payload=payload,
         )

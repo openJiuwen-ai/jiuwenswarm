@@ -9,6 +9,96 @@ import pytest
 from jiuwenswarm.server.runtime.agent_adapter import evolution_helpers
 
 
+def test_auto_rebuild_job_defaults_push_metrics_from_source():
+    watcher = evolution_helpers.auto_rebuild_job(
+        "demo",
+        source=evolution_helpers.AUTO_REBUILD_SOURCE_WATCHER,
+        session_id="s1",
+    )
+    manual = evolution_helpers.auto_rebuild_job(
+        "demo",
+        source=evolution_helpers.AUTO_REBUILD_SOURCE_MANUAL,
+        session_id="s2",
+    )
+    assert watcher.push_metrics is True
+    assert manual.push_metrics is False
+
+
+def test_evolution_entry_metric_items_prefers_auto_and_statusless():
+    entries = [
+        SimpleNamespace(
+            id="auto-1",
+            summary="from auto",
+            timestamp="2026-09-17T00:00:00Z",
+            review_status="auto",
+            change=SimpleNamespace(summary="", content=""),
+        ),
+        SimpleNamespace(
+            id="suggest-1",
+            summary="from suggest",
+            timestamp="2026-09-17T00:00:01Z",
+            review_status="suggest",
+            change=SimpleNamespace(summary="", content=""),
+        ),
+        SimpleNamespace(
+            id="legacy-1",
+            summary="",
+            timestamp="2026-09-17T00:00:02Z",
+            review_status=None,
+            change=SimpleNamespace(summary="legacy tip", content=""),
+        ),
+    ]
+    items = evolution_helpers.evolution_entry_metric_items(entries)
+    assert [item["id"] for item in items] == ["auto-1", "legacy-1"]
+    assert items[0]["summary"] == "from auto"
+    assert items[1]["summary"] == "legacy tip"
+
+
+@pytest.mark.asyncio
+async def test_push_evolution_generated_and_published():
+    pushes: list[dict] = []
+
+    class _Transport:
+        async def send_push(self, msg: dict) -> None:
+            pushes.append(msg)
+
+    def _build(**kwargs):
+        return {
+            "session_id": kwargs["session_id"],
+            "request_id": kwargs["request_id"],
+            "channel_id": kwargs.get("fallback_channel_id") or "default",
+            "payload": kwargs["payload"],
+        }
+
+    ctx = evolution_helpers.EvolutionPushContext(
+        transport=_Transport(),
+        channel_id="web",
+        session_id="sess-1",
+    )
+    await evolution_helpers.push_evolution_generated(
+        ctx,
+        request_id="rid-1",
+        skill_name="demo",
+        items=[{"id": "e1", "summary": "tip"}],
+        build_push_message=_build,
+        source="auto",
+    )
+    await evolution_helpers.push_evolution_published(
+        ctx,
+        request_id="rid-1",
+        skill_name="demo",
+        version="v1.0.1",
+        build_push_message=_build,
+        source="auto",
+    )
+    assert [p["payload"]["event_type"] for p in pushes] == [
+        "chat.evolution_generated",
+        "chat.evolution_published",
+    ]
+    assert pushes[0]["payload"]["items"][0]["id"] == "e1"
+    assert pushes[1]["payload"]["version"] == "v1.0.1"
+
+
 def test_evolution_helpers_parse_approval_and_outcome_events():
     approval = SimpleNamespace(
         type="chat.ask_user_question",

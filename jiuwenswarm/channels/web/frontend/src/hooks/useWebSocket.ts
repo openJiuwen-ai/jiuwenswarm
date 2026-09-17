@@ -3427,6 +3427,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         if (shouldDropDuplicatedEvent('chat.evolution_status', payload)) return;
         useChatStore.getState().setEvolutionStatus(sessionId, payload as unknown as EvolutionStatusPayload);
       }),
+      webClient.on('chat.evolution_generated', () => undefined),
+      webClient.on('chat.evolution_published', () => undefined),
       webClient.on('chat.notice', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;

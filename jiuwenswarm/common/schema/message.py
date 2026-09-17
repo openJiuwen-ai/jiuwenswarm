@@ -292,6 +292,8 @@ class EventType(Enum):
     CHAT_ERROR = "chat.error"
     CHAT_INTERRUPT_RESULT = "chat.interrupt_result"
     CHAT_EVOLUTION_STATUS = "chat.evolution_status"
+    CHAT_EVOLUTION_GENERATED = "chat.evolution_generated"
+    CHAT_EVOLUTION_PUBLISHED = "chat.evolution_published"
     CHAT_SUBTASK_UPDATE = "chat.subtask_update"
     CHAT_ASK_USER_QUESTION = "chat.ask_user_question"
     PLAN_APPROVAL_REQUIRED = "plan.approval_required"
