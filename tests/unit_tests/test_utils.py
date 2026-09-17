@@ -10,6 +10,7 @@ import importlib
 import json
 import os
 import sys
+import time
 from pathlib import Path
 from unittest.mock import patch
 
@@ -345,6 +346,25 @@ class TestSourceRecordMasking:
             assert utils._source_record_masking_installed is True
         finally:
             self._restore_state(state)
+
+
+def test_sanitize_log_text_stays_linear_on_long_identifier_runs():
+    """A long identifier-like run must not make masking quadratic.
+
+    Tool results and model output routinely carry long unbroken runs (base64,
+    hashes, minified code). The named-key pattern once rescanned the run from
+    every offset, so 8k chars took seconds and 200k chars would take minutes.
+    """
+    run = "y" * 200_000
+    raw = f"{run} {{'CAT_CAFE_CALLBACK_TOKEN': 'tok-secret'}} {run}"
+
+    started = time.perf_counter()
+    masked = utils._sanitize_log_text(raw)
+    elapsed = time.perf_counter() - started
+
+    assert "tok-secret" not in masked
+    assert masked.startswith(run)
+    assert elapsed < 2.0, f"masking 400k chars took {elapsed:.2f}s"
 
 
 class TestUserWorkspace:

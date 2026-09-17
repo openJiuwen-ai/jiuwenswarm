@@ -2500,8 +2500,13 @@ _KV_SENSITIVE_PATTERN = re.compile(
 # 2) 值的起始引号（' 或 "）
 # 3) 值内容（非贪婪）
 # 4) 结束引号（通过 (\2) 强制与起始引号一致）
+# The leading lookbehind only lets a match start where a key run starts. Without
+# it the unanchored ``[A-Za-z0-9_.-]*`` rescans the rest of the run from every
+# offset, which is quadratic on long identifier-like text (8k chars took ~3.6s).
+# Matches are unchanged: a leftmost match can never start mid-run, because the
+# ``*`` would absorb the preceding key character too.
 _NAMED_SENSITIVE_KV_PATTERN = re.compile(
-    r"(?i)([\"']?[A-Za-z0-9_.-]*"
+    r"(?i)(?<![A-Za-z0-9_.-])([\"']?[A-Za-z0-9_.-]*"
     r"(?:token|secret|password|passwd|pwd|api[_-]?key|access[_-]?key|"
     r"secret[_-]?key|authorization|auth[_-]?code|auth[_-]?token|"
     r"credential|private[_-]?key|"
