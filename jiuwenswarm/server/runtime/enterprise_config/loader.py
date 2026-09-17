@@ -98,8 +98,10 @@ class _TtlSingleFlightCache:
         self._locks: dict[str, asyncio.Lock] = {}
         self._meta_lock: asyncio.Lock | None = None
         self._ops_since_purge = 0
+        self._generation = 0
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._entries.clear()
         self._locks.clear()
 
@@ -148,13 +150,18 @@ class _TtlSingleFlightCache:
         hit = self._fresh(key)
         if hit is not None:
             return hit
+        generation = self._generation
         lock = await self._lock_for(key)
         async with lock:
             hit = self._fresh(key)
             if hit is not None:
                 return hit
             value = await fetcher()
-            self._entries[key] = _CacheEntry(value=value, fetched_at=time.monotonic())
+            # invalidate 期间的回填不得写回，否则 reload 仍读到旧行。
+            if generation == self._generation:
+                self._entries[key] = _CacheEntry(
+                    value=value, fetched_at=time.monotonic()
+                )
             return value
 
 
@@ -167,8 +174,10 @@ class TemplateEntityCache:
         self._table_locks: dict[str, asyncio.Lock] = {}
         self._meta_lock: asyncio.Lock | None = None
         self._ops_since_purge = 0
+        self._generation = 0
 
     def invalidate(self) -> None:
+        self._generation += 1
         self._entries.clear()
         self._table_locks.clear()
         logger.info("[AgentPerf] template entity cache invalidated")
@@ -215,6 +224,7 @@ class TemplateEntityCache:
         template_ids: list[str],
     ) -> list[dict[str, Any]]:
         self._maybe_purge()
+        generation = self._generation
         try:
             slot_key = TemplateRefSlot(slot)
         except ValueError as exc:
@@ -261,13 +271,15 @@ class TemplateEntityCache:
                         slot, still_missing
                     )
                     now = time.monotonic()
+                    allow_cache_write = generation == self._generation
                     for row in fetched:
                         tid = str(row.get(id_field) or "").strip()
                         if not tid:
                             continue
-                        self._entries[(table, tid)] = _CacheEntry(
-                            value=row, fetched_at=now
-                        )
+                        if allow_cache_write:
+                            self._entries[(table, tid)] = _CacheEntry(
+                                value=row, fetched_at=now
+                            )
                         result[tid] = row
 
         return [result[tid] for tid in refs if tid in result]

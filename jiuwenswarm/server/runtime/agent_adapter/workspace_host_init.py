@@ -1,8 +1,9 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2026. All rights reserved.
 
-"""宿主机 workspace 初始化（纯盘 IO，在事件循环上同步调用）.
+"""宿主机 workspace 初始化（纯盘 IO，供 ``asyncio.to_thread`` 调用）.
 
 替代上游 DirectoryBuilder 经沙箱串行 mkdir/upload ``.workspace`` 的路径。
+本模块函数本身是同步的；调用方应丢到线程池，不要直接堵事件循环。
 
 策略：
 1. 根目录已有 ``.workspace`` marker → 直接跳过；

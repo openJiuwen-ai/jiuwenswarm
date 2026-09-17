@@ -153,3 +153,37 @@ async def test_invalidate_enterprise_config_caches_clears_template(
     await mod._template_entity_cache.get_by_ids("skill_prebuilt", ["w1"])
     mod.invalidate_enterprise_config_caches()
     assert mod._template_entity_cache._entries == {}
+
+
+@pytest.mark.asyncio
+async def test_invalidate_during_fetch_does_not_write_stale(
+    template_cache,
+) -> None:
+    """invalidate 发生在 DB 回填完成前时，旧结果不得写回缓存。"""
+    mod, fetch_calls = template_cache
+    started = asyncio.Event()
+    resume = asyncio.Event()
+    original = mod.db_queries.fetch_templates_by_slot
+
+    async def _gated(slot: str, template_ids: list[str]):
+        started.set()
+        await resume.wait()
+        return await original(slot, template_ids)
+
+    mod.db_queries.fetch_templates_by_slot = _gated  # type: ignore[method-assign]
+    try:
+        task = asyncio.create_task(
+            mod._template_entity_cache.get_by_ids("default_model", ["m1"])
+        )
+        await started.wait()
+        mod.invalidate_template_entity_cache()
+        resume.set()
+        rows = await task
+        assert rows[0]["model_id"] == "model-1"
+        # 旧 generation 的回填不得落盘；下一次仍应打 DB。
+        assert mod._template_entity_cache._entries == {}
+        fetch_before = len(fetch_calls)
+        await mod._template_entity_cache.get_by_ids("default_model", ["m1"])
+        assert len(fetch_calls) == fetch_before + 1
+    finally:
+        mod.db_queries.fetch_templates_by_slot = original  # type: ignore[method-assign]

@@ -6894,10 +6894,26 @@ class JiuWenSwarmDeepAdapter:
             The resolved SysOperation, or None when registration failed.
         """
         previously_retained = list(self._retained_sys_operation_ids)
+        # 读盘用的本地 sysop 与 agent 沙箱 sysop 可能是两份：重建 agent 时不能
+        # 把仍在用的 local 一并 release，否则 rail 会拿着已注销引用。
+        local_keep_id: str | None = None
+        if self._local_sys_operation is not None:
+            local_keep_id = str(self._local_sys_operation.id)
+
         sys_operation = self._resolve_sys_operation()
         if sys_operation is not None:
             self._retain_sys_operation(str(sys_operation.id))
-        self._release_sys_operations(previously_retained)
+
+        to_release = [sid for sid in previously_retained if sid != local_keep_id]
+        if (
+            sys_operation is not None
+            and local_keep_id is not None
+            and str(sys_operation.id) == local_keep_id
+            and previously_retained.count(local_keep_id) >= 1
+        ):
+            # agent 与 local 共用同一张卡：新 retain 已加上，只丢掉上一轮那一票。
+            to_release.append(local_keep_id)
+        self._release_sys_operations(to_release)
         return sys_operation
 
     def _retain_sys_operation(self, sys_operation_id: str) -> None:
@@ -6977,6 +6993,14 @@ class JiuWenSwarmDeepAdapter:
                     exc,
                 )
 
+        # 本地读盘 sysop 若已不在本 adapter retain 列表里，清掉缓存，避免下次
+        # 误以为还能复用已注销实例。
+        local = self._local_sys_operation
+        if local is not None:
+            local_id = str(getattr(local, "id", "") or "")
+            if not local_id or local_id not in self._retained_sys_operation_ids:
+                self._local_sys_operation = None
+
     def _resolve_sys_operation(self) -> SysOperation | None:
         """Create a sys operation.
 
@@ -7053,15 +7077,31 @@ class JiuWenSwarmDeepAdapter:
     def _create_local_sys_operation(self) -> SysOperation | None:
         """只创建/复用本地 SysOperation，给读盘类 rail 用；与沙箱实例分离。"""
         _t0 = time.monotonic()
-        if self._local_sys_operation is not None:
-            logger.info(
-                "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse=1 elapsed_ms=%.1f",
-                self._agent_id,
-                (time.monotonic() - _t0) * 1000,
+        cached = self._local_sys_operation
+        if cached is not None:
+            cached_id = str(getattr(cached, "id", "") or "")
+            still_held = bool(
+                cached_id and cached_id in self._retained_sys_operation_ids
             )
-            return self._local_sys_operation
+            still_registered = bool(
+                cached_id
+                and Runner.resource_mgr.get_sys_operation(cached_id) is not None
+            )
+            if still_held and still_registered:
+                logger.info(
+                    "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse=1 "
+                    "elapsed_ms=%.1f",
+                    self._agent_id,
+                    (time.monotonic() - _t0) * 1000,
+                )
+                return cached
+            # 上一轮 recreate 已 release/unregister：丢掉脏缓存，下面重建。
+            self._local_sys_operation = None
         existing = self._sys_operation
         if existing is not None and getattr(existing, "mode", None) == OperationMode.LOCAL:
+            existing_id = str(getattr(existing, "id", "") or "")
+            if existing_id and existing_id not in self._retained_sys_operation_ids:
+                self._retain_sys_operation(existing_id)
             self._local_sys_operation = existing
             logger.info(
                 "[SandboxPerf] create_local_sys_operation: agent_id=%s reuse_agent=1 "
@@ -7303,7 +7343,8 @@ class JiuWenSwarmDeepAdapter:
     async def _init_workspace_on_host(self) -> None:
         """在宿主机初始化工作区，避免沙箱 DirectoryBuilder 串行建目录。
 
-        仅当 ``AGENT_FILE_READ_BACKEND=local``（默认）时执行。同步落盘（无 to_thread）。
+        仅当 ``AGENT_FILE_READ_BACKEND=local``（默认）时执行。
+        整段落盘丢 ``asyncio.to_thread``，避免堵事件循环。
         """
         _t0 = time.monotonic()
         backend = get_agent_file_read_backend()
