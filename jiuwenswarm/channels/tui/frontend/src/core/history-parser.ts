@@ -441,6 +441,9 @@ function buildEventPayloadForRecord(record: Record<string, unknown>): Record<str
   if (typeof record.result === "string" && typeof base.result !== "string") {
     base.result = record.result;
   }
+  if (typeof record.rendered_result === "string" && typeof base.rendered_result !== "string") {
+    base.rendered_result = record.rendered_result;
+  }
   return base;
 }
 
@@ -609,6 +612,7 @@ export function applyToolResult(
     ...tool,
     status: isError ? "error" : "completed",
     result,
+    renderedResult: asString(toolPayload.rendered_result),
     summary: asString(toolPayload.summary),
     isError,
   };

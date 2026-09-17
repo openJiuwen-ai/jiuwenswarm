@@ -13,8 +13,11 @@ SDK cannot own: turning this platform's ``config.yaml`` section into an
 
 from __future__ import annotations
 
+import logging
 from collections.abc import Mapping
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 
 def build_observability_config(
@@ -23,18 +26,24 @@ def build_observability_config(
     service_name: str,
     default_exporter: str = "otlp_grpc",
     default_endpoint: str = "http://localhost:4317",
-    default_backend: str = "langfuse",
     traces_dir: str,
 ) -> Any:
     """Build the SDK config for one runtime without initializing the provider."""
     from openjiuwen.extensions.observability.config import ObservabilityConfig
+
+    if "backend" in config:
+        # ``backend`` once overrode ``exporter`` in the SDK; the SDK no longer
+        # has the field. Say so instead of silently ignoring a stale config.
+        logger.warning(
+            "observability config key 'backend' has been removed and is ignored; "
+            "select the transport with 'exporter' (e.g. exporter: langfuse)"
+        )
 
     return ObservabilityConfig(
         enabled=True,
         service_name=config.get("service_name", service_name),
         exporter=config.get("exporter", default_exporter),
         endpoint=config.get("endpoint", default_endpoint),
-        backend=config.get("backend", default_backend),
         sample_rate=config.get("sample_rate", 1.0),
         max_attributes=config.get("max_attributes", 200),
         attribute_value_max_length=config.get("attribute_value_max_length", 10240),

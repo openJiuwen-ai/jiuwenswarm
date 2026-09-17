@@ -127,3 +127,27 @@ test('only successful symphony_compose_graph results receive Mermaid', () => {
     assert.equal(normalizeToolResultPayload(result).mermaid, undefined);
   }
 });
+
+test('displays rendered_result instead of the compatibility result string', () => {
+  const normalized = normalizeToolResultPayload({
+    tool_result: {
+      tool_name: 'shutdown_member',
+      tool_call_id: 'call-1',
+      success: true,
+      result: "success=True data={'member_name': 'dev-1'} error=None",
+      rendered_result: 'Member shutdown: member_name=dev-1',
+    },
+  });
+  assert.equal(normalized.result, 'Member shutdown: member_name=dev-1');
+
+  const legacy = normalizeToolResultPayload({ tool_name: 'bash', result: 'legacy text' });
+  assert.equal(legacy.result, 'legacy text');
+
+  const rawOutputFirst = normalizeToolResultPayload({
+    tool_name: 'mcp_weather',
+    raw_output: { result: 'Sunny' },
+    rendered_result: 'Sunny, 25°C',
+    result: "{'result': 'Sunny'}",
+  });
+  assert.equal(rawOutputFirst.result, 'Sunny');
+});

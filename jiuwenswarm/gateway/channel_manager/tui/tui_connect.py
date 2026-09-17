@@ -50,6 +50,7 @@ from jiuwenswarm.common.context_window import (
     DEFAULT_CONTEXT_WINDOW_TOKENS,
     parse_positive_int,
 )
+from jiuwenswarm.common.model_config_validation import probe_model_connection
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.version import __version__
 from jiuwenswarm.common.utils import get_user_workspace_dir
@@ -320,6 +321,8 @@ CLI_FORWARD_REQ_METHODS = frozenset(
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -450,6 +453,8 @@ CLI_FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset(
         "agent_templates.file.list",
         "agent_templates.file.read",
         "agent_templates.create",
+        "agent_templates.update",
+        "agent_templates.delete",
         "agent_templates.import_local",
         "agent_templates.install",
         "agent_templates.uninstall",
@@ -1400,22 +1405,12 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             model_client_config=model_client_config,
         )
 
-        async def _probe(max_tokens: int):
-            return await llm.invoke(
-                [{"role": "user", "content": "Hi"}],
-                max_tokens=max_tokens,
-                temperature=0,
-            )
-
         try:
-            try:
-                response = await _probe(3)
-            except Exception as first_exc:  # noqa: BLE001
-                logger.info(
-                    "[cli config.validate_model] max_tokens=3 failed, retrying with 16: %s",
-                    first_exc,
-                )
-                response = await _probe(16)
+            probe = await probe_model_connection(
+                llm,
+                invoke_kwargs={"temperature": 0},
+                log_context="cli config.validate_model",
+            )
         except Exception as exc:  # noqa: BLE001
             logger.warning("[cli config.validate_model] LLM probe failed: %s", exc)
             await channel.send_response(
@@ -1427,27 +1422,6 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             )
             return
 
-        if hasattr(response, "content"):
-            content = response.content
-        elif isinstance(response, dict):
-            content = response.get("content", "")
-        else:
-            content = str(response)
-        reasoning_content = getattr(response, "reasoning_content", None) if hasattr(response,
-                                                                                    "reasoning_content") else None
-        has_valid_response = (isinstance(content, str) and content) or (
-                isinstance(reasoning_content, str) and reasoning_content
-        )
-        if not has_valid_response:
-            await channel.send_response(
-                ws,
-                req_id,
-                ok=False,
-                error="Empty response from model",
-                code="LLM_ERROR",
-            )
-            return
-
         await channel.send_response(
             ws,
             req_id,
@@ -1455,7 +1429,7 @@ def register_cli_handlers(bind: CliHandlersBindParams) -> None:
             payload={
                 "provider": model_provider,
                 "model": model,
-                "response": content.strip(),
+                "response": probe.content.strip(),
             },
         )
 

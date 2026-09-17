@@ -164,6 +164,11 @@
       <td width="50%">技能迭代、自我优化与能力沉淀机制。</td>
     </tr>
     <tr>
+      <td width="22%"><strong>TTSE 双轨自演进</strong></td>
+      <td width="28%"><a href="zh/TTSE.md">TTSE</a></td>
+      <td width="50%">FACT/TIP 双轨经验归纳与 consult，独立于 Skill 正文演进。</td>
+    </tr>
+    <tr>
       <td width="22%"><strong>工具权限与安全</strong></td>
       <td width="28%"><a href="zh/工具权限与安全防护.md">工具权限与安全防护</a></td>
       <td width="50%">系统命令、文件操作、工具调用中的安全拦截与权限管控。</td>

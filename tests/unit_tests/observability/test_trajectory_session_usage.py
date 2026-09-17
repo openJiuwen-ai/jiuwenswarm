@@ -73,7 +73,7 @@ def _record(
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     ))
 
 

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json
 import logging
+import os
 import threading
 import time
 from collections.abc import Sequence
@@ -90,7 +91,7 @@ def _record(
         request_id=f"request-{session_id}",
         run_id=f"run-{session_id}",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
         record_revision=revision,
         observed_time_unix_nano=100 + revision,
     )
@@ -322,3 +323,63 @@ def test_idle_retirement_keeps_writer_registered_when_close_times_out(
     assert sink.stop_requested is True
     assert router._writers["session-a"] is writer
     test_logger.info("timed-out idle writer stayed registered against duplication")
+
+
+def _session_database_with_age(root: Path, session_id: str, *, age_days: float) -> Path:
+    database = session_database_path(root, session_id)
+    database.parent.mkdir(parents=True, exist_ok=True)
+    stamp = time.time() - age_days * 86400
+    for candidate in (
+        database,
+        database.with_name(f"{database.name}-wal"),
+        database.with_name(f"{database.name}-shm"),
+    ):
+        candidate.write_bytes(b"")
+        os.utime(candidate, (stamp, stamp))
+    return database
+
+
+def test_stale_session_database_is_swept_by_mtime(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    stale = _session_database_with_age(root, "session-stale", age_days=8)
+    fresh = _session_database_with_age(root, "session-fresh", age_days=1)
+    router = TrajectorySessionSinkRouter(_settings(root))
+
+    assert router.sweep_stale_databases() == 1
+
+    assert not stale.exists()
+    assert not stale.with_name(f"{stale.name}-wal").exists()
+    assert not stale.with_name(f"{stale.name}-shm").exists()
+    assert fresh.exists()
+    if stale.parent != fresh.parent:
+        assert not stale.parent.exists()
+    test_logger.info("a session database idle past retention was removed with its sidecars")
+
+
+def test_sweep_skips_session_with_live_writer(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    stale = _session_database_with_age(root, "session-live", age_days=30)
+    router = TrajectorySessionSinkRouter(_settings(root))
+    router._writers["session-live"] = _SessionWriter(
+        sink=SimpleNamespace(),
+        last_activity=time.monotonic(),
+    )
+
+    assert router.sweep_stale_databases() == 0
+    assert stale.exists()
+    test_logger.info("a session with a live writer kept its database")
+
+
+def test_router_start_runs_initial_sweep(tmp_path: Path) -> None:
+    root = tmp_path / "sessions"
+    stale = _session_database_with_age(root, "session-dormant", age_days=8)
+    router = TrajectorySessionSinkRouter(_settings(root))
+    router.start()
+    try:
+        deadline = time.monotonic() + 5
+        while stale.exists() and time.monotonic() < deadline:
+            time.sleep(0.02)
+    finally:
+        assert router.close(timeout=5) is True
+    assert not stale.exists()
+    test_logger.info("router startup swept a dormant session database")

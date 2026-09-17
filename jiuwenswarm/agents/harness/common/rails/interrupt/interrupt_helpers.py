@@ -228,9 +228,6 @@ def build_permission_rail(
         is_auto_permission_enabled,
         normalize_permissions_for_runtime,
     )
-    from jiuwenswarm.agents.harness.common.a4p_execution_context import (
-        AUTHORIZATION_EXECUTION_CONTEXTS,
-    )
     from jiuwenswarm.common.config import get_config
     from jiuwenswarm.common.e2a.acp.acp_tool_updates import build_acp_tool_descriptor
     from jiuwenswarm.common.utils import get_config_file
@@ -350,12 +347,6 @@ def build_permission_rail(
                     return value.strip()
             return None
 
-        def _resolve_cron_job_id(metadata: dict[str, Any]) -> str:
-            cron = metadata.get("cron") if isinstance(metadata, dict) else None
-            if not isinstance(cron, dict):
-                return ""
-            return str(cron.get("job_id") or cron.get("jobId") or "").strip()
-
         async def _request_permission_confirmation(
             req: PermissionConfirmationRequest,
         ) -> PermissionConfirmResponse | str | None:
@@ -373,176 +364,11 @@ def build_permission_rail(
                     feedback="",
                 )
 
-            session_id = _resolve_session_id(req.ctx)
-            execution_context = AUTHORIZATION_EXECUTION_CONTEXTS.get(session_id)
-            channel = (
-                execution_context.channel_id
-                if execution_context is not None
-                else (TOOL_PERMISSION_CHANNEL_ID.get() or "web")
-            )
-
-            tool_call = req.tool_call
-            tool_name = getattr(tool_call, "name", "") if tool_call is not None else ""
-            tool_args_raw = getattr(tool_call, "arguments", None) if tool_call is not None else None
-            tool_args = _normalize_tool_args(tool_args_raw) or {}
-
-            if tool_name == "request_a4p_intent_authorization":
-                return PermissionConfirmResponse(
-                    approved=True,
-                    auto_confirm=False,
-                    feedback="",
-                )
-
-            def _matching_a4p_attempt() -> Any | None:
-                attempt = AUTHORIZATION_EXECUTION_CONTEXTS.get_attempt(session_id)
-                if attempt is None or execution_context is None:
-                    return None
-                if attempt.request_id != execution_context.request_id or attempt.status == "not_requested":
-                    return None
-                return attempt
-
-            def _deny_a4p_attempt(
-                attempt: Any,
-                *,
-                verification_error: str = "",
-            ) -> PermissionConfirmResponse:
-                code = (
-                    "A4P_SCOPE_DENIED"
-                    if attempt.status == "approved"
-                    else "A4P_AUTHORIZATION_UNAVAILABLE"
-                )
-                detail = (
-                    verification_error
-                    or attempt.error
-                    or "the approved token does not match the actual action and params"
-                )
-                return PermissionConfirmResponse(
-                    approved=False,
-                    auto_confirm=False,
-                    feedback=(
-                        f"[{code}] A4P authorization status={attempt.status}; "
-                        f"tool={tool_name}; {detail}. "
-                        "Correct the action scope and request authorization again; "
-                        "do not retry the protected call unchanged."
-                    ),
-                )
-
-            cron_job_id = ""
-            is_interactive_web = bool(
-                execution_context is not None
-                and execution_context.is_interactive_web
-            )
-
-            def _deny_cron_scope(reason: str) -> PermissionConfirmResponse:
-                return PermissionConfirmResponse(
-                    approved=False,
-                    auto_confirm=False,
-                    feedback=(
-                        "[A4P_CRON_SCOPE_DENIED] 定时任务无法使用交互式审批。"
-                        f"job={cron_job_id or 'unknown'} tool={tool_name or 'unknown'}；{reason}。"
-                        "请检查运行上下文中注入的 A4P action/params scope、token 有效期和 "
-                        "agent 绑定；不要原样重试 scope 外调用。"
-                    ),
-                )
-
-            if channel == "__cron__" or is_interactive_web:
-                try:
-                    from jiuwenswarm.agents.harness.common.a4p_runtime import (
-                        get_a4p_runtime,
-                        is_a4p_enabled,
-                        resolve_a4p_identity,
-                    )
-
-                    config = get_config()
-                    if is_a4p_enabled(config):
-                        metadata = (
-                            execution_context.metadata
-                            if execution_context is not None
-                            else {}
-                        )
-                        agent_name = (
-                            execution_context.agent_id
-                            if execution_context is not None
-                            else ""
-                        )
-                        identity = resolve_a4p_identity(
-                            metadata=metadata,
-                            agent_name=agent_name,
-                        )
-                        runtime = get_a4p_runtime()
-                        cron_job_id = _resolve_cron_job_id(metadata)
-                        if cron_job_id:
-                            token = await runtime.find_valid_cron_intent_token(
-                                cron_job_id=cron_job_id,
-                                identity=identity,
-                                action=tool_name,
-                                params=tool_args,
-                            )
-                            if token is not None:
-                                logger.info(
-                                    "[InterruptHelpers] A4P cron intent token approved tool=%s cron_job=%s",
-                                    tool_name,
-                                    cron_job_id,
-                                )
-                                return PermissionConfirmResponse(
-                                    approved=True,
-                                    auto_confirm=False,
-                                    feedback="",
-                                )
-                            if channel == "__cron__":
-                                return _deny_cron_scope(
-                                    "没有匹配当前 action 和实际参数的有效 A4P cron intent token，"
-                                    "或 token 已过期、agent 绑定不匹配"
-                                )
-
-                        if channel == "__cron__":
-                            return _deny_cron_scope(
-                                "请求 metadata.cron.job_id 缺失，无法定位 job 授权"
-                            )
-
-                        if not session_id:
-                            logger.warning(
-                                "[InterruptHelpers] A4P intent token check skipped: session_id missing"
-                            )
-                            return "interrupt"
-                        token = await runtime.find_valid_intent_token(
-                            session_id=session_id,
-                            identity=identity,
-                            action=tool_name,
-                            params=tool_args,
-                        )
-                        if token is not None:
-                            logger.info(
-                                "[InterruptHelpers] A4P intent token approved tool=%s session=%s",
-                                tool_name,
-                                session_id,
-                            )
-                            return PermissionConfirmResponse(
-                                approved=True,
-                                auto_confirm=False,
-                                feedback="",
-                            )
-                        attempt = _matching_a4p_attempt()
-                        if attempt is not None:
-                            return _deny_a4p_attempt(attempt)
-                        return "interrupt"
-                except Exception as exc:
-                    logger.warning(
-                        "[InterruptHelpers] A4P intent authorization check failed: %s",
-                        exc,
-                    )
-                    if channel == "__cron__":
-                        return _deny_cron_scope(f"A4P token 校验异常：{exc}")
-                    attempt = _matching_a4p_attempt()
-                    if attempt is not None:
-                        return _deny_a4p_attempt(
-                            attempt,
-                            verification_error=f"A4P token verification failed: {exc}",
-                        )
-
+            channel = TOOL_PERMISSION_CHANNEL_ID.get() or "web"
             if channel != "acp":
                 return "interrupt"
 
+            session_id = _resolve_session_id(req.ctx)
             if not session_id:
                 return None
 

@@ -150,8 +150,8 @@ def test_goal_commands_are_native_session_runtime_work(
     ("params", "expected"),
     [
         ({"attach_goal": True}, SessionWorkKind.GOAL_ATTACH),
-        ({"input_mode": "steer"}, SessionWorkKind.CONTROL_INPUT),
-        ({"runtime_mode": "follow_up"}, SessionWorkKind.CONTROL_INPUT),
+        ({"input_mode": "steer"}, SessionWorkKind.SESSION_INPUT),
+        ({"runtime_mode": "follow_up"}, SessionWorkKind.SESSION_INPUT),
     ],
 )
 def test_goal_delivery_is_runtime_control_work(

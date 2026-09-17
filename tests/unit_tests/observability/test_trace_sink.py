@@ -84,7 +84,7 @@ def _record(*, span_id: str = _SPAN_ID) -> SimpleNamespace:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
 
 
@@ -116,7 +116,7 @@ def _frame(sequence: int, *, text: str | None = None) -> SimpleNamespace:
         request_id="request-1",
         run_id="run-1",
         agent_mode="agent.work.normal",
-        schema_version="1",
+        schema_version="2",
     )
 
 
@@ -264,6 +264,28 @@ def test_sink_rejects_subject_session_owned_by_another_chat(tmp_path: Path) -> N
         assert stats.queued == 0
     finally:
         assert sink.close(timeout=5) is True
+
+
+def test_sink_accepts_team_member_subject_session(tmp_path: Path) -> None:
+    # A Team member's subject is bound by TeamAgent with the session the
+    # member round runs under, which for in-process teammates is the leader's
+    # own session (spawn_manager passes get_session_id()). Its records must
+    # land in the leader's database, never be rejected as another chat's.
+    sink = TrajectoryRecordSink(_settings(tmp_path / "trajectory.sqlite3"))
+    record = _record()
+    record.execution_subject_id = "team-member:session-1:research-team:analyst"
+    record.execution_subject_kind = "team_member"
+    record.execution_subject_session_id = "session-1"
+
+    sink.start()
+    try:
+        sink.consume(record)
+        stats = sink.stats()
+        assert stats.accepted == 1
+        assert stats.failed == 0
+    finally:
+        assert sink.close(timeout=5) is True
+    assert sink.stats().committed == 1
 
 
 def test_sink_queue_full_drops_without_blocking(tmp_path: Path) -> None:

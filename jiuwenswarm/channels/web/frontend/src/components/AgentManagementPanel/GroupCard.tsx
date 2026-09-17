@@ -9,7 +9,6 @@ type GroupCardProps = {
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
   onInstall: (id: string) => void;
-  onUninstall: (id: string) => void;
 };
 
 export function getAvatarTone(name: string): string {
@@ -40,16 +39,12 @@ function GroupAvatar({
   );
 }
 
-export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }: GroupCardProps) {
+export function GroupCard({ item, busy, onOpen, onUse, onInstall }: GroupCardProps) {
   const { t } = useTranslation();
   const canUse = item.installed && item.capabilities.canUse;
   const canInstall = !item.installed && item.capabilities.canInstall;
-  const canUninstall = item.capabilities.canUninstall;
-  const fallbackTag = t(`agentManagement.categories.${item.category}`, {
-    defaultValue: item.category || t('agentManagement.categoryOther'),
-  });
   const description = item.description || t('agentManagement.unknownDescription');
-  const label = item.tags.length > 0 ? item.tags.map((tag) => tag.label) : [fallbackTag];
+  const label = item.tags.length > 0 ? item.tags.map((tag) => tag.label) : undefined;
   const avatar = <GroupAvatar item={item} />;
   const actionContent = (
     <div
@@ -88,23 +83,6 @@ export function GroupCard({ item, busy, onOpen, onUse, onInstall, onUninstall }:
           }}
         >
           {busy ? t('agentManagement.group.actions.installing') : t('agentManagement.group.actions.install')}
-        </button>
-      ) : canUninstall ? (
-        <button
-          type="button"
-          className="agent-management-button agent-management-button--primary"
-          data-testid="agent-group-card-action"
-          data-variant={item.installed ? 'uninstall' : 'delete'}
-          disabled={busy}
-          aria-busy={busy}
-          onClick={(event) => {
-            event.stopPropagation();
-            onUninstall(item.id);
-          }}
-        >
-          {busy
-            ? t('agentManagement.group.actions.uninstalling')
-            : t(item.installed ? 'agentManagement.group.actions.uninstall' : 'agentManagement.group.actions.delete')}
         </button>
       ) : null}
     </div>

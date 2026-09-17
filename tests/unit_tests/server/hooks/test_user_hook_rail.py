@@ -1,4 +1,4 @@
-# Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
+# Copyright (c) Huawei Technologies Co., Ltd. 2025-2026. All rights reserved.
 
 """Unit tests for jiuwenswarm.server.hooks.user_hook_rail."""
 
@@ -8,6 +8,11 @@ from dataclasses import dataclass, field
 from typing import Any
 from unittest.mock import AsyncMock
 import pytest
+
+from openjiuwen.core.common.exception.codes import StatusCode
+from openjiuwen.core.foundation.llm import ToolMessage
+from openjiuwen.core.foundation.tool import ToolOutput
+from openjiuwen.core.single_agent.ability_manager import AbilityExecutionError
 
 from jiuwenswarm.common.hooks_config import HooksConfig, HookMatcher
 from jiuwenswarm.server.hooks.user_hook_rail import UserHookRail
@@ -30,6 +35,7 @@ class MockCallbackContext:
     inputs: MockToolInputs = field(default_factory=MockToolInputs)
     extra: dict = field(default_factory=dict)
     session: Any = None
+    exception: BaseException | None = None
 
 
 # ============================================================
@@ -211,7 +217,7 @@ class TestAfterToolCall:
         assert "_post_tool_hook_feedback" not in ctx.extra
 
     @pytest.mark.asyncio
-    async def test_appends_additional_context_to_result(self):
+    async def test_appends_additional_context_to_model_message(self):
         config = self._make_config(
             PostToolUse=[(
                 "*",
@@ -219,16 +225,17 @@ class TestAfterToolCall:
             )]
         )
         rail = UserHookRail(config)
+        message = ToolMessage(content="command output", tool_call_id="tc-1")
         ctx = MockCallbackContext(
-            inputs=MockToolInputs(tool_name="Bash", tool_result="command output")
+            inputs=MockToolInputs(tool_name="Bash", tool_result="command output", tool_msg=message)
         )
         await rail.after_tool_call(ctx)
-        assert "review note" in ctx.inputs.tool_result
-        assert "command output" in ctx.inputs.tool_result  # 原内容保留
+        assert message.content == "command output\n[Hook 发现]: review note"
+        assert ctx.inputs.tool_result == "command output"  # structured result untouched
 
     @pytest.mark.asyncio
     async def test_additional_context_appended_to_none_result(self):
-        """即使 tool_result 为 None，也能正常工作."""
+        """A None tool_result still gets the context on the model message."""
         config = self._make_config(
             PostToolUse=[(
                 "*",
@@ -236,9 +243,11 @@ class TestAfterToolCall:
             )]
         )
         rail = UserHookRail(config)
-        ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Read", tool_result=None))
+        message = ToolMessage(content="", tool_call_id="tc-1")
+        ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Read", tool_result=None, tool_msg=message))
         await rail.after_tool_call(ctx)
-        assert "note" in (ctx.inputs.tool_result or "")
+        assert "note" in message.content
+        assert ctx.inputs.tool_result is None
 
     @pytest.mark.asyncio
     async def test_blocking_post_tool_triggers_feedback(self):
@@ -382,3 +391,36 @@ class TestDisableAllHooks:
         ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"))
         await rail.before_tool_call(ctx)
         assert "_skip_tool" not in ctx.extra
+
+
+
+def _post_tool_context_config(context: str) -> HooksConfig:
+    command = f"echo '{{\"additionalContext\":\"{context}\"}}'"
+    return HooksConfig(
+        events={"PostToolUse": [HookMatcher(matcher="*", hooks=[{"command": command, "timeout": 5}])]},
+    )
+
+
+@pytest.mark.asyncio
+async def test_post_tool_context_keeps_structured_tool_output_intact():
+    rail = UserHookRail(_post_tool_context_config("lint passed"))
+    tool_result = ToolOutput(success=True, data={"content": "file body"})
+    message = ToolMessage(content="file body", tool_call_id="tc-1")
+    ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Read", tool_result=tool_result, tool_msg=message))
+
+    await rail.after_tool_call(ctx)
+
+    assert ctx.inputs.tool_result is tool_result
+    assert message.content == "file body\n[Hook 发现]: lint passed"
+
+
+@pytest.mark.asyncio
+async def test_post_tool_context_reaches_the_error_message_of_a_failed_call():
+    rail = UserHookRail(_post_tool_context_config("retry with --force"))
+    error_message = ToolMessage(content="Tool execution error: boom", tool_call_id="tc-2")
+    error = AbilityExecutionError(StatusCode.AGENT_TOOL_EXECUTION_ERROR, msg="boom", tool_message=error_message)
+    ctx = MockCallbackContext(inputs=MockToolInputs(tool_name="Bash"), exception=error)
+
+    await rail.after_tool_call(ctx)
+
+    assert error_message.content == "Tool execution error: boom\n[Hook 发现]: retry with --force"

@@ -185,17 +185,19 @@ def sync_team_observability() -> None:
         was_active = _observability_active
         _observability_active = True
         if not was_active and not provider_existed:
-            if cfg.get("exporter", "otlp_grpc") == "file":
+            # Log the resolved config, not the yaml: the two once diverged
+            # silently and this line hid it.
+            if obs_cfg.exporter == "file":
                 logger.info(
                     "[TeamObservability] enabled: exporter=%s traces_dir=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    traces_dir,
+                    obs_cfg.exporter,
+                    obs_cfg.traces_dir,
                 )
             else:
                 logger.info(
                     "[TeamObservability] enabled: exporter=%s endpoint=%s",
-                    cfg.get("exporter", "otlp_grpc"),
-                    cfg.get("endpoint", "http://localhost:4317"),
+                    obs_cfg.exporter,
+                    obs_cfg.endpoint,
                 )
     except Exception as exc:
         _observability_active = False

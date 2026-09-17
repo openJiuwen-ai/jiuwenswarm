@@ -21,6 +21,7 @@ from jiuwenswarm.runtime.host_services import (
     install_runtime_wake_handler,
     restore_runtime_wake_handler,
 )
+from jiuwenswarm.runtime.session_input import resolve_session_input_mode, validate_session_input
 from jiuwenswarm.gateway.channel_manager.base import ChannelType
 from jiuwenswarm.common.e2a.constants import (
     E2A_CANCEL_SOURCE_CLIENT_DISCONNECT,
@@ -323,6 +324,9 @@ class MessageHandler(ABC):
         # 但同样是“用户发起的对话任务在跑”，配置保存锁须覆盖，故单列此集合。
         # value 存 mode（与 _stream_modes 同款），供 has_active_streams() 判断 team 排除用。
         self._active_chat_tasks: dict[str, str] = {}
+        self._non_stream_chat_tasks: dict[str, asyncio.Task] = {}
+        self._non_stream_chat_messages: dict[str, Message] = {}
+        self._non_stream_chat_locks: dict[str, asyncio.Lock] = {}
         self._disconnect_cancel_tasks: dict[tuple[str, str], asyncio.Task] = {}
         self._stream_app_ids: dict[str, str] = {}  # request_id -> app_id, 多应用流式精确路由
         self._fire_and_forget_tasks: set[asyncio.Task] = set()  # prevent GC of fire-and-forget tasks
@@ -762,10 +766,15 @@ class MessageHandler(ABC):
         params = msg.params if isinstance(msg.params, dict) else {}
         if params.get("attach_goal") is True:
             return True
-        input_mode = str(
-            params.get("input_mode") or params.get("runtime_mode") or ""
-        ).strip().lower()
-        return input_mode in {"follow_up", "steer"}
+        return resolve_session_input_mode(params) is not None
+
+    @classmethod
+    def _is_session_input_message(cls, msg: "Message") -> bool:
+        return (
+            cls._is_chat_send_message(msg)
+            and not cls._is_interrupt_resume_chat_send(msg)
+            and resolve_session_input_mode(msg.params) is not None
+        )
 
     def _get_channel_default_state(self, channel_id: str) -> ChannelControlState:
         """从 config.yaml 读取 Channel 的默认 session_id / mode."""
@@ -1206,11 +1215,16 @@ class MessageHandler(ABC):
                 rids_cancelled.append(rid)
                 tasks_to_cancel.append(task)
 
-        if old_sid is None and not rids_cancelled:
+        has_unary = any(
+            item.session_id == old_sid and (channel_id is None or item.channel_id == channel_id)
+            for item in self._non_stream_chat_messages.values()
+        )
+        if old_sid is None and not rids_cancelled and not has_unary:
             return True
 
         sid_for_agent = (old_sid or "").strip()
         if not sid_for_agent:
+            await self._cancel_non_stream_chat_tasks(old_sid, channel_id=channel_id)
             await _cancel_tasks(tasks_to_cancel)
             await self._pop_stream_tracking_and_broadcast(rids_cancelled)
             return True
@@ -1277,6 +1291,7 @@ class MessageHandler(ABC):
             env_interrupt.channel_context[E2A_INTERNAL_CANCEL_SOURCE_KEY] = cancel_source_value
 
         if cancel_gateway_tasks:
+            await self._cancel_non_stream_chat_tasks(old_sid, channel_id=channel_id)
             await _cancel_tasks(tasks_to_cancel)
             await self._pop_stream_tracking_and_broadcast(rids_cancelled)
 
@@ -3355,29 +3370,9 @@ class MessageHandler(ABC):
                         if str(job.get("user_id") or "").strip() == owner_user_id
                     ]
             elif action == "get":
-                job_id = str(params.get("job_id") or "")
-                if params.get("authoritative") is True:
-                    if not isinstance(params.get("job_id"), str) or not job_id.strip():
-                        raise ValueError("authoritative cron query requires a nonempty job_id")
-                    data = await cc.get_job(job_id)
-                    if data is not None:
-                        if (
-                            not isinstance(data, dict)
-                            or data.get("id") != job_id.strip()
-                            or not isinstance(data.get("user_id", ""), str)
-                        ):
-                            raise ValueError("invalid authoritative cron job")
-                        job_owner = data.get("user_id", "")
-                        if str(job_owner or "").strip() != owner_user_id:
-                            data = {"status": "forbidden", "code": "FORBIDDEN"}
-                        else:
-                            data = {"status": "found", "job": data}
-                    else:
-                        data = {"status": "missing"}
-                else:
-                    data = await _get_owned_job(job_id)
-                    if data is None:
-                        raise KeyError("job not found")
+                data = await _get_owned_job(str(params.get("job_id") or ""))
+                if data is None:
+                    raise KeyError("job not found")
             elif action == "create":
                 # Gateway, rather than an AgentServer payload, is authoritative
                 # for the authenticated owner in AgentOS.
@@ -3440,9 +3435,6 @@ class MessageHandler(ABC):
                 data=data,
                 user_id=owner_user_id or None,
             )
-
-        if not channel_id:
-            return
 
         from jiuwenswarm.common.schema.message import EventType, Message
         out = Message(
@@ -3708,7 +3700,7 @@ class MessageHandler(ABC):
         """可与其它非流式 RPC 并发，不阻塞 _forward_loop。
 
         网关队列否则串行 await Agent，慢请求（如 SkillNet 搜索）会堵住后续的 skills.list 刷新。
-        聊天相关必须按入队顺序与流式任务协调，不得后台并发。
+        普通非流式聊天由独立的 Session 顺序队列管理。
         """
         from jiuwenswarm.common.schema.message import ReqMethod
 
@@ -3752,6 +3744,8 @@ class MessageHandler(ABC):
         """
         from jiuwenswarm.common.schema.message import ReqMethod
 
+        if any(msg.session_id == session_id for msg in self._non_stream_chat_messages.values()):
+            return True
         for active_rid, sid in self._stream_sessions.items():
             if sid != session_id:
                 continue
@@ -4138,6 +4132,59 @@ class MessageHandler(ABC):
 
     # ---------- 入队 -> AgentServer -> 出队 转发循环 ----------
 
+    async def _start_non_stream_chat_task(self, msg: "Message", env: "E2AEnvelope") -> None:
+        """Keep ordinary unary turns FIFO while input/control bypass that lane."""
+        rid = env.request_id or msg.id
+        key = msg.session_id or msg.channel_id
+        lock = self._non_stream_chat_locks.setdefault(key, asyncio.Lock())
+        bypass = self._is_interaction_managed_chat_send(msg) or self._is_interrupt_resume_chat_send(msg)
+
+        def cleanup(task: asyncio.Task) -> None:
+            # Also runs when cancellation wins before the coroutine starts.
+            self._non_stream_chat_tasks.pop(rid, None)
+            self._non_stream_chat_messages.pop(rid, None)
+            self._active_chat_tasks.pop(rid, None)
+            self._stream_user_ids.pop(rid, None)
+            if not any((item.session_id or item.channel_id) == key
+                       for item in self._non_stream_chat_messages.values()):
+                self._non_stream_chat_locks.pop(key, None)
+            if self._running:
+                notification = asyncio.create_task(self._broadcast_task_global_running())
+                self._fire_and_forget_tasks.add(notification)
+                notification.add_done_callback(self._fire_and_forget_tasks.discard)
+
+        async def run() -> None:
+            if bypass:
+                await self._process_non_stream_request(msg, env)
+            else:
+                async with lock:
+                    await self._process_non_stream_request(msg, env)
+
+        self._active_chat_tasks[rid] = (
+            msg.params.get("mode", "plan") if isinstance(msg.params, dict) else "plan"
+        )
+        self._non_stream_chat_messages[rid] = msg
+        task = asyncio.create_task(run(), name=f"gw-chat-{rid[:24]}")
+        self._non_stream_chat_tasks[rid] = task
+        task.add_done_callback(cleanup)
+        await self._broadcast_task_global_running()
+
+    async def _cancel_non_stream_chat_tasks(
+        self, session_id: str | None, *, channel_id: str | None = None,
+    ) -> None:
+        tasks = []
+        for rid, task in list(self._non_stream_chat_tasks.items()):
+            msg = self._non_stream_chat_messages.get(rid)
+            if msg is None or msg.session_id != session_id:
+                continue
+            if channel_id is not None and msg.channel_id != channel_id:
+                continue
+            tasks.append(task)
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+
     async def _forward_loop(self) -> None:
         """循环：从 user_messages 取消息，经 AgentServerClient 发往 AgentServer，将响应写入 robot_messages.
         支持流式和非流式两种模式。使用 timeout=None 阻塞等待，保证有消息时第一时间被唤醒处理；
@@ -4156,7 +4203,7 @@ class MessageHandler(ABC):
                 
          
                 # 先处理受控通道的 Channel 控制指令（如 /new_session、/mode、/skills list）
-                if await self._handle_channel_control(msg):
+                if not self._is_session_input_message(msg) and await self._handle_channel_control(msg):
                     # 该消息仅用于修改 session/mode，已给 Channel 回复提示，不再转发给 Agent
                     continue
 
@@ -4170,6 +4217,15 @@ class MessageHandler(ABC):
                 ):
                     state = self.get_or_create_channel_state(msg)
                     msg.session_id = await self._allocate_channel_session(msg, state)
+
+                # Common to all channels, before optional avatar rewriting or
+                # pending-answer consumption. Explicit supplements remain text.
+                is_session_input = self._is_session_input_message(msg)
+                if is_session_input:
+                    validate_session_input(msg.params)
+                    msg.params = dict(msg.params)
+                    msg.params["input_mode"] = resolve_session_input_mode(msg.params).value
+                    msg.params.pop("runtime_mode", None)
 
                 # mode is only known after _apply_channel_state, so the team /
                 # non-streaming combination is refused here — before GodView
@@ -4276,6 +4332,7 @@ class MessageHandler(ABC):
                         tasks_to_cancel = []
                         rids_cancelled = []
                         current_sid = msg.session_id
+                        await self._cancel_non_stream_chat_tasks(current_sid)
                         for rid, task in list(self._stream_tasks.items()):
                             # 只取消与当前 session_id 关联的任务
                             if self._stream_sessions.get(rid) != current_sid:
@@ -4447,7 +4504,7 @@ class MessageHandler(ABC):
                             continue  # 不相关消息，跳过
 
                 # ---- Resolve @file references in chat.send content ----
-                if msg.req_method == ReqMethod.CHAT_SEND and msg.params:
+                if msg.req_method == ReqMethod.CHAT_SEND and msg.params and not is_session_input:
                     content = msg.params.get("query") or msg.params.get("content") or ""
                     attachments = msg.params.get("attachments")
                     if isinstance(content, str):
@@ -4625,20 +4682,7 @@ class MessageHandler(ABC):
                             method_label,
                         )
                     else:
-                        # 非流式 chat.send（如飞书 enable_streaming=False）：同样属于
-                        # “用户对话任务在跑”，需让跨窗口配置保存锁感知。流式靠
-                        # _send_processing_status 广播；非流式无 processing_status，故在此
-                        # 起止点显式写入 _active_chat_tasks 并广播 task.global_running。
-                        # value 存 mode，供 has_active_streams() 判断 team 排除用。
-                        self._active_chat_tasks[stream_rid] = (
-                            msg.params.get("mode", "plan") if isinstance(msg.params, dict) else "plan"
-                        )
-                        await self._broadcast_task_global_running()
-                        try:
-                            await self._process_non_stream_request(msg, env)
-                        finally:
-                            self._active_chat_tasks.pop(stream_rid, None)
-                            await self._broadcast_task_global_running()
+                        await self._start_non_stream_chat_task(msg, env)
                 except Exception as e:
                     logger.exception("AgentServer send_request failed for %s: %s", msg.id, e)
                     # 流式任务启动在 tracking 写入后、process_stream 成功登记前
@@ -4759,17 +4803,24 @@ class MessageHandler(ABC):
                 "[MessageHandler] Stream 被取消: request_id=%s total_chunks=%s",
                 rid, _proc_count,
             )
-        except RuntimeError as exc:
-            if "AgentServer WebSocket connection closed" not in str(exc):
-                raise
-            await self._publish_stream_connection_error(
-                rid,
-                channel_id,
-                session_id,
-                request_metadata,
-                str(exc),
-            )
         except Exception as exc:
+            if resolve_session_input_mode(env.params) is not None:
+                from jiuwenswarm.common.schema.message import Message, ReqMethod
+
+                request_message = Message(
+                    id=rid, type="req", channel_id=channel_id, session_id=session_id,
+                    params=env.params, timestamp=time.time(), ok=True,
+                    req_method=ReqMethod.CHAT_SEND, metadata=request_metadata,
+                )
+                await self.publish_robot_messages(self._build_error_out_message(request_message, exc))
+                return
+            if isinstance(exc, RuntimeError):
+                if "AgentServer WebSocket connection closed" not in str(exc):
+                    raise exc
+                await self._publish_stream_connection_error(
+                    rid, channel_id, session_id, request_metadata, str(exc),
+                )
+                return
             logger.exception(
                 "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
                 rid, _proc_count, exc,
@@ -5203,6 +5254,21 @@ class MessageHandler(ABC):
     async def stop_forwarding(self) -> None:
         """停止转发任务."""
         self._running = False
+
+        # Stop admission before awaiting task cleanup.
+        if self._forward_task is not None:
+            self._forward_task.cancel()
+            await asyncio.gather(self._forward_task, return_exceptions=True)
+            self._forward_task = None
+        unary_tasks = list(self._non_stream_chat_tasks.values())
+        for task in unary_tasks:
+            task.cancel()
+        if unary_tasks:
+            await asyncio.gather(*unary_tasks, return_exceptions=True)
+        self._non_stream_chat_tasks.clear()
+        self._non_stream_chat_messages.clear()
+        self._non_stream_chat_locks.clear()
+        self._active_chat_tasks.clear()
 
         # Detach before awaiting cancellation.  A wake handler already fetched
         # by another task also checks _running and cannot enqueue into a queue

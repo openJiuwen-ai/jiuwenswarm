@@ -104,8 +104,6 @@ _WEB_FULL_PAYLOAD_EVENT_TYPES = frozenset(
         "chat.symphony_status",
         "chat.notice",
         "chat.message_updated",
-        "a4p.authorization_request",
-        "a4p.authorization_terminated",
         "history.message",
         "chat.session_result",
         "chat.usage_metadata",
@@ -197,9 +195,6 @@ class WebChannel(BaseWsChannel):
         self.git_watcher_registry: Any = None
         # AgentOSRouterClient for same-port HTTP container file APIs (set by handlers).
         self.container_file_client: Any = None
-        self._trajectory_event_loop: asyncio.AbstractEventLoop | None = None
-        self._trajectory_listener_registered = False
-        self._trajectory_update_listener = self._on_trajectory_updates
         self._trajectory_pending_updates: dict[tuple[str, str], Any] = {}
         self._trajectory_send_task: asyncio.Task[None] | None = None
 
@@ -640,17 +635,10 @@ class WebChannel(BaseWsChannel):
             logger.warning("WebChannel 未启用（enabled=False）")
             return
 
-        self._trajectory_event_loop = asyncio.get_running_loop()
-        if not self._trajectory_listener_registered:
-            from jiuwenswarm.observability.updates import trajectory_update_broker
-
-            trajectory_update_broker.register(self._trajectory_update_listener)
-            self._trajectory_listener_registered = True
-
         try:
             await self._start_uvicorn_server()
         finally:
-            self._unregister_trajectory_listener()
+            self._stop_trajectory_hints()
 
     async def _start_uvicorn_server(self) -> None:
         """同一端口承载 WebChannel 的 WebSocket 与 HTTP 路由（uvicorn/FastAPI）。"""
@@ -683,7 +671,7 @@ class WebChannel(BaseWsChannel):
     async def stop(self) -> None:
         """停止 WebSocket 服务并清理连接."""
         self._running = False
-        self._unregister_trajectory_listener()
+        self._stop_trajectory_hints()
 
         all_clients = list(self.clients)
         close_tasks = [client.close(code=1001, reason="server shutdown") for client in all_clients]
@@ -698,26 +686,17 @@ class WebChannel(BaseWsChannel):
         await self._shutdown_all_writers()
         logger.info("WebChannel 已停止")
 
-    def _unregister_trajectory_listener(self) -> None:
-        """Detach the commit listener during every server shutdown path."""
-        if self._trajectory_listener_registered:
-            from jiuwenswarm.observability.updates import trajectory_update_broker
+    def _stop_trajectory_hints(self) -> None:
+        """Drop queued trajectory hints during every server shutdown path.
 
-            trajectory_update_broker.unregister(self._trajectory_update_listener)
-            self._trajectory_listener_registered = False
+        Hints reach this channel from AgentServer over the gateway socket
+        (``schedule_trajectory_updates``); nothing here listens in-process.
+        """
         send_task = self._trajectory_send_task
         if send_task is not None and not send_task.done():
             send_task.cancel()
         self._trajectory_send_task = None
         self._trajectory_pending_updates.clear()
-        self._trajectory_event_loop = None
-
-    def _on_trajectory_updates(self, updates: tuple[Any, ...]) -> None:
-        """Move writer-thread commit hints onto the WebChannel event loop."""
-        loop = self._trajectory_event_loop
-        if loop is None or loop.is_closed():
-            return
-        loop.call_soon_threadsafe(self.schedule_trajectory_updates, updates)
 
     def schedule_trajectory_updates(self, updates: tuple[Any, ...]) -> None:
         """Coalesce high-frequency Span revisions before WebSocket fan-out.
@@ -806,7 +785,6 @@ class WebChannel(BaseWsChannel):
     def _should_preserve_full_payload(event_name: str) -> bool:
         return (
             event_name in _WEB_FULL_PAYLOAD_EVENT_TYPES
-            or event_name.startswith("a4p.")
             or event_name.startswith("team.")
             or event_name.startswith("harness.")
             or event_name.startswith("personal_context.context.")

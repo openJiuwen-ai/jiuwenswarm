@@ -34,7 +34,6 @@ type GroupCatalogPageProps = {
   onOpen: (id: string) => void;
   onUse: (id: string) => void;
   onInstall: (id: string) => void;
-  onUninstall: (id: string) => void;
   onCreate: () => void;
 };
 
@@ -55,7 +54,6 @@ export function GroupCatalogPage({
   onOpen,
   onUse,
   onInstall,
-  onUninstall,
   onCreate,
 }: GroupCatalogPageProps) {
   const { t } = useTranslation();
@@ -125,7 +123,6 @@ export function GroupCatalogPage({
                   onOpen={onOpen}
                   onUse={onUse}
                   onInstall={onInstall}
-                  onUninstall={onUninstall}
                 />
               ))}
             </div>

@@ -53,7 +53,6 @@ def build_server_push_wire(msg: dict[str, Any]) -> dict[str, Any]:
         channel_id=str(msg.get("channel_id", "")),
         payload=msg.get("payload"),
         is_complete=bool(msg.get("is_complete", False)),
-        agent_ref=msg.get("agent_ref"),
     )
     wire = encode_agent_chunk_for_wire(
         chunk,
