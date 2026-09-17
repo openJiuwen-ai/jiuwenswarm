@@ -146,7 +146,6 @@ _FENCE_RE = re.compile(
     r"^```(?:json)?\s*\n?(.*?)\n?```\s*$",
     flags=re.DOTALL | re.IGNORECASE,
 )
-_JSON_OBJ_RE = re.compile(r"\{[^{}]*\}", flags=re.DOTALL)
 
 
 def _strip_reasoning_blocks(raw: str) -> str:
@@ -167,6 +166,35 @@ def _strip_markdown_fence(raw: str) -> str:
     return text
 
 
+def _extract_first_json_object(text: str) -> Optional[str]:
+    """括号计数扫描第一个完整 JSON 对象；忽略双引号字符串内的花括号。"""
+    start = text.find("{")
+    if start < 0:
+        return None
+    depth = 0
+    in_string = False
+    escape = False
+    for i in range(start, len(text)):
+        ch = text[i]
+        if in_string:
+            if escape:
+                escape = False
+            elif ch == "\\":
+                escape = True
+            elif ch == '"':
+                in_string = False
+            continue
+        if ch == '"':
+            in_string = True
+        elif ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[start : i + 1]
+    return None
+
+
 def _parse_attribution_json(raw: str) -> tuple[Optional[dict[str, Any]], str]:
     """健壮解析归因 JSON；失败返回 (None, error)。不抛异常。"""
     if not isinstance(raw, str) or not raw.strip():
@@ -180,11 +208,11 @@ def _parse_attribution_json(raw: str) -> tuple[Optional[dict[str, Any]], str]:
         return None, "json_not_object"
     except (json.JSONDecodeError, TypeError):
         pass
-    m = _JSON_OBJ_RE.search(text)
-    if not m:
+    snippet = _extract_first_json_object(text)
+    if not snippet:
         return None, "json_parse_failed"
     try:
-        obj = json.loads(m.group(0))
+        obj = json.loads(snippet)
     except (json.JSONDecodeError, TypeError) as exc:
         return None, f"json_fallback_failed:{exc}"
     if isinstance(obj, dict):

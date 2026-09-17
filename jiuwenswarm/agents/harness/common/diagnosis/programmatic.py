@@ -125,13 +125,21 @@ class ProgrammaticAttributor(StepAttributor):
         prev: Optional[StepView] = None
         for step in steps:
             for kind in kinds:
-                reason = self._checker(
-                    step,
-                    prev=prev,
-                    task=task,
-                    kind=kind,
-                    tolerance=self._tolerance,
-                )
+                try:
+                    reason = self._checker(
+                        step,
+                        prev=prev,
+                        task=task,
+                        kind=kind,
+                        tolerance=self._tolerance,
+                    )
+                except Exception as exc:  # noqa: BLE001 — checker 失败不得向上抛
+                    return AttributionResult(
+                        attributor=self.name,
+                        step_index=None,
+                        total_steps=n,
+                        error=f"checker_failed:{type(exc).__name__}:{exc}",
+                    )
                 if reason:
                     return AttributionResult(
                         attributor=self.name,

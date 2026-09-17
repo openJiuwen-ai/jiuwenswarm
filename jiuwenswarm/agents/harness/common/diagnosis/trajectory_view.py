@@ -117,8 +117,27 @@ def _response_text(response: Any) -> str:
     return str(response)
 
 
+# 否定短语：命中后不得把其中的失败关键词当成错误
+_NEGATED_FAILURE = re.compile(
+    r"(?i)("
+    r"\bno\s+error(?:\s+found)?\b|"
+    r"\bwithout\s+error\b|"
+    r"\bnot\s+an\s+error\b|"
+    r"没有错误|未发现错误|没有异常|没有失败"
+    r")"
+)
+
+
 def _is_error_result(result: str) -> bool:
-    return bool(result) and bool(_FAILURE_KEYWORDS.search(result))
+    """启发式失败检测，不是精确分类器。
+
+    先剔除否定短语（如 ``no error found`` / ``没有错误``），再对剩余
+    文本做 ``_FAILURE_KEYWORDS`` 匹配，避免 ``No error found`` 被误判。
+    """
+    if not result:
+        return False
+    remainder = _NEGATED_FAILURE.sub(" ", result)
+    return bool(_FAILURE_KEYWORDS.search(remainder))
 
 
 def build_step_view(
@@ -211,9 +230,13 @@ def render_steps(
         args_json = json.dumps(step.arguments, ensure_ascii=False, default=str)
         preview = step.result or ""
         truncated = False
-        if max_result_chars >= 0 and len(preview) > max_result_chars:
-            preview = preview[:max_result_chars]
-            truncated = True
+        if max_result_chars >= 0:
+            if len(args_json) > max_result_chars:
+                args_json = args_json[:max_result_chars]
+                truncated = True
+            if len(preview) > max_result_chars:
+                preview = preview[:max_result_chars]
+                truncated = True
         if step.kind == "tool":
             name = step.tool_name or "tool"
             line = f"[Step {step.index}] {name}({args_json}) -> {preview}"
