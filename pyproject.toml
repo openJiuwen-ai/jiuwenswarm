@@ -18,7 +18,7 @@ dependencies = [
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
     "markdown>=3.4,<4",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@d0bd83352f5ef4070baf44d37e788ba692a95b37",
     # Gateway/AgentServer share the reviewed Runtime foundation implementation.
     "openjiuwen-runtime-foundation[link-mtls] @ git+https://gitcode.com/openJiuwen/agent-runtime.git@develop#subdirectory=foundation",
     "openjiuwen_deepsearch @ git+https://gitcode.com/openJiuwen/deepsearch.git@dev-stable#subdirectory=deepsearch",
@@ -77,7 +77,7 @@ harmony = [
     "ruamel.yaml>=0.18.0",
     "lark-oapi>=1.5.3",
     "loguru>=0.7.3",
-    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@dev-stable",
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@d0bd83352f5ef4070baf44d37e788ba692a95b37",
     "pgvector>=0.4.2",
     "aiosqlite>=0.22.1",
     "croniter>=2.0.0",
@@ -190,9 +190,13 @@ jiuwenswarm = [
 
 [tool.uv]
 default-groups = ['dev']
+override-dependencies = [
+    "openjiuwen @ git+https://gitcode.com/openJiuwen/agent-core.git@d0bd83352f5ef4070baf44d37e788ba692a95b37",
+]
 
 [tool.uv.sources]
 jiuwenswarm-tui = { path = "./packages/jiuwenswarm-tui" }
+openjiuwen = { git = "https://gitcode.com/openJiuwen/agent-core.git", rev = "d0bd83352f5ef4070baf44d37e788ba692a95b37" }
 
 [dependency-groups]
 # Testing (keep in sync with optional-dependencies.test)
