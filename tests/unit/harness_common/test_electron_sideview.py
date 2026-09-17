@@ -153,7 +153,8 @@ def test_external_browser_settings_are_untouched():
 
 
 @pytest.mark.parametrize("mode", ["agent", "code"])
-def test_single_agent_adapters_bind_browser_to_their_own_conversation(monkeypatch, mode):
+@pytest.mark.parametrize("chrome_path", ["", "/configured/chrome"])
+def test_single_agent_adapters_bind_browser_to_their_own_conversation(monkeypatch, mode, chrome_path):
     from jiuwenswarm.server.runtime.agent_adapter import interface_code, interface_deep
 
     module = interface_deep if mode == "agent" else interface_code
@@ -178,7 +179,7 @@ def test_single_agent_adapters_bind_browser_to_their_own_conversation(monkeypatc
     configs = []
     for sid in ("single-one", "single-two"):
         child = parent._new_session_scoped_adapter(sid)
-        specs, _ = child._build_configured_subagents(object(), options, {})
+        specs, _ = child._build_configured_subagents(object(), options, {"browser": {"chrome_path": chrome_path}})
         assert len(specs) == 1
         config = specs[0].factory_kwargs["settings"].mcp_cfg
         assert config.params["env"]["PLAYWRIGHT_MCP_SESSION_ID"] == sid

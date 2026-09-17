@@ -16,6 +16,7 @@ from openjiuwen.harness.tools.browser_move.playwright_runtime.config import Brow
 from openjiuwen.harness.tools.browser_move.playwright_runtime.runtime import BrowserAgentRuntime
 
 from jiuwenswarm.agents.harness.common.electron_sideview import apply_session_sideview_target
+from tests.electron.sdk_managed_smoke import verify_managed_fallback
 
 
 @dataclass(frozen=True)
@@ -90,6 +91,7 @@ async def main():
         state = await runtimes[1].capture_browser_state()
         assert state["ok"] and state["url"] == f'{request["base"]}/sdk-single-two', state
         print("SDK_SINGLE_SESSION_ISOLATION_OK")
+        await verify_managed_fallback(request, original, invoke, runtimes[1])
         print("SDK_BINDINGS_OK")
     finally:
         for runtime in runtimes:

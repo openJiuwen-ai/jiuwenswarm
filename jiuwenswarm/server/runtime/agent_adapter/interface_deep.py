@@ -4251,32 +4251,11 @@ class JiuWenSwarmDeepAdapter:
         config_base: dict[str, Any] | None = None,
     ) -> str:
         """Resolve managed-browser binary from saved browser config."""
+        from jiuwenswarm.agents.harness.common.browser_config import resolve_chrome_path
+
         if config_base is None:
             config_base = get_config()
-        if not isinstance(config_base, dict):
-            return ""
-        config = resolve_env_vars(config_base)
-        browser_cfg = config.get("browser", {}) if isinstance(config, dict) else {}
-        if not isinstance(browser_cfg, dict):
-            return ""
-        chrome_path = browser_cfg.get("chrome_path", "")
-        if isinstance(chrome_path, str):
-            return chrome_path.strip()
-        if not isinstance(chrome_path, dict):
-            return ""
-        platform_map = {
-            "win32": "windows",
-            "cygwin": "windows",
-            "darwin": "macos",
-            "linux": "linux",
-            "linux2": "linux",
-        }
-        os_key = platform_map.get(os.sys.platform, "default")
-        for key in (os_key, "default"):
-            value = chrome_path.get(key, "")
-            if isinstance(value, str) and value.strip():
-                return value.strip()
-        return ""
+        return resolve_chrome_path(config_base)
 
     @staticmethod
     def _resolve_headless_from_config(
@@ -4391,15 +4370,9 @@ class JiuWenSwarmDeepAdapter:
         # Discovery is opt-in and restores its own stale overrides before launch resolution.
         electron_selected = electron_browser_selected()
         headless = self._resolve_headless_from_config(config_base)
-        if electron_selected:
-            # Electron 内置浏览器必需，不可还原：Electron 传入 JSON argv 数组以
-            # 启动 target-aware 适配器（target_mcp_wrapper.cjs），且 sideview 由
-            # Electron 自持可见窗口，managed-browser 的 headless 参数既无意义也
-            # 不能追加到该命令，否则浏览器 Agent 会脱离 Electron 的精确 target。
-            # TARGET_ID 为静态绑定（旧契约）；TARGET_RESOLVER 为每会话隔离模式，
-            # 由 MCP wrapper 启动时按会话及成员解析 TargetID。
-            os.environ.pop("BROWSER_MANAGED_ARGS", None)
-        else:
+        chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
+        # Never append launch flags to Electron's target-aware MCP wrapper.
+        if not electron_selected:
             if runtime_on:
                 launch = resolve_playwright_mcp_launch()
                 mcp_args = [arg for arg in launch.args if arg != "--headless"]
@@ -4419,11 +4392,12 @@ class JiuWenSwarmDeepAdapter:
             else:
                 clear_managed_launch_environment(os.environ)
 
-            if headless:
-                os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
-            else:
-                os.environ.pop("BROWSER_MANAGED_ARGS", None)
-        chrome_path = self._resolve_managed_browser_binary_from_config(config_base)
+        # A configured path enables Swarm-only managed instances in Electron.
+        # This shared setting affects managed Chrome, not remote Electron pages.
+        if headless and (not electron_selected or chrome_path):
+            os.environ["BROWSER_MANAGED_ARGS"] = "--headless=new"
+        else:
+            os.environ.pop("BROWSER_MANAGED_ARGS", None)
         if chrome_path:
             os.environ["BROWSER_MANAGED_BINARY"] = chrome_path
         else:

@@ -199,7 +199,7 @@ async function main() {
     }
     const sdkOutput = await new Promise((resolve, reject) => {
       const child = execFile(python, ['-m', 'tests.electron.sdk_binding_smoke'], {
-        cwd: repo, encoding: 'utf8', windowsHide: true, timeout: 90000,
+        cwd: repo, encoding: 'utf8', windowsHide: true, timeout: process.env.SWARM_TEST_CHROME ? 180000 : 90000,
         env: { ...process.env, JIUWENSWARM_DATA_DIR: path.join(scratch, 'sdk-data') },
       }, (error, stdout, stderr) => {
         fs.writeFileSync(path.join(scratch, 'sdk.stdout.log'), stdout);
@@ -210,11 +210,17 @@ async function main() {
         } else resolve(stdout);
       });
       child.stdin.end(JSON.stringify({ node: process.execPath, wrapper: path.join(desktopDir, 'target_mcp_wrapper.cjs'),
+        chrome: process.env.SWARM_TEST_CHROME,
         cwd: scratch, base, env: { ...payload.env_json, PATH: `${path.join(modules, '.bin')}${path.delimiter}${process.env.PATH}`,
           PLAYWRIGHT_MCP_DIAGNOSTIC_LOG: path.join(scratch, 'sdk-mcp.log') } }));
     });
     assert.match(sdkOutput, /SDK_BINDINGS_OK/);
     assert.match(sdkOutput, /SDK_SINGLE_SESSION_ISOLATION_OK/);
+    if (process.env.SWARM_TEST_CHROME) {
+      assert.match(sdkOutput, /SDK_SWARM_MANAGED_HEADLESS_OK/);
+      assert.match(sdkOutput, /SDK_SWARM_MANAGED_HEADED_OK/);
+      console.log('PASS: Swarm external Chrome, headed/headless, isolated members, Electron coexistence and port cleanup.');
+    }
     await electron.evaluate(async ({ session }) => {
       const shared = session.fromPartition('persist:jiuwenswarm-browser');
       shared.flushStorageData();

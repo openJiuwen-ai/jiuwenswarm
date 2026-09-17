@@ -76,6 +76,28 @@ on that site. Existing per-conversation profile directories are preserved but
 not merged automatically: log in once in the new shared profile. External
 Chrome profiles are not imported.
 
+### Swarm external Chrome fallback
+
+In Electron, a non-empty `browser.chrome_path` saved in Browser settings selects
+the SDK's managed external Chrome for Swarm members only. It honors the same
+`browser.headless` setting as CLI/pywebview. Each conversation/member owns its
+MCP connection, debugging port and persistent profile under the user workspace's
+`.browser-profiles/swarm_<identity>` directory. External tasks do not open an
+empty embedded panel. An invalid path produces the managed Chrome launch error;
+it does not silently switch to another browser.
+
+Leave Chrome's path empty to use independent Electron member panels with shared
+login state. Single-agent conversations always retain Electron panels regardless
+of the saved Chrome path. CLI/pywebview and explicit launch-environment driver
+overrides keep their previous behavior.
+
+External Chrome profiles are separate from each other and from Electron's shared
+cookie store. They are reused for the same conversation/member, not migrated or
+merged. Apply browser settings before creating a team; existing running teams
+are not migrated between backends mid-task. Recreate the team after a backend
+change. The external fallback uses the normal bundled MCP/Node resolver, so
+packaged builds must retain their backend Node runtime (or provide Node >=20).
+
 `browser_run_code_unsafe` is available as in the upstream SDK, and
 `browser_run_code` is a compatibility alias with the same unsafe semantics.
 This restores SDK metadata/probe/batch RPCs. Both execute arbitrary JavaScript
@@ -124,6 +146,10 @@ Before release, validate these flows against a development build:
   remain in `persist:jiuwenswarm-browser` without appearing in managed Chrome.
 - Run simultaneous tasks from different members and conversations; verify
   independent pages, shared login, and member-tab switching without interference.
+- Configure a Chrome path and test headed/headless Swarm tasks alongside a
+  single-agent task: Swarm uses separate external Chrome instances while the
+  single agent remains embedded. Clear the path and create a new team to verify
+  embedded member panels are restored.
 - Exercise `window.open`, target-blank links, downloads, and file save flows;
   no detached page may appear and downloads must complete through Electron.
 - Crash the sideview renderer and the MCP subprocess independently; the view
@@ -139,3 +165,6 @@ the pinned `@playwright/mcp@0.0.78`, then run `npm run test:browser:integration`
 Install frontend dependencies and the repository `.venv` first. The test uses a
 temporary Electron profile, synthetic cookies and local pages only; it covers
 the actual SDK probe scripts, IPC tabs, busy-page eviction and restart persistence.
+Set `SWARM_TEST_CHROME` to a Chrome executable to additionally exercise two
+external Swarm members in both headed and headless modes alongside Electron,
+including managed port cleanup. This check uses temporary profiles only.
