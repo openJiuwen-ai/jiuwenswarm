@@ -65,6 +65,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "agent-ssas"
+version = "0.1.0"
+source = { editable = "AgentSSAS" }
+dependencies = [
+    { name = "pyyaml" },
+]
+
+[package.metadata]
+requires-dist = [
+    { name = "fastapi", marker = "extra == 'http'", specifier = ">=0.115" },
+    { name = "httpx", marker = "extra == 'http'", specifier = ">=0.27" },
+    { name = "pytest", marker = "extra == 'test'", specifier = ">=7.0" },
+    { name = "pytest-asyncio", marker = "extra == 'test'", specifier = ">=0.21" },
+    { name = "pyyaml", specifier = ">=6.0" },
+    { name = "uvicorn", extras = ["standard"], marker = "extra == 'http'", specifier = ">=0.30" },
+]
+provides-extras = ["test", "http"]
+
+[[package]]
 name = "agentdescent"
 version = "0.4.6"
 source = { registry = "https://pypi.org/simple" }
@@ -5711,6 +5730,7 @@ source = { editable = "." }
 dependencies = [
     { name = "a2ui-agent-sdk" },
     { name = "a4p" },
+    { name = "agent-ssas" },
     { name = "aiosqlite" },
     { name = "certifi" },
     { name = "chromadb" },
@@ -5875,6 +5895,7 @@ requires-dist = [
     { name = "a2ui-agent-sdk", specifier = "==0.2.1" },
     { name = "a2ui-agent-sdk", marker = "extra == 'harmony'", specifier = "==0.2.1" },
     { name = "a4p", git = "https://gitcode.com/openJiuwen/agent-protocol.git?subdirectory=A4P&rev=agent-protocol-V0.2.0" },
+    { name = "agent-ssas", editable = "AgentSSAS" },
     { name = "aiosqlite", specifier = ">=0.22.1,<0.23" },
     { name = "aiosqlite", marker = "extra == 'harmony'", specifier = ">=0.22.1" },
     { name = "asyncssh", marker = "extra == 'ssh'", specifier = ">=2.14.0,<2.24" },
