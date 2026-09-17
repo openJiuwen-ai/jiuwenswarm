@@ -2,7 +2,6 @@ export interface RuntimeScope {
   userId?: string;
   groupId?: string;
   botId?: string;
-  gatewayId?: string;
 }
 
 /** Dispatched when enterprise routing identity changes; WS should reconnect. */
@@ -26,26 +25,21 @@ function scopeSignature(scope: RuntimeScope): string {
     userId: scope.userId || '',
     groupId: scope.groupId || '',
     botId: scope.botId || '',
-    gatewayId: scope.gatewayId || '',
   });
 }
 
 /**
  * Read the runtime routing scope supplied by the embedding shell.
  *
- * The values are transport context rather than business form fields. They are
- * intentionally kept in memory and are not written to localStorage or
- * sessionStorage. Authentication and authorization remain the responsibility
- * of the outer shell and server-side access control.
+ * 用户面路由身份仅为 ``user_id`` / ``group_id`` / ``bot_id``（不含 gateway_id）。
+ * 仅保存在内存，不写 local/sessionStorage。
  */
 export function parseRuntimeScope(search: string): RuntimeScope {
   const query = new URLSearchParams(search);
   return {
-    // 租户身份只允许由登录后的 Manager Web 选择上下文注入。
     userId: pickQueryValue(query, 'user_id'),
     groupId: pickQueryValue(query, 'group_id'),
     botId: pickQueryValue(query, 'bot_id'),
-    gatewayId: pickQueryValue(query, 'gateway_id'),
   };
 }
 
@@ -59,7 +53,6 @@ export function setRuntimeScope(scope: RuntimeScope): void {
     userId: pickString(scope.userId),
     groupId: pickString(scope.groupId),
     botId: pickString(scope.botId),
-    gatewayId: pickString(scope.gatewayId),
   };
   const changed = scopeSignature(runtimeScope) !== scopeSignature(next);
   runtimeScope = next;
@@ -77,7 +70,6 @@ export function getRuntimeScope(): RuntimeScope {
     userId: current.userId ?? runtimeScope.userId,
     groupId: current.groupId ?? runtimeScope.groupId,
     botId: current.botId ?? runtimeScope.botId,
-    gatewayId: current.gatewayId ?? runtimeScope.gatewayId,
   };
   return runtimeScope;
 }
@@ -90,7 +82,6 @@ export function appendRuntimeScopeQuery(
   if (scope.userId) query.set('user_id', scope.userId);
   if (scope.groupId) query.set('group_id', scope.groupId);
   if (scope.botId) query.set('bot_id', scope.botId);
-  if (scope.gatewayId) query.set('gateway_id', scope.gatewayId);
   return query;
 }
 
@@ -110,7 +101,6 @@ export function buildRuntimeIdentityHeaders(
   if (userId) headers['X-User-Id'] = userId;
   if (groupId) headers['X-Group-Id'] = groupId;
   if (botId) headers['X-Bot-Id'] = botId;
-  if (scope.gatewayId) headers['X-Gateway-Id'] = scope.gatewayId;
   if (sessionId) headers['X-Session-Id'] = sessionId;
   return headers;
 }

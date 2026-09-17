@@ -278,6 +278,29 @@ def allocate_initial_paths(output_dir: Path, requested_name: str) -> ArtifactPat
     raise _invalid("artifact allocation attempts exhausted")
 
 
+def allocate_initial_html_path(output_dir: Path, requested_name: str) -> Path:
+    """Allocate one visible HTML path without reserving Markdown sidecars."""
+    if not isinstance(output_dir, Path):
+        raise _invalid("output_dir must be a Path")
+    if not isinstance(requested_name, str):
+        raise _invalid("requested_name must be a string")
+    requested_stem = requested_name
+    for suffix in (".html", ".md"):
+        if requested_stem.lower().endswith(suffix):
+            requested_stem = requested_stem[: -len(suffix)]
+            break
+    base_stem = _normalize_base_stem(requested_stem)
+    snapshot = _snapshot_directory_names(output_dir)
+    for ordinal in range(1, MAX_ALLOCATION_ATTEMPTS + 1):
+        candidate_stem = _base_stem_with_ordinal(base_stem, ordinal)
+        candidate = output_dir / f"{candidate_stem}-v1.html"
+        if len(candidate.name.encode("utf-8")) > MAX_FILENAME_BYTES:
+            raise _invalid("artifact filename exceeds the byte limit")
+        if _conservative_name_key(candidate.name) not in snapshot.occupied_keys:
+            return candidate
+    raise _invalid("artifact allocation attempts exhausted")
+
+
 def _require_document_id(provenance: dict) -> str:
     if not isinstance(provenance, dict):
         raise _invalid("provenance must be a dictionary")

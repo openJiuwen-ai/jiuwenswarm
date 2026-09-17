@@ -19,7 +19,7 @@ def test_file_transfer_config_default_values():
     assert config.chunk_size == 65536
     assert config.max_file_size == 104857600
     assert config.transfer_timeout == 300
-    assert config.received_files_dir == "agent/workspace/received_files"
+    assert config.received_files_dir == "agent/jiuwenclaw_workspace/received_files"
     assert config.cleanup_interval == 3600
     assert config.cleanup_age == 86400
     assert config.max_concurrent_transfers == 5

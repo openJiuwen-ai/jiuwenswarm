@@ -171,6 +171,7 @@ test('A2A outbound history accepts dispatch metadata without result bodies', () 
         {
           dispatch_id: 'disp-1',
           agent_id: 'agent-1',
+          agent_name: 'Research Agent',
           mode: 'sync',
           status: 'completed',
           remote_task_id: 'task-1',
@@ -189,6 +190,7 @@ test('A2A outbound history accepts dispatch metadata without result bodies', () 
         {
           dispatch_id: 'disp-1',
           agent_id: 'agent-1',
+          agent_name: 'Research Agent',
           mode: 'sync',
           status: 'completed',
           remote_task_id: 'task-1',
@@ -223,6 +225,7 @@ test('A2A outbound history skips malformed rows without discarding valid records
 
   assert.equal(history?.items.length, 1);
   assert.equal(history?.items[0].dispatch_id, 'disp-1');
+  assert.equal(history?.items[0].agent_name, 'agent-1');
   assert.equal(history?.items[0].updated_at, '2026-08-27T01:00:10Z');
   assert.equal(history?.total, 2);
 });

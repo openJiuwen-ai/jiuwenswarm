@@ -114,11 +114,13 @@ async def test_claim_oneshot_expires(monkeypatch: pytest.MonkeyPatch) -> None:
     ok = await claim_oneshot_run(job, fire_at)
     assert ok is True
     sql = execute.await_args.args[0]
-    assert "UPDATE cron_job" in sql
-    assert "expired = 1" in sql
-    assert "enabled = 0" in sql
-    assert "DELETE FROM cron_job" not in sql
     params = execute.await_args.args[1]
+    assert "UPDATE cron_job" in sql
+    assert "expired = :set_expired" in sql
+    assert "enabled = :set_enabled" in sql
+    assert params["set_expired"] is True
+    assert params["set_enabled"] is False
+    assert "DELETE FROM cron_job" not in sql
     assert params["fire_at"] == datetime_to_db_value(fire_at)
     assert params["last_run_at"] == datetime_to_db_value(fire_at)
 

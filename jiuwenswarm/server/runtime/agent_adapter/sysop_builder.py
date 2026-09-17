@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import logging
 import os
 from pathlib import Path
@@ -29,6 +30,7 @@ from jiuwenswarm.common.utils import (
     get_agent_root_dir,
     get_config_file,
 )
+from jiuwenswarm.edition import is_enterprise
 
 logger = logging.getLogger(__name__)
 
@@ -129,7 +131,7 @@ def _resolve_shared_dir(shared_dir: str | Path | None = None) -> Path | None:
 
     Prefer an explicit ``shared_dir`` (enterprise multi-tenant workspace).
     Otherwise mount ``get_agent_root_dir()`` (e.g. ``~/.jiuwenswarm/agent``)
-    rather than only ``agent/workspace``, so sibling download paths remain writable.
+    rather than only ``agent/jiuwenclaw_workspace``, so sibling download paths remain writable.
     """
     try:
         if shared_dir is not None and str(shared_dir).strip():
@@ -249,9 +251,18 @@ def _resolve_project_dir(override: str | Path | None) -> Path | None:
     return None
 
 
-def _sandbox_isolation_custom_id(project_dir: str | Path | None) -> str:
+def _sandbox_isolation_custom_id(
+    project_dir: str | Path | None, *, shared_dir: str | Path | None = None,
+) -> str:
     """Stable SysOperation isolation key suffix for per-project sandbox sharing."""
     resolved = _resolve_project_dir(project_dir)
+    if is_enterprise():
+        # Match the trusted workspace mounted for this tenant. A default
+        # project must not reuse another tenant's cached sandbox client.
+        root = Path(shared_dir if shared_dir is not None else get_agent_root_dir()).expanduser().resolve()
+        scope = json.dumps([str(root), str(resolved) if resolved is not None else None])
+        digest = hashlib.sha256(scope.encode("utf-8")).hexdigest()[:24]
+        return f"workspace_project_{digest}"
     if resolved is None:
         return "project_default"
     digest = hashlib.sha256(str(resolved).encode("utf-8")).hexdigest()[:16]
@@ -580,6 +591,36 @@ def build_filesystem_policy(
     return {"filesystem_policy": fs_policy}, upload_list
 
 
+def build_process_policy() -> dict[str, Any]:
+    """获取当前进程的有效用户名与用户组名。
+
+    仅企业版（Linux 容器）调用：使用 ``geteuid`` / ``getegid`` 解析有效身份；
+    若 passwd/group 中无对应条目, 则回退为 UID/GID 的字符串形式。
+    非 POSIX 平台（如 Windows 单机版）返回空 dict，调用方跳过 process 段。
+    """
+    if not hasattr(os, "geteuid"):
+        return {}
+    import grp
+    import pwd
+
+    uid = os.geteuid()
+    gid = os.getegid()
+    try:
+        username = pwd.getpwuid(uid).pw_name
+    except KeyError:
+        username = str(uid)
+    try:
+        groupname = grp.getgrgid(gid).gr_name
+    except KeyError:
+        groupname = str(gid)
+
+    process_policy: dict[str, Any] = {
+        "run_as_user": username,
+        "run_as_group": groupname,
+    }
+    return process_policy
+
+
 def create_sandbox_sysop_card(
     sandbox_url: str,
     sandbox_type: str,
@@ -602,7 +643,7 @@ def create_sandbox_sysop_card(
     try:
         if normalized_type == "yuanrong":
             extra_params = _build_yuanrong_extra_params()
-            isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
+            isolation_custom_id = _sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir)
             gateway_config = SandboxGatewayConfig(
                 isolation=SandboxIsolationConfig(
                     container_scope=ContainerScope.CUSTOM,
@@ -644,6 +685,10 @@ def create_sandbox_sysop_card(
             startup_mode=startup_mode,
             shared_dir=shared_dir,
         )
+        if is_enterprise():
+            process_policy = build_process_policy()
+            if process_policy:
+                policy['process'] = process_policy
         extra_params = {
             "policy": policy,
             "policy_mode": "append",
@@ -656,7 +701,7 @@ def create_sandbox_sysop_card(
         if idle_check_interval is not None:
             extra_params["idle_check_interval"] = idle_check_interval
 
-        isolation_custom_id = _sandbox_isolation_custom_id(project_dir)
+        isolation_custom_id = _sandbox_isolation_custom_id(project_dir, shared_dir=shared_dir)
         gateway_config = SandboxGatewayConfig(
             isolation=SandboxIsolationConfig(
                 container_scope=ContainerScope.CUSTOM,
@@ -675,7 +720,6 @@ def create_sandbox_sysop_card(
             gateway_config=gateway_config,
         )
 
-        fs_policy = policy.get("filesystem_policy", {}) if isinstance(policy, dict) else {}
         logger.info(
             "[sysop_builder] sandbox SysOperationCard created:\n"
             "  base_url=%s sandbox_type=%s\n"
@@ -683,11 +727,7 @@ def create_sandbox_sysop_card(
             "  idle_ttl=%s idle_check_interval=%s\n"
             "  preserve_file_sharing_mode=%s\n"
             "  excluded_commands(%d)=%s\n"
-            "  filesystem_policy.files(%d)=%s\n"
-            "  filesystem_policy.directories(%d)=%s\n"
-            "  filesystem_policy.bind_mounts(%d)=%s\n"
-            "  filesystem_policy.read_write(%d)=%s\n"
-            "  filesystem_policy.read_only(%d)=%s\n"
+            "  policy=%s\n"
             "  preserve_files_upload(%d)=%s\n"
             "  policy_mode=%s",
             sandbox_url,
@@ -698,16 +738,7 @@ def create_sandbox_sysop_card(
             _PRESERVE_FILE_SHARING_MODE,
             len(extra_params["excluded_commands"]),
             extra_params["excluded_commands"] or "[]",
-            len(fs_policy.get("files") or []),
-            fs_policy.get("files") or [],
-            len(fs_policy.get("directories") or []),
-            fs_policy.get("directories") or [],
-            len(fs_policy.get("bind_mounts") or []),
-            fs_policy.get("bind_mounts") or [],
-            len(fs_policy.get("read_write") or []),
-            fs_policy.get("read_write") or [],
-            len(fs_policy.get("read_only") or []),
-            fs_policy.get("read_only") or [],
+            json.dumps(policy, ensure_ascii=False, indent=2),
             len(upload_list),
             upload_list or [],
             extra_params["policy_mode"],
@@ -992,6 +1023,7 @@ def find_auto_managed_match(
 __all__ = [
     "PreserveFileSharingMode",
     "build_filesystem_policy",
+    "build_process_policy",
     "build_yuanrong_sandbox_status_view",
     "create_sandbox_sysop_card",
     "create_local_sysop_card",

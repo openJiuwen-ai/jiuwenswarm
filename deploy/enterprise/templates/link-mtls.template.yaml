@@ -1,0 +1,35 @@
+# Certificate fragments only; preserve original business fields and fsGroup.
+privateVolume:
+  name: jiuwenswarm-link-mtls
+  emptyDir:
+    medium: Memory
+helper:
+  securityContext:
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: [ALL]
+  resources:
+    requests:
+      cpu: 5m
+      memory: 16Mi
+    limits:
+      cpu: 100m
+      memory: 64Mi
+  volumeMounts:
+    - name: jiuwenswarm-link-mtls-source
+      mountPath: /run/link-source
+      readOnly: true
+    - name: jiuwenswarm-link-mtls
+      mountPath: /run/link-owned
+headlessService:
+  apiVersion: v1
+  kind: Service
+  spec:
+    clusterIP: None
+    publishNotReadyAddresses: true
+    selector:
+      jiuwenclaw-component: agentserver
+    ports:
+      - name: https
+        port: 8766
+        targetPort: 8766

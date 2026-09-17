@@ -4,6 +4,8 @@
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 from openjiuwen.core.foundation.tool import ToolCard
 
@@ -22,6 +24,7 @@ from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
     _AGENT_CARD_ID,
     JiuWenSwarmDeepAdapter,
 )
+from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import skill_turbo
 
 
 class _FakeTool:
@@ -264,3 +267,43 @@ def test_nested_runtime_context_reset_restores_outer_deepresearch_route() -> Non
         }
     finally:
         outer._reset_runtime_cron_context(outer_tokens)
+
+
+def test_skill_turbo_tool_registers_as_shared_and_is_idempotent(
+    resource_mgr: _FakeResourceMgr,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Concurrent / repeat agent inits must not re-add skill_acceleration_exec."""
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = MagicMock()
+    adapter._stream_event_rail = None
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_config",
+        lambda: {"react": {"skill_turbo": {"enabled": True}}},
+    )
+
+    adapter._init_skill_turbo_tool()
+    adapter._init_skill_turbo_tool()
+
+    assert skill_turbo.card.stateless is True
+    assert resource_mgr.adds == [(skill_turbo.card.id, False, True)]
+    assert resource_mgr.tools[skill_turbo.card.id] is skill_turbo
+    assert adapter._instance.ability_manager.add.call_count == 2
+
+
+def test_skill_turbo_tool_skips_registration_when_disabled(
+    resource_mgr: _FakeResourceMgr,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    adapter = object.__new__(JiuWenSwarmDeepAdapter)
+    adapter._instance = MagicMock()
+    adapter._stream_event_rail = None
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.agent_adapter.interface_deep.get_config",
+        lambda: {"react": {"skill_turbo": {"enabled": False}}},
+    )
+
+    adapter._init_skill_turbo_tool()
+
+    assert resource_mgr.adds == []
+    adapter._instance.ability_manager.add.assert_not_called()

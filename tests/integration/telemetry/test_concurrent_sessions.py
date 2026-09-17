@@ -31,6 +31,12 @@ from jiuwenswarm.telemetry.metrics import TelemetryMetrics
 from jiuwenswarm.telemetry.request_context import TraceBindingRegistry
 from jiuwenswarm.telemetry.span_registry import SpanRegistryProcessor
 
+# CI Python 3.11: asyncio.Runner.close() can raise during pytest-asyncio
+# teardown; pytest.ini ``filterwarnings = error`` would turn that into ERROR.
+pytestmark = pytest.mark.filterwarnings(
+    "ignore:An exception occurred during teardown of an asyncio.Runner:RuntimeWarning"
+)
+
 
 @pytest.fixture
 async def concurrent_env() -> AsyncIterator[SimpleNamespace]:
@@ -74,12 +80,15 @@ async def concurrent_env() -> AsyncIterator[SimpleNamespace]:
             span_registry=span_registry,
         )
     finally:
-        await callbacks.unregister(Runner.callback_framework)
-        shutdown_observability()
-        provider.force_flush()
-        meter_provider.shutdown()
-        provider.shutdown()
-        IdentityStore.clear(identity_token)
+        try:
+            await callbacks.unregister(Runner.callback_framework)
+            shutdown_observability()
+            provider.force_flush()
+            meter_provider.shutdown()
+            provider.shutdown()
+        finally:
+            IdentityStore.clear(identity_token)
+            await asyncio.sleep(0)
 
 
 def _metric_points(reader: InMemoryMetricReader, name: str) -> list[object]:

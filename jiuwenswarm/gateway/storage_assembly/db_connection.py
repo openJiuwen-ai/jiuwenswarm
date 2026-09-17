@@ -68,6 +68,12 @@ class GatewayDbConnection:
             db = self._db_obj or self._bind_database()
             # ``Database.ensure_ready`` 已调用 ``init_all_tables``（幂等）。
             handler = await db.ensure_ready(log_prefix="gateway_storage")
+            from jiuwenswarm.common.security.link_mtls import LinkMTLSConfig
+            from jiuwenswarm.gateway.config.enterprise.link_binding_state import (
+                sync_local_link_binding_state,
+            )
+
+            await sync_local_link_binding_state(handler, LinkMTLSConfig.from_env())
             self._handler = handler
             return handler
 

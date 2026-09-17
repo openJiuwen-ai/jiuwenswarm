@@ -289,6 +289,19 @@ def test_parallel_section_nodes_emit_one_section_boundary():
             {"agent": agent, "section_idx": "3", "event": "done", "content": ""},
             state,
         )
+        validated = (
+            route_chunk(
+                {
+                    "agent": agent,
+                    "section_idx": "3",
+                    "event": "summary_response",
+                    "content": "SUCCESS",
+                },
+                state,
+            )
+            if agent == "sub_reporter"
+            else []
+        )
 
         started_reasoning = _process_reasoning(started)
         assert started_reasoning == [{
@@ -317,7 +330,11 @@ def test_parallel_section_nodes_emit_one_section_boundary():
             "task_index": 3,
             "stream_source_id": "deepresearch_section_3",
         }]
-        completes = [frame for frame in completed if frame["event_type"] == "task.complete"]
+        completes = [
+            frame
+            for frame in completed + validated
+            if frame["event_type"] == "task.complete"
+        ]
         assert len(completes) == (1 if agent == "sub_reporter" else 0)
 
 
@@ -352,7 +369,8 @@ def test_final_report_nodes_share_stage_four_aggregate_stream():
             "agent": "sub_reporter",
             "section_idx": "1",
             "section_total": 1,
-            "event": "done",
+            "event": "summary_response",
+            "content": "SUCCESS",
         },
         state,
     )
@@ -372,11 +390,23 @@ def test_final_report_nodes_share_stage_four_aggregate_stream():
 def test_final_report_aggregate_starts_only_after_all_sections_complete():
     state = RouterState(section_titles={"1": "第一章", "2": "第二章"})
     first = route_chunk(
-        {"agent": "sub_reporter", "section_idx": "1", "section_total": 2, "event": "done"},
+        {
+            "agent": "sub_reporter",
+            "section_idx": "1",
+            "section_total": 2,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        },
         state,
     )
     second = route_chunk(
-        {"agent": "sub_reporter", "section_idx": "2", "section_total": 2, "event": "done"},
+        {
+            "agent": "sub_reporter",
+            "section_idx": "2",
+            "section_total": 2,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        },
         state,
     )
 
@@ -415,7 +445,8 @@ def test_final_report_waits_for_every_expected_section():
             "agent": "sub_reporter",
             "section_idx": "1",
             "section_total": 2,
-            "event": "done",
+            "event": "summary_response",
+            "content": "SUCCESS",
         },
         state,
     )
@@ -429,7 +460,8 @@ def test_final_report_waits_for_every_expected_section():
             "agent": "sub_reporter",
             "section_idx": "2",
             "section_total": 2,
-            "event": "done",
+            "event": "summary_response",
+            "content": "SUCCESS",
         },
         state,
     )
@@ -471,7 +503,8 @@ def test_section_total_has_small_deterministic_bound():
                 "agent": "sub_reporter",
                 "section_idx": "1",
                 "section_total": 10**18,
-                "event": "done",
+            "event": "summary_response",
+            "content": "SUCCESS",
             },
             state,
         )
@@ -722,7 +755,8 @@ def test_final_report_boundaries_remain_exactly_once():
             "agent": "sub_reporter",
             "section_idx": "1",
             "section_total": 1,
-            "event": "done",
+            "event": "summary_response",
+            "content": "SUCCESS",
         },
         state,
     ))
@@ -731,7 +765,8 @@ def test_final_report_boundaries_remain_exactly_once():
             "agent": "sub_reporter",
             "section_idx": "1",
             "section_total": 1,
-            "event": "done",
+                "event": "summary_response",
+                "content": "SUCCESS",
         },
         state,
     ))
@@ -750,7 +785,13 @@ def test_final_report_boundaries_remain_exactly_once():
 def test_final_report_reasoning_waits_for_all_sections_then_follows_start_boundary():
     state = RouterState(section_titles={"1": "第一章", "2": "第二章"})
     route_chunk(
-        {"agent": "sub_reporter", "section_idx": "1", "section_total": 2, "event": "done"},
+        {
+            "agent": "sub_reporter",
+            "section_idx": "1",
+            "section_total": 2,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        },
         state,
     )
 
@@ -764,7 +805,13 @@ def test_final_report_reasoning_waits_for_all_sections_then_follows_start_bounda
     )
 
     released = route_chunk(
-        {"agent": "sub_reporter", "section_idx": "2", "section_total": 2, "event": "done"},
+        {
+            "agent": "sub_reporter",
+            "section_idx": "2",
+            "section_total": 2,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        },
         state,
     )
     aggregate = [
@@ -782,7 +829,13 @@ def test_final_report_reasoning_waits_for_all_sections_then_follows_start_bounda
 def test_final_report_aggregate_completes_after_stage_four_starts():
     state = RouterState(section_titles={"1": "第一章"})
     frames = route_chunk(
-        {"agent": "sub_reporter", "section_idx": "1", "section_total": 1, "event": "done"},
+        {
+            "agent": "sub_reporter",
+            "section_idx": "1",
+            "section_total": 1,
+            "event": "summary_response",
+            "content": "SUCCESS",
+        },
         state,
     )
 
@@ -824,6 +877,12 @@ def test_last_section_reasoning_finishes_before_stage_four_transition():
             "reasoning_content": "正在完成章节最终检查",
         },
         state,
+    )
+    frames.extend(
+        route_chunk(
+            {**base, "event": "summary_response", "content": "SUCCESS"},
+            state,
+        )
     )
 
     final_section_reasoning = next(
@@ -1037,6 +1096,13 @@ def test_parallel_sections_emit_one_stage_update_without_chapter_snapshots():
         "event": "done",
         "content": "SUCCESS",
     }, state)
+    validated = route_chunk({
+        "agent": "sub_reporter",
+        "section_idx": "1",
+        "section_total": 2,
+        "event": "summary_response",
+        "content": "SUCCESS",
+    }, state)
     repeated_success = route_chunk({
         "agent": "sub_reporter",
         "section_idx": "1",
@@ -1051,6 +1117,11 @@ def test_parallel_sections_emit_one_stage_update_without_chapter_snapshots():
         frame["stream_source_id"] == "deepresearch_section_1"
         for frame in _process_reasoning(started + completed)
     )
+    assert [
+        frame["event_type"]
+        for frame in validated
+        if frame.get("stream_source_id") == "deepresearch_section_1"
+    ] == ["task.complete"]
     assert repeated_success == []
 
 
@@ -1075,7 +1146,7 @@ def test_parallel_section_emits_distinct_reasoning_and_content_without_compactio
 
 
 def test_parallel_section_filters_control_process_values():
-    for value in ("SUCCESS", " ALL END ", "SECTION END", "", "   "):
+    for value in (" ALL END ", "SECTION END", "", "   "):
         state = RouterState()
         route_chunk({
             "agent": "sub_reporter",
@@ -1116,7 +1187,38 @@ def test_sub_reporter_success_response_does_not_restart_reasoning():
         state,
     )
 
-    assert frames == []
+    assert _process_reasoning(frames) == []
+    assert any(frame["event_type"] == "task.complete" for frame in frames)
+    assert state.final_report_started is True
+
+
+def test_sub_reporter_section_completes_only_after_validated_success_marker():
+    state = RouterState()
+    base = {
+        "agent": "sub_reporter",
+        "section_idx": "1",
+        "section_title": "第一章",
+        "section_total": 1,
+    }
+
+    done_frames = route_chunk({**base, "event": "done"}, state)
+
+    assert state.completed_section_indices == set()
+    assert not any(frame["event_type"] == "task.complete" for frame in done_frames)
+    assert state.final_report_started is False
+
+    success_frames = route_chunk(
+        {**base, "event": "summary_response", "content": "SUCCESS"},
+        state,
+    )
+
+    assert state.completed_section_indices == {"1"}
+    assert any(
+        frame["event_type"] == "task.complete"
+        and frame.get("stream_source_id") == "deepresearch_section_1"
+        for frame in success_frames
+    )
+    assert state.final_report_started is True
 
 
 def test_sub_reporter_forwards_reasoning_without_streaming_chapter_body():
@@ -1812,9 +1914,6 @@ def test_brief_outline_uses_stage_two_and_outline_preview_contract():
         "brief_info_collector",
         "brief_evidence_reviewer",
         "brief_sub_reporter",
-        "brief_reporter",
-        "brief_mermaid_generator",
-        "brief_source_tracer",
     ],
 )
 def test_brief_research_nodes_advance_stage_three_in_task_list(agent):
@@ -1825,6 +1924,64 @@ def test_brief_research_nodes_advance_stage_three_in_task_list(agent):
 
     _assert_stage(_stage_update(frames), 3)
     assert all(frame["event_type"] != "chat.delta" for frame in frames)
+
+
+def test_brief_sub_reporter_completion_starts_stage_four_before_final_node_chunk():
+    state = RouterState(current_stage=3)
+
+    frames = route_chunk(
+        {"agent": "brief_sub_reporter", "event": "done", "content": "章节写作完成"},
+        state,
+    )
+
+    assert state.final_report_started is True
+    _assert_stage(_stage_update(frames), 4)
+    node_complete = next(
+        index
+        for index, frame in enumerate(frames)
+        if frame["event_type"] == "chat.reasoning"
+        and frame.get("task_id") == "deepresearch_stage_3"
+        and frame.get("stream_source_id") == "dr_brief_sub_reporter"
+        and frame.get("content") == "精简章节撰写完成\n"
+    )
+    stage_four = next(
+        index
+        for index, frame in enumerate(frames)
+        if frame["event_type"] == "task.update"
+        and frame["tasks"][3]["status"] == "in_progress"
+    )
+    assert node_complete < stage_four
+
+
+@pytest.mark.parametrize(
+    "agent",
+    [
+        "brief_reporter",
+        "brief_mermaid_generator",
+        "brief_source_tracer",
+        "brief_html_reporter",
+    ],
+)
+def test_brief_final_nodes_start_stage_four_without_professional_sections(agent):
+    state = RouterState(current_stage=3)
+
+    frames = route_chunk(
+        {"agent": agent, "event": "start", "content": "处理中"},
+        state,
+    )
+
+    assert state.final_report_started is True
+    _assert_stage(_stage_update(frames), 4)
+    final_frames = [
+        frame
+        for frame in frames
+        if frame.get("stream_source_id") == "deepresearch_final_report"
+    ]
+    assert final_frames[0]["event_type"] == "task.start"
+    assert any(
+        frame["event_type"] == "chat.reasoning"
+        for frame in final_frames
+    )
 
 
 @pytest.mark.parametrize(

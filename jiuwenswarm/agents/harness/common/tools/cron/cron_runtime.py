@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import asyncio
 import time
+from collections.abc import Awaitable, Callable
 from copy import deepcopy
-from typing import Any, Optional
+from types import SimpleNamespace
+from typing import Any, Optional, TypeVar
 
 from openjiuwen.harness.tools.cron import CronToolBackend, CronToolContext, create_cron_tools
 
@@ -23,6 +25,35 @@ from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
 from jiuwenswarm.common.schema.message import Message, ReqMethod
 from jiuwenswarm.common.utils import logger
 from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
+
+_T = TypeVar("_T")
+
+
+def _bound_request_context() -> Any | None:
+    """Use the live request ContextVar binding when DeepAgent omits ``context``.
+
+    Only the current bound invocation is trusted. Unbound leftover ContextVars
+    are ignored; session adapters inject the same-request proxy instead.
+    """
+    try:
+        from jiuwenswarm.server.runtime.agent_adapter.interface_deep import (
+            _CRON_TOOL_BOUND,
+            _CRON_TOOL_MODE,
+            get_runtime_tool_channel_id,
+            get_runtime_tool_metadata,
+            get_runtime_tool_session_id,
+        )
+    except Exception:
+        return None
+    if not _CRON_TOOL_BOUND.get():
+        return None
+    metadata = get_runtime_tool_metadata()
+    return SimpleNamespace(
+        channel_id=get_runtime_tool_channel_id(),
+        session_id=get_runtime_tool_session_id(),
+        metadata=dict(metadata) if isinstance(metadata, dict) else metadata,
+        mode=_CRON_TOOL_MODE.get(),
+    )
 
 
 def _normalize_tenant_scope(
@@ -88,7 +119,7 @@ class _CronToolsCronBackend(CronToolBackend):
         app_id = str(metadata.get("app_id") or "").strip()
         from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
 
-        group_id, bot_id, user_id = extract_routing_triple(metadata, context)
+        group_id, bot_id, user_id = extract_routing_triple(metadata)
         return CronToolRoute(
             request_id=request_id,
             channel_id=channel_id,
@@ -103,18 +134,59 @@ class _CronToolsCronBackend(CronToolBackend):
             user_id=user_id,
         )
 
-    async def list_jobs(self, *, include_disabled: bool = True) -> list[dict[str, Any]]:
-        jobs = await self._cron_tools.list_jobs()
-        rows = [self._to_backend_job(job) for job in jobs]
-        if include_disabled:
-            return rows
-        return [job for job in rows if job.get("enabled", True)]
+    def _assert_enterprise_route(self, route: CronToolRoute) -> None:
+        ready_fn = getattr(self._cron_tools, "_enterprise_ready", None)
+        if not callable(ready_fn) or not ready_fn():
+            return
+        from jiuwenswarm.gateway.cron.enterprise_gate import routing_triple_complete
 
-    async def get_job(self, job_id: str) -> dict[str, Any] | None:
-        job = await self._cron_tools.get_job(job_id)
-        if job is None:
-            return None
-        return self._to_backend_job(job)
+        if not str(route.session_id or "").strip() or not routing_triple_complete(
+            route.group_id, route.bot_id, route.user_id
+        ):
+            raise ValueError("enterprise cron requires an authenticated session")
+
+    async def _with_route(
+        self,
+        context: CronToolContext | None,
+        op: Callable[[], Awaitable[_T]],
+    ) -> _T:
+        effective = context if context is not None else _bound_request_context()
+        route = self._route_from_context(effective)
+        self._assert_enterprise_route(route)
+        token = self._cron_tools.push_cron_route(route)
+        try:
+            return await op()
+        finally:
+            self._cron_tools.reset_cron_route(token)
+
+    async def list_jobs(
+        self,
+        *,
+        include_disabled: bool = True,
+        context: CronToolContext | None = None,
+    ) -> list[dict[str, Any]]:
+        async def _run() -> list[dict[str, Any]]:
+            jobs = await self._cron_tools.list_jobs()
+            rows = [self._to_backend_job(job) for job in jobs]
+            if include_disabled:
+                return rows
+            return [job for job in rows if job.get("enabled", True)]
+
+        return await self._with_route(context, _run)
+
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any] | None:
+        async def _run() -> dict[str, Any] | None:
+            job = await self._cron_tools.get_job(job_id)
+            if job is None:
+                return None
+            return self._to_backend_job(job)
+
+        return await self._with_route(context, _run)
 
     async def create_job(
         self,
@@ -142,12 +214,12 @@ class _CronToolsCronBackend(CronToolBackend):
             payload.get("id"),
             payload.get("name"),
         )
-        token = self._cron_tools.push_cron_route(self._route_from_context(context))
-        try:
+
+        async def _run() -> dict[str, Any]:
             job = await self._cron_tools.create_job(payload)
-        finally:
-            self._cron_tools.reset_cron_route(token)
-        return self._to_backend_job(job)
+            return self._to_backend_job(job)
+
+        return await self._with_route(context, _run)
 
     async def update_job(
         self,
@@ -157,36 +229,66 @@ class _CronToolsCronBackend(CronToolBackend):
         context: CronToolContext | None = None,
     ) -> dict[str, Any]:
         payload = _extract_legacy_params(dict(patch or {}), context=context, require_schedule=False)
-        token = self._cron_tools.push_cron_route(self._route_from_context(context))
-        try:
+
+        async def _run() -> dict[str, Any]:
             job = await self._cron_tools.update_job(job_id, payload)
-        finally:
-            self._cron_tools.reset_cron_route(token)
-        return self._to_backend_job(job)
+            return self._to_backend_job(job)
 
-    async def delete_job(self, job_id: str) -> bool:
-        return bool(await self._cron_tools.delete_job(job_id))
+        return await self._with_route(context, _run)
 
-    async def toggle_job(self, job_id: str, enabled: bool) -> dict[str, Any]:
-        job = await self._cron_tools.toggle_job(job_id, enabled)
-        return self._to_backend_job(job)
+    async def delete_job(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> bool:
+        async def _run() -> bool:
+            return bool(await self._cron_tools.delete_job(job_id))
 
-    async def preview_job(self, job_id: str, count: int = 5) -> list[dict[str, Any]]:
-        rows = await self._cron_tools.preview_job(job_id, count)
-        return list(rows or [])
+        return await self._with_route(context, _run)
 
-    async def run_now(self, job_id: str) -> str:
-        token = self._cron_tools.push_cron_route(CronToolRoute())
-        try:
+    async def toggle_job(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        async def _run() -> dict[str, Any]:
+            job = await self._cron_tools.toggle_job(job_id, enabled)
+            return self._to_backend_job(job)
+
+        return await self._with_route(context, _run)
+
+    async def preview_job(
+        self,
+        job_id: str,
+        count: int = 5,
+        *,
+        context: CronToolContext | None = None,
+    ) -> list[dict[str, Any]]:
+        async def _run() -> list[dict[str, Any]]:
+            rows = await self._cron_tools.preview_job(job_id, count)
+            return list(rows or [])
+
+        return await self._with_route(context, _run)
+
+    async def run_now(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> str:
+        async def _run() -> str:
             run_result = await self._cron_tools.run_now(job_id)
-        finally:
-            self._cron_tools.reset_cron_route(token)
-        if isinstance(run_result, dict):
-            return str(run_result.get("run_id") or "")
-        return str(run_result or "")
+            if isinstance(run_result, dict):
+                return str(run_result.get("run_id") or "")
+            return str(run_result or "")
 
-    async def status(self) -> dict[str, Any]:
-        jobs = await self._cron_tools.list_jobs()
+        return await self._with_route(context, _run)
+
+    async def status(self, *, context: CronToolContext | None = None) -> dict[str, Any]:
+        jobs = await self.list_jobs(include_disabled=True, context=context)
         return {
             "running": False,
             "job_count": len(jobs),
@@ -262,6 +364,115 @@ class _CronToolsCronBackend(CronToolBackend):
         row.setdefault("session_target", "isolated")
         row.setdefault("compat_mode", "legacy")
         return row
+
+
+class _ContextInjectingCronBackend:
+    """Fill omitted DeepAgent context from the session adapter proxy.
+
+    openjiuwen ``create_cron_tools`` only forwards ``context=`` on create/update/wake.
+    list/get/delete/toggle/preview/status/run call the backend without it, so
+    ``_with_route`` would otherwise see an empty CronToolRoute. The adapter's
+    ``_RuntimeCronToolContext`` already remembers per-request identity for
+    create; wrap the shared tenant backend with that same object at tool-build
+    time so invoke_tool list/get reuse it. Personal edition is unchanged: extra
+    identity on the route is unused when enterprise cron is off.
+    """
+
+    def __init__(self, inner: CronToolBackend, context: Any) -> None:
+        self._inner = inner
+        self._context = context
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._inner, name)
+
+    def _ctx(self, context: CronToolContext | None) -> Any:
+        return context if context is not None else self._context
+
+    async def list_jobs(
+        self,
+        *,
+        include_disabled: bool = True,
+        context: CronToolContext | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._inner.list_jobs(
+            include_disabled=include_disabled,
+            context=self._ctx(context),
+        )
+
+    async def get_job(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any] | None:
+        return await self._inner.get_job(job_id, context=self._ctx(context))
+
+    async def create_job(
+        self,
+        params: dict[str, Any],
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        return await self._inner.create_job(params, context=self._ctx(context))
+
+    async def update_job(
+        self,
+        job_id: str,
+        patch: dict[str, Any],
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        return await self._inner.update_job(job_id, patch, context=self._ctx(context))
+
+    async def delete_job(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> bool:
+        return await self._inner.delete_job(job_id, context=self._ctx(context))
+
+    async def toggle_job(
+        self,
+        job_id: str,
+        enabled: bool,
+        *,
+        context: CronToolContext | None = None,
+    ) -> dict[str, Any]:
+        return await self._inner.toggle_job(
+            job_id, enabled, context=self._ctx(context)
+        )
+
+    async def preview_job(
+        self,
+        job_id: str,
+        count: int = 5,
+        *,
+        context: CronToolContext | None = None,
+    ) -> list[dict[str, Any]]:
+        return await self._inner.preview_job(
+            job_id, count, context=self._ctx(context)
+        )
+
+    async def run_now(
+        self,
+        job_id: str,
+        *,
+        context: CronToolContext | None = None,
+    ) -> str:
+        return await self._inner.run_now(job_id, context=self._ctx(context))
+
+    async def status(self, *, context: CronToolContext | None = None) -> dict[str, Any]:
+        return await self._inner.status(context=self._ctx(context))
+
+    async def wake(
+        self,
+        text: str,
+        *,
+        context: CronToolContext | None = None,
+        mode: str | None = None,
+    ) -> dict[str, Any]:
+        return await self._inner.wake(text, context=self._ctx(context), mode=mode)
 
 
 def _extract_legacy_params(
@@ -545,6 +756,8 @@ class CronRuntimeBridge:
             getattr(context, "tool_scope", "unknown"),
         )
         self.ensure_scheduler_started(service_id=sid, agent_id=aid)
+        if context is not None:
+            backend = _ContextInjectingCronBackend(backend, context)
         tools = create_cron_tools(
             backend,
             context=context,

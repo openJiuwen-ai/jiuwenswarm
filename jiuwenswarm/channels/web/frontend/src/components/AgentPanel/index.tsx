@@ -197,7 +197,7 @@ export function AgentPanel({ sessionId: _sessionId }: AgentPanelProps) {
         }
       }
 
-      const res = await fetch('/file-api/file-content?path=agent/workspace/agent-data.json');
+      const res = await fetch('/file-api/file-content?path=agent/jiuwenclaw_workspace/agent-data.json');
       if (!res.ok) {
         throw new Error('FETCH_FAILED');
       }

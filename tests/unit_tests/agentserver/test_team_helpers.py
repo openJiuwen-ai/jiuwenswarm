@@ -1240,8 +1240,7 @@ async def test_consume_stream_with_query_launches_watcher_after_runtime_ready(mo
             channel_id: str | None,
             session_id: str,
             team_name: str,
-            hide_dm: bool = False,
-            enable_swarmflow: bool = False,
+            **kwargs: object,
     ) -> None:
         calls.append(f"monitor:{session_id}:{team_name}")
 
@@ -1318,6 +1317,68 @@ def test_sync_team_identity_metadata_keeps_existing_conflicting_team(monkeypatch
     )
 
     assert updates == []
+
+
+def test_sync_team_identity_metadata_keeps_reconciled_template_team_name(monkeypatch):
+    updates: list[dict[str, object]] = []
+    runtime_team_name = (
+        "oc_team_preset-software-dev_officeclaw_1a08f65aea0_d7bfe3d56f01"
+    )
+
+    monkeypatch.setattr(
+        team_helpers,
+        "get_session_metadata",
+        lambda session_id, **kwargs: {
+            "team_name": "oc_team_preset-software-dev",
+            "runtime_team_name": runtime_team_name,
+        },
+    )
+    monkeypatch.setattr(team_helpers, "update_session_metadata", lambda **kwargs: updates.append(kwargs))
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="officeclaw",
+        session_id="officeclaw_1a08f65aea0_d7bfe3d56f01",
+        mode="team",
+        ready_team_name=runtime_team_name,
+        activation_kind="create",
+    )
+
+    assert updates == []
+
+
+def test_sync_team_identity_metadata_honors_explicit_sessions_root(
+    tmp_path,
+    monkeypatch,
+):
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _METADATA_QUEUE,
+        init_session_metadata,
+    )
+
+    correct_root = tmp_path / "agent_agentteam_sessions"
+    wrong_root = tmp_path / "agent_default_sessions"
+    correct_root.mkdir(parents=True)
+    wrong_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        lambda: wrong_root,
+    )
+
+    init_session_metadata(session_id="sess-sync-root", sessions_root=correct_root)
+    _METADATA_QUEUE.join()
+
+    team_helpers.sync_team_identity_metadata(
+        channel_id="officeclaw",
+        session_id="sess-sync-root",
+        mode="team",
+        ready_team_name="oc_team_demo_officeclaw_sess-sync-root",
+        activation_kind="create",
+        sessions_root=correct_root,
+    )
+    _METADATA_QUEUE.join()
+
+    assert (correct_root / "sess-sync-root" / "metadata.json").is_file()
+    assert not (wrong_root / "sess-sync-root" / "metadata.json").exists()
 
 
 @pytest.mark.anyio
@@ -1416,6 +1477,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
         request_id="req-team-stream",
         channel_id="web",
         metadata=None,
+        params={"bot_id": "cron-resource"},
     )
     inputs = {"query": "/evolve_list demo-skill"}
 
@@ -1444,6 +1506,7 @@ async def test_process_team_message_stream_handles_team_evolve_list(monkeypatch,
     assert captured_spec
     assert captured_context[0]["config_base"] == {"models": {"defaults": []}}
     assert captured_context[0]["sessions_root"] == tmp_path / "tenant-sessions"
+    assert captured_context[0]["request_metadata"]["routing"]["bot_id"] == "cron-resource"
 
 
 @pytest.mark.anyio
@@ -1819,6 +1882,7 @@ async def test_process_team_message_stream_restarts_round_after_shutdown_race(mo
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         _ = channel_id, spec, envs
         captured["consumed"] = (session_id, query, round_id)
@@ -1918,6 +1982,7 @@ async def test_process_team_message_stream_fallback_reuses_first_request_directi
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         _ = channel_id, spec
         captured["consumed"] = (session_id, query, round_id, envs)
@@ -2520,6 +2585,7 @@ async def test_process_team_message_stream_treats_plain_query_as_first_request_a
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         _ = channel_id, spec, envs
         captured["consumed"] = (session_id, query, round_id)
@@ -2654,6 +2720,7 @@ async def test_process_team_message_stream_defers_first_evolve_until_team_runtim
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         captured_queries.append(query)
 
@@ -2723,6 +2790,7 @@ async def test_process_team_message_stream_syncs_team_skills_before_evolve_slash
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         captured_queries.append(query)
 
@@ -2795,6 +2863,7 @@ async def test_process_team_message_stream_runs_evolve_followup_without_rail(mon
         *,
         round_id: int,
         envs: dict | None = None,
+        sessions_root=None,
     ) -> None:
         captured_queries.append(query)
 
@@ -4204,7 +4273,10 @@ async def test_ensure_monitor_handlers_creates_workflow_handler_when_swarmflow_e
     monkeypatch.setattr(team_helpers, "_consume_monitor_events", _fake_consume_monitor)
 
     await team_helpers.ensure_monitor_handlers_for_active_runtime(
-        channel_id, session_id, team_name, enable_swarmflow=True,
+        channel_id,
+        session_id,
+        team_name,
+        options=team_helpers.TeamMonitorAttachOptions(enable_swarmflow=True),
     )
 
     wf_handler = registered_handlers.get(session_id)
@@ -4264,7 +4336,10 @@ async def test_ensure_monitor_handlers_skips_workflow_handler_when_swarmflow_dis
     monkeypatch.setattr(team_helpers, "_consume_monitor_events", lambda *a: None)
 
     await team_helpers.ensure_monitor_handlers_for_active_runtime(
-        channel_id, session_id, team_name, enable_swarmflow=False,
+        channel_id,
+        session_id,
+        team_name,
+        options=team_helpers.TeamMonitorAttachOptions(enable_swarmflow=False),
     )
 
     assert registered_wf_handlers.get(session_id) is None
@@ -4584,6 +4659,10 @@ async def test_broadcast_team_state_snapshot_broadcasts_member_and_task_status(m
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
 
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
+
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
         team_helpers,
@@ -4677,6 +4756,10 @@ async def test_broadcast_team_state_snapshot_task_event_carries_title_content_an
         @staticmethod
         def get_monitor_handler(session_id: str):
             return _FakeMonitorHandler()
+
+        @staticmethod
+        def get_active_team_name(session_id: str):
+            return ""
 
     monkeypatch.setattr(team_helpers, "get_team_manager", lambda channel_id: _FakeManager())
     monkeypatch.setattr(
@@ -5247,3 +5330,43 @@ async def test_team_round_settled_empty_board_passes_when_toggle_true(monkeypatc
     monkeypatch.setattr(team_helpers, "_taskless_completion_enabled", lambda session_id: True)
 
     assert await _TeamHelpersTestApi.team_round_settled("officeclaw", "sess-toggle")
+
+
+def test_workflow_runs_persist_and_restore_honor_sessions_root(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from jiuwenswarm.agents.harness.team.handlers.workflow_state import WorkflowRunState
+
+    correct_root = tmp_path / "agent_agentteam_sessions"
+    wrong_root = tmp_path / "agent_default_sessions"
+    correct_root.mkdir(parents=True)
+    wrong_root.mkdir(parents=True)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+        lambda: wrong_root,
+    )
+
+    run_state = WorkflowRunState(
+        id="wf-1",
+        name="demo",
+        status="running",
+    )
+    from jiuwenswarm.server.runtime.session.session_metadata import _METADATA_QUEUE
+
+    team_helpers.persist_workflow_runs(
+        {"wf-1": run_state},
+        "sess_wf_root",
+        sessions_root=correct_root,
+    )
+    _METADATA_QUEUE.join()
+
+    assert (correct_root / "sess_wf_root" / "metadata.json").is_file()
+    assert not (wrong_root / "sess_wf_root" / "metadata.json").exists()
+
+    restored = team_helpers.restore_workflow_runs(
+        "sess_wf_root",
+        sessions_root=correct_root,
+    )
+    assert restored is not None
+    assert restored["wf-1"].id == "wf-1"

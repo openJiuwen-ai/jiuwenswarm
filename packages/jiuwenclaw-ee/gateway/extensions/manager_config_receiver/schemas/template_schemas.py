@@ -1,8 +1,8 @@
 from __future__ import annotations
 
-import re
-from typing import Annotated, Any
-from urllib.parse import urlparse
+from datetime import datetime
+from typing import Annotated, Any, Literal
+from urllib.parse import unquote, urlparse, urlsplit
 
 from croniter import croniter
 from pydantic import (
@@ -12,6 +12,7 @@ from pydantic import (
     BeforeValidator,
     ConfigDict,
     Field,
+    field_validator,
     model_validator,
 )
 
@@ -78,6 +79,34 @@ OptionalSkillSourceUrl = Annotated[
 ]
 
 
+def _validate_a2a_card_path(value: str) -> str:
+    if not value.startswith("/") or value.startswith("//") or "\\" in value:
+        raise ValueError("must be an absolute same-origin path")
+    parsed = urlsplit(value)
+    decoded = unquote(parsed.path)
+    # G.CTL.03: if 内布尔条件不超过 3 个
+    if parsed.scheme or parsed.netloc or parsed.query:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if parsed.fragment:
+        raise ValueError("must not contain a scheme, host, query, or fragment")
+    if decoded.startswith("//") or "\\" in decoded or ".." in decoded.split("/"):
+        raise ValueError("must remain a same-origin path")
+    return value
+
+
+A2ASourceUrl = Annotated[
+    str,
+    Field(min_length=1, max_length=2048),
+    AfterValidator(_validate_http_url),
+]
+A2ACardPath = Annotated[
+    str,
+    Field(min_length=1, max_length=512),
+    AfterValidator(_validate_a2a_card_path),
+]
+TemplateId = Annotated[str, Field(min_length=1, max_length=100)]
+
+
 class HookConfig(BaseModel):
     """扩展模板 hook_config 结构（与设计文档一致）。"""
 
@@ -90,21 +119,27 @@ class HookConfig(BaseModel):
 
 
 class ModelTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """PATCH：未传=不更新；显式 null 由非 Optional 类型在 Field 层拒绝（对齐 NOT NULL 列）。
+
+    写法：``field: T = Field(default=None, ...)`` —— 可省略，但传入必须是 T，不能是 null。
+    ``description`` / ``model_tags`` 等可空列仍用 ``T | None``。
+    """
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    model_type: list[str] | None = None
+    model_type: list[str] = Field(default=None)
     model_tags: list[str] | None = None
-    api_base: str | None = Field(default=None, max_length=512)
-    api_key: str | None = None
-    model_id: str | None = Field(default=None, max_length=128)
-    model_provider: str | None = Field(default=None, max_length=64)
+    api_base: str = Field(default=None, min_length=1, max_length=512)
+    api_key: str = Field(default=None, min_length=1, max_length=4096)
+    model_id: str = Field(default=None, min_length=1, max_length=128)
+    model_provider: str = Field(default=None, min_length=1, max_length=64)
     parameters: dict[str, Any] | None = None
-    timeout: int | None = Field(default=None, ge=1)
-    retry_count: int | None = Field(default=None, ge=0)
-    enable_streaming: bool | None = None
-    enable_function_calling: bool | None = None
-    verify_ssl: bool | None = None
-    enabled: bool | None = None
+    timeout: int = Field(default=None, ge=1)
+    retry_count: int = Field(default=None, ge=0)
+    enable_streaming: bool = Field(default=None)
+    enable_function_calling: bool = Field(default=None)
+    verify_ssl: bool = Field(default=None)
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -114,26 +149,29 @@ class ModelTemplateCreateRequest(ModelTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     api_base: str = Field(..., min_length=1, max_length=512)
-    api_key: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1, max_length=4096)
     model_id: str = Field(..., min_length=1, max_length=128)
     model_provider: str = Field(..., min_length=1, max_length=64)
 
 
 class EmbeddingTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(
+    """对齐 embedding_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(
         default=None,
+        min_length=1,
         max_length=128,
         validation_alias=AliasChoices("template_name", "name"),
     )
     description: str | None = Field(default=None, max_length=512)
     embed_tags: list[str] | None = None
-    api_base: str | None = Field(default=None, max_length=512)
-    api_key: str | None = None
-    model_id: str | None = Field(default=None, max_length=128)
-    model_provider: str | None = Field(default=None, max_length=64)
+    api_base: str = Field(default=None, min_length=1, max_length=512)
+    api_key: str = Field(default=None, min_length=1, max_length=4096)
+    model_id: str = Field(default=None, min_length=1, max_length=128)
+    model_provider: str = Field(default=None, min_length=1, max_length=64)
     parameters: dict[str, Any] | None = None
     client_config: dict[str, Any] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -141,19 +179,21 @@ class EmbeddingTemplateCreateRequest(EmbeddingTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     api_base: str = Field(..., min_length=1, max_length=512)
-    api_key: str = Field(..., min_length=1)
+    api_key: str = Field(..., min_length=1, max_length=4096)
     model_id: str = Field(..., min_length=1, max_length=128)
     model_provider: str = Field(..., min_length=1, max_length=64)
 
 
 class ExtensionConfigTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 extension_config_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    component: str | None = Field(default=None, max_length=32)
-    hook_type: str | None = Field(default=None, max_length=32)
-    hook_config: HookConfig | None = None
+    component: str = Field(default=None, min_length=1, max_length=32)
+    hook_type: str = Field(default=None, min_length=1, max_length=32)
+    hook_config: HookConfig = Field(default=None)
     custom_config: dict[str, Any] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -162,16 +202,19 @@ class ExtensionConfigTemplateCreateRequest(ExtensionConfigTemplateUpdateRequest)
     template_name: str = Field(..., min_length=1, max_length=128)
     component: str = Field(..., min_length=1, max_length=32)
     hook_type: str = Field(..., min_length=1, max_length=32)
+    hook_config: HookConfig
 
 
 class SkillPrebuiltTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 skill_prebuilt_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    skill_id: str | None = Field(default=None, max_length=512)
+    skill_id: str = Field(default=None, min_length=1, max_length=512)
     package_url: OptionalSkillSourceUrl = None
     source_id: str | None = Field(default=None, max_length=64)
     version_id: str | None = Field(default=None, max_length=128)
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -181,17 +224,29 @@ class SkillPrebuiltTemplateCreateRequest(SkillPrebuiltTemplateUpdateRequest):
     skill_id: str = Field(..., min_length=1, max_length=512)
 
 
+# 入参可写别名；存盘归一到 SDK 注册名（见 _CANONICAL_MCP_TRANSPORT）。
+# 企业模板仅允许远程 MCP；本地 stdio 不在用户可配入口开放。
 _VALID_MCP_TRANSPORTS = frozenset({
-    "stdio",
     "sse",
     "http",
     "streamable-http",
     "streamable_http",
 })
 
+# http / streamable_http → streamable-http（openjiuwen StreamableHttpClient）
+_MCP_TRANSPORT_ALIASES: dict[str, str] = {
+    "http": "streamable-http",
+    "streamable_http": "streamable-http",
+}
+
 
 def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
-    """校验 MCP 模板 ``mcp_entry``；丢弃条目级 ``enabled``（开关只认模板行）。"""
+    """校验 MCP 模板 ``mcp_entry``；丢弃条目级 ``enabled``（开关只认模板行）。
+
+    ``http`` / ``streamable_http`` 作为 Streamable HTTP 别名接受，存盘时写成
+    ``streamable-http``，避免 Gateway 保存成功、AgentServer 注册报
+    ``Unsupported MCP client type: http``。
+    """
     if not isinstance(entry, dict):
         raise ValueError("mcp_entry must be a JSON object")
     normalized = dict(entry)
@@ -205,24 +260,22 @@ def validate_mcp_entry(entry: dict[str, Any]) -> dict[str, Any]:
             "mcp_entry.transport must be one of: "
             + ", ".join(sorted(_VALID_MCP_TRANSPORTS))
         )
-    if transport == "stdio":
-        command = str(normalized.get("command", "")).strip()
-        if not command:
-            raise ValueError("mcp_entry.command is required for stdio transport")
-    else:
-        url = str(normalized.get("url", "")).strip()
-        if not url:
-            raise ValueError("mcp_entry.url is required for remote MCP transport")
+    transport = _MCP_TRANSPORT_ALIASES.get(transport, transport)
+    url = str(normalized.get("url", "")).strip()
+    if not url:
+        raise ValueError("mcp_entry.url is required for remote MCP transport")
     normalized["name"] = name
     normalized["transport"] = transport
     return normalized
 
 
 class McpTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 mcp_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    mcp_entry: dict[str, Any] | None = None
-    enabled: bool | None = None
+    mcp_entry: dict[str, Any] = Field(default=None)
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
     @model_validator(mode="after")
@@ -239,10 +292,12 @@ class McpTemplateCreateRequest(McpTemplateUpdateRequest):
 
 
 class PermissionsTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 permissions_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    enabled: bool | None = None
-    body: dict[str, Any] | None = None
+    enabled: bool = Field(default=None)
+    body: dict[str, Any] = Field(default=None)
     data: dict[str, Any] | None = None
 
 
@@ -258,11 +313,13 @@ class PermissionsTemplateCreateRequest(PermissionsTemplateUpdateRequest):
 
 
 class AgentTemplateUpdateRequest(SafeTextMixin):
-    template_name: str | None = Field(default=None, max_length=128)
+    """对齐 agent_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
     agent_tags: list[str] | None = None
     template_ref: dict[str, list[str]] | None = None
-    enabled: bool | None = None
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
     @model_validator(mode="before")
@@ -280,3 +337,119 @@ class AgentTemplateCreateRequest(AgentTemplateUpdateRequest):
     template_id: str = Field(..., min_length=1, max_length=100)
     template_name: str = Field(..., min_length=1, max_length=128)
     template_ref: dict[str, list[str]] = Field(default_factory=dict)
+
+
+class A2ACredentialOperation(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True, extra="forbid")
+
+    operation: Literal["keep", "replace", "clear"]
+    value: str | None = Field(default=None, max_length=4096)
+
+    @model_validator(mode="after")
+    def _validate_operation(self) -> A2ACredentialOperation:
+        if self.operation == "replace":
+            if not self.value:
+                raise ValueError("credential.value is required for replace")
+            if self.value.startswith("ENC:v1:"):
+                raise ValueError("encrypted credential envelopes are not supported")
+        elif self.value is not None:
+            raise ValueError("credential.value is only valid for replace")
+        return self
+
+
+class A2AOutboundTemplateUpdateRequest(SafeTextMixin):
+    """对齐 a2a_outbound_template：NOT NULL 列用 ``T = Field(default=None)``。
+
+    ``credential`` 非落库列（映射 credential_ref），null 表示不改凭证，保持可空。
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    template_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    a2a_tags: list[str] | None = None
+    source_url: A2ASourceUrl = Field(default=None)
+    card_path: A2ACardPath = Field(default=None)
+    agent_card: dict[str, Any] = Field(default=None)
+    card_fingerprint: str = Field(default=None, min_length=1, max_length=128)
+    card_revision: int = Field(default=None, ge=1)
+    selected_interface: dict[str, Any] = Field(default=None)
+    connect_timeout_seconds: float = Field(default=None, gt=0)
+    sync_wait_seconds: float = Field(default=None, gt=0)
+    enabled: bool = Field(default=None)
+    credential: A2ACredentialOperation | None = None
+    data: dict[str, Any] | None = None
+    updated_at: datetime = Field(default=None)
+
+    @model_validator(mode="after")
+    def _validate_card_and_interface(self) -> A2AOutboundTemplateUpdateRequest:
+        if self.agent_card is not None and not str(self.agent_card.get("name") or "").strip():
+            raise ValueError("agent_card.name is required")
+        if self.selected_interface is not None:
+            protocol_binding = str(
+                self.selected_interface.get("protocol_binding") or ""
+            ).strip()
+            protocol_version = str(
+                self.selected_interface.get("protocol_version") or ""
+            ).strip()
+            if not protocol_binding:
+                raise ValueError("selected_interface.protocol_binding is required")
+            if not protocol_version:
+                raise ValueError("selected_interface.protocol_version is required")
+            interface_url = str(self.selected_interface.get("url") or "").strip()
+            if not interface_url:
+                raise ValueError("selected_interface.url is required")
+            _validate_http_url(interface_url)
+        return self
+
+
+class A2AOutboundTemplateCreateRequest(A2AOutboundTemplateUpdateRequest):
+    template_id: TemplateId
+    template_name: str = Field(..., min_length=1, max_length=128)
+    source_url: A2ASourceUrl
+    card_path: A2ACardPath
+    agent_card: dict[str, Any]
+    card_fingerprint: str = Field(..., min_length=1, max_length=128)
+    card_revision: int = Field(..., ge=1)
+    selected_interface: dict[str, Any]
+    connect_timeout_seconds: float = Field(..., gt=0)
+    sync_wait_seconds: float = Field(..., gt=0)
+    enabled: bool
+    credential: A2ACredentialOperation
+    updated_at: datetime
+
+    @model_validator(mode="after")
+    def _require_bootstrap_credential(self) -> A2AOutboundTemplateCreateRequest:
+        if self.credential.operation == "keep":
+            raise ValueError("credential keep is not valid for A2A Agent upsert")
+        return self
+
+
+class A2AAccessPolicyTemplateUpdateRequest(SafeTextMixin):
+    """对齐 a2a_access_policy_template：NOT NULL 列用 ``T = Field(default=None)``。"""
+
+    model_config = ConfigDict(str_strip_whitespace=True, extra="ignore")
+
+    policy_name: str = Field(default=None, min_length=1, max_length=128)
+    description: str | None = Field(default=None, max_length=512)
+    mode: Literal["allowlist", "denylist"] = Field(default=None)
+    member_template_ids: list[TemplateId] = Field(default=None)
+    enabled: bool = Field(default=None)
+    revision: int = Field(default=None, ge=1)
+    data: dict[str, Any] | None = None
+    updated_at: datetime = Field(default=None)
+
+    @field_validator("member_template_ids")
+    @classmethod
+    def _deduplicate_members(cls, value: list[str] | None) -> list[str] | None:
+        return None if value is None else list(dict.fromkeys(value))
+
+
+class A2AAccessPolicyTemplateCreateRequest(A2AAccessPolicyTemplateUpdateRequest):
+    policy_id: TemplateId
+    policy_name: str = Field(..., min_length=1, max_length=128)
+    mode: Literal["allowlist", "denylist"]
+    member_template_ids: list[TemplateId] = Field(default_factory=list)
+    enabled: bool
+    revision: int = Field(..., ge=1)
+    updated_at: datetime

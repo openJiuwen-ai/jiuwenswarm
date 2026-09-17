@@ -1,0 +1,28 @@
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE}
+
+ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
+
+# uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP(=1000) 硬契约对齐，
+# 防止基础镜像占用 1000 时属主漂移（构建期直接失败，fail fast）
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app
+WORKDIR /app/jiuwenswarm/jiuwenbox
+
+COPY jiuwenbox/pyproject.toml ./pyproject.toml
+COPY jiuwenbox/README.md ./README.md
+COPY jiuwenbox/src ./src
+
+RUN uv pip install --system --break-system-packages \
+    ${PIP_EXTRA_ARGS} \
+    -e .
+
+COPY docker/sandbox-entrypoint.sh /usr/local/bin/sandbox-entrypoint.sh
+RUN chmod +x /usr/local/bin/sandbox-entrypoint.sh
+
+EXPOSE 8321
+EXPOSE 8322
+
+ENV JIUWENBOX_LISTEN=http://0.0.0.0:8321
+ENTRYPOINT ["/usr/local/bin/sandbox-entrypoint.sh"]
+CMD ["python3", "-m", "jiuwenbox.server.launcher"]

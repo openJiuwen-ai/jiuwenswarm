@@ -2,7 +2,7 @@
 
 """PendingInteraction — 统一的追问上下文，支持群聊追问和 DM 追问两种模式。
 
-存储路径: {workspace_dir}/agent/workspace/interactions/{interaction_id}.json
+存储路径: {workspace_dir}/agent/jiuwenclaw_workspace/interactions/{interaction_id}.json
 文件名前缀: gpq_* 群聊追问, iact_* DM 追问
 TTL: 24 小时
 """

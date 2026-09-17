@@ -20,7 +20,7 @@ description: 代理执行 AKG 算子任务。先检查固定仓库与分支；�
 
 - `<AKG_REPO_URL>`：`https://gitcode.com/mindspore/akg/`
 - `<AKG_REPO_BRANCH>`：`br_agents`
-- `<AKG_REPO_DIR>`：`$HOME/.jiuwenswarm/agent/workspace/akg`
+- `<AKG_REPO_DIR>`：`$HOME/.jiuwenswarm/agent/jiuwenclaw_workspace/akg`
 - `<AKG_AGENTS_DIR>`：`<AKG_REPO_DIR>/akg_agents`
 
 先检查 `<AKG_REPO_DIR>` 是否存在；若存在，再检查它是否为 git 仓库以及当前分支是否为 `<AKG_REPO_BRANCH>`。

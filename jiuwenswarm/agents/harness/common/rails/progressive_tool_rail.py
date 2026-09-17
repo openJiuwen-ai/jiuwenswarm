@@ -5,6 +5,8 @@
 - eager_tools: always visible in the model tools schema
 - deferred_tools: registered at runtime but hidden from schema; accessed via
   tools_search + invoke_tool
+- disabled_tools / DisabledToolsRail: excluded from schema, navigation,
+  tools_search, and invoke_tool
 
 Fixed schema maximizes LLM prefix caching while keeping rarely used tools reachable.
 """
@@ -33,11 +35,11 @@ from jiuwenswarm.agents.harness.common.tools.invoke_tool_tool import (
 )
 from jiuwenswarm.common.mcp_config import (
     OFFICE_CLAW_EXPECTED_TOOL_IDS_KWARG,
-    OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX,
     bind_active_office_claw_mcp_tools,
     bind_office_claw_from_agent,
     get_active_office_claw_mcp_tool_ids,
     is_office_claw_tool_name_live_concurrent,
+    is_request_scoped_mcp_tool_id,
     resolve_active_office_claw_tool_id,
 )
 
@@ -109,6 +111,7 @@ class ProgressiveToolRail(DeepAgentRail):
         agent_card_id: str | None = None,
         enable_for_models: list[str] | None = None,
         deepresearch_context_provider: Callable[[], dict[str, str]] | None = None,
+        disabled_tools: list[str] | None = None,
     ) -> None:
         super().__init__()
         self.enabled = bool(enabled)
@@ -123,6 +126,11 @@ class ProgressiveToolRail(DeepAgentRail):
         ]
         self._cached_model_name = ""
         self._deepresearch_context_provider = deepresearch_context_provider
+        self._disabled_tools: set[str] = {
+            str(name).strip()
+            for name in (disabled_tools or [])
+            if str(name).strip()
+        }
 
         if "tools_search" not in self.eager_tools:
             self.eager_tools.insert(0, "tools_search")
@@ -142,6 +150,50 @@ class ProgressiveToolRail(DeepAgentRail):
         self._office_claw_active_tool_ids: frozenset[str] | None = None
         self._office_claw_delivery_thread_id: str | None = None
         self._office_claw_invocation_id: str | None = None
+
+    def update_disabled_tools(self, disabled_tools: list[str] | None) -> None:
+        """Replace the local blacklist mirror and drop stale deferred cache."""
+        self._disabled_tools = {
+            str(name).strip()
+            for name in (disabled_tools or [])
+            if str(name).strip()
+        }
+        self.invalidate_deferred_tool_cache()
+
+    def _current_disabled_tools(self) -> frozenset[str]:
+        """Union of constructor seed and live DisabledToolsRail when reachable.
+
+        Progressive filters deferred tools using the constructor/hot-reload seed
+        first. When ``_runtime_agent`` / ``_deep_agent`` still points at a
+        DeepAgent with ``find_rails_by_type``, also merge the live
+        ``DisabledToolsRail`` blacklist. Bridge callbacks may leave only the
+        seed effective; enterprise blacklists rely on that seed at rail build.
+        """
+        names = set(getattr(self, "_disabled_tools", None) or ())
+        # Tests often build rails via object.__new__ without __init__; tolerate
+        # missing attrs so invoke_tool paths stay fail-closed rather than crash.
+        agent = getattr(self, "_runtime_agent", None) or getattr(
+            self, "_deep_agent", None
+        )
+        find = getattr(agent, "find_rails_by_type", None) if agent is not None else None
+        if not callable(find):
+            return frozenset(names)
+        try:
+            from jiuwenswarm.agents.harness.common.rails.disabled_tools_rail import (
+                DisabledToolsRail,
+            )
+        except ImportError:
+            return frozenset(names)
+        try:
+            for rail in find((DisabledToolsRail,)) or ():
+                names.update(getattr(rail, "_disabled_tools", ()) or ())
+        except Exception as exc:
+            logger.debug(
+                "%s failed to read DisabledToolsRail blacklist: %s",
+                _LOG_PREFIX,
+                exc,
+            )
+        return frozenset(name for name in names if name)
 
     def set_office_claw_active_tool_ids(
         self,
@@ -538,7 +590,7 @@ class ProgressiveToolRail(DeepAgentRail):
         )
 
     async def before_model_call(self, ctx: AgentCallbackContext) -> None:
-        """Filter tools to only include eager_tools."""
+        """Filter tools to eager_tools (minus disabled) and inject navigation."""
         if not self._lazy_load_active_for_ctx(ctx):
             return
 
@@ -546,6 +598,14 @@ class ProgressiveToolRail(DeepAgentRail):
             self._runtime_agent = ctx.agent
         self._resolve_runtime_agent(ctx)
         await self._refresh_deferred_tool_cache_if_stale()
+        disabled = self._current_disabled_tools()
+        if any(
+            str(getattr(tool, "name", "") or "") in disabled
+            for tool in self._cached_deferred_tool_infos
+        ):
+            # Blacklist can change via DisabledToolsRail hot-reload without
+            # ability_manager membership flipping in a way the stale check sees.
+            await self._refresh_deferred_tool_cache()
 
         inputs = getattr(ctx, "inputs", None)
         if inputs is None:
@@ -556,10 +616,11 @@ class ProgressiveToolRail(DeepAgentRail):
             return
 
         original_count = len(tools)
-        filtered_tools = [
-            tool for tool in tools
-            if str(getattr(tool, "name", "") or "") in self.eager_tools
-        ]
+        filtered_tools = []
+        for tool in tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name in self.eager_tools and name not in disabled:
+                filtered_tools.append(tool)
         inputs.tools = filtered_tools
 
         removed = sorted(set(
@@ -571,11 +632,12 @@ class ProgressiveToolRail(DeepAgentRail):
         ))
 
         logger.info(
-            "%s filter tools %s -> %s removed=%s",
+            "%s filter tools %s -> %s removed=%s disabled=%s",
             _LOG_PREFIX,
             original_count,
             len(filtered_tools),
             removed,
+            sorted(disabled),
         )
 
         await self._add_navigation_section(ctx)
@@ -709,15 +771,22 @@ class ProgressiveToolRail(DeepAgentRail):
     async def _refresh_deferred_tool_cache(
         self, agent: Any = None
     ) -> None:
-        """Refresh cached tool lists from live ability_manager."""
+        """Refresh cached tool lists from live ability_manager.
+
+        ``_cached_all_tool_infos`` stays unfiltered for staleness checks.
+        Deferred/nav/search/invoke omit both non-eager and disabled tools so
+        blacklist entries never appear in the navigation section.
+        """
         resolved = agent or self._resolve_runtime_agent()
         all_tools = await self._get_all_tool_infos(resolved)
         self._cached_all_tool_infos = all_tools
-        self._cached_deferred_tool_infos = [
-            tool
-            for tool in all_tools
-            if str(getattr(tool, "name", "") or "") not in self.eager_tools
-        ]
+        disabled = self._current_disabled_tools()
+        deferred_tools = []
+        for tool in all_tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name not in self.eager_tools and name not in disabled:
+                deferred_tools.append(tool)
+        self._cached_deferred_tool_infos = deferred_tools
 
     @staticmethod
     def _tool_name_set(tools: list[Any]) -> set[str]:
@@ -760,11 +829,12 @@ class ProgressiveToolRail(DeepAgentRail):
         ):
             await self._refresh_deferred_tool_cache(agent)
             return
-        live_deferred = [
-            tool
-            for tool in live_tools
-            if str(getattr(tool, "name", "") or "") not in self.eager_tools
-        ]
+        disabled = self._current_disabled_tools()
+        live_deferred = []
+        for tool in live_tools:
+            name = str(getattr(tool, "name", "") or "")
+            if name not in self.eager_tools and name not in disabled:
+                live_deferred.append(tool)
         if live_deferred and not self._cached_deferred_tool_infos:
             await self._refresh_deferred_tool_cache(agent)
 
@@ -797,6 +867,14 @@ class ProgressiveToolRail(DeepAgentRail):
                 "success": False,
                 "matches": [],
                 "message": "tool_name is required",
+            }
+
+        if tool_name in self._current_disabled_tools():
+            return {
+                "success": False,
+                "matches": [],
+                "count": 0,
+                "message": f"工具 '{tool_name}' 已禁用，无法按需查询。",
             }
 
         matches = self._find_deferred_tool_matches(tool_name_key)
@@ -899,9 +977,7 @@ class ProgressiveToolRail(DeepAgentRail):
             return ""
         preferred = []
         for tool_id in matches:
-            if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX) and tool_id.endswith(
-                suffix
-            ):
+            if is_request_scoped_mcp_tool_id(tool_id) and tool_id.endswith(suffix):
                 preferred.append(tool_id)
         return preferred[0] if preferred else matches[0]
 
@@ -913,7 +989,7 @@ class ProgressiveToolRail(DeepAgentRail):
         allowed: frozenset[str] | None,
     ) -> bool:
         """True when ``tool_id`` must not be used for this request."""
-        if not tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+        if not is_request_scoped_mcp_tool_id(tool_id):
             return False
         owned = getattr(self, "_office_claw_active_tool_ids", None)
         if owned is not None:
@@ -935,7 +1011,7 @@ class ProgressiveToolRail(DeepAgentRail):
         owned_id = self._owned_office_claw_tool_id(tool_name)
         if owned_id:
             return self._lookup_tool_instance(owned_id) is not None
-        if tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX):
+        if is_request_scoped_mcp_tool_id(tool_id):
             if self._is_foreign_office_claw_tool_id(
                 tool_id, tool_name, allowed=get_active_office_claw_mcp_tool_ids()
             ):
@@ -1108,6 +1184,13 @@ class ProgressiveToolRail(DeepAgentRail):
                 "tool_name": tool_name,
             }
 
+        if tool_name in self._current_disabled_tools():
+            return {
+                "success": False,
+                "error": f"工具 '{tool_name}' 已禁用，无法通过 invoke_tool 调用。",
+                "tool_name": tool_name,
+            }
+
         target_tool_card = None
         for tool in self._cached_deferred_tool_infos:
             if str(getattr(tool, "name", "") or "") == tool_name:
@@ -1202,7 +1285,7 @@ class ProgressiveToolRail(DeepAgentRail):
         )
         active_allowed = get_active_office_claw_mcp_tool_ids()
         is_request_tool_without_binding = (
-            target_tool_id.startswith(OFFICE_CLAW_REQUEST_TOOL_ID_PREFIX)
+            is_request_scoped_mcp_tool_id(target_tool_id)
             and not expected_invocation
             and self._office_claw_active_tool_ids is None
             and active_allowed is None

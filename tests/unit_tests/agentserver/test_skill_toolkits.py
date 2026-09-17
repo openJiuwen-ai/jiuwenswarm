@@ -1,14 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
-from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
-from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
 from jiuwenswarm.agents.harness.common.recommendation.situation_report import (
     _format_skills_for_llm,
 )
+from jiuwenswarm.agents.harness.common.tools.skill_toolkits import SkillToolkit
+from jiuwenswarm.server.runtime.skill.skill_manager import SkillManager
 
 
 def test_uninstall_skill_removes_local_skill_without_plugin_record(tmp_path):
@@ -274,6 +273,28 @@ def test_install_skill_builtin_source_routes_to_handle_skills_install_builtin(tm
     assert result["success"] is True
     assert result["source"] == "builtin"
     assert (user_skills_dir / "my-builtin-skill").is_dir()
+
+
+def test_enterprise_skill_tools_do_not_expose_or_install_builtin_source(
+    tmp_path,
+    monkeypatch,
+):
+    monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
+    manager = SkillManager(workspace_dir=str(tmp_path / "workspace"))
+    toolkit = SkillToolkit(manager)
+    tools = {tool.card.name: tool for tool in toolkit.get_tools()}
+    search_sources = tools["search_skill"].card.input_params["properties"]["source"][
+        "enum"
+    ]
+    install_sources = tools["install_skill"].card.input_params["properties"]["source"][
+        "enum"
+    ]
+    result = asyncio.run(toolkit.install_skill("my-builtin-skill", "builtin"))
+
+    assert "builtin" not in search_sources
+    assert "builtin" not in install_sources
+    assert result["success"] is False
+    assert result["error_code"] == "builtin_not_available"
 
 
 def test_skill_tool_descriptions_are_chinese(tmp_path):

@@ -171,6 +171,33 @@ def is_read_file_error_message(message: str) -> bool:
     return text.startswith(READ_FILE_ERROR_PREFIX)
 
 
+def _unwrap_tool_output(result: Any) -> Any:
+    """ToolOutput（duck-typed：success/data/error）规整为等价 dict。"""
+    if isinstance(result, (str, dict)) or result is None:
+        return result
+    if hasattr(result, "data") and hasattr(result, "error"):
+        return {
+            "success": getattr(result, "success", None),
+            "data": result.data,
+            "error": result.error,
+        }
+    return result
+
+
+def _extract_parallel_read_entries(result: Any) -> list[Any] | None:
+    """多文件并行读取（file_paths）的聚合结果，返回 files 列表。"""
+    payload = result
+    if not isinstance(payload, (str, dict)) and hasattr(payload, "data"):
+        payload = payload.data
+    if (
+        isinstance(payload, dict)
+        and payload.get("parallel_read")
+        and isinstance(payload.get("files"), list)
+    ):
+        return payload["files"]
+    return None
+
+
 def _extract_text_content(result: Any) -> str:
     if result is None:
         return ""
@@ -186,6 +213,18 @@ def _extract_text_content(result: Any) -> str:
             if isinstance(err, str):
                 return err
         return str(result)
+    unwrapped = _unwrap_tool_output(result)
+    if isinstance(unwrapped, dict):
+        if unwrapped.get("error") is not None:
+            return str(unwrapped["error"])
+        data = unwrapped.get("data")
+        if isinstance(data, str):
+            return data
+        if isinstance(data, dict):
+            for key in ("content", "result", "text", "output", "message"):
+                value = data.get(key)
+                if isinstance(value, str):
+                    return value
     return str(result)
 
 
@@ -193,7 +232,10 @@ def _looks_like_binary_payload(text: str) -> bool:
     if not text:
         return False
     lowered = text.lower()
-    if any(marker in lowered for marker in _BINARY_RESULT_MARKERS):
+    # 特征词只对“错误消息样”的短文本生效：真实文件内容完全可能合法地
+    # 含有 "binary file" 等字样（如读到的源码本身），长文本只看空字节和
+    # 控制字符占比，不按词表误判。
+    if len(text) <= 500 and any(marker in lowered for marker in _BINARY_RESULT_MARKERS):
         return True
     if "\x00" in text:
         return True
@@ -210,9 +252,21 @@ def _looks_like_binary_payload(text: str) -> bool:
 
 def validate_read_file_result(path: str, result: Any) -> tuple[bool, str | None]:
     """Return (ok, error_message). error_message is set when read should be treated as failed."""
+    # 多文件并行读取：每个文件已由工具侧逐个校验，单文件失败隔离在
+    # files[i].error 里。聚合文本不再整体套用二进制启发式，否则读到的
+    # 源码中出现 "binary file" 等字样会把整批合法结果误判为二进制误读。
+    if _extract_parallel_read_entries(result) is not None:
+        return True, None
+
     if isinstance(result, dict) and result.get("success") is False:
         err = _extract_text_content(result)
         return False, err or build_non_text_read_error(path)
+
+    if not isinstance(result, (str, dict)):
+        unwrapped = _unwrap_tool_output(result)
+        if isinstance(unwrapped, dict) and unwrapped.get("success") is False:
+            err = _extract_text_content(result)
+            return False, err or build_non_text_read_error(path)
 
     text = _extract_text_content(result)
     if not text.strip():

@@ -2,15 +2,15 @@
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 
 class LoggingConfigUpsertRequest(BaseModel):
-    """对齐 Manager ``LoggingConfigUpsertRequest``。"""
+    """对齐 logging_config：``level`` NOT NULL；其余 level 列可空。"""
 
-    level: str = Field(default="INFO", max_length=16)
+    level: str = Field(default="INFO", min_length=1, max_length=16)
     console_level: str | None = Field(default=None, max_length=16)
     gateway: str | None = Field(default=None, max_length=16)
     channel: str | None = Field(default=None, max_length=16)
@@ -19,19 +19,19 @@ class LoggingConfigUpsertRequest(BaseModel):
 
 
 class TaskMemoryUpsertRequest(BaseModel):
-    """对齐 Manager ``TaskMemoryUpsertRequest``。"""
+    """对齐 task_memory_config：仅 ``enabled`` NOT NULL；模型/密钥等列可空。"""
 
     enabled: bool = Field(default=False)
-    llm_model: str = Field(default="", max_length=256)
-    embedding_model: str = Field(default="", max_length=256)
-    api_key: str = Field(default="", max_length=512)
-    api_base: str = Field(default="", max_length=1024)
+    llm_model: str | None = Field(default=None, max_length=256)
+    embedding_model: str | None = Field(default=None, max_length=256)
+    api_key: str | None = Field(default=None, max_length=512)
+    api_base: str | None = Field(default=None, max_length=1024)
     retrieval_algo: str | None = Field(default=None, max_length=64)
     summary_algo: str | None = Field(default=None, max_length=64)
 
 
 class MemoryConfigUpsertRequest(BaseModel):
-    """对齐 Manager ``MemoryConfigUpsertRequest``。"""
+    """对齐 memory_config upsert：接口要求 body；落库 body 可空由服务层处理。"""
 
     body: dict[str, Any] = Field(
         ...,
@@ -43,35 +43,37 @@ class MemoryConfigUpsertRequest(BaseModel):
 
 
 class LogMaskingRuleCreateRequest(BaseModel):
-    """创建日志脱敏规则（对齐 Manager ``LogMaskingRuleCreateBody``）。"""
+    """创建日志脱敏规则（对齐 log_masking_rule / Manager ``LogMaskingRuleCreateBody``）。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
     rule_id: str = Field(..., min_length=1, max_length=64)
     rule_name: str = Field(..., min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    pattern: str = Field(..., min_length=1)
+    pattern: str = Field(..., min_length=1, max_length=512)
+    # 可省略/null：服务层 normalize_replacement → 默认 ******
     replacement: str | None = Field(default=None, max_length=64)
     priority: int = 0
     with_fingerprint: bool = False
-    source: str = Field(default="custom", max_length=16)
+    source: Literal["builtin", "custom"] = Field(default="custom")
     enabled: bool = True
     data: dict[str, Any] | None = None
 
 
 class LogMaskingRuleUpdateRequest(BaseModel):
-    """更新日志脱敏规则（对齐 Manager ``LogMaskingRuleUpdateBody``）。"""
+    """PATCH：未传=不更新；NOT NULL 列用 ``T = Field(default=None)`` 拒绝显式 null。"""
 
     model_config = ConfigDict(str_strip_whitespace=True)
 
-    rule_name: str | None = Field(default=None, max_length=128)
+    rule_name: str = Field(default=None, min_length=1, max_length=128)
     description: str | None = Field(default=None, max_length=512)
-    pattern: str | None = None
+    pattern: str = Field(default=None, min_length=1, max_length=512)
+    # 可省略；显式 null 仍交给 normalize_replacement 回落到默认值
     replacement: str | None = Field(default=None, max_length=64)
-    priority: int | None = None
-    with_fingerprint: bool | None = None
-    source: str | None = Field(default=None, max_length=16)
-    enabled: bool | None = None
+    priority: int = Field(default=None)
+    with_fingerprint: bool = Field(default=None)
+    source: Literal["builtin", "custom"] = Field(default=None)
+    enabled: bool = Field(default=None)
     data: dict[str, Any] | None = None
 
 

@@ -113,5 +113,6 @@ async def test_shutdown_cleanup_scheduler_deletes_team_session_and_pushes_notice
             "session_id": "sess-shutdown",
             "channel_id": "web",
             "deleted": True,
+            "sessions_root": None,
         }
     ]

@@ -22,7 +22,7 @@ class FileTransferConfig:
         chunk_size: 分片大小（字节），默认 64KB
         max_file_size: 最大文件大小（字节），默认 100MB，0=不限制
         transfer_timeout: 传输超时时间（秒），默认 300 秒
-        received_files_dir: 接收文件存储目录，默认 "agent/workspace/received_files"
+        received_files_dir: 接收文件存储目录，默认 "agent/jiuwenclaw_workspace/received_files"
         cleanup_interval: 临时文件清理间隔（秒），默认 3600 秒
         cleanup_age: 清理超过 N 秒的临时文件，默认 86400 秒（24小时）
         max_concurrent_transfers: 最大并发传输数，默认 5
@@ -32,7 +32,7 @@ class FileTransferConfig:
     chunk_size: int = 65536
     max_file_size: int = 104857600
     transfer_timeout: int = 300
-    received_files_dir: str = "agent/workspace/received_files"
+    received_files_dir: str = "agent/jiuwenclaw_workspace/received_files"
     cleanup_interval: int = 3600
     cleanup_age: int = 86400
     max_concurrent_transfers: int = 5
@@ -46,7 +46,7 @@ class FileTransferConfig:
             "max_file_size": int(data.get("max_file_size", 104857600)),
             "transfer_timeout": int(data.get("transfer_timeout", 300)),
             "received_files_dir": str(
-                data.get("received_files_dir", "agent/workspace/received_files")
+                data.get("received_files_dir", "agent/jiuwenclaw_workspace/received_files")
             ),
             "cleanup_interval": int(data.get("cleanup_interval", 3600)),
             "cleanup_age": int(data.get("cleanup_age", 86400)),

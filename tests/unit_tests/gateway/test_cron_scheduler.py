@@ -13,6 +13,8 @@ from jiuwenswarm.gateway.cron.models import CronJob, CronRunState
 from jiuwenswarm.gateway.cron.scheduler import (
     CronSchedulerService,
     _Event,
+    _persist_remote_cron_session_catalog,
+    _touch_remote_cron_session_catalog,
 )
 from jiuwenswarm.common.cron_team_completion import (
     cron_team_round_should_end,
@@ -1658,3 +1660,128 @@ class TestExtractTextFromAgentPayload:
     def test_error_int_value_returns_empty_string(self):
         result = self._call({"error": 42})
         assert result == ""
+
+
+class TestRemoteCronSessionCatalog:
+    """企业 remote 下 cron 执行会话写入 web 库；local 必须跳过。"""
+
+    @staticmethod
+    def test_local_mode_skips_ensure(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: False)
+        called: list[object] = []
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.ensure_session_row_sync",
+            lambda *args, **kwargs: called.append((args, kwargs)) or True,
+        )
+        _persist_remote_cron_session_catalog(_make_job(), "sid-1", now_ts=1.0)
+        assert called == []
+
+    @staticmethod
+    def test_empty_session_id_skips_ensure(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+        called: list[object] = []
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.ensure_session_row_sync",
+            lambda *args, **kwargs: called.append((args, kwargs)) or True,
+        )
+        _persist_remote_cron_session_catalog(_make_job(), "  ", now_ts=1.0)
+        assert called == []
+
+    @staticmethod
+    def test_remote_mode_writes_identity_and_cron_fields(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+        captured: dict[str, object] = {}
+
+        def fake_ensure(session_id, store=None, **kwargs):
+            captured["session_id"] = session_id
+            captured["store"] = store
+            captured.update(kwargs)
+            return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.ensure_session_row_sync",
+            fake_ensure,
+        )
+        job = _make_job(
+            user_id="u1",
+            group_id="g1",
+            bot_id="b1",
+            project_id="proj-1",
+            work_mode="work",
+        )
+        _persist_remote_cron_session_catalog(job, "cron_sid", now_ts=123.5)
+        assert captured["session_id"] == "cron_sid"
+        assert captured["user"] == "u1"
+        assert captured["group_id"] == "g1"
+        assert captured["bot_id"] == "b1"
+        assert captured["project_id"] == "proj-1"
+        assert captured["cron_id"] == "job-1"
+        assert captured["work_mode"] == "work"
+        assert captured["ts"] == 123.5
+
+    @staticmethod
+    def test_guest_user_when_job_user_missing(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+        captured: dict[str, object] = {}
+
+        def fake_ensure(session_id, store=None, **kwargs):
+            captured.update(kwargs)
+            return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.ensure_session_row_sync",
+            fake_ensure,
+        )
+        _persist_remote_cron_session_catalog(_make_job(), "sid", now_ts=1.0)
+        assert captured["user"] == "guest"
+
+    @staticmethod
+    def test_ensure_failure_is_swallowed(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+
+        def boom(*args, **kwargs):
+            raise RuntimeError("web history store unavailable")
+
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.ensure_session_row_sync",
+            boom,
+        )
+        _persist_remote_cron_session_catalog(_make_job(), "sid", now_ts=1.0)
+
+    @staticmethod
+    def test_touch_local_mode_skips(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: False)
+        called: list[object] = []
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.touch_session_sync",
+            lambda *args, **kwargs: called.append((args, kwargs)) or True,
+        )
+        _touch_remote_cron_session_catalog("sid-1", now_ts=9.0)
+        assert called == []
+
+    @staticmethod
+    def test_touch_remote_mode_updates_activity(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+        captured: dict[str, object] = {}
+
+        def fake_touch(session_id, store=None, **kwargs):
+            captured["session_id"] = session_id
+            captured.update(kwargs)
+            return True
+
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.touch_session_sync",
+            fake_touch,
+        )
+        _touch_remote_cron_session_catalog("sid-1", now_ts=9.0)
+        assert captured["session_id"] == "sid-1"
+        assert captured["ts"] == 9.0
+
+    @staticmethod
+    def test_touch_failure_is_swallowed(monkeypatch):
+        monkeypatch.setattr(cron_scheduler_module, "is_remote_storage", lambda: True)
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.touch_session_sync",
+            lambda *args, **kwargs: (_ for _ in ()).throw(RuntimeError("db down")),
+        )
+        _touch_remote_cron_session_catalog("sid-1", now_ts=1.0)

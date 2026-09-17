@@ -611,10 +611,12 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
   const { t, i18n } = useTranslation();
   const readOnly = isEnterprise();
   const [activeTab, setActiveTab] = useState<"my" | "marketplace" | "index" | "graph">("my");
-  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled" | "builtin" | "prebuilt" | "user">("all");
+  // 企业版「我的技能」默认落在「企业预置」页签；个人版保持「全部」
+  const [mySkillsSubTab, setMySkillsSubTab] = useState<"all" | "enabled" | "disabled" | "builtin" | "prebuilt" | "user">(readOnly ? "prebuilt" : "all");
   const [mySkillsPage, setMySkillsPage] = useState(1);
   const [mySkillsPageSize, setMySkillsPageSize] = useState(MY_SKILLS_PAGE_SIZE_DEFAULT);
-  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">("builtin");
+  // 企业版不提供「内置」页签（不向客户提供内置技能安装入口），默认落在 SwarmSkills
+  const [marketplaceSubTab, setMarketplaceSubTab] = useState<"builtin" | "swarmskills" | "online">(readOnly ? "swarmskills" : "builtin");
   // 企业版：技能源为空时不展示 SwarmSkills 入口（null=未知，加载中先展示）
   const [enterpriseSourceCount, setEnterpriseSourceCount] = useState<number | null>(null);
   const [searchTrigger, setSearchTrigger] = useState(0);
@@ -1528,11 +1530,13 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
         filtered = visibleSkills.filter(s => s.source_type === "user");
         break;
       default:
-        // 企业版「全部」：企业预置优先，其次内置、用户自装；个人版保持原有顺序
+        // 企业版「全部」：不含内置技能，企业预置优先、用户自装其次；个人版保持原有顺序
         if (readOnly) {
           const priority = (s: SkillItem) =>
-            s.source_type === "prebuilt" ? 0 : s.source_type === "builtin" ? 1 : s.source_type === "user" ? 2 : 3;
-          filtered = [...visibleSkills].sort((a, b) => priority(a) - priority(b));
+            s.source_type === "prebuilt" ? 0 : s.source_type === "user" ? 1 : 2;
+          filtered = visibleSkills
+            .filter(s => s.source_type !== "builtin")
+            .sort((a, b) => priority(a) - priority(b));
         }
         break;
     }
@@ -2178,7 +2182,7 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
             </div>
 
             <div className={`mt-4 flex-1 min-h-0 overflow-y-auto ${viewMode === "grid" && marketplaceSubTab === "builtin" ? "flex flex-wrap gap-4 content-start" : "space-y-3"}`}>
-              {marketplaceSubTab === "builtin" && (
+              {marketplaceSubTab === "builtin" && !readOnly && (
                 <>
                   {listState === "loading" && (
                     <div className="flex items-center justify-center h-full text-text-muted">{t('common.loading')}</div>
@@ -2442,16 +2446,6 @@ export function SkillPanel({ sessionId, onNavigateToConfig, isActive = false }: 
                           }`}
                         >
                           {t('skills.mySkillsTabs.all')}
-                        </button>
-                        <button
-                          onClick={() => setMySkillsSubTab("builtin")}
-                          className={`px-4 text-sm font-medium  ${
-                            mySkillsSubTab === "builtin"
-                              ? "rounded-[8px] bg-secondary h-8 text-text"
-                              : "text-text-muted hover:text-text"
-                          }`}
-                        >
-                          {t('skills.mySkillsTabs.builtin')}
                         </button>
                         <button
                           onClick={() => setMySkillsSubTab("prebuilt")}

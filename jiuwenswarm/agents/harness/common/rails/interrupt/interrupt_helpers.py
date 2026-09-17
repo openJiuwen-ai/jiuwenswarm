@@ -69,17 +69,11 @@ def _has_active_skill_overlay() -> bool:
     判定失败按存在处理（返回 True，强制回落 engine），不放宽权限。
     """
     try:
-        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
-            get_effective_permissions_config,
-        )
         from openjiuwen.harness.security.skill_authorization import (
             get_skill_authorization_context,
             get_skill_grant_store,
-            is_skill_authorization_enabled,
         )
 
-        if not is_skill_authorization_enabled(get_effective_permissions_config()):
-            return False
         authz = get_skill_authorization_context()
         if authz is None or not authz.session_id or not authz.agent_scope_id:
             return False
@@ -423,6 +417,7 @@ def build_permission_rail(
     llm: Any = None,
     model_name: str | None = None,
     permission_config: dict[str, Any] | None = None,
+    resolve_workspace_dir: Any | None = None,
 ) -> Any | None:
     """Build openjiuwen PermissionInterruptRail for tool permission checks.
 
@@ -432,6 +427,8 @@ def build_permission_rail(
         model_name: Model name for risk assessment
         permission_config: Optional Agent-level permissions body (enterprise template).
             When omitted, falls back to effective/global permissions config.
+        resolve_workspace_dir: Optional workspace root resolver for file_guard.
+            Defaults to process-level ``get_workspace_dir``.
 
     Returns:
         PermissionInterruptRail instance or None if disabled
@@ -781,7 +778,7 @@ def build_permission_rail(
         host = ToolPermissionHost(
             get_permissions_snapshot=_get_permissions_snapshot,
             persist_allow_rule=_persist_allow_rule,
-            resolve_workspace_dir=get_workspace_dir,
+            resolve_workspace_dir=resolve_workspace_dir or get_workspace_dir,
             permission_yaml_path=get_config_file(),
             request_permission_confirmation=_request_permission_confirmation,
             permission_scene_hook=_permission_scene_hook,

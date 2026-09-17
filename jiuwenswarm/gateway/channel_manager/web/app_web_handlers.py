@@ -724,6 +724,11 @@ _FORWARD_REQ_METHODS = frozenset({
     "agents.enable",
     "agents.disable",
     "agents.tools_list",
+    "mcp.server.add",
+    "mcp.server.remove",
+    "mcp.server.update",
+    "mcp.server.list",
+    "mcp.server.get",
     # Schedule task management
     "schedule.check_config",
     "schedule.update_config",
@@ -828,6 +833,11 @@ _FORWARD_NO_LOCAL_HANDLER_METHODS = frozenset({
     "agents.enable",
     "agents.disable",
     "agents.tools_list",
+    "mcp.server.add",
+    "mcp.server.remove",
+    "mcp.server.update",
+    "mcp.server.list",
+    "mcp.server.get",
 })
 
 # 配置信息：config.get 返回、config.set 可修改的键（前端 param 名 -> 环境变量名）
@@ -1645,11 +1655,12 @@ def _ws_identity_scope(ws: Any) -> tuple[str | None, str | None]:
 
 
 def _pg_row_to_session_meta(row: dict[str, Any]) -> dict[str, Any]:
-    """PG sessions 行 → 会话元数据投影（供 project.get_sessions 复用
-    ``_attribute_session_project`` / ``_to_session_info`` 流水线）。
+    """PG sessions 行 → 会话元数据投影（供 project.get_sessions /
+    project.get_cron_sessions 复用 ``_attribute_session_project`` /
+    ``_to_session_info`` 流水线）。
 
-    PG 行即 web 会话事实源：channel_id 恒为 web、project/cron/work_mode 用行值、
-    last_user_message_at 缺失时以 updated_at 兜底。
+    PG 行即 web 会话目录真源：channel_id 恒为 web、project/cron/work_mode 用行值、
+    last_user_message_at 缺失时以 updated_at 兜底。cron 列表不过滤 channel_id。
     """
     updated = float(row.get("updated_at") or 0)
     lum = row.get("last_user_message_at")
@@ -1896,13 +1907,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     async def _a2a_ingress_reload(ws, req_id, params, session_id):
         await _send_a2a_snapshot(ws, req_id, lambda: a2a_manager.reload())
 
-    channel.register_method("a2a.ingress.get", _a2a_ingress_get)
-    channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
-    channel.register_method("a2a.ingress.history", _a2a_ingress_history)
-    channel.register_method("a2a.ingress.update", _a2a_ingress_update)
-    channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
-    channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
-    channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
+    if not is_enterprise():
+        channel.register_method("a2a.ingress.get", _a2a_ingress_get)
+        channel.register_method("a2a.ingress.edit", _a2a_ingress_edit)
+        channel.register_method("a2a.ingress.history", _a2a_ingress_history)
+        channel.register_method("a2a.ingress.update", _a2a_ingress_update)
+        channel.register_method("a2a.ingress.enable", _a2a_ingress_enable)
+        channel.register_method("a2a.ingress.disable", _a2a_ingress_disable)
+        channel.register_method("a2a.ingress.reload", _a2a_ingress_reload)
 
     async def _send_a2a_outbound(ws, req_id, operation) -> None:
         if a2a_manager is None or not a2a_manager.outbound_available:
@@ -1949,13 +1961,14 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(ws, req_id, a2a_manager.outbound_get_settings)
 
     async def _a2a_outbound_settings_update(ws, req_id, params, session_id):
-        enabled = params.get("allow_loopback_http")
-        if not isinstance(enabled, bool):
+        allow_loopback = params.get("allow_loopback")
+        allow_http = params.get("allow_http")
+        if not isinstance(allow_loopback, bool) or not isinstance(allow_http, bool):
             await channel.send_response(
                 ws,
                 req_id,
                 ok=False,
-                error="allow_loopback_http must be a boolean",
+                error="allow_loopback and allow_http must be booleans",
                 code="A2A_CONFIG_INVALID",
             )
             return
@@ -1963,7 +1976,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws,
             req_id,
             lambda: a2a_manager.outbound_update_settings(
-                allow_loopback_http=enabled
+                allow_loopback=allow_loopback, allow_http=allow_http
             ),
         )
 
@@ -1972,8 +1985,17 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_register(dict(params))
         )
 
-    async def _a2a_outbound_list(ws, req_id, params, session_id):
-        await _send_a2a_outbound(ws, req_id, lambda: a2a_manager.outbound_list())
+    async def _a2a_outbound_list(ws, req_id, params, session_id, user_id=None):
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_list(
+                source_user_id=user_id,
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                )
+            ),
+        )
 
     async def _a2a_outbound_get(ws, req_id, params, session_id):
         await _send_a2a_outbound(
@@ -1990,6 +2012,30 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         agent_id = str(payload.pop("agent_id", ""))
         await _send_a2a_outbound(
             ws, req_id, lambda: a2a_manager.outbound_update(agent_id, payload)
+        )
+
+    async def _a2a_outbound_enabled_update(ws, req_id, params, session_id, user_id=None):
+        user_enabled = params.get("user_enabled")
+        if not isinstance(user_enabled, bool):
+            await channel.send_response(
+                ws,
+                req_id,
+                ok=False,
+                error="user_enabled must be a boolean",
+                code="A2A_OUTBOUND_STORE_INVALID",
+            )
+            return
+        await _send_a2a_outbound(
+            ws,
+            req_id,
+            lambda: a2a_manager.outbound_set_user_enabled(
+                str(params.get("agent_id") or ""),
+                enabled=user_enabled,
+                source_user_id=user_id,
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
+            ),
         )
 
     async def _a2a_outbound_refresh(ws, req_id, params, session_id):
@@ -2028,14 +2074,21 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             ws, req_id, lambda: a2a_manager.outbound_delete(str(params.get("agent_id") or ""))
         )
 
-    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_get(ws, req_id, params, session_id, user_id=None):
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_get(str(params.get("dispatch_id") or "")),
+            lambda: a2a_manager.outbound_dispatch_get(
+                str(params.get("dispatch_id") or ""),
+                source_user_id=user_id,
+                source_session_id=(session_id if is_enterprise() else None),
+                source_resource_id=(
+                    str(params.get("bot_id") or "") if is_enterprise() else None
+                ),
+            ),
         )
 
-    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id):
+    async def _a2a_outbound_dispatch_list(ws, req_id, params, session_id, user_id=None):
         try:
             limit = int(params.get("limit", 200))
         except (TypeError, ValueError):
@@ -2051,7 +2104,9 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         await _send_a2a_outbound(
             ws,
             req_id,
-            lambda: a2a_manager.outbound_dispatch_list(limit=limit),
+            lambda: a2a_manager.outbound_dispatch_list(
+                limit=limit, source_user_id=user_id
+            ),
         )
 
     channel.register_method("a2a.outbound.settings.get", _a2a_outbound_settings_get)
@@ -2062,6 +2117,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("a2a.outbound.get", _a2a_outbound_get)
     channel.register_method("a2a.outbound.edit", _a2a_outbound_edit)
     channel.register_method("a2a.outbound.update", _a2a_outbound_update)
+    channel.register_method("a2a.outbound.enabled.update", _a2a_outbound_enabled_update)
     channel.register_method("a2a.outbound.refresh", _a2a_outbound_refresh)
     channel.register_method(
         "a2a.outbound.confirm_revision", _a2a_outbound_confirm_revision
@@ -2086,6 +2142,8 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
 
     def _schedule_agent_prewarm_sync(name: str) -> None:
         """Reconcile project-derived warm keys without delaying the Web RPC."""
+        if is_enterprise():
+            return
 
         async def _sync() -> None:
             try:
@@ -4307,13 +4365,15 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             "total": total,
         })
 
-    async def _project_get_cron_sessions(ws, req_id, params, session_id):
+    async def _project_get_cron_sessions(ws, req_id, params, session_id, user_id=None):
         """获取项目下的定时任务会话列表(cron_id 非空的非置顶会话),按 last_user_message_at 倒序。
 
         与 ``project.get_sessions`` 互斥分工:本接口仅返回 cron 会话,
         ``project.get_sessions`` 仅返回普通会话。支持按 ``cron_id`` 过滤某任务的历史执行会话。
         归属校验同 ``project.get_sessions``:非默认项目(``default`` / ``default_code``
         视为默认)时校验项目存在且可见。
+        remote 模式与 ``project.get_sessions`` 对齐：优先读 web 库 sessions 行，
+        库不可用再回退 AgentServer session.list。本地模式仍读磁盘 metadata。
         """
         if not isinstance(params, dict):
             params = {}
@@ -4363,23 +4423,44 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
             return _attribute_session_project(meta, visible_by_id) == project_id
 
         if is_remote_storage():
-            ac = _resolve(agent_client)
-            if ac is None:
-                await channel.send_response(
-                    ws,
-                    req_id,
-                    ok=False,
-                    error="AgentServer is unavailable",
-                    code="SERVICE_UNAVAILABLE",
+            # remote：以 web 库为目录真源（与 project.get_sessions / session.delete 同源）。
+            # 空列表是有效结果，不得回退 pod，否则已删 PG 行会被磁盘条目复活。
+            sessions: list[dict[str, Any]] | None = None
+            _uid = (str(params.get("user_id") or user_id or "").strip() or "") or "guest"
+            _scope_group, _scope_bot = _ws_identity_scope(ws)
+            try:
+                from jiuwenswarm.channels.web.history_store.api import list_all_sessions_sync
+
+                rows = await asyncio.to_thread(
+                    list_all_sessions_sync, None, user=_uid,
+                    group_id=_scope_group, bot_id=_scope_bot,
                 )
-                return
-            sessions = await _fetch_all_sessions_from_agent(
-                ac,
-                channel_id=channel.channel_id,
-                user_id=str(params.get("user_id") or "").strip() or None,
-                group_id=str(params.get("group_id") or "").strip() or None,
-                bot_id=str(params.get("bot_id") or "").strip() or None,
-            )
+                if rows is not None:
+                    sessions = [_pg_row_to_session_meta(r) for r in rows]
+            except Exception:  # noqa: BLE001
+                logger.warning(
+                    "[project.get_cron_sessions] web 库读取失败，回退 pod 拉取",
+                    exc_info=True,
+                )
+                sessions = None
+            if sessions is None:
+                ac = _resolve(agent_client)
+                if ac is None:
+                    await channel.send_response(
+                        ws,
+                        req_id,
+                        ok=False,
+                        error="AgentServer is unavailable",
+                        code="SERVICE_UNAVAILABLE",
+                    )
+                    return
+                sessions = await _fetch_all_sessions_from_agent(
+                    ac,
+                    channel_id=channel.channel_id,
+                    user_id=str(params.get("user_id") or user_id or "").strip() or None,
+                    group_id=str(params.get("group_id") or "").strip() or None,
+                    bot_id=str(params.get("bot_id") or "").strip() or None,
+                )
         else:
             from jiuwenswarm.server.runtime.session.session_metadata import collect_all_sessions_metadata
 
@@ -4417,7 +4498,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
         """创建项目,指定工作目录。
 
         ``project_dir`` 为可选:传则指定工作目录绝对路径;不传或空串则在默认工作区
-        (``~/.jiuwenswarm/agent/workspace/{work|code}``)下按项目名自动新建文件夹作为工作目录。
+        (``~/.jiuwenswarm/agent/jiuwenclaw_workspace/{work|code}``)下按项目名自动新建文件夹作为工作目录。
         ``work_mode`` 为可选:``"code"`` / ``"work"``,默认按通道推断(Web→work,TUI→code)。
         项目名含文件系统非法字符(``<>:"/\\|?*`` 等)时返回 ``BAD_REQUEST``。
         自动恢复: 若 ``project_dir`` 命中已隐藏(``hidden:true``)**且同 work_mode**的项目,置

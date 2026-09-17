@@ -31,9 +31,28 @@ class ReqMethod(Enum):
     COMMAND_DIFF = "command.diff"
     COMMAND_SIMPLIFY = "command.simplify"
     COMMAND_MCP = "command.mcp"
+    MCP_SERVER_ADD = "mcp.server.add"
+    MCP_SERVER_REMOVE = "mcp.server.remove"
+    MCP_SERVER_UPDATE = "mcp.server.update"
+    MCP_SERVER_LIST = "mcp.server.list"
+    MCP_SERVER_GET = "mcp.server.get"
     COMMAND_MODEL = "command.model"
     COMMAND_RESUME = "command.resume"
     COMMAND_SANDBOX = "command.sandbox"
+
+    # 沙箱配置（officeAce 通过 WS 查询/修改 jiuwenbox 沙箱开关、启动方式、文件/网络策略）：
+    # enabled = 是否开启沙箱（false->LOCAL，true->SANDBOX）
+    # startup_mode = 沙箱 box-server 启动方式（internal=agent-server 拉起，
+    #   external=外部部署/K8s），两者都暴露给 officeAce
+    # files/network 直接读写 windows-policy 运行时对应字段，不改 config.yaml
+    SANDBOX_ENABLED_GET = "sandbox.enabled.get"
+    SANDBOX_ENABLED_SET = "sandbox.enabled.set"
+    SANDBOX_STARTUP_MODE_GET = "sandbox.startup_mode.get"
+    SANDBOX_STARTUP_MODE_SET = "sandbox.startup_mode.set"
+    SANDBOX_FILES_GET = "sandbox.files.get"
+    SANDBOX_FILES_SET = "sandbox.files.set"
+    SANDBOX_NETWORK_GET = "sandbox.network.get"
+    SANDBOX_NETWORK_SET = "sandbox.network.set"
     COMMAND_SESSION = "command.session"
     COMMAND_WORKFLOWS = "command.workflows"
     COMMAND_STATUS = "command.status"
@@ -217,6 +236,7 @@ class ReqMethod(Enum):
     TEAM_HISTORY_GET = "team.history.get"
     TEAM_MEMBERS_GET = "team.members.get"
     TEAM_MQ_PUBLISH = "team.mq.publish"
+    TEAM_TASKS_DEPENDENCIES = "team.tasks.dependencies"
 
     # Harness package management
     HARNESS_PACKAGES_GET = "harness.packages.get"
@@ -226,6 +246,11 @@ class ReqMethod(Enum):
     HARNESS_PACKAGES_DELETE = "harness.packages.delete"
     HARNESS_PACKAGES_IMPORT = "harness.packages.import"
     HARNESS_PACKAGES_EXPORT = "harness.packages.export"
+
+    # Expert management
+    EXPERTS_LIST = "experts.list"
+    EXPERT_LOAD = "expert.load"
+    EXPERT_UNLOAD = "expert.unload"
 
     # Schedule task management
     SCHEDULE_CHECK_CONFIG = "schedule.check_config"

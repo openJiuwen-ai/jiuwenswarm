@@ -20,6 +20,7 @@ from jiuwenswarm.agents.harness.team.team_manager import (
     refresh_team_shared_skill_links_across_managers,
     reset_team_manager,
 )
+from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
 
 
 class _TeamManagerHarness(TeamManager):
@@ -443,9 +444,21 @@ async def test_team_manager_keeps_single_session_per_channel(monkeypatch: pytest
     web_manager = get_team_manager("web")
     feishu_manager = get_team_manager("feishu")
 
-    await web_manager.get_or_create_team("web-s1", deep_agent=object(), channel_id="web")
-    await feishu_manager.get_or_create_team("fs-s1", deep_agent=object(), channel_id="feishu")
-    await web_manager.get_or_create_team("web-s2", deep_agent=object(), channel_id="web")
+    await web_manager.get_or_create_team(
+        "web-s1",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web"),
+    )
+    await feishu_manager.get_or_create_team(
+        "fs-s1",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="feishu"),
+    )
+    await web_manager.get_or_create_team(
+        "web-s2",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web"),
+    )
 
     assert created_sessions == ["web-s1", "fs-s1", "web-s2"]
     assert destroyed_sessions == ["web-s1"]
@@ -486,7 +499,11 @@ async def test_create_team_does_not_run_global_runtime_cleanup(monkeypatch: pyte
     )
     manager = TeamManager()
 
-    team_agent = await manager.create_team("sess-1", deep_agent=object(), channel_id="web")
+    team_agent = await manager.create_team(
+        "sess-1",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web"),
+    )
 
     assert team_agent is not None
     assert manager.get_team_agent("sess-1") is team_agent
@@ -522,7 +539,11 @@ async def test_create_team_appends_session_id_to_team_name(monkeypatch: pytest.M
     )
     manager = TeamManager()
 
-    team_agent = await manager.create_team("oc_abc123", deep_agent=object(), channel_id="feishu")
+    team_agent = await manager.create_team(
+        "oc_abc123",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="feishu"),
+    )
 
     assert team_agent is not None
     assert created_team_names == ["demo_team_oc_abc123"]
@@ -558,7 +579,11 @@ async def test_create_team_appends_session_id_to_web_team_name(monkeypatch: pyte
     )
     manager = TeamManager()
 
-    team_agent = await manager.create_team("oc_abc123", deep_agent=object(), channel_id="web")
+    team_agent = await manager.create_team(
+        "oc_abc123",
+        deep_agent=object(),
+        params=TeamBootstrapParams(channel_id="web"),
+    )
 
     assert team_agent is not None
     assert created_team_names == ["demo_team_oc_abc123"]
@@ -1761,6 +1786,10 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
         "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
         lambda _session_id, cache_bust=False: {},
     )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(find_by_session=lambda _session_id: None),
+    )
     monkeypatch.setattr(TeamManager, "_ensure_postgresql_for_leader", fake_ensure_postgresql)
     monkeypatch.setattr(TeamManager, "_load_team_spec", staticmethod(lambda _session_id: _Spec()))
     monkeypatch.setattr(
@@ -1775,6 +1804,283 @@ async def test_get_swarm_enriched_team_spec_keeps_legacy_session_scoped_team_nam
     )
 
     assert spec.team_name == "template_team_sess-legacy"
+
+
+def test_lookup_bound_team_identity_recovers_binding_from_store(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="oc_team_user4", template_id="oc_team_user4")
+    store.bind_session(team_name="oc_team_user4", session_id="officeclaw_test_sid")
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    sessions_root = tmp_path / "sessions"
+
+    recovered = TeamManager._recover_torn_team_binding(
+        "officeclaw_test_sid",
+        sessions_root=sessions_root,
+    )
+
+    assert recovered is not None
+    team_name, runtime_team_name, template_id = recovered
+    assert team_name == "oc_team_user4"
+    assert template_id == "oc_team_user4"
+    assert runtime_team_name == TeamManager.build_session_scoped_team_name(
+        "oc_team_user4",
+        "officeclaw_test_sid",
+    )
+    metadata_path = sessions_root / "officeclaw_test_sid" / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_user4"
+    assert payload["runtime_team_name"] == runtime_team_name
+    assert payload["team_template_id"] == "oc_team_user4"
+
+
+def test_recover_torn_team_binding_returns_none_without_store_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    sessions_root = tmp_path / "sessions"
+
+    recovered = TeamManager._recover_torn_team_binding(
+        "officeclaw_test_sid",
+        sessions_root=sessions_root,
+    )
+
+    assert recovered is None
+    assert not (sessions_root / "officeclaw_test_sid" / "metadata.json").exists()
+
+
+def test_lookup_bound_team_identity_skips_recovery_when_metadata_has_team(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False: {
+            "team_name": "custom_team",
+            "team_template_id": "beta_template",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.TeamManager._find_session_binding",
+        staticmethod(lambda _session_id: None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: SimpleNamespace(get=lambda _team_name: None),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity",
+        lambda **_kwargs: None,
+    )
+
+    team_name, runtime_team_name, template_id, template_snapshot = (
+        TeamManager._lookup_bound_team_identity("sess-bound")
+    )
+
+    assert team_name == "custom_team"
+    # resolve_session_runtime_team_name falls back to team_name when the
+    # runtime_team_name key is absent from session metadata.
+    assert runtime_team_name == "custom_team"
+    assert template_id == "beta_template"
+    assert template_snapshot is None
+
+
+def test_lookup_bound_team_identity_reconciles_polluted_metadata_from_binding(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(team_name="oc_team_user4", template_id="oc_team_user4")
+    store.bind_session(team_name="oc_team_user4", session_id="officeclaw_test_sid")
+    sessions_root = tmp_path / "sessions"
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False, **kwargs: {
+            "team_name": "oc_team_preset-software-dev",
+            "team_template_id": "oc_team_preset-software-dev",
+            "runtime_team_name": "oc_team_preset-software-dev_officeclaw_test_sid",
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_team_template_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity_for_binding",
+        lambda binding, **kwargs: SimpleNamespace(
+            template_id=binding.template_id,
+            template_snapshot={"team_name": binding.team_name},
+        ),
+    )
+
+    team_name, runtime_team_name, template_id, _snapshot = (
+        TeamManager._lookup_bound_team_identity(
+            "officeclaw_test_sid",
+            config_base={},
+            sessions_root=sessions_root,
+        )
+    )
+
+    assert team_name == "oc_team_user4"
+    assert template_id == "oc_team_user4"
+    assert runtime_team_name == TeamManager.build_session_scoped_team_name(
+        "oc_team_user4",
+        "officeclaw_test_sid",
+    )
+    metadata_path = sessions_root / "officeclaw_test_sid" / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_user4"
+    assert payload["team_template_id"] == "oc_team_user4"
+
+
+def test_lookup_bound_team_identity_reconciles_session_scoped_team_name_pollution(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    import json
+
+    from jiuwenswarm.server.runtime.team_binding_store import TeamBindingStore
+
+    session_id = "officeclaw_test_sid"
+    store = TeamBindingStore(tmp_path / "bindings.json")
+    store.create(
+        team_name="oc_team_preset-software-dev",
+        template_id="oc_team_preset-software-dev",
+    )
+    store.bind_session(team_name="oc_team_preset-software-dev", session_id=session_id)
+    sessions_root = tmp_path / "sessions"
+    polluted_team_name = TeamManager.build_session_scoped_team_name(
+        "oc_team_preset-software-dev",
+        session_id,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store",
+        lambda: store,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_metadata",
+        lambda _session_id, cache_bust=False, **kwargs: {
+            "team_name": polluted_team_name,
+            "team_template_id": "oc_team_preset-software-dev",
+            "runtime_team_name": polluted_team_name,
+        },
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.team.team_manager.get_session_team_template_snapshot",
+        lambda *_args, **_kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.server.runtime.team_entity_store.ensure_team_entity_for_binding",
+        lambda binding, **kwargs: SimpleNamespace(
+            template_id=binding.template_id,
+            template_snapshot={"team_name": binding.team_name},
+        ),
+    )
+
+    team_name, runtime_team_name, template_id, _snapshot = (
+        TeamManager._lookup_bound_team_identity(
+            session_id,
+            config_base={},
+            sessions_root=sessions_root,
+        )
+    )
+
+    assert team_name == "oc_team_preset-software-dev"
+    assert template_id == "oc_team_preset-software-dev"
+    assert runtime_team_name == polluted_team_name
+    metadata_path = sessions_root / session_id / "metadata.json"
+    assert metadata_path.is_file()
+    payload = json.loads(metadata_path.read_text(encoding="utf-8"))
+    assert payload["team_name"] == "oc_team_preset-software-dev"
+    assert payload["runtime_team_name"] == polluted_team_name
+
+
+@pytest.mark.asyncio
+async def test_create_team_passes_sessions_root_to_load_session_team_spec(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path,
+) -> None:
+    captured: dict[str, object] = {}
+
+    def _fake_load(session_id: str, **kwargs: object) -> tuple[object, bool]:
+        captured["session_id"] = session_id
+        captured.update(kwargs)
+        spec = SimpleNamespace(
+            team_name="demo_team",
+            build=lambda: SimpleNamespace(channel_id=None),
+        )
+        return spec, True
+
+    async def _noop_postgresql(_cfg: object) -> None:
+        return None
+
+    monkeypatch.setattr(TeamManager, "_load_session_team_spec", staticmethod(_fake_load))
+    monkeypatch.setattr(
+        TeamManager,
+        "_ensure_postgresql_for_leader",
+        staticmethod(_noop_postgresql),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.swarm.enrich_team_spec_for_swarm",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.common.config.get_config",
+        lambda: {},
+    )
+    monkeypatch.setattr(
+        TeamManager,
+        "ensure_team_shared_skills_ready_for_session",
+        lambda self, session_id, spec: None,
+    )
+    monkeypatch.setattr(
+        TeamManager,
+        "_is_distributed_mode",
+        staticmethod(lambda _cfg: False),
+    )
+
+    sessions_root = tmp_path / "agent_agentteam_sessions"
+    manager = TeamManager()
+    await manager.create_team(
+        "sess-create-root",
+        deep_agent=object(),
+        params=TeamBootstrapParams(
+            channel_id="officeclaw",
+            sessions_root=sessions_root,
+        ),
+    )
+
+    assert captured["session_id"] == "sess-create-root"
+    assert captured["sessions_root"] == sessions_root
 
 
 def test_register_workflow_handler() -> None:

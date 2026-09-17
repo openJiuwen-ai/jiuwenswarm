@@ -20,6 +20,8 @@ Tip formula B (effective tip)::
     active[(sid, aid)] ∪ staged[(sid, aid)]   # staged wins on key clash
 
 Task seal: when overlay is bound (including ``{}``), readers only see overlay.
+Same-request ``set_os_environ`` writes also patch the bound overlay so apply_* /
+enterprise merge paths remain visible to ``read_env`` within that seal.
 """
 
 from __future__ import annotations
@@ -41,9 +43,7 @@ _DEFAULT_HEADERS_ALIASES = (
 )
 # Huawei MaaS / OfficeClaw: use the protocol-specific header as a fallback when
 # ``default_headers`` is missing from the tip seal.
-_DEFAULT_HEADERS_FALLBACK_ALIASES = (
-    "OFFICE_CLAW_HUAWEI_MAAS_HEADERS_JSON",
-)
+_DEFAULT_HEADERS_FALLBACK_ALIASES = ("OFFICE_CLAW_HUAWEI_MAAS_HEADERS_JSON",)
 
 logger = logging.getLogger(__name__)
 
@@ -82,9 +82,22 @@ SPAWN_ENV_KEYS: frozenset[str] = frozenset(
         "DISABLED_TOOLS",
         # Code-mode generated-code co-author header switch; process shared.
         "JIUWENSWARM_CODE_COAUTHOR_HEADER_ENABLED",
+        # HTTP/SSE service-to-service mTLS.  These values are process-scoped;
+        # certificate paths point to files mounted by the deployment layer.
+        "JIUWENSWARM_LINK_MTLS_MODE",
+        "JIUWENSWARM_LINK_MTLS_PROFILE",
+        "JIUWENSWARM_LINK_MTLS_CA_FILE",
+        "JIUWENSWARM_LINK_MTLS_CERT_FILE",
+        "JIUWENSWARM_LINK_MTLS_KEY_FILE",
         # launchEnv / config.yaml ${EXTENSION_DIRS}; process-shared (relay RELAYCLAW_SHARED_ENV_KEYS TBD).
         "EXTENSION_DIRS",
     }
+)
+
+# Service credentials are protected process configuration, NOT browser/research
+# tool credentials. Runtime injects each AgentServer's own profile explicitly.
+LINK_SERVICE_ENV_KEYS = frozenset(
+    key for key in SPAWN_ENV_KEYS if key.startswith("JIUWENSWARM_LINK_")
 )
 
 BUSINESS_MIRROR_KEYS: frozenset[str] = frozenset(
@@ -192,7 +205,9 @@ def canonical_product_env_key(name: str) -> str:
     """Map ``JIUWENCLAW_*`` → ``JIUWENSWARM_*``; leave other keys unchanged."""
     key = str(name)
     if key.startswith(_LEGACY_PRODUCT_ENV_PREFIX):
-        return _CANONICAL_PRODUCT_ENV_PREFIX + key[len(_LEGACY_PRODUCT_ENV_PREFIX):]
+        return _CANONICAL_PRODUCT_ENV_PREFIX + key.removeprefix(
+            _LEGACY_PRODUCT_ENV_PREFIX
+        )
     return key
 
 
@@ -200,7 +215,9 @@ def legacy_product_env_key(name: str) -> str | None:
     """Return the relay ``JIUWENCLAW_*`` alias for a ``JIUWENSWARM_*`` key."""
     key = str(name)
     if key.startswith(_CANONICAL_PRODUCT_ENV_PREFIX):
-        return _LEGACY_PRODUCT_ENV_PREFIX + key[len(_CANONICAL_PRODUCT_ENV_PREFIX):]
+        return _LEGACY_PRODUCT_ENV_PREFIX + key.removeprefix(
+            _CANONICAL_PRODUCT_ENV_PREFIX
+        )
     return None
 
 
@@ -308,11 +325,15 @@ def resolve_env_ns(
     if service_id is None and agent_id is None and bound is not None:
         return bound
     sid = normalize_env_ns_id(
-        service_id if service_id is not None else (bound[0] if bound else _DEFAULT_SERVICE_ID),
+        service_id
+        if service_id is not None
+        else (bound[0] if bound else _DEFAULT_SERVICE_ID),
         default=_DEFAULT_SERVICE_ID,
     )
     aid = normalize_env_ns_id(
-        agent_id if agent_id is not None else (bound[1] if bound else _DEFAULT_AGENT_ID),
+        agent_id
+        if agent_id is not None
+        else (bound[1] if bound else _DEFAULT_AGENT_ID),
         default=_DEFAULT_AGENT_ID,
     )
     return sid, aid
@@ -412,6 +433,21 @@ _EMPTY_OMIT_ENV_KEYS: frozenset[str] = frozenset(
 )
 
 
+def _stringify_env_value(value: Any) -> str:
+    """Serialize tip/env values so JSON objects stay valid JSON.
+
+    ``str(dict)`` / ``str(list)`` emit Python repr with single quotes
+    (``{'k': 'v'}``), which ``json.loads`` cannot parse. Hot-reload callers
+    such as ``agent.reload_config`` pass ``default_headers`` as a dict.
+    """
+    if isinstance(value, (dict, list)):
+        try:
+            return json.dumps(value, ensure_ascii=False)
+        except (TypeError, ValueError):
+            return str(value)
+    return str(value)
+
+
 def stage_env_overrides(
     env_overrides: dict[str, Any] | None,
     *,
@@ -434,7 +470,7 @@ def stage_env_overrides(
             # promote_staged_env 会提前返回，删除意图丢失。
             bag[key] = None
         else:
-            text = str(env_value)
+            text = _stringify_env_value(env_value)
             if key in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                 continue
             bag[key] = text
@@ -464,7 +500,7 @@ def promote_staged_env(
 
 def _plaintext_tip_value(name: str, value: Any) -> str:
     """Store tip values as plaintext (decrypt ciphertext from .env / legacy)."""
-    text = str(value)
+    text = _stringify_env_value(value)
     if not text:
         return text
     return str(decrypt(name, text))
@@ -477,7 +513,7 @@ def _ensure_ciphertext(name: str, value: Any) -> str:
     and keep as-is (avoids double-encrypt for .env ingest / legacy). Otherwise
     encrypt plaintext. Without a crypto provider this is a no-op.
     """
-    text = str(value)
+    text = _stringify_env_value(value)
     if not text:
         return text
     if not is_sensitive_env_name(name):
@@ -565,7 +601,7 @@ def apply_env_overrides_to_active(
             active.pop(name, None)
             _pop_bare_if_default_default(sid, aid, name)
         else:
-            value = str(env_value)
+            value = _stringify_env_value(env_value)
             if name in _EMPTY_OMIT_ENV_KEYS and not value.strip():
                 continue
             active[name] = _plaintext_tip_value(name, value)
@@ -591,7 +627,7 @@ def replace_active_env(
                 continue
             if env_value is None:
                 continue
-            text = str(env_value)
+            text = _stringify_env_value(env_value)
             if name in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                 continue
             new_map[name] = _plaintext_tip_value(name, text)
@@ -614,8 +650,10 @@ def clear_agent_env_ns(service_id: str, agent_id: str) -> None:
         clear_staged=True,
     )
     if (
-        normalize_env_ns_id(service_id, default=_DEFAULT_SERVICE_ID) == _DEFAULT_SERVICE_ID
-        and normalize_env_ns_id(agent_id, default=_DEFAULT_AGENT_ID) == _DEFAULT_AGENT_ID
+        normalize_env_ns_id(service_id, default=_DEFAULT_SERVICE_ID)
+        == _DEFAULT_SERVICE_ID
+        and normalize_env_ns_id(agent_id, default=_DEFAULT_AGENT_ID)
+        == _DEFAULT_AGENT_ID
     ):
         pop_track_b_bare_from_environ()
 
@@ -660,7 +698,7 @@ def build_effective_env_overlay(
                 if value is None:
                     merged.pop(k, None)
                 else:
-                    text = str(value)
+                    text = _stringify_env_value(value)
                     if k in _EMPTY_OMIT_ENV_KEYS and not text.strip():
                         continue
                     merged[k] = text
@@ -776,6 +814,44 @@ ENV_CONFIG_DICT: MutableMapping[str, Any] = _ActiveEnvDict()
 # ---------------------------------------------------------------------------
 
 
+def _sync_bound_overlay_write(
+    name: str,
+    value: str | None,
+    *,
+    ns: EnvNsKey | None = None,
+) -> None:
+    """Keep the sealed task overlay aligned with in-request tip writes.
+
+    Overlay seal intentionally hides live tip from readers, but writers in the
+    same request (e.g. ``apply_vision_model_config_from_yaml`` after enterprise
+    model merge) must still be visible to subsequent ``read_env`` calls.
+
+    Only patches when ``ns`` matches the currently bound agent env ns, so an
+    explicit cross-ns ``set_os_environ`` cannot leak values into another
+    request's overlay.
+    """
+    overlay = _task_env_overlay.get()
+    if overlay is _UNBOUND:
+        return
+    bound_ns = _agent_env_ns.get()
+    if ns is not None and ns != bound_ns:
+        logger.warning(
+            "set_os_environ 跨 ns 写入不同步当前 overlay: write_ns=%s bound_ns=%s key=%s",
+            ns,
+            bound_ns,
+            name,
+        )
+        return
+    key = canonical_product_env_key(str(name))
+    if value is None:
+        overlay.pop(key, None)
+        legacy = legacy_product_env_key(key)
+        if legacy is not None:
+            overlay.pop(legacy, None)
+        return
+    overlay[key] = value
+
+
 def set_os_environ(
     name: str,
     value: Any,
@@ -783,18 +859,26 @@ def set_os_environ(
     service_id: str | None = None,
     agent_id: str | None = None,
 ) -> None:
-    """Write Track B active tip only (plaintext). Does not touch ``os.environ``."""
+    """Write Track B active tip only (plaintext). Does not touch ``os.environ``.
+
+    When a task overlay is bound for the same env ns, also patch that overlay so
+    same-request readers observe the write despite seal-miss semantics.
+    """
     if name in SPAWN_ENV_KEYS:
         logger.warning("拒绝 set_os_environ 轨道 A 键: %s", name)
         return
     key = resolve_env_ns(service_id, agent_id)
     sid, aid = key
     active = _bag(_active_bags, key)
+    env_name = str(name)
     if value is None:
-        active.pop(str(name), None)
-        _pop_bare_if_default_default(sid, aid, str(name))
+        active.pop(env_name, None)
+        _pop_bare_if_default_default(sid, aid, env_name)
+        _sync_bound_overlay_write(env_name, None, ns=key)
         return
-    active[str(name)] = _plaintext_tip_value(str(name), value)
+    plain = _plaintext_tip_value(env_name, value)
+    active[env_name] = plain
+    _sync_bound_overlay_write(env_name, plain, ns=key)
 
 
 def get_os_environ(
@@ -826,11 +910,11 @@ def export_agent_environ(
     out: dict[str, str] = {}
     tip = effective_tip(service_id, agent_id)
     for k, v in tip.items():
-        if v is None:
+        if v is None or k in LINK_SERVICE_ENV_KEYS:
             continue
-        out[str(k)] = str(v)
+        out[str(k)] = _stringify_env_value(v)
     for k in SPAWN_ENV_KEYS:
-        if k in os.environ:
+        if k in os.environ and k not in LINK_SERVICE_ENV_KEYS:
             out[k] = os.environ[k]
     for k in PROCESS_UNIQUE_ENV_KEYS:
         if k in os.environ:
@@ -848,6 +932,8 @@ def export_spawn_environ() -> dict[str, str]:
     """
     out: dict[str, str] = {}
     for key in SPAWN_ENV_KEYS | PROCESS_UNIQUE_ENV_KEYS:
+        if key in LINK_SERVICE_ENV_KEYS:
+            continue
         value = os.environ.get(key)
         if value is not None:
             out[key] = value
@@ -896,7 +982,7 @@ def update_process_baseline(updates: Mapping[str, Any] | None) -> None:
         if env_value is None:
             _process_baseline.pop(name, None)
             continue
-        text = str(env_value)
+        text = _stringify_env_value(env_value)
         if name in _EMPTY_OMIT_ENV_KEYS and not text.strip():
             continue
         _process_baseline[name] = _plaintext_tip_value(name, text)
@@ -975,9 +1061,7 @@ def _ingest_legacy_guard_keys_into_baseline() -> None:
     ):
         if key not in os.environ:
             continue
-        _process_baseline.setdefault(
-            key, _plaintext_tip_value(key, os.environ[key])
-        )
+        _process_baseline.setdefault(key, _plaintext_tip_value(key, os.environ[key]))
 
 
 def ingest_bare_business_into_tip(*, force: bool = False) -> None:
@@ -1103,7 +1187,7 @@ def read_env(name: str, default: str = "") -> str:
     value = get_local_config(name, default or None)
     if value is None:
         return default
-    text = str(value)
+    text = _stringify_env_value(value)
     return text if text else default
 
 
@@ -1124,7 +1208,7 @@ def read_env_if_set(name: str) -> str | None:
                 return ""
             if isinstance(value, str):
                 return decrypt(lookup, value)
-            return str(value)
+            return _stringify_env_value(value)
         return None
 
     tip = effective_tip()
@@ -1136,7 +1220,7 @@ def read_env_if_set(name: str) -> str | None:
             return ""
         if isinstance(value, str):
             return decrypt(lookup, value)
-        return str(value)
+        return _stringify_env_value(value)
     return None
 
 
@@ -1157,9 +1241,17 @@ def read_default_headers_raw() -> str:
     return ""
 
 
-def parse_default_headers(raw: str) -> dict[str, str] | None:
-    """Parse and validate default_headers JSON; return None when empty."""
-    text = (raw or "").strip()
+def parse_default_headers(raw: str | dict[str, Any] | None) -> dict[str, str] | None:
+    """Parse and validate default_headers JSON; return None when empty.
+
+    Accepts a JSON object string or an already-decoded dict. Overlay / reload
+    paths may bind ``default_headers`` as a mapping before it is stringified.
+    """
+    if isinstance(raw, dict):
+        return {str(k): str(v) for k, v in raw.items() if v is not None}
+    if raw is None:
+        return None
+    text = raw.strip() if isinstance(raw, str) else _stringify_env_value(raw).strip()
     if not text:
         return None
     try:

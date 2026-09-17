@@ -291,3 +291,37 @@ def test_code_mode_builds_disabled_tools_rail(monkeypatch):
     rail = disabled_info.build_func(**disabled_info.params)
     assert isinstance(rail, DisabledToolsRail)
     assert rail._disabled_tools == {"search_skill"}
+
+
+def test_init_prunes_subagent_tools_and_refreshes_subagent_rail():
+    """After detach, GP SubAgentConfig.tools and task_tool ads must drop blacklist."""
+    from openjiuwen.core.single_agent.schema.agent_card import AgentCard
+    from openjiuwen.harness.schema.config import SubAgentConfig
+
+    web = _make_card("web_search")
+    bash = _make_card("bash")
+    cards = {"web_search": web, "bash": bash}
+    agent = _make_agent(cards)
+
+    gp = SubAgentConfig(
+        agent_card=AgentCard(name="general-purpose", description="gp"),
+        system_prompt="",
+        tools=[web, bash],
+    )
+    agent.deep_config = SimpleNamespace(subagents=[gp])
+
+    refreshed = {"called": False}
+
+    class _FakeSubagentRail:
+        def refresh_available_agents(self, _agent):
+            refreshed["called"] = True
+
+    agent.find_rails_by_type = lambda types: [_FakeSubagentRail()]
+
+    rail = DisabledToolsRail(disabled_tools=["web_search"])
+    rail.init(agent)
+
+    assert "web_search" not in agent.ability_manager._cards
+    names = [getattr(t, "name", None) for t in (gp.tools or [])]
+    assert names == ["bash"]
+    assert refreshed["called"] is True

@@ -22,7 +22,6 @@ function appendEnterpriseScope(path: string): string {
   if (scope.userId) query.set('user_id', scope.userId);
   if (scope.groupId) query.set('group_id', scope.groupId);
   if (scope.botId) query.set('bot_id', scope.botId);
-  if (scope.gatewayId) query.set('gateway_id', scope.gatewayId);
   const suffix = query.toString();
   return suffix ? `${path}?${suffix}` : path;
 }

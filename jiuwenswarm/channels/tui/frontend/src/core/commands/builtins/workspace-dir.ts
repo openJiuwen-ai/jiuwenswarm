@@ -81,7 +81,7 @@ function showAllTrustedPaths(ctx: CommandContext): void {
   // Show system default workspace (fixed)
   items.push({
     label: "workspace (system)",
-    value: "~/.jiuwenswarm/agent/workspace",
+    value: "~/.jiuwenswarm/agent/jiuwenclaw_workspace",
   });
 
   // Show current project scope (always resolved absolute path)

@@ -9,6 +9,7 @@ from jiuwenswarm.common.work_mode import (
     DEFAULT_WEB_WORK_MODE,
     normalize_work_mode,
 )
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.cron.cron_expr import validate_cron_expression
 
 
@@ -87,6 +88,9 @@ CRON_JOB_MODES: frozenset[str] = frozenset(
 # Canonical default when create/update/runtime do not specify mode.
 CRON_JOB_DEFAULT_MODE: str = "agent"
 
+# 集群(team)模式相关的 cron 执行模式；企业版不开集群模式定时器，创建/更新时直接拒绝。
+_TEAM_CRON_MODES: frozenset[str] = frozenset({"team", "team.plan", "code.team"})
+
 # 名称/描述最大长度（前后端保持一致，见 CronTaskDrawer.tsx 同名常量）。
 # 名称对齐 ConfigPanel 里 Agent 名称字段的 64；描述对齐产品确认的 500。
 CRON_JOB_NAME_MAX_LENGTH: int = 64
@@ -104,12 +108,20 @@ def normalize_cron_job_mode(raw: Any, *, default: str = CRON_JOB_DEFAULT_MODE) -
 
     legacy 别名（plan / agent.plan / agent.fast）在此处即归一为 "agent" 后落库，
     而非仅依赖运行时（AgentServer 侧）兜底归一。
+
+    企业版不支持集群(team)模式定时器：create/update 传入 team 类 mode 时直接抛
+    ValueError（参数非法，创建/更新失败），不做任何兜底归一。
     """
     if raw is None:
         return default
     value = str(raw).strip().lower()
     if not value:
         return default
+    if is_enterprise() and value in _TEAM_CRON_MODES:
+        raise ValueError(
+            f"Cluster (team) cron mode {raw!r} is not supported in the enterprise edition. "
+            f"Valid: {', '.join(cron_job_modes_for_tools())}"
+        )
     if value not in CRON_JOB_MODES:
         raise ValueError(
             f"Invalid cron job mode {raw!r}. "
@@ -129,7 +141,11 @@ def coerce_cron_job_mode(raw: Any, *, default: str = CRON_JOB_DEFAULT_MODE) -> s
 
 
 def cron_job_modes_for_tools() -> list[str]:
-    return sorted(CRON_JOB_MODES)
+    modes = sorted(CRON_JOB_MODES)
+    if is_enterprise():
+        # 企业版不开集群(team)模式定时器，工具 schema / cron.job.meta 都不暴露 team 类 mode。
+        modes = [m for m in modes if m not in _TEAM_CRON_MODES]
+    return modes
 
 
 def cron_job_metadata() -> dict[str, str | list[str] | int]:
@@ -142,8 +158,6 @@ def cron_job_metadata() -> dict[str, str | list[str] | int]:
         "max_timeout_seconds": CRON_MAX_TIMEOUT_SECONDS,
     }
 
-
-_TEAM_CRON_MODES: frozenset[str] = frozenset({"team", "team.plan", "code.team"})
 
 CRON_DEFAULT_TIMEOUT_SECONDS: int = 10 * 60
 CRON_TEAM_DEFAULT_TIMEOUT_SECONDS: int = 20 * 60

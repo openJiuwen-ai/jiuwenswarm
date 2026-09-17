@@ -21,14 +21,27 @@ logger = logging.getLogger(__name__)
 # AgentServer's E2A normalization. Local handlers only receive ``params``, so
 # merge ``metadata.routing`` into the handler params copy (not Message.params).
 _LOCAL_ROUTING_IDENTITY_PREFIXES = ("cron.", "skills.enterprise.")
-_LOCAL_ROUTING_IDENTITY_METHODS = frozenset({"models.list", "project.get_sessions", "project.get_cron_sessions"})
+_LOCAL_ROUTING_IDENTITY_METHODS = frozenset({
+    "models.list",
+    "project.get_sessions",
+    "project.get_cron_sessions",
+    "a2a.outbound.list",
+    "a2a.outbound.enabled.update",
+    "a2a.outbound.dispatch.get",
+})
 
 _ENTERPRISE_BLOCKED_EXACT = frozenset({
     "config.set", "config.save_all", "models.replace_all", "models.save",
     "models.remove", "models.set_active", "path.set", "updater.download",
     "updater.upgrade", "updater.reset_source", "updater.set_conf",
 })
-_ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.")
+_ENTERPRISE_BLOCKED_PREFIXES = ("agents.", "teams.", "extensions.", "plugins.", "mcp.server.")
+_ENTERPRISE_A2A_ALLOWED = frozenset({
+    "a2a.outbound.list",
+    "a2a.outbound.enabled.update",
+    "a2a.outbound.dispatch.list",
+    "a2a.outbound.dispatch.get",
+})
 _ENTERPRISE_SKILL_ALLOWED = frozenset({
     "skills.list",
     "skills.get",
@@ -51,6 +64,8 @@ def is_enterprise_write_forbidden(method: str) -> bool:
     if not is_enterprise():
         return False
     if method in _ENTERPRISE_BLOCKED_EXACT or method.startswith(_ENTERPRISE_BLOCKED_PREFIXES):
+        return True
+    if method.startswith("a2a.") and method not in _ENTERPRISE_A2A_ALLOWED:
         return True
     if method.startswith("channel.") and (method.endswith(".set_conf") or method.endswith(".unbind")):
         return True

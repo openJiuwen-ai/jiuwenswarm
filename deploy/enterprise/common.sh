@@ -58,3 +58,23 @@ gen_uuid4() {
     fi
     error "Cannot generate uuid4: uuidgen or python3 is required"
 }
+
+#   dev     -> root（hostPath 挂载源码）          HOME=/root
+#   product -> app（镜像内 USER app，uid 1000）   HOME=/home/app
+# CLAW_HOME： HOME目录
+# CLAW_FS_GROUP：（PVC/NFS）要靠 kubelet 按属组 授权
+# CLAW_USER: 运行时用户
+# CLAW_GROUP： 运行时组
+set_user_context() {
+    if [ "${DEPLOY_VARS["MODE"]}" == "dev" ]; then
+        DEPLOY_VARS["CLAW_HOME"]="/root"
+        DEPLOY_VARS["CLAW_FS_GROUP"]="0"
+        DEPLOY_VARS["CLAW_USER"]="0"
+        DEPLOY_VARS["CLAW_GROUP"]="0"
+    else
+        DEPLOY_VARS["CLAW_HOME"]="/home/app"
+        DEPLOY_VARS["CLAW_FS_GROUP"]="1000"
+        DEPLOY_VARS["CLAW_USER"]="1000"
+        DEPLOY_VARS["CLAW_GROUP"]="1000"
+    fi
+}

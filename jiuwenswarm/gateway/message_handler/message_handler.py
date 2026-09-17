@@ -173,6 +173,16 @@ class ModeChangeCancelParams:
     new_mode_label: str
 
 
+@dataclass
+class StreamEmitParams:
+    """流式异常收尾补发(chat.error / chat.final)所需的具名参数(避免过长形参列表)。"""
+
+    request_id: str
+    channel_id: str
+    session_id: str | None
+    request_metadata: dict[str, Any] | None
+
+
 if TYPE_CHECKING:
     from jiuwenswarm.common.e2a.models import E2AEnvelope
     from jiuwenswarm.gateway.routing.agent_client import AgentServerClient
@@ -218,7 +228,7 @@ class MessageHandler(FileTransferMixin, ABC):
         self._running = False
         self._a2a_outbound_tool_manager: Any | None = None
         self._active_a2a_outbound_tool_tasks: dict[
-            str, tuple[asyncio.Task[Any], str]
+            str, tuple[asyncio.Task[Any], str, str, str]
         ] = {}
         self._forward_task: asyncio.Task | None = None
         self._stream_tasks: dict[str, asyncio.Task] = {}  # request_id -> task
@@ -2938,15 +2948,14 @@ class MessageHandler(FileTransferMixin, ABC):
             session_id: str | None = str(sid_raw)
         else:
             session_id = self._stream_sessions.get(rid)
+        request_metadata = self._stream_metadata.get(rid)
 
         if await self._handle_a2a_outbound_tool_push(
             chunk=chunk,
             session_id=session_id,
+            request_metadata=request_metadata,
         ):
             return
-        
-        # 获取原始请求的 metadata，用于合并
-        request_metadata = self._stream_metadata.get(rid)
         
         # 获取 AgentServer 返回的 metadata
         wmd = wire.get("metadata")
@@ -3034,7 +3043,11 @@ class MessageHandler(FileTransferMixin, ABC):
             self._active_a2a_outbound_tool_tasks = {}
 
     async def _handle_a2a_outbound_tool_push(
-        self, *, chunk: Any, session_id: str | None
+        self,
+        *,
+        chunk: Any,
+        session_id: str | None,
+        request_metadata: dict[str, Any] | None = None,
     ) -> bool:
         from jiuwenswarm.common.e2a.adapters import build_acp_tool_response_message
         from jiuwenswarm.gateway.a2a_manager.outbound import (
@@ -3071,6 +3084,45 @@ class MessageHandler(FileTransferMixin, ABC):
         manager = self._a2a_outbound_tool_manager
         current_task = asyncio.current_task()
         trusted_session_id = str(session_id or "").strip()
+        source_resource_id = ""
+        source_user_id = ""
+        resource_identity_invalid = False
+        if is_enterprise():
+            from jiuwenswarm.common.request_identity import web_routing_identity
+
+            # Reverse RPC has its own request_id. Resolve identity from the
+            # Gateway's active conversation, never from tool-supplied metadata.
+            source_identity = web_routing_identity(request_metadata)
+            if request_metadata is None and trusted_session_id:
+                identities = []
+                for active_rid, active_sid in getattr(self, "_stream_sessions", {}).items():
+                    if active_sid != trusted_session_id:
+                        continue
+                    if self._stream_channels.get(active_rid) != chunk.channel_id:
+                        continue
+                    identities.append(
+                        web_routing_identity(self._stream_metadata.get(active_rid))
+                    )
+                if identities and all(item == identities[0] for item in identities):
+                    source_identity = identities[0]
+            source_resource_id = str(source_identity.get("bot_id") or "").strip()
+            source_user_id = str(source_identity.get("user_id") or "").strip()
+            requested_resource_id = str(params.get("resource_id") or "").strip()
+            missing_source = not source_resource_id
+            if method == A2A_TOOL_CANCEL_CALL:
+                # Cancel payloads only include jsonrpc_id; bind via active_calls.
+                resource_identity_invalid = missing_source
+            else:
+                resource_identity_invalid = bool(
+                    missing_source or requested_resource_id != source_resource_id
+                )
+            if resource_identity_invalid:
+                logger.warning(
+                    "[A2A] reverse RPC identity missing or mismatched: method=%s session_id=%s "
+                    "channel_id=%s gateway_bot_id=%r tool_resource_id=%r",
+                    method, trusted_session_id, chunk.channel_id,
+                    source_resource_id, requested_resource_id,
+                )
         active_calls = getattr(self, "_active_a2a_outbound_tool_tasks", None)
         if active_calls is None:
             active_calls = self._active_a2a_outbound_tool_tasks = {}
@@ -3080,7 +3132,11 @@ class MessageHandler(FileTransferMixin, ABC):
             target = active[0] if active is not None else None
             canceled = bool(
                 active is not None
+                and not resource_identity_invalid
                 and active[1] == trusted_session_id
+                and active[2] == source_resource_id
+                and active[3] == source_user_id
+                and (not is_enterprise() or bool(source_user_id))
                 and target is not current_task
             )
             if canceled:
@@ -3099,8 +3155,17 @@ class MessageHandler(FileTransferMixin, ABC):
             await self.publish_user_messages(reply)
             return True
         if jsonrpc_id and current_task is not None:
-            active_calls[jsonrpc_id] = (current_task, trusted_session_id)
+            active_calls[jsonrpc_id] = (
+                current_task,
+                trusted_session_id,
+                source_resource_id,
+                source_user_id,
+            )
         try:
+            if resource_identity_invalid:
+                raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_AUTHORIZED)
+            if is_enterprise() and not source_user_id:
+                raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
             if manager is None:
                 raise A2AOutboundError(A2AOutboundErrorCode.MANAGER_UNAVAILABLE)
             source_session_id = trusted_session_id
@@ -3110,24 +3175,39 @@ class MessageHandler(FileTransferMixin, ABC):
                 required = params.get("required_skills")
                 if required is not None and not isinstance(required, list):
                     raise A2AOutboundError(A2AOutboundErrorCode.TASK_INVALID)
-                result = await manager.outbound_find_agents(
-                    query=str(params.get("query") or ""),
-                    required_skills=required,
-                    limit=int(params.get("limit") or 5),
-                )
+                call_params = {
+                    "query": str(params.get("query") or ""),
+                    "required_skills": required,
+                    "limit": int(params.get("limit") or 5),
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                if source_user_id:
+                    call_params["source_user_id"] = source_user_id
+                result = await manager.outbound_find_agents(**call_params)
             elif method == A2A_TOOL_DISPATCH_TASK:
-                result = await manager.outbound_dispatch_task(
-                    agent_id=str(params.get("agent_id") or ""),
-                    task=str(params.get("task") or ""),
-                    mode=str(params.get("mode") or ""),
-                    source_session_id=source_session_id,
-                    reason=str(params.get("reason") or "") or None,
-                )
+                call_params = {
+                    "agent_id": str(params.get("agent_id") or ""),
+                    "task": str(params.get("task") or ""),
+                    "mode": str(params.get("mode") or ""),
+                    "source_session_id": source_session_id,
+                    "reason": str(params.get("reason") or "") or None,
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                if source_user_id:
+                    call_params["source_user_id"] = source_user_id
+                result = await manager.outbound_dispatch_task(**call_params)
             elif method == A2A_TOOL_GET_DISPATCH:
-                result = await manager.outbound_get_dispatch(
-                    dispatch_id=str(params.get("dispatch_id") or ""),
-                    source_session_id=source_session_id,
-                )
+                call_params = {
+                    "dispatch_id": str(params.get("dispatch_id") or ""),
+                    "source_session_id": source_session_id,
+                }
+                if source_resource_id:
+                    call_params["source_resource_id"] = source_resource_id
+                if source_user_id:
+                    call_params["source_user_id"] = source_user_id
+                result = await manager.outbound_get_dispatch(**call_params)
             response = {"jsonrpc": "2.0", "id": jsonrpc_id, "result": result}
         except A2AOutboundError as exc:
             response = {
@@ -3498,22 +3578,20 @@ class MessageHandler(FileTransferMixin, ABC):
 
     async def _publish_stream_cancelled_final(
         self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
+        params: StreamEmitParams,
     ) -> None:
         """流式任务被网关取消时补发 chat.final，带 is_complete（供飞书等通道合并缓冲）。"""
         from jiuwenswarm.common.schema.message import Message, EventType
 
+        request_metadata = params.request_metadata
         group_digital_avatar = bool(request_metadata.get("group_digital_avatar", False)) if request_metadata else False
         enable_memory = bool(request_metadata.get("enable_memory", True)) if request_metadata else True
 
         out = Message(
-            id=request_id,
+            id=params.request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
+            channel_id=params.channel_id,
+            session_id=params.session_id,
             params={},
             timestamp=time.time(),
             ok=True,
@@ -3530,42 +3608,40 @@ class MessageHandler(FileTransferMixin, ABC):
         await self.publish_robot_messages(out)
         logger.info(
             "[MessageHandler] 已发送流式取消结束帧: request_id=%s session_id=%s",
-            request_id,
-            session_id,
+            params.request_id,
+            params.session_id,
         )
 
     async def _publish_stream_connection_error(
         self,
-        request_id: str,
-        channel_id: str,
-        session_id: str | None,
-        request_metadata: dict[str, Any] | None,
+        params: StreamEmitParams,
         error: str,
+        code: str = "AGENT_SERVER_CONNECTION_CLOSED",
     ) -> None:
         """Publish a visible stream error when the AgentServer connection drops."""
         from jiuwenswarm.common.schema.message import Message, EventType
 
         out = Message(
-            id=request_id,
+            id=params.request_id,
             type="event",
-            channel_id=channel_id,
-            session_id=session_id,
+            channel_id=params.channel_id,
+            session_id=params.session_id,
             params={},
             timestamp=time.time(),
             ok=False,
             payload={
                 "event_type": EventType.CHAT_ERROR.value,
                 "error": error,
-                "code": "AGENT_SERVER_CONNECTION_CLOSED",
+                "code": code,
                 "is_complete": True,
             },
             event_type=EventType.CHAT_ERROR,
-            metadata=request_metadata,
+            metadata=params.request_metadata,
         )
         await self.publish_robot_messages(out)
         logger.warning(
             "[MessageHandler] Stream 因 AgentServer WebSocket 断开而结束: request_id=%s error=%s",
-            request_id,
+            params.request_id,
             error,
         )
 
@@ -4772,6 +4848,13 @@ class MessageHandler(FileTransferMixin, ABC):
         rid = env.request_id or ""
         channel_id = env.channel or ""
         stream_app_id = self._stream_app_ids.get(rid, "")  # 提前捕获，_pop_stream_tracking 后会清除
+        # 流式异常收尾补发(chat.error/chat.final)共用的具名参数
+        emit_params = StreamEmitParams(
+            request_id=rid,
+            channel_id=channel_id,
+            session_id=session_id,
+            request_metadata=request_metadata,
+        )
         cancelled = False
         has_processing_status_false = False
         _proc_count = 0
@@ -4840,10 +4923,7 @@ class MessageHandler(FileTransferMixin, ABC):
             if "AgentServer WebSocket connection closed" not in str(exc):
                 raise
             await self._publish_stream_connection_error(
-                rid,
-                channel_id,
-                session_id,
-                request_metadata,
+                emit_params,
                 str(exc),
             )
         except Exception as exc:
@@ -4853,9 +4933,13 @@ class MessageHandler(FileTransferMixin, ABC):
                 "[MessageHandler] Stream 异常: request_id=%s total_chunks=%s error=%s",
                 rid, _proc_count, exc,
             )
-            await self._publish_stream_cancelled_final(
-                rid, channel_id, session_id, request_metadata,
+            # 快失败/路由类异常(如 SCOPE_FULL)必须以 CHAT_ERROR 事件外显,
+            # 否则前端只收到空 chat.final,表现为静默无响应
+            await self._publish_stream_connection_error(
+                emit_params, str(exc),
+                code="GATEWAY_STREAM_ERROR",
             )
+            await self._publish_stream_cancelled_final(emit_params)
             raise  # 重新抛出，让调用者知道任务被取消
         finally:
             telemetry_outcome["error"] = request_error

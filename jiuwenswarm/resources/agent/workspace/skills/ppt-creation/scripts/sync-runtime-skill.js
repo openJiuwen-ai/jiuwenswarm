@@ -14,11 +14,11 @@ const crypto = require("crypto");
 
 const SRC = path.resolve(__dirname, "..");                       // .../skills/ppt-creation (repo copy)
 const DST = path.resolve(
-  process.env.HOME, ".jiuwenswarm/agent/workspace/skills/ppt-creation" // runtime copy
+  process.env.HOME, ".jiuwenswarm/agent/jiuwenclaw_workspace/skills/ppt-creation" // runtime copy
 );
 const AGENT_DATA = [
   path.resolve(SRC, "../../agent-data.json"),                    // repo manifest
-  path.resolve(process.env.HOME, ".jiuwenswarm/agent/workspace/agent-data.json"), // runtime manifest
+  path.resolve(process.env.HOME, ".jiuwenswarm/agent/jiuwenclaw_workspace/agent-data.json"), // runtime manifest
 ];
 
 const EXCLUDE_DIRS = new Set(["node_modules", "output", ".git"]);
@@ -145,8 +145,8 @@ function reconcileManifest(manifestPath) {
         data[key].push({
           name,
           path: dirRel
-            ? `agent/workspace/skills/ppt-creation/${dirRel}/${name}`
-            : `agent/workspace/skills/ppt-creation/${name}`,
+            ? `agent/jiuwenclaw_workspace/skills/ppt-creation/${dirRel}/${name}`
+            : `agent/jiuwenclaw_workspace/skills/ppt-creation/${name}`,
           isMarkdown: name.endsWith(".md"),
         });
         added += 1;

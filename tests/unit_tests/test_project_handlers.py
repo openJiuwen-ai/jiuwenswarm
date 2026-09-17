@@ -782,7 +782,7 @@ class TestEmptyPathProject:
         assert resp["payload"]["project_id"].startswith("proj_")
         # work_mode 改造后默认工作区按 work_mode 分桶:Web 通道默认 work 模式
         # → workspace/work/{name}
-        expected_path = str(get_agent_root_dir() / "workspace" / "work" / "空项目A")
+        expected_path = str(get_agent_root_dir() / "jiuwenclaw_workspace" / "work" / "空项目A")
         assert resp["payload"]["project_dir"] == expected_path
         assert os.path.isdir(expected_path)
         assert resp["payload"]["restored"] is False
@@ -952,7 +952,9 @@ class TestSessionCreateProjectDirConsistency:
 
 
 # ===========================================================================
-# project.get_cron_sessions (remote → Agent session.list)
+# project.get_cron_sessions
+# remote：web 库优先；空列表是有效结果，不得回退 Agent。
+# 库不可用（None）才回退 Agent session.list。local 仍读磁盘 metadata。
 # ===========================================================================
 class _FakeSessionListAgentClient:
     def __init__(self, sessions: list[dict]):
@@ -976,13 +978,56 @@ class _FakeSessionListAgentClient:
         )
 
 
+def _pg_session_row(
+    session_id: str,
+    *,
+    cron_id: str = "",
+    project_id: str = "",
+    last_user_message_at: float = 0.0,
+    title: str = "",
+    pinned: bool = False,
+) -> dict:
+    return {
+        "session_id": session_id,
+        "title": title,
+        "created_at": 1.0,
+        "updated_at": last_user_message_at,
+        "last_user_message_at": last_user_message_at,
+        "message_count": 1,
+        "pinned": pinned,
+        "pin_order": 0,
+        "project_id": project_id,
+        "cron_id": cron_id,
+        "work_mode": "work",
+    }
+
+
+def _patch_list_all_sessions(monkeypatch, result):
+    """result 为 list（含空列表）或 None（库不可用）。"""
+    monkeypatch.setattr(
+        "jiuwenswarm.channels.web.history_store.api.list_all_sessions_sync",
+        lambda *args, **kwargs: result,
+    )
+
+
+def _reregister_with_agent(channel, agent_client):
+    from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
+        WebHandlersBindParams,
+        _register_web_handlers,
+    )
+
+    _register_web_handlers(
+        WebHandlersBindParams(channel=channel, agent_client=agent_client)
+    )
+
+
 class TestProjectGetCronSessionsRemote:
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remote_mode_fetches_and_filters_cron_sessions(
+    async def test_remote_mode_reads_pg_and_filters_cron_sessions(
         registered_channel, tmp_path, monkeypatch,
     ):
-        """remote 存储：从 Agent session.list 拉全量，再按 cron_id / 项目过滤。"""
+        """remote：优先读 web 库 sessions 行，再按 cron_id / 项目过滤；不打 Agent。"""
         monkeypatch.setattr(
             "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
             lambda: True,
@@ -990,6 +1035,101 @@ class TestProjectGetCronSessionsRemote:
 
         pa = _abspath(tmp_path, "cron_app")
         proj = _make_project("CronApp", pa)
+        _patch_list_all_sessions(monkeypatch, [
+            _pg_session_row(
+                "cron_run_1",
+                cron_id="job-abc",
+                project_id=proj.project_id,
+                last_user_message_at=200.0,
+                title="cron run",
+            ),
+            _pg_session_row(
+                "web_normal",
+                project_id=proj.project_id,
+                last_user_message_at=300.0,
+                title="normal",
+            ),
+            _pg_session_row(
+                "cron_other_job",
+                cron_id="job-other",
+                project_id=proj.project_id,
+                last_user_message_at=100.0,
+                title="other cron",
+            ),
+        ])
+        fake_client = _FakeSessionListAgentClient([])
+        _reregister_with_agent(registered_channel, fake_client)
+
+        resp = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": proj.project_id, "cron_id": "job-abc"},
+        )
+        assert resp["ok"] is True
+        sessions = resp["payload"]["sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "cron_run_1"
+        assert sessions[0]["cron_id"] == "job-abc"
+        assert fake_client.requests == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remote_empty_pg_does_not_resurrect_from_agent(
+        registered_channel, tmp_path, monkeypatch,
+    ):
+        """web 库返回空列表是有效结果：不得回退 Agent，否则已删行会被磁盘条目复活。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
+            lambda: True,
+        )
+        pa = _abspath(tmp_path, "cron_app")
+        proj = _make_project("CronApp", pa)
+        _patch_list_all_sessions(monkeypatch, [])
+        fake_client = _FakeSessionListAgentClient([
+            {
+                "session_id": "cron_deleted_on_pg",
+                "cron_id": "job-abc",
+                "project_id": proj.project_id,
+                "project_dir": pa,
+                "channel_id": "__cron__",
+                "last_user_message_at": 200.0,
+                "title": "stale disk",
+                "created_at": 1.0,
+                "last_message_at": 200.0,
+                "message_count": 1,
+                "mode": "agent",
+                "team_name": "",
+                "pinned": False,
+                "pin_order": 0,
+                "model": "",
+                "work_mode": "work",
+            },
+        ])
+        _reregister_with_agent(registered_channel, fake_client)
+
+        resp = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": proj.project_id, "cron_id": "job-abc"},
+        )
+        assert resp["ok"] is True
+        assert resp["payload"]["sessions"] == []
+        assert resp["payload"]["total"] == 0
+        assert fake_client.requests == []
+
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_remote_mode_falls_back_to_agent_when_store_unavailable(
+        registered_channel, tmp_path, monkeypatch,
+    ):
+        """库不可用（None）才回退 Agent session.list。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
+            lambda: True,
+        )
+        pa = _abspath(tmp_path, "cron_app")
+        proj = _make_project("CronApp", pa)
+        _patch_list_all_sessions(monkeypatch, None)
         agent_sessions = [
             {
                 "session_id": "cron_run_1",
@@ -1027,35 +1167,9 @@ class TestProjectGetCronSessionsRemote:
                 "model": "",
                 "work_mode": "work",
             },
-            {
-                "session_id": "cron_other_job",
-                "cron_id": "job-other",
-                "project_id": proj.project_id,
-                "project_dir": pa,
-                "channel_id": "__cron__",
-                "last_user_message_at": 100.0,
-                "title": "other cron",
-                "created_at": 1.0,
-                "last_message_at": 100.0,
-                "message_count": 1,
-                "mode": "agent",
-                "team_name": "",
-                "pinned": False,
-                "pin_order": 0,
-                "model": "",
-                "work_mode": "work",
-            },
         ]
-        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-            WebHandlersBindParams,
-            _register_web_handlers,
-        )
-
         fake_client = _FakeSessionListAgentClient(agent_sessions)
-        # handler 在注册时捕获 agent_client，需重新注册以注入 fake session.list 客户端
-        _register_web_handlers(
-            WebHandlersBindParams(channel=registered_channel, agent_client=fake_client)
-        )
+        _reregister_with_agent(registered_channel, fake_client)
 
         resp = await _call(
             registered_channel,
@@ -1066,17 +1180,19 @@ class TestProjectGetCronSessionsRemote:
         sessions = resp["payload"]["sessions"]
         assert len(sessions) == 1
         assert sessions[0]["session_id"] == "cron_run_1"
-        assert sessions[0]["cron_id"] == "job-abc"
         assert fake_client.requests
 
     @staticmethod
     @pytest.mark.asyncio
-    async def test_remote_mode_paginates_session_list(registered_channel, sessions_dir, monkeypatch):
-        """remote 存储：超过单页上限时循环拉取 session.list。"""
+    async def test_remote_mode_paginates_session_list_on_fallback(
+        registered_channel, sessions_dir, monkeypatch,
+    ):
+        """库不可用时：超过单页上限则循环拉取 session.list。"""
         monkeypatch.setattr(
             "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
             lambda: True,
         )
+        _patch_list_all_sessions(monkeypatch, None)
         from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import _SESSION_LIST_PAGE_SIZE
 
         agent_sessions = [
@@ -1100,16 +1216,8 @@ class TestProjectGetCronSessionsRemote:
             }
             for i in range(_SESSION_LIST_PAGE_SIZE + 3)
         ]
-        from jiuwenswarm.gateway.channel_manager.web.app_web_handlers import (
-            WebHandlersBindParams,
-            _register_web_handlers,
-        )
-
         fake_client = _FakeSessionListAgentClient(agent_sessions)
-        # handler 在注册时捕获 agent_client，需重新注册以注入 fake session.list 客户端
-        _register_web_handlers(
-            WebHandlersBindParams(channel=registered_channel, agent_client=fake_client)
-        )
+        _reregister_with_agent(registered_channel, fake_client)
 
         resp = await _call(
             registered_channel,
@@ -1120,3 +1228,54 @@ class TestProjectGetCronSessionsRemote:
         assert resp["payload"]["total"] == _SESSION_LIST_PAGE_SIZE + 3
         assert len(fake_client.requests) >= 2
         assert not any(sessions_dir.iterdir())
+
+
+class TestProjectGetCronSessionsLocal:
+    @staticmethod
+    @pytest.mark.asyncio
+    async def test_local_mode_reads_disk_metadata(
+        registered_channel, tmp_path, monkeypatch,
+    ):
+        """个人版 / local：仍读磁盘 metadata，不走 web 库。"""
+        monkeypatch.setattr(
+            "jiuwenswarm.gateway.routing.session_index.is_remote_storage",
+            lambda: False,
+        )
+        called = []
+
+        def _should_not_hit_pg(*args, **kwargs):
+            called.append((args, kwargs))
+            raise AssertionError("local mode must not read web catalog")
+
+        monkeypatch.setattr(
+            "jiuwenswarm.channels.web.history_store.api.list_all_sessions_sync",
+            _should_not_hit_pg,
+        )
+        pa = _abspath(tmp_path, "cron_app")
+        proj = _make_project("CronApp", pa)
+        _make_session(
+            "cron_run_1",
+            project_id=proj.project_id,
+            project_dir=pa,
+            cron_id="job-abc",
+            channel_id="__cron__",
+            last_user_message_at=200.0,
+        )
+        _make_session(
+            "web_normal",
+            project_id=proj.project_id,
+            project_dir=pa,
+            last_user_message_at=300.0,
+        )
+
+        resp = await _call(
+            registered_channel,
+            "project.get_cron_sessions",
+            {"project_id": proj.project_id, "cron_id": "job-abc"},
+        )
+        assert resp["ok"] is True
+        sessions = resp["payload"]["sessions"]
+        assert len(sessions) == 1
+        assert sessions[0]["session_id"] == "cron_run_1"
+        assert sessions[0]["cron_id"] == "job-abc"
+        assert called == []

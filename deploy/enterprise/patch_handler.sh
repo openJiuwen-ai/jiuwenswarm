@@ -12,6 +12,12 @@ wait_http_ready() {
     local port="$2"
     local path="$3"
     local module="${4:-service}"
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" == enforce ]]; then
+        local role=gateway
+        [[ "$module" != agent-runtime* ]] || role=runtime
+        link_mtls_call wait "$role" "$path"
+        return
+    fi
     local elapsed=0
     local code="000"
     [ -n "${port}" ] || error "${module} NodePort is empty; cannot check readiness"
@@ -37,6 +43,12 @@ post_and_validate() {
     local url="$1"
     local data="$2"
     local module="${3:-}"
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" == enforce ]]; then
+        local path="${url#*://}"
+        path="/${path#*/}"
+        link_mtls_request "$module" "$path" "$data"
+        return
+    fi
     local resp_file="$(mktemp)"
     local code=$(curl -s --max-time 20 -o "${resp_file}" -w "%{http_code}" \
         -X POST "${url}" -H "Content-Type: application/json" -d "${data}" 2>/dev/null) || code="000"
@@ -52,6 +64,87 @@ post_and_validate() {
     success "POST ${url} ok (http=${code})"
 }
 
+# 按存储模式注入 data 卷(.jiuwenswarm 数据目录):模板里不再预置 PVC 卷,
+# 由本函数按 CLAW_MOUNT_TYPE 二选一注入——
+#   pvc: StorageClass 动态供给的持久卷(claimName=CLAW_PVC)
+#   nfs: 直连 NFS 共享目录(server=NFS_SERVER_ADDR, path=NFS_SHARE_PATH/jiuwenclaw,
+#        与 check_runtime_up_dependency 预创建的内置 NFS 数据目录同名)
+# 用法: inject_data_volume <json_file>
+inject_data_volume() {
+    local json_file="${CONFIG["AS_JSON_FILE"]}"
+    local mount_type="${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}"
+    local data_volume
+    if [ "${mount_type}" == "pvc" ]; then
+        data_volume="$(jq -n --arg claim "${DEPLOY_VARS["CLAW_PVC"]}" \
+            '{name: "data", persistentVolumeClaim: {claimName: $claim}}')"
+    elif [ "${mount_type}" == "nfs" ]; then
+        if [ -z "${DEPLOY_VARS["NFS_SERVER_ADDR"]:-}" ]; then
+            error "CLAW_MOUNT_TYPE=nfs requires NFS_SERVER_ADDR (external) or a deployed built-in NFS"
+        fi
+        # 规整共享根路径尾部 '/'(内置 NFS 默认 NFS_SHARE_PATH="/",避免拼出 //jiuwenclaw)
+        local nfs_share="${DEPLOY_VARS["NFS_SHARE_PATH"]%/}"
+        data_volume="$(jq -n --arg server "${DEPLOY_VARS["NFS_SERVER_ADDR"]}" \
+            --arg path "${nfs_share}/jiuwenclaw" \
+            '{name: "data", nfs: {server: $server, path: $path}}')"
+    else
+        error "Unsupported CLAW_MOUNT_TYPE '${mount_type}' (expect pvc/nfs)"
+    fi
+    jq --argjson volume "${data_volume}" \
+        '.rawdata.templates[].volumes += [$volume]' \
+        "${json_file}" > "${json_file}.tmp" && mv -f "${json_file}.tmp" "${json_file}"
+}
+
+# product 模式下镜像内置代码、Pod 无需固定调度到当前节点,
+# 删除 pod template 里的 nodeName 字段让 K8s 调度器自由调度
+# (dev 模式靠 nodeName 固定到当前节点以便 hostPath 挂源码)。
+# 用法: drop_nodename_field <json_file>
+drop_nodename_field() {
+    local json_file="${CONFIG["AS_JSON_FILE"]}"
+    if [[ "${DEPLOY_VARS["MODE"]}" == "product" ]]; then
+        jq 'del(.rawdata.templates[].nodeName)' "${json_file}" > "${json_file}.tmp"
+        mv -f "${json_file}.tmp" "${json_file}"
+    fi
+}
+
+# 剔除无效/不需要的 hostPath 卷(+ 引用它们的 volumeMounts):
+# 规则1(两模式通用):三个代码目录变量(CLAW_CODE_PATH/RUNTIME_CODE_PATH/CORE_CODE_PATH)任一为空,
+#   引用该变量的 hostPath 路径会变坏、不能挂载,一并剔除。映射(按 hostPath path 引用):
+#   CLAW_CODE_PATH    -> hp-code
+#   RUNTIME_CODE_PATH -> hp-rt-foundation, hp-rt-management
+#   CORE_CODE_PATH    -> hp-openjiuwen
+# 规则2(仅 product):agentserver 镜像内置代码,4 个 agentserver 代码挂载,1 个 jiuwenbox代码挂载
+#   (hp-code/hp-rt-foundation/hp-rt-management/hp-openjiuwen)无论变量是否为空都删;
+#   hp-cgroup(sidecar 系统路径)始终保留。
+# 用法: drop_hostpath_volumes <json_file>
+drop_hostpath_volumes() {
+    local json_file="${CONFIG["AS_JSON_FILE"]}"
+    local drop_names=()
+    if [[ -z "${DEPLOY_VARS["CLAW_CODE_PATH"]:-}" ]]; then
+        drop_names+=(hp-code)
+    fi
+    if [[ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ]]; then
+        drop_names+=(hp-rt-foundation hp-rt-management)
+    fi
+    if [[ -z "${DEPLOY_VARS["CORE_CODE_PATH"]:-}" ]]; then
+        drop_names+=(hp-openjiuwen)
+    fi
+    if [[ "${DEPLOY_VARS["MODE"]}" == "product" ]]; then
+        drop_names+=(hp-code hp-rt-foundation hp-rt-management hp-openjiuwen)
+    fi
+
+    if [ "${#drop_names[@]}" -gt 0 ]; then
+        local jq_drop
+        jq_drop="$(printf '%s\n' "${drop_names[@]}" | jq -R . | jq -s .)"
+        jq --argjson drop "${jq_drop}" \
+            ".rawdata.templates[].volumes |= map(select(.name as \$n | \$drop | map(. == \$n) | any | not))" \
+            "${json_file}" > "${json_file}.tmp"
+        jq '(.rawdata.templates[0].volumes | map(.name)) as $keep
+            | .rawdata.containers[].volumeMounts |= map(select(.name as $n | $keep | map(. == $n) | any))' \
+            "${json_file}.tmp" > "${json_file}"
+        rm -f "${json_file}.tmp"
+    fi
+}
+
 render_patch_file() {
     local json_template="${CONFIG["AS_JSON_TEMPLATE_FILE"]}"
     local json_file="${CONFIG["AS_JSON_FILE"]}"
@@ -63,45 +156,9 @@ render_patch_file() {
         error "AgentServer JSON rendering failed, invalid JSON format: ${json_file}"
     fi
 
-    # 计算要剔除的 hostPath 卷(+ 引用它们的 volumeMounts);product 模式额外删主容器 securityContext
-    # 及所有容器的 privileged:
-    # 规则1(两模式通用):三个代码目录变量(CLAW_CODE_PATH/RUNTIME_CODE_PATH/CORE_CODE_PATH)任一为空,
-    #   引用该变量的 hostPath 路径会变坏、不能挂载,一并剔除。映射(按 hostPath path 引用):
-    #   CLAW_CODE_PATH    -> hp-code, hp-jiuwenbox
-    #   RUNTIME_CODE_PATH -> hp-rt-foundation, hp-rt-management
-    #   CORE_CODE_PATH    -> hp-openjiuwen
-    # 规则2(仅 product):agentserver 镜像内置代码,4 个 agentserver 代码挂载,1 个 jiuwenbox代码挂载
-    #   (hp-code/hp-rt-foundation/hp-rt-management/hp-openjiuwen)无论变量是否为空都删;
-    #   hp-cgroup(sidecar 系统路径)始终保留。
-    local drop_names=()
-    if [[ -z "${DEPLOY_VARS["CLAW_CODE_PATH"]:-}" ]]; then
-        drop_names+=(hp-code hp-jiuwenbox)
-    fi
-    if [[ -z "${DEPLOY_VARS["RUNTIME_CODE_PATH"]:-}" ]]; then
-        drop_names+=(hp-rt-foundation hp-rt-management)
-    fi
-    if [[ -z "${DEPLOY_VARS["CORE_CODE_PATH"]:-}" ]]; then
-        drop_names+=(hp-openjiuwen)
-    fi
-    if [[ "${DEPLOY_VARS["MODE"]}" == "product" ]]; then
-        drop_names+=(hp-code hp-rt-foundation hp-rt-management hp-openjiuwen hp-jiuwenbox)
-    fi
-
-    if [ "${#drop_names[@]}" -gt 0 ]; then
-        local jq_drop sec_filter
-        jq_drop="$(printf '%s\n' "${drop_names[@]}" | jq -R . | jq -s .)"
-        sec_filter=""
-        if [[ "${DEPLOY_VARS["MODE"]}" == "product" ]]; then
-            sec_filter=' | .rawdata.containers |= map(if .container_id == "c-agentserver" then del(.securityContext) else . end) | .rawdata.containers |= map(del(.securityContext.privileged))'
-        fi
-        jq --argjson drop "${jq_drop}" \
-            ".rawdata.templates[].volumes |= map(select(.name as \$n | \$drop | map(. == \$n) | any | not))${sec_filter}" \
-            "${json_file}" > "${json_file}.tmp"
-        jq '(.rawdata.templates[0].volumes | map(.name)) as $keep
-            | .rawdata.containers[].volumeMounts |= map(select(.name as $n | $keep | map(. == $n) | any))' \
-            "${json_file}.tmp" > "${json_file}"
-        rm -f "${json_file}.tmp"
-    fi
+    inject_data_volume
+    drop_hostpath_volumes
+    drop_nodename_field
 
     success "AgentServer configuration rendered"
 }

@@ -114,6 +114,32 @@ def test_parse_llm_output_without_task_id_unchanged() -> None:
     assert parsed == {"event_type": "chat.delta", "content": "hello"}
 
 
+def test_parse_llm_output_accepts_openjiuwen_output_key() -> None:
+    """openjiuwen llm_controller streams payload.output, not payload.content.
+
+    Before this fix, mid-ReAct user text was dropped while reasoning (which
+    already accepted ``output``) still reached the thinking UI.
+    """
+    chunk = SimpleNamespace(
+        type="llm_output",
+        payload={"output": "我来帮你完成这个任务", "result_type": "answer"},
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed == {
+        "event_type": "chat.delta",
+        "content": "我来帮你完成这个任务",
+    }
+
+
+def test_parse_llm_output_prefers_content_over_output() -> None:
+    chunk = SimpleNamespace(
+        type="llm_output",
+        payload={"content": "from-content", "output": "from-output"},
+    )
+    parsed = JiuWenSwarmDeepAdapter._parse_stream_chunk(chunk)
+    assert parsed["content"] == "from-content"
+
+
 def test_parse_content_chunk_forwards_task_id() -> None:
     chunk = SimpleNamespace(
         type="content_chunk",

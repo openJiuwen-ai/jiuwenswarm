@@ -167,7 +167,7 @@ Best for:
    Copy skill folder into:
 
    ```text
-   C:\Users\<username>\.jiuwenswarm\service_default\agent_default\jiuwenswarm_workspace\skills\
+   C:\Users\<username>\.jiuwenswarm\service_default\agent_default\agent\jiuwenclaw_workspace\skills\
    ```
 
 4. **Verify**
@@ -259,7 +259,7 @@ The agent lists installed skill names, sources, versions, and related info.
 **Method 3: File path**
 
 ```text
-C:\Users\<username>\.jiuwenswarm\service_default\agent_default\jiuwenswarm_workspace\skills\
+C:\Users\<username>\.jiuwenswarm\service_default\agent_default\agent\jiuwenclaw_workspace\skills\
 ```
 
 Each subfolder is one skill.

@@ -21,7 +21,7 @@ description: 安排延迟重启本 Agent 所在的服务（JiuwenSwarm app）。
 python %USERPROFILE%\.jiuwenswarm\agent\skills\delayed-restart-app\launch_delayed_restart.py --pid <当前 app 的 PID> --delay 5
 ```
 
-（Unix/macOS 使用：`python ~/.jiuwenswarm/agent/workspace/skills/delayed-restart-app/launch_delayed_restart.py --pid <PID> --delay 5`）
+（Unix/macOS 使用：`python ~/.jiuwenswarm/agent/jiuwenclaw_workspace/skills/delayed-restart-app/launch_delayed_restart.py --pid <PID> --delay 5`）
 
 - `--pid`：必填，当前 JiuwenSwarm app 进程的 PID（执行前需先获取，如从 config 或通过 `tasklist`/`pgrep` 等命令）
 - `--delay 5`：延迟 5 秒后重启（可改为 3、10 等）

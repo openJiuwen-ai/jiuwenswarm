@@ -15,6 +15,7 @@ Covers:
 from __future__ import annotations
 
 import asyncio
+from contextlib import AsyncExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
 
@@ -23,9 +24,17 @@ import pytest
 from jiuwenswarm.common import mcp_config
 from jiuwenswarm.common.mcp_config import (
     _PooledMcpWorker,
+    _enter_remote_mcp_session,
     list_request_mcp_server_tools,
     _run_mcp_worker,
 )
+
+
+@pytest.fixture(autouse=True)
+def _allow_loopback_mcp_in_mocked_remote_tests(monkeypatch: pytest.MonkeyPatch) -> None:
+    """本文件用 127.0.0.1 当假远端 URL；生产 SSRF 默认拦截 loopback，需显式放行。"""
+
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
 
 
 def _sse_config() -> dict:
@@ -137,6 +146,91 @@ async def test_streamable_http_discovery_dispatches_to_http_client(
     assert [t["name"] for t in tool_defs] == ["http_tool"]
     assert params["_mcp_client_type"] == "streamable-http"
     assert params["server_path"] == "http://127.0.0.1:3002/mcp"
+
+
+@pytest.mark.asyncio
+async def test_remote_discovery_stamps_default_timeout_on_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未传 timeout_s 时，发现 client 也必须拿到 300s request-scoped 默认值。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    await list_request_mcp_server_tools("baidu-netdisk", _sse_config())
+
+    client = _FakeRemoteClient.instances[0]
+    assert client._jws_call_timeout == mcp_config._MCP_CALL_TOOL_TIMEOUT_S
+
+
+@pytest.mark.asyncio
+async def test_remote_worker_stamps_default_timeout_on_client(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """worker 自建的远程 client 未传 timeout_s 时使用 300s request-scoped 默认值。"""
+    _FakeRemoteClient.reset()
+    _patch_remote_client(monkeypatch)
+    stack = AsyncExitStack()
+    try:
+        client = await _enter_remote_mcp_session(
+            stack,
+            {
+                "_mcp_client_type": "sse",
+                "server_name": "baidu-netdisk",
+                "server_path": "http://127.0.0.1:3001/sse",
+            },
+            "sse",
+        )
+        assert client._client._jws_call_timeout == mcp_config._MCP_CALL_TOOL_TIMEOUT_S
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.asyncio
+async def test_remote_discovery_connect_uses_large_connector_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """timeout_s 大于 300s 时，发现与 worker 建连都使用该放宽后的 deadline。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    _, params = await list_request_mcp_server_tools(
+        "baidu-netdisk", {**_sse_config(), "timeout_s": 600}
+    )
+
+    client = _FakeRemoteClient.instances[0]
+    assert client.connect.call_args.kwargs["timeout"] == 600.0
+    assert params["timeout_s"] == 600
+
+    stack = AsyncExitStack()
+    try:
+        await _enter_remote_mcp_session(stack, params, "sse")
+        worker_client = _FakeRemoteClient.instances[-1]
+        assert worker_client.connect.call_args.kwargs["timeout"] == 600.0
+    finally:
+        await stack.aclose()
+
+
+@pytest.mark.asyncio
+async def test_remote_discovery_keeps_default_for_short_connector_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A connector timeout below 300s must not shorten discovery."""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    _, params = await list_request_mcp_server_tools(
+        "baidu-netdisk", {**_sse_config(), "timeout_s": 0.3}
+    )
+
+    client = _FakeRemoteClient.instances[0]
+    assert (
+        client.connect.call_args.kwargs["timeout"]
+        == mcp_config._MCP_CONNECTOR_DISCOVERY_TIMEOUT_S
+    )
+    assert params["timeout_s"] == 0.3
 
 
 @pytest.mark.asyncio
@@ -264,6 +358,77 @@ async def test_remote_call_result_dict_serialized_as_json() -> None:
 
 
 @pytest.mark.asyncio
+async def test_remote_call_tool_honors_connector_timeout_s(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """params["timeout_s"]（前端下发的单连接器超时）必须覆盖 300s 默认值：
+    调用超过连接器 timeout_s 时被打断，并不依赖具体默认值时长。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    # 连接器超时 0.3s（远小于 300s 默认）：挂在 10s 的调用应在 ~0.3s 失败。
+    _, params = await list_request_mcp_server_tools(
+        "baidu-netdisk", {**_sse_config(), "timeout_s": 0.3}
+    )
+    assert params["timeout_s"] == 0.3
+
+    async def _hang(*a, **kw):
+        await asyncio.sleep(10)
+
+    inner = MagicMock()
+    inner.call_tool = AsyncMock(side_effect=_hang)
+    inner.connect = AsyncMock(return_value=True)
+    inner.disconnect = AsyncMock(return_value=True)
+    inner.list_tools = AsyncMock(return_value=[])
+    monkeypatch.setattr(
+        mcp_config, "_remote_mcp_client_cls", lambda client_type: lambda cfg: inner
+    )
+
+    worker = _PooledMcpWorker("baidu-netdisk")
+    fut: asyncio.Future = asyncio.get_running_loop().create_future()
+    worker.queue.put_nowait(
+        SimpleNamespace(tool_name="netdisk_list", arguments={}, future=fut)
+    )
+    worker.queue.put_nowait(None)
+
+    await asyncio.wait_for(_run_mcp_worker(params, worker), timeout=10)
+
+    # 若未使用连接器超时，wait_for(10) 会先超时；走到这里即证明用了 0.3s 连接器超时。
+    assert fut.done() and isinstance(fut.exception(), TimeoutError)
+
+
+@pytest.mark.asyncio
+async def test_remote_call_tool_invalid_timeout_s_falls_back_to_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """非法 timeout_s（0/负数/非数值）必须回落到 _MCP_CALL_TOOL_TIMEOUT_S。"""
+    for bad in (0, -5, "120", True):
+        _FakeRemoteClient.reset()
+        _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+        _patch_remote_client(monkeypatch)
+
+        _, params = await list_request_mcp_server_tools(
+            "baidu-netdisk", {**_sse_config(), "timeout_s": bad}
+        )
+        # 非法值被 create_mcp_tool 丢弃，params 不带 timeout_s。
+        assert "timeout_s" not in params
+
+
+@pytest.mark.asyncio
+async def test_remote_call_tool_no_timeout_s_uses_default(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """未下发 timeout_s 时沿用 _MCP_CALL_TOOL_TIMEOUT_S 默认 300s。"""
+    _FakeRemoteClient.reset()
+    _FakeRemoteClient.tools = [_FakeTool("netdisk_list")]
+    _patch_remote_client(monkeypatch)
+
+    _, params = await list_request_mcp_server_tools("baidu-netdisk", _sse_config())
+    assert "timeout_s" not in params
+
+
+@pytest.mark.asyncio
 async def test_remote_call_tool_timeout_breaks_worker_and_drains(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -277,7 +442,7 @@ async def test_remote_call_tool_timeout_breaks_worker_and_drains(
     _, params = await list_request_mcp_server_tools("baidu-netdisk", _sse_config())
     _FakeRemoteClient.reset()
 
-    # Shrink the call timeout so the test doesn't wait 30s.
+    # Shrink the call timeout so the test doesn't wait 300s.
     monkeypatch.setattr(mcp_config, "_MCP_CALL_TOOL_TIMEOUT_S", 0.2)
 
     # Make the worker-built client's call_tool hang past the worker timeout.
@@ -402,4 +567,52 @@ async def test_stdio_discovery_still_marks_client_type(monkeypatch: pytest.Monke
     tool_defs, params = await list_request_mcp_server_tools("local-stdio", config)
 
     assert [t["name"] for t in tool_defs] == ["stdio_tool"]
+    assert params["_mcp_client_type"] == "stdio"
+
+
+@pytest.mark.asyncio
+async def test_missing_type_command_args_discovery_defaults_to_stdio(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """缺 type 的 command+args 配置默认走 stdio 发现（方案 §5.2）。"""
+    monkeypatch.setenv("JIUWENSWARM_ALLOW_LOOPBACK_MCP", "1")
+
+    fake_session = MagicMock()
+    fake_session.initialize = AsyncMock()
+    fake_session.list_tools = AsyncMock(
+        return_value=SimpleNamespace(tools=[_FakeTool("legacy_tool")])
+    )
+
+    class _StdioCtx:
+        async def __aenter__(self):
+            return MagicMock(), MagicMock()
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr("mcp.client.stdio.stdio_client", lambda _p: _StdioCtx())
+    monkeypatch.setattr(mcp_config, "_stdio_server_parameters", lambda params: None)
+
+    import mcp as _mcp_mod
+
+    class _SessionCtx:
+        def __init__(self, session) -> None:
+            self._session = session
+
+        async def __aenter__(self):
+            return self._session
+
+        async def __aexit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(_mcp_mod, "ClientSession", lambda *a, **k: _SessionCtx(fake_session))
+
+    config = {
+        "name": "legacy-stdio",
+        "command": "npx",
+        "args": ["-y", "some-mcp"],
+    }
+    tool_defs, params = await list_request_mcp_server_tools("legacy-stdio", config)
+
+    assert [t["name"] for t in tool_defs] == ["legacy_tool"]
     assert params["_mcp_client_type"] == "stdio"

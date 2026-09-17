@@ -70,7 +70,7 @@ def _sync_prompt_workspace_templates(language: str) -> None:
     if not str(home_dir).startswith("/tmp/"):
         return
 
-    workspace_dir = home_dir / ".jiuwenswarm" / "agent" / "workspace"
+    workspace_dir = home_dir / ".jiuwenswarm" / "agent" / "jiuwenclaw_workspace"
     if not workspace_dir.exists():
         return
 

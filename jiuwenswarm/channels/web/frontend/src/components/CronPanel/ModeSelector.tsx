@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom';
 import clsx from 'clsx';
 import { useTranslation } from 'react-i18next';
 import { AGENT_MODE_OPTIONS } from '../../config/chatConfig';
+import { isEnterprise } from '../../edition';
 import type { AgentMode } from '../../types';
 
 interface ModeSelectorProps {
@@ -24,6 +25,13 @@ export default function ModeSelector({ value, onChange, disabled = false }: Mode
   const rootRef = useRef<HTMLDivElement>(null);
   const menuPortalRef = useRef<HTMLDivElement>(null);
 
+  // 企业版定时器不支持集群(team)模式，选择器只保留「单Agent」选项；个人版保持原样。
+  // 存量 team job 打开编辑时会经 currentMode 逻辑 fallback 到过滤后的首选项，只影响展示，
+  // 提交时后端仍会做严格校验拦截。
+  const modeOptions = isEnterprise()
+    ? AGENT_MODE_OPTIONS.filter((item) => item.value !== 'team')
+    : AGENT_MODE_OPTIONS;
+
   // 不用 useClickOutside(rootRef, ...)：下拉菜单是 portal 到 document.body 的，
   // 不在 rootRef 的 DOM 子树里，useClickOutside 只盯 rootRef 会把"点选项"误判成
   // "点外面"立刻关菜单，导致选项 onClick 还没触发菜单就卸载、根本选不上。这里
@@ -40,7 +48,7 @@ export default function ModeSelector({ value, onChange, disabled = false }: Mode
     return () => document.removeEventListener('pointerdown', handlePointerDown);
   }, [open]);
 
-  const currentMode = AGENT_MODE_OPTIONS.find((item) => item.value === value) ?? AGENT_MODE_OPTIONS[0];
+  const currentMode = modeOptions.find((item) => item.value === value) ?? modeOptions[0];
 
   const handleTriggerClick = () => {
     if (disabled) return;
@@ -91,7 +99,7 @@ export default function ModeSelector({ value, onChange, disabled = false }: Mode
             : { position: 'fixed', top: menuAnchor.bottom + 10, left: menuAnchor.left, zIndex: 9999 }
           }
         >
-          {AGENT_MODE_OPTIONS.map((m) => (
+          {modeOptions.map((m) => (
             <button
               type="button"
               key={m.value}

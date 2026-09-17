@@ -908,6 +908,77 @@ class TestDeliveryContext:
         assert push["session_id"] == "sess_push"
         assert push["metadata"]["telegram_chat_id"] == "chat-1"
 
+    @staticmethod
+    def test_build_server_push_message_honors_explicit_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_QUEUE,
+            build_server_push_message,
+            set_session_delivery_context,
+        )
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+
+        set_session_delivery_context(
+            session_id="sess_push_root",
+            channel_id="officeclaw",
+            source_request_id="req-root",
+            route_metadata={"routing": {"group_id": "chat-1"}},
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        push = build_server_push_message(
+            session_id="sess_push_root",
+            request_id="push-root",
+            payload={"event_type": "chat.final", "content": "done"},
+            fallback_channel_id="web",
+            sessions_root=sessions_dir,
+        )
+
+        assert push["channel_id"] == "officeclaw"
+        assert push["metadata"]["routing"]["group_id"] == "chat-1"
+
+    @staticmethod
+    def test_delivery_context_honors_explicit_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_QUEUE,
+            set_session_delivery_context,
+        )
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+
+        set_session_delivery_context(
+            session_id="sess_delivery_root",
+            channel_id="officeclaw",
+            source_request_id="req-root",
+            route_metadata={"routing": {"group_id": "chat-1"}},
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        assert (
+            sessions_dir / "sess_delivery_root" / "metadata.json"
+        ).is_file()
+        assert not (wrong_root / "sess_delivery_root" / "metadata.json").exists()
+
 
 # ===========================================================================
 # 需求验证: 会话标题稳定性
@@ -1067,6 +1138,95 @@ class TestTitleStability:
 
         data = _read_json(sessions_dir / "sess_noclear" / "metadata.json")
         assert data["title"] == "已有标题", "空字符串不应清除已有标题"
+
+
+class TestEnqueueWriteSessionsRoot:
+    @staticmethod
+    def test_coalesce_write_sessions_root_resolves_context(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _coalesce_write_sessions_root,
+        )
+
+        assert _coalesce_write_sessions_root(None) == str(sessions_dir)
+        explicit = sessions_dir.parent / "agent_agentteam_sessions"
+        assert _coalesce_write_sessions_root(explicit) == str(explicit)
+
+    @staticmethod
+    def test_async_enqueue_pins_context_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Worker must receive the sessions root captured in the enqueueing thread."""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _enqueue_write,
+            _METADATA_QUEUE,
+        )
+
+        captured_roots: list[str | None] = []
+
+        def _fake_write_sync(
+            session_id,
+            metadata,
+            preserve_pin_fields=False,
+            *,
+            sessions_root=None,
+        ):
+            captured_roots.append(sessions_root)
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata._write_metadata_sync",
+            _fake_write_sync,
+        )
+
+        _enqueue_write(
+            "sess_pin_root",
+            {"session_id": "sess_pin_root", "title": "pinned root"},
+            sessions_root=None,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+        _METADATA_QUEUE.join()
+
+        assert captured_roots == [str(sessions_dir)]
+
+    @staticmethod
+    def test_async_enqueue_honors_explicit_sessions_root(sessions_dir, tmp_path, monkeypatch):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _enqueue_write,
+            _METADATA_QUEUE,
+        )
+
+        captured_roots: list[str | None] = []
+
+        def _fake_write_sync(
+            session_id,
+            metadata,
+            preserve_pin_fields=False,
+            *,
+            sessions_root=None,
+        ):
+            captured_roots.append(sessions_root)
+
+        explicit_root = tmp_path / "agent_agentteam_sessions"
+        explicit_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata._write_metadata_sync",
+            _fake_write_sync,
+        )
+
+        _enqueue_write(
+            "sess_explicit_root",
+            {"session_id": "sess_explicit_root", "title": "explicit"},
+            sessions_root=explicit_root,
+        )
+        _METADATA_QUEUE.join()
+
+        assert captured_roots == [str(explicit_root)]
 
 
 # ===========================================================================
@@ -2086,6 +2246,133 @@ class TestLazyMigrationOnRead:
 
         data = get_session_metadata("s_orphan", cache_bust=True)
         assert data["project_id"] == ""
+
+
+class TestLegacyWorkspacePrefixRemap:
+    """agent/workspace → agent/jiuwenclaw_workspace 改名后的旧路径重映射。
+
+    迁移函数会重写 projects.json / metadata.json,但读路径兜底重映射
+    保证遗漏记录（备份恢复、外部写入等）不会在旧路径上 mkdir 复活僵尸目录。
+    """
+
+    @staticmethod
+    def test_remap_when_old_gone_and_new_exists(tmp_path):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+
+        old_str = str(old / "work" / "demo")
+        remapped = _remap_legacy_workspace_prefix(old_str)
+        assert remapped == str(new_ws / "work" / "demo")
+
+        # 路径恰好等于旧工作区本身
+        assert _remap_legacy_workspace_prefix(str(old)) == str(new_ws)
+
+    @staticmethod
+    def test_no_remap_when_old_dir_still_exists(tmp_path):
+        """旧目录还在（迁移未执行）时不干预,避免在迁移前改写路径。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "agent"
+        old = agent_root / "workspace"
+        old.mkdir(parents=True)
+
+        assert _remap_legacy_workspace_prefix(str(old / "work" / "demo")) == str(
+            old / "work" / "demo"
+        )
+
+    @staticmethod
+    def test_no_remap_when_new_dir_missing(tmp_path):
+        """新目录不存在（全新环境/无关路径）时保持原样。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        agent_root = tmp_path / "agent"
+        old = agent_root / "workspace"
+
+        assert _remap_legacy_workspace_prefix(str(old / "work" / "demo")) == str(
+            old / "work" / "demo"
+        )
+
+    @staticmethod
+    def test_unrelated_path_untouched(tmp_path):
+        """不含 /agent/workspace 锚点的路径原样返回。"""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _remap_legacy_workspace_prefix,
+        )
+
+        for raw in ("", "E:\\repos\\demo", str(tmp_path / "workspace" / "a")):
+            assert _remap_legacy_workspace_prefix(raw) == raw
+
+    @staticmethod
+    def test_validate_project_dir_uses_remapped_path(tmp_path, monkeypatch):
+        """旧前缀的 project_dir 经 validate_project_dir 后落到新目录,
+        不在旧路径上 mkdir。"""
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            validate_project_dir,
+        )
+
+        result = validate_project_dir(
+            str(old / "work" / "demo"), default=new_ws
+        )
+        assert result == (new_ws / "work" / "demo").resolve()
+        # 旧目录未被复活
+        assert not old.exists()
+
+    @staticmethod
+    def test_read_metadata_remaps_and_writes_back(tmp_path, monkeypatch):
+        """读路径惰性迁移:metadata 中旧前缀被重映射并异步写盘。
+
+        直接调用 _apply_metadata_defaults_with_inference 绕开
+        sanitize_session_id 的导入链（其依赖 openjiuwen 子模块,
+        在部分测试环境缺失,与 TestLazyMigrationOnRead 整类的既有
+        环境性 ERROR 相同,非本用例逻辑问题）。
+        """
+        agent_root = tmp_path / "service_default" / "agent_default" / "agent"
+        new_ws = agent_root / "jiuwenclaw_workspace"
+        new_ws.mkdir(parents=True)
+        old = agent_root / "workspace"
+        old_project = str(old / "work" / "demo")
+
+        sdir = agent_root / "sessions" / "s_legacy_ws"
+        sdir.mkdir(parents=True)
+        (sdir / "metadata.json").write_text(
+            json.dumps(
+                {
+                    "session_id": "s_legacy_ws",
+                    "project_dir": old_project,
+                    "channel_metadata": {"cwd": old_project, "project_dir": old_project},
+                }
+            ),
+            encoding="utf-8",
+        )
+
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _apply_metadata_defaults_with_inference,
+        )
+
+        metadata = json.loads((sdir / "metadata.json").read_text(encoding="utf-8"))
+        result = _apply_metadata_defaults_with_inference(
+            "s_legacy_ws", metadata, session_dir=sdir, enable_writeback=False
+        )
+
+        expected = str(new_ws / "work" / "demo")
+        assert result["project_dir"] == expected
+        assert result["channel_metadata"]["cwd"] == expected
+        assert result["channel_metadata"]["project_dir"] == expected
 
 
 # ===========================================================================

@@ -41,6 +41,7 @@ _ACK_LISTENER_ATTR = "_jiuwen_remote_bootstrap_ack_listener_attached"
 _SHUTDOWN_CLEANUP_WRAPPED_ATTR = "_jiuwen_shutdown_member_remote_cleanup_wrapped"
 _SHUTDOWN_CLEANUP_SESSION_ID_ATTR = "_jiuwen_shutdown_member_remote_cleanup_session_id"
 _SHUTDOWN_CLEANUP_CHANNEL_ID_ATTR = "_jiuwen_shutdown_member_remote_cleanup_channel_id"
+_SHUTDOWN_CLEANUP_SESSIONS_ROOT_ATTR = "_jiuwen_shutdown_member_remote_cleanup_sessions_root"
 _CLEAN_TEAM_TEARDOWN_WRAPPED_ATTR = "_jiuwen_clean_team_distributed_teardown_wrapped"
 _CLEAN_TEAM_TEARDOWN_SESSION_ID_ATTR = "_jiuwen_clean_team_distributed_teardown_session_id"
 _CLEAN_TEAM_TEARDOWN_CHANNEL_ID_ATTR = "_jiuwen_clean_team_distributed_teardown_channel_id"
@@ -278,6 +279,27 @@ async def _existing_team_member(team_agent: Any | None, member_name: str) -> Any
         return await get_member(member_name, team_name)
 
 
+def _resolve_bootstrap_sessions_root(
+    sessions_root: str | None = None,
+) -> str | None:
+    """Resolve tenant sessions root for distributed bootstrap when not explicit."""
+    if sessions_root is not None:
+        return str(sessions_root)
+    try:
+        from jiuwenswarm.common.utils import resolve_tenant_sessions_dir
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        manager = AgentWebSocketServer.get_instance().get_agent_manager()
+        resolved = resolve_tenant_sessions_dir(
+            getattr(manager, "_workspace_key", None),
+            service_id=getattr(manager, "_env_service_id", None),
+            agent_id=getattr(manager, "_env_agent_id", None),
+        )
+        return str(resolved)
+    except Exception:
+        return None
+
+
 async def _team_agent_for_session(
     session_id: str,
     *,
@@ -306,10 +328,15 @@ async def _team_agent_for_session(
             return None
         token = set_session_id(sid)
         try:
+            from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
+
             return await get_team_manager(channel_id).get_or_create_team(
                 sid,
                 deep_agent,
-                channel_id=channel_id,
+                params=TeamBootstrapParams(
+                    channel_id=channel_id,
+                    sessions_root=_resolve_bootstrap_sessions_root(),
+                ),
             )
         finally:
             reset_session_id(token)
@@ -1548,24 +1575,33 @@ async def _all_teammates_shutdown_requested_or_done(team_agent: Any) -> bool:
     return True
 
 
-def _schedule_shutdown_cleanup(session_id: str, channel_id: str | None) -> None:
+def _schedule_shutdown_cleanup(
+    session_id: str,
+    channel_id: str | None,
+    sessions_root: str | None = None,
+) -> None:
     sid = str(session_id or "").strip()
     if not sid:
         return
     existing_task = _SHUTDOWN_CLEANUP_TASKS.get(sid)
     if existing_task is None or existing_task.done():
         _SHUTDOWN_CLEANUP_TASKS[sid] = asyncio.create_task(
-            _delayed_shutdown_cleanup(sid, channel_id)
+            _delayed_shutdown_cleanup(sid, channel_id, sessions_root)
         )
 
 
-async def _delayed_shutdown_cleanup(session_id: str, channel_id: str | None) -> bool:
+async def _delayed_shutdown_cleanup(
+    session_id: str,
+    channel_id: str | None,
+    sessions_root: str | None = None,
+) -> bool:
     try:
         # Give the leader response a short chance to flush before stopping the team stream.
         await asyncio.sleep(2.0)
         return await run_pending_shutdown_cleanup_for_session(
             session_id,
             channel_id=channel_id,
+            sessions_root=sessions_root,
         )
     finally:
         current_task = asyncio.current_task()
@@ -1597,6 +1633,7 @@ async def _push_shutdown_cleanup_notice(
     session_id: str,
     channel_id: str | None,
     deleted: bool,
+    sessions_root: str | None = None,
 ) -> None:
     try:
         from jiuwenswarm.server.gateway_push import WebSocketGatewayPushTransport
@@ -1613,6 +1650,7 @@ async def _push_shutdown_cleanup_notice(
                 session_id=session_id,
                 request_id=request_id,
                 fallback_channel_id=channel_id,
+                sessions_root=sessions_root,
                 payload={
                     "event_type": "chat.final",
                     "request_id": request_id,
@@ -1633,6 +1671,7 @@ async def _push_shutdown_cleanup_notice(
 async def run_pending_shutdown_cleanup_for_session(
     session_id: str,
     channel_id: str | None = None,
+    sessions_root: str | None = None,
 ) -> bool:
     """Delete a distributed team session after all teammates have been asked to shut down."""
     sid = str(session_id or "").strip()
@@ -1654,6 +1693,7 @@ async def run_pending_shutdown_cleanup_for_session(
             session_id=sid,
             channel_id=active_channel_id,
             deleted=bool(deleted),
+            sessions_root=sessions_root,
         )
         return bool(deleted)
     except Exception as exc:
@@ -1666,6 +1706,7 @@ async def run_pending_shutdown_cleanup_for_session(
             session_id=sid,
             channel_id=active_channel_id,
             deleted=False,
+            sessions_root=sessions_root,
         )
         return False
 
@@ -1675,6 +1716,7 @@ def attach_shutdown_member_remote_cleanup_wrapper(
     *,
     session_id: str,
     channel_id: str | None,
+    sessions_root: str | None = None,
 ) -> None:
     """Delete a distributed team session after every teammate has been shut down."""
     from jiuwenswarm.common.config import get_config as _get_config
@@ -1711,6 +1753,11 @@ def attach_shutdown_member_remote_cleanup_wrapper(
 
     setattr(tool, _SHUTDOWN_CLEANUP_SESSION_ID_ATTR, session_id)
     setattr(tool, _SHUTDOWN_CLEANUP_CHANNEL_ID_ATTR, channel_id)
+    setattr(
+        tool,
+        _SHUTDOWN_CLEANUP_SESSIONS_ROOT_ATTR,
+        str(sessions_root) if sessions_root is not None else None,
+    )
     setattr(tool, _WRAPPED_TEAM_AGENT_ATTR, team_agent)
     if getattr(tool, _SHUTDOWN_CLEANUP_WRAPPED_ATTR, False):
         return
@@ -1727,6 +1774,11 @@ def attach_shutdown_member_remote_cleanup_wrapper(
                 getattr(self, _SHUTDOWN_CLEANUP_SESSION_ID_ATTR, session_id) or session_id
             ).strip() or session_id
             active_channel_id = getattr(self, _SHUTDOWN_CLEANUP_CHANNEL_ID_ATTR, channel_id)
+            active_sessions_root = getattr(
+                self,
+                _SHUTDOWN_CLEANUP_SESSIONS_ROOT_ATTR,
+                sessions_root,
+            )
             shutdown_inputs = inputs if isinstance(inputs, dict) else {}
             shutdown_member_name = str(shutdown_inputs.get("member_name", "")).strip()
             shutdown_force = bool(shutdown_inputs.get("force", False))
@@ -1757,7 +1809,11 @@ def attach_shutdown_member_remote_cleanup_wrapper(
                 return result
             if lifecycle == "temporary":
                 return result
-            _schedule_shutdown_cleanup(active_session_id, active_channel_id)
+            _schedule_shutdown_cleanup(
+                active_session_id,
+                active_channel_id,
+                active_sessions_root,
+            )
         except Exception as exc:
             logger.warning("[RemoteMemberBootstrap] shutdown cleanup hook failed: %s", exc)
         return result
@@ -2416,11 +2472,16 @@ async def _ensure_dynamic_member_execution_loop(
             request_metadata = {"mode": assembly_mode}
             if assembly_project_dir:
                 request_metadata["project_dir"] = assembly_project_dir
+        from jiuwenswarm.agents.harness.team.team_session_scope import TeamBootstrapParams
+
         leader_team_agent = await team_manager.get_or_create_team(
             sid,
             deep_agent,
-            channel_id=channel_id,
-            request_metadata=request_metadata,
+            params=TeamBootstrapParams(
+                channel_id=channel_id,
+                request_metadata=request_metadata,
+                sessions_root=_resolve_bootstrap_sessions_root(),
+            ),
         )
         helper_token = set_session_id(sid)
         try:

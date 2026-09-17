@@ -15,11 +15,12 @@ from fastapi import Body, FastAPI, File, Query, Request, Response, UploadFile
 from fastapi.responses import JSONResponse, RedirectResponse, StreamingResponse
 from pydantic import BaseModel, ConfigDict, Field
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.gateway.channel_manager.web.web_http_dispatch import dispatch_http_request
 from jiuwenswarm.gateway.channel_manager.web.web_http_routes import (
-    MAPPED_ROUTES,
     WebHttpMappedRoute,
     catalog_entries,
+    mapped_routes_for_edition,
 )
 from jiuwenswarm.gateway.channel_manager.web.web_http_file_compat import (
     catalog_file_compat_entries,
@@ -381,6 +382,8 @@ def _schedule_abandoned_outbound_cleanup(
 
 def create_web_http_app(channel: Any) -> FastAPI:
     """Build FastAPI app bound to an existing ``WebChannel`` instance."""
+    enterprise_mode = is_enterprise()
+    mapped_routes = mapped_routes_for_edition(enterprise=enterprise_mode)
     app = FastAPI(
         title="JiuwenSwarm Gateway Web HTTP",
         version="0.2.0",
@@ -566,7 +569,7 @@ def create_web_http_app(channel: Any) -> FastAPI:
                 "ok": True,
                 "data": {
                     "prefix": "/api/v1",
-                    "routes": catalog_entries()
+                    "routes": catalog_entries(routes=mapped_routes)
                     + catalog_sessions_compat_entries()
                     + catalog_file_compat_entries(),
                 },
@@ -607,7 +610,7 @@ def create_web_http_app(channel: Any) -> FastAPI:
             request, channel, "harness.import", payload, bind_session_param=False,
         )
 
-    _register_mapped_routes(app, channel, MAPPED_ROUTES)
+    _register_mapped_routes(app, channel, mapped_routes)
     register_sessions_compat_routes(app)
     register_file_compat_routes(app)
     return app

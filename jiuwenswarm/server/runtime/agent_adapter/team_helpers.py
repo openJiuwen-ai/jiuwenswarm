@@ -28,6 +28,7 @@ from openjiuwen.core.common.logging import server_logger
 from openjiuwen.harness import DeepAgent
 
 from jiuwenswarm.agents.harness.team import TeamManager, get_team_manager
+from jiuwenswarm.agents.harness.team.team_session_scope import TeamMonitorAttachOptions
 from jiuwenswarm.common.log_preview import DEFAULT_PREVIEW_MAX_CHARS, preview_text
 from jiuwenswarm.common.cron_team_completion import (
     _cron_solo_harness_end_pending,
@@ -452,9 +453,13 @@ def sync_team_identity_metadata(
     mode: str,
     ready_team_name: str,
     activation_kind: str | None,
+    sessions_root: str | Path | None = None,
 ) -> None:
     """Persist team identity when a team runtime becomes ready."""
-    metadata = get_session_metadata(session_id)
+    metadata_kwargs: dict[str, Any] = {}
+    if sessions_root is not None:
+        metadata_kwargs["sessions_root"] = sessions_root
+    metadata = get_session_metadata(session_id, **metadata_kwargs)
     existing_team_name = str(metadata.get("team_name") or "").strip()
     normalized_kind = str(activation_kind or "").strip()
 
@@ -469,27 +474,48 @@ def sync_team_identity_metadata(
         )
         return
 
-    update_session_metadata(
-        session_id=session_id,
-        channel_id=_resolve_channel_id(channel_id),
-        mode=mode,
-        team_name=ready_team_name,
-    )
+    update_kwargs: dict[str, Any] = {
+        "session_id": session_id,
+        "channel_id": _resolve_channel_id(channel_id),
+        "mode": mode,
+        "team_name": ready_team_name,
+    }
+    if sessions_root is not None:
+        update_kwargs["sessions_root"] = sessions_root
+    update_session_metadata(**update_kwargs)
 
 
-def persist_workflow_runs(runs: dict[str, WorkflowRunState], session_id: str) -> None:
+def persist_workflow_runs(
+    runs: dict[str, WorkflowRunState],
+    session_id: str,
+    *,
+    sessions_root: str | Path | None = None,
+) -> None:
     """Persist WorkflowRunState dict to session metadata (file-based store)."""
-    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata, _enqueue_write
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _coalesce_write_sessions_root,
+        _read_metadata,
+        _enqueue_write,
+    )
+    root_s = _coalesce_write_sessions_root(sessions_root)
     runs_data = {run_id: run_state.model_dump() for run_id, run_state in runs.items()}
-    metadata = _read_metadata(session_id, cache_bust=True)
+    metadata = _read_metadata(session_id, cache_bust=True, sessions_root=root_s)
     metadata[_WORKFLOW_RUNS_STATE_KEY] = runs_data
-    _enqueue_write(session_id, metadata)
+    _enqueue_write(session_id, metadata, sessions_root=root_s)
 
 
-def restore_workflow_runs(session_id: str) -> dict[str, WorkflowRunState] | None:
+def restore_workflow_runs(
+    session_id: str,
+    *,
+    sessions_root: str | Path | None = None,
+) -> dict[str, WorkflowRunState] | None:
     """Restore WorkflowRunState dict from session metadata."""
-    from jiuwenswarm.server.runtime.session.session_metadata import _read_metadata
-    metadata = _read_metadata(session_id, cache_bust=True)
+    from jiuwenswarm.server.runtime.session.session_metadata import (
+        _coalesce_write_sessions_root,
+        _read_metadata,
+    )
+    root_s = _coalesce_write_sessions_root(sessions_root)
+    metadata = _read_metadata(session_id, cache_bust=True, sessions_root=root_s)
     runs_data = metadata.get(_WORKFLOW_RUNS_STATE_KEY)
     if not runs_data:
         return None
@@ -600,14 +626,18 @@ async def ensure_monitor_handlers_for_active_runtime(
     channel_id: str | None,
     session_id: str,
     team_name: str,
-    hide_dm: bool = False,
-    enable_swarmflow: bool = False,
+    *,
+    options: TeamMonitorAttachOptions | None = None,
 ) -> None:
     """Attach TeamMonitorHandler and optionally WorkflowMonitorHandler for the active runtime.
 
     Both handlers obtain their own TeamMonitor from Runner (independent listeners on
     team_agent). WorkflowMonitorHandler is only created when enable_swarmflow is True.
     """
+    opts = options or TeamMonitorAttachOptions()
+    hide_dm = opts.hide_dm
+    enable_swarmflow = opts.enable_swarmflow
+    sessions_root = opts.sessions_root
     tm = get_team_manager(channel_id)
 
     # --- TeamMonitorHandler ---
@@ -698,7 +728,10 @@ async def ensure_monitor_handlers_for_active_runtime(
         # Stopped handler still holds _runs in memory — prefer these
         initial_runs = existing_wf.get_run_states()
         # Merge disk-restored runs for any IDs not present in memory
-        restored_from_disk = restore_workflow_runs(session_id)
+        restored_from_disk = restore_workflow_runs(
+            session_id,
+            sessions_root=sessions_root,
+        )
         if restored_from_disk:
             for run_id, run_state in restored_from_disk.items():
                 if run_id not in initial_runs:
@@ -707,7 +740,10 @@ async def ensure_monitor_handlers_for_active_runtime(
         tm.pop_workflow_handler(session_id)
     else:
         # No in-memory handler — restore from disk only
-        initial_runs = restore_workflow_runs(session_id)
+        initial_runs = restore_workflow_runs(
+            session_id,
+            sessions_root=sessions_root,
+        )
 
     # Bind the explicit session_id so create_monitor freezes the real id
     # instead of an empty contextvar (same rationale as the TeamMonitor
@@ -734,6 +770,7 @@ async def ensure_monitor_handlers_for_active_runtime(
         session_id=session_id,
         channel_id=channel_id,
         initial_runs=initial_runs,
+        sessions_root=sessions_root,
     )
     try:
         await wf_handler.start()
@@ -999,6 +1036,28 @@ async def _broadcast_team_state_snapshot(
         if snapshot is None:
             return
         team_id = snapshot.get("team_id", "")
+        # D13.1: 取内核依赖边,每个 task 快照 event 带 depends_on(下游 task_id → 上游列表),
+        # 与 tasks 一体 push 给 relay(transform relayclaw-event-transform.ts:895 读 depends_on
+        # → onTask 设 dependsOn → build() tasks[].dependsOn + edges)。让续跑/历史轮 panorama
+        # 稳定显示 DAG 箭头,不依赖 D4 异步 fetchTeamTaskDependencies。team_name 用
+        # get_active_team_name(:2562 team.runtime_ready 时 team 必 active);None/异常→空 edges。
+        team_name = team_manager.get_active_team_name(session_id) or ""
+        deps_by_task: dict[str, list[str]] = {}
+        if team_name:
+            try:
+                dep_edges = await monitor_handler.get_team_dependencies_from_db(
+                    session_id, team_name
+                ) or []
+                for e in dep_edges:
+                    deps_by_task.setdefault(str(e.get("task_id", "")), []).append(
+                        str(e.get("depends_on_task_id", ""))
+                    )
+            except Exception:
+                logger.debug(
+                    "[TeamHelpers] get_team_dependencies_from_db failed in snapshot: session_id=%s",
+                    session_id,
+                    exc_info=True,
+                )
 
         # Broadcast member status snapshot
         for m in snapshot.get("members", []):
@@ -1032,6 +1091,7 @@ async def _broadcast_team_state_snapshot(
                     "title_original_size": t.get("title_original_size"),
                     "content_truncated": t.get("content_truncated"),
                     "content_original_size": t.get("content_original_size"),
+                    "depends_on": deps_by_task.get(t["task_id"], []),
                 },
             }
             _persist_team_history_event(channel_id, session_id, event)
@@ -1656,6 +1716,7 @@ async def _start_team_stream_round(
     hide_dm: bool = False,
     debug: bool = False,
     source: str = "first",
+    sessions_root: str | Path | None = None,
 ) -> asyncio.Queue:
     """Start a team stream round and register its waiter queue."""
     # Sync team observability with current config before streaming.
@@ -1689,6 +1750,7 @@ async def _start_team_stream_round(
             query,
             round_id=round_id,
             envs=stream_envs or None,
+            sessions_root=sessions_root,
         )
     )
     team_manager.register_stream_task(session_id, stream_task)
@@ -1778,6 +1840,18 @@ async def process_team_message_stream(
 
     try:
         request_metadata = dict(request.metadata or {})
+        from jiuwenswarm.common.request_identity import apply_routing_metadata
+        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
+
+        group_id, bot_id, user_id = extract_routing_triple(request.metadata, getattr(request, "params", None))
+        routing = {}
+        if group_id:
+            routing["group_id"] = group_id
+        if bot_id:
+            routing["bot_id"] = bot_id
+        if user_id:
+            routing["user_id"] = user_id
+        request_metadata = apply_routing_metadata(request_metadata, routing)
         # V2: 若请求携带 member_name（由 Gateway resolve_member_by_user 反查注入），
         # 在前拼接 $sender，让 OpenJiuwen 识别发言人身份。
         # 规则：
@@ -1973,6 +2047,13 @@ async def process_team_message_stream(
                     session_id,
                     rid,
                 )
+                # 续跑(interact 路径,非 _consume_stream_with_query 重启)时:waiter 已注册
+                # (:1966 add_waiter)、monitor_handler 从上一轮续存(同 session;结尾快照对续跑
+                # 有效=它续存),此处广播当前任务板→relay 累加器续跑起点即展示历史任务,后续 live
+                # team.task 事件继续覆盖,结尾快照定稿。monitor_handler None 时 no-op(:994)。
+                # 与结尾快照同机制(_broadcast_team_state_snapshot→_broadcast_event→waiter→relay),
+                # onTask 按 taskId 去重,幂等。
+                await _broadcast_team_state_snapshot(channel_id, session_id)
 
             # Control continuations reuse the waiter that was active before
             # delivery. Other follow-ups already own the current request queue.
@@ -2177,6 +2258,7 @@ async def process_team_message_stream(
                 hide_dm=hide_dm,
                 debug=debug,
                 source=first_request_source,
+                sessions_root=sessions_root,
             )
 
         try:
@@ -2323,6 +2405,7 @@ async def _consume_stream_with_query(
     *,
     round_id: int,
     envs: dict[str, Any] | None = None,
+    sessions_root: str | Path | None = None,
 ) -> None:
     """Consume the team stream in the background and broadcast parsed events."""
     _envs = envs or {}
@@ -2485,6 +2568,7 @@ async def _consume_stream_with_query(
                         mode="team",
                         ready_team_name=ready_team_name,
                         activation_kind=activation_kind,
+                        sessions_root=sessions_root,
                     )
                     tm = get_team_manager(channel_id)
                     tm.commit_runtime_ready(session_id, ready_team_name)
@@ -2497,14 +2581,25 @@ async def _consume_stream_with_query(
                         channel_id,
                         session_id,
                         ready_team_name,
-                        hide_dm=hide_dm,
-                        enable_swarmflow=bool(getattr(team_spec, "enable_swarmflow", False)),
+                        options=TeamMonitorAttachOptions(
+                            hide_dm=hide_dm,
+                            enable_swarmflow=bool(
+                                getattr(team_spec, "enable_swarmflow", False)
+                            ),
+                            sessions_root=sessions_root,
+                        ),
                     )
                     ensure_team_evolution_watcher(
                         channel_id,
                         session_id,
                         source="runtime_ready",
                     )
+                    # D12: team.runtime_ready 时 monitor_handler 刚 ensure,广播当前任务板——
+                    # 续跑重启 _consume_stream_with_query(round N)时,Run A 中断清理已 pop 旧
+                    # monitor_handler,此处重新 ensure;内核板仍含 Run A 的 tasks(persisted)
+                    # → 广播给 relay 累加器,panorama 在 team.runtime_ready 即展示历史任务。
+                    # monitor_handler None 时 no-op;与结尾/续跑路径快照 onTask 按 taskId 去重幂等。
+                    await _broadcast_team_state_snapshot(channel_id, session_id)
                 elif parsed.get("event_type") == "team.interact.failed":
                     reason = str(parsed.get("reason") or "").strip()
                     error_msg = _INTERACT_REASON_ERROR_MAP.get(

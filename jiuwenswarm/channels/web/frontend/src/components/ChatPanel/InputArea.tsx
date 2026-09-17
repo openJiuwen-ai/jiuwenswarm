@@ -1,4 +1,4 @@
-﻿import {
+import {
   useState,
   useRef,
   useCallback,
@@ -3077,8 +3077,11 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
     [installedSkillMap],
   );
 
+  // 企业版不向客户提供内置技能的选择入口
   const installedSkills = useMemo(
-    () => skills.filter((s) => isSkillInstalled(s) && s.enabled !== false),
+    () => skills.filter(
+      (s) => isSkillInstalled(s) && s.enabled !== false && !(isEnterprise() && s.source_type === 'builtin'),
+    ),
     [skills, isSkillInstalled],
   );
 
@@ -3104,7 +3107,7 @@ function SkillSelector({ onNavigateToSkills, onInsertSkill, onRemoveSkill }: {
         plugins?: InputAreaInstalledPlugin[];
       }>(
         'skills.list',
-        { with_installed: true },
+        { session_id: activeSessionId, with_installed: true },
         { timeoutMs: 30_000 },
       );
       setSkills(data.skills || []);

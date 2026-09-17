@@ -18,7 +18,25 @@ from typing import BinaryIO
 try:
     from .path_safety import is_direct_regular_file, private_mode_is_compatible
 except ImportError:  # Executed as a standalone script by runtime.py.
-    from path_safety import is_direct_regular_file, private_mode_is_compatible
+    # Problem: under the embedded python313._pth, the script directory is
+    # NOT on sys.path, so the absolute `from path_safety import` above
+    # fails with ModuleNotFoundError. The bridge subprocess then dies
+    # before emitting any stdout frame, the parent hits BrokenPipeError,
+    # and the styled HTML falls back to a no-CSS export.
+    # Fix: load path_safety.py by absolute file path via importlib. This
+    # relies on __file__ (not sys.path), touches no sys.path (so sibling
+    # files tools.py/tls.py/usage.py cannot shadow anything), and does not
+    # run the parent-package chain (unlike `python -m`, which executes
+    # tools/__init__.py and eagerly imports openjiuwen, polluting stdout
+    # before the redirect_stdout defense inside stylize_request).
+    import importlib.util
+    _here = os.path.dirname(os.path.abspath(__file__))
+    _spec = importlib.util.spec_from_file_location(
+        "path_safety", os.path.join(_here, "path_safety.py"))
+    _mod = importlib.util.module_from_spec(_spec)
+    _spec.loader.exec_module(_mod)
+    is_direct_regular_file = _mod.is_direct_regular_file
+    private_mode_is_compatible = _mod.private_mode_is_compatible
 
 BRIDGE_INPUT_MAX_BYTES = 64 * 1024 * 1024
 BRIDGE_ARCHIVE_MAX_BYTES = 128 * 1024 * 1024
