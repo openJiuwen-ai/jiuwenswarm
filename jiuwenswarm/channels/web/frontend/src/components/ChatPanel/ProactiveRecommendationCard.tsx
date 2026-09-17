@@ -16,6 +16,7 @@ import ReactMarkdown from 'react-markdown';
 import type { Message } from '../../types';
 import { formatTimestamp } from '../../utils';
 import { webClient } from '../../services/webClient';
+import { proactiveFeedbackButtonClass } from './proactiveFeedbackClass';
 
 interface ProactiveRecommendationCardProps {
   message: Message;
@@ -128,14 +129,7 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
               disabled={!!feedbackGiven}
               aria-pressed={feedbackGiven === 'like'}
               data-testid="chat-panel-proactive-feedback-like"
-              className={
-                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
-                (feedbackGiven === 'like'
-                  ? 'bg-green-500/30 border-green-500/60 text-green-300'
-                  : feedbackGiven === 'dislike'
-                    ? 'bg-green-500/10 border-green-500/20 text-green-400/60 opacity-40 cursor-not-allowed'
-                    : 'bg-green-500/10 hover:bg-green-500/25 text-green-400 border-green-500/20 hover:border-green-500/40')
-              }
+              className={proactiveFeedbackButtonClass(feedbackGiven, 'like')}
             >
               <ThumbsUp className="w-3.5 h-3.5" />
               {t('proactive.feedback.helpful', '有帮助')}
@@ -145,14 +139,7 @@ export const ProactiveRecommendationCard: React.FC<ProactiveRecommendationCardPr
               disabled={!!feedbackGiven}
               aria-pressed={feedbackGiven === 'dislike'}
               data-testid="chat-panel-proactive-feedback-dislike"
-              className={
-                'flex items-center gap-1 px-2.5 py-1 rounded-full text-xs transition-colors border ' +
-                (feedbackGiven === 'dislike'
-                  ? 'bg-red-500/30 border-red-500/60 text-red-300'
-                  : feedbackGiven === 'like'
-                    ? 'bg-red-500/10 border-red-500/20 text-red-400/60 opacity-40 cursor-not-allowed'
-                    : 'bg-red-500/10 hover:bg-red-500/25 text-red-400 border-red-500/20 hover:border-red-500/40')
-              }
+              className={proactiveFeedbackButtonClass(feedbackGiven, 'dislike')}
             >
               <ThumbsDown className="w-3.5 h-3.5" />
               {t('proactive.feedback.notNeeded', '不需要')}
