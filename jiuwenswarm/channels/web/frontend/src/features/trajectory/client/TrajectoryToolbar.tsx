@@ -116,6 +116,7 @@ export function TrajectoryToolbar({
             className={css.control}
             role="switch"
             aria-checked={actualTime}
+            hidden
             onClick={() => { onActualTimeChange(!actualTime) }}
           >
             <span>{t('toolbar.actualTime')}</span>
