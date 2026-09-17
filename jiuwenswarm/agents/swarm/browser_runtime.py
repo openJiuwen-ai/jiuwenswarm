@@ -56,11 +56,13 @@ def apply_swarm_browser_settings(
         user_data_dir=str(workspace / ".browser-profiles" / key),
     )
     params = dict(settings.mcp_cfg.params or {})
-    env = {
-        name: value for name, value in (params.get("env") or {}).items()
-        if not name.startswith(("PLAYWRIGHT_MCP_", "PLAYWRIGHT_CDP_"))
-        and name != "ELECTRON_RUN_AS_NODE"
-    }
+    env = {}
+    for name, value in (params.get("env") or {}).items():
+        if name.startswith(("PLAYWRIGHT_MCP_", "PLAYWRIGHT_CDP_")):
+            continue
+        if name == "ELECTRON_RUN_AS_NODE":
+            continue
+        env[name] = value
     params.update(
         command=launch.command,
         args=[*launch.args, "--caps=" + ",".join(PLAYWRIGHT_MCP_CAPABILITY_NAMES)],
