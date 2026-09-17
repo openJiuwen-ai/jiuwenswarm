@@ -17869,12 +17869,14 @@ class JiuWenSwarmDeepAdapter:
             session: Any = None,
             *,
             return_state: bool = False,
+            processor_types: list[str] | None = None,
     ) -> dict[str, Any]:
         """主动触发上下文压缩。
 
         Args:
             session_id: 会话ID
             session: Session 对象（可选）
+            processor_types: 可选的上下文压缩处理器白名单
 
         Returns:
             包含压缩结果的字典:
@@ -17888,6 +17890,7 @@ class JiuWenSwarmDeepAdapter:
                     session_id=session_id,
                     session=session,
                     return_state=return_state,
+                    processor_types=processor_types,
                 )
             finally:
                 await self._evict_idle_session_adapters()
@@ -17910,6 +17913,7 @@ class JiuWenSwarmDeepAdapter:
             session=session,
             session_id=session_id,
             return_state=True,
+            processor_types=processor_types,
         )
         summary: str | None = None
         state: dict[str, Any] | None = None

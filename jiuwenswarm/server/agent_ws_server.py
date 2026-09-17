@@ -193,6 +193,10 @@ from jiuwenswarm.server.runtime.gateway_adapter import (
 )
 
 logger = logging.getLogger(__name__)
+_MANUAL_COMPACT_PROCESSOR_TYPES = [
+    "MessageSummaryOffloader",
+    "RoundLevelCompressor",
+]
 
 
 async def _reuse_server_runtime_dependencies() -> None:
@@ -6947,7 +6951,11 @@ class AgentWebSocketServer:
                 execution_subject=execution_subject,
             )
             try:
-                result_data = await agent.compress_context(session_id=session_id, return_state=True)
+                result_data = await agent.compress_context(
+                    session_id=session_id,
+                    return_state=True,
+                    processor_types=_MANUAL_COMPACT_PROCESSOR_TYPES,
+                )
 
                 result = result_data.get("result")
                 stats = result_data.get("stats")
