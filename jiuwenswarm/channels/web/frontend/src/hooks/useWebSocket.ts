@@ -15,7 +15,6 @@ import {
   InterruptResultPayload,
   InterruptIntent,
   SubtaskUpdatePayload,
-  AskUserQuestionPayload,
   EvolutionStatusPayload,
   UserAnswer,
   UserAnswerStatus,
@@ -33,6 +32,7 @@ import {
   GoalAction,
   Message,
 } from '../types';
+import { normalizeAskUserQuestionPayload } from '../features/askUserQuestion';
 import {
   ensureSessionRuntimes,
   useChatStore,
@@ -411,7 +411,6 @@ function getConnectSignature(options: WebConnectOptions): string {
     userId: scope.userId || '',
     groupId: scope.groupId || '',
     botId: scope.botId || '',
-    gatewayId: scope.gatewayId || '',
   });
 }
 
@@ -2585,7 +2584,11 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         // In team mode the backend suppresses chat.final while the team is
         // still running and only sends chat.processing_status(is_complete=true)
         // on team.completed, so we must NOT reset isProcessing here.
-        if (!useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory) {
+        // 企业版错误后的 final 只是回复段收尾，保留错误并等待任务终态/错误 EOF 兜底。
+        if (
+          !useChatStore.getState().getRuntime(sessionId)?.isLoadingHistory &&
+          !(isEnterprise() && getWebTransport() === 'http' && useChatStore.getState().getRuntime(sessionId)?.executionError)
+        ) {
           useChatStore.getState().setExecutionError(sessionId, null);
           if (currentMode !== 'team') {
             // 有 active Goal 时，普通问答轮和 Goal 后续执行走同一条流；这次 chat.final 可能只是
@@ -3276,6 +3279,14 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
         const payload = event.payload;
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
+        // HTTP 错误流 EOF 的本地兜底只收尾所属请求，不能终止后续新任务。
+        const errorEof = isEnterprise() && payload.source === 'http_error_eof';
+        if (
+          errorEof &&
+          (!shouldHandleCurrentRequestEvent(event) || !useChatStore.getState().getRuntime(sessionId)?.isProcessing)
+        ) {
+          return;
+        }
         // supplement 流认领：后端 supplement 后新 chat.send 的 request_id 含 interrupt id
         const eventRid = typeof event.request_id === 'string' ? event.request_id.trim() : '';
         if (eventRid) {
@@ -3320,6 +3331,9 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
             useChatStore.getState().settlePendingToolExecutions(sessionId);
           }
           useChatStore.getState().settleHistoricalToolExecutions(sessionId);
+
+          // EOF 不是后端任务完成确认，只复用展示收尾，不触发队列发送。
+          if (errorEof) return;
 
           // 检查是否有等待的任务队列
           const currentMode = useSessionStore.getState().getRuntime(sessionId)?.mode;
@@ -3677,53 +3691,8 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
       webClient.on('chat.ask_user_question', ({ payload }) => {
         const sessionId = resolveEventSessionId(payload);
         if (!sessionId) return;
-        const questionPayload = payload as Record<string, unknown>;
-        const evolutionMeta =
-          questionPayload.evolution_meta && typeof questionPayload.evolution_meta === 'object'
-            ? (questionPayload.evolution_meta as Record<string, unknown>)
-            : questionPayload._evolution_meta && typeof questionPayload._evolution_meta === 'object'
-              ? (questionPayload._evolution_meta as Record<string, unknown>)
-              : undefined;
-        const questions = Array.isArray(questionPayload.questions) ? questionPayload.questions : [];
-        const approvalSchema =
-          typeof questionPayload.approval_schema === 'string'
-            ? questionPayload.approval_schema
-            : undefined;
-        const planApprovalKind =
-          typeof questionPayload.plan_approval_kind === 'string'
-            ? questionPayload.plan_approval_kind
-            : undefined;
-        const planContent =
-          typeof questionPayload.plan_content === 'string'
-            ? questionPayload.plan_content
-            : undefined;
-        const planLanguage =
-          questionPayload.plan_language === 'cn' || questionPayload.plan_language === 'en'
-            ? questionPayload.plan_language
-            : undefined;
-        const agentScopeId =
-          typeof questionPayload.agent_scope_id === 'string'
-            ? questionPayload.agent_scope_id
-            : undefined;
-        // Skill 加载审批卡：透传结构化数据（payload_schema["x-skill-approval-card"]，
-        // 若后端通道已携带）；缺失时由卡片组件回退渲染 message markdown。
-        const rawCard = questionPayload['x-skill-approval-card'] ?? questionPayload['skill_approval_card'];
-        const skillApprovalCard =
-          rawCard && typeof rawCard === 'object'
-            ? (rawCard as AskUserQuestionPayload['skill_approval_card'])
-            : undefined;
-        const normalizedPayload: AskUserQuestionPayload = {
-          request_id: typeof questionPayload.request_id === 'string' ? questionPayload.request_id : '',
-          source: typeof questionPayload.source === 'string' ? questionPayload.source : undefined,
-          questions,
-          ...(approvalSchema ? { approvalSchema } : {}),
-          ...(evolutionMeta ? { evolutionMeta } : {}),
-          ...(planApprovalKind ? { planApprovalKind } : {}),
-          ...(planContent !== undefined ? { planContent } : {}),
-          ...(planLanguage ? { planLanguage } : {}),
-          ...(agentScopeId ? { agent_scope_id: agentScopeId } : {}),
-          ...(skillApprovalCard ? { skill_approval_card: skillApprovalCard } : {}),
-        };
+        const normalizedPayload = normalizeAskUserQuestionPayload(payload);
+        if (!normalizedPayload) return;
         useChatStore.getState().setPendingQuestion(sessionId, normalizedPayload);
       }),
       webClient.on('chat.ask_user_question_expired', ({ payload }) => {
@@ -4190,6 +4159,7 @@ export function useWebSocket(options: UseWebSocketOptions): UseWebSocketReturn {
     updateSession,
     resolveEventSessionId,
     shouldDropDuplicatedEvent,
+    shouldHandleCurrentRequestEvent,
     shouldRecoverProcessingFromReasoning,
     t,
     takeTeamMemberOutputEventId,

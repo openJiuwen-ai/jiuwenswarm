@@ -83,7 +83,7 @@ interface ChatPanelProps {
     answers: UserAnswer[],
     source?: string,
     status?: UserAnswerStatus,
-  ) => void;
+  ) => Promise<void>;
   onExportShare?: () => void | Promise<void>;
   isExportingShare?: boolean;
   canExportShare?: boolean;

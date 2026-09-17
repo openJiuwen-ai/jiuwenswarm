@@ -3,6 +3,7 @@ import { useTranslation } from 'react-i18next';
 import { ChevronDown, ChevronLeft, ChevronRight, Search, TrendingUp, Newspaper, Briefcase } from 'lucide-react';
 import { webRequest, webClient } from '../../services/webClient';
 import { useCronStore } from '../../stores';
+import { isEnterprise } from '../../edition';
 import { projectRegistryClient } from '../../features/workspace/projectRegistryClient';
 import type { ProjectInfo } from '../../features/workspace/projectTypes';
 import type { Session } from '../../types';
@@ -537,7 +538,9 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
         // 优先信任显式 project_id，只传 project_dir 需要多一层反查（见 CronTaskFormValue.projectId 注释）。
         // 未选项目（projectId 为 null）时不传这个 key，走 project_dir 空串的既有归默认项目逻辑。
         ...(value.projectId ? { project_id: value.projectId } : {}),
-        ...(value.modelName ? { model_name: value.modelName } : {}),
+        // 企业版不支持用户选择模型（无模型下拉框），不提交 model_name，走 AgentServer 默认模型，
+        // 避免后端 validate_cron_model 对企业库模型的校验误伤（个人版保留模型选择）。
+        ...(!isEnterprise() && value.modelName ? { model_name: value.modelName } : {}),
         mode: value.mode,
         session_id: sessionId,
         ...(isOnce ? { delete_after_run: true } : {}),
@@ -580,7 +583,8 @@ export default function CronPanel({ sessionId, onCreateViaChat, onSelectSession 
             targets: value.targets.trim() || 'web',
             enabled: value.enabled,
             wake_offset_seconds: normalizeWakeOffsetSeconds(value.wakeOffsetSeconds),
-            ...(value.modelName ? { model_name: value.modelName } : {}),
+            // 企业版不支持用户选择模型，不提交 model_name（同 handleCreateSubmit）。
+            ...(!isEnterprise() && value.modelName ? { model_name: value.modelName } : {}),
             mode: value.mode,
             delete_after_run: isOnce,
           };

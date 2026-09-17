@@ -130,6 +130,7 @@ class DeliveryNode(PlanNode):
             total_pages or page_count,
             pages_dir,
             send_file_status,
+            file_size_constraint=str(inputs.get("file_size_constraint") or "").strip(),
         )
         delivery_summary = ""
         if task_completed:
@@ -345,19 +346,32 @@ class DeliveryNode(PlanNode):
         page_count: int,
         pages_dir: str,
         send_file_status: str,
+        *,
+        file_size_constraint: str = "",
     ) -> str:
+        size_hint = (
+            "，未自动处理：指定文件大小（暂不支持）"
+            if str(file_size_constraint or "").strip()
+            else ""
+        )
         if status == "failed":
             return f"PPT 生成失败，HTML 页面目录：{pages_dir}"
         # PPT 已发送给用户时，无论 pages_ok 是否通过，都明确说明"已发送"，
         # 避免 delivery_status=partial 时的"部分完成"措辞让 LLM 误判任务未完成。
         if send_file_status == "sent":
-            return f"PPT 已生成并发送给用户，页数：{page_count}，文件：{pptx_filename or '未生成'}"
+            return (
+                f"PPT 已生成并发送给用户，页数：{page_count}，"
+                f"文件：{pptx_filename or '未生成'}{size_hint}"
+            )
         if status == "partial":
-            return f"PPT 部分完成，页数：{page_count}，文件：{pptx_filename or '未生成'}"
+            return (
+                f"PPT 部分完成，页数：{page_count}，"
+                f"文件：{pptx_filename or '未生成'}{size_hint}"
+            )
         send_info = ""
         if send_file_status == "failed":
             send_info = "，文件发送失败"
-        return f"PPT 生成完成，页数：{page_count}，文件：{pptx_filename}{send_info}"
+        return f"PPT 生成完成，页数：{page_count}，文件：{pptx_filename}{send_info}{size_hint}"
 
     async def _execute_stream(self, inputs: dict[str, Any]) -> AsyncIterator[dict[str, Any]]:
         result = await self._execute(inputs)

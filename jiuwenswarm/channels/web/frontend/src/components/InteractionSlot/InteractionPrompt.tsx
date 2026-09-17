@@ -12,7 +12,7 @@ import remarkGfm from 'remark-gfm';
 import { FileText, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useChatStore } from '../../stores';
 import type { AskUserQuestionPayload, Message, Question, UserAnswer, UserAnswerStatus } from '../../types';
-import { buildEmptyAskUserAnswers, resolveAskUserStatus } from './interactionSubmission';
+import { buildEmptyAskUserAnswers, isIncompleteAskUserPage, resolveAskUserStatus } from './interactionSubmission';
 import { buildQaSummaryContent, type QaSummaryData, type QaSummaryItem } from './qaSummary';
 
 /** 后端为「有选项的问题」追加的自定义输入占位项。 */
@@ -37,15 +37,15 @@ interface PageState {
   /** 单选场景下是否选中「自定义」项 */
   customActive: boolean;
   /**
-   * 该页是否因「点击跳过按钮且当前无任何选择/输入」而被显式标记为跳过。
-   * 仅用于 answerFor 判断是否要返回空答案而非套用「默认选第一项」的兜底；
+   * 该页是否被用户显式跳过，用于返回空答案并显示跳过摘要；
    * 一旦用户在该页重新做出任何选择/输入，会被清除。
    */
   skippedNoSelection?: boolean;
 }
 
-function emptyPage(): PageState {
-  return { selected: [], custom: '', customActive: false };
+function emptyPage(question?: Question): PageState {
+  const first = question?.options?.find(option => option.label !== CUSTOM_OPTION_LABEL);
+  return { selected: first ? [first.value || first.label] : [], custom: '', customActive: false };
 }
 
 export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps) {
@@ -65,7 +65,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   const [submitting, setSubmitting] = useState(false);
 
   const current = questions[page];
-  const st = states[page] ?? emptyPage();
+  const st = states[page] ?? emptyPage(current);
   const isLast = page >= total - 1;
 
   const hasCustomOption = useMemo(
@@ -81,9 +81,9 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
 
   const patch = useCallback(
     (updater: (prev: PageState) => PageState) => {
-      setStates((prev) => ({ ...prev, [page]: updater(prev[page] ?? emptyPage()) }));
+      setStates((prev) => ({ ...prev, [page]: updater(prev[page] ?? emptyPage(current)) }));
     },
-    [page],
+    [page, current],
   );
 
   const toggleOption = useCallback(
@@ -114,14 +114,14 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
     [patch],
   );
 
-  /** 当前页是否选了 Other 却未填写自定义内容（禁止前进/提交，避免空答触发 thinking）。 */
-  const incompleteCustom = st.customActive && !st.custom.trim();
+  /** 显式空选或空 Other 不得前进/提交；跳过仍允许空答案。 */
+  const incompleteAnswer = current ? isIncompleteAskUserPage(current, st) : false;
 
   /** 把某页状态转为一个 UserAnswer。 */
   const answerFor = useCallback(
     (idx: number, overrides?: Record<number, PageState>): UserAnswer => {
       const q = questions[idx];
-      const s = overrides?.[idx] ?? states[idx] ?? emptyPage();
+      const s = overrides?.[idx] ?? states[idx] ?? emptyPage(q);
       const customText = s.custom.trim();
       // 该页被显式跳过时返回空答案；交互状态由顶层 status 表达，不能再把
       // 内部提示文本伪装成 custom_input，也不能套用默认第一项的兜底。
@@ -134,12 +134,6 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
       }
       const answer: UserAnswer = { question: q?.question, selected_options: [...s.selected] };
       if (customText) answer.custom_input = customText;
-      // 兜底：既无选择也无输入、且不是显式跳过时，默认第一个普通选项（避免后端拿到空答案）。
-      // 该分支对应「点确定/下一步但什么都没选」这种情况，维持原有行为，不在本次改动范围内。
-      if (answer.selected_options.length === 0 && !customText) {
-        const first = (q?.options ?? []).find((o) => o.label !== CUSTOM_OPTION_LABEL);
-        if (first) answer.selected_options = [first.value || first.label];
-      }
       return answer;
     },
     [questions, states],
@@ -154,7 +148,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   /** 组装「问题澄清」回显数据（仅展示用户真实作答内容）。 */
   const buildSummary = useCallback((overrides?: Record<number, PageState>): QaSummaryData => {
     const items: QaSummaryItem[] = questions.map((q, idx) => {
-      const s = overrides?.[idx] ?? states[idx] ?? emptyPage();
+      const s = overrides?.[idx] ?? states[idx] ?? emptyPage(q);
       const customText = s.custom.trim();
       if (s.skippedNoSelection && s.selected.length === 0 && !customText) {
         return { header: q.header, question: q.question, answers: [t('interactionPrompt.skippedSummary')] };
@@ -179,6 +173,16 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
       discardAnswers = false,
     ) => {
       if (submitting) return;
+      if (!discardAnswers) {
+        const incompletePage = questions.findIndex((q, idx) => {
+          const state = overrides?.[idx] ?? states[idx] ?? emptyPage(q);
+          return isIncompleteAskUserPage(q, state);
+        });
+        if (incompletePage !== -1) {
+          setPage(incompletePage);
+          return;
+        }
+      }
       setSubmitting(true);
       if (withEcho) {
         const sid = useChatStore.getState().activeSessionId;
@@ -200,7 +204,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
       onSubmit(pending.request_id, answers, pending.source, status);
       clearPending();
     },
-    [submitting, pending, buildSummary, buildAnswers, questions, addMessage, onSubmit, clearPending],
+    [submitting, pending, buildSummary, buildAnswers, questions, states, addMessage, onSubmit, clearPending],
   );
 
   const goPrev = useCallback(() => setPage((p) => Math.max(0, p - 1)), []);
@@ -213,22 +217,18 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
   }, [total]);
 
   const handleNextOrConfirm = useCallback(() => {
-    // Other 空输入：留在当前页提示用户填写，勿提交以免进入黄色 thinking（#2330）。
-    if (incompleteCustom) return;
+    // 空 Other 或多选空答案必须先补充内容（#2330）。
+    if (incompleteAnswer) return;
     if (isLast) submit(true, 'answered');
     else goNextPage();
-  }, [incompleteCustom, isLast, submit, goNextPage]);
+  }, [incompleteAnswer, isLast, submit, goNextPage]);
 
   const handleSkip = useCallback(() => {
     // 跳过：无论当前页此前是否已经选中过某个选项/填过自定义输入，点击"跳过"
     // 都必须视为"这道题被跳过了"，绝不能把之前的选择原样带出去（bug011）。
-    // 显式标记为"已跳过"，后续 answerFor 会生成空答案并由顶层 status 表达语义，
-    // 而不是套用"默认选第一项"的兜底逻辑——这一点是本次修复的核心，
-    // 务必确保 skippedNoSelection 分支在 answerFor 里排在"默认选第一项"兜底之前
-    // （见 answerFor 实现），不会被兜底逻辑抢先命中。
     // patch() 触发的 setStates 是异步的，若末页直接 submit 会读到旧值，
     // 因此显式构造覆盖态传给 submit，避免依赖尚未生效的 state。
-    const skippedState: PageState = { ...emptyPage(), skippedNoSelection: true };
+    const skippedState: PageState = { selected: [], custom: '', customActive: false, skippedNoSelection: true };
     const overridden = { ...states, [page]: skippedState };
     patch(() => skippedState);
     if (isLast) submit(true, 'skipped', overridden);
@@ -267,7 +267,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
               type="button"
               className="ix-prompt__pager-btn"
               onClick={goNextPage}
-              disabled={page >= reached || page >= total - 1}
+              disabled={incompleteAnswer || page >= reached || page >= total - 1}
               aria-label={t('interactionPrompt.next')}
             >
               <ChevronRight size={16} strokeWidth={2} />
@@ -331,6 +331,11 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
             />
           )}
         </div>
+        {incompleteAnswer && (
+          <p role="status" className="text-warn">
+            {t(st.customActive ? 'interactionPrompt.customRequired' : 'interactionPrompt.selectionRequired')}
+          </p>
+        )}
       </div>
 
       <div className="ix-prompt__foot">
@@ -354,7 +359,7 @@ export function InteractionPrompt({ pending, onSubmit }: InteractionPromptProps)
           type="button"
           className="ix-btn ix-btn--primary"
           onClick={handleNextOrConfirm}
-          disabled={submitting || incompleteCustom}
+          disabled={submitting || incompleteAnswer}
         >
           {isLast ? t('interactionPrompt.confirm') : t('interactionPrompt.nextStep')}
         </button>

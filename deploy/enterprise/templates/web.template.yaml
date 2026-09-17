@@ -15,6 +15,8 @@ spec:
       labels:
         app: <<WEB_NAME>>
     spec:
+      securityContext:
+        fsGroup: 0
       containers:
         - name: web
           image: <<WEB_IMAGE>>
@@ -30,40 +32,18 @@ spec:
             - secretRef:
                 name: <<SECRET_CM_NAME>>
           env:
-            - name: JIUWENCLAW_WEB_HOST
-              value: "0.0.0.0"
-            - name: FRONTEND_HOST
-              value: "0.0.0.0"
+            - name: WEB_HTTP_PORT
+              value: "<<WEB_HTTP_PORT>>"
             - name: JIUWENSWARM_EDITION
               value: "enterprise"
             - name: LOGIN_AUTH_SIMULATE
-              value: "<<APPLY_PATCH>>"
-            - name: FRONTEND_PORT
-              value: "<<WEB_HTTP_PORT>>"
+              value: "<<LOGIN_AUTH_SIMULATE>>"
             - name: WEB_TRANSPORT
               value: "http"
-            - name: ENTERPRISE_WEB_WS_HOST
-              value: "0.0.0.0"
-            - name: ENTERPRISE_WEB_WS_PORT
-              value: "<<WEB_WS_PORT>>"
             - name: GATEWAY_URL
               value: "http://<<GATEWAY_NAME>>:<<WEB_PORT>>"
             - name: GATEWAY_WEB_HTTP_URL
               value: "http://<<GATEWAY_NAME>>:<<GATEWAY_WEB_HTTP_PORT>>"
-            - name: WS_ORIGIN_CHECK_ENABLED
-              value: "<<WS_ORIGIN_CHECK_ENABLED>>"
-            - name: WS_ALLOWED_ORIGINS
-              value: "<<WS_ALLOWED_ORIGINS>>"
-            - name: WEB_DB_TYPE
-              value: "<<DB_TYPE>>"
-            - name: WEB_DB_HOST
-              value: "<<DB_HOST>>"
-            - name: WEB_DB_PORT
-              value: "<<DB_PORT>>"
-            - name: WEB_DB_USER
-              value: "<<WEB_DB_USER>>"
-            - name: WEB_DB_NAME
-              value: "<<WEB_DB_NAME>>"
             - name: TZ
               value: "<<TIMEZONE>>"
             - name: OBS_URL

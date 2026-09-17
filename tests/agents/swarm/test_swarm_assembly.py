@@ -19,6 +19,8 @@ touching a real LLM, the network, or a live ``DeepAgent``:
 from __future__ import annotations
 
 import inspect
+import asyncio
+import contextvars
 import json
 import logging
 import types
@@ -144,11 +146,46 @@ def test_team_a2a_outbound_rail_uses_live_route_when_context_session_is_empty(
     assert rail._runtime_route() == ("live-session", "live-channel")
 
 
-def test_team_a2a_outbound_rail_is_excluded_from_enterprise_runtime(monkeypatch) -> None:
+def test_team_a2a_outbound_rail_keeps_enterprise_resource(monkeypatch) -> None:
     monkeypatch.setenv("JIUWENSWARM_EDITION", "enterprise")
-    context = SwarmBuildContext(session_id="session-a2a", channel="web")
+    context = SwarmBuildContext(session_id="session-a2a", channel="web", request_metadata={"routing": {"bot_id": "resource-1"}})
 
-    assert member_rails._build_a2a_outbound_toolkit_rail({}, context) is None
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, context)
+    assert contextvars.Context().run(rail._runtime_resource_id) == "resource-1"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("mode", ["team", "team.plan", "code.team"])
+async def test_team_a2a_tools_keep_resource_in_empty_context(mode):
+    context = SwarmBuildContext(session_id="session-a2a", channel="web", mode=mode,
+        request_metadata={"routing": {"bot_id": "resource-1"}})
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, context)
+    tools = {}
+    async def call(method, params, **route):
+        return {"params": params, **route}
+    rail._backend_provider = lambda: SimpleNamespace(ready=True, call=call)
+    rail.init(SimpleNamespace(ability_manager=SimpleNamespace(
+        add_ability=lambda card, tool: tools.update({card.name: tool})), system_prompt_builder=None))
+    for name, params in (
+        ("a2a_find_agents", {}),
+        ("a2a_dispatch_task", {"agent_id": "weather", "task": "weather", "mode": "sync"}),
+        ("a2a_get_dispatch", {"dispatch_id": "dispatch-1"}),
+    ):
+        result = await asyncio.create_task(tools[name].invoke(params), context=contextvars.Context())
+        assert result["session_id"] == "session-a2a"
+        assert result["params"]["resource_id"] == "resource-1"
+
+
+def test_team_a2a_live_session_does_not_borrow_build_identity():
+    rail = member_rails._build_a2a_outbound_toolkit_rail({}, SwarmBuildContext(
+        session_id="old", request_metadata={"routing": {"bot_id": "old-resource"}}))
+    def check():
+        interface_deep._CRON_TOOL_SESSION_ID.set("new")
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("")
+        assert rail._runtime_resource_id() == ""
+        interface_deep._RUNTIME_TOOL_RESOURCE_ID.set("new-resource")
+        assert rail._runtime_resource_id() == "new-resource"
+    contextvars.Context().run(check)
 
 # Rail provider names shared by both roles (no role-specific evolution rails).
 # Harness todo planning is teammate-only; leaders use the team task board instead.
@@ -1067,16 +1104,14 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
                 {
                     "name": "local_tool",
                     "enabled": True,
-                    "transport": "stdio",
-                    "command": "python",
-                    "args": ["server.py"],
-                    "cwd": str(tmp_path),
+                    "transport": "sse",
+                    "url": "http://127.0.0.1:18013/sse",
                 },
                 {
                     "name": "disabled_tool",
                     "enabled": False,
-                    "transport": "stdio",
-                    "command": "python",
+                    "transport": "sse",
+                    "url": "http://127.0.0.1:18014/sse",
                 },
                 {
                     "name": "invalid_tool",
@@ -1100,12 +1135,8 @@ def test_enrich_team_spec_for_swarm_injects_config_mcp_servers(
     assert [cfg.server_name for cfg in leader_mcps] == ["local_tool"]
     assert [cfg.server_name for cfg in teammate_mcps] == ["local_tool"]
     assert leader_mcps[0].server_id == teammate_mcps[0].server_id
-    assert leader_mcps[0].client_type == "stdio"
-    assert leader_mcps[0].params == {
-        "command": "python",
-        "args": ["server.py"],
-        "cwd": str(tmp_path),
-    }
+    assert leader_mcps[0].client_type == "sse"
+    assert leader_mcps[0].server_path == "http://127.0.0.1:18013/sse"
 
 
 def test_enrich_skips_absent_roles_gracefully() -> None:

@@ -113,13 +113,13 @@ class PPTGenRootNode(PlanNode):
             ImagePrepareNode(),
             PPTPageGenNode(),
             PPTExportNode(),
-            # Stage 8: 演讲备注（仅 need_speaker_notes=True 时执行，best-effort 不阻塞交付）
+            # Stage 13: 演讲备注（仅 need_speaker_notes=True 时执行，best-effort 不阻塞交付）
             self._speaker_notes,
             self._delivery,
         ]
         super().__init__(
             plan_name="ppt_gen_root",
-            instruction="PPT生成任务流根节点，串联P0-P10全流程（含Stage 8演讲备注）",
+            instruction="PPT生成任务流根节点，串联P0-P10全流程（含Stage 13演讲备注）",
             # P3 固定保留在任务列表；无附件时运行时 skip 并标记 completed。
             sub_plans=[
                 self._p0,
@@ -186,6 +186,16 @@ class PPTGenRootNode(PlanNode):
 
         for subplan in self._tail_plans:
             await self._run_subplan(subplan, inputs, results)
+
+        # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
+        if str(inputs.get("delivery_status") or "").strip() == "failed":
+            return {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
 
         return {
             "node": self.plan_name,
@@ -415,6 +425,19 @@ class PPTGenRootNode(PlanNode):
         #    RelayClaw 的 pptTurboSummary 收集窗口（tool_result 时还会被清空）。
         # 骨架由 P10 写入 artifact → skill_turbo_tools 挂 ContextVar →
         # SkillTurboDeliverySummaryRail 在外层 tool_result 之后再发 llm_output。
+        # 交付失败感知：P10 delivery_status=failed 时不再宣称"任务流执行完成"，
+        # 与 skill_turbo_tools.visible_ppt_turbo_finish_text 的失败路径对齐。
+        # message 用固定中性文案（与非流式路径一致）：该消息会进入任务列表/主气泡
+        # 等用户可见链路，不透传 summary 等动态内容，避免暴露内部执行细节。
+        if str(inputs.get("delivery_status") or "").strip() == "failed":
+            yield {
+                "node": self.plan_name,
+                "status": "error",
+                "message": "PPT生成任务流执行失败：PPTX 导出或交付未成功",
+                "result": inputs,
+                "steps": results,
+            }
+            return
         yield {
             "node": self.plan_name,
             "status": "ok",

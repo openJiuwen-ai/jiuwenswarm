@@ -60,6 +60,11 @@ class CronTenantRegistry:
         return cls._instance
 
     @classmethod
+    def try_get_instance(cls) -> CronTenantRegistry | None:
+        """Return the live registry when Gateway is in-process; else None."""
+        return cls._instance
+
+    @classmethod
     def reset_instance(cls) -> None:
         cls._instance = None
 
@@ -188,14 +193,18 @@ class CronTenantRegistry:
         request_mode: str | None = None,
         mirror_to_agent: bool = False,
     ) -> Any:
+        from jiuwenswarm.gateway.cron.enterprise_gate import extract_routing_triple
+
         controller = await self.get_controller(service_id, agent_id)
+        params = dict(params or {})
+        group_id, bot_id, user_id = extract_routing_triple(params)
+        routing = {"group_id": group_id, "bot_id": bot_id, "user_id": user_id}
         if action == "list":
-            return await controller.list_jobs()
+            return await controller.list_jobs(routing)
         if action == "get":
-            return await controller.get_job(str(params.get("job_id") or ""))
+            return await controller.get_job(str(params.get("job_id") or ""), **routing)
         if action == "create":
             if request_mode:
-                params = dict(params)
                 params["mode"] = request_mode
             data = await controller.create_job(params)
             if mirror_to_agent:
@@ -206,7 +215,7 @@ class CronTenantRegistry:
         if action == "update":
             job_id = str(params.get("job_id") or "")
             patch = dict(params.get("patch") or {})
-            data = await controller.update_job(job_id, patch)
+            data = await controller.update_job(job_id, patch, **routing)
             if mirror_to_agent:
                 await self._mirror_after_mutation(
                     service_id=service_id, agent_id=agent_id, job=data
@@ -214,7 +223,7 @@ class CronTenantRegistry:
             return data
         if action == "delete":
             job_id = str(params.get("job_id") or "")
-            deleted = await controller.delete_job(job_id)
+            deleted = await controller.delete_job(job_id, **routing)
             if mirror_to_agent and deleted:
                 await self._mirror_after_mutation(
                     service_id=service_id,
@@ -225,7 +234,7 @@ class CronTenantRegistry:
         if action == "toggle":
             job_id = str(params.get("job_id") or "")
             enabled = bool(params.get("enabled"))
-            data = await controller.toggle_job(job_id, enabled)
+            data = await controller.toggle_job(job_id, enabled, **routing)
             if mirror_to_agent:
                 await self._mirror_after_mutation(
                     service_id=service_id, agent_id=agent_id, job=data
@@ -235,9 +244,15 @@ class CronTenantRegistry:
             return await controller.preview_job(
                 str(params.get("job_id") or ""),
                 int(params.get("count", 5)),
+                **routing,
             )
         if action == "run_now":
-            return {"run_id": await controller.run_now(str(params.get("job_id") or ""))}
+            return {
+                "run_id": await controller.run_now(
+                    str(params.get("job_id") or ""),
+                    **routing,
+                )
+            }
         return {"error": f"unknown cron action: {action}"}
 
     async def web_create_job(

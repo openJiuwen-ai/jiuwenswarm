@@ -102,10 +102,15 @@ class A2AOutboundRegistry:
         self._registration_lock = asyncio.Lock()
         self._agent_operation_locks = KeyedLockPool()
 
-    def set_allow_loopback_http(self, enabled: bool) -> None:
-        self._discovery.set_allow_loopback_http(enabled)
+    def _require_mutable_catalog(self) -> None:
+        if getattr(self._repository, "manager_owned", False):
+            raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
+
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self._discovery.set_network_settings(allow_loopback=allow_loopback, allow_http=allow_http)
 
     async def discover(self, url: str, card_path: str | None = None) -> dict[str, Any]:
+        self._require_mutable_catalog()
         card = await self._discovery.discover(url, card_path)
         now = self._now()
         item = A2AOutboundDiscovery(
@@ -127,6 +132,7 @@ class A2AOutboundRegistry:
         return item.to_dict()
 
     async def register(self, params: Mapping[str, Any]) -> dict[str, Any]:
+        self._require_mutable_catalog()
         discovery_id = str(params.get("discovery_id") or "").strip()
         if not discovery_id:
             raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_NOT_FOUND)
@@ -198,15 +204,52 @@ class A2AOutboundRegistry:
             )
             return created.public_dict()
 
-    async def list_agents(self) -> dict[str, Any]:
+    async def list_agents(self, *, source_user_id: str | None = None) -> dict[str, Any]:
+        list_projected = getattr(self._repository, "list_projected_agents", None)
+        if callable(list_projected):
+            projected = await list_projected(source_user_id=source_user_id)
+            items = [item.public_dict() for item in projected]
+            return {"items": items, "total": len(items)}
         items = [item.public_dict() for item in await self._repository.list_agents()]
         return {"items": items, "total": len(items)}
 
-    async def get_agent(self, agent_id: str) -> dict[str, Any]:
+    async def get_agent(self, agent_id: str, *, source_user_id: str | None = None) -> dict[str, Any]:
+        get_projected = getattr(self._repository, "get_projected_agent", None)
+        if callable(get_projected):
+            projected = await get_projected(agent_id, source_user_id=source_user_id)
+            if projected is None:
+                raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_REGISTERED)
+            return projected.public_dict()
         return (await self._require_agent(agent_id)).public_dict()
+
+    async def set_user_enabled(
+        self, agent_id: str, user_enabled: bool, *, source_user_id: str | None = None
+    ) -> dict[str, Any]:
+        setter = getattr(self._repository, "set_user_enabled", None)
+        if not callable(setter):
+            raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
+        projected = await setter(agent_id, user_enabled, source_user_id=source_user_id)
+        return projected.public_dict()
+
+    async def resolve_effective_a2a_agent_ids(
+        self, resource_id: str, *, source_user_id: str | None = None
+    ) -> frozenset[str] | None:
+        resolver = getattr(self._repository, "resolve_effective_a2a_agent_ids", None)
+        if not callable(resolver):
+            return None
+        return await resolver(resource_id, source_user_id=source_user_id)
+
+    async def resolve_authorized_a2a_agent_ids(
+        self, resource_id: str
+    ) -> frozenset[str] | None:
+        resolver = getattr(self._repository, "resolve_authorized_a2a_agent_ids", None)
+        if not callable(resolver):
+            return None
+        return await resolver(resource_id)
 
     async def edit_agent(self, agent_id: str) -> dict[str, Any]:
         """Read the credential only for an explicit management editing request."""
+        self._require_mutable_catalog()
         async with self._agent_operation_locks.hold(agent_id):
             agent = await self._require_agent(agent_id)
             result = agent.public_dict()
@@ -216,6 +259,7 @@ class A2AOutboundRegistry:
     async def update_agent(
         self, agent_id: str, params: Mapping[str, Any]
     ) -> dict[str, Any]:
+        self._require_mutable_catalog()
         allowed = {
             "display_name",
             "enabled",
@@ -284,6 +328,7 @@ class A2AOutboundRegistry:
         return updated.public_dict()
 
     async def refresh_agent(self, agent_id: str) -> dict[str, Any]:
+        self._require_mutable_catalog()
         async with self._agent_operation_locks.hold(agent_id):
             current = await self._require_agent(agent_id)
             try:
@@ -370,6 +415,7 @@ class A2AOutboundRegistry:
         return updated.public_dict()
 
     async def confirm_revision(self, agent_id: str, *, accept: bool) -> dict[str, Any]:
+        self._require_mutable_catalog()
         if not isinstance(accept, bool):
             raise A2AOutboundError(A2AOutboundErrorCode.STORE_INVALID)
 
@@ -416,6 +462,7 @@ class A2AOutboundRegistry:
         return updated.public_dict()
 
     async def delete_agent(self, agent_id: str) -> dict[str, Any]:
+        self._require_mutable_catalog()
         async with self._agent_operation_locks.hold(agent_id):
             if not await self._repository.delete_agent(agent_id):
                 raise A2AOutboundError(A2AOutboundErrorCode.AGENT_NOT_REGISTERED)
@@ -428,16 +475,23 @@ class A2AOutboundRegistry:
             raise A2AOutboundError(A2AOutboundErrorCode.DISPATCH_NOT_FOUND)
         return item.to_record()
 
-    async def list_dispatches(self, *, limit: int = 200) -> dict[str, Any]:
+    async def list_dispatches(
+        self, *, limit: int = 200, source_user_id: str | None = None
+    ) -> dict[str, Any]:
         normalized_limit = max(1, min(int(limit), 200))
-        records = await self._repository.list_dispatches(limit=normalized_limit)
-        total = await self._repository.count_dispatches()
+        if getattr(self._repository, "manager_owned", False) and not source_user_id:
+            raise A2AOutboundError(A2AOutboundErrorCode.USER_IDENTITY_REQUIRED)
+        records = await self._repository.list_dispatches(
+            limit=normalized_limit, source_user_id=source_user_id
+        )
+        total = await self._repository.count_dispatches(source_user_id=source_user_id)
         items = []
         for item in records:
             items.append(
                 {
                     "dispatch_id": item.dispatch_id,
                     "agent_id": item.agent_id,
+                    "agent_name": item.agent_name,
                     "mode": item.mode.value,
                     "status": item.status.value,
                     "remote_task_id": item.remote_task_id,
@@ -447,6 +501,7 @@ class A2AOutboundRegistry:
                     "finished_at": item.finished_at,
                     "error_code": item.error_code,
                     "error_summary": item.error_summary,
+                    "source_resource_id": item.source_resource_id,
                 }
             )
         return {"items": items, "total": total}

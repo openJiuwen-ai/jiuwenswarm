@@ -383,6 +383,10 @@ select {
     background: var(--effect-content-background);
   }
 
+  .content.content--a2a {
+    overflow-y: hidden;
+  }
+
   /* Cards */
   .card {
     background: var(--color-surface-card);

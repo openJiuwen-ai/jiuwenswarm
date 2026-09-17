@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import contextvars
 import logging
+import time
 import uuid
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -32,6 +33,9 @@ from jiuwenswarm.common.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+_ENTERPRISE_MUTATION_CONFIRM_SECONDS = 5.0
+_ENTERPRISE_MUTATION_POLL_INTERVAL = 0.1
 
 
 def resolve_cron_jobs_path(
@@ -253,6 +257,84 @@ class CronTools:
             out["user_id"] = r.user_id
         return out
 
+    def _require_enterprise_identity(self) -> dict[str, str]:
+        from jiuwenswarm.gateway.cron.enterprise_gate import (
+            extract_routing_triple,
+            routing_triple_complete,
+        )
+
+        identity = self._routing_identity_payload()
+        group_id, bot_id, user_id = extract_routing_triple(identity)
+        if not routing_triple_complete(group_id, bot_id, user_id):
+            raise ValueError("enterprise cron requires group_id, bot_id and user_id")
+        return identity
+
+    @staticmethod
+    def _enterprise_registry():
+        try:
+            from jiuwenswarm.gateway.cron.tenant_registry import CronTenantRegistry
+
+            return CronTenantRegistry.try_get_instance()
+        except Exception:
+            return None
+
+    async def _dispatch_enterprise_action(
+        self,
+        action: str,
+        params: dict[str, Any],
+    ) -> Any:
+        """Apply an enterprise mutation via in-process registry, else Gateway push.
+
+        Returns the controller result when the Gateway registry is in-process.
+        Returns None after a successful push; the caller must confirm via PG.
+        """
+        identity = self._require_enterprise_identity()
+        merged = dict(params or {})
+        for key in ("group_id", "bot_id", "user_id"):
+            merged.pop(key, None)
+        merged.update(identity)
+        registry = self._enterprise_registry()
+        if registry is not None:
+            data = await registry.handle_push_action(
+                action=action,
+                params=merged,
+                service_id=self._service_id,
+                agent_id=self._agent_id,
+                mirror_to_agent=False,
+            )
+            if isinstance(data, dict) and data.get("error"):
+                raise RuntimeError(str(data["error"]))
+            return data
+        forwarded = await self._send(action, merged)
+        if isinstance(forwarded, dict) and forwarded.get("delivered") == 0:
+            raise RuntimeError("enterprise cron request was not delivered to gateway")
+        return None
+
+    async def _wait_enterprise_job(
+        self,
+        job_id: str,
+        *,
+        expect_absent: bool = False,
+        predicate: Any | None = None,
+    ) -> dict[str, Any] | None:
+        deadline = time.monotonic() + _ENTERPRISE_MUTATION_CONFIRM_SECONDS
+        while True:
+            row = await self._get_job_enterprise(job_id)
+            if expect_absent:
+                if row is None:
+                    return None
+            elif row is not None and (predicate is None or predicate(row)):
+                return row
+            if time.monotonic() >= deadline:
+                if expect_absent:
+                    raise RuntimeError(
+                        f"enterprise cron delete was not confirmed for job_id={job_id}"
+                    )
+                raise RuntimeError(
+                    f"enterprise cron update was not confirmed for job_id={job_id}"
+                )
+            await asyncio.sleep(_ENTERPRISE_MUTATION_POLL_INTERVAL)
+
     async def _list_jobs_enterprise(self) -> list[dict[str, Any]]:
         from jiuwenswarm.gateway.cron.db_store import _row_to_job
         from jiuwenswarm.gateway.cron.enterprise_gate import (
@@ -272,6 +354,44 @@ class CronTools:
             job = _row_to_job(row)
             if job is not None:
                 out.append(job.to_dict())
+        return out
+
+    async def _get_job_enterprise(self, job_id: str) -> dict[str, Any] | None:
+        wanted = str(job_id or "").strip()
+        if not wanted:
+            return None
+        for item in await self._list_jobs_enterprise():
+            if str(item.get("id") or "") == wanted:
+                return item
+        return None
+
+    @staticmethod
+    def _preview_schedule(job: Any, count: int) -> list[dict[str, Any]]:
+        if isinstance(job, dict):
+            cron_expr = str(job.get("cron_expr") or "").strip()
+            timezone = str(job.get("timezone") or "Asia/Shanghai").strip() or "Asia/Shanghai"
+            wake_offset = job.get("wake_offset_seconds")
+        else:
+            cron_expr = str(getattr(job, "cron_expr", "") or "").strip()
+            timezone = str(getattr(job, "timezone", None) or "Asia/Shanghai").strip() or "Asia/Shanghai"
+            wake_offset = getattr(job, "wake_offset_seconds", None)
+        count = max(1, min(int(count), 50))
+        tz = ZoneInfo(timezone)
+        base = datetime.now(tz=tz)
+        out: list[dict[str, Any]] = []
+        push_dt = base
+        for _ in range(count):
+            try:
+                push_dt = _cron_next_push_dt(cron_expr, push_dt)
+            except Exception as exc:  # noqa: BLE001
+                msg = str(exc)
+                if "CroniterBadDateError" in msg or "failed to find next date" in msg:
+                    break
+                raise
+            if out and push_dt.isoformat() == out[-1]["push_at"]:
+                break
+            wake_dt = push_dt - timedelta(seconds=max(0, int(wake_offset or 0)))
+            out.append({"wake_at": wake_dt.isoformat(), "push_at": push_dt.isoformat()})
         return out
 
     async def _send_split(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
@@ -296,8 +416,22 @@ class CronTools:
                 "message": "",
             },
         }
-        await self._gateway_push.send_push(payload)
-        return {"action": action, "status": "forwarded", "data": None, "message": "cron request forwarded to gateway"}
+        delivered = await self._gateway_push.send_push(payload)
+        result: dict[str, Any] = {
+            "action": action,
+            "status": "forwarded",
+            "data": None,
+            "message": "cron request forwarded to gateway",
+        }
+        if isinstance(delivered, int):
+            result["delivered"] = delivered
+            if delivered == 0:
+                logger.warning(
+                    "[CronTools] cron push delivered to 0 subscribers action=%s job_id=%s",
+                    action,
+                    data.get("job_id") or data.get("id"),
+                )
+        return result
 
     async def _send(self, action: str, params: dict[str, Any]) -> dict[str, Any]:
         return await self._send_split(action, params)
@@ -407,11 +541,7 @@ class CronTools:
 
     async def get_job(self, job_id: str) -> Any:
         if self._enterprise_ready():
-            jobs = await self._list_jobs_enterprise()
-            for item in jobs:
-                if str(item.get("id") or "") == str(job_id or "").strip():
-                    return item
-            return None
+            return await self._get_job_enterprise(job_id)
         job = await self._local_store.get_job(job_id)
         return job.to_dict() if job else None
 
@@ -422,6 +552,8 @@ class CronTools:
         # 避免多副本扇出导致重复落库。与个人版"id 在 AgentServer 生成"保持一致。
         job_id = str(normalized.get("id") or "").strip() or uuid.uuid4().hex
         normalized.pop("session_id", None)
+        for key in ("group_id", "bot_id", "user_id"):
+            normalized.pop(key, None)
         normalized["targets"] = self._normalize_targets_param(normalized.get("targets"))
         normalized["cron_expr"] = normalize_cron_expr(str(normalized.get("cron_expr") or "").strip())
         # 与手动创建规格对齐：LLM 工具 schema 无 delete_after_run 字段，未显式传入时
@@ -492,6 +624,7 @@ class CronTools:
         work_mode = binding.work_mode
 
         if self._enterprise_ready():
+            identity = self._require_enterprise_identity()
             push_payload = {
                 **normalized,
                 "id": job_id,
@@ -501,7 +634,7 @@ class CronTools:
                 **mode_kw,
                 **model_kw,
             }
-            push_payload.update(self._routing_identity_payload())
+            push_payload.update(identity)
             await self._send("create", push_payload)
             return push_payload
 
@@ -538,6 +671,8 @@ class CronTools:
     async def update_job(self, job_id: str, patch: dict[str, Any]) -> Any:
         normalized_patch = dict(patch or {})
         normalized_patch.pop("session_id", None)
+        for key in ("group_id", "bot_id", "user_id"):
+            normalized_patch.pop(key, None)
         if "cron_expr" in normalized_patch:
             normalized_patch["cron_expr"] = normalize_cron_expr(str(normalized_patch["cron_expr"]).strip())
         if "targets" in normalized_patch:
@@ -557,15 +692,22 @@ class CronTools:
         # work_mode / project_id / project_dir 重解析(共享 helper):
         # 与 CronController.update_job 共用同一 ``resolve_cron_job_patch``,
         # 确保 AgentTool 与 Web RPC 两条链路逻辑一致。
-        existing = await self._local_store.get_job(job_id)
-        if existing is None:
-            raise KeyError("job not found")
+        if self._enterprise_ready():
+            existing_row = await self.get_job(job_id)
+            if existing_row is None:
+                raise KeyError("job not found")
+            existing_work_mode = str(existing_row.get("work_mode") or "")
+        else:
+            existing = await self._local_store.get_job(job_id)
+            if existing is None:
+                raise KeyError("job not found")
+            existing_work_mode = existing.work_mode or ""
 
         channel_id_val = self._resolve_channel_id() or "web"
         from jiuwenswarm.server.runtime.session.project_store import resolve_cron_job_patch
         resolve_cron_job_patch(
             normalized_patch,
-            existing_work_mode=existing.work_mode or "",
+            existing_work_mode=existing_work_mode,
             resolve_work_mode_fn=self._resolve_work_mode_from_params,
             channel_id=channel_id_val,
         )
@@ -576,13 +718,39 @@ class CronTools:
             chat_type = self._route().chat_type
             normalized_patch["chat_type"] = chat_type if chat_type else None
 
-        identity = self._routing_identity_payload()
         if self._enterprise_ready():
-            await self._send(
+            patch_payload = self._sync_patch_payload(normalized_patch)
+            data = await self._dispatch_enterprise_action(
                 "update",
-                {"job_id": job_id, "patch": self._sync_patch_payload(normalized_patch), **identity},
+                {"job_id": job_id, "patch": patch_payload},
             )
-            return {"job_id": job_id, "status": "forwarded"}
+            if isinstance(data, dict) and data.get("id"):
+                return data
+
+            compare_keys = (
+                "name",
+                "enabled",
+                "cron_expr",
+                "timezone",
+                "description",
+                "targets",
+                "mode",
+                "model_name",
+                "project_id",
+                "work_mode",
+                "wake_offset_seconds",
+                "delete_after_run",
+            )
+
+            def _updated(row: dict[str, Any]) -> bool:
+                return all(
+                    row.get(key) == patch_payload[key]
+                    for key in compare_keys
+                    if key in patch_payload
+                )
+
+            confirmed = await self._wait_enterprise_job(job_id, predicate=_updated)
+            return confirmed
 
         job = await self._local_store.update_job(job_id, normalized_patch)
         try:
@@ -599,9 +767,17 @@ class CronTools:
         return job.to_dict()
 
     async def delete_job(self, job_id: str) -> Any:
-        identity = self._routing_identity_payload()
         if self._enterprise_ready():
-            await self._send("delete", {"job_id": job_id, **identity})
+            existing = await self.get_job(job_id)
+            if existing is None:
+                return False
+            data = await self._dispatch_enterprise_action("delete", {"job_id": job_id})
+            if isinstance(data, dict) and "deleted" in data:
+                deleted = data["deleted"]
+                if not isinstance(deleted, bool):
+                    raise RuntimeError("invalid cron delete response")
+                return deleted
+            await self._wait_enterprise_job(job_id, expect_absent=True)
             return True
         deleted = await self._local_store.delete_job(job_id)
         try:
@@ -617,15 +793,30 @@ class CronTools:
     async def toggle_job(self, job_id: str, enabled: bool) -> Any:
         # proactive.tick job 的开关由 config 的 proactive_recommendation.enabled 驱动，
         # 禁止手动 toggle——否则会与 config 开关不一致。引导用户去设置关开关。
-        existing = await self._local_store.get_job(job_id)
-        if existing is not None and str(getattr(existing, "mode", "") or "").strip().lower() == "proactive.tick":
+        if self._enterprise_ready():
+            existing_row = await self.get_job(job_id)
+            if existing_row is None:
+                raise KeyError("job not found")
+            mode = str(existing_row.get("mode") or "").strip().lower()
+        else:
+            existing = await self._local_store.get_job(job_id)
+            mode = str(getattr(existing, "mode", "") or "").strip().lower() if existing is not None else ""
+        if mode == "proactive.tick":
             raise RuntimeError(
                 "主动推荐定时任务由设置→主动推荐开关控制，不能手动启停；请到设置→主动推荐操作。"
             )
-        identity = self._routing_identity_payload()
         if self._enterprise_ready():
-            await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled), **identity})
-            return {"job_id": job_id, "enabled": bool(enabled), "status": "forwarded"}
+            data = await self._dispatch_enterprise_action(
+                "toggle",
+                {"job_id": job_id, "enabled": bool(enabled)},
+            )
+            if isinstance(data, dict) and data.get("id"):
+                return data
+            confirmed = await self._wait_enterprise_job(
+                job_id,
+                predicate=lambda row: bool(row.get("enabled")) is bool(enabled),
+            )
+            return confirmed
         job = await self._local_store.update_job(job_id, {"enabled": bool(enabled)})
         try:
             await self._send("toggle", {"job_id": job_id, "enabled": bool(enabled)})
@@ -638,29 +829,22 @@ class CronTools:
         return job.to_dict()
 
     async def preview_job(self, job_id: str, count: int = 5) -> Any:
+        if self._enterprise_ready():
+            job = await self.get_job(job_id)
+            if job is None:
+                raise KeyError("job not found")
+            return self._preview_schedule(job, count)
         job = await self._local_store.get_job(job_id)
         if job is None:
             raise KeyError("job not found")
-        count = max(1, min(int(count), 50))
-        tz = ZoneInfo(job.timezone)
-        base = datetime.now(tz=tz)
-        out: list[dict[str, Any]] = []
-        push_dt = base
-        for _ in range(count):
-            try:
-                push_dt = _cron_next_push_dt(job.cron_expr, push_dt)
-            except Exception as exc:  # noqa: BLE001
-                msg = str(exc)
-                if "CroniterBadDateError" in msg or "failed to find next date" in msg:
-                    break
-                raise
-            if out and push_dt.isoformat() == out[-1]["push_at"]:
-                break
-            wake_dt = push_dt - timedelta(seconds=max(0, int(job.wake_offset_seconds or 0)))
-            out.append({"wake_at": wake_dt.isoformat(), "push_at": push_dt.isoformat()})
-        return out
+        return self._preview_schedule(job, count)
 
     async def run_now(self, job_id: str) -> Any:
+        if self._enterprise_ready():
+            data = await self._dispatch_enterprise_action("run_now", {"job_id": job_id})
+            if data is not None:
+                return data
+            return {"job_id": job_id, "status": "forwarded"}
         return await self._send("run_now", {"job_id": job_id})
 
     async def _create_job_tool(self, **kwargs: Any) -> Any:

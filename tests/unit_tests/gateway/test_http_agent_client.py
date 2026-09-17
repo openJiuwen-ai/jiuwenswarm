@@ -11,9 +11,14 @@ import pytest
 from jiuwenswarm.common.e2a.constants import E2A_WIRE_SERVER_PUSH_KEY
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.e2a.wire_codec import encode_agent_chunk_for_wire
+from jiuwenswarm.common.request_ext import INTERNAL_HEADER_NAME, decode_internal_header
 from jiuwenswarm.common.schema.agent import AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
-from jiuwenswarm.common.request_ext import INTERNAL_HEADER_NAME, decode_internal_header
+from jiuwenswarm.common.security.link_mtls import (
+    MTLSDeploymentIdentity,
+    LinkMTLSConfig,
+    LinkMTLSMode,
+)
 from jiuwenswarm.gateway.routing.agent_rest_map import (
     RestAssemblyError,
     assemble_rest_request,
@@ -197,8 +202,84 @@ async def test_connect_rejects_websocket_url():
         await client.connect("ws://127.0.0.1:18092")
 
 
+@pytest.mark.asyncio
+async def test_enforce_agent_client_rejects_plain_http():
+    config = LinkMTLSConfig(
+        mode=LinkMTLSMode.ENFORCE,
+        identity=MTLSDeploymentIdentity("deployment-1", "binding-1", 4),
+    )
+    client = HttpSseAgentServerClient(link_mtls_config=config)
+    with pytest.raises(ValueError, match="must use https"):
+        await client.connect("http://127.0.0.1:8766")
+
+
+@pytest.mark.asyncio
+async def test_enforce_agent_client_rejects_plain_http_per_pod_base_url():
+    config = LinkMTLSConfig(
+        mode=LinkMTLSMode.ENFORCE,
+        identity=MTLSDeploymentIdentity("deployment-1", "binding-1", 4),
+    )
+    client = HttpSseAgentServerClient(
+        http_client=httpx.AsyncClient(
+            transport=httpx.MockTransport(
+                lambda request: httpx.Response(200, json={"ok": True})
+            )
+        ),
+        link_mtls_config=config,
+    )
+    envelope = e2a_from_agent_fields(
+        request_id="r1",
+        channel_id="web",
+        req_method=ReqMethod.SESSION_LIST,
+        params={},
+    )
+    try:
+        with pytest.raises(ValueError, match="must use https"):
+            await client.send_request(
+                envelope,
+                base_url="http://agent-pod.agentserver-headless:8766",
+            )
+    finally:
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_enforce_agent_client_sends_binding_headers():
+    captured: dict[str, str] = {}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        captured.update(request.headers)
+        return httpx.Response(
+            200,
+            json={"ok": True, "data": {"status": "ready"}},
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+    config = LinkMTLSConfig(
+        mode=LinkMTLSMode.ENFORCE,
+        identity=MTLSDeploymentIdentity("deployment-1", "binding-1", 4),
+    )
+    client = HttpSseAgentServerClient(
+        http_client=http,
+        link_mtls_config=config,
+    )
+    try:
+        await client.connect("https://agent.example:8766")
+        assert captured["x-jiuwenswarm-mtls-binding-id"] == "binding-1"
+        assert captured["x-jiuwenswarm-mtls-binding-epoch"] == "4"
+        assert {name for name in captured if name.startswith("x-jiuwenswarm-")} == {
+            "x-jiuwenswarm-mtls-binding-id",
+            "x-jiuwenswarm-mtls-binding-epoch",
+        }
+    finally:
+        await client.disconnect()
+        await http.aclose()
+
+
 def _sse_blob(wire: dict) -> bytes:
-    return f"event: e2a.chunk\ndata: {json.dumps(wire, ensure_ascii=False)}\n\n".encode("utf-8")
+    return f"event: e2a.chunk\ndata: {json.dumps(wire, ensure_ascii=False)}\n\n".encode(
+        "utf-8"
+    )
 
 
 def _http_json(payload: dict) -> bytes:
@@ -213,7 +294,9 @@ async def _start_interrupt_stub():
     interrupt_received = asyncio.Event()
     interrupt_paths: list[str] = []
 
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
             request_line = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
@@ -227,7 +310,9 @@ async def _start_interrupt_stub():
 
             if path.endswith("/health"):
                 writer.write(
-                    _http_json({"ok": True, "data": {"status": "ready"}, "request_id": "h1"})
+                    _http_json(
+                        {"ok": True, "data": {"status": "ready"}, "request_id": "h1"}
+                    )
                 )
             elif path.endswith("/actions/interrupt"):
                 interrupt_paths.append(path)
@@ -381,7 +466,11 @@ def test_default_agent_url_websocket_when_type_default(monkeypatch):
             {
                 "request_id": "r2",
                 "ok": False,
-                "error": {"code": "NOT_FOUND", "message": "missing", "details": {"k": 1}},
+                "error": {
+                    "code": "NOT_FOUND",
+                    "message": "missing",
+                    "details": {"k": 1},
+                },
             },
             False,
             {"error": "missing", "code": "NOT_FOUND", "k": 1},
@@ -401,7 +490,9 @@ def test_default_agent_url_websocket_when_type_default(monkeypatch):
     ],
 )
 def test_http_unary_unwrap_shapes(payload, expect_ok, expect_payload):
-    resp = http_unary_to_agent_response(payload, channel_id="web", request_id="fallback")
+    resp = http_unary_to_agent_response(
+        payload, channel_id="web", request_id="fallback"
+    )
     assert resp.ok is expect_ok
     assert resp.channel_id == "web"
     for key, value in expect_payload.items():
@@ -431,11 +522,11 @@ async def test_iter_sse_skips_keepalive_event_and_bad_json():
         "\n"
         "data: [1,2]\n"
         "\n"
-        "data: {\"a\": 1}\n"
+        'data: {"a": 1}\n'
         "\n"
-        "data: {\"ok\": true, \"n\": 2}\n"
+        'data: {"ok": true, "n": 2}\n'
         "\n"
-        "data: {\"trail\": true}\n"
+        'data: {"trail": true}\n'
     )
     frames = [frame async for frame in iter_sse_data_frames(_LineResponse(blob))]
     assert frames == [{"a": 1}, {"ok": True, "n": 2}, {"trail": True}]
@@ -443,7 +534,7 @@ async def test_iter_sse_skips_keepalive_event_and_bad_json():
 
 @pytest.mark.asyncio
 async def test_iter_sse_joins_multiline_data():
-    blob = "data: {\n" 'data: "ok": true\n' "data: }\n" "\n"
+    blob = 'data: {\ndata: "ok": true\ndata: }\n\n'
     frames = [frame async for frame in iter_sse_data_frames(_LineResponse(blob))]
     assert frames == [{"ok": True}]
 
@@ -488,7 +579,9 @@ async def test_connect_rejects_wss_and_empty_scheme():
     "health",
     [
         lambda _r: httpx.Response(503, json={"ok": False, "error": {"code": "DOWN"}}),
-        lambda _r: httpx.Response(200, json={"ok": False, "data": {"status": "starting"}}),
+        lambda _r: httpx.Response(
+            200, json={"ok": False, "data": {"status": "starting"}}
+        ),
         lambda _r: httpx.Response(200, json={"status": "ready"}),
         lambda _r: httpx.Response(200, content=b"not-json"),
         lambda _r: httpx.Response(200, json=["nope"]),
@@ -664,7 +757,9 @@ async def test_push_loop_only_forwards_server_push_frames():
         received.append(frame)
         got.set()
 
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
             request_line = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
@@ -725,7 +820,9 @@ async def test_push_loop_backs_off_after_clean_stream_end(monkeypatch):
     async def on_push(_frame: dict) -> None:
         return None
 
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         nonlocal stream_hits
         try:
             header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
@@ -767,6 +864,172 @@ async def test_push_loop_backs_off_after_clean_stream_end(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_push_loop_stops_when_ephemeral_pod_is_unreachable(monkeypatch):
+    """Deleted Pod IPs must not retry events/stream forever."""
+    import jiuwenswarm.gateway.routing.http_agent_client as hac
+
+    monkeypatch.setattr(hac, "_PUSH_RETRY_SECONDS", 0.05)
+    monkeypatch.setattr(hac, "_CONNECT_TIMEOUT_SECONDS", 0.3)
+
+    stream_hits = 0
+    hold = asyncio.Event()
+
+    async def on_push(_frame: dict) -> None:
+        return None
+
+    async def _handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
+        nonlocal stream_hits
+        try:
+            header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
+            request_line = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
+            _method, path, *_rest = request_line.split(" ")
+            if path.endswith("/health"):
+                writer.write(_http_json({"ok": True, "data": {"status": "ready"}}))
+                await writer.drain()
+                return
+            if path.endswith("/events/stream"):
+                stream_hits += 1
+                writer.write(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\n"
+                    b"Cache-Control: no-cache\r\nConnection: keep-alive\r\n\r\n"
+                )
+                await writer.drain()
+                await hold.wait()
+                return
+            writer.write(_http_json({"ok": False, "error": {"code": "NOT_FOUND"}}))
+            await writer.drain()
+        finally:
+            writer.close()
+            try:
+                await writer.wait_closed()
+            except Exception:  # noqa: BLE001
+                pass
+
+    server = await asyncio.start_server(_handle, "127.0.0.1", 0)
+    port = server.sockets[0].getsockname()[1]
+    client = HttpSseAgentServerClient(retry_push_connect=False)
+    client.set_server_push_handler(on_push)
+    try:
+        await client.connect(f"http://127.0.0.1:{port}")
+        await asyncio.sleep(0.05)
+        assert stream_hits == 1
+        assert client._running is True
+        server.close()
+        await server.wait_closed()
+        hold.set()
+        async with asyncio.timeout(3):
+            while client._running:
+                await asyncio.sleep(0.05)
+        hits_after = stream_hits
+        await asyncio.sleep(0.25)
+        assert stream_hits == hits_after
+    finally:
+        hold.set()
+        await client.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_ephemeral_push_resets_connect_failures_after_success(monkeypatch):
+    """N=3: two TCP fails keep running; a successful stream zeros the counter; three in a row stop."""
+    import jiuwenswarm.gateway.routing.http_agent_client as hac
+
+    monkeypatch.setattr(hac, "_PUSH_RETRY_SECONDS", 0.02)
+    monkeypatch.setattr(hac, "_PUSH_MAX_CONNECT_FAILURES", 3)
+
+    script: asyncio.Queue[str] = asyncio.Queue()
+    holds: list[asyncio.Event] = []
+
+    class _HoldStream(httpx.AsyncByteStream):
+        def __init__(self, hold: asyncio.Event) -> None:
+            self._hold = hold
+
+        async def __aiter__(self):
+            yield b'data: {"event_type": "gateway.push_ready"}\n\n'
+            await self._hold.wait()
+
+        async def aclose(self) -> None:
+            self._hold.set()
+
+    class _ScriptedTransport(httpx.AsyncBaseTransport):
+        async def handle_async_request(self, request: httpx.Request) -> httpx.Response:
+            path = request.url.path
+            if path.endswith("/health"):
+                return httpx.Response(
+                    200,
+                    json={"ok": True, "data": {"status": "ready"}},
+                    request=request,
+                )
+            if not path.endswith("/events/stream"):
+                return httpx.Response(404, request=request)
+            action = await script.get()
+            if action == "fail":
+                raise httpx.ConnectError(
+                    "All connection attempts failed",
+                    request=request,
+                )
+            hold = asyncio.Event()
+            holds.append(hold)
+            return httpx.Response(
+                200,
+                headers={"content-type": "text/event-stream"},
+                stream=_HoldStream(hold),
+                request=request,
+            )
+
+    async def _wait_failures(count: int) -> None:
+        async with asyncio.timeout(2):
+            while client._push_connect_failures != count:
+                await asyncio.sleep(0)
+
+    http = httpx.AsyncClient(transport=_ScriptedTransport())
+    client = HttpSseAgentServerClient(http_client=http, retry_push_connect=False)
+
+    async def on_push(_frame: dict) -> None:
+        return None
+
+    client.set_server_push_handler(on_push)
+    try:
+        await client.connect("http://10.244.0.190:8766")
+        assert client._running is True
+        assert client._push_connect_failures == 0
+
+        await script.put("fail")
+        await _wait_failures(1)
+        assert client._running is True
+
+        await script.put("fail")
+        await _wait_failures(2)
+        assert client._running is True
+
+        await script.put("ok")
+        async with asyncio.timeout(2):
+            while client._push_connect_failures != 0 or not client._push_ready.is_set():
+                await asyncio.sleep(0)
+        assert client._running is True
+        assert len(holds) == 1
+
+        holds[-1].set()
+        await asyncio.sleep(0.05)
+        assert client._running is True
+        assert client._push_connect_failures == 0
+
+        await script.put("fail")
+        await script.put("fail")
+        await script.put("fail")
+        async with asyncio.timeout(2):
+            while client._running:
+                await asyncio.sleep(0)
+        assert client._push_connect_failures == 3
+    finally:
+        for hold in holds:
+            hold.set()
+        await client.disconnect()
+        await http.aclose()
+
+
+@pytest.mark.asyncio
 async def test_send_request_with_base_url_skips_connect():
     seen: list[str] = []
 
@@ -798,7 +1061,9 @@ async def test_send_request_with_base_url_skips_connect():
 @pytest.mark.asyncio
 async def test_send_request_base_url_5xx_raises():
     def handler(request: httpx.Request) -> httpx.Response:
-        return httpx.Response(502, json={"ok": False, "error": {"message": "bad gateway"}})
+        return httpx.Response(
+            502, json={"ok": False, "error": {"message": "bad gateway"}}
+        )
 
     client = HttpSseAgentServerClient(
         http_client=httpx.AsyncClient(transport=httpx.MockTransport(handler))
@@ -830,7 +1095,9 @@ async def _start_trailing_sse_stub(*, first_rid: str = "chat-old"):
     release_trailing = asyncio.Event()
     paths: list[str] = []
 
-    async def _handle(reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
+    async def _handle(
+        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
+    ) -> None:
         try:
             header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), timeout=5)
             request_line = header.split(b"\r\n", 1)[0].decode("ascii", errors="replace")
@@ -846,7 +1113,9 @@ async def _start_trailing_sse_stub(*, first_rid: str = "chat-old"):
 
             if path.endswith("/health"):
                 writer.write(
-                    _http_json({"ok": True, "data": {"status": "ready"}, "request_id": "h1"})
+                    _http_json(
+                        {"ok": True, "data": {"status": "ready"}, "request_id": "h1"}
+                    )
                 )
             elif path.endswith("/chat/completions"):
                 req_rid = first_rid
@@ -944,18 +1213,30 @@ async def test_send_request_stream_cancel_drops_trailing_chunks():
 
 
 @pytest.mark.asyncio
-async def test_new_stream_supersedes_old_stream_trailing_chunks():
+@pytest.mark.parametrize(
+    "old_user,new_session,new_user,superseded",
+    [("alice", "s1", "alice", True), ("alice", "s2", "alice", False),
+     ("alice", "s1", "bob", False), ("alice", None, "alice", False),
+     (None, "s1", None, False), ("", "s1", "", False)],
+)
+async def test_new_stream_supersedes_only_same_session(
+    old_user, new_session, new_user, superseded
+):
     server, port, first_sent, release_trailing = await _start_trailing_sse_stub()
     base = f"http://127.0.0.1:{port}"
     client = HttpSseAgentServerClient()
     old_yielded: list[str] = []
     new_yielded: list[str] = []
+    old_consumed = asyncio.Event()
+    new_consumed = asyncio.Event()
+    tasks = []
     try:
         await client.connect(base)
         old_env = e2a_from_agent_fields(
             request_id="chat-old",
             channel_id="web",
             session_id="s1",
+            user_id=old_user,
             req_method=ReqMethod.CHAT_SEND,
             params={"query": "old"},
             is_stream=True,
@@ -963,7 +1244,8 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
         new_env = e2a_from_agent_fields(
             request_id="chat-new",
             channel_id="web",
-            session_id="s1",
+            session_id=new_session,
+            user_id=new_user,
             req_method=ReqMethod.CHAT_SEND,
             params={"query": "new"},
             is_stream=True,
@@ -973,27 +1255,97 @@ async def test_new_stream_supersedes_old_stream_trailing_chunks():
             async for chunk in client.send_request_stream(old_env):
                 payload = chunk.payload or {}
                 old_yielded.append(str(payload.get("content") or ""))
+                old_consumed.set()
 
         old_task = asyncio.create_task(_consume_old())
+        tasks.append(old_task)
         await asyncio.wait_for(first_sent.wait(), timeout=5)
+        # A server write does not imply the client has consumed the first frame.
+        # Establish the old stream before superseding it, independent of scheduling.
+        await asyncio.wait_for(old_consumed.wait(), timeout=5)
         first_sent.clear()
 
         async def _consume_new() -> None:
             async for chunk in client.send_request_stream(new_env):
                 payload = chunk.payload or {}
                 new_yielded.append(str(payload.get("content") or ""))
+                new_consumed.set()
 
         new_task = asyncio.create_task(_consume_new())
+        tasks.append(new_task)
         await asyncio.wait_for(first_sent.wait(), timeout=5)
+        await asyncio.wait_for(new_consumed.wait(), timeout=5)
         release_trailing.set()
-        await asyncio.sleep(0.15)
-        old_task.cancel()
-        new_task.cancel()
-        await asyncio.gather(old_task, new_task, return_exceptions=True)
+        await asyncio.wait_for(asyncio.gather(*tasks), timeout=5)
         assert "first" in old_yielded
-        assert "STALE_TAIL" not in old_yielded
+        assert ("STALE_TAIL" not in old_yielded) is superseded
+        assert new_yielded == ["first", "STALE_TAIL"]
     finally:
         release_trailing.set()
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await client.disconnect()
         server.close()
         await server.wait_closed()
+
+
+@pytest.mark.asyncio
+async def test_three_sessions_continue_independently_while_bob_first_stream_waits():
+    """Transport regression: Carol's second request overlaps Bob's first SSE."""
+    bob_started = asyncio.Event()
+    carol_second = asyncio.Event()
+    received = {}
+
+    class Stream(httpx.AsyncByteStream):
+        def __init__(self, rid):
+            self.rid = rid
+
+        async def __aiter__(self):
+            if self.rid == "bob-1":
+                bob_started.set()
+                await asyncio.wait_for(carol_second.wait(), 5)
+            else:
+                await asyncio.wait_for(bob_started.wait(), 5)
+            if self.rid == "carol-2":
+                carol_second.set()
+            for sequence, event in enumerate(("chat.delta", "chat.final")):
+                yield _sse_blob(encode_agent_chunk_for_wire(
+                    AgentResponseChunk(
+                        request_id=self.rid, channel_id="web",
+                        payload={"event_type": event, "content": self.rid.split("-")[0]},
+                        is_complete=event == "chat.final",
+                    ), response_id=self.rid, sequence=sequence,
+                ))
+
+    def handler(request):
+        return httpx.Response(200, stream=Stream(request.headers["X-Request-Id"]))
+
+    async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as http:
+        client = HttpSseAgentServerClient(http_client=http)
+
+        async def conversation(user):
+            for turn in (1, 2):
+                rid = f"{user}-{turn}"
+                env = e2a_from_agent_fields(
+                    request_id=rid, channel_id="web", user_id=user,
+                    session_id=f"session-{user}", req_method=ReqMethod.CHAT_SEND,
+                    params={"query": "code"}, is_stream=True,
+                )
+                received[rid] = [chunk async for chunk in client.send_request_stream(
+                    env, base_url="http://as.test:8080"
+                )]
+                assert [c.payload["event_type"] for c in received[rid]] == [
+                    "chat.delta", "chat.final"
+                ]
+                assert all(c.request_id == rid and c.payload["content"] == user
+                           for c in received[rid])
+
+        try:
+            await asyncio.wait_for(asyncio.gather(*(
+                conversation(user) for user in ("alice", "bob", "carol")
+            )), 10)
+            assert len(received) == 6
+            assert not client._inflight_stream_ids
+        finally:
+            await client.disconnect()

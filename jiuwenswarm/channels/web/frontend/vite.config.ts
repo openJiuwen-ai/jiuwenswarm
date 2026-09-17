@@ -367,7 +367,7 @@ function loginAuthStartupCheck(): Plugin {
       console.info('[jiuwenswarm-web] 【正式身份认证模式，依赖manager ID认证服务】')
       const targets = [
         { name: 'manager ID认证服务', env: 'USER_WEB_IDP_TARGET', target: process.env.USER_WEB_IDP_TARGET, path: '/v1/auth/me' },
-        { name: 'Manager业务接口', env: 'USER_WEB_MANAGER_TARGET', target: process.env.USER_WEB_MANAGER_TARGET, path: '/api/v1/user-console/gateways' },
+        { name: 'Manager业务接口', env: 'USER_WEB_MANAGER_TARGET', target: process.env.USER_WEB_MANAGER_TARGET, path: '/api/v1/user-console/agent-contexts' },
       ]
       const missing = targets.filter(({ target }) => !target).map(({ env }) => env)
       if (missing.length > 0) {

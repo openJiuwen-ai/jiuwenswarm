@@ -6,9 +6,11 @@ import logging
 import threading
 import time
 from contextvars import ContextVar
-from typing import Any
+from typing import Any, Literal, TypeAlias
 
 logger = logging.getLogger(__name__)
+
+DeepResearchReportType: TypeAlias = Literal["professional", "brief"]
 
 _request_context: ContextVar[dict[str, Any] | None] = ContextVar("perf_request_context", default=None)
 _request_wall_start: ContextVar[float | None] = ContextVar("perf_request_wall_start", default=None)
@@ -46,6 +48,8 @@ def set_request_context(
     trace_id: str | None = None,
     service_id: str | None = None,
     agent_id: str | None = None,
+    requested_report_type: DeepResearchReportType | None = None,
+    begin_perf_collection: bool = True,
 ) -> dict[str, Any]:
     started_at = time.time()
     ctx: dict[str, Any] = {
@@ -57,23 +61,25 @@ def set_request_context(
         "started_at": started_at,
         "service_id": service_id,
         "agent_id": agent_id,
+        "requested_report_type": requested_report_type,
     }
     _request_context.set(ctx)
     _request_wall_start.set(started_at)
     with _REGISTRY_LOCK:
         _SESSION_ACTIVE[normalize_session_key(session_id)] = ctx
-    from jiuwenswarm.perf.collector import get_perf_collector
+    if begin_perf_collection:
+        from jiuwenswarm.perf.collector import get_perf_collector
 
-    get_perf_collector().begin_request(
-        session_id=session_id,
-        request_id=request_id,
-        channel_id=channel_id,
-        mode=mode,
-        trace_id=trace_id,
-        started_at=started_at,
-        service_id=service_id,
-        agent_id=agent_id,
-    )
+        get_perf_collector().begin_request(
+            session_id=session_id,
+            request_id=request_id,
+            channel_id=channel_id,
+            mode=mode,
+            trace_id=trace_id,
+            started_at=started_at,
+            service_id=service_id,
+            agent_id=agent_id,
+        )
     return ctx
 
 

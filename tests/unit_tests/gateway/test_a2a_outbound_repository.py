@@ -113,6 +113,44 @@ class _SecretProbe:
 
 
 @pytest.mark.asyncio
+async def test_history_filters_owner_before_limit_and_preserves_legacy_and_cleanup():
+    from jiuwenswarm.gateway.a2a_manager.outbound.registry import A2AOutboundRegistry
+
+    store = InMemoryPersistentBackend()
+    repository = A2AOutboundRepository(store)
+    repository.manager_owned = True
+    legacy = _dispatch("legacy", status=A2AOutboundDispatchStatus.COMPLETED).to_record()
+    legacy.pop("source_user_id")
+    await store.create("a2a_outbound_dispatch", legacy)
+    for name, owner, day in [("a1", "alice", 1), ("a2", "alice", 2), ("b1", "bob", 3)]:
+        await repository.create_dispatch(
+            replace(_dispatch(name, created_at=_stamp(day)), source_user_id=owner)
+        )
+        await repository.transition_dispatch(name, A2AOutboundDispatchStatus.COMPLETED)
+    registry = A2AOutboundRegistry(repository)
+    result = await registry.list_dispatches(limit=1, source_user_id="alice")
+    assert [item["dispatch_id"] for item in result["items"]] == ["a2"]
+    assert result["total"] == 2
+    result = await registry.list_dispatches(source_user_id="bob")
+    assert [item["dispatch_id"] for item in result["items"]] == ["b1"]
+    assert result["total"] == 1
+    assert await registry.list_dispatches(source_user_id="nobody") == {
+        "items": [],
+        "total": 0,
+    }
+    with pytest.raises(A2AOutboundError) as error:
+        await registry.list_dispatches()
+    assert error.value.code is A2AOutboundErrorCode.USER_IDENTITY_REQUIRED
+    assert (await repository.get_dispatch("legacy")).source_user_id is None
+    assert (await repository.get_dispatch("a1")).source_user_id == "alice"
+    with pytest.raises(ValueError):
+        await repository.transition_dispatch("a1", "completed", source_user_id="bob")
+    assert await repository.count_dispatches() == 4
+    assert await repository.cleanup_dispatches(max_records=1, max_age_days=0) == 3
+    assert [item.dispatch_id for item in await repository.list_dispatches()] == ["b1"]
+
+
+@pytest.mark.asyncio
 async def test_agent_roundtrip_redacts_card_secrets_and_hides_credential_ref() -> None:
     store = InMemoryPersistentBackend()
     repository = A2AOutboundRepository(store)
@@ -464,7 +502,9 @@ async def test_file_backend_cas_preserves_first_terminal_winner(tmp_path) -> Non
     }
 
 
-def test_storage_registry_exposes_only_personal_a2a_layouts(tmp_path) -> None:
+def test_storage_registry_uses_file_dispatch_for_personal_and_db_for_enterprise(
+    tmp_path,
+) -> None:
     personal = build_gateway_store_registry(persistent_root=tmp_path)
     enterprise = build_gateway_store_registry()
 
@@ -477,7 +517,12 @@ def test_storage_registry_exposes_only_personal_a2a_layouts(tmp_path) -> None:
         assert personal_layout.file.path == str(tmp_path / filename)
         assert personal_layout.file.key_fields == (key,)
         assert personal_layout.db is None
-        assert enterprise.get(name) is None
+    assert enterprise.get("a2a_outbound_agent") is None
+    enterprise_dispatch = enterprise.get("a2a_outbound_dispatch")
+    assert enterprise_dispatch is not None
+    assert enterprise_dispatch.file is None
+    assert enterprise_dispatch.db is not None
+    assert enterprise_dispatch.db.table == "a2a_outbound_dispatch"
 
 
 def test_repository_factory_creates_personal_json_repository() -> None:

@@ -4,7 +4,9 @@
 
 # pylint: disable=protected-access
 
+import asyncio
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 from openjiuwen.core.runner.callback import AbortError
@@ -88,3 +90,57 @@ def test_shared_interrupt_unwrap_handles_deep_and_cyclic_chains() -> None:
     second = SimpleNamespace(cause=first)
     first.cause = second
     assert extract_tool_interrupt(first) is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("first_finished", ["todo_modify", "bash"])
+async def test_parallel_tools_preserve_results_and_todo_update(monkeypatch, first_finished):
+    from jiuwenswarm.agents.harness.common.tools.subagent_executor.context_vars import (
+        get_subagent_parent_session,
+    )
+
+    session = _FakeSession()
+    rail = JiuSwarmStreamEventRail()
+    monkeypatch.setattr(rail, "_rebind_runtime_cwd", lambda **kwargs: None)
+    todo_updated = AsyncMock()
+    monkeypatch.setattr(rail, "_emit_todo_updated", todo_updated)
+    shared_extra = {}
+    todo_bound = asyncio.Event()
+    shell_bound = asyncio.Event()
+    first_done = asyncio.Event()
+
+    async def call(name):
+        ctx = _ctx(session)
+        ctx.extra = shared_extra
+        ctx.inputs.tool_call.id = name
+        ctx.inputs.tool_call.name = name
+        ctx.inputs.tool_name = name
+        ctx.inputs.tool_result = {"message": "ok"}
+        original_parent = get_subagent_parent_session()
+        if name == "bash":
+            await todo_bound.wait()
+        await rail.before_tool_call(ctx)
+        if name == "todo_modify":
+            todo_bound.set()
+            await shell_bound.wait()
+        else:
+            shell_bound.set()
+        if name != first_finished:
+            await first_done.wait()
+        try:
+            await rail.after_tool_call(ctx)
+            assert get_subagent_parent_session() is original_parent
+            assert ctx.extra is shared_extra
+        finally:
+            if name == first_finished:
+                first_done.set()
+
+    results = await asyncio.wait_for(
+        asyncio.gather(call("todo_modify"), call("bash"), return_exceptions=True),
+        timeout=5,
+    )
+    assert results == [None, None]
+    emitted = [o.payload["tool_result"] for o in session.outputs if o.type == "tool_result"]
+    assert {r["tool_call_id"] for r in emitted} == {"todo_modify", "bash"}
+    assert all(r["raw_output"] == {"message": "ok"} for r in emitted)
+    todo_updated.assert_awaited_once()

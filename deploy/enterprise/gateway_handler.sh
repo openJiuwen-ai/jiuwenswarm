@@ -100,18 +100,15 @@ gen_gateway_file() {
 render_gateway_files() {
     local mode="${DEPLOY_VARS["MODE"]}"
 
-    if [ "${mode}" == "dev" ]; then
-        DEPLOY_VARS["CLAW_HOME"]="/root"
-    else
-        DEPLOY_VARS["CLAW_HOME"]="/home/app"
-    fi
-
     render_secret_configmap
     gen_gateway_env_file
     gen_gateway_config_file
 
     ensure_available_port "GATEWAY_CONFIG_HTTP_NODE_PORT"
     gen_gateway_file
+    if [[ "${DEPLOY_VARS[JIUWENSWARM_LINK_MTLS_MODE]:-off}" != off ]]; then
+        link_mtls_render gateway "${CONFIG[GATEWAY_FILE]}"
+    fi
 }
 
 deploy_gateway() {

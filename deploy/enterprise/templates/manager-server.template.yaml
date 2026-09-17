@@ -49,9 +49,14 @@ spec:
       labels:
         app: <<MANAGER_SERVER_NAME>>
     spec:
+      securityContext:
+        fsGroup: <<CLAW_FS_GROUP>>
       containers:
       - name: manager
         image: <<MANAGER_SERVER_IMAGE>>
+        securityContext:
+          runAsUser: <<CLAW_USER>>
+          runAsGroup: <<CLAW_GROUP>>
         ports:
         - name: rest
           containerPort: <<MANAGER_REST_PORT>>
@@ -79,8 +84,15 @@ spec:
           value: "<<MANAGER_DB_NAME>>"
         - name: IDENTITY_PUBLIC_KEY_URL
           value: "http://<<IDENTITY_NAME>>:<<IDENTITY_REST_PORT>>/v1/auth/public_key"
-        - name: AGENT_RUNTIME_ENDPOINT
-          value: "http://<<AGENT_RUNTIME_NAME>>:<<AGENT_RUNTIME_PORT>>"
+        # nginx 变量 proxy_pass 需 FQDN；短名作回退时由 Manager 扩成 *.svc.cluster.local
+        - name: MANAGER_WEB_USER_WEB_TARGET
+          value: "http://<<WEB_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<WEB_HTTP_PORT>>"
+        - name: MANAGER_WEB_GATEWAY_HTTP_TARGET
+          value: "http://<<GATEWAY_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<GATEWAY_WEB_HTTP_PORT>>"
+        - name: MANAGER_WEB_GATEWAY_WS_TARGET
+          value: "http://<<GATEWAY_NAME>>.<<NAMESPACE>>.svc.cluster.local:<<WEB_PORT>>"
+        - name: NAMESPACE
+          value: "<<NAMESPACE>>"
         - name: AGENT_RUNTIME_SYNC_TIMEOUT
           value: "<<AGENT_RUNTIME_SYNC_TIMEOUT>>"
         - name: MANAGER_WS_ENABLED

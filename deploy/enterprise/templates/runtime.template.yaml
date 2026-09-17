@@ -66,10 +66,15 @@ spec:
                       values:
                         - <<AGENT_RUNTIME_NAME>>
                 topologyKey: "kubernetes.io/hostname"
+      securityContext:
+        fsGroup: <<CLAW_FS_GROUP>>
       containers:
         - name: agent-runtime
           image: <<AGENT_RUNTIME_IMAGE>>
           imagePullPolicy: IfNotPresent
+          securityContext:
+            runAsUser: <<CLAW_USER>>
+            runAsGroup: <<CLAW_GROUP>>
           ports:
             - name: rest
               containerPort: <<AGENT_RUNTIME_PORT>>
@@ -119,10 +124,15 @@ spec:
               value: "1"
             - name: AGENT_RUNTIME_KUBECONFIG
               value: ""
-            - name: AGENT_RUNTIME_DEFAULT_NAMESPACE
-              value: "<<NAMESPACE>>"
-            - name: AGENT_RUNTIME_SCOPE_FULL_TIMEOUT
-              value: "<<AGENT_RUNTIME_SCOPE_FULL_TIMEOUT>>"
+            # runtime 自身 ns(downward API):模板 namespace 为空时 AgentServer
+            # 落同名 ns;代码另有 SA 文件兜底,注入仅为显式化。
+            # AGENT_RUNTIME_DEFAULT_NAMESPACE/SCOPE_FULL_TIMEOUT 已随代码删除
+            # (2026-09-17 cyz2 实录:旧注入被新代码忽略→落 "default"→403)
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  apiVersion: v1
+                  fieldPath: metadata.namespace
             - name: AGENT_RUNTIME_LOG_LEVEL
               value: "<<AGENT_RUNTIME_LOG_LEVEL>>"
             - name: JIUWENSWARM_EDITION

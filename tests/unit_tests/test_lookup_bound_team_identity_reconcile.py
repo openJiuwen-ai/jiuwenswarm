@@ -41,6 +41,11 @@ def _patch_meta(monkeypatch, *, team_name="t", template_id="t", frozen=FROZEN):
 
 def test_reconcile_called_and_its_result_returned(monkeypatch):
     _patch_meta(monkeypatch)
+    monkeypatch.setattr(
+        TeamManager,
+        "_find_session_binding",
+        staticmethod(lambda _session_id: None),
+    )
     with patch(
         "jiuwenswarm.server.runtime.team_snapshot_refresh.reconcile_session_team_snapshot",
         return_value=RECONCILED,
@@ -58,6 +63,11 @@ def test_reconcile_called_and_its_result_returned(monkeypatch):
 
 def test_no_frozen_snapshot_skips_reconcile(monkeypatch):
     _patch_meta(monkeypatch, frozen=None, template_id="")
+    monkeypatch.setattr(
+        TeamManager,
+        "_find_session_binding",
+        staticmethod(lambda _session_id: None),
+    )
     with patch(
         "jiuwenswarm.server.runtime.team_binding_store.get_team_binding_store"
     ) as mock_bs, patch(

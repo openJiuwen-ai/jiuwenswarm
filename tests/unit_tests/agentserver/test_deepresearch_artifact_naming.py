@@ -169,6 +169,30 @@ def test_allocate_initial_paths_adds_same_title_suffix_for_markdown_and_sidecar_
     )
 
 
+@pytest.mark.parametrize("requested_name", ["report", "report.md", "report.html"])
+def test_allocate_initial_html_path_strips_known_suffixes(requested_name, tmp_path):
+    api = _api()
+
+    allocated = api.allocate_initial_html_path(tmp_path, requested_name)
+
+    assert allocated.name == "report-v1.html"
+
+
+def test_allocate_initial_html_path_checks_html_collision_without_markdown_reservation(
+    tmp_path,
+):
+    api = _api()
+    (tmp_path / "report-v1.md").write_text("professional", encoding="utf-8")
+
+    first = api.allocate_initial_html_path(tmp_path, "report.md")
+    first.write_text("brief", encoding="utf-8")
+    second = api.allocate_initial_html_path(tmp_path, "report.html")
+
+    assert first.name == "report-v1.html"
+    assert second.name == "report-2-v1.html"
+    assert not (tmp_path / "report-2-v1.md").exists()
+
+
 @pytest.mark.parametrize("path_field", ["markdown_path", "provenance_path", "final_result_path"])
 def test_allocate_initial_paths_treats_hidden_atomic_target_as_collision(tmp_path, path_field):
     api = _api()

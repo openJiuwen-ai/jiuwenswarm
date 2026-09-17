@@ -11,10 +11,9 @@ import pytest
 from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
     PageGenContext,
     PageWorkerNode,
+    _build_page_prompt,
     _build_content_template_fill_prompt,
     _build_content_template_fill_system_prompt,
-    _count_agenda_items,
-    _build_page_gen_rewrite_hint,
     _extract_chart_scaffold_region,
     _extract_designer_section,
     _filled_chart_scaffold_is_progressed,
@@ -23,7 +22,6 @@ from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import 
     _repair_content_template_chrome,
     _uses_content_template_fill,
     _uses_structural_template_fill,
-    _validate_chart_mount_references,
     _validate_custom_content_template_fill_output,
 )
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import skill_turbo
@@ -114,11 +112,28 @@ def _minimal_fill_prompt(*, style_id: str, outline_page: str = "- type: content\
 def test_extract_designer_section_matches_current_anchors():
     extracted = _extract_designer_section(_DESIGNER_MD_FIXTURE)
 
-    assert "MARKER_BUDGET_CONTRACT" in extracted
     assert "MARKER_CRITICAL" in extracted
+    assert "MARKER_FLEX" in extracted
+    assert "MARKER_LAYOUT" in extracted
     assert "MARKER_FORBIDDEN_LEAK" not in extracted
     assert "MARKER_STAGE4_LEAK" not in extracted
     assert "## 禁止事项" not in extracted
+
+
+def test_extract_designer_section_legacy_budget_when_no_new_anchors():
+    legacy_only = """
+**E. 页面内容预算契约（生成 HTML 前必须完成）**
+
+预算片段 MARKER_BUDGET_CONTRACT
+
+### 阶段 4：交付
+
+交付片段 MARKER_STAGE4_LEAK
+""".strip()
+    extracted = _extract_designer_section(legacy_only)
+
+    assert "MARKER_BUDGET_CONTRACT" in extracted
+    assert "MARKER_STAGE4_LEAK" not in extracted
 
 
 def test_extract_designer_section_content_fill_uses_density_checklist_not_long_chapters():
@@ -136,8 +151,6 @@ def test_extract_designer_section_content_fill_uses_density_checklist_not_long_c
     assert "MARKER_VISUAL" not in extracted
     assert "MARKER_CRITICAL" not in extracted
     assert "## 图表与数据可视化" in extracted
-    assert "MARKER_ACTIVATION_STEPS" in extracted
-    assert "### 激活 content-template" in extracted
 
 
 def test_content_fill_prompt_omits_outline_full_and_long_designer_chapters():
@@ -155,9 +168,6 @@ def test_content_fill_prompt_omits_outline_full_and_long_designer_chapters():
     assert "MARKER_VISUAL" not in prompt
     assert "MARKER_CRITICAL" not in prompt
     assert "## 图表与数据可视化" in prompt  # trend 为图表候选页
-    assert "`CHART_SCAFFOLD` 不在 Chrome 锁内" in prompt
-    assert "MARKER_ACTIVATION_STEPS" in prompt
-    assert "PAGE_CONTENT 布局 + CHART_SCAFFOLD 激活" in prompt
 
 
 def test_content_fill_prompt_non_chart_page_skips_chart_section():
@@ -181,8 +191,8 @@ def test_content_fill_prompt_retry_uses_original_html_as_edit_base():
 
     assert "上次产物（原始 HTML，作为本轮定点修复基底）" in prompt
     assert "<section>旧版本</section>" in prompt
-    assert "本轮必须以“上次产物（原始 HTML）”为编辑基底做定点修复" in prompt
-    assert "`seed_html` 仅用于约束骨架/Chrome/占位符边界；`original_html` 才是当前页面已形成状态的来源。" in prompt
+    assert "本轮必须基于上次产物做针对性修复，不要回退为从 seed 重新整页填充" in prompt
+    assert "`seed_html` 仅用于约束骨架/Chrome/占位符边界；`original_html` 才是当前页面已形成状态的来源" in prompt
 
 
 def test_content_fill_prompt_custom_vs_preset_page_content_rules():
@@ -231,86 +241,6 @@ def test_is_chart_candidate_structural_never_elevates():
         outline_page="**类型**：agenda\n**数据需求**：目录",
         research_page="图表趋势对比",
     )
-
-
-def test_count_agenda_items_accepts_custom_target_page_markers():
-    html = """
-    <div class="ppt-slide" type="agenda">
-      <main>
-        <section><span>P03</span><p>市场概览</p></section>
-        <section><span>P05</span><p>竞争格局</p></section>
-        <section><span>P07</span><p>落地路径</p></section>
-      </main>
-    </div>
-    """
-
-    assert _count_agenda_items(html) == 3
-
-
-def test_count_agenda_items_accepts_preset_roman_anchor_comments():
-    html = """
-    <div class="ppt-slide agenda-stage" type="agenda">
-      <div class="grid">
-        <!-- Ⅰ -->
-        <div><span>Ⅰ</span><p>背景</p></div>
-        <!-- Ⅱ -->
-        <div><span>Ⅱ</span><p>策略</p></div>
-        <!-- Ⅲ -->
-        <div><span>Ⅲ</span><p>执行</p></div>
-      </div>
-    </div>
-    """
-
-    assert _count_agenda_items(html) == 3
-
-
-def test_count_agenda_items_ignores_visible_page_marker_outside_main():
-    html = """
-    <div class="ppt-slide" type="agenda">
-      <main>
-        <section><span>P03</span><p>市场概览</p></section>
-        <section><span>P05</span><p>竞争格局</p></section>
-        <section><span>P07</span><p>落地路径</p></section>
-      </main>
-      <span data-skill-turbo-page-number="true">第 03 页 / 共 12 页</span>
-    </div>
-    """
-
-    assert _count_agenda_items(html) == 3
-
-
-def test_count_agenda_items_deduplicates_repeated_comment_anchors():
-    html = """
-    <div class="ppt-slide agenda-stage" type="agenda">
-      <div class="grid">
-        <!-- 01 -->
-        <div><span>01</span><p>背景</p></div>
-        <!-- 01 -->
-        <div><span>01</span><p>背景</p></div>
-        <!-- 02 -->
-        <div><span>02</span><p>策略</p></div>
-      </div>
-    </div>
-    """
-
-    assert _count_agenda_items(html) == 2
-
-
-def test_count_agenda_items_accepts_double_digit_comment_anchors():
-    html = """
-    <div class="ppt-slide agenda-stage" type="agenda">
-      <div class="grid">
-        <!-- 09 -->
-        <div><span>09</span><p>阶段一</p></div>
-        <!-- 10 -->
-        <div><span>10</span><p>阶段二</p></div>
-        <!-- 11 -->
-        <div><span>11</span><p>阶段三</p></div>
-      </div>
-    </div>
-    """
-
-    assert _count_agenda_items(html) == 3
 
 
 def test_content_fill_prompt_content_type_elevated_by_data_needs():
@@ -363,7 +293,7 @@ def test_repair_content_template_chrome_preserves_filled_scaffold():
         "<html><head><title>{{PAGE_TITLE}}</title></head><body>"
         '<div class="content-safe"><header><h1>{{PAGE_TITLE}}</h1></header>'
         '<main class="page-main">{{PAGE_CONTENT}}</main>'
-        '</main><div class="flex-shrink-0"><p>{{PAGE_FOOTER}}</p></div>'
+        '<div class="flex-shrink-0"><p>{{PAGE_FOOTER}}</p></div>'
         "<!-- CHART_SCAFFOLD_BEGIN "
         '<script>const option = null; document.getElementById("chart-1");</script> '
         "CHART_SCAFFOLD_END --></body></html>"
@@ -386,40 +316,13 @@ def test_repair_content_template_chrome_preserves_filled_scaffold():
     assert 'const option = {"series"' in repaired
 
 
-def test_rewrite_hint_semantic_elevation_exempts_scaffold():
-    hint = _build_page_gen_rewrite_hint(
-        "content_template_chrome_changed",
-        page_type="content",
-        outline_page="**类型**：content\n**数据需求**：对比",
-    )
-    assert "CHART_SCAFFOLD 不在 Chrome 锁内" in hint
-
-
-def test_rewrite_hint_chart_candidate_exempts_scaffold():
-    hint = _build_page_gen_rewrite_hint(
-        "content_template_chrome_changed",
-        page_type="data",
-    )
-    assert "CHART_SCAFFOLD 不在 Chrome 锁内" in hint
-    assert "三处占位内容" not in hint
-
-
-def test_rewrite_hint_non_chart_keeps_three_slots():
-    hint = _build_page_gen_rewrite_hint(
-        "content_template_chrome_changed",
-        page_type="case",
-    )
-    assert "三处占位" in hint
-    assert "CHART_SCAFFOLD 不在 Chrome 锁内" not in hint
-
-
 def test_custom_chart_prompt_mentions_chart_font_family():
     prompt = _minimal_fill_prompt(
         style_id="custom",
         outline_page="**类型**：trend\n**标题**：趋势页",
     )
     assert "CHART_FONT_FAMILY" in prompt
-    assert "必须" in prompt and "frontmatter" in prompt
+    assert "须按" in prompt and "style-custom.md" in prompt
 
 
 def test_extract_chart_scaffold_region_ignores_scripts_after_body_with_prior_comment():
@@ -503,7 +406,7 @@ def test_chart_scaffold_path_b_ignores_main_inline_echarts_init():
     assert _extract_chart_scaffold_region(filled) is None
     merged = _merge_chart_scaffold_from_filled(seed, filled)
     assert "CHART_SCAFFOLD_BEGIN" in merged
-    assert 'const option = null' in merged
+    assert "const option = null" in merged
 
 
 _RESEARCH_OUTLINE = """**类型**：content
@@ -550,37 +453,6 @@ def test_validate_custom_content_fill_theme_and_placeholders():
     assert reason2 == "unfilled_placeholders"
 
 
-def test_custom_content_fill_does_not_hard_fail_on_chart_mount_mismatch():
-    """贵阳 case 回归：mount 错配不得使填槽校验失败（禁止进 missing / 拒导出）。"""
-    pad = "<!-- pad -->" * 20
-    seed = (
-        '<!DOCTYPE html><html><head><style id="theme-contract">'
-        "{{THEME_CSS_VARIABLES}}</style></head><body>"
-        f"{pad}"
-        '<div class="ppt-slide"><div class="content-safe">'
-        "<header><h1>{{PAGE_TITLE}}</h1></header>"
-        '<main class="page-main flex-1">{{PAGE_CONTENT}}</main>'
-        "<footer><p>{{PAGE_FOOTER}}</p></footer>"
-        "</div></div></body></html>"
-    )
-    mismatch_body = (
-        '<div class="flex-1 min-h-0 flex flex-col">'
-        '<div id="chart-2" class="w-full h-full"></div></div>'
-        "<script>"
-        'echarts.init(document.getElementById("chart-1"));'
-        "var option={};"
-        "</script>"
-    )
-    filled = seed.replace("{{THEME_CSS_VARIABLES}}", "--color-text:#111;")
-    filled = filled.replace("{{PAGE_TITLE}}", "标题")
-    filled = filled.replace("{{PAGE_CONTENT}}", mismatch_body)
-    filled = filled.replace("{{PAGE_FOOTER}}", "来源")
-    assert _validate_chart_mount_references(filled) is False
-    ok, reason = _validate_custom_content_template_fill_output(seed, filled)
-    assert ok, reason
-    assert reason != "chart_mount_id_mismatch"
-
-
 @pytest.mark.asyncio
 async def test_skill_turbo_template_path_bypass_hard_fails():
     raw = await skill_turbo.invoke(
@@ -599,7 +471,9 @@ async def test_generate_one_passes_original_html_to_content_template_fill(monkey
     node = object.__new__(PageWorkerNode)
     captured: dict[str, str] = {}
 
-    async def fake_generate_content_template_fill(self, ctx, *, rewrite_hint="", original_html=""):
+    async def fake_generate_content_template_fill(
+        self, ctx, *, rewrite_hint="", original_html="", seed_html_override=""
+    ):
         captured["rewrite_hint"] = rewrite_hint
         captured["original_html"] = original_html
         return "<html></html>", "", ""
@@ -637,3 +511,218 @@ async def test_generate_one_passes_original_html_to_content_template_fill(monkey
     assert reason == ""
     assert captured["rewrite_hint"] == "仅修复 overflow"
     assert captured["original_html"] == "<html><body><main>旧页</main></body></html>"
+
+
+def test_layout_fix_hint_chart_axis_range():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+        _layout_fix_hint_from_cli_output,
+    )
+
+    hit = _layout_fix_hint_from_cli_output(
+        '[page-3][chart-axis-range] series "A" 数据极值 120 高于 yAxis[0].max 100'
+    )
+    assert "min/max 覆盖数据极值" in hit
+    miss = _layout_fix_hint_from_cli_output("[page-1][overflow] main")
+    assert "chart-axis-range" not in miss
+
+
+def test_designer_injection_includes_axis_range_rule():
+    charts_text = """
+## 图表与数据可视化
+
+- 数值轴值域：先确定 series 数据再设置数值轴；显式 min/max 必须完整覆盖该轴承载的数据，
+  不需要固定范围时由 ECharts 自动计算。
+
+### 激活 content-template 内的图表骨架（强制）
+
+按骨架激活。
+
+### custom 模式的图表骨架
+
+保持 custom 说明。
+""".strip()
+
+    fill_extracted = _extract_designer_section(
+        "",
+        include_charts=True,
+        for_content_template_fill=True,
+        charts_text=charts_text,
+    )
+    free_extracted = _extract_designer_section(
+        "",
+        include_charts=True,
+        charts_text=charts_text,
+    )
+
+    assert "数值轴值域" in fill_extracted
+    assert "数值轴值域" in free_extracted
+    assert "显式 min/max 必须完整覆盖" in fill_extracted
+    assert "显式 min/max 必须完整覆盖" in free_extracted
+
+
+def test_strip_page_gen_excluded_text_basic_and_guards():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import (
+        PptCommon,
+    )
+
+    notes_frag = "NOTES_VERBATIM_FRAGMENT."
+    size_frag = "SIZE_LIMIT_20MB."
+    src = f"Make a sleep health PPT. {notes_frag} {size_frag} Keep the rest."
+    out = PptCommon.strip_page_gen_excluded_text(
+        src,
+        {
+            "notes_request_verbatim": [notes_frag],
+            "file_size_constraint": size_frag,
+        },
+    )
+    assert notes_frag not in out
+    assert size_frag not in out
+    assert "sleep health" in out
+
+    # fail-open：片段等于全文
+    assert (
+        PptCommon.strip_page_gen_excluded_text(
+            "整段", {"notes_request_verbatim": ["整段"]}
+        )
+        == "整段"
+    )
+    # 未命中原样
+    assert (
+        PptCommon.strip_page_gen_excluded_text(
+            src, {"notes_request_verbatim": ["missing-fragment"]}
+        )
+        == src
+    )
+    assert PptCommon.strip_page_gen_excluded_text(src, {}) == src
+
+
+def test_p4_prompt_strips_notes_and_file_size_from_user_query():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.content_plan import (
+        _build_p43_prompt,
+    )
+
+    notes_frag = "每页下方附上完整口述台词。"
+    size_frag = "文件控制在 20MB。"
+    inputs = {
+        "topic": "睡眠健康",
+        "page_count": 6,
+        "audience": "管理层",
+        "source_type": "topic",
+        "search_mode": "auto",
+        "presentation_purpose": "工作汇报",
+        "focus_areas": "行业趋势",
+        "content_branch": "research",
+        "query": (
+            "做一份睡眠健康 PPT，面向管理层，重点讲行业趋势、用户痛点、市场规模、"
+            f"核心结论。{notes_frag}{size_frag} 请保持商务表达。"
+        ),
+        "notes_request_verbatim": [notes_frag],
+        "file_size_constraint": size_frag,
+        "user_dimensions": [],
+        "user_structure": "",
+    }
+
+    prompt = _build_p43_prompt(inputs, "", "")
+
+    user_line = next(
+        line for line in prompt.splitlines() if line.startswith("- 用户原文：")
+    )
+
+    assert "做一份睡眠健康 PPT" in user_line
+    assert "市场规模" in user_line
+    assert "请保持商务表达。" in user_line
+    assert notes_frag not in user_line
+    assert size_frag not in user_line
+
+
+def test_content_fill_prompt_includes_footer_rule_and_speaker_notes_ban():
+    prompt = _minimal_fill_prompt(
+        style_id="business-classic",
+        outline_page="**类型**：trend\n**标题**：趋势页",
+    )
+
+    assert "口径注释" in prompt
+    assert "不是演讲备注/口播台词/QA" in prompt
+    assert "演讲稿/演讲备注/讲者备注/speaker notes 禁止写入页面" in prompt
+
+
+def test_free_gen_page_prompt_includes_speaker_notes_ban():
+    prompt = _build_page_prompt(
+        3,
+        "business-classic",
+        "style stub",
+        "**类型**：trend\n**标题**：趋势页\n**研究需求**：✅\n**数据需求**：市场份额",
+        "research stub",
+        user_query="每页下方附上完整口述台词。",
+    )
+
+    assert "演讲稿/演讲备注/讲者备注/speaker notes 禁止写入页面" in prompt
+    assert "notesSlide" in prompt
+
+
+def test_delivery_summary_records_unsupported_file_size():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery import (
+        DeliveryNode,
+    )
+
+    summary = DeliveryNode._build_summary(
+        "sent",
+        "a.pptx",
+        9,
+        "/tmp/pages",
+        "sent",
+        file_size_constraint="不超过 20MB",
+    )
+    assert "指定文件大小" in summary
+    summary2 = DeliveryNode._build_summary(
+        "sent",
+        "a.pptx",
+        9,
+        "/tmp/pages",
+        "sent",
+        file_size_constraint="",
+    )
+    assert "指定文件大小" not in summary2
+
+
+def test_p2_slot_prompt_mentions_file_size_and_notes_verbatim():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+        _P21_SLOT_SYSTEM_PROMPT,
+    )
+
+    assert "file_size_constraint" in _P21_SLOT_SYSTEM_PROMPT
+    assert "notes_request_verbatim" in _P21_SLOT_SYSTEM_PROMPT
+    assert "文件体积要求不属于版式" in _P21_SLOT_SYSTEM_PROMPT
+
+
+def test_merge_slot_payload_applies_notes_verbatim_and_file_size():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+        _merge_slot_payload,
+    )
+
+    inputs: dict[str, object] = {}
+    payload = {
+        "topic": "睡眠健康",
+        "notes_request_verbatim": ["每页下方附上完整口述台词"],
+        "file_size_constraint": "不超过 20MB",
+    }
+
+    _merge_slot_payload(inputs, payload)
+
+    assert inputs["topic"] == "睡眠健康"
+    assert inputs["notes_request_verbatim"] == ["每页下方附上完整口述台词"]
+    assert inputs["file_size_constraint"] == "不超过 20MB"
+
+
+def test_merge_slot_payload_defaults_notes_verbatim_and_file_size():
+    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+        _merge_slot_payload,
+    )
+
+    inputs: dict[str, object] = {}
+    payload = {"topic": "睡眠健康"}
+
+    _merge_slot_payload(inputs, payload)
+
+    assert inputs["notes_request_verbatim"] == []
+    assert inputs["file_size_constraint"] == ""

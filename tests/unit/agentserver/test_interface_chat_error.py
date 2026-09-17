@@ -159,6 +159,10 @@ async def test_chat_error_history_record_persists_error_type_at_top_level(
     sessions_root.mkdir()
     monkeypatch.setattr(session_history, "get_agent_sessions_dir", lambda: sessions_root)
     monkeypatch.setattr(session_metadata, "get_agent_sessions_dir", lambda: sessions_root)
+    monkeypatch.setattr(
+        "jiuwenswarm.server.handlers._shared._sessions_dir_for_request",
+        lambda _request: sessions_root,
+    )
     monkeypatch.setattr(interface_module, "get_config", lambda: {"preferred_language": "zh"})
     monkeypatch.setattr(interface_module, "get_memory_mode", lambda _cfg: "off")
     monkeypatch.setattr(interface_module, "build_user_prompt", lambda q, **_kw: q)

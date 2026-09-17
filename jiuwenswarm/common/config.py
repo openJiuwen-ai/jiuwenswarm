@@ -17,6 +17,7 @@ from ruamel.yaml.scalarstring import DoubleQuotedScalarString, PlainScalarString
 import yaml
 import portalocker
 
+from jiuwenswarm.edition import is_enterprise
 from jiuwenswarm.common.kv_cache_affinity_config import (
     ASCEND_AFFINITY_PROVIDER,
     get_default_model_provider as resolve_default_model_provider,
@@ -399,6 +400,23 @@ def _get_bool_env(value: str | None) -> bool | None:
     return value.lower() in ("true", "1", "yes")
 
 
+def coerce_config_bool(value: Any, default: bool) -> bool:
+    """Parse yaml/json/env booleans; treat ``"false"`` / ``"0"`` as False."""
+    if isinstance(value, bool):
+        return value
+    if value is None:
+        return default
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        text = value.strip().lower()
+        if text in {"1", "true", "yes", "on"}:
+            return True
+        if text in {"0", "false", "no", "off", ""}:
+            return False
+    return default
+
+
 def _get_evolution_config(config: dict[str, Any] | None) -> dict[str, Any]:
     if not isinstance(config, dict):
         return {}
@@ -491,6 +509,47 @@ def get_evolution_enabled(config: dict[str, Any] | None) -> bool:
     Prefer :func:`get_skill_evolution_enabled`; kept for backward compatibility.
     """
     return get_skill_evolution_enabled(config)
+
+
+def _get_ttse_config(config: dict[str, Any] | None) -> dict[str, Any]:
+    """Return the TTSE config block from a full yaml or a react-section cache."""
+    if not isinstance(config, dict):
+        return {}
+    react_config = config.get("react")
+    if isinstance(react_config, dict) and isinstance(react_config.get("ttse"), dict):
+        return react_config["ttse"]
+    ttse_config = config.get("ttse")
+    if isinstance(ttse_config, dict):
+        return ttse_config
+    return {}
+
+
+def get_ttse_enabled(config: dict[str, Any] | None) -> bool:
+    """Return whether TTSE (FACT/TIP) rail should be mounted.
+
+    Opt-in: missing / unset ``enabled`` is False (shipped template and docs 2.7).
+    Reads ``react.ttse.enabled`` first, then top-level ``ttse.enabled``.
+    """
+    return coerce_config_bool(_get_ttse_config(config).get("enabled"), False)
+
+
+def get_ttse_embedding_config(config: dict[str, Any] | None) -> dict[str, str]:
+    """Return normalized ``react.ttse.embedding`` fields for TTSE retrieval.
+
+    Expects ``api_key`` / ``base_url`` / ``model``. Returns an empty dict when
+    the block is missing or any required field is blank after strip (caller
+    should leave embedding disabled and fall back to whole-bank injection).
+    """
+    ttse = _get_ttse_config(config)
+    raw = ttse.get("embedding")
+    if not isinstance(raw, dict):
+        return {}
+    api_key = str(raw.get("api_key") or "").strip()
+    base_url = str(raw.get("base_url") or "").strip()
+    model = str(raw.get("model") or "").strip()
+    if not (api_key and base_url and model):
+        return {}
+    return {"api_key": api_key, "base_url": base_url, "model": model}
 
 
 def get_skill_create_enabled(config: dict[str, Any] | None) -> bool:
@@ -2994,6 +3053,13 @@ def update_sandbox_endpoint(
     所有 ``None`` 入参表示"本次不修改该字段, 保留 config.yaml 中既有值",
     以方便 ``_handle_sandbox_enable`` 在不同阶段分批落盘。
     """
+    # 企业级:config.yaml 为只读挂载, 不回写
+    if is_enterprise():
+        logger.info(
+            "[config] enterprise: config.yaml 为只读挂载, "
+            "sandbox endpoint 不持久化(仅运行期生效)")
+        return set()
+
     url_value = str(url or "").strip()
     type_value = str(sandbox_type or "").strip()
     if not url_value or not type_value:
@@ -3126,6 +3192,13 @@ def update_sandbox_runtime(patch: dict[str, Any]) -> dict[str, Any]:
             ``files`` 字典若提供则整体替换；其余键按值合并。 ``idle_*`` 字段
             接受整数秒数 (``<= 0`` 归一化为 ``None`` = 禁用淘汰) 或 ``None``。
     """
+    # 企业级:config.yaml 为只读挂载,不回写(返回当前 runtime,未变更)
+    if is_enterprise():
+        logger.info(
+            "[config] enterprise: config.yaml 为只读挂载, "
+            "sandbox runtime 不持久化(仅运行期生效)")
+        return dict(get_sandbox_runtime() or {})
+
     if not isinstance(patch, dict):
         raise ValueError("patch must be an object")
 

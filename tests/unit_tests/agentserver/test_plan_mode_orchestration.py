@@ -581,8 +581,9 @@ def test_agent_lookup_restores_project_dir_for_interrupt_continuation() -> None:
     from jiuwenswarm.server.runtime.agent_manager import AgentManager
 
     manager = AgentManager.__new__(AgentManager)
-    manager.service_id = "default"
-    manager.agent_id = "office"
+    manager._workspace_key = "default"
+    manager._env_service_id = "default"
+    manager._env_agent_id = "office"
     request = SimpleNamespace(
         session_id="sess_project_resume",
         params={

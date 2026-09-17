@@ -77,6 +77,7 @@ async def get_or_create_gateway_enc_keypair() -> GatewayEncKeypair:
             "private_key": cp.b64e(priv),
             "public_key": cp.b64e(pub),
             "fingerprint": fp,
+            "data": None,
             "created_at": now,
             "updated_at": now,
         },
@@ -108,6 +109,7 @@ async def get_or_create_gateway_sign_keypair() -> GatewaySignKeypair:
             "private_key": priv_b64,
             "public_key": pub_b64,
             "fingerprint": fp,
+            "data": None,
             "created_at": now,
             "updated_at": now,
         },
@@ -154,6 +156,8 @@ async def store_manager_sign_pubkey(
             {
                 "id": _KEYPAIR_ID,
                 "bound_at": now,
+                "data": None,
+                "created_at": now,
                 **data,
             },
         )

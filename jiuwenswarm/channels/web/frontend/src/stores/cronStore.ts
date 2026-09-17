@@ -64,6 +64,10 @@ interface CronState {
   toggleCronGroup: (groupId: string) => void;
   loadCronSessions: (projectId: string, cronId: string) => Promise<void>;
   isCronGroupExpanded: (groupId: string) => boolean;
+  // projectId → 该 project 下全部 cron 会话（cron_id 非空），会话组按此聚合（不再依赖 job 列表）
+  projectCronSessions: Record<string, Session[]>;
+  projectCronSessionsLoading: Record<string, boolean>;
+  loadProjectCronSessions: (projectId: string) => Promise<void>;
 }
 
 // 将未读状态持久化到 localStorage，用 queueMicrotask 延迟到当前同步热路径之后执行，
@@ -87,6 +91,8 @@ export const useCronStore = create<CronState>((set, get) => ({
   cronSessions: {},
   cronSessionsLoading: {},
   lastRunSessionId: {},
+  projectCronSessions: {},
+  projectCronSessionsLoading: {},
   setLastRunSessionId: (jobId, sessionId) =>
     set((s) => ({ lastRunSessionId: { ...s.lastRunSessionId, [jobId]: sessionId } })),
   pendingActiveHistoryRefresh: null,
@@ -148,10 +154,15 @@ export const useCronStore = create<CronState>((set, get) => ({
       });
 
       const activeSessionId = useChatStore.getState().activeSessionId;
+      const projectIdsToRefresh = new Set<string>();
 
       for (const jobId of updatedJobIds) {
         const job = webJobs.find((item) => item.id === jobId);
         const lastSid = (job?.last_session_id ?? '').trim();
+        const projectId = job?.project_id || 'default';
+        // 侧栏会话组读 projectCronSessions。本函数只挂在企业版 HTTP 的 30s 轮询上，
+        // 个人版 WS 推送不走这里。
+        projectIdsToRefresh.add(projectId);
         // 当前正打开的会话恰好是这次新产生的 cron 会话：企业版 HTTP 无 push，
         // 立即执行跳转后 skipHistoryLoad，消息两头落空。这里用轮询兜底——
         // 投递一次历史刷新请求，并直接清掉蓝点（消息即将实打实显示出来）。
@@ -159,14 +170,18 @@ export const useCronStore = create<CronState>((set, get) => ({
           get().clearCronJobUnread(jobId);
           get().requestActiveHistoryRefresh(lastSid);
           if (job) {
-            void get().loadCronSessions(job.project_id || 'default', jobId);
+            void get().loadCronSessions(projectId, jobId);
           }
           continue;
         }
         get().markCronJobUnread(jobId);
         if (job) {
-          void get().loadCronSessions(job.project_id || 'default', jobId);
+          void get().loadCronSessions(projectId, jobId);
         }
+      }
+
+      for (const projectId of projectIdsToRefresh) {
+        void get().loadProjectCronSessions(projectId);
       }
     } catch {
       // Pull sync is best-effort; avoid surfacing transient HTTP errors in the sidebar.
@@ -206,6 +221,27 @@ export const useCronStore = create<CronState>((set, get) => ({
     } catch {
       set((state) => ({
         cronSessionsLoading: { ...state.cronSessionsLoading, [cronId]: false },
+      }));
+    }
+  },
+
+  loadProjectCronSessions: async (projectId: string) => {
+    set((state) => ({
+      projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: true },
+    }));
+    try {
+      // 不带 cron_id：拉该 project 下全部 cron 会话（cron_id 非空），供会话组聚合。
+      const payload = await projectRegistryClient.getCronSessions(projectId);
+      set((state) => ({
+        projectCronSessions: {
+          ...state.projectCronSessions,
+          [projectId]: payload.sessions || [],
+        },
+        projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: false },
+      }));
+    } catch {
+      set((state) => ({
+        projectCronSessionsLoading: { ...state.projectCronSessionsLoading, [projectId]: false },
       }));
     }
   },
