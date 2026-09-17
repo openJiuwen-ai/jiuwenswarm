@@ -1015,7 +1015,7 @@ async def test_core_error_is_returned_as_final_e2a_error(capture_wire: None) -> 
     assert ws.sent[0]["response_kind"] == "e2a.error"
     assert ws.sent[0]["body"]["details"] == {
         "error": "safe PersonalContext error",
-        "code": StatusCode.ERROR.code,
+        "code": str(StatusCode.ERROR.code),
         "status": "ERROR",
     }
 

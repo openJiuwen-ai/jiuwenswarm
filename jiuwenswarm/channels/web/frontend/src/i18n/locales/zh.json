@@ -1809,7 +1809,8 @@
       "statKnowledge": "上下文节点数",
       "statCollecting": "正在采集",
       "knowledgeSource": "上下文来源",
-      "lastRun": "上次采集"
+      "lastRun": "上次采集",
+      "fetchTaskRunning": "当前有采集任务正在运行，请等待完成后再修改配置"
     },
     "addContent": {
       "title": "添加内容",

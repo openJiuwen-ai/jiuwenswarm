@@ -10,7 +10,7 @@
  * 数据走 usePersonalContextStore；状态轮询 5s。
  */
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Loader2, PlayCircle, Plus, X } from 'lucide-react';
 import { Switch } from '../Switch';
@@ -24,9 +24,10 @@ import {
   PROVIDER_LABEL_KEYS,
   PROVIDER_ORDER,
   FREQUENCY_SECONDS,
-  pcApi,
+  isFetchTaskRunningError,
 } from '../../services/personalContextApi';
 import { requestSettingsModule } from '../../features/settings/settingsNavigation';
+import { toast } from '../../components/ui/Toast/toastStore';
 import { AddContentDrawer } from './AddContentDrawer';
 import localFilesIcon from '../../assets/settings/channels/local-files.svg';
 import edgeBookmarksIcon from '../../assets/settings/channels/edge-bookmarks.svg';
@@ -90,10 +91,10 @@ export function PersonalContextServicesPanel({
     config,
     graph,
     status,
+    runHistories,
     loadingServices,
     pendingWrites,
-    loadServices,
-    loadStatus,
+    batchRefresh,
     setServiceEnabled,
     deleteService,
     runOne,
@@ -103,60 +104,25 @@ export function PersonalContextServicesPanel({
     isProviderAuthorized,
   } = usePersonalContextStore();
   const [notice, setNotice] = useState<PanelNotice | null>(null);
-  const [runHistories, setRunHistories] = useState<Record<string, FetchRunRecord[]>>({});
   const [drawerOpen, setDrawerOpen] = useState(false);
   const [editing, setEditing] = useState<FetchServiceConfig | null>(null);
   const [selectedProvider, setSelectedProvider] = useState<FetchProvider>(PROVIDER_ORDER[0]);
   /** 用户是否手动点过分类；为 true 后不再自动切换默认分类。 */
   const [userTouched, setUserTouched] = useState(false);
-  const pollRef = useRef<number | null>(null);
-  const runStatusLoadingRef = useRef(false);
-  const runStatusRequestRef = useRef(0);
 
-  /** 一次批量拉取全部服务运行历史；失败不干扰任务列表与进度轮询。 */
-  const loadRunHistories = useCallback(() => {
-    if (runStatusLoadingRef.current) return;
-    runStatusLoadingRef.current = true;
-    const requestId = ++runStatusRequestRef.current;
-    void pcApi.getRunStatus()
-      .then((response) => {
-        if (requestId !== runStatusRequestRef.current) return;
-        setRunHistories(
-          Object.fromEntries(response.services.map((item) => [item.service_id, item.runs])),
-        );
-      })
-      .catch(() => {})
-      .finally(() => {
-        runStatusLoadingRef.current = false;
-      });
-  }, []);
-
-  // 轮询同时刷新服务列表与运行态进度（fetch_service_states / fetch_run_progress），
-  // 否则任务页进度会停留在进页快照（见 ServicesPanel.refresh 旧实现只刷 loadServices）。
-  const refresh = useCallback(() => {
-    void loadServices().catch((e: unknown) => {
-      setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
-    });
-    void loadStatus().catch(() => {
-      // 进度刷新失败不阻断列表展示
-    });
-    loadRunHistories();
-  }, [loadServices, loadStatus, loadRunHistories]);
-
+  // 5s 轮询：一次 RTT 拉齐 services + status + runHistories，合并成单次 set()
+  // 避免此前三路独立请求在不同时刻独立 set() 造成的三次级联重渲染与 UI 抖动。
   useEffect(() => {
     if (!isConnected || !isActive) return;
-    refresh();
+    batchRefresh().catch(() => {});
     // 授权态进页只读一次：github/gitcode 后端会真实校验 PAT（打外部 API），
     // 飞书也只需进页同步一次（authorizing 态另有专用轮询），均不宜随 5s 轮询反复调用。
     void loadAuthStatus('feishu').catch(() => {});
     void loadAuthStatus('github').catch(() => {});
     void loadAuthStatus('gitcode').catch(() => {});
-    pollRef.current = window.setInterval(refresh, POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current != null) window.clearInterval(pollRef.current);
-      pollRef.current = null;
-    };
-  }, [isConnected, isActive, refresh, loadAuthStatus]);
+    const id = window.setInterval(() => batchRefresh().catch(() => {}), POLL_INTERVAL_MS);
+    return () => window.clearInterval(id);
+  }, [isConnected, isActive, batchRefresh, loadAuthStatus]);
 
   const services = config.fetch_services;
 
@@ -211,6 +177,10 @@ export function PersonalContextServicesPanel({
         }
         await deleteService(serviceId);
       } catch (e) {
+        if (isFetchTaskRunningError(e)) {
+          toast.open({ content: t('personalContext.services.fetchTaskRunning'), variant: 'warning' });
+          return;
+        }
         setNotice({ kind: 'error', message: e instanceof Error ? e.message : String(e) });
       }
     },
@@ -434,7 +404,7 @@ export function PersonalContextServicesPanel({
         <AddContentDrawer
           editService={editing}
           onClose={() => setEditing(null)}
-          onCreated={() => { setEditing(null); refresh(); }}
+          onCreated={() => { setEditing(null); batchRefresh().catch(() => {}); }}
         />
       )}
     </div>

@@ -12,6 +12,7 @@ import contextlib
 from copy import deepcopy
 import os
 from pathlib import Path
+import logging
 import stat
 import tempfile
 from collections.abc import Awaitable, Callable
@@ -23,6 +24,8 @@ import yaml
 from openjiuwen.harness.personal_context import PersonalContext
 
 from jiuwenswarm.common.config import get_config, get_default_models
+
+_LOGGER = logging.getLogger(__name__)
 
 
 _CONFIG_FILENAME = "personal_context.yaml"
@@ -672,6 +675,7 @@ class PersonalContextHostAPI:
         payload: bytes,
         *,
         known_previous_active: bool | None = None,
+        known_status: object | None = None,
     ) -> None:
         """Apply one validated complete configuration while the Host lock is held."""
 
@@ -682,13 +686,23 @@ class PersonalContextHostAPI:
         )
 
         previous_active = False
+        has_active_fetch = False
         if previous is not None:
-            if known_previous_active is not None:
+            if known_status is not None:
+                previous_active = _is_runtime_active(known_status)
+                has_active_fetch = any(
+                    s in {"RUNNING", "STOPPING"}
+                    for s in getattr(known_status, "fetch_service_states", {}).values()
+                )
+            elif known_previous_active is not None:
                 previous_active = known_previous_active
             else:
                 try:
-                    previous_active = _is_runtime_active(
-                        await self._personal_context.snapshot()
+                    status = await self._personal_context.snapshot()
+                    previous_active = _is_runtime_active(status)
+                    has_active_fetch = any(
+                        s in {"RUNNING", "STOPPING"}
+                        for s in getattr(status, "fetch_service_states", {}).values()
                     )
                 except asyncio.CancelledError:
                     raise
@@ -703,6 +717,18 @@ class PersonalContextHostAPI:
             return
 
         temporary: Path | None = _stage_yaml(self._config_path, payload)
+
+        # A running fetch round must not be silently cancelled by a config
+        # update: reject the change so the caller can surface a clear
+        # "task is running, please try later" message to the user.
+        if previous_active and has_active_fetch:
+            if temporary is not None:
+                with contextlib.suppress(OSError):
+                    temporary.unlink()
+            _raise_host_error(
+                "A fetch task is running",
+                status_name="CONTEXT_PROACTIVE_STATE_INVALID",
+            )
         disabling = (
             previous is not None
             and previous.collection_enabled
@@ -1155,7 +1181,7 @@ class PersonalContextHostAPI:
                     candidate,
                     stored,
                     _serialize_config(stored),
-                    known_previous_active=_is_runtime_active(status),
+                    known_status=status,
                 )
             except BaseException as exc:
                 restore_error: BaseException | None = None
@@ -1621,7 +1647,11 @@ class PersonalContextHostAPI:
             timeout_seconds=_STOP_TIMEOUT_SECONDS
         )
         if previous is None:
+            previous_instance = self._personal_context
             self._personal_context = PersonalContext(home=self._home)
+            discard = getattr(previous_instance, "shutdown", None)
+            if callable(discard):
+                discard()
             self._config = None
             self._stored_config = None
             return

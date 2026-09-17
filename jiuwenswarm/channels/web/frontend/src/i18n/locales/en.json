@@ -1827,7 +1827,8 @@
       "statKnowledge": "Context Nodes",
       "statCollecting": "Collecting",
       "knowledgeSource": "Context Source",
-      "lastRun": "Last Run"
+      "lastRun": "Last Run",
+      "fetchTaskRunning": "A fetch task is currently running. Please wait for it to complete before changing settings."
     },
     "addContent": {
       "title": "Add content",
