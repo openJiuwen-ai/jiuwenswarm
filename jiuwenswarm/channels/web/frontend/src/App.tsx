@@ -69,6 +69,7 @@ import { readAgentTemplateName } from './features/agentIdentity';
 import { normalizeTeamLeaderIdentity } from './features/teamLeaderIdentity';
 import { useWebSocket, mergePersistedGoalCompletionMessages, stampGoalObjectiveMessages, useResponsiveLayout, useResponsivePanelResize } from './hooks';
 import { webRequest } from './services/webClient';
+import { getArchiveErrorCode } from './features/workspace/archivedTaskClient';
 import type { WorkflowRun } from './components/teamArea/workflowTypes';
 import { processOAuthCallback } from './utils/gitcodeOAuth';
 import { useTeamPanelState } from './features/teamPanelState';
@@ -3426,7 +3427,9 @@ function AppContent({
       await deleteSideConversation(side.session.session_id);
     } catch (error) {
       console.error('Failed to close side conversation:', error);
-      window.alert(t('multiSession.errors.delete'));
+      window.alert(t(getArchiveErrorCode(error) === 'SESSION_BUSY'
+        ? 'multiSession.project.errors.deleteSessionBusy'
+        : 'multiSession.errors.delete'));
     }
   }, [deleteSideConversation, t]);
 

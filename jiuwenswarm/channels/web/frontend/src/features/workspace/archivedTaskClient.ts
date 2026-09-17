@@ -87,6 +87,7 @@ export interface ProjectOperationFailurePayload {
   phase?: string;
   retryable?: boolean;
   completed_session_ids?: string[];
+  completed_conversation_session_ids?: string[];
   completed_cron_job_ids?: string[];
   failed_items?: Array<{
     resource_type: 'session' | 'cron' | 'project';
@@ -103,6 +104,8 @@ export interface ProjectOperationFailure {
   retryable: boolean;
   /** 后端提供的安全错误文本，可作为辅助详情展示。 */
   detail: string | null;
+  deletedConversations: number;
+  deletedCronJobs: number;
 }
 
 type ArchiveRequest = <T = unknown>(
@@ -143,6 +146,8 @@ export function parseProjectOperationFailure(error: unknown): ProjectOperationFa
     phase: (payload && typeof payload.phase === 'string' && payload.phase) || '',
     retryable: (payload && payload.retryable === true) || isArchiveErrorRetriable(error),
     detail,
+    deletedConversations: payload?.completed_conversation_session_ids?.length ?? 0,
+    deletedCronJobs: payload?.completed_cron_job_ids?.length ?? 0,
   };
 }
 

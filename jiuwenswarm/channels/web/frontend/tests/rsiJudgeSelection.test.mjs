@@ -18,14 +18,24 @@ globalThis.rsiJudgeRequest = async (method, params) => {
   if (method === 'rsi.task.list') return { tasks: [] };
   return { task_id: 'probe', status: 'CREATED' };
 };
+const dialogCreateParams = [];
+globalThis.rsiDialogCreateParams = dialogCreateParams;
 const mocks = {
+  '../rsiApi': `
+    export const rsiDatasetValidate = async () => ({ valid: true, sample_count: 1, errors: [] });
+    export const rsiTaskCreate = async params => {
+      globalThis.rsiDialogCreateParams.push(params);
+      return { task_id: 'probe', status: 'CREATED' };
+    };
+    export const rsiTaskList = async () => [];
+    export const rsiTrainingStart = async () => ({ status: 'RUNNING' });
+  `,
   '../../services/webClient': 'export const webRequest = (method, params) => globalThis.rsiJudgeRequest(method, params);',
   'react-i18next': "export const useTranslation = () => ({ t: key => key, i18n: { language: 'en' } });",
   '../../../stores/sessionStore': "export const useSessionStore = selector => selector({ availableModels: [{ model_name: 'test-model' }] });",
   '../../../components/ModelProviderIcon': 'export const ModelProviderIcon = () => null;',
   '../../../features/workspace/localFilePicker': "export const selectLocalFiles = async () => ({ ok: true, files: [{ path: '/fixtures/cases.json' }] });",
   '../../../features/workspace/projectDirectoryPicker': 'export const selectProjectDirectory = async () => ({ ok: false });',
-  '../../../services/pluginPackagesApi': 'export const pluginPackagesApi = { list: async () => [] };',
 };
 await build({
   entryPoints: ['src/features/rsi/components/CreateExperimentDialog.tsx', 'src/features/rsi/rsiApi.ts'],
@@ -42,7 +52,7 @@ await build({
 const { CreateExperimentDialog } = await import('../node_modules/.cache/rsi-judge-selection/components/CreateExperimentDialog.mjs');
 const { rsiTaskCreate } = await import('../node_modules/.cache/rsi-judge-selection/rsiApi.mjs');
 
-test('Agent selection reaches the actual task.create wire request as llm_as_judge', async () => {
+test('Agent selection reaches task.create with the current Harness default', async () => {
   const root = createRoot(document.getElementById('root'));
   try {
     await act(async () => root.render(React.createElement(CreateExperimentDialog, {
@@ -65,11 +75,16 @@ test('Agent selection reaches the actual task.create wire request as llm_as_judg
     }
     await act(async () => document.querySelector('.rsi-create-dialog__path-btn').click());
     await act(async () => document.querySelector('.rsi-create-dialog__submit').click());
-    const request = calls.find(call => call.method === 'rsi.task.create');
+    assert.equal(
+      document.querySelector('[aria-label="rsi.createDialog.pluginLabel"]'),
+      null,
+    );
+    const request = dialogCreateParams.at(-1);
     assert.ok(request, 'form validation must complete before submitting');
-    assert.equal(request.params.evaluation_method, 'llm_as_judge');
-    assert.equal(request.params.input_file, '/fixtures/cases.json');
-    assert.deepEqual(request.params.model_refs, { optimizer: 'test-model', tester: 'test-model' });
+    assert.equal(request.package_id, '');
+    assert.equal(request.evaluation_method, 'llm_as_judge');
+    assert.equal(request.input_file, '/fixtures/cases.json');
+    assert.deepEqual(request.model_refs, { optimizer: 'test-model', tester: 'test-model' });
   } finally {
     await act(async () => root.unmount());
   }
@@ -88,6 +103,7 @@ test('script and legacy callers keep their grading route; artifact requests get 
 test.after(() => {
   dom.window.close();
   delete globalThis.rsiJudgeRequest;
+  delete globalThis.rsiDialogCreateParams;
   delete globalThis.IS_REACT_ACT_ENVIRONMENT;
   delete globalThis.window;
   delete globalThis.document;

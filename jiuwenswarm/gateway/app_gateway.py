@@ -72,12 +72,14 @@ _mark_startup_import_phase("openjiuwen_and_channel_base_imported")
 # --- Now safe to import jiuwenswarm modules ---
 from jiuwenswarm.gateway.channel_manager.protocol.acp.acp_connect import AcpGatewayBridge
 from jiuwenswarm.gateway.routing.agent_request_timeout import coerce_client_timeout_ms
-from jiuwenswarm.common.security.ws_origin import get_header_value
+from jiuwenswarm.common.security.ws_origin import (
+    extract_handshake_request,
+    get_header_value,
+)
 from jiuwenswarm.gateway.routing.route_binding import GatewayRouteBinding
 from jiuwenswarm.common.debug_dump import install_async_dump_handler
 from jiuwenswarm.common.utils import (
     apply_free_search_runtime_defaults,
-    get_cron_jobs_path,
     get_env_file,
     get_root_dir,
     get_user_workspace_dir,
@@ -954,6 +956,24 @@ class GatewayServer(BaseWebChannel):
             route.outbound_interceptor = route.outbound_interceptor or self._acp_bridge.outbound_intercept
             route.cleanup_handler = route.cleanup_handler or self._acp_bridge.cleanup
 
+    async def _process_request(self, *args: Any) -> Any:
+        """Reject hooked upgrades (TUI) before 101 when IAM fails."""
+        path, request_headers = extract_handshake_request(args)
+        request_path = urlparse(path or "").path or (path or "")
+        route, _matched = self._resolve_route(request_path)
+        ws_channel = getattr(route, "ws_channel", None) if route is not None else None
+        channel_name = str(getattr(route, "channel_id", "") or "")
+        if ws_channel is None or not await ws_channel.handshake_auth_denied(
+            path=path, headers=request_headers, channel=channel_name
+        ):
+            return None
+        logger.warning(
+            "GatewayServer 握手拒绝 path=%s channel=%s reason=unauthorized",
+            request_path,
+            channel_name,
+        )
+        return ws_channel.unauthorized_handshake_response(args)
+
     def _resolve_route(self, request_path: str) -> tuple[RouteConfig | None, str]:
         """按精确路径匹配路由；支持常见变体（如尾部斜杠）以避免客户端握手失败。"""
         routes = self.config.routes
@@ -1035,6 +1055,7 @@ class GatewayServer(BaseWebChannel):
             self._connection_handler,
             self.config.host,
             self.config.port,
+            process_request=self._process_request,
             ping_interval=20,
             ping_timeout=600,
             max_size=ws_max_size,
@@ -1700,7 +1721,6 @@ async def _run(
         web_host: str,
         web_port: int,
         web_path: str,
-        web_dual_protocol: bool = True,
 ) -> None:
     # IM 平台 (dingtalk/feishu/whatsapp/wechat/xiaoyi/telegram/discord/slack/wecom) 均为
     # 惰性 import: 仅在对应 channel enabled 分支内导入, 避免冷启动时为禁用平台
@@ -1710,7 +1730,11 @@ async def _run(
     from jiuwenswarm.common.cleanup import start_background_cleanup
     from jiuwenswarm.gateway.routing.agent_client import WebSocketAgentServerClient
     from jiuwenswarm.gateway.channel_manager.channel_manager import ChannelManager
-    from jiuwenswarm.gateway.cron import CronController, CronJobStore, CronSchedulerService
+    from jiuwenswarm.gateway.cron import (
+        CronController,
+        CronSchedulerService,
+        create_gateway_cron_store,
+    )
     from jiuwenswarm.gateway.health_check import (
         GatewayHealthCheckService,
         HealthCheckConfig,
@@ -1813,7 +1837,7 @@ async def _run(
     message_handler.set_inbound_pipeline(im_inbound)
     message_handler.set_outbound_pipeline(im_outbound)
 
-    cron_store = CronJobStore(path=get_cron_jobs_path())
+    cron_store = await create_gateway_cron_store()
     cron_scheduler = CronSchedulerService(
         store=cron_store,
         agent_client=client,
@@ -2079,7 +2103,6 @@ async def _run(
         host=web_host,
         port=web_port,
         path=web_path,
-        dual_protocol=web_dual_protocol,
     )
     web_channel = WebChannel(web_config, _DummyBus(), agent_client=client)
 
@@ -3486,8 +3509,6 @@ def main() -> None:
     web_host = args.host or os.getenv("WEB_HOST", "127.0.0.1")
     web_port = args.port or int(os.getenv("WEB_PORT", "19000"))
     web_path = args.web_path or os.getenv("WEB_PATH", "/ws")
-    _dual_raw = os.getenv("WEB_DUAL_PROTOCOL", "1").strip().lower()
-    web_dual_protocol = _dual_raw not in {"0", "false", "no", "off"}
 
     install_async_dump_handler("gateway")
 
@@ -3511,7 +3532,6 @@ def main() -> None:
                 web_host=web_host,
                 web_port=web_port,
                 web_path=web_path,
-                web_dual_protocol=web_dual_protocol,
             )
         )
     finally:

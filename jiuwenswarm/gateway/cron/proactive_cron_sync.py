@@ -113,7 +113,7 @@ async def _ensure_deleted(cron_controller: Any) -> None:
         return
     # force=True：这是 config 开关关闭触发的合法删除，绕过 store 层对
     # proactive.tick job 的手动删除保护（保护只挡用户路径，不挡 sync）。
-    await cron_controller.delete_job(PROACTIVE_JOB_ID, force=True)
+    await cron_controller.delete_job(PROACTIVE_JOB_ID, force=True, delete_sessions=False)
     logger.info("[ProactiveAutoReg] deleted proactive.tick job (disabled in config)")
 
 

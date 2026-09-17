@@ -6636,7 +6636,13 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
                 code="BAD_REQUEST",
             )
             return
-        deleted = await cc.delete_job(job_id)
+        try:
+            deleted = await cc.delete_job(job_id)
+        except Exception as exc:
+            await channel.send_response(
+                ws, req_id, ok=False, error=str(exc), code="DELETE_FAILED"
+            )
+            return
         if not deleted:
             await channel.send_response(ws, req_id, ok=False, error="job not found", code="NOT_FOUND")
             return
@@ -7632,7 +7638,7 @@ def _register_web_handlers(bind: WebHandlersBindParams) -> None:
     channel.register_method("harness.export", _harness_export_handler)
 
     real_agent_client = _resolve(agent_client)
-    # Container file transfer is HTTP on the WebChannel port (dual_protocol),
+    # Container file transfer is HTTP on the WebChannel port, not WS JSON-RPC.
     # not WS JSON-RPC. Bind any client that already exposes the container-file
     # methods so build_web_channel_app can mount /file-api/* at channel.start().
     # Do not import AgentOSRouterClient here: this module must not depend on extensions.

@@ -1,17 +1,75 @@
 # Copyright (c) Huawei Technologies Co., Ltd. 2025. All rights reserved.
 
+import io
 import json
+import logging
+import urllib.error
 from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
 
 from jiuwenswarm.common.e2a.models import E2AEnvelope
+from jiuwenswarm.extensions import yuanrong_frontend_client as yuanrong_mod
 from jiuwenswarm.extensions.yuanrong_frontend_client import (
+    DEFAULT_RUNTIME_PROBE_SETTINGS,
+    DEFAULT_THIRD_AGENT_PROBE_SETTINGS,
+    TRACE_ID_HEADER,
+    RuntimeProbeSettings,
     YuanrongAgentApiError,
     YuanrongAgentFileError,
+    YuanrongAgentTimeoutError,
     YuanrongFrontendAgentClient,
+    _is_agent_running,
+    _merge_agent_instance_payload,
+    apply_trace_header,
+    extract_trace_id,
+    normalize_trace_id,
+    bind_southbound_trace_id,
+    clear_southbound_trace_id,
+    current_southbound_trace_id,
 )
+
+
+def _header(captured: dict[str, str], name: str) -> str:
+    target = name.lower()
+    for key, value in captured.items():
+        if str(key).lower() == target:
+            return str(value)
+    return ""
+
+_CREATE_INSTANCE_ID = "0b6c6322-6533-4901-8000-00000000bb0b"
+
+
+def _fake_agent_get_urlopen(
+    req,
+    timeout=0,
+    *,
+    requests: list[tuple[str, str, bytes | None]] | None = None,
+    get_bodies: list[bytes] | None = None,
+    headers: list[dict[str, str]] | None = None,
+):
+    """Mock urlopen for GET /api/agent/:id (and ignore timeout)."""
+    del timeout
+    body = req.data
+    if requests is not None:
+        requests.append((req.method, req.full_url, body))
+    if headers is not None:
+        headers.append(dict(req.header_items()))
+    resp = MagicMock()
+    resp.status = 200
+    if req.method == "GET" and "/api/agent/" in req.full_url:
+        remaining = get_bodies if get_bodies is not None else []
+        if not remaining:
+            resp.status = 404
+            resp.read.return_value = b'{"code":404,"message":"instance not found"}'
+        else:
+            resp.read.return_value = remaining.pop(0)
+    else:
+        resp.read.return_value = b"{}"
+    resp.__enter__ = MagicMock(return_value=resp)
+    resp.__exit__ = MagicMock(return_value=False)
+    return resp
 
 
 class YuanrongFrontendAgentClientProbe(YuanrongFrontendAgentClient):
@@ -24,12 +82,14 @@ class YuanrongFrontendAgentClientProbe(YuanrongFrontendAgentClient):
         user_id: str | None = None,
         req_method: str | None = None,
         stream: bool = False,
+        request_id: str | None = None,
     ) -> dict[str, str]:
         return self._invoke_headers(
             session_id,
             user_id=user_id,
             req_method=req_method,
             stream=stream,
+            request_id=request_id,
         )
 
     def parse_agent_file_list_response(
@@ -57,19 +117,42 @@ def client() -> YuanrongFrontendAgentClientProbe:
     )
 
 
+def test_normalize_and_extract_trace_id():
+    assert normalize_trace_id("t-20260903-001") == "t-20260903-001"
+    assert len(normalize_trace_id("")) == 36
+    assert extract_trace_id({"X-Trace-Id": "abc"}) == "abc"
+    assert extract_trace_id({"x-trace-id": "abc"}) == "abc"
+    assert apply_trace_header({"Content-Type": "application/json"}, "req-1")[
+        TRACE_ID_HEADER
+    ] == "req-1"
+
+
+def test_bind_southbound_trace_id_is_task_local():
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""
+    assert bind_southbound_trace_id("t-file-1") == "t-file-1"
+    assert current_southbound_trace_id() == "t-file-1"
+    apply_trace_header({}, "t-ws-2")
+    assert current_southbound_trace_id() == "t-ws-2"
+    clear_southbound_trace_id()
+    assert current_southbound_trace_id() == ""
+
+
 def test_invoke_headers_without_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1")
+    headers = client.invoke_headers("sess-1", request_id="req-1")
 
     assert "X-Session-Context" not in headers
     instance = json.loads(headers["X-Instance-Session"])
     assert instance == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
+    assert headers[TRACE_ID_HEADER] == "req-1"
 
 
 def test_invoke_headers_with_user_id(client: YuanrongFrontendAgentClientProbe):
-    headers = client.invoke_headers("sess-1", user_id="alice")
+    headers = client.invoke_headers("sess-1", user_id="alice", request_id="req-2")
 
     assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "alice"}
     assert json.loads(headers["X-Instance-Session"]) == {"sessionID": "sess-1", "sessionTTL": 900, "concurrency": 2}
+    assert headers[TRACE_ID_HEADER] == "req-2"
 
 
 def test_invoke_headers_stream_accepts_sse(client: YuanrongFrontendAgentClientProbe):
@@ -77,6 +160,7 @@ def test_invoke_headers_stream_accepts_sse(client: YuanrongFrontendAgentClientPr
 
     assert headers["Accept"] == "text/event-stream"
     assert json.loads(headers["X-Session-Context"]) == {"sessionCtx": "bob"}
+    assert headers[TRACE_ID_HEADER]
 
 
 @pytest.mark.asyncio
@@ -107,6 +191,9 @@ async def test_send_request_passes_user_id_in_session_context(client: YuanrongFr
 
     assert response.ok is True
     assert json.loads(captured["X-session-context"]) == {"sessionCtx": "alice"}
+    minted = _header(captured, TRACE_ID_HEADER)
+    assert minted
+    assert minted != "req-1"
 
 
 @pytest.mark.asyncio
@@ -209,6 +296,15 @@ async def test_create_and_delete_sandbox_calls_agent_api(client: YuanrongFronten
             },
             "cpu": 600,
             "memory": 512,
+            "probes": {
+                "startup": {
+                    "tcpSocket": {"port": 22},
+                    "initialDelaySeconds": 3,
+                    "periodSeconds": 3,
+                    "timeoutSeconds": 2,
+                    "failureThreshold": 6,
+                },
+            },
         },
         "env_vars": {"userid": "u-9f3a", "TRACE_ID": "ver-1"},
         "mounts": [
@@ -228,6 +324,148 @@ async def test_create_and_delete_sandbox_calls_agent_api(client: YuanrongFronten
         "0b6c6322-6533-4901-8000-00000000bb0b"
     )
     assert delete_body is None
+
+
+@pytest.mark.asyncio
+async def test_agent_api_sends_x_trace_id(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[dict[str, str]] = []
+
+    def fake_urlopen(req, timeout=0):
+        del timeout
+        captured.append(dict(req.header_items()))
+        resp = MagicMock()
+        resp.status = 200
+        if req.method == "POST" and req.full_url.endswith("/api/agent"):
+            resp.read.return_value = (
+                b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+            )
+        else:
+            resp.read.return_value = b'{"code":200}'
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        sandbox = await client.create_sandbox(
+            namespace="default",
+            name="alice+coder",
+            workspace="/home/agentos",
+            runtime_spec=_INLINE_RUNTIME_SPEC,
+            trace_id="t-20260903-001",
+        )
+        await client.delete_sandbox(sandbox.sandbox_id, trace_id="t-20260903-001")
+        await client.get_agent_info(sandbox.sandbox_id, trace_id="t-20260903-001")
+
+    assert sandbox.metadata.get("trace_id") == "t-20260903-001"
+    assert [_header(item, TRACE_ID_HEADER) for item in captured] == [
+        "t-20260903-001",
+        "t-20260903-001",
+        "t-20260903-001",
+    ]
+    assert current_southbound_trace_id() == "t-20260903-001"
+
+
+@pytest.mark.asyncio
+async def test_agent_api_mints_unique_trace_id_per_call(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[dict[str, str]] = []
+
+    def fake_urlopen(req, timeout=0):
+        del timeout
+        captured.append(dict(req.header_items()))
+        resp = MagicMock()
+        resp.status = 200
+        if req.method == "POST" and req.full_url.endswith("/api/agent"):
+            resp.read.return_value = (
+                b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+            )
+        else:
+            resp.read.return_value = b'{"code":200}'
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        sandbox = await client.create_sandbox(
+            namespace="default",
+            name="alice+coder",
+            workspace="/home/agentos",
+            runtime_spec=_INLINE_RUNTIME_SPEC,
+        )
+        await client.delete_sandbox(sandbox.sandbox_id)
+        await client.get_agent_info(sandbox.sandbox_id)
+
+    ids = [_header(item, TRACE_ID_HEADER) for item in captured]
+    assert all(ids)
+    assert len(set(ids)) == 3
+    assert sandbox.metadata.get("trace_id") == ids[0]
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+    client._do_agent_delete = lambda instance_id, trace_id=None: (  # noqa: ARG005
+        404,
+        '{"code":404,"message":"not found"}',
+    )
+    await client.delete_sandbox("already-gone")
+
+
+@pytest.mark.asyncio
+async def test_create_sandbox_sends_runtime_spec_probes(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    probes = {
+        "startup": {
+            "tcpSocket": {"port": 18092},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 6,
+        },
+        "liveness": {
+            "tcpSocket": {"port": 18092},
+            "timeoutSeconds": 2,
+            "failureThreshold": 3,
+        },
+    }
+
+    def fake_urlopen(req, timeout=0):
+        requests.append((req.method, req.full_url, req.data))
+        resp = MagicMock()
+        resp.status = 200
+        resp.read.return_value = (
+            b'{"code":200,"instance_id":"0b6c6322-6533-4901-8000-00000000bb0b"}'
+        )
+        resp.__enter__ = MagicMock(return_value=resp)
+        resp.__exit__ = MagicMock(return_value=False)
+        return resp
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.create_sandbox(
+            namespace="default",
+            name="my-agent",
+            workspace="/home/hhc/workspaceA",
+            runtime_spec={
+                "runtime": "python3.11",
+                "rootfs": {"imageurl": "jiuwenswarm-agent-runtime:latest"},
+                "cmds": [["sh", "-c", "jiuwenswarm-agentserver --port 18092"]],
+                "probes": probes,
+            },
+        )
+
+    payload = json.loads(requests[0][2].decode("utf-8"))
+    assert payload["runtime_spec"]["probes"] == probes
+    assert payload["runtime_spec"]["cmds"] == [
+        ["sh", "-c", "jiuwenswarm-agentserver --port 18092"]
+    ]
+    assert "port_probe" not in payload
+    assert "probes" not in payload
 
 
 _INLINE_RUNTIME_SPEC = {
@@ -292,6 +530,65 @@ async def test_create_sandbox_raises_clear_timeout_error():
 
 
 @pytest.mark.asyncio
+async def test_create_sandbox_timeout_error_is_distinguishable_subclass():
+    """超时抛 YuanrongAgentTimeoutError 子类，调用方可据此做幂等回查。"""
+    client = YuanrongFrontendAgentClientProbe(
+        frontend_endpoint="http://127.0.0.1:8080",
+        function_version_urn="urn:test:function:1",
+        agent_timeout_s=12.0,
+    )
+    await client.connect("http://127.0.0.1:8080")
+
+    with patch(
+        "urllib.request.urlopen",
+        side_effect=TimeoutError("timed out"),
+    ):
+        with pytest.raises(YuanrongAgentTimeoutError, match="request timeout"):
+            await client.create_sandbox(
+                namespace="dev",
+                name="agent-001",
+                workspace="/home/hhc/workspaceA",
+                runtime_spec=_INLINE_RUNTIME_SPEC,
+            )
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_treats_404_as_success(client: YuanrongFrontendAgentClientProbe):
+    """幂等删除：实例已不存在（404）视为删除成功。"""
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            404,
+            "Not Found",
+            None,
+            io.BytesIO(b'{"code":404,"message":"instance not found"}'),
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.delete_sandbox("0b6c6322-dead-beef-8000-00000000bb0b")
+
+
+@pytest.mark.asyncio
+async def test_delete_sandbox_still_raises_on_server_error(client: YuanrongFrontendAgentClientProbe):
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        raise urllib.error.HTTPError(
+            req.full_url,
+            500,
+            "Internal Server Error",
+            None,
+            io.BytesIO(b'{"code":500,"message":"boom"}'),
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="agent API failed"):
+            await client.delete_sandbox("0b6c6322-dead-beef-8000-00000000bb0b")
+
+
+@pytest.mark.asyncio
 async def test_create_sandbox_raises_on_agent_api_error(client: YuanrongFrontendAgentClientProbe):
     await client.connect("http://127.0.0.1:8080")
 
@@ -311,6 +608,341 @@ async def test_create_sandbox_raises_on_agent_api_error(client: YuanrongFrontend
                 workspace="/home/hhc/workspaceA",
                 runtime_spec=_INLINE_RUNTIME_SPEC,
             )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_polls_get_until_status_running(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    captured_headers: list[dict[str, str]] = []
+    get_bodies = [
+        b'{"code":404,"message":"instance not found or not running"}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running","node_ip":"10.0.0.1"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req,
+            timeout,
+            requests=requests,
+            get_bodies=get_bodies,
+            headers=captured_headers,
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        instance = await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+    assert instance["status"] == "running"
+    assert instance["node_ip"] == "10.0.0.1"
+    get_calls = [item for item in requests if item[0] == "GET"]
+    assert len(get_calls) == 3
+    assert all(
+        item[1] == f"http://127.0.0.1:8080/api/agent/{_CREATE_INSTANCE_ID}"
+        for item in get_calls
+    )
+    poll_ids = [_header(item, TRACE_ID_HEADER) for item in captured_headers]
+    assert len(poll_ids) == 3
+    assert all(poll_ids)
+    assert len(set(poll_ids)) == 1
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_logs_trace_id_on_first_attempt(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured: list[str] = []
+
+    class _Mem(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            captured.append(record.getMessage())
+
+    handler = _Mem()
+    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger.addHandler(handler)
+    yr_logger.setLevel(logging.INFO)
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running"}}',
+    ]
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=get_bodies)
+
+    try:
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            instance = await client.wait_until_running(
+                _CREATE_INSTANCE_ID, trace_id="t-get-1"
+            )
+    finally:
+        yr_logger.removeHandler(handler)
+
+    assert instance["status"] == "running"
+    assert current_southbound_trace_id() == "t-get-1"
+    assert any(
+        "instance running after GET poll:" in msg
+        and "trace_id=t-get-1" in msg
+        and "attempt=1" in msg
+        for msg in captured
+    )
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_reuses_explicit_trace_id(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    captured_headers: list[dict[str, str]] = []
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req, timeout, get_bodies=get_bodies, headers=captured_headers
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        await client.wait_until_running(
+            _CREATE_INSTANCE_ID, trace_id="t-20260903-001"
+        )
+
+    poll_ids = [_header(item, TRACE_ID_HEADER) for item in captured_headers]
+    assert poll_ids == ["t-20260903-001", "t-20260903-001"]
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_times_out_when_never_running(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    await client.connect("http://127.0.0.1:8080")
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_RETRY_INTERVAL_SECONDS", 0.01)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=[])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="not running after"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_raises_on_failed_status(
+    client: YuanrongFrontendAgentClientProbe,
+):
+    await client.connect("http://127.0.0.1:8080")
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req,
+            timeout,
+            get_bodies=[
+                b'{"code":200,"instance":{"instance_id":"'
+                + _CREATE_INSTANCE_ID.encode()
+                + b'","status":"failed"}}'
+            ],
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="agent instance failed"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+def test_startup_budget_seconds_matches_delay_plus_period_times_failure():
+    assert DEFAULT_RUNTIME_PROBE_SETTINGS.startup_budget_seconds() == 21.0
+    assert DEFAULT_THIRD_AGENT_PROBE_SETTINGS.startup_budget_seconds() == 26.0
+    assert (
+        RuntimeProbeSettings(
+            startup_initial_delay_seconds=3,
+            startup_period_seconds=3,
+            startup_failure_threshold=12,
+        ).startup_budget_seconds()
+        == 39.0
+    )
+
+
+def test_is_agent_running_requires_explicit_running_when_status_present():
+    """Only ``status=running`` is connectable; missing status is not ready."""
+    assert _is_agent_running(None) is False
+    assert _is_agent_running({}) is False
+    assert _is_agent_running({"status": "creating"}) is False
+    assert _is_agent_running({"status": "scheduling"}) is False
+    assert _is_agent_running({"status": "ready"}) is False
+    assert _is_agent_running({"status": "running"}) is True
+    assert _is_agent_running({"instance_id": "x", "status": "creating"}) is False
+    assert _is_agent_running({"instance_id": "x"}) is False
+    assert _is_agent_running({"instance_id": "x", "node_ip": "10.0.0.1"}) is False
+    assert _is_agent_running({"instance_id": "x", "state": ""}) is False
+
+
+def test_merge_agent_instance_payload_promotes_top_level_ips() -> None:
+    nested = _merge_agent_instance_payload(
+        {
+            "code": 200,
+            "instance": {
+                "instance_id": "sbx-1",
+                "status": "running",
+                "node_ip": "10.0.0.1",
+                "sandbox_ip": "10.64.0.2",
+            },
+        }
+    )
+    assert nested["node_ip"] == "10.0.0.1"
+    assert nested["sandbox_ip"] == "10.64.0.2"
+
+    promoted = _merge_agent_instance_payload(
+        {
+            "code": 200,
+            "status": "running",
+            "node_ip": "10.0.0.5",
+            "ip_address": "10.64.12.34",
+            "instance": {"instance_id": "sbx-2"},
+        }
+    )
+    assert promoted["instance_id"] == "sbx-2"
+    assert promoted["status"] == "running"
+    assert promoted["node_ip"] == "10.0.0.5"
+    assert promoted["ip_address"] == "10.64.12.34"
+
+    nested_wins = _merge_agent_instance_payload(
+        {
+            "sandbox_ip": "198.51.100.9",
+            "instance": {"sandbox_ip": "10.64.0.2", "status": "running"},
+        }
+    )
+    assert nested_wins["sandbox_ip"] == "10.64.0.2"
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_keeps_polling_when_status_missing(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Partial GET (instance_id, no status) must not skip the probe wait."""
+    await client.connect("http://127.0.0.1:8080")
+    requests: list[tuple[str, str, bytes | None]] = []
+    get_bodies = [
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","node_ip":"10.0.0.1"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"creating"}}',
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","status":"running","node_ip":"10.0.0.1"}}',
+    ]
+
+    async def instant_sleep(_seconds: float) -> None:
+        return None
+
+    monkeypatch.setattr(yuanrong_mod.asyncio, "sleep", instant_sleep)
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(
+            req, timeout, requests=requests, get_bodies=get_bodies
+        )
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        instance = await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+    assert instance["status"] == "running"
+    get_calls = [item for item in requests if item[0] == "GET"]
+    assert len(get_calls) == 4
+
+
+@pytest.mark.asyncio
+async def test_wait_until_running_times_out_when_status_never_present(
+    client: YuanrongFrontendAgentClientProbe,
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """Legacy / partial GET that never sends status must not return ready."""
+    await client.connect("http://127.0.0.1:8080")
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_TIMEOUT_SECONDS", 0.05)
+    monkeypatch.setattr(yuanrong_mod, "_AGENT_RUNNING_RETRY_INTERVAL_SECONDS", 0.01)
+    partial = (
+        b'{"code":200,"instance":{"instance_id":"'
+        + _CREATE_INSTANCE_ID.encode()
+        + b'","node_ip":"10.0.0.1"}}'
+    )
+
+    def fake_urlopen(req, timeout=0):
+        return _fake_agent_get_urlopen(req, timeout, get_bodies=[partial])
+
+    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+        with pytest.raises(YuanrongAgentApiError, match="not running after"):
+            await client.wait_until_running(_CREATE_INSTANCE_ID)
+
+
+def test_create_sandbox_derives_probes_from_ports():
+    probes = yuanrong_mod._probes_from_ports(["tcp:22"])
+    assert probes == {
+        "startup": {
+            "tcpSocket": {"port": 22},
+            "initialDelaySeconds": 3,
+            "periodSeconds": 3,
+            "timeoutSeconds": 2,
+            "failureThreshold": 6,
+        },
+    }
+    assert yuanrong_mod._normalize_probes(
+        {
+            "startup": {"tcpSocket": {"port": 18092}, "initialDelaySeconds": 5},
+            "liveness": {"tcpSocket": {"port": 18092}},
+        }
+    ) == {
+        "startup": {"tcpSocket": {"port": 18092}, "initialDelaySeconds": 5},
+        "liveness": {"tcpSocket": {"port": 18092}},
+    }
+
+
+def test_create_sandbox_derives_probes_from_custom_settings():
+    settings = RuntimeProbeSettings(
+        startup_initial_delay_seconds=5,
+        startup_period_seconds=4,
+        startup_timeout_seconds=1,
+        startup_failure_threshold=8,
+    )
+    probes = yuanrong_mod._probes_from_ports(["tcp:22"], settings)
+    assert probes == {
+        "startup": {
+            "tcpSocket": {"port": 22},
+            "initialDelaySeconds": 5,
+            "periodSeconds": 4,
+            "timeoutSeconds": 1,
+            "failureThreshold": 8,
+        },
+    }
 
 
 @pytest.mark.asyncio
@@ -461,12 +1093,23 @@ def test_normalize_mkdir_mode_rejects_illegal(client: YuanrongFrontendAgentClien
 async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentClientProbe):
     await client.connect("http://127.0.0.1:8080")
     captured: dict[str, Any] = {}
+    logs: list[str] = []
+
+    class _Mem(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            logs.append(record.getMessage())
+
+    handler = _Mem()
+    yr_logger = logging.getLogger("jiuwenswarm.extensions.yuanrong_frontend_client")
+    yr_logger.addHandler(handler)
+    yr_logger.setLevel(logging.INFO)
 
     def fake_urlopen(req, timeout=0):
         del timeout
         captured["url"] = req.full_url
         captured["method"] = req.get_method()
         captured["authorization"] = dict(req.header_items()).get("Authorization")
+        captured["headers"] = dict(req.header_items())
         resp = MagicMock()
         resp.status = 200
         resp.read.return_value = json.dumps(
@@ -476,14 +1119,18 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
         resp.__exit__ = MagicMock(return_value=False)
         return resp
 
-    with patch("urllib.request.urlopen", side_effect=fake_urlopen):
-        result = await client.mkdir_agent_dir(
-            "inst-1",
-            "/home/agentos/sub",
-            mode="0755",
-            recursive=True,
-            auth_headers={"Authorization": "Bearer tok-mkdir"},
-        )
+    try:
+        with patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            result = await client.mkdir_agent_dir(
+                "inst-1",
+                "/home/agentos/sub",
+                mode="0755",
+                recursive=True,
+                auth_headers={"Authorization": "Bearer tok-mkdir"},
+                trace_id="t-mkdir-1",
+            )
+    finally:
+        yr_logger.removeHandler(handler)
 
     assert result["created"] is True
     assert captured["method"] == "POST"
@@ -492,6 +1139,9 @@ async def test_mkdir_agent_dir_sends_query_params(client: YuanrongFrontendAgentC
     assert "path=%2Fhome%2Fagentos%2Fsub" in captured["url"]
     assert "mode=0755" in captured["url"]
     assert "recursive=true" in captured["url"]
+    assert _header(captured["headers"], TRACE_ID_HEADER) == "t-mkdir-1"
+    assert current_southbound_trace_id() == "t-mkdir-1"
+    assert any("mkdir_agent_dir:" in msg and "trace_id=t-mkdir-1" in msg for msg in logs)
 
 
 @pytest.mark.asyncio

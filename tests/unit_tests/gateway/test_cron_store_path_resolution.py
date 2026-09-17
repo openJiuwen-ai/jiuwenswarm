@@ -129,7 +129,7 @@ async def test_a_store_vanishing_under_us_warns_by_name(workspace):
     path = _write_job(workspace / "agent" / "home" / "cron_jobs.json")
     scheduler = _scheduler(CronJobStore(path=path))
     await scheduler.reload()
-    scheduler._sync_store_mtime()
+    await scheduler._sync_store_revision()
 
     path.unlink()
     with _scheduler_logs() as records:
