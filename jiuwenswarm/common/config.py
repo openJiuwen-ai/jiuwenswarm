@@ -433,6 +433,18 @@ def get_progressive_tool_enabled(config: dict[str, Any] | None = None) -> bool:
     return bool(value)
 
 
+def is_tool_retrieval_enabled(config: dict[str, Any] | None = None) -> bool:
+    """Return whether the ``tool_search`` progressive disclosure is enabled.
+
+    Reuses the single top-level ``progressive_tool_enabled`` switch (the same
+    one historically documented for the deferred-tool pipeline). ``true`` means
+    our skill_index-framework ``tool_search`` is mounted and deferred tools are
+    hidden until discovered; ``false`` disables it and every tool stays direct.
+    """
+
+    return False
+
+
 def get_endpoint_profile_overrides(config: dict[str, Any] | None = None) -> dict[str, str]:
     """Return the user-configured ``api_base host -> endpoint_profile`` map.
 
