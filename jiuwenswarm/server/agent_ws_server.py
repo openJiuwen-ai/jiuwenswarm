@@ -8230,17 +8230,44 @@ class AgentWebSocketServer:
     async def _handle_mcp_install(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
-        """Download and install a Hub MCP package without connecting it."""
+        """Download, install, and connect a Hub MCP in one interaction."""
         try:
             from jiuwenswarm.server.runtime.mcp.marketplace import install_hub_mcp
+            from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
 
             asset_id = str((request.params or {}).get("id") or "").strip()
             item = await install_hub_mcp(asset_id)
+            name = str(item.get("name") or "").strip()
+            # Connect failure is non-fatal after a successful download.
+            try:
+                connect = await self._run_mcp_connect_flow(
+                    name, rollback_on_probe_failure=False
+                )
+            except CliConnectError as cli_exc:
+                connect = {
+                    "type": "connect_failed",
+                    "error": str(cli_exc),
+                    "code": cli_exc.code,
+                    "runtime": cli_exc.runtime,
+                    "install_cmd": cli_exc.install_cmd,
+                    "name": name,
+                }
+            except Exception as connect_exc:  # noqa: BLE001
+                logger.warning(
+                    "[AgentWebSocketServer] mcp.install connect step failed for '%s': %s",
+                    name, connect_exc,
+                )
+                connect = {
+                    "type": "connect_failed",
+                    "error": str(connect_exc),
+                    "code": "MCP_INTERNAL",
+                    "name": name,
+                }
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,
                 ok=True,
-                payload={"type": "installed", "item": item},
+                payload={"type": "installed", "item": item, "connect": connect},
             )
         except (KeyError, ValueError) as exc:
             resp = AgentResponse(
@@ -8348,129 +8375,85 @@ class AgentWebSocketServer:
         async with send_lock:
             await send_wire_payload(ws, wire)
 
+    async def _run_mcp_connect_flow(
+        self, name: str, *, rollback_on_probe_failure: bool = True
+    ) -> dict[str, Any]:
+        """Run the shared connect flow and return a frontend payload."""
+        from jiuwenswarm.server.runtime.mcp.registry import connect_mcp
+
+        item = await asyncio.to_thread(connect_mcp, name)
+        if isinstance(item, dict) and item.get("auth_required"):
+            return {"type": "auth_required", **self._mask_sensitive_fields(item)}
+        if isinstance(item, dict) and item.get("credentials_required"):
+            # Required-token fields are metadata, not secrets.
+            return {"type": "credentials_required", **item}
+        # Confirm server-bearing MCPs are actually usable before connected.
+        probe_ok, _probe_reason = await self._agent_manager.probe_mcp_live_connection(name)
+        if not probe_ok:
+            if rollback_on_probe_failure:
+                try:
+                    from jiuwenswarm.server.runtime.mcp.registry import (
+                        rollback_failed_connect,
+                    )
+                    rollback_failed_connect(name)
+                except Exception as rollback_exc:  # noqa: BLE001
+                    logger.warning(
+                        "[mcp] rollback failed-probe entry '%s' failed: %s",
+                        name, rollback_exc,
+                    )
+            return {
+                "type": "connect_failed",
+                "error": "MCP live-connect probe failed",
+                "code": "MCP_UNREACHABLE",
+                "name": name,
+            }
+        # Promote connecting state and sync skill-only credentials.
+        try:
+            from jiuwenswarm.server.runtime.mcp.state_store import (
+                set_mcp_state,
+            )
+            set_mcp_state(name, state="connected")
+        except Exception as flip_exc:  # noqa: BLE001
+            logger.warning(
+                "[mcp] flip connecting→connected after connect failed for '%s': %s",
+                name, flip_exc,
+            )
+        try:
+            self._agent_manager.sync_mcp_credentials()
+        except Exception as sync_exc:  # noqa: BLE001
+            logger.warning("[mcp] sync_mcp_credentials after connect failed: %s", sync_exc)
+        return {
+            "type": "connected",
+            "name": name,
+            "applied": True,
+            "item": self._mask_sensitive_fields(item),
+        }
+
     async def _handle_mcp_connect(
         self, ws: Any, request: AgentRequest, send_lock: asyncio.Lock
     ) -> None:
-        """Handle ``mcp.connect`` RPC: install a marketplace MCP.
-
-        Form A/B upsert config + hot-reload. Form C (CLI) runs CliDriver;
-        when an auth step needs user action it returns an ``auth_required``
-        sentinel with the extracted ``auth_url``. The frontend opens that URL
-        in the user's browser (the CLI binary may not auto-open, and the
-        backend may be headless/remote), then sends ``mcp.wait_auth`` which
-        holds-open polling ``complete_cli_auth`` until OAuth completes.
-        """
+        """Handle ``mcp.connect``; CLI OAuth may return ``auth_required``."""
         from jiuwenswarm.server.runtime.mcp.registry import CliConnectError
         try:
-            from jiuwenswarm.server.runtime.mcp.registry import connect_mcp
             params = request.params or {}
             name = str(params.get("name", "")).strip()
             if not name:
                 raise ValueError("mcp name is required")
-            item = await asyncio.to_thread(connect_mcp, name)
-            if isinstance(item, dict) and item.get("auth_required"):
-                # CLI form: connect_mcp started the CLI auth command and
-                # extracted the auth_url. Return it now so the frontend can
-                # open the browser (the CLI binary may not auto-open, and the
-                # backend may be headless/remote — the frontend's browser is
-                # the reliable place to open the auth page). The frontend then
-                # sends mcp.wait_auth to hold-open poll until OAuth completes.
+            payload = await self._run_mcp_connect_flow(name)
+            if payload.get("type") == "connect_failed":
                 resp = AgentResponse(
                     request_id=request.request_id,
                     channel_id=request.channel_id,
-                    ok=True,
-                    payload={"type": "auth_required", **self._mask_sensitive_fields(item)},
-                )
-            elif isinstance(item, dict) and item.get("credentials_required"):
-                # Form B missing token: surface a prompt instead of reloading —
-                # there is no config entry to reload until tokens are provisioned.
-                # NOTE: item fields are metadata (required_tokens list,
-                # credential_kind), not secrets — pass through unmasked. The
-                # generic _mask_sensitive_fields keys on 'token' substrings and
-                # would replace required_tokens with '***', breaking the
-                # frontend's array methods on that list.
-                resp = AgentResponse(
-                    request_id=request.request_id,
-                    channel_id=request.channel_id,
-                    ok=True,
-                    payload={"type": "credentials_required", **item},
+                    ok=False,
+                    payload=payload,
                 )
             else:
-                # Connect-time live-connect probe: not just register the entry,
-                # but confirm the MCP is actually usable before reporting
-                # "connected". For server-bearing types (stdio / remote-mcp /
-                # hybrid-cli's mcp.json subcommand) this spawns the stdio
-                # subprocess + MCP initialize handshake, or does a real HTTP
-                # connect — so npx first-install cost and handshake failures
-                # surface HERE (the user waits on connect) instead of silently
-                # degrading to "no tools" on the first chat message. A
-                # successful probe leaves the connection in the process-global
-                # Runner.resource_mgr cache, which reconcile reuses (no
-                # duplicate spawn on chat.send). skill-only / pure-CLI MCPs have
-                # no server entry — the probe returns (True, "") and they
-                # surface via bundled skills.
-                probe_ok, probe_reason = await self._agent_manager.probe_mcp_live_connection(name)
-                if not probe_ok:
-                    try:
-                        # Roll back: marketplace → remove record+skills; custom
-                        # → flip to registered (keep definition for edit/retry,
-                        # do NOT delete).
-                        from jiuwenswarm.server.runtime.mcp.registry import (
-                            rollback_failed_connect,
-                        )
-                        rollback_failed_connect(name)
-                    except Exception as rollback_exc:  # noqa: BLE001
-                        logger.warning(
-                            "[mcp] rollback failed-probe entry '%s' failed: %s",
-                            name, rollback_exc,
-                        )
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=False,
-                        payload={
-                            "type": "connect_failed",
-                            "error": "MCP live-connect probe failed",
-                            "code": "MCP_UNREACHABLE",
-                            "name": name,
-                        },
-                    )
-                else:
-                    # Probe succeeded (or no server to probe) — flip
-                    # connecting → connected so the MCP is selectable per
-                    # session, sync token env for skill-only bundled scripts,
-                    # and return. The MCP is NOT loaded into a specific agent
-                    # session here: session-level enable is driven by the
-                    # ``mcp`` field on chat.send (see reconcile_session_mcp).
-                    try:
-                        from jiuwenswarm.server.runtime.mcp.state_store import (
-                            set_mcp_state,
-                        )
-                        set_mcp_state(name, state="connected")
-                    except Exception as flip_exc:  # noqa: BLE001
-                        logger.warning(
-                            "[mcp] flip connecting→connected after connect failed for '%s': %s",
-                            name, flip_exc,
-                        )
-                    # Skill-only connectors' bundled scripts read tokens from
-                    # os.environ; sync the just-provisioned token into the agent
-                    # process env so BashTool inherits it. No-op for MCP-type
-                    # connectors (their tokens resolve via McpServerConfig).
-                    try:
-                        self._agent_manager.sync_mcp_credentials()
-                    except Exception as sync_exc:  # noqa: BLE001
-                        logger.warning("[mcp] sync_mcp_credentials after connect failed: %s", sync_exc)
-                    resp = AgentResponse(
-                        request_id=request.request_id,
-                        channel_id=request.channel_id,
-                        ok=True,
-                        payload={
-                            "type": "connected",
-                            "name": name,
-                            "applied": True,
-                            "item": self._mask_sensitive_fields(item),
-                        },
-                    )
+                resp = AgentResponse(
+                    request_id=request.request_id,
+                    channel_id=request.channel_id,
+                    ok=True,
+                    payload=payload,
+                )
         except KeyError as exc:
             resp = AgentResponse(
                 request_id=request.request_id,
@@ -8479,9 +8462,6 @@ class AgentWebSocketServer:
                 payload={"type": "connect_failed", "error": str(exc), "code": "MCP_NOT_FOUND"},
             )
         except CliConnectError as exc:
-            # Classifiable CLI failure (runtime missing / network / incomplete).
-            # Surface code + runtime + install_cmd so the frontend shows an
-            # actionable i18n hint instead of the raw "[WinError 2]" string.
             resp = AgentResponse(
                 request_id=request.request_id,
                 channel_id=request.channel_id,

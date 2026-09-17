@@ -257,7 +257,19 @@ export function MarketplacePage({
     const cs = mcpCardStates[connector.runtimePackageName];
     const action = nextMcpQuickAction(connector.installed, cs);
     if (action === 'install') {
-      await installConnector(connector.id);
+      const response = await installConnector(connector.id);
+      const connectResult = response?.connect;
+      const connectName = connectResult?.name ?? connector.runtimePackageName;
+      if (connectResult?.credentialsRequired) {
+        setTokenTarget({
+          name: connectName,
+          displayName: connector.displayName,
+          icon: connector.icon ?? undefined,
+          response: connectResult,
+        });
+      } else if (connectResult?.type === 'auth_required') {
+        setAuthTarget({ name: connectName, response: connectResult });
+      }
       return;
     }
     if (action !== 'connect') return;
@@ -700,14 +712,13 @@ export function MarketplacePage({
             : paginatedPlugins.map((pkg) => {
                 const pluginInstalled = !!installed[pkg.id];
                 const pluginConnected = (pluginConnectionStateMap[pkg.id] ?? 'disconnected') === 'connected';
-                // plugin_packages.list 不下发 avatar（只有 show 详情才有），卡片层级没有真实图标
-                // 可用，不传 iconUrl，EntityAvatar 会直接走生成的首字符色块。
                 return (
                   <MyMarketCard
                     key={pkg.id}
                     title={localizedText(pkg.displayName, i18n.language)}
                     description={localizedText(pkg.displayDescription, i18n.language)}
                     avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
+                    iconUrl={pkg.avatar || undefined}
                     state={derivePluginCardState(pluginInstalled, pluginConnected)}
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}
                     onUse={() => onUse({ kind: 'plugin', id: pkg.runtimePackageName })}
@@ -752,6 +763,7 @@ export function MarketplacePage({
                     title={localizedText(pkg.displayName, i18n.language)}
                     description={localizedText(pkg.displayDescription, i18n.language)}
                     avatar={getSkillAvatar(localizedText(pkg.displayName, i18n.language))}
+                    iconUrl={pkg.avatar || undefined}
                     state={derivePluginCardState(pluginInstalled, pluginConnected)}
                     canOpenDetail
                     onOpenDetail={() => onOpenPluginDetail(pkg.id)}

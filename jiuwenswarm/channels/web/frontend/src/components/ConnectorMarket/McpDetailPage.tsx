@@ -98,7 +98,9 @@ interface McpDetailPageProps {
 export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: McpDetailPageProps) {
   const { t } = useTranslation();
   const connector = useConnectorStore((s) => s.connectors.find((c) => c.id === name || c.runtimePackageName === name));
-  const detail = useConnectorStore((s) => s.detailCache[name]);
+  // Cache by the runtime name used by connect/disconnect and detail invalidation.
+  const runtimeName = connector?.runtimePackageName ?? name;
+  const detail = useConnectorStore((s) => s.detailCache[runtimeName]);
   const tools = detail?.tools;
   // mcp.show 一次性带回的预置技能（name+description），之前只用了同批返回的 tools，这份完全
   // 没消费出口——插件详情页（PluginDetailPage.tsx）有对称的"技能"分区，MCP 这边照抄视觉补上。
@@ -117,7 +119,6 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   const [busy, setBusy] = useState(false);
 
   // 卡片统一状态机（见 mcpState.ts）。busy 用 busyMap[name]。
-  const runtimeName = connector?.runtimePackageName ?? name;
   const cardState = connector
     ? deriveCardState({ connectionState: connector.connectionState, busy: busyMap[name] ?? busyMap[runtimeName] })
     : 'idle';
@@ -136,12 +137,14 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   // detailCache[name] 变成 undefined（不管是最初挂载时没缓存，还是被 connect/disconnect 之类的
   // 操作清空），这个 effect 就会重新触发去重新拉，不用等重新挂载。
   useEffect(() => {
+    // Uninstalled Hub packages have no local directory for mcp.show.
+    if (connector?.source === 'hub' && !connector.installed) return;
     // mcp.show 一次性带回 skills+tools（见文档 §5.2）；loadDetail 内部已经按 name 缓存，
-    // detailCache[name] 有值时这里的调用会被它自己的守卫短路，不会产生多余请求。
+    // detailCache[runtimeName] 有值时这里的调用会被它自己的守卫短路，不会产生多余请求。
     if (!detail) {
-      loadDetail(name);
+      loadDetail(runtimeName);
     }
-  }, [name, detail, loadDetail]);
+  }, [connector?.source, connector?.installed, runtimeName, detail, loadDetail]);
 
   if (!connector) return null;
 
@@ -159,8 +162,15 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
   async function handleInstall() {
     setInstalling(true);
     if (!connectorInstalled) {
-      await installPackage(connectorId);
+      const response = await installPackage(connectorId);
       setInstalling(false);
+      if (!response) return;
+      const connectResult = response.connect;
+      if (connectResult?.credentialsRequired) {
+        setTokenTarget(connectResult);
+      } else if (connectResult?.type === 'auth_required') {
+        setAuthTarget(connectResult);
+      }
       return;
     }
     const response = await connectAction(runtimeName);
@@ -239,11 +249,13 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
             <span
               data-tooltip={detail?.cliSpecPresent ? t('connectorMarket.detail.cliSpecPresentHint') : undefined}
               data-testid="connector-market-mcp-detail-integration-type"
-              data-variant={connector.integrationType}
+              data-variant={connector.source === 'hub' ? 'hub' : connector.integrationType}
               className="flex items-center gap-1 rounded-full border border-border px-2 py-0.5 text-[11px] leading-4 text-text-muted"
             >
               {detail?.cliSpecPresent && <Terminal size={11} />}
-              {t(integrationTypeLabelKey(connector.integrationType))}
+              {connector.source === 'hub'
+                ? t('connectorMarket.detail.integrationType.hub')
+                : t(integrationTypeLabelKey(connector.integrationType))}
             </span>
             {cardState === 'error' && (
               <span
@@ -324,7 +336,8 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           Unlink 换成"红圆底+白色X"这种更常见的错误态图标（用 bg-danger 圆形 + 白色 X 手搭，
           lucide 没有现成的实心圆+X 组合图标）；"连接MCP"文字从红色改成蓝色（用跟全局一致的
           accent 蓝 token）。 */}
-        {installed && !linked && (
+        {/* Show the same banner before first install or reconnect. */}
+        {!linked && (
           <div
             className="mb-6 flex items-center gap-1.5 rounded-lg bg-[#FCE3E1] px-3 py-2 text-[13px] text-text-muted"
             data-testid="connector-market-mcp-detail-disconnect-banner"
@@ -372,7 +385,7 @@ export function McpDetailPage({ name, onBack, onUse, onUseExample, onEdit }: Mcp
           >
             {t('connectorMarket.detail.sections.basicInfo')}
           </h2>
-          <p className="text-[12px] leading-[18px] text-text">{detail?.description ?? ''}</p>
+          <p className="text-[12px] leading-[18px] text-text">{detail?.description ?? connector.description ?? ''}</p>
         </div>
 
         {detail?.examples && detail.examples.length > 0 && (

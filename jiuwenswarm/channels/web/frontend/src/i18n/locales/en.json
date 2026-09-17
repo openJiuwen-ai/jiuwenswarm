@@ -2996,7 +2996,8 @@
         "cli": "CLI authorization",
         "stdioMcp": "Local Connector",
         "remoteMcp": "Remote Connector",
-        "skillOnly": "Skills only"
+        "skillOnly": "Skills only",
+        "hub": "OpenJiuwen Agentic Hub"
       },
       "cliSpecPresentHint": "Supports CLI-driven setup",
       "config": {
