@@ -2,18 +2,19 @@
 
 > 范围：Manager（`applications/manager`）通过 HTTP 调用 Gateway **Config Receiver**（`jiuwenswarm/.../manager_config_receiver`）的全部接口。  
 
-
 ---
 
 ## 1. 总览
 
-| 项 | 说明 |
-|----|------|
-| Gateway 模块 | `packages/jiuwenclaw-ee/gateway/extensions/manager_config_receiver` |
-| Base URL | 实例的 `gateway_config_host`（如 `http://gateway:8080`） |
-| 路径前缀 | `/api/v1` |
-| Manager 客户端 | `manager_server.manager_config_push.client.gateway_request` |
-| 探活客户端 | `manager_server.core.instance.config_host_probe`（直连 GET） |
+
+| 项           | 说明                                                                  |
+| ----------- | ------------------------------------------------------------------- |
+| Gateway 模块  | `packages/jiuwenclaw-ee/gateway/extensions/manager_config_receiver` |
+| Base URL    | 实例的 `gateway_config_host`（如 `http://gateway:8080`）                  |
+| 路径前缀        | `/api/v1`                                                           |
+| Manager 客户端 | `manager_server.manager_config_push.client.gateway_request`         |
+| 探活客户端       | `manager_server.core.instance.config_host_probe`（直连 GET）            |
+
 
 **交互原则**
 
@@ -22,7 +23,11 @@
 
 ---
 
+
+
 ## 2. 公共约定
+
+
 
 ### 2.1 请求 Body
 
@@ -42,17 +47,23 @@ PATCH 更新须至少包含一个可更新业务字段；空 Body / 无可更新
 }
 ```
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
-| `code` | int | 业务码，成功为 `200` |
-| `message` | string | 文案，成功为 `success` |
-| `data` | object \| null | 业务结果；更新/删除多为 `null`；创建类接口多为 `{ "template_id": "..." }` / `{ "resource_id": "..." }` / `{ "rule_id": "..." }` 等 |
 
-| HTTP | 含义 |
-|------|------|
-| 200 | 成功 |
-| 400 | 业务校验失败（`detail`） |
-| 404 | 资源不存在 |
+| 字段        | 类型            | 说明                                                                                                             |
+| --------- | ------------- | -------------------------------------------------------------------------------------------------------------- |
+| `code`    | int           | 业务码，成功为 `200`                                                                                                  |
+| `message` | string        | 文案，成功为 `success`                                                                                               |
+| `data`    | object | null | 业务结果；更新/删除多为 `null`；创建类接口多为 `{ "template_id": "..." }` / `{ "resource_id": "..." }` / `{ "rule_id": "..." }` 等 |
+
+
+
+| HTTP | 含义               |
+| ---- | ---------------- |
+| 200  | 成功               |
+| 400  | 业务校验失败（`detail`） |
+| 404  | 资源不存在            |
+
+
+
 
 ### 2.3 Manager 调用形态
 
@@ -63,6 +74,8 @@ Body = { **business } 或 {}
 ```
 
 ---
+
+
 
 ## 3. 探活 / 系统
 
@@ -76,9 +89,11 @@ Body = { **business } 或 {}
 - **请求参数**：无
 - **返回参数**：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
+
+| 字段       | 类型     | 说明   |
+| -------- | ------ | ---- |
 | `status` | string | `ok` |
+
 
 - **请求示例**：无 Body
 - **返回示例**：
@@ -86,6 +101,8 @@ Body = { **business } 或 {}
 ```json
 { "status": "ok" }
 ```
+
+
 
 ### 3.2 就绪检查
 
@@ -95,9 +112,11 @@ Body = { **business } 或 {}
 - **请求参数**：无
 - **返回参数**：
 
-| 字段 | 类型 | 说明 |
-|------|------|------|
+
+| 字段       | 类型     | 说明      |
+| -------- | ------ | ------- |
 | `status` | string | `ready` |
+
 
 - **请求示例**：无 Body
 - **返回示例**：
@@ -110,32 +129,38 @@ Body = { **business } 或 {}
 
 ---
 
+
+
 ## 4. 模型模板（`model_template` / `model-templates`）
+
+
 
 ### 4.0 表结构（`model_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键；插入时可省略。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识（通常 UUID v4）；API 路径与引用均用本字段。 |
-| `template_name` | VARCHAR(128) | 是 | 用户自定义模板名称。 |
-| `description` | VARCHAR(512) | 否 | 模型描述。 |
-| `model_type` | JSON | 是 | 模型类型列表；允许值仅 `default` / `video` / `audio` / `vision`；创建未传时落库为 `[]`。 |
-| `model_tags` | JSON | 否 | 标签，如 `["chat","vision"]`。 |
-| `api_base` | VARCHAR(512) | 是 | 模型 API 基地址。 |
-| `api_key` | VARCHAR(4096) | 是 | API 密钥。 |
-| `model_id` | VARCHAR(128) | 是 | 上游模型标识（如 `gpt-4o-mini`）。 |
-| `model_provider` | VARCHAR(64) | 是 | 提供商标识，如 `openai`。 |
-| `parameters` | JSON | 否 | 推理参数，如 `temperature`、`max_tokens`。 |
-| `timeout` | INT DEFAULT 60 | 否 | 单次请求超时（秒）。 |
-| `retry_count` | INT DEFAULT 3 | 否 | 失败重试次数。 |
-| `enable_streaming` | BOOLEAN DEFAULT true | 否 | 是否启用流式输出。 |
-| `enable_function_calling` | BOOLEAN DEFAULT true | 否 | 是否启用函数调用。 |
-| `verify_ssl` | BOOLEAN DEFAULT false | 否 | 是否校验 HTTPS 证书。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展字段。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+
+| 字段名                       | 类型                    | 必填  | 说明                                                                  |
+| ------------------------- | --------------------- | --- | ------------------------------------------------------------------- |
+| `id`                      | BIGINT 自增 PK          | 是   | 数据库主键；插入时可省略。                                                       |
+| `template_id`             | VARCHAR(100) UNIQUE   | 是   | 对外稳定标识（通常 UUID v4）；API 路径与引用均用本字段。                                  |
+| `template_name`           | VARCHAR(128)          | 是   | 用户自定义模板名称。                                                          |
+| `description`             | VARCHAR(512)          | 否   | 模型描述。                                                               |
+| `model_type`              | JSON                  | 是   | 模型类型列表；允许值仅 `default` / `video` / `audio` / `vision`；创建未传时落库为 `[]`。 |
+| `model_tags`              | JSON                  | 否   | 标签，如 `["chat","vision"]`。                                           |
+| `api_base`                | VARCHAR(512)          | 是   | 模型 API 基地址。                                                         |
+| `api_key`                 | VARCHAR(4096)         | 是   | API 密钥。                                                             |
+| `model_id`                | VARCHAR(128)          | 是   | 上游模型标识（如 `gpt-4o-mini`）。                                            |
+| `model_provider`          | VARCHAR(64)           | 是   | 提供商标识，如 `openai`。                                                   |
+| `parameters`              | JSON                  | 否   | 推理参数，如 `temperature`、`max_tokens`。                                  |
+| `timeout`                 | INT DEFAULT 60        | 否   | 单次请求超时（秒）。                                                          |
+| `retry_count`             | INT DEFAULT 3         | 否   | 失败重试次数。                                                             |
+| `enable_streaming`        | BOOLEAN DEFAULT true  | 否   | 是否启用流式输出。                                                           |
+| `enable_function_calling` | BOOLEAN DEFAULT true  | 否   | 是否启用函数调用。                                                           |
+| `verify_ssl`              | BOOLEAN DEFAULT false | 否   | 是否校验 HTTPS 证书。                                                      |
+| `enabled`                 | BOOLEAN DEFAULT true  | 是   | 是否启用。                                                               |
+| `data`                    | JSON                  | 否   | 扩展字段。                                                               |
+| `created_at`              | DATETIME(3)           | 是   | 创建时间。                                                               |
+| `updated_at`              | DATETIME(3)           | 是   | 更新时间。                                                               |
+
 
 **Manager 触发**：Agent 资源 `template_ref` 引用 / 全量 bootstrap / 模型模板变更推送（`push_template_to_gateway`）。
 
@@ -146,31 +171,35 @@ Body = { **business } 或 {}
 - **请求路径**：`/api/v1/model-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID |
-| `template_name` | string | 是 | 名称 |
-| `api_base` | string | 是 | API 基地址 |
-| `api_key` | string | 是 | API 密钥 |
-| `model_id` | string | 是 | 上游模型 ID |
-| `model_provider` | string | 是 | 提供商 |
-| `description` | string | 否 | 描述 |
-| `model_type` | string[] | 否 | 类型列表；仅允许 `default` / `video` / `audio` / `vision`；省略时落库 `[]` |
-| `model_tags` | string[] | 否 | 标签 |
-| `parameters` | object | 否 | 推理参数 |
-| `timeout` | int | 否 | 超时秒；默认 `60`（`>=1`） |
-| `retry_count` | int | 否 | 重试次数；默认 `3`（`>=0`） |
-| `enable_streaming` | bool | 否 | 流式；默认 `true` |
-| `enable_function_calling` | bool | 否 | 函数调用；默认 `true` |
-| `verify_ssl` | bool | 否 | SSL 校验；默认 `false` |
-| `enabled` | bool | 否 | 启用；默认 `true` |
-| `data` | object | 否 | 扩展 |
+
+| 字段名                       | 类型       | 必填  | 说明                                                           |
+| ------------------------- | -------- | --- | ------------------------------------------------------------ |
+| `template_id`             | string   | 是   | 业务 ID                                                        |
+| `template_name`           | string   | 是   | 名称                                                           |
+| `api_base`                | string   | 是   | API 基地址                                                      |
+| `api_key`                 | string   | 是   | API 密钥                                                       |
+| `model_id`                | string   | 是   | 上游模型 ID                                                      |
+| `model_provider`          | string   | 是   | 提供商                                                          |
+| `description`             | string   | 否   | 描述                                                           |
+| `model_type`              | string[] | 否   | 类型列表；仅允许 `default` / `video` / `audio` / `vision`；省略时落库 `[]` |
+| `model_tags`              | string[] | 否   | 标签                                                           |
+| `parameters`              | object   | 否   | 推理参数                                                         |
+| `timeout`                 | int      | 否   | 超时秒；默认 `60`（`>=1`）                                           |
+| `retry_count`             | int      | 否   | 重试次数；默认 `3`（`>=0`）                                           |
+| `enable_streaming`        | bool     | 否   | 流式；默认 `true`                                                 |
+| `enable_function_calling` | bool     | 否   | 函数调用；默认 `true`                                               |
+| `verify_ssl`              | bool     | 否   | SSL 校验；默认 `false`                                            |
+| `enabled`                 | bool     | 否   | 启用；默认 `true`                                                 |
+| `data`                    | object   | 否   | 扩展                                                           |
+
 
 - **返回参数**：
 
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
+
+| 字段名                | 类型     | 说明                |
+| ------------------ | ------ | ----------------- |
 | `data.template_id` | string | 写入的 `template_id` |
+
 
 - **请求示例**（演示数据 M1「兜底-经济型」）：
 
@@ -203,6 +232,8 @@ Body = { **business } 或 {}
 }
 ```
 
+
+
 ### 4.2 更新模型模板
 
 - **接口名称**：更新模型模板
@@ -210,9 +241,11 @@ Body = { **business } 或 {}
 - **请求路径**：`/api/v1/model-templates/{template_id}`
 - **路径参数**：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 要更新的模板 ID |
+
+| 字段名           | 类型     | 必填  | 说明        |
+| ------------- | ------ | --- | --------- |
+| `template_id` | string | 是   | 要更新的模板 ID |
+
 
 - **请求参数**（Body）：业务字段均可选（partial）。
 - **返回参数**：`data` 为 `null`
@@ -236,6 +269,8 @@ Body = { **business } 或 {}
 }
 ```
 
+
+
 ### 4.3 删除模型模板
 
 - **接口名称**：删除模型模板
@@ -244,8 +279,10 @@ Body = { **business } 或 {}
 - **路径参数**：`template_id`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
+
+| 字段名 | 类型  | 必填  | 说明  |
+| --- | --- | --- | --- |
+
 
 - **返回参数**：`data` 为 `null`
 - **请求示例**：
@@ -266,27 +303,35 @@ Body = { **business } 或 {}
 
 ---
 
+
+
 ## 5. Embedding 模板（`embedding_template` / `embedding-templates`）
+
+
 
 ### 5.0 表结构（`embedding_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识。 |
-| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
-| `description` | VARCHAR(512) | 否 | 用途说明。 |
-| `embed_tags` | JSON | 否 | 标签，如 `["memory","fallback"]`。 |
-| `api_base` | VARCHAR(512) | 是 | Embedding API 基地址。 |
-| `api_key` | VARCHAR(4096) | 是 | API 密钥。 |
-| `model_id` | VARCHAR(128) | 是 | 上游 Embedding 模型标识。 |
-| `model_provider` | VARCHAR(64) | 是 | 提供商标识。 |
-| `parameters` | JSON | 否 | 对齐 OpenAI Embeddings 可选参数（如 `encoding_format`、`dimensions`）。 |
-| `client_config` | JSON | 否 | HTTP 客户端参数（如 `timeout`、`retry_count`、`verify_ssl`）。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展字段。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+
+| 字段名              | 类型                   | 必填  | 说明                                                           |
+| ---------------- | -------------------- | --- | ------------------------------------------------------------ |
+| `id`             | BIGINT 自增 PK         | 是   | 数据库主键。                                                       |
+| `template_id`    | VARCHAR(100) UNIQUE  | 是   | 对外稳定标识。                                                      |
+| `template_name`  | VARCHAR(128)         | 是   | 模板名称。                                                        |
+| `description`    | VARCHAR(512)         | 否   | 用途说明。                                                        |
+| `embed_tags`     | JSON                 | 否   | 标签，如 `["memory","fallback"]`。                                |
+| `api_base`       | VARCHAR(512)         | 是   | Embedding API 基地址。                                           |
+| `api_key`        | VARCHAR(4096)        | 是   | API 密钥。                                                      |
+| `model_id`       | VARCHAR(128)         | 是   | 上游 Embedding 模型标识。                                           |
+| `model_provider` | VARCHAR(64)          | 是   | 提供商标识。                                                       |
+| `parameters`     | JSON                 | 否   | 对齐 OpenAI Embeddings 可选参数（如 `encoding_format`、`dimensions`）。 |
+| `client_config`  | JSON                 | 否   | HTTP 客户端参数（如 `timeout`、`retry_count`、`verify_ssl`）。          |
+| `enabled`        | BOOLEAN DEFAULT true | 是   | 是否启用。                                                        |
+| `data`           | JSON                 | 否   | 扩展字段。                                                        |
+| `created_at`     | DATETIME(3)          | 是   | 创建时间。                                                        |
+| `updated_at`     | DATETIME(3)          | 是   | 更新时间。                                                        |
+
+
+
 
 ### 5.1 创建 / Upsert Embedding 模板
 
@@ -295,20 +340,22 @@ Body = { **business } 或 {}
 - **请求路径**：`/api/v1/embedding-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID |
-| `template_name` | string | 是 | 名称（亦接受别名 `name`） |
-| `api_base` | string | 是 | API 基地址 |
-| `api_key` | string | 是 | API 密钥 |
-| `model_id` | string | 是 | 模型 ID |
-| `model_provider` | string | 是 | 提供商 |
-| `description` | string | 否 | 描述 |
-| `embed_tags` | string[] | 否 | 标签 |
-| `parameters` | object | 否 | Embeddings 可选参数 |
-| `client_config` | object | 否 | HTTP 客户端配置 |
-| `enabled` | bool | 否 | 启用 |
-| `data` | object | 否 | 扩展 |
+
+| 字段名              | 类型       | 必填  | 说明               |
+| ---------------- | -------- | --- | ---------------- |
+| `template_id`    | string   | 是   | 业务 ID            |
+| `template_name`  | string   | 是   | 名称（亦接受别名 `name`） |
+| `api_base`       | string   | 是   | API 基地址          |
+| `api_key`        | string   | 是   | API 密钥           |
+| `model_id`       | string   | 是   | 模型 ID            |
+| `model_provider` | string   | 是   | 提供商              |
+| `description`    | string   | 否   | 描述               |
+| `embed_tags`     | string[] | 否   | 标签               |
+| `parameters`     | object   | 否   | Embeddings 可选参数  |
+| `client_config`  | object   | 否   | HTTP 客户端配置       |
+| `enabled`        | bool     | 否   | 启用               |
+| `data`           | object   | 否   | 扩展               |
+
 
 - **返回参数**：`data.template_id`
 - **请求示例**（演示数据 B1「兜底向量模型」）：
@@ -340,6 +387,8 @@ Body = { **business } 或 {}
 }
 ```
 
+
+
 ### 5.2 更新 Embedding 模板
 
 - **接口名称**：更新 Embedding 模板
@@ -367,6 +416,8 @@ Body = { **business } 或 {}
 }
 ```
 
+
+
 ### 5.3 删除 Embedding 模板
 
 - **接口名称**：删除 Embedding 模板
@@ -393,33 +444,43 @@ Body = { **business } 或 {}
 
 ---
 
+
+
 ## 6. 扩展配置模板（`extension_config_template` / `extension-config-templates`）
+
+
 
 ### 6.0 表结构（`extension_config_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识。 |
-| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
-| `description` | VARCHAR(512) | 否 | 用途说明。 |
-| `component` | VARCHAR(32) | 是 | 下发目标：`gateway` / `agent_server`。 |
-| `hook_type` | VARCHAR(32) | 是 | `pre_request` / `post_request` / `error` / `schedule`。 |
-| `hook_config` | JSON | 是 | 钩子配置，见下表。 |
-| `custom_config` | JSON | 否 | 自定义配置；默认 `{}`。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展字段。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
-**`hook_config` 字段说明**：
+| 字段名             | 类型                   | 必填  | 说明                                                     |
+| --------------- | -------------------- | --- | ------------------------------------------------------ |
+| `id`            | BIGINT 自增 PK         | 是   | 数据库主键。                                                 |
+| `template_id`   | VARCHAR(100) UNIQUE  | 是   | 对外稳定标识。                                                |
+| `template_name` | VARCHAR(128)         | 是   | 模板名称。                                                  |
+| `description`   | VARCHAR(512)         | 否   | 用途说明。                                                  |
+| `component`     | VARCHAR(32)          | 是   | 下发目标：`gateway` / `agent_server`。                       |
+| `hook_type`     | VARCHAR(32)          | 是   | `pre_request` / `post_request` / `error` / `schedule`。 |
+| `hook_config`   | JSON                 | 是   | 钩子配置，见下表。                                              |
+| `custom_config` | JSON                 | 否   | 自定义配置；默认 `{}`。                                         |
+| `enabled`       | BOOLEAN DEFAULT true | 是   | 是否启用。                                                  |
+| `data`          | JSON                 | 否   | 扩展字段。                                                  |
+| `created_at`    | DATETIME(3)          | 是   | 创建时间。                                                  |
+| `updated_at`    | DATETIME(3)          | 是   | 更新时间。                                                  |
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `handler` | string | 是 | 钩子实现路径，如 `hooks.auth.pre_request`。 |
-| `params` | object | 否 | 静态参数。 |
-| `schedule` | string | 否 | 仅 `hook_type=schedule` 时必填；cron（5/6/7 段）。 |
-| `data` | object | 否 | 单条钩子扩展。 |
+
+`hook_config` **字段说明**：
+
+
+| 字段名        | 类型     | 必填  | 说明                                        |
+| ---------- | ------ | --- | ----------------------------------------- |
+| `handler`  | string | 是   | 钩子实现路径，如 `hooks.auth.pre_request`。        |
+| `params`   | object | 否   | 静态参数。                                     |
+| `schedule` | string | 否   | 仅 `hook_type=schedule` 时必填；cron（5/6/7 段）。 |
+| `data`     | object | 否   | 单条钩子扩展。                                   |
+
+
+
 
 ### 6.1 创建 / Upsert 扩展配置模板
 
@@ -428,17 +489,19 @@ Body = { **business } 或 {}
 - **请求路径**：`/api/v1/extension-config-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID |
-| `template_name` | string | 是 | 名称 |
-| `component` | string | 是 | 目标组件；仅 `gateway` / `agent_server` |
-| `hook_type` | string | 是 | 钩子类型；仅 `pre_request` / `post_request` / `error` / `schedule` |
-| `description` | string | 否 | 描述 |
-| `hook_config` | object | 是 | 钩子配置（创建落库必填；`hook_type=schedule` 时须含合法 `schedule` cron） |
-| `custom_config` | object | 否 | 自定义配置；省略时落库 `{}` |
-| `enabled` | bool | 否 | 启用；默认 `true` |
-| `data` | object | 否 | 扩展 |
+
+| 字段名             | 类型     | 必填  | 说明                                                           |
+| --------------- | ------ | --- | ------------------------------------------------------------ |
+| `template_id`   | string | 是   | 业务 ID                                                        |
+| `template_name` | string | 是   | 名称                                                           |
+| `component`     | string | 是   | 目标组件；仅 `gateway` / `agent_server`                            |
+| `hook_type`     | string | 是   | 钩子类型；仅 `pre_request` / `post_request` / `error` / `schedule` |
+| `description`   | string | 否   | 描述                                                           |
+| `hook_config`   | object | 是   | 钩子配置（创建落库必填；`hook_type=schedule` 时须含合法 `schedule` cron）      |
+| `custom_config` | object | 否   | 自定义配置；省略时落库 `{}`                                             |
+| `enabled`       | bool   | 否   | 启用；默认 `true`                                                 |
+| `data`          | object | 否   | 扩展                                                           |
+
 
 - **返回参数**：`data.template_id`
 - **请求示例**（演示数据 E1「Gateway 请求前鉴权」）：
@@ -469,6 +532,8 @@ Body = { **business } 或 {}
   "data": { "template_id": "e1000001-0000-4000-8000-0000000000e1" }
 }
 ```
+
+
 
 ### 6.2 更新扩展配置模板
 
@@ -502,6 +567,8 @@ Body = { **business } 或 {}
 }
 ```
 
+
+
 ### 6.3 删除扩展配置模板
 
 - **接口名称**：删除扩展配置模板
@@ -528,14 +595,18 @@ Body = { **business } 或 {}
 
 ---
 
+
+
 ## 7. 预置Skill模板（`skill_prebuilt_template` / `skill-prebuilt-templates`）
 
 企业预置技能安装为**双模式**（按字段推断，不另传 `mode`）：
 
-| 模式 | 定位 | 说明 |
-|------|------|------|
+
+| 模式             | 定位                                        | 说明                                                                                                                                                                        |
+| -------------- | ----------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `provider`（推荐） | 齐 `source_id` + `skill_id` + `version_id` | AgentServer 走 SPI：`get_artifact` → `download_artifact` → `verify_artifact`。摘要以 Provider `ArtifactDescriptor` 为准，**不读**模板 `data.sha256`。若同时带 `package_url`，URL **不作**安装入口。 |
-| `url`（兼容） | 合法 `package_url`（且走不成 provider） | AgentServer `install_skill_sync(package_url, checksum=data.sha256?)`。可选 `data.sha256`（64 位小写 hex）。 |
+| `url`（兼容）      | 合法 `package_url`（且走不成 provider）           | AgentServer `install_skill_sync(package_url, checksum=data.sha256?)`。可选 `data.sha256`（64 位小写 hex）。                                                                        |
+
 
 Gateway **只存期望态**，不下载、不验签、不写 workspace。写接口 `200` 只表示模板已保存；真正安装在 AgentServer reconcile。账本 `source_type=prebuilt`；用户不可卸载。
 
@@ -547,20 +618,22 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ### 7.0 表结构（`skill_prebuilt_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识；策略 / Agent `template_ref.skill_prebuilt` 引用本字段。 |
-| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
-| `description` | VARCHAR(512) | 否 | 用途说明。 |
-| `skill_id` | VARCHAR(512) | 是 | 远端/本地定位 ID；两种模式均使用。 |
-| `package_url` | VARCHAR(2048) | 条件 | **仅 url 路径**：合法 `http(s)://` 且含主机。 |
-| `source_id` | VARCHAR(64) | 条件 | **仅 provider 路径**：已绑定来源 ID，建议 `^[a-z0-9][a-z0-9-]{0,63}$`。 |
-| `version_id` | VARCHAR(128) | 条件 | **仅 provider 路径**：精确制品版本 ID。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | `false` 时不下发到租户预置清单。 |
-| `data` | JSON | 否 | 扩展袋。url 路径可用 `data.sha256`；**禁止**在 `data` 内放 `source_id` / `skill_id` / `version_id` / `package_url`。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+
+| 字段名             | 类型                   | 必填  | 说明                                                                                                    |
+| --------------- | -------------------- | --- | ----------------------------------------------------------------------------------------------------- |
+| `id`            | BIGINT 自增 PK         | 是   | 数据库主键。                                                                                                |
+| `template_id`   | VARCHAR(100) UNIQUE  | 是   | 对外稳定标识；策略 / Agent `template_ref.skill_prebuilt` 引用本字段。                                                |
+| `template_name` | VARCHAR(128)         | 是   | 模板名称。                                                                                                 |
+| `description`   | VARCHAR(512)         | 否   | 用途说明。                                                                                                 |
+| `skill_id`      | VARCHAR(512)         | 是   | 远端/本地定位 ID；两种模式均使用。                                                                                   |
+| `package_url`   | VARCHAR(2048)        | 条件  | **仅 url 路径**：合法 `http(s)://` 且含主机。                                                                    |
+| `source_id`     | VARCHAR(64)          | 条件  | **仅 provider 路径**：已绑定来源 ID，建议 `^[a-z0-9][a-z0-9-]{0,63}$`。                                            |
+| `version_id`    | VARCHAR(128)         | 条件  | **仅 provider 路径**：精确制品版本 ID。                                                                          |
+| `enabled`       | BOOLEAN DEFAULT true | 是   | `false` 时不下发到租户预置清单。                                                                                  |
+| `data`          | JSON                 | 否   | 扩展袋。url 路径可用 `data.sha256`；**禁止**在 `data` 内放 `source_id` / `skill_id` / `version_id` / `package_url`。 |
+| `created_at`    | DATETIME(3)          | 是   | 创建时间。                                                                                                 |
+| `updated_at`    | DATETIME(3)          | 是   | 更新时间。                                                                                                 |
+
 
 落库校验：合并后必须能推断 provider 或 url 之一。`data.sha256` 若提供须为 64 位小写 hex。
 
@@ -571,20 +644,21 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 - **请求路径**：`/api/v1/skill-prebuilt-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID，≤100 |
-| `template_name` | string | 是 | 名称，≤128 |
-| `skill_id` | string | 是 | Skill ID，≤512 |
-| `source_id` | string | 条件 | provider：来源 ID，≤64 |
-| `version_id` | string | 条件 | provider：制品版本 ID，≤128 |
-| `package_url` | string | 条件 | url：合法 http(s) URL，≤2048 |
-| `description` | string | 否 | 描述，≤512 |
-| `enabled` | bool | 否 | 启用；默认 `true` |
-| `data` | object | 否 | 扩展；url 可用 `sha256` |
+
+| 字段名             | 类型     | 必填  | 说明                       |
+| --------------- | ------ | --- | ------------------------ |
+| `template_id`   | string | 是   | 业务 ID，≤100               |
+| `template_name` | string | 是   | 名称，≤128                  |
+| `skill_id`      | string | 是   | Skill ID，≤512            |
+| `source_id`     | string | 条件  | provider：来源 ID，≤64       |
+| `version_id`    | string | 条件  | provider：制品版本 ID，≤128    |
+| `package_url`   | string | 条件  | url：合法 http(s) URL，≤2048 |
+| `description`   | string | 否   | 描述，≤512                  |
+| `enabled`       | bool   | 否   | 启用；默认 `true`             |
+| `data`          | object | 否   | 扩展；url 可用 `sha256`       |
+
 
 - **返回参数**：`data.template_id`
-
 - **请求示例（provider）**：
 
 ```json
@@ -685,6 +759,8 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
+
+
 ## 8. 安全护栏模板（`permissions_template` / `permissions-templates`）
 
 判定只在 **AgentServer**。Gateway 只存期望态：写接口 `200` 表示模板已落库，不代表节点已按该策略拦截。
@@ -697,50 +773,58 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ### 8.0 表结构（`permissions_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | 对外稳定标识；策略 / Agent `template_ref.permissions` 引用本字段。 |
-| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
-| `description` | VARCHAR(512) | 否 | 说明，不参与判定。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 模板行开关；`false` 时不下发，等价未引用。 |
-| `body` | JSON | 是 | 完整权限策略，结构与 `config.yaml::permissions` 一致；见下表。 |
-| `data` | JSON | 否 | 扩展袋，运行时不参与判定。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+
+| 字段名             | 类型                   | 必填  | 说明                                                  |
+| --------------- | -------------------- | --- | --------------------------------------------------- |
+| `id`            | BIGINT 自增 PK         | 是   | 数据库主键。                                              |
+| `template_id`   | VARCHAR(100) UNIQUE  | 是   | 对外稳定标识；策略 / Agent `template_ref.permissions` 引用本字段。 |
+| `template_name` | VARCHAR(128)         | 是   | 模板名称。                                               |
+| `description`   | VARCHAR(512)         | 否   | 说明，不参与判定。                                           |
+| `enabled`       | BOOLEAN DEFAULT true | 是   | 模板行开关；`false` 时不下发，等价未引用。                           |
+| `body`          | JSON                 | 是   | 完整权限策略，结构与 `config.yaml::permissions` 一致；见下表。       |
+| `data`          | JSON                 | 否   | 扩展袋，运行时不参与判定。                                       |
+| `created_at`    | DATETIME(3)          | 是   | 创建时间。                                               |
+| `updated_at`    | DATETIME(3)          | 是   | 更新时间。                                               |
+
 
 两个开关不要混：行上 `enabled` 控制是否下发；`body.enabled` 是权限引擎总开关（`false` 时工具调用基本放行，内置高危规则仍可能 DENY）。
 
-**`body` 字段**（Gateway **不**校验内部语义，只要求是 JSON object；无效 body 运行时回落 yaml）：
+`body` **字段**（Gateway **不**校验内部语义，只要求是 JSON object；无效 body 运行时回落 yaml）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `enabled` | bool | 否 | 权限引擎总开关。Manager 新建多为 `true`。 |
-| `permission_mode` | string | 否 | `normal`（默认）或 `strict`；把 `rules[].severity` 映射为 allow / ask / deny。 |
-| `defaults` | object | 否 | 未列明工具的默认动作；UI 通常只编 `defaults["*"]`（`allow` / `ask` / `deny`）。无 `defaults` 时引擎回落 `ask`。 |
-| `tools` | object | 否 | 键为工具名，值为 `allow` / `ask` / `deny`。`deny` 立即拒绝，不再看 rules。 |
-| `rules` | array | 否 | 参数级规则，见 **rule 对象**。 |
-| `file_guard` | object | 否 | 路径防护，见 **file_guard 对象**。 |
 
-**`rule` 对象**：
+| 字段名               | 类型     | 必填  | 说明                                                                                     |
+| ----------------- | ------ | --- | -------------------------------------------------------------------------------------- |
+| `enabled`         | bool   | 否   | 权限引擎总开关。Manager 新建多为 `true`。                                                           |
+| `permission_mode` | string | 否   | `normal`（默认）或 `strict`；把 `rules[].severity` 映射为 allow / ask / deny。                    |
+| `defaults`        | object | 否   | 未列明工具的默认动作；UI 通常只编 `defaults["*"]`（`allow` / `ask` / `deny`）。无 `defaults` 时引擎回落 `ask`。 |
+| `tools`           | object | 否   | 键为工具名，值为 `allow` / `ask` / `deny`。`deny` 立即拒绝，不再看 rules。                               |
+| `rules`           | array  | 否   | 参数级规则，见 **rule 对象**。                                                                   |
+| `file_guard`      | object | 否   | 路径防护，见 **file_guard 对象**。                                                              |
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | string | 否 | 规则 ID。 |
-| `tools` | string[] | 是 | 适用工具；须同一类（shell / path），空或跨类则运行时跳过该条。 |
-| `pattern` | string | 是 | 命令模式。通配如 `ls *`；`re:` 开头为正则。 |
-| `severity` | string | 否 | `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`，经 `permission_mode` 映射。 |
-| `action` | string | 否 | 显式 `allow` / `ask` / `deny`；有则优先于 severity 映射。 |
-| `description` | string | 否 | 说明。 |
 
-**`file_guard` 对象**：
+`rule` **对象**：
 
-| 字段名 | 类型 | 说明 |
-|--------|------|------|
-| `enabled` | bool | `false` 时整层路径防护关，不影响 tools/rules。 |
-| `defaults` | object | 未命中 workspace / paths 时的 `read` / `write` / `exec`（`allow` / `ask` / `deny`）。 |
-| `workspace` | object | Agent workspace **内**三轴；配置里不写死路径。 |
-| `paths` | array | 额外路径规则：`path`、`match`（`prefix` 缺省 / `glob`）、以及该路径三轴。 |
+
+| 字段名           | 类型       | 必填  | 说明                                                             |
+| ------------- | -------- | --- | -------------------------------------------------------------- |
+| `id`          | string   | 否   | 规则 ID。                                                         |
+| `tools`       | string[] | 是   | 适用工具；须同一类（shell / path），空或跨类则运行时跳过该条。                          |
+| `pattern`     | string   | 是   | 命令模式。通配如 `ls *`；`re:` 开头为正则。                                   |
+| `severity`    | string   | 否   | `LOW` / `MEDIUM` / `HIGH` / `CRITICAL`，经 `permission_mode` 映射。 |
+| `action`      | string   | 否   | 显式 `allow` / `ask` / `deny`；有则优先于 severity 映射。                 |
+| `description` | string   | 否   | 说明。                                                            |
+
+
+`file_guard` **对象**：
+
+
+| 字段名         | 类型     | 说明                                                                            |
+| ----------- | ------ | ----------------------------------------------------------------------------- |
+| `enabled`   | bool   | `false` 时整层路径防护关，不影响 tools/rules。                                             |
+| `defaults`  | object | 未命中 workspace / paths 时的 `read` / `write` / `exec`（`allow` / `ask` / `deny`）。 |
+| `workspace` | object | Agent workspace **内**三轴；配置里不写死路径。                                             |
+| `paths`     | array  | 额外路径规则：`path`、`match`（`prefix` 缺省 / `glob`）、以及该路径三轴。                          |
+
 
 `permission_mode` 映射：`normal` 下 LOW/MEDIUM→allow、HIGH/CRITICAL→ask；`strict` 下 MEDIUM→ask、CRITICAL→deny。未知 severity 按 HIGH。
 
@@ -751,14 +835,16 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 - **请求路径**：`/api/v1/permissions-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID，≤100 |
-| `template_name` | string | 是 | 名称，≤128 |
-| `body` | object | 是 | 完整 permissions 段；缺省或非 object → 400 |
-| `description` | string | 否 | 描述，≤512 |
-| `enabled` | bool | 否 | 模板行开关；默认 `true` |
-| `data` | object | 否 | 扩展 |
+
+| 字段名             | 类型     | 必填  | 说明                                 |
+| --------------- | ------ | --- | ---------------------------------- |
+| `template_id`   | string | 是   | 业务 ID，≤100                         |
+| `template_name` | string | 是   | 名称，≤128                            |
+| `body`          | object | 是   | 完整 permissions 段；缺省或非 object → 400 |
+| `description`   | string | 否   | 描述，≤512                            |
+| `enabled`       | bool   | 否   | 模板行开关；默认 `true`                    |
+| `data`          | object | 否   | 扩展                                 |
+
 
 - **返回参数**：`data.template_id`
 - **请求示例**：
@@ -876,54 +962,227 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 9. Agent 模板（`agent_template` / `agent-templates`）
 
-### 9.0 表结构（`agent_template`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `template_id` | VARCHAR(100) UNIQUE | 是 | UUIDv4；`instance_agent_resource.ref_template_id` 引用本字段。 |
-| `template_name` | VARCHAR(128) | 是 | 模板名称。 |
-| `description` | VARCHAR(512) | 否 | 描述。 |
-| `agent_tags` | JSON | 否 | 标签，如 `["vip","demo"]`。 |
-| `template_ref` | JSON | 否 | 对各配置模板的槽位引用；结构见下。未配置可为 `{}`。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展（如 `workspace_dir`）。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+## 9. MCP 模板（`mcp_template` / `mcp-templates`）
 
-**`template_ref` 槽位**：
+> **MCP**（Model Context Protocol）= 给 Agent 外挂「工具服务器」的协议。Manager 把远程 MCP 服务写成模板推到 Gateway；Agent 的 `template_ref.mcp` 引用这些模板后，AgentServer 会用它们**整表替换**本地 `config.yaml` 的 `mcp.servers`（禁用仅写在本地 yaml 里的 MCP）。
 
-| 槽位键 | 实体表 | 说明 |
-|--------|--------|------|
-| `default_model` | `model_template` | 默认模型 |
-| `video_model` | `model_template` | 视频模型 |
-| `audio_model` | `model_template` | 音频模型 |
-| `vision_model` | `model_template` | 视觉模型 |
-| `embedding_model` | `embedding_template` | Embedding |
-| `skill_prebuilt` | `skill_prebuilt_template` | 预置Skill（可多条；见 §7） |
-| `extension_config` | `extension_config_template` | 扩展配置 |
-| `permissions` | `permissions_template` | 安全护栏 / Permissions（**单值**；见 §8） |
+说明：
+
+- **只允许远程 MCP**（`sse` / `streamable-http`）；**不开放**本地 `stdio`。
+- 入参 `transport` 可写别名 `http`、`streamable_http`，存盘时归一为 SDK 认识的 `streamable-http`。
+- 启用开关只认**模板行**的 `enabled`；`mcp_entry` 内的 `enabled` 会被丢弃。
+
+**Manager 触发**：Agent `template_ref.mcp` 引用 / 全量 bootstrap / MCP 模板变更推送（`push_template_to_gateway`）。
+
+### 9.0 表结构（`mcp_template`）
+
+
+| 字段名             | 类型                   | 必填  | 说明                                          |
+| --------------- | -------------------- | --- | ------------------------------------------- |
+| `id`            | BIGINT 自增 PK         | 是   | 数据库主键。                                      |
+| `template_id`   | VARCHAR(100) UNIQUE  | 是   | 对外稳定标识；策略 / Agent `template_ref.mcp` 引用本字段。 |
+| `template_name` | VARCHAR(128)         | 是   | 模板名称。                                       |
+| `description`   | VARCHAR(512)         | 否   | 用途说明。                                       |
+| `mcp_entry`     | JSON                 | 是   | 单条 MCP 服务描述（见下）。                            |
+| `enabled`       | BOOLEAN DEFAULT true | 是   | 是否启用（唯一开关）。                                 |
+| `data`          | JSON                 | 否   | 扩展字段。                                       |
+| `created_at`    | DATETIME(3)          | 是   | 创建时间。                                       |
+| `updated_at`    | DATETIME(3)          | 是   | 更新时间。                                       |
+
+
+`mcp_entry` **字段**（对象）：
+
+
+| 字段名         | 类型     | 必填  | 说明                                                                             |
+| ----------- | ------ | --- | ------------------------------------------------------------------------------ |
+| `name`      | string | 是   | MCP 服务名（写入 `mcp.servers[].name`）。                                              |
+| `transport` | string | 是   | `sse` / `streamable-http`；别名 `http`、`streamable_http` → 存盘为 `streamable-http`。 |
+| `url`       | string | 是   | 远程 MCP 服务地址。                                                                   |
+| `headers`   | object | 否   | HTTP 头，如 `{"Authorization":"Bearer …"}` → SDK `auth_headers`。                  |
+| `timeout_s` | number | 否   | 超时秒数等客户端参数（透传到运行时 `params`）。                                                   |
+| 其他          | —      | 否   | 透传字段保留；`enabled` 会被剥离。                                                         |
+
+
+
+
+### 9.1 创建 / Upsert MCP 模板
+
+- **接口名称**：创建 MCP 模板
+- **请求方法**：`POST`
+- **请求路径**：`/api/v1/mcp-templates`
+- **请求参数**（Body）：
+
+
+| 字段名             | 类型     | 必填  | 说明          |
+| --------------- | ------ | --- | ----------- |
+| `template_id`   | string | 是   | 业务 ID（≤100） |
+| `template_name` | string | 是   | 名称（≤128）    |
+| `mcp_entry`     | object | 是   | 见 §9.0      |
+| `description`   | string | 否   | 描述（≤512）    |
+| `enabled`       | bool   | 否   | 默认 `true`   |
+| `data`          | object | 否   | 扩展          |
+
+
+- **返回参数**：`data.template_id`
+- **请求示例**（Streamable HTTP + Bearer）：
+
+```json
+{
+  "template_id": "mcp00001-0000-4000-8000-00000000demo",
+  "template_name": "Demo MCP Server",
+  "description": "HTTP MCP for demo tools",
+  "mcp_entry": {
+    "name": "demo-tools",
+    "transport": "http",
+    "url": "http://127.0.0.1:9000/mcp",
+    "headers": {
+      "Authorization": "Bearer sds-dev-mcp-bearer-token"
+    },
+    "timeout_s": 10
+  },
+  "enabled": true,
+  "data": { "demo": "m1" }
+}
+```
+
+说明：上例 `transport: "http"` 落库后为 `streamable-http`。
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": { "template_id": "mcp00001-0000-4000-8000-00000000demo" }
+}
+```
+
+
+
+### 9.2 更新 MCP 模板
+
+- **接口名称**：更新 MCP 模板
+- **请求方法**：`PATCH`
+- **请求路径**：`/api/v1/mcp-templates/{template_id}`
+- **路径参数**：`template_id`
+- **请求参数**：可选业务字段（partial；至少一项）
+- **返回参数**：`data` 为 `null`
+- **请求示例**：
+
+```json
+{
+  "mcp_entry": {
+    "name": "demo-tools",
+    "transport": "streamable-http",
+    "url": "http://192.168.1.96:18016/mcp",
+    "headers": {
+      "Authorization": "Bearer sds-dev-mcp-bearer-token"
+    },
+    "timeout_s": 30
+  },
+  "enabled": true
+}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+
+
+### 9.3 删除 MCP 模板
+
+- **接口名称**：删除 MCP 模板
+- **请求方法**：`DELETE`
+- **请求路径**：`/api/v1/mcp-templates/{template_id}`
+- **路径参数**：`template_id`
+- **请求参数**：`{}`
+- **返回参数**：`data` 为 `null`
+- **请求示例**：
+
+```json
+{}
+```
+
+- **返回示例**：
+
+```json
+{
+  "code": 200,
+  "message": "success",
+  "data": null
+}
+```
+
+---
+
+
+
+## 10. Agent 模板（`agent_template` / `agent-templates`）
+
+
+
+### 10.0 表结构（`agent_template`）
+
+
+| 字段名             | 类型                   | 必填  | 说明                                                      |
+| --------------- | -------------------- | --- | ------------------------------------------------------- |
+| `id`            | BIGINT 自增 PK         | 是   | 数据库主键。                                                  |
+| `template_id`   | VARCHAR(100) UNIQUE  | 是   | UUIDv4；`instance_agent_resource.ref_template_id` 引用本字段。 |
+| `template_name` | VARCHAR(128)         | 是   | 模板名称。                                                   |
+| `description`   | VARCHAR(512)         | 否   | 描述。                                                     |
+| `agent_tags`    | JSON                 | 否   | 标签，如 `["vip","demo"]`。                                  |
+| `template_ref`  | JSON                 | 否   | 对各配置模板的槽位引用；结构见下。未配置可为 `{}`。                            |
+| `enabled`       | BOOLEAN DEFAULT true | 是   | 是否启用。                                                   |
+| `data`          | JSON                 | 否   | 扩展（如 `workspace_dir`）。                                  |
+| `created_at`    | DATETIME(3)          | 是   | 创建时间。                                                   |
+| `updated_at`    | DATETIME(3)          | 是   | 更新时间。                                                   |
+
+
+`template_ref` **槽位**：
+
+
+| 槽位键                | 实体表                         | 说明                              |
+| ------------------ | --------------------------- | ------------------------------- |
+| `default_model`    | `model_template`            | 默认模型                            |
+| `video_model`      | `model_template`            | 视频模型                            |
+| `audio_model`      | `model_template`            | 音频模型                            |
+| `vision_model`     | `model_template`            | 视觉模型                            |
+| `embedding_model`  | `embedding_template`        | Embedding                       |
+| `skill_prebuilt`   | `skill_prebuilt_template`   | 预置Skill（可多条；见 §7）               |
+| `extension_config` | `extension_config_template` | 扩展配置                            |
+| `mcp`              | `mcp_template`              | MCP 服务（可多条；见 §9）                |
+| `permissions`      | `permissions_template`      | 安全护栏 / Permissions（**单值**；见 §8） |
+
 
 值为 `template_id` 字符串数组。空槽位键在规范化时省略。Manager 推送 Agent 模板前会先推送其引用的子模板。`service_config` 仅下发 Runtime，不出现在本 Gateway 接口中。
 
-### 9.1 创建 / Upsert Agent 模板
+### 10.1 创建 / Upsert Agent 模板
 
 - **接口名称**：创建 Agent 模板
 - **请求方法**：`POST`
 - **请求路径**：`/api/v1/agent-templates`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `template_id` | string | 是 | 业务 ID |
-| `template_name` | string | 是 | 名称 |
-| `description` | string | 否 | 描述 |
-| `agent_tags` | string[] | 否 | 标签 |
-| `template_ref` | object | 否 | 默认 `{}` |
-| `enabled` | bool | 否 | 启用 |
-| `data` | object | 否 | 扩展 |
+
+| 字段名             | 类型       | 必填  | 说明      |
+| --------------- | -------- | --- | ------- |
+| `template_id`   | string   | 是   | 业务 ID   |
+| `template_name` | string   | 是   | 名称      |
+| `description`   | string   | 否   | 描述      |
+| `agent_tags`    | string[] | 否   | 标签      |
+| `template_ref`  | object   | 否   | 默认 `{}` |
+| `enabled`       | bool     | 否   | 启用      |
+| `data`          | object   | 否   | 扩展      |
+
 
 - **返回参数**：`data.template_id`
 - **请求示例**（演示数据「销售组 Agent 模板」；`m2/b2/...` 为已创建子模板的 `template_id`）：
@@ -932,7 +1191,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 {
   "template_id": "aa000001-0000-4000-8000-00000000sale",
   "template_name": "销售组 Agent 模板",
-  "description": "销售通道：M2/B2/预置Skill/E1+E2",
+  "description": "销售通道：M2/B2/预置Skill/E1+E2/MCP",
   "agent_tags": ["sales", "demo"],
   "template_ref": {
     "default_model": ["a1000001-0000-4000-8000-0000000000m2"],
@@ -950,7 +1209,8 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
     "extension_config": [
       "e1000001-0000-4000-8000-0000000000e1",
       "e1000001-0000-4000-8000-0000000000e2"
-    ]
+    ],
+    "mcp": ["mcp00001-0000-4000-8000-00000000demo"]
   },
   "enabled": true,
   "data": {}
@@ -967,7 +1227,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 9.2 更新 Agent 模板
+
+
+### 10.2 更新 Agent 模板
 
 - **接口名称**：更新 Agent 模板
 - **请求方法**：`PATCH`
@@ -994,7 +1256,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 9.3 删除 Agent 模板
+
+
+### 10.3 删除 Agent 模板
 
 - **接口名称**：删除 Agent 模板
 - **请求方法**：`DELETE`
@@ -1020,45 +1284,55 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 10. 实例 Agent 资源（`instance_agent_resource` / `instance-agent-resources`）
 
-### 10.0 表结构（Gateway：`instance_agent_resource`）
+
+## 11. 实例 Agent 资源（`instance_agent_resource` / `instance-agent-resources`）
+
+
+
+### 11.0 表结构（Gateway：`instance_agent_resource`）
 
 与 Manager 表字段对齐。`resource_id` 唯一，一行一个实例 Agent；多条件 OR 写在 `match_expr` JSON 中。
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `resource_id` | VARCHAR(100) UNIQUE | 是 | 实例化 Agent ID（运行时 / 会话标识）。 |
-| `resource_name` | VARCHAR(128) | 是 | 展示名称。 |
-| `resource_desc` | VARCHAR(512) | 否 | 描述。 |
-| `ref_template_id` | VARCHAR(100) | 是 | 关联 `agent_template.template_id`。 |
-| `match_expr` | JSON | 否 | 命中表达式；`[]` / `""` / null = 全匹配；`str` 单条件；`[str, ...]` 多条件 OR。 |
-| `granted_by` | VARCHAR(64) | 否 | 授权人。 |
-| `expires_at` | DATETIME(3) | 否 | 过期时间。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
 
-### 10.1 Upsert 实例 Agent 资源
+| 字段名               | 类型                   | 必填  | 说明                                                            |
+| ----------------- | -------------------- | --- | ------------------------------------------------------------- |
+| `id`              | BIGINT 自增 PK         | 是   | 数据库主键。                                                        |
+| `resource_id`     | VARCHAR(100) UNIQUE  | 是   | 实例化 Agent ID（运行时 / 会话标识）。                                     |
+| `resource_name`   | VARCHAR(128)         | 是   | 展示名称。                                                         |
+| `resource_desc`   | VARCHAR(512)         | 否   | 描述。                                                           |
+| `ref_template_id` | VARCHAR(100)         | 是   | 关联 `agent_template.template_id`。                              |
+| `match_expr`      | JSON                 | 否   | 命中表达式；`[]` / `""` / null = 全匹配；`str` 单条件；`[str, ...]` 多条件 OR。 |
+| `granted_by`      | VARCHAR(64)          | 否   | 授权人。                                                          |
+| `expires_at`      | DATETIME(3)          | 否   | 过期时间。                                                         |
+| `enabled`         | BOOLEAN DEFAULT true | 是   | 是否启用。                                                         |
+| `data`            | JSON                 | 否   | 扩展。                                                           |
+| `created_at`      | DATETIME(3)          | 是   | 创建时间。                                                         |
+| `updated_at`      | DATETIME(3)          | 是   | 更新时间。                                                         |
+
+
+
+
+### 11.1 Upsert 实例 Agent 资源
 
 - **接口名称**：Upsert 实例 Agent 资源
 - **请求方法**：`POST`
 - **请求路径**：`/api/v1/instance-agent-resources`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `resource_id` | string | 是 | 资源 ID |
-| `ref_template_id` | string | 是 | Agent 模板 ID |
-| `resource_name` | string | 是 | 名称 |
-| `resource_desc` | string | 否 | 描述 |
-| `match_expr` | string \| string[] \| null | 否 | 命中表达式；默认 `[]` |
-| `granted_by` | string | 否 | 授权人 |
-| `enabled` | bool | 否 | 默认 `true` |
-| `expires_at` | datetime | 否 | 过期时间 |
-| `data` | object | 否 | 扩展 |
+
+| 字段名               | 类型                       | 必填  | 说明            |
+| ----------------- | ------------------------ | --- | ------------- |
+| `resource_id`     | string                   | 是   | 资源 ID         |
+| `ref_template_id` | string                   | 是   | Agent 模板 ID   |
+| `resource_name`   | string                   | 是   | 名称            |
+| `resource_desc`   | string                   | 否   | 描述            |
+| `match_expr`      | string | string[] | null | 否   | 命中表达式；默认 `[]` |
+| `granted_by`      | string                   | 否   | 授权人           |
+| `enabled`         | bool                     | 否   | 默认 `true`     |
+| `expires_at`      | datetime                 | 否   | 过期时间          |
+| `data`            | object                   | 否   | 扩展            |
+
 
 - **返回参数**：`data.resource_id`
 - **请求示例**（演示数据 R_VIP / R_SALES 形态）：
@@ -1089,7 +1363,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 10.2 删除实例 Agent 资源
+
+
+### 11.2 删除实例 Agent 资源
 
 - **接口名称**：删除实例 Agent 资源
 - **请求方法**：`DELETE`
@@ -1115,37 +1391,47 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 11. 应用配置 — Logging（`logging_config`）
 
-### 11.0 表结构（`logging_config`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 主键（单行配置）。 |
-| `level` | VARCHAR(16) | 是 | 默认级别，如 `INFO`。 |
-| `console_level` | VARCHAR(16) | 否 | 控制台级别。 |
-| `gateway` | VARCHAR(16) | 否 | Gateway 日志级别。 |
-| `channel` | VARCHAR(16) | 否 | Channel 日志级别。 |
-| `agent_server` | VARCHAR(16) | 否 | AgentServer 日志级别。 |
-| `full` | VARCHAR(16) | 否 | 全量覆盖级别。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+## 12. 应用配置 — Logging（`logging_config`）
 
-### 11.1 Upsert Logging 配置
+
+
+### 12.0 表结构（`logging_config`）
+
+
+| 字段名             | 类型           | 必填  | 说明                |
+| --------------- | ------------ | --- | ----------------- |
+| `id`            | BIGINT 自增 PK | 是   | 主键（单行配置）。         |
+| `level`         | VARCHAR(16)  | 是   | 默认级别，如 `INFO`。    |
+| `console_level` | VARCHAR(16)  | 否   | 控制台级别。            |
+| `gateway`       | VARCHAR(16)  | 否   | Gateway 日志级别。     |
+| `channel`       | VARCHAR(16)  | 否   | Channel 日志级别。     |
+| `agent_server`  | VARCHAR(16)  | 否   | AgentServer 日志级别。 |
+| `full`          | VARCHAR(16)  | 否   | 全量覆盖级别。           |
+| `created_at`    | DATETIME(3)  | 是   | 创建时间。             |
+| `updated_at`    | DATETIME(3)  | 是   | 更新时间。             |
+
+
+
+
+### 12.1 Upsert Logging 配置
 
 - **接口名称**：Upsert Logging 配置
 - **请求方法**：`PUT`
 - **请求路径**：`/api/v1/logging`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `level` | string | 否 | 默认 `INFO` |
-| `console_level` | string | 否 | — |
-| `gateway` | string | 否 | — |
-| `channel` | string | 否 | — |
-| `agent_server` | string | 否 | — |
-| `full` | string | 否 | — |
+
+| 字段名             | 类型     | 必填  | 说明        |
+| --------------- | ------ | --- | --------- |
+| `level`         | string | 否   | 默认 `INFO` |
+| `console_level` | string | 否   | —         |
+| `gateway`       | string | 否   | —         |
+| `channel`       | string | 否   | —         |
+| `agent_server`  | string | 否   | —         |
+| `full`          | string | 否   | —         |
+
 
 - **返回参数**：`data` 为落库后的级别字段对象
 - **请求示例**：
@@ -1178,7 +1464,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 11.2 删除 Logging 配置
+
+
+### 12.2 删除 Logging 配置
 
 - **接口名称**：删除 Logging 配置
 - **请求方法**：`DELETE`
@@ -1203,45 +1491,55 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 12. 应用配置 — 日志脱敏规则（`log_masking_rule`）
 
-### 12.0 表结构（`log_masking_rule`）
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `id` | BIGINT 自增 PK | 是 | 数据库主键。 |
-| `rule_id` | VARCHAR(64) UNIQUE | 是 | 规则业务 ID。 |
-| `rule_name` | VARCHAR(128) | 是 | 规则名称。 |
-| `description` | VARCHAR(512) | 否 | 描述。 |
-| `pattern` | VARCHAR(512) | 是 | 正则。 |
-| `replacement` | VARCHAR(64) | 是 | 替换串，默认 `******`。 |
-| `priority` | INT | 是 | 优先级。 |
-| `with_fingerprint` | BOOLEAN DEFAULT false | 是 | 是否在脱敏替换结果中附带指纹。 |
-| `source` | VARCHAR(16) | 是 | 如 `custom` / `builtin`。 |
-| `enabled` | BOOLEAN DEFAULT true | 是 | 是否启用。 |
-| `data` | JSON | 否 | 扩展。 |
-| `created_at` | DATETIME(3) | 是 | 创建时间。 |
-| `updated_at` | DATETIME(3) | 是 | 更新时间。 |
+## 13. 应用配置 — 日志脱敏规则（`log_masking_rule`）
 
-### 12.1 创建日志脱敏规则
+
+
+### 13.0 表结构（`log_masking_rule`）
+
+
+| 字段名                | 类型                    | 必填  | 说明                      |
+| ------------------ | --------------------- | --- | ----------------------- |
+| `id`               | BIGINT 自增 PK          | 是   | 数据库主键。                  |
+| `rule_id`          | VARCHAR(64) UNIQUE    | 是   | 规则业务 ID。                |
+| `rule_name`        | VARCHAR(128)          | 是   | 规则名称。                   |
+| `description`      | VARCHAR(512)          | 否   | 描述。                     |
+| `pattern`          | VARCHAR(512)          | 是   | 正则。                     |
+| `replacement`      | VARCHAR(64)           | 是   | 替换串，默认 `******`。        |
+| `priority`         | INT                   | 是   | 优先级。                    |
+| `with_fingerprint` | BOOLEAN DEFAULT false | 是   | 是否在脱敏替换结果中附带指纹。         |
+| `source`           | VARCHAR(16)           | 是   | 如 `custom` / `builtin`。 |
+| `enabled`          | BOOLEAN DEFAULT true  | 是   | 是否启用。                   |
+| `data`             | JSON                  | 否   | 扩展。                     |
+| `created_at`       | DATETIME(3)           | 是   | 创建时间。                   |
+| `updated_at`       | DATETIME(3)           | 是   | 更新时间。                   |
+
+
+
+
+### 13.1 创建日志脱敏规则
 
 - **接口名称**：创建日志脱敏规则
 - **请求方法**：`POST`
 - **请求路径**：`/api/v1/log-masking-rules`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `rule_id` | string | 是 | 规则 ID |
-| `rule_name` | string | 是 | 名称 |
-| `pattern` | string | 是 | 正则 |
-| `description` | string | 否 | 描述 |
-| `replacement` | string | 否 | 替换串；默认 `******` |
-| `priority` | int | 否 | 默认 `0` |
-| `with_fingerprint` | bool | 否 | 默认 `false` |
-| `source` | string | 否 | 默认 `custom` |
-| `enabled` | bool | 否 | 默认 `true` |
-| `data` | object | 否 | 扩展 |
+
+| 字段名                | 类型     | 必填  | 说明              |
+| ------------------ | ------ | --- | --------------- |
+| `rule_id`          | string | 是   | 规则 ID           |
+| `rule_name`        | string | 是   | 名称              |
+| `pattern`          | string | 是   | 正则              |
+| `description`      | string | 否   | 描述              |
+| `replacement`      | string | 否   | 替换串；默认 `******` |
+| `priority`         | int    | 否   | 默认 `0`          |
+| `with_fingerprint` | bool   | 否   | 默认 `false`      |
+| `source`           | string | 否   | 默认 `custom`     |
+| `enabled`          | bool   | 否   | 默认 `true`       |
+| `data`             | object | 否   | 扩展              |
+
 
 - **返回参数**：`data.rule_id`
 - **请求示例**：
@@ -1273,7 +1571,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 12.2 更新日志脱敏规则
+
+
+### 13.2 更新日志脱敏规则
 
 - **接口名称**：更新日志脱敏规则
 - **请求方法**：`PATCH`
@@ -1302,7 +1602,9 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 }
 ```
 
-### 12.3 删除日志脱敏规则
+
+
+### 13.3 删除日志脱敏规则
 
 - **接口名称**：删除日志脱敏规则
 - **请求方法**：`DELETE`
@@ -1328,20 +1630,24 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 13. 实例数据生命周期
+
+
+## 14. 实例数据生命周期
 
 无独立业务表；`purge` 会清理本 Gateway 上已同步的模板 / 资源 / 应用配置等表（含 channel / cron / Manager 公钥等；不可逆）。
 
-### 13.1 清理实例配置数据
+### 14.1 清理实例配置数据
 
 - **接口名称**：实例数据生命周期（purge）
 - **请求方法**：`POST`
 - **请求路径**：`/api/v1/instance-data-lifecycle`
 - **请求参数**（Body）：
 
-| 字段名 | 类型 | 必填 | 说明 |
-|--------|------|------|------|
-| `op` | string | 否 | 默认 `purge`；目前仅支持 `purge` |
+
+| 字段名  | 类型     | 必填  | 说明                       |
+| ---- | ------ | --- | ------------------------ |
+| `op` | string | 否   | 默认 `purge`；目前仅支持 `purge` |
+
 
 - **返回参数**：`data.purged` 为各表删除计数（仅含实际删到行的表）
 - **请求示例**：
@@ -1365,6 +1671,7 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
       "extension_config_template": 2,
       "skill_prebuilt_template": 2,
       "permissions_template": 1,
+      "mcp_template": 1,
       "agent_template": 3,
       "instance_agent_resource": 3,
       "log_masking_rule": 1,
@@ -1376,62 +1683,77 @@ HMAC 密钥、Bearer token、长期明文下载凭证不得出现在模板或普
 
 ---
 
-## 14. Manager 侧调用映射（速查）
 
-| Gateway 能力 | Manager 代码位置 |
-|--------------|------------------|
-| HTTP 客户端 | `manager_config_push/client.py` → `gateway_request` |
-| Endpoint 解析 | `manager_config_push/endpoint.py` |
-| 探活 | `core/instance/config_host_probe.py`、`schedulers/heartbeat_scanner.py` |
-| 模板推送 | `core/template/push_template_to_gateway.py` |
-| 预置 Skill 模板 | `core/template/skill_prebuilt_template.py` → `/api/v1/skill-prebuilt-templates` |
-| 安全护栏模板 | `core/template/permissions_template.py` → `/api/v1/permissions-templates` |
-| Agent 模板/资源推送 | `core/template/push_agent_template_to_gateway.py` |
-| Agent 资源业务 | `core/instance_resource/instance_agent_resource_service.py` |
-| 应用配置 | `core/application_config/*.py` |
-| 上线全量同步 | `core/instance/instance_data_lifecycle.py` |
-| 删实例清理 | `purge_gateway_instance_data` |
+
+## 15. Manager 侧调用映射（速查）
+
+
+| Gateway 能力    | Manager 代码位置                                                                    |
+| ------------- | ------------------------------------------------------------------------------- |
+| HTTP 客户端      | `manager_config_push/client.py` → `gateway_request`                             |
+| Endpoint 解析   | `manager_config_push/endpoint.py`                                               |
+| 探活            | `core/instance/config_host_probe.py`、`schedulers/heartbeat_scanner.py`          |
+| 模板推送          | `core/template/push_template_to_gateway.py`                                     |
+| 预置 Skill 模板   | `core/template/skill_prebuilt_template.py` → `/api/v1/skill-prebuilt-templates` |
+| 安全护栏模板        | `core/template/permissions_template.py` → `/api/v1/permissions-templates`       |
+| MCP 模板        | `core/template/mcp_template.py` → `/api/v1/mcp-templates`                       |
+| Agent 模板/资源推送 | `core/template/push_agent_template_to_gateway.py`                               |
+| Agent 资源业务    | `core/instance_resource/instance_agent_resource_service.py`                     |
+| 应用配置          | `core/application_config/*.py`                                                  |
+| 上线全量同步        | `core/instance/instance_data_lifecycle.py`                                      |
+| 删实例清理         | `purge_gateway_instance_data`                                                   |
+
 
 ---
 
-## 15. 源码索引
 
-| 侧 | 路径 |
-|----|------|
-| Gateway 路由 | `manager_config_receiver/http/app.py` |
-| 模板路由 / Schema | `routers/template_routers.py`、`schemas/template_schemas.py` |
-| 表定义 | `jiuwenswarm/gateway/config/enterprise/tables/template_models.py`、`instance_resource_models.py`、`application_config_models.py` |
-| 应用配置路由 | `routers/application_config_routers.py` |
-| Agent 资源路由 | `routers/instance_resource_routers.py` |
-| 生命周期 | `routers/instance_routers.py`、`core/instance/instance_data_lifecycle.py` |
-| 探活 | `http/app.py` → `GET /api/health`、`GET /api/v1/ready` |
+
+## 16. 源码索引
+
+
+| 侧             | 路径                                                                                                                             |
+| ------------- | ------------------------------------------------------------------------------------------------------------------------------ |
+| Gateway 路由    | `manager_config_receiver/http/app.py`                                                                                          |
+| 模板路由 / Schema | `routers/template_routers.py`、`schemas/template_schemas.py`                                                                    |
+| 表定义           | `jiuwenswarm/gateway/config/enterprise/tables/template_models.py`、`instance_resource_models.py`、`application_config_models.py` |
+| 应用配置路由        | `routers/application_config_routers.py`                                                                                        |
+| Agent 资源路由    | `routers/instance_resource_routers.py`                                                                                         |
+| 生命周期          | `routers/instance_routers.py`、`core/instance/instance_data_lifecycle.py`                                                       |
+| 探活            | `http/app.py` → `GET /api/health`、`GET /api/v1/ready`                                                                          |
+
 
 Gateway OpenAPI：`{gateway_config_host}/docs`。
 
 ---
 
-## 16. 与旧 Gateway 接口的差异
+
+
+## 17. 与旧 Gateway 接口的差异
 
 > 旧实现：`jiuwenswarm/.../packages/jiuwenclaw-ee/gateway/extensions/manager_ws_client`  
-> 新实现：`manager_config_receiver`（本文档 §1–§15 所描述的 HTTP Config Receiver）
+> 新实现：`manager_config_receiver`（本文档 §1–§16 所描述的 HTTP Config Receiver）
 
 旧链路是 **Gateway 作为 WebSocket 客户端连上 Manager**，由 Manager 下发 `config.push` 帧；新链路是 **Manager 作为 HTTP 客户端主动调用** Gateway 的 `gateway_config_host`。业务落库语义大体对齐，但传输、寻址、操作编码与能力边界均已切换。
 
-### 16.1 架构与连接模型
+### 17.1 架构与连接模型
 
-| 维度 | 旧（`manager_ws_client`） | 新（本文档 HTTP） |
-|------|---------------------------|-------------------|
-| 传输 | WebSocket 长连接 | HTTP 请求/响应 |
-| 谁主动连谁 | Gateway → Manager（`ws_url`，如 `ws://…:8766`） | Manager → Gateway（`gateway_config_host`） |
-| 会话建立 | `register` / `register.ack`，分配或复用 `jiuwenclaw_id` | 实例在 Manager 侧已创建；推送前读 `instance_info.gateway_config_host` |
-| 存活判定 | Gateway 发 `heartbeat`，Manager 回 `heartbeat.ack`；另有 `pod_status.report` | Manager 主动 `GET /api/health`（及就绪 `GET /api/v1/ready`） |
-| 配置下发 | Manager → Gateway：`config.push` | Manager → Gateway：`POST/PUT/PATCH/DELETE /api/v1/...` |
-| 结果回传 | Gateway → Manager：`config.ack`（含 `revision` / `success_flag` / `result`） | 同一次 HTTP 响应的统一包络 `{ code, message, data }` |
-| Manager 客户端 | 旧 `manager_ws_server` 推帧 | `manager_config_push.client.gateway_request` |
 
-### 16.2 报文形态对比
+| 维度          | 旧（`manager_ws_client`）                                                   | 新（本文档 HTTP）                                               |
+| ----------- | ------------------------------------------------------------------------ | --------------------------------------------------------- |
+| 传输          | WebSocket 长连接                                                            | HTTP 请求/响应                                                |
+| 谁主动连谁       | Gateway → Manager（`ws_url`，如 `ws://…:8766`）                              | Manager → Gateway（`gateway_config_host`）                  |
+| 会话建立        | `register` / `register.ack`，分配或复用 `jiuwenclaw_id`                        | 实例在 Manager 侧已创建；推送前读 `instance_info.gateway_config_host` |
+| 存活判定        | Gateway 发 `heartbeat`，Manager 回 `heartbeat.ack`；另有 `pod_status.report`   | Manager 主动 `GET /api/health`（及就绪 `GET /api/v1/ready`）     |
+| 配置下发        | Manager → Gateway：`config.push`                                          | Manager → Gateway：`POST/PUT/PATCH/DELETE /api/v1/...`     |
+| 结果回传        | Gateway → Manager：`config.ack`（含 `revision` / `success_flag` / `result`） | 同一次 HTTP 响应的统一包络 `{ code, message, data }`                |
+| Manager 客户端 | 旧 `manager_ws_server` 推帧                                                 | `manager_config_push.client.gateway_request`              |
 
-**旧：`config.push` 帧（示意）**
+
+
+
+### 17.2 报文形态对比
+
+**旧：**`config.push` **帧（示意）**
 
 ```json
 {
@@ -1451,7 +1773,7 @@ Gateway OpenAPI：`{gateway_config_host}/docs`。
 }
 ```
 
-- 一次 push 的 `config` 里按 **业务 key** 选一段（`model_templates` / `logging_config` / …），段内用 **`op`** 区分 create / update / delete / upsert / sync。
+- 一次 push 的 `config` 里按 **业务 key** 选一段（`model_templates` / `logging_config` / …），段内用 `op` 区分 create / update / delete / upsert / sync。
 - 可带 **Ed25519 验签**（`sig`）与 **混合加密信封**（`enc` + 字段级 ENC）。
 - Gateway 处理后回 `config.ack`。
 
@@ -1471,72 +1793,97 @@ Content-Type: application/json
 - **HTTP 方法 + 路径** 代替 `op` + config key；Body 直接是业务字段（不再包一层 `template` / `updates`，应用配置类也不再要求 `op`）。
 - 当前 Manager HTTP 客户端按明文 JSON 推送；旧链路的帧签名 / DEK 信封不在本 HTTP 协议内复用。
 
-### 16.3 操作编码：`op` → HTTP 方法
 
-| 旧 `op`（payload 内） | 新 HTTP | 说明 |
-|----------------------|---------|------|
-| `create` | `POST /api/v1/...` | 模板 / 脱敏规则等；Body 为资源本体（旧版常为 `{ op, template }`） |
-| `update` | `PATCH /api/v1/.../{id}` | 路径带业务 ID；Body 为变更字段（旧版常为 `{ op, template_id, updates }`） |
-| `upsert` | `PUT /api/v1/...` | logging 等单文档配置 |
-| `delete` | `DELETE /api/v1/...` 或 `.../{id}` | 无业务字段时 Body `{}` |
-| `sync` | **无对等单接口** | 旧版全量对账（upsert 全集 + 删差集）；新版由 Manager 上线引导时多次 REST 推送，或 `POST /api/v1/instance-data-lifecycle`（`purge`）清理 |
-| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供** | 见 §16.5 |
 
-### 16.4 能力映射速查
+### 17.3 操作编码：`op` → HTTP 方法
 
-| 旧 `config` key | 旧入口 | 新 HTTP 路径（本文档） |
-|-----------------|--------|------------------------|
-| （无，靠 WS heartbeat） | `heartbeat` / `heartbeat.ack` | `GET /api/health`、`GET /api/v1/ready` |
-| `model_templates` | `apply_model_template` | `/api/v1/model-templates` |
-| `embedding_templates` | `apply_embedding_template` | `/api/v1/embedding-templates` |
-| `extension_config_templates` | `apply_extension_config_template` | `/api/v1/extension-config-templates` |
-| `skill_whitelist_templates` | `apply_skill_whitelist_template` | `/api/v1/skill-prebuilt-templates`（**改为** `skill_prebuilt_template` CRUD，见 §7） |
-| `permissions_config`（旧实例级） | 旧 WS 应用配置 | `/api/v1/permissions-templates`（**改为** `permissions_template` CRUD，见 §8） |
-| `logging_config` | `apply_logging_config` | `/api/v1/logging` |
-| `log_masking_rule` | `apply_log_masking_rule` | `/api/v1/log-masking-rules` |
-| `instance_data_lifecycle` | `apply_instance_data_lifecycle` | `/api/v1/instance-data-lifecycle` |
-| — | 无 | `/api/v1/agent-templates`（**新增**） |
-| — | 无 | `/api/v1/instance-agent-resources`（**新增**） |
 
-### 16.5 旧有、本文档未覆盖的能力
+| 旧 `op`（payload 内）                    | 新 HTTP                            | 说明                                                                                                      |
+| ------------------------------------ | --------------------------------- | ------------------------------------------------------------------------------------------------------- |
+| `create`                             | `POST /api/v1/...`                | 模板 / 脱敏规则等；Body 为资源本体（旧版常为 `{ op, template }`）                                                          |
+| `update`                             | `PATCH /api/v1/.../{id}`          | 路径带业务 ID；Body 为变更字段（旧版常为 `{ op, template_id, updates }`）                                                |
+| `upsert`                             | `PUT /api/v1/...`                 | logging 等单文档配置                                                                                          |
+| `delete`                             | `DELETE /api/v1/...` 或 `.../{id}` | 无业务字段时 Body `{}`                                                                                        |
+| `sync`                               | **无对等单接口**                        | 旧版全量对账（upsert 全集 + 删差集）；新版由 Manager 上线引导时多次 REST 推送，或 `POST /api/v1/instance-data-lifecycle`（`purge`）清理 |
+| `activate` / `deactivate`（仅 channel） | **本 Receiver 未提供**                | 见 §17.5                                                                                                 |
+
+
+
+
+### 17.4 能力映射速查
+
+
+| 旧 `config` key               | 旧入口                               | 新 HTTP 路径（本文档）                                                                 |
+| ---------------------------- | --------------------------------- | ------------------------------------------------------------------------------ |
+| （无，靠 WS heartbeat）           | `heartbeat` / `heartbeat.ack`     | `GET /api/health`、`GET /api/v1/ready`                                          |
+| `model_templates`            | `apply_model_template`            | `/api/v1/model-templates`                                                      |
+| `embedding_templates`        | `apply_embedding_template`        | `/api/v1/embedding-templates`                                                  |
+| `extension_config_templates` | `apply_extension_config_template` | `/api/v1/extension-config-templates`                                           |
+| `skill_whitelist_templates`  | `apply_skill_whitelist_template`  | `/api/v1/skill-prebuilt-templates`（**改为** `skill_prebuilt_template` CRUD，见 §7） |
+| `permissions_config`（旧实例级）   | 旧 WS 应用配置                         | `/api/v1/permissions-templates`（**改为** `permissions_template` CRUD，见 §8）       |
+| —                            | 无                                 | `/api/v1/mcp-templates`（**新增** `mcp_template` CRUD，见 §9）                       |
+| `logging_config`             | `apply_logging_config`            | `/api/v1/logging`                                                              |
+| `log_masking_rule`           | `apply_log_masking_rule`          | `/api/v1/log-masking-rules`                                                    |
+| `instance_data_lifecycle`    | `apply_instance_data_lifecycle`   | `/api/v1/instance-data-lifecycle`                                              |
+| —                            | 无                                 | `/api/v1/agent-templates`（**新增**）                                              |
+| —                            | 无                                 | `/api/v1/instance-agent-resources`（**新增**）                                     |
+
+
+
+
+### 17.5 旧有、本文档未覆盖的能力
 
 下列 key 仍存在于旧 `manager_ws_client` 路由中，**不在**本 Config Receiver HTTP 文档范围内（去向以当前产品设计为准：策略/映射可能仍在 Manager 侧编排，或改由 Runtime 通道下发）：
 
-| 旧 `config` key | 旧行为摘要 |
-|-----------------|------------|
-| `task_memory_config` | Task Memory 应用配置（前端未交付，暂未纳入本文档） |
-| `memory_config` | Memory 应用配置（前端未交付，暂未纳入本文档） |
-| `channel_config` | Channel 配置 create / activate / deactivate / delete |
-| `service_config_templates` | 服务配置模板 CRUD / sync（Agent 模板说明中：`service_config` 仅下发 Runtime） |
-| `config_default_template_mappings` | 默认模板映射 CRUD / sync |
-| `config_effective_global_policies` | 全局生效策略 |
-| `config_effective_service_policies` | 服务级生效策略 |
-| `config_effective_agent_policies` | Agent 级生效策略 |
+
+| 旧 `config` key                      | 旧行为摘要                                                        |
+| ----------------------------------- | ------------------------------------------------------------ |
+| `task_memory_config`                | Task Memory 应用配置（前端未交付，暂未纳入本文档）                              |
+| `memory_config`                     | Memory 应用配置（前端未交付，暂未纳入本文档）                                   |
+| `channel_config`                    | Channel 配置 create / activate / deactivate / delete           |
+| `service_config_templates`          | 服务配置模板 CRUD / sync（Agent 模板说明中：`service_config` 仅下发 Runtime） |
+| `config_default_template_mappings`  | 默认模板映射 CRUD / sync                                           |
+| `config_effective_global_policies`  | 全局生效策略                                                       |
+| `config_effective_service_policies` | 服务级生效策略                                                      |
+| `config_effective_agent_policies`   | Agent 级生效策略                                                  |
+
 
 > Manager 推送代码里仍可能出现 `service_config_templates` → `/api/v1/service-config-templates` 的路径常量；若 Gateway Receiver 未实现该路由，则不属于本文档已交付接口。
 
-### 16.6 数据模型与实例隔离
 
-| 维度 | 旧 | 新 |
-|------|----|----|
-| `jiuwenclaw_id` 列 | 各业务表普遍带 `jiuwenclaw_id`，与 `(jiuwenclaw_id, template_id)` 等联合唯一 | 本文档表结构以单实例 Gateway 库为准，**无** `jiuwenclaw_id` 列；实例身份由「连到哪台 `gateway_config_host`」表达 |
-| push 校验 | `assert_jiuwenclaw_id_matches`：帧内 id 须与已注册 id 一致 | HTTP 无帧内 id；Manager 用 `jiuwenclaw_id` 查 endpoint 后再请求 |
-| 全量清理 | `instance_data_lifecycle.op=purge`，按 id 扫多表（含策略/channel 等） | `POST /api/v1/instance-data-lifecycle`，`op` 默认 `purge`；清理本机已同步表（模板/资源/应用配置/channel/cron/公钥等），响应 `data.purged` 仅含删到行的表 |
 
-### 16.7 安全与副作用
+### 17.6 数据模型与实例隔离
 
-| 项 | 旧 | 新 |
-|----|----|----|
-| 完整性 | 可选/强制 Ed25519 验签 + nonce 防重放 | 依赖传输层（建议内网 / TLS）；HTTP 层无 `sig` |
-| 机密性 | 可选 hybrid 解 DEK + 敏感字段 ENC | Body 明文 JSON（密钥等仍可能出现在模板字段中，需靠网络隔离或后续加固） |
+
+| 维度                | 旧                                                              | 新                                                                                                                     |
+| ----------------- | -------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------- |
+| `jiuwenclaw_id` 列 | 各业务表普遍带 `jiuwenclaw_id`，与 `(jiuwenclaw_id, template_id)` 等联合唯一 | 本文档表结构以单实例 Gateway 库为准，**无** `jiuwenclaw_id` 列；实例身份由「连到哪台 `gateway_config_host`」表达                                    |
+| push 校验           | `assert_jiuwenclaw_id_matches`：帧内 id 须与已注册 id 一致               | HTTP 无帧内 id；Manager 用 `jiuwenclaw_id` 查 endpoint 后再请求                                                                 |
+| 全量清理              | `instance_data_lifecycle.op=purge`，按 id 扫多表（含策略/channel 等）     | `POST /api/v1/instance-data-lifecycle`，`op` 默认 `purge`；清理本机已同步表（模板/资源/应用配置/channel/cron/公钥等），响应 `data.purged` 仅含删到行的表 |
+
+
+
+
+### 17.7 安全与副作用
+
+
+| 项           | 旧                                                         | 新                                                          |
+| ----------- | --------------------------------------------------------- | ---------------------------------------------------------- |
+| 完整性         | 可选/强制 Ed25519 验签 + nonce 防重放                              | 依赖传输层（建议内网 / TLS）；HTTP 层无 `sig`                            |
+| 机密性         | 可选 hybrid 解 DEK + 敏感字段 ENC                                | Body 明文 JSON（密钥等仍可能出现在模板字段中，需靠网络隔离或后续加固）                   |
 | Runtime 热更新 | 部分写成功后触发 `enterprise_config_update`（`runtime_management`） | 由 Receiver / Runtime 侧实现决定；**不**再走 WS `config.push` 后的统一钩子 |
 
-### 16.8 迁移时注意点
 
-1. **不要把旧 `op` JSON 原样 POST**：须改成对应 REST 方法与路径；模板 create 的 Body 是资源字段本身，不是 `{ "op":"create", "template":{...} }`。
-2. **无 `sync` 单接口**：上线全量对齐改为 Manager 按资源逐条（或批量多次）HTTP 推送；删实例仍用 lifecycle `purge`。
+
+
+### 17.8 迁移时注意点
+
+1. **不要把旧** `op` **JSON 原样 POST**：须改成对应 REST 方法与路径；模板 create 的 Body 是资源字段本身，不是 `{ "op":"create", "template":{...} }`。
+2. **无** `sync` **单接口**：上线全量对齐改为 Manager 按资源逐条（或批量多次）HTTP 推送；删实例仍用 lifecycle `purge`。
 3. **探活方向反转**：运维/排障看 Manager 对 `gateway_config_host` 的 health，而不是 Gateway 是否连上 Manager WS。
 4. **Agent 模板与实例 Agent 资源** 为 HTTP 阶段新增能力，旧 WS 路由中无对应 key。
 5. **安全护栏** 不再走旧 `permissions_config` 应用配置；改为 `POST/PATCH/DELETE /api/v1/permissions-templates`，由 Agent `template_ref.permissions` 引用（§8）。
+
+5′. **MCP 模板** 为 HTTP 阶段新增能力：`POST/PATCH/DELETE /api/v1/mcp-templates`，由 Agent `template_ref.mcp` 引用（§9）；企业版生效时整表替换本地 `mcp.servers`。
 6. **预置 Skill** 不再走 `/skill-whitelist-templates`（`skill_id` + `skill_version` + `skill_source`）；改为 `/skill-prebuilt-templates` 双模式（provider / url），槽位 `skill_prebuilt`（§7）。
 7. **策略 / Channel / 部分 service 模板** 若业务仍需要，需确认是否改走 Runtime 配置通道或其他接口，不能假设旧 `config.push` key 在本 Receiver 上仍可用。
