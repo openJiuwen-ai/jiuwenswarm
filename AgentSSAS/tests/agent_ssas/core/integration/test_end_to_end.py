@@ -74,7 +74,7 @@ class TestEndToEnd:
         assert threat_files == []
 
         # 验证 SQLite 数据库中记录了事件
-        db_events = await backend._storage.get_events_by_trace_id(
+        db_events = await backend._storage.get_events_by_trace_id(  # pylint: disable=protected-access
             "e2e-trace"
         )
         # 至少应有 raw_event 记录
@@ -235,7 +235,7 @@ class TestEndToEnd:
         await asyncio.sleep(0.1)
 
         # 查询 test_detection 模块的 result_store
-        module = backend._module_manager.get_module("test_detection")
+        module = backend._module_manager.get_module("test_detection")  # pylint: disable=protected-access
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=10)
         assert len(reports) >= 1

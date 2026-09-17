@@ -185,7 +185,7 @@ class TestPipelineIntegration:
         )
         await backend.report_event(raw_event)
         # 从存储查询 raw_events
-        events = await backend._storage.get_events_by_trace_id("persist-trace")
+        events = await backend._storage.get_events_by_trace_id("persist-trace")  # pylint: disable=protected-access
         # 至少应有 raw_event 记录
         assert len(events) >= 1
 
@@ -220,7 +220,7 @@ class TestPipelineIntegration:
         assert assessment.risk_level == RiskLevel.SAFE
         await asyncio.sleep(0.05)
 
-        module = backend._module_manager.get_module("agent_moss")
+        module = backend._module_manager.get_module("agent_moss")  # pylint: disable=protected-access
         assert module is not None
         reports = await module.storage.result_store.get_events(limit=20)
         moss_reports = [
@@ -261,15 +261,13 @@ class TestPipelineIntegration:
 
         assessment = await backend.report_event(raw_event)
         assert assessment.risk_level == RiskLevel.SAFE
-        if backend._pipeline._background_tasks:
-            await asyncio.gather(
-                *backend._pipeline._background_tasks,
-                return_exceptions=True,
-            )
+        background_tasks = backend._pipeline._background_tasks  # pylint: disable=protected-access
+        if background_tasks:
+            await asyncio.gather(*background_tasks, return_exceptions=True)
 
-        module = backend._module_manager.get_module("agent_moss")
+        module = backend._module_manager.get_module("agent_moss")  # pylint: disable=protected-access
         assert module is not None
-        assert len(module.analyzer._history["session:moss-safe-session"]) == 1
+        assert len(module.analyzer._history["session:moss-safe-session"]) == 1  # noqa: SLF001 pylint: disable=protected-access
         reports = await module.storage.result_store.get_events(limit=20)
         assert not [report for report in reports if report.get("module_name") == "agent_moss"]
 

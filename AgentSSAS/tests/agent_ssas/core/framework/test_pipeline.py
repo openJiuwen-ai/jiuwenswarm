@@ -51,7 +51,7 @@ class TestAggregateReports:
     def test_empty_reports_returns_safe(ssas_config: AgentSSASConfig) -> None:
         """验证空报告列表返回无风险 RiskAssessment。"""
         pipeline = TestAggregateReports._make_pipeline(ssas_config)
-        result = pipeline._aggregate_reports([])
+        result = pipeline._aggregate_reports([])  # pylint: disable=protected-access
         assert result.has_risk is False
         assert result.risk_level == RiskLevel.SAFE
 
@@ -85,7 +85,7 @@ class TestAggregateReports:
                 "module_name": "module_b",
             },
         ]
-        result = pipeline._aggregate_reports(reports)
+        result = pipeline._aggregate_reports(reports)  # pylint: disable=protected-access
         assert result.has_risk is True
         assert result.risk_level == RiskLevel.HIGH
         assert result.risk_type == "tool_misuse"
@@ -119,7 +119,7 @@ class TestAggregateReports:
                 "module_name": "m2",
             },
         ]
-        result = pipeline._aggregate_reports(reports)
+        result = pipeline._aggregate_reports(reports)  # pylint: disable=protected-access
         assert result.detected_threats == ["threat_a", "threat_b", "threat_c"]
 
     @staticmethod
@@ -131,7 +131,7 @@ class TestAggregateReports:
         """验证 recommended_actions 去重合并,空时默认 ["log"]。"""
         pipeline = TestAggregateReports._make_pipeline(ssas_config)
         # 空列表 -> 默认 ["log"]
-        result = pipeline._aggregate_reports(
+        result = pipeline._aggregate_reports(  # pylint: disable=protected-access
             [
                 {
                     "has_risk": False,
@@ -161,7 +161,7 @@ class TestAggregateReports:
                 "module_name": "m1",
             }
         ]
-        result = pipeline._aggregate_reports(reports)
+        result = pipeline._aggregate_reports(reports)  # pylint: disable=protected-access
         assert result.risk_level == RiskLevel.SAFE
 
 
@@ -333,15 +333,15 @@ class TestPipelineRun:
         mock_mm.get_storage = MagicMock(return_value=mock_storage)
 
         pipeline = ThreatAnalysisPipeline(ssas_config, mock_mm)
-        pipeline._presentation.render = AsyncMock()
-        report = await pipeline._run_module_pipeline(
+        pipeline._presentation.render = AsyncMock()  # pylint: disable=protected-access
+        report = await pipeline._run_module_pipeline(  # pylint: disable=protected-access
             "agent_moss", _make_unified_event().to_event_desc()
         )
 
         assert report is not None
         assert report["has_risk"] is has_risk
         assert mock_storage.result_store.record_event.await_count == expected_emit_count
-        assert pipeline._presentation.render.await_count == expected_emit_count
+        assert pipeline._presentation.render.await_count == expected_emit_count  # pylint: disable=protected-access
 
 
 class TestPipelineAuthTimeout:
@@ -584,7 +584,7 @@ class TestPipelineAlertPersistence:
         # 同步返回仍为无风险(notify 不阻塞)
         assert result.has_risk is False
         # 等待后台任务完成(含告警落库)
-        await asyncio.gather(*pipeline._background_tasks, return_exceptions=True)
+        await asyncio.gather(*pipeline._background_tasks, return_exceptions=True)  # pylint: disable=protected-access
         alerts = await sqlite_store.get_alerts()
         assert len(alerts) == 1
         alert = alerts[0]
@@ -617,7 +617,7 @@ class TestPipelineAlertPersistence:
         pipeline = ThreatAnalysisPipeline(ssas_config, mock_mm, storage=sqlite_store)
         unified = _make_unified_event()
         await pipeline.run(unified)
-        await asyncio.gather(*pipeline._background_tasks, return_exceptions=True)
+        await asyncio.gather(*pipeline._background_tasks, return_exceptions=True)  # pylint: disable=protected-access
         alerts = await sqlite_store.get_alerts()
         assert alerts == []
 
@@ -715,7 +715,7 @@ class TestPipelineAlertPersistence:
             mock_module.modeler.build_model = AsyncMock(return_value={})
             mock_module.analyzer.analyze = AsyncMock(return_value=report)
             modules[name] = mock_module
-        mock_mm.get_module = MagicMock(side_effect=lambda n: modules[n])
+        mock_mm.get_module = MagicMock(side_effect=lambda n: modules.get(n))
         mock_mm.get_storage = MagicMock(return_value=None)
 
         pipeline = ThreatAnalysisPipeline(ssas_config, mock_mm, storage=sqlite_store)

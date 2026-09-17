@@ -201,7 +201,8 @@ class DetectionModuleManager:
             except Exception:
                 logger.exception("清理检测模块存储失败: module=%s", name)
 
-    def _get_modules_dir(self) -> Path:
+    @staticmethod
+    def _get_modules_dir() -> Path:
         """获取 detection_modules 目录路径。
 
         从 agent_ssas 包安装路径推导,返回 agent_ssas/detection_modules 目录。
@@ -338,7 +339,8 @@ class DetectionModuleManager:
             self._subscriber_counts.get(sub.event_type, 0) + 1
         )
 
-    def _parse_module_yaml(self, module_yaml: Path) -> dict[str, Any]:
+    @staticmethod
+    def _parse_module_yaml(module_yaml: Path) -> dict[str, Any]:
         """解析 module.yaml 配置。
 
         读取 YAML 文件,校验必需字段,将 plugins 列表拆分为

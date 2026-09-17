@@ -400,5 +400,5 @@ class TestAgentMossSecurityRules:
         analyzer = AgentMossAnalyzer(
             {"analysis_methods": ["rule", "agent_behavior_graph"], "risk_threshold": "high"}
         )
-        assert analyzer._analysis_methods == ["rule", "agent_behavior_graph"]  # noqa: SLF001
-        assert analyzer._risk_threshold == "high"  # noqa: SLF001
+        assert analyzer._analysis_methods == ["rule", "agent_behavior_graph"]  # noqa: SLF001 pylint: disable=protected-access
+        assert analyzer._risk_threshold == "high"  # noqa: SLF001 pylint: disable=protected-access
