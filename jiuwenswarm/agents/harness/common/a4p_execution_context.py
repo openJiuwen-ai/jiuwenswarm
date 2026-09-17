@@ -7,6 +7,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Literal
 
+from jiuwenswarm.common.mode_matrix import deprecate_mode
+
 
 @dataclass(frozen=True)
 class AuthorizerRoute:
@@ -23,7 +25,9 @@ class AuthorizerRoute:
         return (
             self.session_id,
             self.app_id,
-            self.agent_ref_mode,
+            # Chat requests use canonical modes while Web management RPCs can
+            # still carry their legacy equivalents (e.g. agent.work.normal/agent).
+            deprecate_mode(self.agent_ref_mode),
             self.agent_ref_id,
         )
 

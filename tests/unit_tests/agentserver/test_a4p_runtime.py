@@ -652,6 +652,106 @@ async def test_a4p_pending_authorization_is_scoped_to_logical_route() -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.parametrize("legacy_mode,canonical_mode", [
+    ("agent", "agent.work.normal"),
+    ("agent.plan", "agent.work.plan"),
+    ("code.normal", "agent.code.normal"),
+    ("team", "team.work.normal"),
+])
+@pytest.mark.parametrize("decision", ["complete", "reject"])
+async def test_a4p_rpc_recovers_and_resolves_canonical_chat_authorization(
+    monkeypatch, legacy_mode, canonical_mode, decision,
+) -> None:
+    runtime = A4PRuntime({"a4p": {"enabled": True}})
+    monkeypatch.setattr(a4p_rpc, "is_a4p_enabled", lambda: True)
+    monkeypatch.setattr(a4p_rpc, "get_a4p_runtime", lambda: runtime)
+
+    async def send_push(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(runtime.authorizer, "_send_push", send_push)
+    chat = AgentRequest(
+        request_id="chat-1", channel_id="web", session_id="session-1",
+        req_method=ReqMethod.CHAT_SEND, params={},
+        agent_ref={"mode": canonical_mode, "id": "default"},
+        metadata={"app_id": "default", "ws_id": "old-connection"},
+    )
+    route = build_authorization_execution_context(
+        chat, agent_id="default", mode=canonical_mode,
+    ).authorizer_route
+    task = asyncio.create_task(runtime.authorizer.request_authorization(
+        WebAuthorizationRequest(
+            request_id="intent-1",
+            mandate={"mandateId": "intent-1", "intent": {"actions": []}},
+            signing_options={}, ui_context={"sessionId": "session-1"}, route=route,
+        )
+    ))
+    await asyncio.sleep(0)
+    try:
+        def rpc(method):
+            return AgentRequest(
+                request_id="rpc-1", channel_id="web", session_id="session-1",
+                req_method=method, params={"requestId": "intent-1"},
+                metadata={
+                    "app_id": "default", "ws_id": "new-connection",
+                    "agent_ref": {"mode": legacy_mode, "id": "default"},
+                },
+            )
+
+        recovered = await a4p_rpc.dispatch_a4p_request(rpc(ReqMethod.A4P_AUTHORIZATION_PENDING))
+        assert recovered.ok
+        assert recovered.payload["pending"]["requestId"] == "intent-1"
+        method = (ReqMethod.A4P_AUTHORIZATION_COMPLETE if decision == "complete"
+                  else ReqMethod.A4P_AUTHORIZATION_REJECT)
+        resolved = await a4p_rpc.dispatch_a4p_request(rpc(method))
+        assert resolved.ok
+        assert (await task).approved is (decision == "complete")
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("different_field,value", [
+    ("session_id", "other-session"),
+    ("app_id", "other-app"),
+    ("agent_ref_id", "other-agent"),
+    ("agent_ref_mode", "team.work.normal"),
+    ("agent_ref_mode", "agent.code.normal"),
+    ("agent_ref_mode", "agent.work.plan"),
+])
+async def test_a4p_mode_alias_matching_preserves_route_isolation(
+    monkeypatch, different_field, value,
+) -> None:
+    broker = WebAuthorizerBroker()
+
+    async def send_push(*_args, **_kwargs):
+        return None
+
+    monkeypatch.setattr(broker, "_send_push", send_push)
+    fields = dict(session_id="session-1", app_id="default", agent_ref_id="default")
+    route = AuthorizerRoute(**fields, agent_ref_mode="agent.work.normal")
+    other = AuthorizerRoute(**{**fields, "agent_ref_mode": "agent", different_field: value})
+    task = asyncio.create_task(broker.request_authorization(WebAuthorizationRequest(
+        request_id="intent-1", mandate={}, signing_options={},
+        ui_context={"sessionId": "session-1"}, route=route,
+    )))
+    await asyncio.sleep(0)
+    try:
+        assert broker.pending_for_route(other)["pending"] is None
+        assert broker.complete("intent-1", other)["ok"] is False
+        assert broker.reject("intent-1", other)["ok"] is False
+        assert not task.done()
+        assert broker.reject("intent-1", route)["ok"] is True
+        await task
+    finally:
+        if not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+
+@pytest.mark.asyncio
 async def test_a4p_complete_rpc_does_not_accept_external_signed_mandate(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -665,7 +765,7 @@ async def test_a4p_complete_rpc_does_not_accept_external_signed_mandate(
             *,
             assertion: dict[str, Any] | None = None,
         ) -> dict:
-            assert route.logical_key == ("session-1", "default", "agent", "agent-1")
+            assert route.logical_key == ("session-1", "default", "agent.work.normal", "agent-1")
             assert assertion is None
             calls.append(request_id)
             return {"ok": True, "requestId": request_id}
@@ -703,7 +803,7 @@ async def test_a4p_pending_rpc_returns_only_current_route(
 ) -> None:
     class _Authorizer:
         def pending_for_route(self, route: AuthorizerRoute) -> dict:
-            assert route.logical_key == ("session-1", "default", "agent", "agent-1")
+            assert route.logical_key == ("session-1", "default", "agent.work.normal", "agent-1")
             return {"ok": True, "pending": {"requestId": "intent-1"}}
 
     class _Runtime:
