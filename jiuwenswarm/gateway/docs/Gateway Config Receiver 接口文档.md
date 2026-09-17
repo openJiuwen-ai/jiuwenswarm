@@ -1,4 +1,4 @@
-# Gateway中和Manager交互的接口文档
+# Gateway Config Receiver 接口文档
 
 > 范围：Manager（`applications/manager`）通过 HTTP 调用 Gateway **Config Receiver**（`jiuwenswarm/.../manager_config_receiver`）的全部接口。  
 
