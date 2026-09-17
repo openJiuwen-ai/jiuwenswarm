@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 _SKILL_CODES_PACKAGE = "jiuwenswarm.server.runtime.skill_turbo.skill_codes"
 _MIN_ROUTE_CONFIDENCE = 0.6
+_ROUTE_MAX_ATTEMPTS = 2
 
 
 class PlanGenerationError(Exception):
@@ -104,21 +105,33 @@ class SkillTurboPlanner:
         logger.info("[SkillTurboPlanner] route skills detail: %s", skills_payload)
 
         messages = self._build_route_messages(task, context, skills_payload)
-        try:
-            # 使用流式调用，避免部分 MaaS 模型（如 maas-glm-5.1-zhipu）
-            # 非流式路由未注册导致 429 Route missed
+        # 路由输出偶发不可解析（推理模型空 content / 非 JSON 文本）属瞬态失败：
+        # 重试一次再降级，避免单次采样异常直接放弃整条加速通道。
+        # 注意：confidence 不足 / skill_name=null 是模型正常判定，不在此重试范围内。
+        route: dict[str, Any] | None = None
+        for attempt in range(1, _ROUTE_MAX_ATTEMPTS + 1):
             collected: list[str] = []
-            async for chunk in client.stream(messages):
-                content = getattr(chunk, "content", None)
-                if content:
-                    collected.append(content)
-            raw_content = "".join(collected)
-            route = extract_llm_json(raw_content, expected_type=dict)
-        except Exception as e:
-            logger.warning(
-                "[SkillTurboPlanner] LLM route failed error_type=%s",
-                type(e).__name__,
-            )
+            try:
+                # 使用流式调用：部分模型服务对非流式调用存在路由注册限制，
+                # 可能触发 429 Route missed，流式调用可规避
+                async for chunk in client.stream(messages):
+                    content = getattr(chunk, "content", None)
+                    if content:
+                        collected.append(content)
+                raw_content = "".join(collected)
+                route = extract_llm_json(raw_content, expected_type=dict)
+                break
+            except Exception as e:
+                # 记录原始返回前缀，便于区分空 content / 非 JSON 文本两类失败
+                logger.warning(
+                    "[SkillTurboPlanner] LLM route failed attempt=%d/%d error=%s: %s raw_content=%r",
+                    attempt,
+                    _ROUTE_MAX_ATTEMPTS,
+                    type(e).__name__,
+                    e,
+                    "".join(collected)[:300],
+                )
+        if route is None:
             return None
 
         skill_name = route.get("skill_name")

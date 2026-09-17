@@ -27,10 +27,12 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         *,
         backend_provider: Callable[[], A2AOutboundToolBackend | None] | None = None,
         runtime_route: Callable[[], tuple[str, str]] | None = None,
+        runtime_resource_id: Callable[[], str] | None = None,
     ) -> None:
         super().__init__()
         self._backend_provider = backend_provider or GatewayA2AOutboundToolBackend
         self._runtime_route = runtime_route
+        self._runtime_resource_id = runtime_resource_id
         self._registered: list[str] = []
         self._prompt_builder: Any = None
         self._agent: Any = None
@@ -50,11 +52,12 @@ class A2AOutboundToolkitRail(DeepAgentRail):
         ability_manager = getattr(agent, "ability_manager", None)
         if ability_manager is None:
             return
-        toolkit = (
-            A2AOutboundToolkit(backend, runtime_route=self._runtime_route)
-            if self._runtime_route is not None
-            else A2AOutboundToolkit(backend)
-        )
+        toolkit_kwargs: dict[str, Any] = {}
+        if self._runtime_route is not None:
+            toolkit_kwargs["runtime_route"] = self._runtime_route
+        if self._runtime_resource_id is not None:
+            toolkit_kwargs["runtime_resource_id"] = self._runtime_resource_id
+        toolkit = A2AOutboundToolkit(backend, **toolkit_kwargs)
         tools = toolkit.get_tools()
         for tool in tools:
             ability_manager.add_ability(tool.card, tool)

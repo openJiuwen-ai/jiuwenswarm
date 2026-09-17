@@ -17,5 +17,4 @@ export const ENTERPRISE_HIDDEN_NAV_ITEMS = [
   "configpanel",
   "browserpanel",
   "updatepanel",
-  "a2aingress",
 ] as const;

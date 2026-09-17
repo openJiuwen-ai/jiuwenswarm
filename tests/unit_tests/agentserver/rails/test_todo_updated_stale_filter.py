@@ -135,3 +135,36 @@ async def test_emit_todo_updated_no_filter_without_stale_ids(
 
     assert len(pushed) == 1
     assert [t["id"] for t in pushed[0]["todos"]] == ["a", "b"]
+
+
+@pytest.mark.asyncio
+async def test_emit_todo_updated_overlays_later_completed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """todo.updated must use the same serial overlay as task.update."""
+    from jiuwenswarm.agents.harness.common.rails import stream_event_rail
+
+    rail = object.__new__(stream_event_rail.JiuSwarmStreamEventRail)
+    rail._member_name = ""  # pylint: disable=protected-access
+    rail._main_todo_tool = None  # pylint: disable=protected-access
+    disk_todos = _todos(("search_temp", "in_progress"), ("load_skill", "completed"))
+
+    class _FakeTodoTool:
+        async def load_todos(self, _session_id: str) -> list[_FakeTodoItem]:
+            return list(disk_todos)
+
+    monkeypatch.setattr(rail, "_get_todo_tool", lambda: _FakeTodoTool())
+
+    pushed: list[dict[str, Any]] = []
+
+    class _FakeSessionWithStream(_FakeSession):
+        async def write_stream(self, schema: Any) -> None:
+            pushed.append(schema.payload)
+
+    session = _FakeSessionWithStream()
+    await rail._emit_todo_updated(session, "sess-1")  # pylint: disable=protected-access
+
+    assert len(pushed) == 1
+    by_id = {row["id"]: row["status"] for row in pushed[0]["todos"]}
+    assert by_id["search_temp"] == "in_progress"
+    assert by_id["load_skill"] == "pending"

@@ -1,7 +1,6 @@
 """session_metadata 模块单元测试"""
 from __future__ import annotations
 
-import asyncio
 import json
 import threading
 import time
@@ -969,6 +968,77 @@ class TestDeliveryContext:
         assert context is not None
         assert context["channel_id"] == "feishu"
 
+    @staticmethod
+    def test_build_server_push_message_honors_explicit_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_QUEUE,
+            build_server_push_message,
+            set_session_delivery_context,
+        )
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+
+        set_session_delivery_context(
+            session_id="sess_push_root",
+            channel_id="officeclaw",
+            source_request_id="req-root",
+            route_metadata={"routing": {"group_id": "chat-1"}},
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        push = build_server_push_message(
+            session_id="sess_push_root",
+            request_id="push-root",
+            payload={"event_type": "chat.final", "content": "done"},
+            fallback_channel_id="web",
+            sessions_root=sessions_dir,
+        )
+
+        assert push["channel_id"] == "officeclaw"
+        assert push["metadata"]["routing"]["group_id"] == "chat-1"
+
+    @staticmethod
+    def test_delivery_context_honors_explicit_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _METADATA_QUEUE,
+            set_session_delivery_context,
+        )
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+
+        set_session_delivery_context(
+            session_id="sess_delivery_root",
+            channel_id="officeclaw",
+            source_request_id="req-root",
+            route_metadata={"routing": {"group_id": "chat-1"}},
+            sessions_root=sessions_dir,
+        )
+        _METADATA_QUEUE.join()
+
+        assert (
+            sessions_dir / "sess_delivery_root" / "metadata.json"
+        ).is_file()
+        assert not (wrong_root / "sess_delivery_root" / "metadata.json").exists()
+
 
 # ===========================================================================
 # 需求验证: 会话标题稳定性
@@ -1128,6 +1198,95 @@ class TestTitleStability:
 
         data = _read_json(sessions_dir / "sess_noclear" / "metadata.json")
         assert data["title"] == "已有标题", "空字符串不应清除已有标题"
+
+
+class TestEnqueueWriteSessionsRoot:
+    @staticmethod
+    def test_coalesce_write_sessions_root_resolves_context(sessions_dir):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _coalesce_write_sessions_root,
+        )
+
+        assert _coalesce_write_sessions_root(None) == str(sessions_dir)
+        explicit = sessions_dir.parent / "agent_agentteam_sessions"
+        assert _coalesce_write_sessions_root(explicit) == str(explicit)
+
+    @staticmethod
+    def test_async_enqueue_pins_context_sessions_root(
+        sessions_dir,
+        tmp_path,
+        monkeypatch,
+    ):
+        """Worker must receive the sessions root captured in the enqueueing thread."""
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _enqueue_write,
+            _METADATA_QUEUE,
+        )
+
+        captured_roots: list[str | None] = []
+
+        def _fake_write_sync(
+            session_id,
+            metadata,
+            preserve_pin_fields=False,
+            *,
+            sessions_root=None,
+        ):
+            captured_roots.append(sessions_root)
+
+        wrong_root = tmp_path / "agent_default_sessions"
+        wrong_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata._write_metadata_sync",
+            _fake_write_sync,
+        )
+
+        _enqueue_write(
+            "sess_pin_root",
+            {"session_id": "sess_pin_root", "title": "pinned root"},
+            sessions_root=None,
+        )
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata.get_agent_sessions_dir",
+            lambda: wrong_root,
+        )
+        _METADATA_QUEUE.join()
+
+        assert captured_roots == [str(sessions_dir)]
+
+    @staticmethod
+    def test_async_enqueue_honors_explicit_sessions_root(sessions_dir, tmp_path, monkeypatch):
+        from jiuwenswarm.server.runtime.session.session_metadata import (
+            _enqueue_write,
+            _METADATA_QUEUE,
+        )
+
+        captured_roots: list[str | None] = []
+
+        def _fake_write_sync(
+            session_id,
+            metadata,
+            preserve_pin_fields=False,
+            *,
+            sessions_root=None,
+        ):
+            captured_roots.append(sessions_root)
+
+        explicit_root = tmp_path / "agent_agentteam_sessions"
+        explicit_root.mkdir(parents=True)
+        monkeypatch.setattr(
+            "jiuwenswarm.server.runtime.session.session_metadata._write_metadata_sync",
+            _fake_write_sync,
+        )
+
+        _enqueue_write(
+            "sess_explicit_root",
+            {"session_id": "sess_explicit_root", "title": "explicit"},
+            sessions_root=explicit_root,
+        )
+        _METADATA_QUEUE.join()
+
+        assert captured_roots == [str(explicit_root)]
 
 
 # ===========================================================================
@@ -1587,7 +1746,6 @@ class TestSyncChatRequestMetadata:
         from jiuwenswarm.server.runtime.session.session_metadata import (
             init_session_metadata,
             update_session_metadata,
-            get_session_metadata,
         )
 
         init_session_metadata(session_id="sess_1")

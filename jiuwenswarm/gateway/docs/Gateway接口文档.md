@@ -1129,6 +1129,8 @@ Gateway 对下列 method **立即**返回 `res`（`accepted: true`）；Agent �
 
 #### 6. 数字分身权限
 
+> **企业版未使用。** 企业用户面隐藏通道页，不调用本节 method。数字分身 owner 范围由个人版通道设置页读写。
+
 ##### 6.1 `permissions.owner_scopes.get`
 
 读取数字分身 owner 权限范围配置。
@@ -1259,6 +1261,8 @@ Gateway 对下列 method **立即**返回 `res`（`accepted: true`）；Agent �
 ---
 
 #### 7. 权限
+
+> **企业版未使用。** 企业用户面隐藏配置页，不调用本节 method。企业策略走 Manager 安全护栏模板（`/api/v1/permissions-templates`）；对话里「本次允许 / 总是允许」走 `chat.send` 应答，不走本节 RPC。
 
 ##### 7.1 `permissions.enabled.get`
 

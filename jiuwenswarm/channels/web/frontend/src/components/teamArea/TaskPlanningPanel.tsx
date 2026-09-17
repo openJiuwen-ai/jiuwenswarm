@@ -153,7 +153,7 @@ export function TaskPlanningPanel({
             ))}
           </div>
         </div>
-        <div className="flex-1 overflow-y-auto px-4 pb-3">
+        <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-3">
           {allTasks.length === 0 ? (
             <div className="text-center py-8 text-sm text-text-muted">
               {t('team.noTasks')}

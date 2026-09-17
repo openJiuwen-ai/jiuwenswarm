@@ -14,7 +14,7 @@ from jiuwenswarm.gateway.storage.backends.db import reader as _db_reader
 from .schemas import SLOT_ENTITY_TABLE, TemplateRefSlot
 
 
-def _resolve_slot_table(slot: str) -> str:
+def _resolve_slot_storage(slot: str) -> tuple[str, str]:
     try:
         slot_key = TemplateRefSlot(slot)
     except ValueError as exc:
@@ -22,7 +22,12 @@ def _resolve_slot_table(slot: str) -> str:
             f"unknown template_ref slot {slot!r} "
             f"(known: {[s.value for s in TemplateRefSlot]})"
         ) from exc
-    return SLOT_ENTITY_TABLE[slot_key]
+    id_field = (
+        "policy_id"
+        if slot_key is TemplateRefSlot.A2A_ACCESS_POLICY
+        else "template_id"
+    )
+    return SLOT_ENTITY_TABLE[slot_key], id_field
 
 
 async def fetch_templates_by_slot(
@@ -34,7 +39,7 @@ async def fetch_templates_by_slot(
     ``template_id`` 使用 foundation DB 的 ``IN`` 语义一次查出；返回顺序与入参
     ``template_ids`` 一致（去重后）。未命中的 id 不出现在结果中。
     """
-    table = _resolve_slot_table(slot)
+    table, id_field = _resolve_slot_storage(slot)
     refs: list[str] = []
     seen: set[str] = set()
     for raw in template_ids:
@@ -45,12 +50,12 @@ async def fetch_templates_by_slot(
         refs.append(ref)
     if not refs:
         return []
-    filters: dict[str, Any] = {"enabled": True, "template_id": refs}
+    filters: dict[str, Any] = {"enabled": True, id_field: refs}
     rows = await list_records(table, filters=filters)
     by_id = {
-        str(row.get("template_id") or "").strip(): row
+        str(row.get(id_field) or "").strip(): row
         for row in rows
-        if str(row.get("template_id") or "").strip()
+        if str(row.get(id_field) or "").strip()
     }
     return [by_id[ref] for ref in refs if ref in by_id]
 

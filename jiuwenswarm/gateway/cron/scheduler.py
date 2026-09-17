@@ -110,6 +110,65 @@ def _normalize_workflow_result_text(result: str) -> str:
     return remainder
 
 
+def _persist_remote_cron_session_catalog(
+    job: CronJob,
+    session_id: str,
+    *,
+    now_ts: float,
+) -> None:
+    """remote 模式下把 cron 执行会话写入 Web 历史库 ``sessions`` 行。
+
+    个人版 / local 磁盘模式不写，避免污染无 PG 的部署。失败只告警，
+    不打断 Agent 执行（与 web ``session.create`` 落行失败不阻塞一致）。
+    """
+    sid = str(session_id or "").strip()
+    if not sid or not is_remote_storage():
+        return
+    try:
+        from jiuwenswarm.channels.web.history_store.api import ensure_session_row_sync
+
+        title = _auto_title(str(job.description or job.name or "").strip())
+        ensure_session_row_sync(
+            sid,
+            None,
+            user=str(getattr(job, "user_id", None) or "").strip() or "guest",
+            group_id=str(getattr(job, "group_id", None) or "").strip() or None,
+            bot_id=str(getattr(job, "bot_id", None) or "").strip() or None,
+            project_id=str(job.project_id or "").strip() or None,
+            cron_id=str(job.id or "").strip() or None,
+            work_mode=(
+                str(getattr(job, "work_mode", None) or DEFAULT_WEB_WORK_MODE).strip()
+                or None
+            ),
+            title=title or None,
+            ts=float(now_ts),
+        )
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[Cron] persist exec session catalog failed job=%s session_id=%s",
+            getattr(job, "id", ""),
+            sid,
+            exc_info=True,
+        )
+
+
+def _touch_remote_cron_session_catalog(session_id: str, *, now_ts: float) -> None:
+    """remote 模式下刷新 cron 执行会话的活动时间，供侧栏按最近执行排序。"""
+    sid = str(session_id or "").strip()
+    if not sid or not is_remote_storage():
+        return
+    try:
+        from jiuwenswarm.channels.web.history_store.api import touch_session_sync
+
+        touch_session_sync(sid, None, ts=float(now_ts))
+    except Exception:  # noqa: BLE001
+        logger.warning(
+            "[Cron] touch exec session catalog failed session_id=%s",
+            sid,
+            exc_info=True,
+        )
+
+
 def _extract_workflow_result_text(payload: dict | None) -> str | None:
     if not isinstance(payload, dict):
         return None
@@ -907,6 +966,12 @@ class CronSchedulerService:
             exec_session_id=session_id,
             ok=True,
         )
+        await asyncio.to_thread(
+            _persist_remote_cron_session_catalog,
+            job,
+            session_id,
+            now_ts=self._now_fn(),
+        )
         return session_id
 
     def _schedule_event(self, at_dt: datetime, kind: str, job_id: str, run_id: str) -> None:
@@ -1374,6 +1439,13 @@ class CronSchedulerService:
                     if state.session_preallocated and state.exec_session_id:
                         # run_now 已提前创建真实会话，直接复用，避免重复 session.create。
                         exec_session_id = state.exec_session_id
+                        # 二次 ensure：预分配落行失败时给一次补偿，成功则为幂等。
+                        await asyncio.to_thread(
+                            _persist_remote_cron_session_catalog,
+                            job,
+                            exec_session_id,
+                            now_ts=self._now_fn(),
+                        )
                         _log_cron_run_phase(
                             "run_agent_reuse_preallocated_session",
                             run_id=run_id,
@@ -1401,6 +1473,14 @@ class CronSchedulerService:
                             job_id=job.id,
                             exec_session_id=exec_session_id,
                         )
+                else:
+                    # team 不走 session.create 预分配，信封 session_id 即执行会话。
+                    await asyncio.to_thread(
+                        _persist_remote_cron_session_catalog,
+                        job,
+                        exec_session_id,
+                        now_ts=self._now_fn(),
+                    )
                 cron_meta = {
                     "job_id": job.id,
                     "job_name": job.name,
@@ -1534,6 +1614,12 @@ class CronSchedulerService:
             finally:
                 state.finished_at = self._now_fn()
                 is_cancelled_ghost = state.error == "cancelled"
+                if not is_cancelled_ghost:
+                    await asyncio.to_thread(
+                        _touch_remote_cron_session_catalog,
+                        exec_session_id or state.exec_session_id or "",
+                        now_ts=state.finished_at,
+                    )
                 should_deliver_result = bool(state.result_text) and not is_cancelled_ghost
                 # Ensure failed runs also produce result_text so push logic can deliver it.
                 # But for cancelled ghost tasks, skip — no result should be pushed for

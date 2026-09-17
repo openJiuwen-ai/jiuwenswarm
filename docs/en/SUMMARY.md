@@ -34,6 +34,7 @@
   - [Symphony](symphony.md)
   - [Team Skills](SwarmSkills.md)
   - [Skill self-evolution](SkillSelfEvolution.md)
+  - [TTSE dual-track self-evolution](TTSE.md)
   - [Agent & workspace](Agent.md)
   - [Session management](Session.md)
   - [Browser tools](Browser.md)

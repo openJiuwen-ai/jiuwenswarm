@@ -177,26 +177,59 @@ def _is_public_address(address: str) -> bool:
     )
 
 
+_RFC1918_NETWORKS = (
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_rfc1918_ipv4_only(addresses: list[str]) -> bool:
+    # Match Manager's RFC1918-only policy; IPv6 ULA/mapped addresses
+    # are not included in the private-network exception.
+    for item in addresses:
+        address = ipaddress.ip_address(item)
+        if address.version != 4:
+            return False
+        in_private = False
+        for network in _RFC1918_NETWORKS:
+            if address in network:
+                in_private = True
+                break
+        if not in_private:
+            return False
+    return True
+
+
+def _http_blocked_by_policy(
+    network_policy: dict[str, bool], *, public_only: bool
+) -> bool:
+    if network_policy.get("allow_http") is not True:
+        return True
+    if public_only and network_policy.get("allow_public_http") is not True:
+        return True
+    return False
+
+
 class A2AOutboundDiscoveryService:
     """Resolve a caller-supplied Card URL without granting invocation rights."""
 
     def __init__(
         self,
         *,
-        allow_loopback_http: bool = False,
+        allow_loopback: bool = False,
+        allow_http: bool = False,
         address_resolver: AddressResolver = _resolve_addresses,
         transport_factory: TransportFactory = _pinned_transport_factory,
     ) -> None:
-        self._allow_loopback_http = allow_loopback_http
+        self._allow_loopback = allow_loopback
+        self._allow_http = allow_http
         self._address_resolver = address_resolver
         self._transport_factory = transport_factory
 
-    @property
-    def allow_loopback_http(self) -> bool:
-        return self._allow_loopback_http
-
-    def set_allow_loopback_http(self, enabled: bool) -> None:
-        self._allow_loopback_http = bool(enabled)
+    def set_network_settings(self, *, allow_loopback: bool, allow_http: bool) -> None:
+        self._allow_loopback = allow_loopback
+        self._allow_http = allow_http
 
     async def discover(self, url: str, card_path: str | None = None) -> DiscoveredCard:
         source_url, normalized_path, card_url = self._normalize(url, card_path)
@@ -363,7 +396,9 @@ class A2AOutboundDiscoveryService:
         )
         return source_url, normalized_path, card_url
 
-    async def _validate_network_target(self, url: str) -> _ValidatedTarget:
+    async def _validate_network_target(
+        self, url: str, *, network_policy: dict[str, bool] | None = None
+    ) -> _ValidatedTarget:
         try:
             parts = urlsplit(url)
             scheme = parts.scheme.lower()
@@ -382,10 +417,22 @@ class A2AOutboundDiscoveryService:
         loopback_only = all(
             ipaddress.ip_address(item).is_loopback for item in addresses
         )
-        if scheme == "http" and not (self._allow_loopback_http and loopback_only):
-            raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
-        if not all(_is_public_address(item) for item in addresses):
-            if not (self._allow_loopback_http and loopback_only):
+        public_only = all(_is_public_address(item) for item in addresses)
+        if network_policy is None:
+            if scheme == "http" and not self._allow_http:
+                raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
+            if not public_only and not (self._allow_loopback and loopback_only):
+                raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
+        else:
+            private_only = _is_rfc1918_ipv4_only(addresses)
+            allowed_address = public_only
+            if network_policy.get("allow_private_network") is True and private_only:
+                allowed_address = True
+            if not allowed_address:
+                raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
+            if scheme == "http" and _http_blocked_by_policy(
+                network_policy, public_only=public_only
+            ):
                 raise A2AOutboundError(A2AOutboundErrorCode.DISCOVERY_BLOCKED)
         return _ValidatedTarget(
             host=parts.hostname.lower().rstrip("."),
@@ -393,9 +440,11 @@ class A2AOutboundDiscoveryService:
             pinned_address=addresses[0],
         )
 
-    async def validate_network_target(self, url: str) -> _ValidatedTarget:
+    async def validate_network_target(
+        self, url: str, *, network_policy: dict[str, bool] | None = None
+    ) -> _ValidatedTarget:
         """Revalidate and resolve a target immediately before a connection."""
-        return await self._validate_network_target(url)
+        return await self._validate_network_target(url, network_policy=network_policy)
 
 
 __all__ = [

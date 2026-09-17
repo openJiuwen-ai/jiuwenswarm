@@ -204,3 +204,58 @@ AGENT_TEMPLATE_TABLE_DEF = TableDefinition(
         IndexDefinition(["template_id"], unique=True),
     ],
 )
+
+A2A_OUTBOUND_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_outbound_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("template_id", "string", length=100, nullable=False),
+        ColumnDefinition("template_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("a2a_tags", "json", nullable=True),
+        ColumnDefinition("source_url", "string", length=2048, nullable=False),
+        ColumnDefinition("card_path", "string", length=512, nullable=False),
+        ColumnDefinition("agent_card", "json", nullable=False),
+        ColumnDefinition("card_fingerprint", "string", length=128, nullable=False),
+        ColumnDefinition("card_revision", "integer", nullable=False),
+        ColumnDefinition("selected_interface", "json", nullable=False),
+        ColumnDefinition("credential_ref", "string", length=512, nullable=True),
+        ColumnDefinition("connect_timeout_seconds", "float", nullable=False),
+        ColumnDefinition("sync_wait_seconds", "float", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["template_id"], unique=True)],
+)
+
+A2A_ACCESS_POLICY_TEMPLATE_TABLE_DEF = TableDefinition(
+    table_name="a2a_access_policy_template",
+    columns=[
+        ColumnDefinition(
+            "id",
+            "integer",
+            primary_key=True,
+            autoincrement=True,
+            nullable=False,
+        ),
+        ColumnDefinition("policy_id", "string", length=100, nullable=False),
+        ColumnDefinition("policy_name", "string", length=128, nullable=False),
+        ColumnDefinition("description", "string", length=512, nullable=True),
+        ColumnDefinition("mode", "string", length=16, nullable=False),
+        ColumnDefinition("member_template_ids", "json", nullable=False),
+        ColumnDefinition("enabled", "boolean", nullable=False, default=True),
+        ColumnDefinition("revision", "integer", nullable=False),
+        ColumnDefinition("data", "json", nullable=True),
+        ColumnDefinition("created_at", "datetime", nullable=False),
+        ColumnDefinition("updated_at", "datetime", nullable=False),
+    ],
+    indexes=[IndexDefinition(["policy_id"], unique=True)],
+)

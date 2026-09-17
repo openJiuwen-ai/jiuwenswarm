@@ -27,6 +27,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -37,8 +38,13 @@ _AGENT_WIRING_MARKER = "_jiuwenswarm_skill_authz_wiring_installed"
 _CHILD_ASSEMBLED_ATTR = "_jiuwenswarm_skill_authz_scope"
 
 
-def skill_authorization_enabled() -> bool:
-    """动态授权总开关；读取失败按关闭处理（fail-closed，对齐 0708）。"""
+PermissionConfigProvider = Callable[[], dict[str, Any]]
+
+
+def skill_authorization_enabled(
+    config_provider: PermissionConfigProvider | None = None,
+) -> bool:
+    """动态授权总开关；优先读取所属 Agent 的权限模板。"""
     try:
         from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
             get_effective_permissions_config,
@@ -47,7 +53,8 @@ def skill_authorization_enabled() -> bool:
             is_skill_authorization_enabled,
         )
 
-        return is_skill_authorization_enabled(get_effective_permissions_config())
+        provider = config_provider or get_effective_permissions_config
+        return is_skill_authorization_enabled(provider())
     except Exception:  # noqa: BLE001
         logger.warning(
             "[skill_authorization] subagent wiring flag read failed; preserve legacy path",
@@ -56,13 +63,15 @@ def skill_authorization_enabled() -> bool:
         return False
 
 
-def resolve_main_authorization_session() -> str | None:
+def resolve_main_authorization_session(
+    config_provider: PermissionConfigProvider | None = None,
+) -> str | None:
     """仅当功能开启且父 Context 为 main scope 时返回主会话 id（对齐 0708 语义）。
 
     子 Agent 任务可能继承父请求的授权 Context；只有 scope=="main" 的父 Context
     才允许装配委托授权链，杜绝任何形式的授权继承。
     """
-    if not skill_authorization_enabled():
+    if not skill_authorization_enabled(config_provider):
         return None
     try:
         from openjiuwen.harness.security.skill_authorization import (
@@ -174,6 +183,7 @@ def build_subagent_authorization_rails(
     skill_use_rail: Any | None = None,
     engine: Any | None = None,
     workspace_root: Any | None = None,
+    config_provider: PermissionConfigProvider | None = None,
 ) -> tuple[Any, ...]:
     """装配产物：给子 Agent 追加的委托 rail 对。
 
@@ -186,7 +196,14 @@ def build_subagent_authorization_rails(
     main_session_id = str(session_id or "").strip()
     if not scope or not main_session_id:
         return ()
-    if not skill_authorization_enabled():
+    effective_config_provider = config_provider
+    if effective_config_provider is None:
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            get_effective_permissions_config,
+        )
+
+        effective_config_provider = get_effective_permissions_config
+    if not skill_authorization_enabled(effective_config_provider):
         logger.info(
             "[skill_authorization] subagent wiring skipped scope=%s reason=disabled",
             scope,
@@ -202,6 +219,9 @@ def build_subagent_authorization_rails(
         from jiuwenswarm.agents.harness.common.rails.subagent_skill_authorization_rail import (
             SubagentSkillAuthorizationRail,
         )
+        from jiuwenswarm.agents.harness.common.rails.permissions.config_loader import (
+            merge_session_permissions_overlay,
+        )
 
         skill_resolver = None
         if skill_use_rail is not None:
@@ -216,12 +236,15 @@ def build_subagent_authorization_rails(
             session_id=main_session_id,
             engine=engine,
             skill_resolver=skill_resolver,
+            config_provider=effective_config_provider,
+            session_config_merger=merge_session_permissions_overlay,
         )
         permission_rail = SubagentPermissionRail(
             agent_scope_id=scope,
             session_id=main_session_id,
             engine=engine,
             workspace_root=workspace_root,
+            config_provider=effective_config_provider,
         )
     except Exception:  # noqa: BLE001
         logger.warning(
@@ -297,6 +320,8 @@ def attach_subagent_authorization(
     child: Any,
     agent_scope_id: str,
     session_id: str,
+    *,
+    config_provider: PermissionConfigProvider | None = None,
 ) -> bool:
     """把委托 rail 对挂到子 Agent 并接管其生命周期清理。
 
@@ -327,6 +352,7 @@ def attach_subagent_authorization(
         skill_use_rail=_find_child_skill_use_rail(child),
         engine=engine,
         workspace_root=_child_workspace_root(child),
+        config_provider=config_provider,
     )
     if not rails:
         return False
@@ -344,7 +370,11 @@ def attach_subagent_authorization(
     return True
 
 
-def install_subagent_authorization_wiring(agent: Any) -> bool:
+def install_subagent_authorization_wiring(
+    agent: Any,
+    *,
+    config_provider: PermissionConfigProvider | None = None,
+) -> bool:
     """包装父 Agent ``create_subagent``：子 Agent 创建时按需装配委托授权链。
 
     仅当父 Context 为 main scope（``resolve_main_authorization_session``）
@@ -367,7 +397,7 @@ def install_subagent_authorization_wiring(agent: Any) -> bool:
     ) -> Any:
         child = original_create(subagent_type, subsession_id, *args, **kwargs)
         try:
-            main_session_id = resolve_main_authorization_session()
+            main_session_id = resolve_main_authorization_session(config_provider)
         except Exception:  # noqa: BLE001
             logger.warning(
                 "[skill_authorization] subagent wiring scope resolve failed",
@@ -380,6 +410,7 @@ def install_subagent_authorization_wiring(agent: Any) -> bool:
                     child,
                     str(subsession_id or ""),
                     main_session_id,
+                    config_provider=config_provider,
                 )
             except Exception:  # noqa: BLE001 — 装配失败不得击穿子 Agent 创建
                 logger.warning(

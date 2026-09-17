@@ -11,6 +11,13 @@ from pathlib import Path
 
 import httpx
 import pytest
+import pytest_asyncio
+
+from jiuwenswarm.common.security.link_mtls import (
+    MTLSDeploymentIdentity,
+    LinkMTLSConfig,
+    LinkMTLSMode,
+)
 
 _EXT_DIR = (
     Path(__file__).resolve().parents[3]
@@ -50,7 +57,7 @@ def _ok_body() -> dict:
     }
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def client_factory():
     clients: list = []
     https: list[httpx.AsyncClient] = []
@@ -59,10 +66,15 @@ async def client_factory():
         handler: Callable[[httpx.Request], httpx.Response],
         *,
         base_url: str = "http://runtime-manager:8091",
+        link_mtls_config: LinkMTLSConfig | None = None,
     ) -> RuntimeSessionRouteClient:
         http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
         https.append(http)
-        client = RuntimeSessionRouteClient(base_url=base_url, http_client=http)
+        client = RuntimeSessionRouteClient(
+            base_url=base_url,
+            http_client=http,
+            link_mtls_config=link_mtls_config,
+        )
         clients.append(client)
         return client
 
@@ -97,12 +109,70 @@ async def test_route_success(client_factory) -> None:
 
 
 @pytest.mark.asyncio
+async def test_enforce_sends_binding_headers_and_validates_route(
+    client_factory,
+) -> None:
+    identity = MTLSDeploymentIdentity("deployment-1", "binding-1", 3)
+    config = LinkMTLSConfig(mode=LinkMTLSMode.ENFORCE, identity=identity)
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.headers["X-Jiuwenswarm-Mtls-Binding-Id"] == "binding-1"
+        assert request.headers["X-Jiuwenswarm-Mtls-Binding-Epoch"] == "3"
+        body = _ok_body()
+        body["rawdata"].update(
+            {
+                "pod_sse_url": "https://agent.example:8766/api/v1",
+                "mtls_deployment_id": "deployment-1",
+                "mtls_binding_id": "binding-1",
+                "mtls_binding_epoch": 3,
+            }
+        )
+        return httpx.Response(200, json=body)
+
+    result = await client_factory(
+        handler,
+        base_url="https://runtime.example:8091",
+        link_mtls_config=config,
+    ).route(**_ROUTE_KW)
+    assert result.mtls_binding_epoch == 3
+
+
+@pytest.mark.asyncio
+async def test_enforce_rejects_stale_route_binding(client_factory) -> None:
+    config = LinkMTLSConfig(
+        mode=LinkMTLSMode.ENFORCE,
+        identity=MTLSDeploymentIdentity("deployment-1", "binding-1", 3),
+    )
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        body = _ok_body()
+        body["rawdata"].update(
+            {
+                "pod_sse_url": "https://agent.example:8766/api/v1",
+                "mtls_deployment_id": "deployment-1",
+                "mtls_binding_id": "binding-1",
+                "mtls_binding_epoch": 2,
+            }
+        )
+        return httpx.Response(200, json=body)
+
+    with pytest.raises(FatalRouteError, match="binding mismatch"):
+        await client_factory(
+            handler,
+            base_url="https://runtime.example:8091",
+            link_mtls_config=config,
+        ).route(**_ROUTE_KW)
+
+
+@pytest.mark.asyncio
 async def test_route_strips_base_url_slash(client_factory) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         assert str(request.url) == "http://runtime-manager:8091/api/session/route"
         return httpx.Response(200, json=_ok_body())
 
-    await client_factory(handler, base_url="http://runtime-manager:8091/").route(**_ROUTE_KW)
+    await client_factory(handler, base_url="http://runtime-manager:8091/").route(
+        **_ROUTE_KW
+    )
 
 
 @pytest.mark.asyncio
@@ -114,7 +184,9 @@ async def test_route_missing_args_skips_http(client_factory) -> None:
         return httpx.Response(200, json=_ok_body())
 
     with pytest.raises(FatalRouteError) as exc:
-        await client_factory(handler).route(session_id="", group_id="g", bot_id="b", request_id="r")
+        await client_factory(handler).route(
+            session_id="", group_id="g", bot_id="b", request_id="r"
+        )
     assert exc.value.code == "VALIDATION"
     assert called["n"] == 0
 
@@ -130,7 +202,9 @@ async def test_route_missing_args_skips_http(client_factory) -> None:
         (400, "VALIDATION", None, FatalRouteError),
     ],
 )
-async def test_route_error_codes(client_factory, status, code, retry_after, exc_type) -> None:
+async def test_route_error_codes(
+    client_factory, status, code, retry_after, exc_type
+) -> None:
     body: dict = {"ok": False, "error_code": code, "error_message": code}
     if retry_after is not None:
         body["retry_after"] = retry_after
@@ -185,7 +259,10 @@ async def test_touch_expired_returns_false(client_factory) -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, json={"ok": True, "rawdata": {"touched": False}})
 
-    assert await client_factory(handler).touch(session_id="sess-gone", request_id="req-1") is False
+    assert (
+        await client_factory(handler).touch(session_id="sess-gone", request_id="req-1")
+        is False
+    )
 
 
 @pytest.mark.asyncio
@@ -277,7 +354,9 @@ async def test_reads_url_from_env(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 @pytest.mark.asyncio
-async def test_blank_url_and_bad_timeout_fall_back(monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_blank_url_and_bad_timeout_fall_back(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     monkeypatch.setenv("GATEWAY_RUNTIME_MANAGER_URL", "   ")
     monkeypatch.setenv("GATEWAY_RUNTIME_MANAGER_TIMEOUT", "not-a-number")
     client = RuntimeSessionRouteClient()

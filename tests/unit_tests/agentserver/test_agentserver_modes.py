@@ -8,6 +8,7 @@ import pytest
 import yaml
 
 from jiuwenswarm.server import agent_ws_server as agent_ws_server_module
+from jiuwenswarm.common.config import get_ttse_enabled
 from jiuwenswarm.common.schema.agent import AgentRequest, AgentResponse, AgentResponseChunk
 from jiuwenswarm.common.schema.message import ReqMethod
 from jiuwenswarm.server.runtime.agent_adapter import interface_deep as interface_deep_module
@@ -57,7 +58,10 @@ def _is_regular_skill_evolution_rail(rail):
 
 def test_progressive_defaults_expose_registered_ask_user_tool():
     rail = interface_deep_module.build_progressive_tool_rail_from_config(
-        {"tool_lazy_load": {"enabled": True}},
+        {
+            "tool_lazy_load": {"enabled": True},
+            "ttse": {"enabled": False},
+        },
         language="zh",
     )
 
@@ -65,6 +69,7 @@ def test_progressive_defaults_expose_registered_ask_user_tool():
     assert "ask_user" in rail.eager_tools
     assert "deepresearch_execute" in rail.eager_tools
     assert "ask_user_question" not in rail.eager_tools
+    assert "ttse_consult" not in rail.eager_tools
 
 
 def test_progressive_runtime_config_exposes_registered_ask_user_tool():
@@ -74,6 +79,9 @@ def test_progressive_runtime_config_exposes_registered_ask_user_tool():
 
     assert "ask_user" in eager_tools
     assert "ask_user_question" not in eager_tools
+    # Default-off: the shipped eager list must not advertise ttse_consult.
+    # After react.ttse.enabled=true, runtime inserts it for first-turn consult.
+    assert "ttse_consult" not in eager_tools
 
 
 def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
@@ -86,7 +94,8 @@ def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
                     "ask_user_question",
                     "ask_user",
                 ],
-            }
+            },
+            "ttse": {"enabled": False},
         },
         language="zh",
     )
@@ -101,6 +110,180 @@ def test_progressive_legacy_eager_config_exposes_registered_ask_user_tool():
     ]
 
 
+def test_progressive_eager_tools_keep_ttse_consult_when_inject_enabled():
+    """After TTSE is configured on, first-turn schema includes ttse_consult."""
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": [
+                    "read_file",
+                    "skill_acceleration_exec",
+                ],
+            },
+            "ttse": {"enabled": True, "inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert rail.eager_tools == [
+        "tools_search",
+        "invoke_tool",
+        "deepresearch_execute",
+        "read_file",
+        "ttse_consult",
+        "skill_acceleration_exec",
+    ]
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_inject_disabled():
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file"],
+            },
+            "ttse": {"enabled": True, "inject_enabled": False},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_master_disabled():
+    """Default-off: yaml listing ttse_consult must not put it in schema."""
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": [
+                    "read_file",
+                    "ttse_consult",
+                    "skill_acceleration_exec",
+                ],
+            },
+            "ttse": {"enabled": False, "inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+def test_progressive_eager_tools_skip_ttse_consult_when_enabled_unset(monkeypatch):
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file", "ttse_consult"],
+            },
+            "ttse": {"inject_enabled": True},
+        },
+        language="zh",
+    )
+
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+@pytest.mark.parametrize(
+    ("ttse", "expect_mounted", "expect_eager"),
+    [
+        ({}, False, False),
+        ({"dream_interval": 5}, False, False),
+        ({"inject_enabled": True}, False, False),
+        ({"inject_enabled": True, "evolve_enabled": True}, False, False),
+        ({"enabled": False}, False, False),
+        ({"enabled": False, "inject_enabled": True}, False, False),
+        ({"enabled": True}, True, True),
+        ({"enabled": True, "inject_enabled": True}, True, True),
+        ({"enabled": True, "inject_enabled": False}, True, False),
+    ],
+)
+def test_ttse_eager_and_mount_agree_on_enabled_default(
+    ttse, expect_mounted, expect_eager, monkeypatch
+):
+    """With empty yaml, eager consult matches get_ttse_enabled on missing/false enabled."""
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    react = {"ttse": ttse}
+    assert get_ttse_enabled({"react": react}) is expect_mounted
+    assert get_ttse_enabled(react) is expect_mounted
+    assert interface_deep_module._ttse_consult_should_be_eager(react) is expect_eager
+    if not expect_mounted:
+        assert expect_eager is False
+
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        {
+            "tool_lazy_load": {
+                "enabled": True,
+                "eager_tools": ["read_file", "ttse_consult"],
+            },
+            "ttse": ttse,
+        },
+        language="zh",
+    )
+    assert rail is not None
+    assert ("ttse_consult" in rail.eager_tools) is expect_eager
+
+
+def test_ttse_eager_inherits_yaml_when_runtime_omits_key(monkeypatch):
+    """Sparse OfficeAce cache must not strip first-turn consult while the rail mounts."""
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    )
+    react = {"tool_lazy_load": {"enabled": True, "eager_tools": ["read_file"]}}
+    merged = interface_deep_module._merge_ttse_config(react)
+    assert get_ttse_enabled({"react": {"ttse": merged}}) is True
+    assert interface_deep_module._ttse_consult_should_be_eager(react) is True
+
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        react,
+        language="zh",
+    )
+    assert rail is not None
+    assert "ttse_consult" in rail.eager_tools
+
+
+def test_ttse_runtime_disabled_overrides_yaml_for_eager(monkeypatch):
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    )
+    react = {
+        "tool_lazy_load": {"enabled": True, "eager_tools": ["read_file", "ttse_consult"]},
+        "ttse": {"enabled": False, "inject_enabled": True},
+    }
+    assert interface_deep_module._ttse_consult_should_be_eager(react) is False
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        react,
+        language="zh",
+    )
+    assert rail is not None
+    assert "ttse_consult" not in rail.eager_tools
+
+
+def test_shipped_config_puts_ttse_consult_in_first_turn_schema():
+    config_path = Path(__file__).parents[3] / "jiuwenswarm/resources/config.yaml"
+    config = yaml.safe_load(config_path.read_text(encoding="utf-8"))
+
+    rail = interface_deep_module.build_progressive_tool_rail_from_config(
+        config["react"],
+        language="zh",
+    )
+
+    assert rail is not None
+    assert config["react"]["ttse"]["enabled"] is True
+    assert "ttse_consult" in rail.eager_tools
+
+
 def test_deep_adapter_builds_usage_reporting_task_planning_rail():
     from jiuwenswarm.agents.harness.common.rails.concurrent_safe_rails import (
         ConcurrentSafeTaskPlanningRail,
@@ -113,6 +296,42 @@ def test_deep_adapter_builds_usage_reporting_task_planning_rail():
     rail = adapter._build_task_planning_rail({})  # pylint: disable=protected-access
 
     assert isinstance(rail, ConcurrentSafeTaskPlanningRail)
+
+
+@pytest.mark.asyncio
+async def test_invalid_deepresearch_report_type_fails_before_session_child_spawn():
+    adapter = object.__new__(interface_deep_module.JiuWenSwarmDeepAdapter)
+    adapter._is_session_scoped_adapter = False
+    adapter._get_or_create_session_adapter = AsyncMock(
+        side_effect=AssertionError("session child must not be spawned")
+    )
+    request = AgentRequest(
+        request_id="request-invalid-report-type",
+        channel_id="officeclaw",
+        session_id="session-invalid-report-type",
+        params={
+            "query": "research topic",
+            "mode": "agent",
+            "report_type": "Brief",
+        },
+    )
+
+    chunks = [
+        chunk
+        async for chunk in adapter.process_message_stream_impl(
+            request,
+            {"query": "research topic"},
+        )
+    ]
+
+    assert len(chunks) == 1
+    assert chunks[0].payload == {
+        "event_type": "chat.error",
+        "error_code": "invalid_request",
+        "error": "params.report_type must be one of: professional, brief",
+    }
+    assert chunks[0].is_complete is True
+    adapter._get_or_create_session_adapter.assert_not_awaited()
 
 
 @pytest.mark.asyncio
@@ -171,7 +390,18 @@ async def test_concurrent_task_planning_rail_uses_session_api_and_preserves_term
         (None, ("agent", None, "agent")),
     ],
 )
-def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, expected):
+def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(
+    raw_mode, expected, monkeypatch
+):
+    # Isolate mode normalization from the flash.enabled config switch: the
+    # user's ~/.jiuwenswarm config may have flash.enabled=true (which rewrites
+    # agent→flash). These cases assert pure normalization (plan→agent etc.),
+    # independent of that switch, so force it off.
+    import jiuwenswarm.server.handlers._shared as _shared
+
+    monkeypatch.setattr(
+        _shared, "get_config", lambda: {"flash": {"enabled": False}}
+    )
     assert agent_ws_server_module.resolve_agent_request_mode(raw_mode) == expected
 
 
@@ -185,10 +415,15 @@ def test_resolve_agent_request_mode_accepts_primary_and_dotted_modes(raw_mode, e
     ],
 )
 def test_resolve_agent_request_mode_aligns_single_agent_with_work_mode(
-    raw_mode,
-    work_mode,
-    expected,
+    raw_mode, work_mode, expected, monkeypatch
 ):
+    # Same flash-switch isolation as above (work_mode=work hits the
+    # agent-or-flash exit, which must resolve to "agent" with the switch off).
+    import jiuwenswarm.server.handlers._shared as _shared
+
+    monkeypatch.setattr(
+        _shared, "get_config", lambda: {"flash": {"enabled": False}}
+    )
     assert agent_ws_server_module.resolve_agent_request_mode(
         raw_mode,
         work_mode=work_mode,
@@ -2629,3 +2864,527 @@ def test_agent_manager_uses_project_dir_in_cache_identity(monkeypatch, tmp_path)
     assert first is first_again
     assert first is not second
     assert len(created) == 2
+
+
+def _fake_agent_instance():
+    class FakeAbilityManager:
+        @staticmethod
+        def list():
+            return []
+
+    class FakeInstance:
+        def __init__(self):
+            self.registered = []
+            self.unregistered = []
+            self.ability_manager = FakeAbilityManager()
+
+        async def register_rail(self, rail):
+            self.registered.append(rail)
+
+        async def unregister_rail(self, rail):
+            self.unregistered.append(rail)
+
+    return FakeInstance()
+
+
+def test_deep_adapter_registers_ttse_rail_when_enabled(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"enabled": True},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+    asyncio.run(adapter._reconcile_evolution_rails())
+
+    assert adapter._ttse_rail is ttse_rail
+    assert adapter._instance.registered.count(ttse_rail) == 1
+
+
+def test_deep_adapter_skips_ttse_rail_when_enabled_unset(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"inject_enabled": True, "evolve_enabled": True},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
+def test_deep_adapter_skips_ttse_rail_when_disabled(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"enabled": False},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": False}}},
+    )
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
+def test_deep_adapter_skips_ttse_rail_when_runtime_disabled_overrides_yaml(monkeypatch):
+    """Runtime cache enabled:false must win over on-disk yaml enabled:true."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"enabled": False},
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    built = []
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(
+        adapter,
+        "_build_ttse_rail",
+        lambda _config: built.append("built") or object(),
+    )
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True}}},
+    )
+
+    asyncio.run(adapter._update_rails_for_mode("agent"))
+
+    assert adapter._ttse_rail is None
+    assert built == []
+
+
+def test_deep_adapter_unregisters_ttse_rail_when_disabled(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "ttse": {"enabled": True},
+    }
+
+    ttse_rail = object()
+    yaml_enabled = {"value": True}
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": yaml_enabled["value"]}}},
+    )
+
+    asyncio.run(adapter._reconcile_evolution_rails())
+    assert adapter._ttse_rail is ttse_rail
+
+    adapter._config_cache["ttse"] = {"enabled": False}
+    yaml_enabled["value"] = False
+    asyncio.run(adapter._reconcile_evolution_rails())
+
+    assert adapter._ttse_rail is None
+    assert adapter._instance.unregistered == [ttse_rail]
+
+
+def test_deep_adapter_mounts_and_exposes_consult_when_cache_omits_ttse(monkeypatch):
+    """Yaml enabled:true + sparse runtime cache must not half-open TTSE."""
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    async def _noop(*_args, **_kwargs):
+        return None
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._instance = _fake_agent_instance()
+    adapter._config_cache = {
+        "evolution": {"enabled": False},
+        "tool_lazy_load": {
+            "enabled": True,
+            "eager_tools": ["read_file", "skill_acceleration_exec"],
+        },
+        "context_engine_config": {"enabled": False},
+    }
+    adapter._task_planning_rail = "task-planning-rail"
+    adapter._ask_user_rail = "ask-user-rail"
+    adapter._context_assemble_rail = "context-assemble-rail"
+    adapter._context_assemble_mode = "agent"
+
+    ttse_rail = object()
+    monkeypatch.setattr(adapter, "_handle_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_handle_external_memory_rail_by_config", _noop)
+    monkeypatch.setattr(adapter, "_ensure_active_evolution_rails_registered", _noop)
+    monkeypatch.setattr(adapter, "_build_ttse_rail", lambda _config: ttse_rail)
+    monkeypatch.setattr(interface_deep_module, "_build_context_processor_rail", lambda _config: None)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"enabled": True, "inject_enabled": True}}},
+    )
+
+    asyncio.run(adapter._reconcile_evolution_rails())
+    rail = adapter._build_progressive_tool_rail(adapter._config_cache)
+
+    assert adapter._ttse_rail is ttse_rail
+    assert rail is not None
+    assert "ttse_consult" in rail.eager_tools
+    assert interface_deep_module._ttse_consult_should_be_eager(adapter._config_cache) is True
+
+
+def test_resolve_instance_config_base_fills_ttse_on_sparse_snapshot():
+    sparse = {"react": {"agent_name": "office-agent"}}
+    resolved = interface_deep_module._resolve_instance_config_base(sparse)
+    assert resolved["react"]["agent_name"] == "office-agent"
+    assert resolved["react"]["ttse"]["enabled"] is True
+
+
+def test_apply_reload_config_snapshot_fills_ttse_on_sparse_snapshot(monkeypatch):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    adapter = JiuWenSwarmDeepAdapter()
+    monkeypatch.setattr(adapter, "_refresh_enterprise_config_for_reload", AsyncMock())
+    monkeypatch.setattr(adapter, "_refresh_multimodal_configs", lambda _cfg: None)
+    monkeypatch.setattr(adapter, "_merge_enterprise_models_into_config", lambda cfg: cfg)
+
+    sparse = {"react": {"agent_name": "office-agent"}}
+    result = asyncio.run(adapter._apply_reload_config_snapshot(sparse, None))
+
+    assert result["react"]["agent_name"] == "office-agent"
+    assert result["react"]["ttse"]["enabled"] is True
+    assert adapter._config_cache["agent_name"] == "office-agent"
+    assert adapter._config_cache["ttse"]["enabled"] is True
+    assert interface_deep_module._ttse_consult_should_be_eager(adapter._config_cache) is True
+
+
+def test_build_ttse_rail_uses_workspace_bank_path(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+    fake_processor = object()
+    tenant_ws = tmp_path / "tenant_ws"
+    tenant_ws.mkdir()
+    shared_ws = tmp_path / "shared_default"
+    shared_ws.mkdir()
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: shared_ws)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: fake_processor,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._workspace_dir = str(tenant_ws)
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "evolve_enabled": False,
+                "dream_enabled": False,
+                "dream_interval": 5,
+                "dream_min_hours": 12,
+                "dream_ttl_days": 30,
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["store_path"] == str(tenant_ws / ".ttse" / "bank.json")
+    assert captured["config"]["store_path"] != str(shared_ws / ".ttse" / "bank.json")
+    assert captured["config"]["evolve_enabled"] is False
+    assert captured["config"]["inject_enabled"] is True
+    assert captured["config"]["trajectory_export_enabled"] is False
+    assert captured["config"]["trajectory_export_path"] == ""
+    assert captured["config"]["embedding"] is None
+    assert captured["config"]["dream_enabled"] is False
+    assert captured["config"]["dream_interval"] == 5
+    assert captured["config"]["dream_min_hours"] == 12.0
+    assert captured["config"]["dream_ttl_days"] == 30
+    assert captured["rail"]["model"] == "test-model"
+    assert captured["rail"]["trajectory_span_processor"] is fake_processor
+
+
+def test_build_ttse_rail_skips_when_trajectory_processor_unavailable(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            raise AssertionError("TTSERail must not be constructed without a processor")
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", lambda **kwargs: kwargs)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: None,
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    assert adapter._build_ttse_rail({"ttse": {}}) is None
+
+
+def test_build_ttse_rail_ignores_configured_store_path(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"store_path": str(tmp_path / "yaml-bank.json")}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {"ttse": {"store_path": str(tmp_path / "cache-bank.json")}}
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["store_path"] == str(tmp_path / ".ttse" / "bank.json")
+
+
+def test_build_ttse_rail_ignores_configured_inject_mode(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(
+        interface_deep_module,
+        "get_config",
+        lambda: {"react": {"ttse": {"inject_mode": "legacy_system"}}},
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail({"ttse": {"inject_mode": "trailing_attach"}})
+
+    assert isinstance(rail, FakeTTSERail)
+    assert "inject_mode" not in captured["config"]
+
+
+def test_build_ttse_rail_wires_embedding_when_complete(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    class FakeProvider:
+        def __init__(self, **kwargs):
+            captured["provider"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "openjiuwen.core.memory.lite.embeddings.OpenAICompatibleEmbeddingProvider",
+        FakeProvider,
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {
+            "ttse": {
+                "embedding": {
+                    "api_key": "secret",
+                    "base_url": "https://api.modelarts-maas.com/v1",
+                    "model": "bge-m3",
+                }
+            }
+        }
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["embedding"] is not None
+    assert isinstance(captured["config"]["embedding"], FakeProvider)
+    assert captured["provider"] == {
+        "api_key": "secret",
+        "base_url": "https://api.modelarts-maas.com/v1",
+        "model": "bge-m3",
+    }
+
+
+def test_build_ttse_rail_skips_embedding_when_incomplete(monkeypatch, tmp_path):
+    from jiuwenswarm.server.runtime.agent_adapter.interface_deep import JiuWenSwarmDeepAdapter
+
+    captured: dict[str, object] = {}
+
+    class FakeTTSEConfig:
+        def __init__(self, **kwargs):
+            captured["config"] = kwargs
+
+    class FakeTTSERail:
+        def __init__(self, **kwargs):
+            captured["rail"] = kwargs
+
+    monkeypatch.setattr(interface_deep_module, "TTSERail", FakeTTSERail)
+    monkeypatch.setattr(interface_deep_module, "TTSEConfig", FakeTTSEConfig)
+    monkeypatch.setattr(interface_deep_module, "get_agent_workspace_dir", lambda: tmp_path)
+    monkeypatch.setattr(interface_deep_module, "get_config", lambda: {})
+    monkeypatch.setattr(
+        "jiuwenswarm.agents.harness.observability_runtime.get_trajectory_span_processor",
+        lambda: object(),
+    )
+
+    adapter = JiuWenSwarmDeepAdapter()
+    adapter._model = Mock()
+    adapter._default_model_name = "test-model"
+
+    rail = adapter._build_ttse_rail(
+        {"ttse": {"embedding": {"api_key": "only-key", "base_url": "", "model": "bge-m3"}}}
+    )
+
+    assert isinstance(rail, FakeTTSERail)
+    assert captured["config"]["embedding"] is None

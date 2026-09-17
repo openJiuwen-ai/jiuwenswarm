@@ -5,7 +5,11 @@ ARG AGENT_RUNTIME_REPOS
 ARG AGENT_RUNTIME_BRANCH
 ARG PIP_EXTRA_ARGS="-i https://mirrors.aliyun.com/pypi/simple/"
 
-RUN useradd --create-home --shell /bin/bash app \
+# uid/gid 固定 1000：与部署侧 CLAW_USER/CLAW_GROUP/CLAW_FS_GROUP(=1000) 及
+# k8s 模板渲染的 runAsUser/runAsGroup 硬契约对齐；基础镜像若已占用 1000
+# 会在构建期直接失败（fail fast），避免运行期属主漂移导致 EACCES
+RUN groupadd --gid 1000 app \
+    && useradd --uid 1000 --gid 1000 --create-home --shell /bin/bash app \
     && mkdir -p /app/jiuwenswarm && chown app:app /app/jiuwenswarm
 
 WORKDIR /app/jiuwenswarm
@@ -31,8 +35,6 @@ RUN mkdir -p /opt/tiktoken-cache \
 
 RUN yq -y -i '.dependencies = {}' jiuwenswarm/extensions/symphony/extension.yaml
 
-# 预建 workspace（app 属主）：product 模式 gateway/agentserver 以 app 运行，
-# kubelet 为 config subPath 挂载创建的中间目录是 root 属主，运行期会 EACCES
 RUN mkdir -p /home/app/.jiuwenswarm/config && chown -R app:app /home/app/.jiuwenswarm
 
 USER app

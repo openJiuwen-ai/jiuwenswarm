@@ -520,7 +520,7 @@ export function ToolPanel({
           </div>
         ) : (
           /* 任务概述（复用集群模式紧凑态样式，数据来自 TodoItem） */
-          <div className="flex-1 overflow-hidden mb-3">
+          <div className="flex min-h-0 flex-1 flex-col overflow-hidden mb-3">
             <TaskPlanningPanel
               variant="compact"
               tasks={todoTeamTasks}

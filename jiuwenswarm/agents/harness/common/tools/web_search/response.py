@@ -4,6 +4,9 @@ from __future__ import annotations
 
 from jiuwenswarm.agents.harness.common.tools.web_search.types import WebSearchRecord
 
+# 内联正文展示上限，避免超大网页正文撑爆模型上下文
+_MAX_DISPLAY_BODY = 6000
+
 
 def _dedupe_records(records: list[WebSearchRecord]) -> list[WebSearchRecord]:
     seen: set[str] = set()
@@ -30,14 +33,19 @@ def _format_records_block(
     if not deduped and not include_answer.strip():
         lines.append("(no structured results)")
         return lines
-    # 提示模型按需调用 fetch_webpage（正文已在内存缓存，命中快）
-    lines.append("Hint: 仅展示摘要与 URL。如需正文，请调用 fetch_webpage 工具。")
+    # petal 已将完整正文(content)内联返回，模型通常无需再 fetch
+    lines.append("Hint: 结果已内联展示正文（Content）；仅在正文缺失时才需 fetch_webpage。")
     for idx, rec in enumerate(deduped, 1):
         lines.append(f"{idx}. {rec.title}")
         if rec.url:
             lines.append(f"   URL: {rec.url}")
-        if rec.snippet:
-            lines.append(f"   Snippet: {rec.snippet}")
+        # 优先展示完整 content；content 缺失（非 petal 源）时回退 snippet(summary)
+        body = (rec.content or "").strip() or (rec.snippet or "").strip()
+        if body:
+            label = "Content" if (rec.content and rec.content.strip()) else "Snippet"
+            if len(body) > _MAX_DISPLAY_BODY:
+                body = body[:_MAX_DISPLAY_BODY] + " ...(body truncated)"
+            lines.append(f"   {label}: {body}")
         lines.append(f"   Source: {rec.source}")
     return lines
 

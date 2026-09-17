@@ -5,7 +5,7 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
@@ -67,10 +67,19 @@ class Settings(BaseSettings):
         default=8775,
         validation_alias="GATEWAY_CONFIG_HTTP_PORT",
     )
-    # 对外可被 Manager 访问的主机名（端口用 HTTP_PORT）
+    gateway_config_forwarded_allow_ips: str = Field(
+        default="127.0.0.1",
+        validation_alias="GATEWAY_CONFIG_FORWARDED_ALLOW_IPS",
+        description="允许提供 X-Forwarded-* 的可信反向代理 IP/CIDR 列表",
+    )
+    # 对外可被 Manager 访问的地址；HTTPS 通常由反向代理终止。
     gateway_config_public_host: str = Field(
         default="",
         validation_alias="GATEWAY_CONFIG_PUBLIC_HOST",
+    )
+    gateway_config_public_scheme: Literal["http", "https"] = Field(
+        default="http",
+        validation_alias="GATEWAY_CONFIG_PUBLIC_SCHEME",
     )
     # Gateway 管理面 REST Base（可选；身份绑定后一般不再主动调用 Manager）
     gateway_manager_http_url: str = Field(
@@ -115,6 +124,14 @@ class Settings(BaseSettings):
     # ===================== 核心校验逻辑 =====================
     @model_validator(mode="after")
     def validate_db_fields(self) -> "Settings":
+        trusted_proxies = {
+            value.strip()
+            for value in self.gateway_config_forwarded_allow_ips.split(",")
+            if value.strip()
+        }
+        if "*" in trusted_proxies:
+            raise ValueError("GATEWAY_CONFIG_FORWARDED_ALLOW_IPS must not trust all hosts")
+
         # 如果是 SQLite，不需要校验连接参数
         if is_sqlite(self.gateway_db_type):
             # 如果没传路径，自动设置默认值

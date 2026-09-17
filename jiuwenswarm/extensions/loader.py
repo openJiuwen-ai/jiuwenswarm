@@ -58,6 +58,10 @@ class ExtensionLoader:
     async def load_extension(self, root: Path) -> Any:
         manifest = _load_manifest_dict(root)
 
+        if manifest.get("enabled") is False:
+            logger.info("[ExtensionLoader] 扩展 %s 已禁用（enabled=false）", root.name)
+            return None
+
         await self._install_dependencies(manifest, root)
 
         module = self._import_module(root)

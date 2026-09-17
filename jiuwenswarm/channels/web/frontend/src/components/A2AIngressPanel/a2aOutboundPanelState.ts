@@ -31,6 +31,9 @@ export interface A2AOutboundAgent {
   agent_card: Record<string, unknown>;
   selected_interface: A2AOutboundInterface;
   enabled: boolean;
+  manager_enabled: boolean;
+  user_enabled: boolean;
+  effective_enabled: boolean;
   availability: A2AOutboundAvailability;
   has_credential: boolean;
   connect_timeout_seconds: number;
@@ -41,7 +44,8 @@ export interface A2AOutboundAgent {
 }
 
 export interface A2AOutboundSettings {
-  allow_loopback_http: boolean;
+  allow_loopback: boolean;
+  allow_http: boolean;
 }
 
 const asString = (value: unknown): string => (typeof value === 'string' ? value : '');
@@ -92,13 +96,17 @@ export function normalizeA2AOutboundAgent(value: unknown): A2AOutboundAgent | nu
   const availability = asString(item.availability) as A2AOutboundAvailability;
   const selectedInterface = normalizeInterface(item.selected_interface);
   if (!asString(item.agent_id) || !selectedInterface || !['available', 'unreachable', 'incompatible', 'review_required'].includes(availability)) return null;
+  const enabled = item.enabled === true;
   return {
     agent_id: asString(item.agent_id),
     display_name: asString(item.display_name),
     card_revision: asNumber(item.card_revision),
     agent_card: item.agent_card && typeof item.agent_card === 'object' ? (item.agent_card as Record<string, unknown>) : {},
     selected_interface: selectedInterface,
-    enabled: item.enabled === true,
+    enabled,
+    manager_enabled: typeof item.manager_enabled === 'boolean' ? item.manager_enabled : enabled,
+    user_enabled: typeof item.user_enabled === 'boolean' ? item.user_enabled : enabled,
+    effective_enabled: typeof item.effective_enabled === 'boolean' ? item.effective_enabled : enabled,
     availability,
     has_credential: item.has_credential === true,
     connect_timeout_seconds: asNumber(item.connect_timeout_seconds),
@@ -122,8 +130,10 @@ export function normalizeA2AOutboundList(value: unknown): A2AOutboundAgent[] | n
 
 export function normalizeA2AOutboundSettings(value: unknown): A2AOutboundSettings | null {
   if (!value || typeof value !== 'object') return null;
-  const enabled = (value as Record<string, unknown>).allow_loopback_http;
-  return typeof enabled === 'boolean' ? { allow_loopback_http: enabled } : null;
+  const { allow_loopback, allow_http } = value as Record<string, unknown>;
+  return typeof allow_loopback === 'boolean' && typeof allow_http === 'boolean'
+    ? { allow_loopback, allow_http }
+    : null;
 }
 
 export const shouldAcceptA2AOutboundResponse = (generation: number, current: number): boolean => generation === current;

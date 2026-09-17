@@ -467,6 +467,14 @@ check_web_up_dependency(){
 }
 
 check_manager_up_dependency(){
+    if [ -z "${DEPLOY_VARS["IDENTITY_ADMIN_PASSWORD"]:-}" ]; then
+        error "IDENTITY_ADMIN_PASSWORD cannot be empty."
+    fi
+
+    if [ -z "${DEPLOY_VARS["IDENTITY_USER1_PASSWORD"]:-}" ]; then
+        error "IDENTITY_USER1_PASSWORD cannot be empty."
+    fi
+
     check_if_db_up
 }
 
@@ -480,8 +488,7 @@ check_runtime_up_dependency(){
         if [[ "${DEPLOY_VARS["RENDER_ONLY"]}" != "true" && "${DEPLOY_VARS["ENABLE_EXTERNAL_NFS"]}" == "false" ]]; then
             info "Preparing JiuwenClaw data directory: ${jiuwenclaw_path}"
             local nfs_pod=$(kubectl get pods -n default -l app=${nfs_dname} -o jsonpath='{.items[0].metadata.name}')
-            info "Executing: kubectl exec ${nfs_pod} -- sh -c \"mkdir -p ${jiuwenclaw_path} && chown 1000:1000 ${jiuwenclaw_path} && chmod 777 ${jiuwenclaw_path}\""
-            kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${jiuwenclaw_path} && chown 1000:1000 ${jiuwenclaw_path} && chmod 777 ${jiuwenclaw_path}"
+            kubectl exec ${nfs_pod} -- sh -c "mkdir -p ${jiuwenclaw_path}"
             success "JiuwenClaw directory created successfully in NFS Pod!"
         fi
     elif [ "${DEPLOY_VARS["CLAW_MOUNT_TYPE"]}" == "pvc" ]; then

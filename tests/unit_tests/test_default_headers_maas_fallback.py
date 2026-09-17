@@ -2,20 +2,83 @@
 
 from __future__ import annotations
 
+import json
+
 from jiuwenswarm.common.local_env_config import (
+    apply_env_overrides_to_active,
     bind_task_env_overlay,
+    effective_tip,
     parse_default_headers,
     read_default_headers,
     read_default_headers_raw,
     reset_task_env_overlay,
+    stage_env_overrides,
 )
 
 
 def test_parse_default_headers_requires_object() -> None:
     assert parse_default_headers("") is None
+    assert parse_default_headers(None) is None
     assert parse_default_headers('{"Authorization":"Basic abc"}') == {
         "Authorization": "Basic abc"
     }
+
+
+def test_parse_default_headers_with_dict() -> None:
+    raw = {"Authorization": "Bearer xxx", "x-custom": "app"}
+    assert parse_default_headers(raw) == {
+        "Authorization": "Bearer xxx",
+        "x-custom": "app",
+    }
+
+
+def test_parse_default_headers_with_single_header_dict() -> None:
+    assert parse_default_headers({"Authorization": "Bearer xxx"}) == {
+        "Authorization": "Bearer xxx"
+    }
+
+
+def test_stage_env_overrides_serializes_dict_as_json() -> None:
+    headers = {"Authorization": "Bearer xxx", "x-officeace-client": "app"}
+    stage_env_overrides({"default_headers": headers})
+    stored = effective_tip().get("default_headers", "")
+    assert isinstance(stored, str)
+    assert json.loads(stored) == headers
+    assert read_default_headers() == headers
+
+
+def test_stage_env_overrides_keeps_json_string() -> None:
+    raw = '{"Authorization": "Bearer xxx", "x-custom": "app"}'
+    stage_env_overrides({"default_headers": raw})
+    stored = effective_tip().get("default_headers", "")
+    assert stored == raw
+    assert read_default_headers() == {
+        "Authorization": "Bearer xxx",
+        "x-custom": "app",
+    }
+
+
+def test_apply_env_overrides_serializes_dict_as_json() -> None:
+    headers = {"Authorization": "Bearer xxx"}
+    apply_env_overrides_to_active({"default_headers": headers})
+    stored = effective_tip().get("default_headers", "")
+    assert json.loads(stored) == headers
+    assert read_default_headers() == headers
+
+
+def test_read_default_headers_from_overlay_dict() -> None:
+    token = bind_task_env_overlay(
+        {"default_headers": {"Authorization": "Basic overlay", "x-custom": "app"}}
+    )
+    try:
+        assert read_default_headers() == {
+            "Authorization": "Basic overlay",
+            "x-custom": "app",
+        }
+        parsed = json.loads(read_default_headers_raw())
+        assert parsed["Authorization"] == "Basic overlay"
+    finally:
+        reset_task_env_overlay(token)
 
 
 def test_read_default_headers_prefers_primary_key() -> None:

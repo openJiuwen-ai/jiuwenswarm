@@ -7,6 +7,7 @@ import ModeSelector from './ModeSelector';
 import DatePicker from './DatePicker';
 import SimpleSelect from './SimpleSelect';
 import TemplateClusterIcon from './TemplateClusterIcon';
+import { isEnterprise } from '../../edition';
 import { validateCronExpr } from './cronExprValidation';
 import { normalizeWakeOffsetSeconds } from './cronWakeOffset';
 import { cronExprToSchedule, isOnceScheduleExpired } from './scheduleConvert';
@@ -276,7 +277,9 @@ export default function CronTaskDrawer({ mode, initial, projects, targetOptions,
                   onChange={(m) => setForm({ ...form, mode: m })}
                   disabled={proactiveLocked}
                 />
-                <ModelPicker value={form.modelName} onChange={(modelName) => setForm({ ...form, modelName })} disabled={proactiveLocked} />
+                {!isEnterprise() && (
+                  <ModelPicker value={form.modelName} onChange={(modelName) => setForm({ ...form, modelName })} disabled={proactiveLocked} />
+                )}
               </div>
             </div>
             {form.description.length >= CRON_DESCRIPTION_MAX_LENGTH && (

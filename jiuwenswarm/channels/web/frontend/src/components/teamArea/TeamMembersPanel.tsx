@@ -289,7 +289,7 @@ export function TeamMembersPanel({
         />
       ) : (
         <div className="flex flex-1 items-center justify-center bg-card text-sm text-text-muted">
-          {t('team.selectMember')}
+          {t('team.noMembers')}
         </div>
       )}
     </div>

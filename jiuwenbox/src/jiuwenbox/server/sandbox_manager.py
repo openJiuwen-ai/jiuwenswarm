@@ -14,6 +14,7 @@ import binascii
 import json
 import logging
 import os
+import sys
 import textwrap
 import time
 from collections.abc import Mapping
@@ -54,6 +55,76 @@ def _is_daemon_ipc_file_op_failure(result: RuntimeFileOpResult) -> bool:
     if result.ok:
         return False
     return result.error in ("daemon_unavailable", "transport_failure")
+
+
+def _build_windows_exec_env(
+    env: dict[str, str] | None,
+    tool_paths=None,
+) -> dict[str, str]:
+    """为 Windows 沙箱子进程补 PATH, 使裸名 ``bash``/``python``/``cmd`` 可解析.
+
+    docs §4.0: jbx-sandbox 子进程的 PATH 默认空 (LOGON_WITH_PROFILE 加载的
+    profile 无 PATH), agent-core 送的 ``command[0]`` 是裸名 (``bash``/``python``
+    /``cmd``), 靠子进程 PATH 解析。本函数把等价 PATH 塞进 env:
+      tool_paths 展开的目录    # bash/git/node/python 真实安装目录 (D:\\Files\\Git 等)
+                               # 必须用 policy 的 tool_paths, 不能写死 %ProgramFiles%\\Git\\bin
+                               # — Git 装在 D:\\Files\\Git 时前者解析到不存在路径 → 0xC0000142
+                               # (实测: install 预装了 D:\\Files\\Git 的读 ACL 但 PATH 没含它,
+                               #  预装白费, bash 裸名解析失败). 含 git_dir 的 usr/bin + bin 子目录.
+      <venv>\\Scripts          # python/pip 裸名解析到 venv (G3 落点, 见 docs §4.3)
+      %SystemRoot%\\System32    # cmd/powershell + 系统 dll 裸名解析 (默认 ACL 已允许读)
+      %SystemRoot%\\WindowsPowerShell\\v1.0
+      <打包 python 目录>        # python 裸名兜底
+
+    tool_paths 由 policy.windows.filesystem.tool_paths 传入 (exec 调用方
+    self.policy 取). venv 目录与打包 python 目录由 agent-server 经 env 注入
+    (``JIUWENBOX_VENV_DIR`` / ``JIUWENBOX_BUNDLED_PYTHON``, 见 docs §4.3),
+    缺失则跳过对应段。PATH 放最前, 覆盖 profile 任何残留。
+    """
+    base = dict(env) if env else {}
+    parts: list[str] = []
+    # tool_paths 展开 (和 _create_windows 给 runner 的 PATH 一致, 确保 exec
+    # 子进程能解析到与预装 ACL 匹配的工具可执行). git_dir 含 usr/bin + bin.
+    if tool_paths is not None:
+        _tp = tool_paths
+        for i, _attr in enumerate(("git_dir", "node_dir", "python_dir")):
+            _d = (getattr(_tp, _attr, "") or "").strip()
+            if _d:
+                parts.append(_d)
+                if _attr == "git_dir":
+                    parts.append(f"{_d}\\usr\\bin")
+                    parts.append(f"{_d}\\bin")
+        _bash_p = (getattr(_tp, "bash_path", "") or "").strip()
+        if _bash_p:
+            _parent = os.path.dirname(_bash_p)
+            if _parent:
+                parts.append(_parent)
+    venv_dir = (os.environ.get("JIUWENBOX_VENV_DIR") or "").strip()
+    if venv_dir:
+        parts.append(f"{venv_dir}\\Scripts")
+    system_root = (os.environ.get("SystemRoot") or "").strip()
+    if system_root:
+        parts.append(f"{system_root}\\System32")
+        parts.append(f"{system_root}\\WindowsPowerShell\\v1.0")
+    bundled_python = (os.environ.get("JIUWENBOX_BUNDLED_PYTHON") or "").strip()
+    if bundled_python:
+        parts.append(bundled_python)
+    existing_path = base.get("PATH") or os.environ.get("PATH") or ""
+    if existing_path:
+        parts.append(existing_path)
+    if parts:
+        base["PATH"] = os.pathsep.join(parts)
+    # 补齐进程加载 DLL / 运行所需的基本环境变量. agent-core 传来的 env
+    # (request.env) 通常只有 PATH 片段, 缺 SystemRoot/TEMP 等 — 受限 token
+    # 子进程加载系统 DLL (kernel32 依赖 KnownDlls) 或 msys/cygwin runtime
+    # (msys-2.0.dll 初始化需 SystemRoot) 时会 STATUS_DLL_INIT_FAILED
+    # (0xC0000142, 实测: bash/python 启动即退). 用 setdefault 不覆盖已有值,
+    # 缺失则从本进程环境补 (和 _create_windows 给 runner 的 env 一致).
+    for _var in ("SystemRoot", "windir", "TEMP", "TMP", "PATHEXT", "COMSPEC"):
+        _val = os.environ.get(_var)
+        if _val and _var not in base:
+            base[_var] = _val
+    return base
 
 from jiuwenbox.logging_config import configure_logging
 from jiuwenbox.models.common import AuditEventType
@@ -126,6 +197,19 @@ class SandboxStateError(Exception):
     def __init__(self, *args: object) -> None:
         super().__init__(*args)
         logger.error("%s: %s", self.__class__.__name__, str(self))
+
+
+class CodePolicyDenialError(Exception):
+    """Raised when code-level policy enforcement denies a file operation.
+
+    Fallback defense when ACL/Landlock cannot be applied (e.g. Windows ACL
+    WRITE_DAC denied on owner-mismatched folders like D:/software where
+    SetNamedSecurityInfo fails with WinError 5). See ``_enforce_path_policy``.
+    """
+
+    def __init__(self, *args: object) -> None:
+        super().__init__(*args)
+        logger.warning("%s: %s", self.__class__.__name__, str(self))
 
 
 class SandboxConflictError(Exception):
@@ -702,10 +786,29 @@ class SandboxManager:
         # pre-call ``EXEC_COMMAND`` was dropped: it doubled the JSONL
         # volume without adding any information not already present here.
         start = time.monotonic()
+        # Windows: 给子进程 env 补 PATH, 使裸名 bash/python/cmd 可解析 (docs §4.0)。
+        # python/pip 裸名靠 PATH 前置 venv\Scripts 解析到 venv python (G3 落点,
+        # 见 docs §4.3)。Linux 不动 (R5)。
+        exec_env = request.env
+        if sys.platform == "win32":
+            exec_env = _build_windows_exec_env(
+                request.env,
+                tool_paths=self.policy.windows.filesystem.tool_paths,
+            )
+            # P2-19: 日志不含完整 command (可能含 prompt/API key/敏感路径) 和完整 PATH.
+            # 仅打 command[0] (可执行名) + 参数数量, 便于定位又不泄露. PATH 含工具目录
+            # 路径且极长, 不打. 旧版 INFO 全量打 request.command 且 debug 上调 info, 凭据
+            # 泄露面恶化.
+            _cmd0 = request.command[0] if request.command else "<empty>"
+            _cmd_len = len(request.command)
+            logger.info(
+                "[SandboxWin] exec sandbox=%s cmd0=%s argc=%d workdir=%s",
+                sandbox_id, _cmd0, _cmd_len, request.workdir,
+            )
         runtime_request = RuntimeExecRequest(
             command=request.command,
             workdir=request.workdir,
-            env=request.env,
+            env=exec_env,
             stdin_data=request.stdin_data,
             timeout=request.timeout,
         )
@@ -892,6 +995,11 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
+        # Code-level policy enforcement: ACL fallback for paths where
+        # SetNamedSecurityInfo failed (e.g. D:/agent when ACL is intact this
+        # is a no-op; when ACL failed this is the only defense).
+        await self._enforce_path_policy(sandbox_id, sandbox_path, op="write")
+
         # One audit row per upload, emitted after the call returns so the
         # payload covers both intent (path/size) and outcome (ok, error,
         # which transport landed it). The earlier pre-call event was
@@ -1021,6 +1129,12 @@ class SandboxManager:
                 )
             self._mark_active(ref)
 
+        # Code-level policy enforcement: ACL fallback for deny_read paths
+        # (e.g. D:/software where SetNamedSecurityInfo WinError 5 left no
+        # Deny ACE on the folder; without this check the daemon happily
+        # reads the file since the sandbox uid has Authenticated Users read).
+        await self._enforce_path_policy(sandbox_id, sandbox_path, op="read")
+
         # Mirror of ``upload_file_to_sandbox``: a single post-result row
         # carrying intent + outcome. ``size`` is filled in on success
         # (from the actual bytes returned), 0 otherwise.
@@ -1143,6 +1257,14 @@ class SandboxManager:
                     f"Cannot list files in sandbox '{sandbox_id}': state is {ref.phase.value}"
                 )
             self._mark_active(ref)
+
+        # Code-level policy enforcement: deny_read fallback. The HTTP API
+        # endpoint ``GET /sandboxes/{id}/files?sandbox_path=...`` walks the
+        # directory in-process via the daemon, which inherits the sandbox
+        # token. If the Deny Read ACE failed to apply (D:/software case),
+        # the daemon still has directory-list permission via Authenticated
+        # Users - this check blocks the listing at the API layer.
+        await self._enforce_path_policy(sandbox_id, request.sandbox_path, op="read")
 
         # Fast path: ask the daemon to walk the directory in-process.
         # Saves the python3 cold start and the fork+exec that the legacy
@@ -1269,6 +1391,13 @@ class SandboxManager:
         pattern: str,
         exclude_patterns: list[str] | None = None,
     ) -> list[dict[str, object]]:
+        # Code-level policy enforcement: deny_read fallback (mirrors
+        # ``list_files_in_sandbox``). ``search_files_in_sandbox`` delegates
+        # to ``exec_in_sandbox`` running an in-sandbox python3 walker, which
+        # inherits the sandbox token - if Deny Read ACE failed to apply on
+        # the search root, the walker would still enumerate the subtree.
+        await self._enforce_path_policy(sandbox_id, sandbox_path, op="read")
+
         script = textwrap.dedent(
             """
             import datetime
@@ -1346,6 +1475,89 @@ class SandboxManager:
         async with self._lock:
             self._get_sandbox(sandbox_id)
             return self.audit.read_logs_raw(sandbox_id)
+
+    # ------------------------------------------------------------------
+    # Code-level path policy enforcement (ACL/Landlock fallback)
+    # ------------------------------------------------------------------
+    @staticmethod
+    def _normalize_policy_path(path: str) -> str:
+        """归一化路径用于大小写不敏感比较.
+
+        - ``os.path.normpath``: 统一分隔符 + 消除 ``..`` / ``.`` / 重复分隔
+        - Windows: 转小写 (NTFS 大小写不敏感)
+        - 不调用 ``Path.resolve()`` (会要求路径存在, 上传新文件路径可能不存在)
+        """
+        p = os.path.normpath(path)
+        if sys.platform == "win32":
+            p = p.lower()
+        return p
+
+    @staticmethod
+    def _path_matches_rule(path_norm: str, rule_norm: str) -> bool:
+        """路径是否命中规则 (规则路径本身或其子路径).
+
+        子路径匹配要求紧接分隔符, 避免 ``D:/software`` 误匹配 ``D:/softwarefoo``.
+        """
+        if path_norm == rule_norm:
+            return True
+        return path_norm.startswith(rule_norm + os.sep)
+
+    async def _enforce_path_policy(
+        self,
+        sandbox_id: str,
+        sandbox_path: str,
+        op: str,
+    ) -> None:
+        """代码层路径策略校验 (ACL/Landlock 失效时的 fallback 防御).
+
+        复用沙箱 per-sandbox SecurityPolicy 的 ``windows.filesystem.deny_read`` /
+        ``deny_write`` 列表, 在 HTTP API 入口对 ``sandbox_path`` 做权限判定.
+        ACL 设置失败时 (典型: ``D:/software`` owner 不是当前用户,
+        ``SetNamedSecurityInfo`` WinError 5), 这层校验仍能拦截.
+
+        仅校验 ``deny_*`` 黑名单规则 (用户需求: deny_read / deny_write 拦截).
+        不做 ``allow_*`` 白名单检查 — ACL 语义中 ``allow_read`` 是叠加在预装系统
+        读 ACL (C:/Windows, Python stdlib 等, 见 ``win_setup.get_preinstalled_read_paths``)
+        之上的增量授权, 此处无法枚举预装路径, 强行白名单会误拦沙箱运行所必需的
+        系统目录读访问.
+
+        - 命中 ``deny_*`` → 拒绝 (raise CodePolicyDenialError → HTTP 403)
+        - 其余放行 (留给 ACL/Landlock 决定, 与现有行为一致)
+
+        含 ``{{ workspace }}`` 等占位符的规则跳过 (workspace per-sandbox 路径
+        此处不可得, workspace 是用户自有目录, ACL 通常生效, 不需要代码层兜底).
+        """
+        if op not in ("read", "write"):
+            raise ValueError(f"invalid op {op!r}, must be 'read' or 'write'")
+
+        policy = await self.get_policy(sandbox_id)
+        if policy is None:
+            return  # 无策略 = 无可校验, 放行 (与 ACL 缺失策略时同语义)
+
+        windows = getattr(policy, "windows", None)
+        fs = getattr(windows, "filesystem", None) if windows else None
+        if fs is None:
+            return
+
+        if op == "read":
+            deny_rules = list(getattr(fs, "deny_read", None) or [])
+        else:
+            deny_rules = list(getattr(fs, "deny_write", None) or [])
+
+        # 含占位符的规则跳过 (workspace per-sandbox 路径此处不可得, ACL 兜底)
+        deny_rules = [r for r in deny_rules if r and "{{" not in r]
+        if not deny_rules:
+            return  # 无可校验规则
+
+        target_norm = self._normalize_policy_path(sandbox_path)
+
+        # 命中 deny → 拒绝 (deny 优先级最高)
+        for rule in deny_rules:
+            if self._path_matches_rule(target_norm, self._normalize_policy_path(rule)):
+                raise CodePolicyDenialError(
+                    f"Code-enforced policy denial: {op} '{sandbox_path}' "
+                    f"matched deny rule '{rule}' (sandbox={sandbox_id})"
+                )
 
     async def get_policy(self, sandbox_id: str) -> SecurityPolicy | None:
         async with self._lock:

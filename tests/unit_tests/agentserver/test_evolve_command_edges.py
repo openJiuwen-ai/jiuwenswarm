@@ -656,8 +656,17 @@ async def test_team_stream_injects_image_tool_context_for_non_vision_model(
     assert "jiuwenswarm_image_tool_context" in captured["query"]
     assert "agent/sessions/sess-team-image/uploads/persisted.png" in captured["query"]
     from jiuwenswarm.common.utils import resolve_tenant_sessions_dir
+    from jiuwenswarm.server.runtime.tenant_agent_pool import TenantAgentPool
 
+    tenant_agent_id, tenant_service_id, tenant_workspace_key = TenantAgentPool.extract_ids(
+        request
+    )
+    assert tenant_workspace_key == expected_workspace_key
     assert captured["runtime_context"] == {
         "config_base": tenant_config,
-        "sessions_root": resolve_tenant_sessions_dir(expected_workspace_key),
+        "sessions_root": resolve_tenant_sessions_dir(
+            tenant_workspace_key,
+            service_id=tenant_service_id,
+            agent_id=tenant_agent_id,
+        ),
     }

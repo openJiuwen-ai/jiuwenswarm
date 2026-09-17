@@ -529,6 +529,20 @@ def _normalize_sessions_root_s(sessions_root: str | Path | None) -> str | None:
     return str(sessions_root)
 
 
+def _coalesce_write_sessions_root(sessions_root: str | Path | None) -> str:
+    """Resolve the sessions root used for metadata writes.
+
+    ``sessions_root`` may be omitted when callers rely on request-scoped
+    ``get_agent_sessions_dir()``. That ContextVar is thread-local and is not
+    available in the metadata writer worker, so capture the resolved path in
+    the enqueueing thread before async persistence.
+    """
+    normalized = _normalize_sessions_root_s(sessions_root)
+    if normalized is not None:
+        return normalized
+    return str(get_agent_sessions_dir())
+
+
 def _metadata_cache_key(session_id: str, sessions_root: str | None) -> str:
     root = sessions_root if sessions_root is not None else str(get_agent_sessions_dir())
     return f"{root}\n{session_id}"
@@ -798,7 +812,7 @@ def _enqueue_write(
     注意: ``_write_metadata_sync`` 本身不更新缓存,缓存更新统一在此函数
     顶部完成,与异步路径行为一致,避免 ``init_session_metadata`` 污染缓存。
     """
-    root_s = _normalize_sessions_root_s(sessions_root)
+    root_s = _coalesce_write_sessions_root(sessions_root)
     cache_key = _metadata_cache_key(session_id, root_s)
     # 立即更新缓存,确保后续读取能看到最新状态
     if preserve_pin_fields:
@@ -1422,9 +1436,11 @@ def set_session_delivery_context(
     source_request_id: str | None,
     route_metadata: dict[str, Any] | None,
     delivery_kind: str = _DELIVERY_KIND_SERVER_PUSH,
+    sessions_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """刷新 session 级 delivery context，供异步 server_push 恢复路由上下文。"""
-    metadata = _read_metadata(session_id)
+    root_s = _coalesce_write_sessions_root(sessions_root)
+    metadata = _read_metadata(session_id, sessions_root=root_s)
     current_context_raw = metadata.get("delivery_context")
     current_context = (
         copy.deepcopy(current_context_raw)
@@ -1495,13 +1511,23 @@ def set_session_delivery_context(
         delivery_context["route_metadata"] = normalized_route_metadata
 
     metadata["delivery_context"] = delivery_context
-    _enqueue_write(session_id, metadata, preserve_pin_fields=True)
+    _enqueue_write(
+        session_id,
+        metadata,
+        preserve_pin_fields=True,
+        sessions_root=root_s,
+    )
     return copy.deepcopy(delivery_context)
 
 
-def get_session_delivery_context(session_id: str) -> dict[str, Any] | None:
+def get_session_delivery_context(
+    session_id: str,
+    *,
+    sessions_root: str | Path | None = None,
+) -> dict[str, Any] | None:
     """读取 session 级 delivery context。"""
-    metadata = _read_metadata(session_id)
+    root_s = _normalize_sessions_root_s(sessions_root)
+    metadata = _read_metadata(session_id, sessions_root=root_s)
     context = metadata.get("delivery_context")
     if not isinstance(context, dict):
         return None
@@ -1514,9 +1540,13 @@ def build_server_push_message(
     request_id: str,
     payload: dict[str, Any],
     fallback_channel_id: str | None = None,
+    sessions_root: str | Path | None = None,
 ) -> dict[str, Any]:
     """基于 session delivery context 构造 evolution watcher 的 server_push 消息。"""
-    delivery_context = get_session_delivery_context(session_id) or {}
+    delivery_context = get_session_delivery_context(
+        session_id,
+        sessions_root=sessions_root,
+    ) or {}
     route_metadata = delivery_context.get("route_metadata")
     channel_id = str(
         delivery_context.get("channel_id") or fallback_channel_id or "default"

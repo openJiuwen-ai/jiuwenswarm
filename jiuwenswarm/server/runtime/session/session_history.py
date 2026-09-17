@@ -176,6 +176,12 @@ def _has_persistable_assistant_payload(
             or payload.get("metadata")
             or payload.get("usage_metadata")
         )
+    # HITL cards have empty content; questions / expiry live in extras.
+    if et == "chat.ask_user_question":
+        questions = payload.get("questions")
+        return isinstance(questions, list) and bool(questions)
+    if et in {"chat.ask_user_question_expired", "chat.ask_user_answered"}:
+        return True
     # Empty chat.final / chat.* status shells and other blank assistants: skip.
     if et.startswith("chat.") or et in {"", "chat.final"}:
         return False
@@ -1196,6 +1202,7 @@ def append_history_record(
                 channel_id=cid,
                 source_request_id=rid,
                 route_metadata=channel_metadata,
+                sessions_root=sessions_root_s,
             )
     except Exception as exc:
         logger.warning("更新会话元数据失败: %s", exc)

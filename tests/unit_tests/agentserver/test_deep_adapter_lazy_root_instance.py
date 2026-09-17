@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import asyncio
+from types import SimpleNamespace
 
 import pytest
 
@@ -170,3 +171,50 @@ async def test_session_child_reuses_authoritative_config_snapshot() -> None:
 
     assert await adapter._get_or_create_session_adapter("sess_a") is child
     assert calls == [tenant_config]
+
+
+@pytest.mark.asyncio
+async def test_enterprise_request_rebuilds_session_child_created_without_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A requestless helper must not leave the live session on YAML permissions."""
+    monkeypatch.setattr(interface_deep_module, "is_enterprise", lambda: True)
+    parent = JiuWenSwarmDeepAdapter()
+
+    class FakeChild:
+        def __init__(self, resource_id: str | None = None) -> None:
+            self._enterprise_config_resource_id = resource_id
+            self.cleaned = False
+            self.created_with = None
+
+        async def cleanup(self) -> None:
+            self.cleaned = True
+
+        async def create_instance(self, config=None, **_kwargs) -> None:
+            self.created_with = config
+
+        async def start_interaction(self, session_id=None) -> None:
+            del session_id
+
+    stale = FakeChild()
+    fresh = FakeChild()
+    parent._session_adapters = {"sess_a": stale}
+    parent._new_session_scoped_adapter = lambda _sid: fresh
+
+    async def _reload_noop(_sid, _child) -> None:
+        return None
+
+    parent._reload_session_adapter_if_stale = _reload_noop
+    parent._touch_session_adapter = lambda _sid: None
+    request = SimpleNamespace(
+        metadata={"routing": {"bot_id": "agent-resource-1"}},
+    )
+
+    result = await parent._get_or_create_session_adapter(
+        "sess_a",
+        request=request,
+    )
+
+    assert result is fresh
+    assert stale.cleaned is True
+    assert fresh.created_with["request"] is request

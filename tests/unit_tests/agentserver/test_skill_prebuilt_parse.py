@@ -75,4 +75,22 @@ def test_parse_url_and_provider() -> None:
     assert by_id["a/url"].sha256 == "a" * 64
     assert by_id["b/legacy_ignored"].install_mode() is None
     assert by_id["c/provider"].install_mode() == "provider"
+    assert by_id["c/provider"].author == ""
     assert len(cfg.items_with_source) == 2
+
+
+def test_parse_reads_author_from_template_data() -> None:
+    cfg = parse_agent_skill_prebuilt(
+        "agent-1",
+        "svc-1",
+        [
+            {
+                "skill_id": "7354f823822d4d0baf4253168601bfbe",
+                "source_id": "swarmskillhub",
+                "version_id": "1.0.0",
+                "enabled": True,
+                "data": {"author": "Feng-Wang"},
+            }
+        ],
+    )
+    assert cfg.skills[0].author == "Feng-Wang"

@@ -108,6 +108,11 @@ _SKILL_TURBO_TASK_EVENT_TYPES: frozenset[str] = frozenset({
     "task.update",
 })
 
+# 仅 task.update 可带外推送：它是全量 taskProgress 快照，后到 FIFO 覆盖先到，幂等。
+# task.start/task.complete 驱动前端 taskStack，必须与 chat.* 保持 FIFO 顺序；
+# 带外抢先 complete 会导致迟到的思考/工具调用丢 segment（见外层 todo 注释）。
+_SKILL_TURBO_OOB_TASK_EVENT_TYPES: frozenset[str] = frozenset({"task.update"})
+
 
 def _without_inner_task_routing(payload: dict[str, Any]) -> dict[str, Any]:
     """Copy a parent-bound event without its SkillTurbo-only task id."""
@@ -129,6 +134,74 @@ def _prepare_parent_stream_output(
         cleaned.pop("task_id", None)
         return "content_chunk", cleaned
     return _SKILL_TURBO_EVENT_TYPE_TO_OUTPUT_TYPE.get(event_type, event_type), payload
+
+
+async def _push_task_event_out_of_band(
+    event_type: str,
+    payload: dict[str, Any],
+    *,
+    request_id: str,
+    channel_id: str,
+    session_id: str,
+) -> None:
+    """Bypass the parent stream FIFO for task.update snapshots only.
+
+    ``chat.file`` already uses PushRegistry, so PPT can appear while
+    ``write_stream`` is still draining thousands of page-gen deltas. The
+    right-hand task list is driven by ``task.update`` snapshots that used
+    only that FIFO, leaving Stage 11 in_progress after delivery. Later FIFO
+    ``task.update`` snapshots remain idempotent. ``task.start`` /
+    ``task.complete`` stay on the FIFO so they keep pace with ``chat.*``.
+    """
+    if event_type not in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+        return
+    if not request_id or not channel_id or not session_id:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: missing ids request_id=%s "
+            "channel_id=%s session_id=%s",
+            event_type,
+            bool(request_id),
+            bool(channel_id),
+            bool(session_id),
+        )
+        return
+    try:
+        from jiuwenswarm.server.agent_ws_server import AgentWebSocketServer
+
+        server = AgentWebSocketServer.get_instance()
+    except Exception:
+        logger.debug(
+            "[SkillTurboTool] skip send_push %s: AgentWebSocketServer unavailable",
+            event_type,
+            exc_info=True,
+        )
+        return
+
+    push_payload = dict(payload)
+    push_payload.setdefault("event_type", event_type)
+    msg = {
+        "request_id": request_id,
+        "channel_id": channel_id,
+        "session_id": session_id,
+        "payload": push_payload,
+        "is_complete": False,
+    }
+    try:
+        delivered = await server.send_push(msg)
+        logger.info(
+            "[SkillTurboTool] send_push %s delivered=%s request_id=%s session_id=%s",
+            event_type,
+            delivered,
+            request_id,
+            session_id,
+        )
+    except Exception:
+        logger.warning(
+            "[SkillTurboTool] send_push %s failed request_id=%s",
+            event_type,
+            request_id,
+            exc_info=True,
+        )
 
 
 # ── ContextVar：在 before_tool_call 中注入，供工具函数读取 ──
@@ -423,6 +496,20 @@ def _ppt_delivery_summary(artifact_holder: dict[str, Any] | None) -> str:
     return text.strip() if isinstance(text, str) else ""
 
 
+def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
+    """P10 明确交付失败时，禁止把 skill_acceleration_exec 收成 success。"""
+    node = (artifact_holder or {}).get("p10_delivery")
+    if not isinstance(node, dict):
+        return ""
+    info = node.get("info") if isinstance(node.get("info"), dict) else {}
+    if str(info.get("delivery_status") or "") != "failed":
+        return ""
+    return (
+        "PPT 生成失败：未产出可交付的 pptx 文件。"
+        "请根据流水线失败阶段重试，不要告知用户已经生成成功。"
+    )
+
+
 def visible_ppt_turbo_finish_text(
     holder: dict[str, Any] | None,
     *,
@@ -500,6 +587,7 @@ def _wrap_skill_turbo_result(
         "当前 skill 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
         "此排除规则为临时措施，待 skill 加速器适配模板功能后移除。"
     ),
+    stateless=True,
 )
 async def skill_turbo(query: str) -> dict[str, Any] | str:
     """执行 SkillAccelerationExec 任务。
@@ -832,6 +920,17 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                         event_type,
                         exc_info=True,
                     )
+                    continue
+                if event_type in _SKILL_TURBO_OOB_TASK_EVENT_TYPES:
+                    await _push_task_event_out_of_band(
+                        event_type,
+                        payload,
+                        request_id=str(request_id or ""),
+                        channel_id=str(channel_id or ""),
+                        session_id=_resolve_skill_turbo_resume_session_id(
+                            external_session_id, parent_session
+                        ),
+                    )
             elif event_type in _SKILL_TURBO_TASK_EVENT_TYPES:
                 logger.warning(
                     "[SkillTurboTool] drop %s: parent_session is None "
@@ -839,8 +938,15 @@ async def skill_turbo(query: str) -> dict[str, Any] | str:
                     event_type,
                 )
 
-        # 过程输出已通过 write_stream 实时推给前端，tool result 仅返回精简完成信号 + 产物摘要
+        # 过程输出已通过 write_stream 实时推给前端。交付失败时不得返回 success，
+        # 否则外层 LLM / 前端会把「任务已完成」当成 PPT 已生成。
         release_checkpoint = True
+        ppt_fail = _ppt_delivery_failed_error(skill_turbo_inst.artifact_holder)
+        if ppt_fail:
+            return _wrap_skill_turbo_result(
+                {"success": False, "error": ppt_fail},
+                artifact_holder=skill_turbo_inst.artifact_holder,
+            )
         return _wrap_skill_turbo_result(
             {"success": True, "result": "任务已完成"},
             artifact_holder=skill_turbo_inst.artifact_holder,

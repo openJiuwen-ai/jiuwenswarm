@@ -4,6 +4,7 @@ version: 0.1.0
 description: SwarmSkillHub Skill Source provider factory (search / check_updates / get_artifact).
 author: jiuwenswarm
 min_jiuwenswarm_version: "0.2.0"
+enabled: true
 roles:
   - agentserver
 capabilities:

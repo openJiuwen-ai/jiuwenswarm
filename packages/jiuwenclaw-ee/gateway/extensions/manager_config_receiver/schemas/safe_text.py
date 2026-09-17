@@ -29,6 +29,7 @@ _SQLI_RE = re.compile(
 SAFE_TEXT_FIELD_NAMES: frozenset[str] = frozenset(
     {
         "template_name",
+        "policy_name",
         "description",
         "namespace",
         "pod_name",
@@ -45,6 +46,7 @@ SAFE_TEXT_LIST_FIELD_NAMES: frozenset[str] = frozenset(
     {
         "model_tags",
         "embed_tags",
+        "a2a_tags",
     }
 )
 

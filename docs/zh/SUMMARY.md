@@ -36,6 +36,7 @@
   - [技能交响乐：技能检索、编排与分发](symphony-技能编排与分发.md)
   - [Team Skills 团队技能](SwarmSkills.md)
   - [Skill 自演进](Skill自演进.md)
+  - [TTSE 双轨自演进](TTSE.md)
   - [智能体与工作区](智能体.md)
   - [会话管理](会话.md)
   - [浏览器工具](浏览器.md)

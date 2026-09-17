@@ -66,7 +66,8 @@ def _petal_format_answer_from_records(records: list[dict[str, str]]) -> str:
     for rec in records:
         title = (rec.get("title") or "").strip()
         url = (rec.get("url") or "").strip()
-        summary = (rec.get("summary") or "").strip()
+        # 优先用完整 content；content 缺失时回退 summary（petal 的 summary 可能被截断）
+        summary = (rec.get("content") or "").strip() or (rec.get("summary") or "").strip()
         if not title and not url and not summary:
             continue
         n += 1
@@ -75,7 +76,10 @@ def _petal_format_answer_from_records(records: list[dict[str, str]]) -> str:
         if url:
             lines.append(f"   URL: {url}")
         if summary:
-            lines.append(f"   Summary: {summary}")
+            label = "Content" if (rec.get("content") or "").strip() else "Summary"
+            if len(summary) > _PETAL_MAX_SUMMARY_LEN:
+                summary = summary[:_PETAL_MAX_SUMMARY_LEN] + " ...(body truncated)"
+            lines.append(f"   {label}: {summary}")
     return "\n".join(lines)
 
 

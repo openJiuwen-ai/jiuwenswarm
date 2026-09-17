@@ -75,6 +75,7 @@ JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
 ├── global_vars.sh                        # 全局常量、默认参数定义脚本
 ├── gateway_handler.sh                    # Gateway网关模块部署、运维处理脚本
 ├── runtime_handler.sh                    # AgentRuntime 运行时模块部署、运维处理脚本
+├── link_mtls_handler.sh                  # 可选内部链路证书准备、挂载及认证下发
 ├── k8s_handler.sh                        # Kubernetes 集群资源操作核心脚本
 ├── minio_handler.sh                      # MinIO 对象存储模块部署运维脚本
 ├── mysql_handler.sh                      # MySQL 数据库模块部署运维脚本
@@ -94,6 +95,7 @@ JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
     ├── agentserver.template.json           # AgentServer 服务模板
     ├── agentserver.template.env            # AgentServer 环境变量配置模板
     ├── runtime.template.yaml               # AgentRuntime 运行时 Kubernetes 资源模板
+    ├── link-mtls.template.yaml             # 可选证书挂载辅助容器及 headless Service 片段
     ├── minio.template.yaml                 # MinIO 存储 Kubernetes 资源模板
     ├── mysql.template.yaml                 # MySQL 数据库 Kubernetes 资源模板
     ├── nfs.template.yaml                   # NFS 存储 Kubernetes 资源模板
@@ -109,6 +111,8 @@ JiuwenClaw_deployTool_<VERSION>_<ARCH>_product/
 ### 1.5 修改配置文件`.env.custom`
 
 修改配置前，请先查阅配置文件参数说明书 `.env.example`，明确各配置项含义与使用规则；再结合自身实际环境，按需调整配置文件`.env.custom`的参数，完成部署环境与业务场景适配。
+
+内部链路双向证书认证默认关闭，只有显式配置 `JIUWENSWARM_LINK_MTLS_MODE=enforce` 才启用。安装步骤、数据持久化、安全边界和维护限制统一见[内部链路 mTLS 使用与设计说明](../../docs/zh/HTTP-SSE链路mTLS部署配置.md)。
 
 以下为系统运行必需参数，需依据实际大模型服务凭证完整填写：
 ```

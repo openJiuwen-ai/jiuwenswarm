@@ -23,6 +23,9 @@ const agent = {
   agent_card: { name: 'Research Agent' },
   selected_interface: selectedInterface,
   enabled: true,
+  manager_enabled: true,
+  user_enabled: true,
+  effective_enabled: true,
   availability: 'available',
   has_credential: false,
   connect_timeout_seconds: 10,
@@ -63,15 +66,31 @@ test('A2A outbound agent rejects unknown availability and malformed interfaces',
   assert.equal(normalizeA2AOutboundAgent({ ...agent, selected_interface: { url: selectedInterface.url } }), null);
 });
 
+test('personal records derive enterprise enable states from enabled', () => {
+  const { manager_enabled, user_enabled, effective_enabled } = normalizeA2AOutboundAgent({
+    ...agent,
+    manager_enabled: undefined,
+    user_enabled: undefined,
+    effective_enabled: undefined,
+  });
+  assert.deepEqual({ manager_enabled, user_enabled, effective_enabled }, {
+    manager_enabled: true,
+    user_enabled: true,
+    effective_enabled: true,
+  });
+});
+
 test('A2A outbound list rejects any malformed item', () => {
   assert.deepEqual(normalizeA2AOutboundList({ items: [agent] }), [agent]);
   assert.equal(normalizeA2AOutboundList({ items: [agent, { agent_id: '' }] }), null);
   assert.equal(normalizeA2AOutboundList({ items: 'invalid' }), null);
 });
 
-test('A2A outbound settings require an explicit loopback boolean', () => {
-  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback_http: true }), { allow_loopback_http: true });
-  assert.equal(normalizeA2AOutboundSettings({ allow_loopback_http: 'true' }), null);
+test('A2A outbound settings require explicit loopback and HTTP booleans', () => {
+  assert.deepEqual(normalizeA2AOutboundSettings({ allow_loopback: true, allow_http: false }), { allow_loopback: true, allow_http: false });
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: 'true', allow_http: false }), null);
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: true }), null);
+  assert.equal(normalizeA2AOutboundSettings({ allow_loopback: false, allow_http: 'true' }), null);
   assert.equal(normalizeA2AOutboundSettings({}), null);
 });
 
