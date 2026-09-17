@@ -123,8 +123,8 @@ for (const language of ['zh', 'en']) {
 }
 
 for (const mode of ['agent', 'auto_harness']) {
-  test(`${mode}: persisted automatic profile is projected without saving during render`, async () => {
-    await mount({ mode, profile: 'automatic' }, async ({ saved, sessionId }) => {
+  test(`${mode}: persisted default profile is displayed without saving during render`, async () => {
+    await mount({ mode, profile: 'default' }, async ({ saved, sessionId }) => {
       const effective = 'default';
       const trigger = byId('chat-panel-permission-selector-trigger');
       assert.equal(trigger.dataset.variant, effective);
@@ -140,13 +140,13 @@ for (const mode of ['agent', 'auto_harness']) {
       assert.deepEqual(saved, []);
       await act(async () => useSessionStore.getState().setMode(sessionId, 'agent'));
       assert.equal(byId('chat-panel-permission-selector-trigger').dataset.variant, 'default');
-      assert.deepEqual(saved, [], 'a mode projection must not overwrite the persisted automatic profile');
+      assert.deepEqual(saved, [], 'switching modes must not overwrite the persisted profile');
     });
   });
 }
 
 test('team hides the permission selector without overwriting the persisted profile', async () => {
-  await mount({ mode: 'team', profile: 'automatic' }, async ({ saved, sessionId }) => {
+  await mount({ mode: 'team', profile: 'default' }, async ({ saved, sessionId }) => {
     assert.equal(document.querySelector('[data-testid="chat-panel-permission-selector-trigger"]'), null);
     await act(async () => useSessionStore.getState().setMode(sessionId, 'agent'));
     assert.equal(byId('chat-panel-permission-selector-trigger').dataset.variant, 'default');

@@ -35,7 +35,7 @@ from jiuwenswarm.agents.harness.common.tools import pdf_tools
 
 
 @pytest.fixture
-def native(tmp_path):
+def native(tmp_path, internal_auto_mode):
     root = tmp_path / "task"
     work = root / "work"
     work.mkdir(parents=True)
@@ -439,6 +439,8 @@ def test_smart_construction_leaves_process_file_registry_unchanged(tmp_path):
         )
         from openjiuwen.harness.security.models import PermissionLevel
         from jiuwenswarm.agents.harness.common.rails.interrupt.interrupt_helpers import build_permission_rail
+        from jiuwenswarm.agents.harness.common.rails.permissions import auto_config
+        auto_config._VALID_RUNTIME_MODES = {*auto_config._VALID_RUNTIME_MODES, auto_config.AUTO_PERMISSION_MODE}
         root = Path(sys.argv[1])
         defaults = FileGuardAxisDefaults(*(PermissionLevel.ASK,) * 3)
         checker = FileGuardChecker(EffectiveFileGuardConfig(True, "native", defaults, (), root))

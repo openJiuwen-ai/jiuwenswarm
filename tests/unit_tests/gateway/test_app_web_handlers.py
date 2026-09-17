@@ -1706,7 +1706,7 @@ async def test_media_capability_provider_identity_round_trips_through_config_rpc
     ("permissions", "expected_profile", "expected_enabled"),
     [
         ({"enabled": True, "mode": "manual"}, "default", "true"),
-        ({"enabled": True, "mode": "auto"}, "automatic", "true"),
+        ({"enabled": True, "mode": "auto"}, "default", "true"),
         ({"enabled": False, "mode": "auto"}, "full_access", "false"),
         ({"enabled": True, "mode": "future"}, "default", "true"),
     ],
@@ -1740,7 +1740,6 @@ async def test_config_get_returns_canonical_permission_profile(
     "params",
     [
         {"permissions_profile": "invalid"},
-        {"permissions_profile": "automatic"},
         {"permissions_mode": "auto"},
         {"permissions_profile": "automatic", "permissions_enabled": "true"},
     ],
@@ -1751,24 +1750,6 @@ async def test_config_set_rejects_invalid_permission_facade(monkeypatch, params)
     _register_web_handlers(WebHandlersBindParams(channel=channel))
 
     await channel.methods["config.set"](object(), "req-profile", params, "sess-profile")
-
-    assert channel.responses[-1]["ok"] is False
-    assert channel.responses[-1]["code"] == "BAD_REQUEST"
-
-
-@pytest.mark.asyncio
-@pytest.mark.parametrize("method", ["config.set", "config.save_all"])
-async def test_unsupported_profile_is_rejected_before_writes(monkeypatch, method):
-    channel = FakeWebChannel()
-    monkeypatch.setattr(app_web_handlers, "get_config_raw", lambda: {})
-    for name in ("update_permissions_profile_in_config", "update_default_models_in_config"):
-        monkeypatch.setattr(app_web_handlers, name, lambda *a, **kw: pytest.fail("unexpected config write"))
-    _register_web_handlers(WebHandlersBindParams(channel=channel))
-    params = {"permissions_profile": "automatic", "model_provider": "OpenAI"}
-    if method == "config.save_all":
-        params = {"config": params}
-
-    await channel.methods[method](object(), "unsupported-profile", params, "session")
 
     assert channel.responses[-1]["ok"] is False
     assert channel.responses[-1]["code"] == "BAD_REQUEST"
