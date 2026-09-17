@@ -1913,18 +1913,20 @@ def _next_change_seq(connection: sqlite3.Connection) -> int:
 
     Revisions are what readers resume from, so they only ever grow -- also
     across retention, which deletes records but never rewinds this counter.
+    The bump and the read are two statements rather than ``UPDATE ... RETURNING``
+    because ``RETURNING`` needs SQLite 3.35+, newer than some supported Python
+    builds link against. The caller's write transaction keeps them atomic.
     """
-    row = connection.execute(
+    cursor = connection.execute(
         """
         UPDATE trajectory_store_state
         SET max_change_seq = max_change_seq + 1
         WHERE singleton = 1
-        RETURNING max_change_seq
         """
-    ).fetchone()
-    if row is None:
+    )
+    if cursor.rowcount != 1:
         raise RuntimeError("Trajectory store state is missing")
-    return int(row["max_change_seq"])
+    return _stored_max_change_seq(connection)
 
 
 def _new_store_epoch() -> str:
