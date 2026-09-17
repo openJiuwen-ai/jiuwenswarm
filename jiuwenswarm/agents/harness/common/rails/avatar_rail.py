@@ -9,6 +9,8 @@
 
 from __future__ import annotations
 
+import logging
+
 from openjiuwen.core.foundation.llm import ToolMessage
 from openjiuwen.core.single_agent.rail.base import AgentCallbackContext
 from openjiuwen.harness.prompts import PromptSection
@@ -17,6 +19,8 @@ from openjiuwen.harness.rails.base import DeepAgentRail
 from jiuwenswarm.agents.harness.common.rails.permissions.owner_scopes import (
     TOOL_PERMISSION_CONTEXT,
 )
+
+logger = logging.getLogger(__name__)
 
 _MEMORY_WRITE_TOOLS = frozenset({"write_memory", "edit_memory"})
 
@@ -159,9 +163,11 @@ class AvatarPromptRail(DeepAgentRail):
 
     @staticmethod
     def _reject_tool(ctx: AgentCallbackContext, message: str) -> None:
-        """跳过工具执行，直接返回拒绝消息。"""
+        """Skip tool execution and return a rejection message."""
         tool_call = ctx.inputs.tool_call
         tool_call_id = tool_call.id if tool_call else ""
+        tool_name = ctx.inputs.tool_name
+        logger.warning("Tool call rejected: %s — %s", tool_name, message)
         ctx.extra["_skip_tool"] = True
         ctx.inputs.tool_result = message
         ctx.inputs.tool_msg = ToolMessage(content=message, tool_call_id=tool_call_id)
