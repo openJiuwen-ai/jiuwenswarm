@@ -6,7 +6,7 @@ export function permissionOptionsForMode(_mode: AgentMode): Permission[] {
   return PERMISSION_OPTIONS;
 }
 
-export function effectivePermissionProfile(persistedProfile: Permission, _mode: AgentMode): Permission {
-  if (persistedProfile === 'automatic') return 'default';
+export function effectivePermissionProfile(persistedProfile: Permission, mode: AgentMode): Permission {
+  if (persistedProfile === 'automatic' && mode !== 'agent') return 'default';
   return persistedProfile;
 }

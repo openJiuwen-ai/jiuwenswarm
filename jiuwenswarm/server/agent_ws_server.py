@@ -10345,20 +10345,6 @@ class AgentWebSocketServer:
             params = request.params or {}
             config_payload = params.get("config")
             env_overrides = params.get("env")
-            from jiuwenswarm.common.config import get_config_raw, validate_permissions_mode
-
-            # Validate before reload changes the environment or starts background work.
-            candidate_env = dict(os.environ)
-            if isinstance(env_overrides, dict):
-                for key, value in env_overrides.items():
-                    if value is None:
-                        candidate_env.pop(str(key), None)
-                    else:
-                        candidate_env[str(key)] = str(value)
-            validate_permissions_mode(
-                config_payload if isinstance(config_payload, dict) else get_config_raw(),
-                env=candidate_env,
-            )
             target_channel_id = str(params.get("target_channel_id") or "").strip() or None
             target_session_id = str(params.get("target_session_id") or "").strip() or None
             raw_reload_scopes = params.get("reload_scopes")

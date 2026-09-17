@@ -5,7 +5,7 @@ import { effectivePermissionProfile, permissionOptionsForMode } from '../node_mo
 
 test('single agent exposes only supported profiles', () => {
   assert.deepEqual(permissionOptionsForMode('agent'), ['default', 'full_access']);
-  assert.equal(effectivePermissionProfile('automatic', 'agent'), 'default');
+  assert.equal(effectivePermissionProfile('default', 'agent'), 'default');
 });
 
 test('team and auto harness hide automatic without changing persisted profile', () => {

@@ -24,6 +24,7 @@ from tests.unit_tests.agentserver.permissions.auto_permission_test_support impor
 
 
 @pytest.mark.parametrize("native", [False, True])
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_platform_root_reuses_core_trusted_dir_axes(tmp_path, native: bool) -> None:
     primary = tmp_path / "project"
     platform = tmp_path / "agent-workspace"
@@ -56,6 +57,7 @@ def test_platform_root_reuses_core_trusted_dir_axes(tmp_path, native: bool) -> N
         assert guard._resolve_one(primary / "run.py", "exec")[0].value == "allow"
 
 
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_platform_root_does_not_override_more_specific_path_rules(tmp_path) -> None:
     primary = tmp_path / "project"
     platform = tmp_path / "agent-workspace"
@@ -142,6 +144,7 @@ def test_platform_root_survives_request_trusted_dir_replace_and_clear(tmp_path) 
     ]
 
 
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_builder_binds_core_and_auto_to_same_primary_root(tmp_path) -> None:
     primary = tmp_path / "selected-project"
     platform = tmp_path / "agent-workspace"
@@ -160,6 +163,7 @@ def test_auto_builder_binds_core_and_auto_to_same_primary_root(tmp_path) -> None
     assert rail.base_rail._engine.trusted_dirs == [platform.resolve()]
 
 
+@pytest.mark.usefixtures("internal_auto_mode")
 def test_auto_builder_exposes_only_installed_host_snapshot(tmp_path) -> None:
     rail = build_permission_rail(
         {
@@ -181,6 +185,7 @@ def test_auto_builder_exposes_only_installed_host_snapshot(tmp_path) -> None:
 
 
 @pytest.mark.asyncio
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_auto_scene_hook_uses_installed_owner_scopes(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -249,6 +254,7 @@ def test_manual_builder_ignores_uninstalled_disk_snapshot(
 @pytest.mark.parametrize("installed_level,live_level,expected", [
     ("allow", "deny", "approve"), ("deny", "allow", "reject"),
 ])
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_group_avatar_uses_installed_permission_epoch(
     monkeypatch: pytest.MonkeyPatch,
     tmp_path,
@@ -319,6 +325,7 @@ def avatar_owner():
 @pytest.mark.parametrize("workspace_read,default_read,expected", [
     ("allow", "deny", "approve"), ("deny", "allow", "reject"),
 ])
+@pytest.mark.usefixtures("internal_auto_mode")
 async def test_avatar_uses_installed_engine_workspace(
     tmp_path, monkeypatch, avatar_owner, workspace_read, default_read, expected,
 ):
