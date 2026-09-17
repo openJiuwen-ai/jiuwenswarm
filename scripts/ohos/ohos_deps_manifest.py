@@ -205,24 +205,39 @@ def import_module_for(spec: str) -> str:
     return pkg.replace("-", "_")
 
 
-def add_row(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
-    project: str,
-    category: str,
-    spec: str,
-    note: str = "",
-    *,
-    dedupe_by_spec: bool = False,
-) -> None:
-    spec = spec.strip()
-    if not spec or not is_leaf_spec(spec):
-        return
-    key = spec if dedupe_by_spec else f"{project}\0{spec}"
-    if key in seen:
-        return
-    seen.add(key)
-    rows.append((project, category, spec, import_module_for(spec), note))
+class ManifestRows:
+    """收集 (project, category, pip_spec, import_module, note) 行并去重。
+
+    封装原 ``rows.add(...)`` 的 rows/seen 参数对（G.FNM.03）。
+    """
+
+    def __init__(self) -> None:
+        self.rows: list[tuple[str, str, str, str, str]] = []
+        self._seen: set[str] = set()
+
+    def __iter__(self):
+        return iter(self.rows)
+
+    def __len__(self) -> int:
+        return len(self.rows)
+
+    def add(
+        self,
+        project: str,
+        category: str,
+        spec: str,
+        note: str = "",
+        *,
+        dedupe_by_spec: bool = False,
+    ) -> None:
+        spec = spec.strip()
+        if not spec or not is_leaf_spec(spec):
+            return
+        key = spec if dedupe_by_spec else f"{project}\0{spec}"
+        if key in self._seen:
+            return
+        self._seen.add(key)
+        self.rows.append((project, category, spec, import_module_for(spec), note))
 
 
 def expand_openjiuwen_extra(spec: str) -> list[str]:
@@ -238,13 +253,10 @@ def expand_openjiuwen_extra(spec: str) -> list[str]:
 
 
 def add_transitive_native_rows(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
+    rows: ManifestRows,
 ) -> None:
     for spec, _mod, note in TRANSITIVE_NATIVE_P0:
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "transitive-native",
             "p0",
             spec,
@@ -254,8 +266,7 @@ def add_transitive_native_rows(
 
 
 def collect_project_deps(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
+    rows: ManifestRows,
     project: str,
     pyproject_path: Path,
     *,
@@ -277,7 +288,7 @@ def collect_project_deps(
         )
         if is_jiuwenswarm_git_openjiuwen:
             continue
-        add_row(rows, seen, project, "core", s, dedupe_by_spec=dedupe_by_spec)
+        rows.add(project, "core", s, dedupe_by_spec=dedupe_by_spec)
     if include_optional:
         opt = proj.get("optional-dependencies") or {}
         for group, specs in opt.items():
@@ -295,9 +306,7 @@ def collect_project_deps(
                 s = str(spec)
                 if s.startswith("openjiuwen["):
                     for leaf in expand_openjiuwen_extra(s):
-                        add_row(
-                            rows,
-                            seen,
+                        rows.add(
                             project,
                             f"extra:{group}",
                             leaf,
@@ -305,9 +314,7 @@ def collect_project_deps(
                             dedupe_by_spec=dedupe_by_spec,
                         )
                     continue
-                add_row(
-                    rows,
-                    seen,
+                rows.add(
                     project,
                     f"extra:{group}",
                     s,
@@ -337,8 +344,7 @@ def _spec_package_key(spec: str) -> str:
 
 
 def collect_agentserver_minimal(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
+    rows: ManifestRows,
     requirements_path: Path,
 ) -> None:
     """requirements-harmony.txt + AgentServer 所需 native 传递依赖。"""
@@ -348,9 +354,7 @@ def collect_agentserver_minimal(
     for spec, _mod, note in TRANSITIVE_NATIVE_AGENTSERVER:
         if _spec_package_key(spec) in req_keys:
             continue
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "transitive-native",
             "p0",
             spec,
@@ -359,9 +363,7 @@ def collect_agentserver_minimal(
         )
 
     for spec in req_specs:
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "agentserver-minimal",
             "requirements-harmony",
             spec,
@@ -387,8 +389,7 @@ def resolve_harmonyos_pyproject(agent_core: Path, office_claw: Path) -> Path | N
 
 
 def collect_agentcore_minimal(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
+    rows: ManifestRows,
     *,
     harmonyos_path: Path | None,
     requirements_path: Path,
@@ -397,9 +398,7 @@ def collect_agentcore_minimal(
     for spec, _mod, note in TRANSITIVE_NATIVE_AGENTSERVER:
         if _spec_package_key(spec) not in {"cryptography", "cffi", "rpds-py"}:
             continue
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "transitive-native",
             "p0",
             spec,
@@ -408,9 +407,7 @@ def collect_agentcore_minimal(
         )
 
     for spec, _mod, note in AGENTCORE_NATIVE_PRELOAD:
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "transitive-native",
             "p0",
             spec,
@@ -425,9 +422,7 @@ def collect_agentcore_minimal(
             len(AGENTCORE_MINIMAL_SPECS),
         )
         for spec, _mod, note in AGENTCORE_MINIMAL_SPECS:
-            add_row(
-                rows,
-                seen,
+            rows.add(
                 "agentcore-minimal",
                 "openjiuwen-runtime",
                 spec,
@@ -451,9 +446,7 @@ def collect_agentcore_minimal(
             note += ";needs:cryptography+openssl"
         if _spec_package_key(s) in {"fastmcp", "mcp"}:
             note += ";tool-protocol"
-        add_row(
-            rows,
-            seen,
+        rows.add(
             "agentcore-minimal",
             "openjiuwen-harmonyos",
             s,
@@ -463,16 +456,14 @@ def collect_agentcore_minimal(
 
 
 def collect_jiuwenswarm_runtime(
-    rows: list[tuple[str, str, str, str, str]],
-    seen: set[str],
+    rows: ManifestRows,
     agent_core: Path,
     jiuwen_root: Path,
 ) -> None:
     """jiuwenswarm 跑起来所需 PyPI 闭包（不含本体 -e / git openjiuwen）。"""
-    add_transitive_native_rows(rows, seen)
+    add_transitive_native_rows(rows)
     collect_project_deps(
         rows,
-        seen,
         "agent-core",
         agent_core / "pyproject.toml",
         include_optional=False,
@@ -480,7 +471,6 @@ def collect_jiuwenswarm_runtime(
     )
     collect_project_deps(
         rows,
-        seen,
         "jiuwenswarm",
         jiuwen_root / "pyproject.toml",
         include_optional=True,
@@ -531,14 +521,13 @@ def main() -> int:
     jiuwenclaw = Path(os.environ.get("JIUWENCLAW_VENDOR_PATH", relay_claw / "vendor" / "jiuwenclaw"))
     tui_path = jiuwen_root / "packages" / "jiuwenswarm-tui"
 
-    rows: list[tuple[str, str, str, str, str]] = []
-    seen: set[str] = set()
+    rows = ManifestRows()
 
     if profile == "jiuwenswarm-runtime":
-        collect_jiuwenswarm_runtime(rows, seen, agent_core, jiuwen_root)
+        collect_jiuwenswarm_runtime(rows, agent_core, jiuwen_root)
     elif profile == "agentserver-minimal":
         req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-harmony.txt")
-        collect_agentserver_minimal(rows, seen, req_path)
+        collect_agentserver_minimal(rows, req_path)
     elif profile == "agentcore-minimal":
         req_path = Path(args.requirements) if args.requirements else (repo_root / "requirements-harmony.txt")
         harmony_path = (
@@ -548,17 +537,14 @@ def main() -> int:
         )
         collect_agentcore_minimal(
             rows,
-            seen,
             harmonyos_path=harmony_path,
             requirements_path=req_path,
         )
     else:
-        collect_project_deps(rows, seen, "agent-core", agent_core / "pyproject.toml")
+        collect_project_deps(rows, "agent-core", agent_core / "pyproject.toml")
 
         if not pypi_only:
-            add_row(
-                rows,
-                seen,
+            rows.add(
                 "agent-core",
                 "extra:intelli-router",
                 "intelli-router @ "
@@ -567,47 +553,39 @@ def main() -> int:
                 "git optional",
             )
 
-        collect_project_deps(rows, seen, "jiuwenswarm", jiuwen_root / "pyproject.toml")
+        collect_project_deps(rows, "jiuwenswarm", jiuwen_root / "pyproject.toml")
         if not pypi_only and (agent_core / "pyproject.toml").is_file():
-            add_row(
-                rows,
-                seen,
+            rows.add(
                 "jiuwenswarm",
                 "core",
                 f"-e {agent_core.resolve()}",
                 "local openjiuwen replaces git",
             )
 
-        collect_project_deps(rows, seen, "jiuwenswarm-tui", tui_path / "pyproject.toml")
+        collect_project_deps(rows, "jiuwenswarm-tui", tui_path / "pyproject.toml")
 
         if not pypi_only and (jiuwenclaw / "pyproject.toml").is_file():
-            add_row(
-                rows,
-                seen,
+            rows.add(
                 "jiuwenclaw",
                 "editable",
                 f"-e {jiuwenclaw.resolve()}",
                 "relay-claw vendor",
             )
-            collect_project_deps(rows, seen, "jiuwenclaw", jiuwenclaw / "pyproject.toml")
+            collect_project_deps(rows, "jiuwenclaw", jiuwenclaw / "pyproject.toml")
 
         for spec in RELAY_WHEELHOUSE:
-            add_row(rows, seen, "relay-claw", "wheelhouse", spec, "shared-runtime")
+            rows.add("relay-claw", "wheelhouse", spec, "shared-runtime")
 
         if not pypi_only:
             if (jiuwen_root / "pyproject.toml").is_file():
-                add_row(
-                    rows,
-                    seen,
+                rows.add(
                     "jiuwenswarm",
                     "editable",
                     f"-e {jiuwen_root.resolve()}",
                     "project itself",
                 )
             if (agent_core / "pyproject.toml").is_file():
-                add_row(
-                    rows,
-                    seen,
+                rows.add(
                     "agent-core",
                     "editable",
                     f"-e {agent_core.resolve()}",
@@ -623,16 +601,21 @@ def main() -> int:
             if " @ git+" in row[2] or "git+https" in row[2]:
                 continue
             filtered_rows.append(row)
-        rows = filtered_rows
+        rows.rows = filtered_rows
 
     out_path = os.environ.get("MANIFEST_OUT")
-    lines = ["project\tcategory\tpip_spec\timport_module\tnote"]
-    lines.extend("\t".join(r) for r in rows)
-    text = "\n".join(lines) + "\n"
     if out_path:
-        Path(out_path).write_text(text, encoding="utf-8")
+        lines = ["project\tcategory\tpip_spec\timport_module\tnote"]
+        lines.extend("\t".join(r) for r in rows.rows)
+        Path(out_path).write_text("\n".join(lines) + "\n", encoding="utf-8")
     else:
-        sys.stdout.write(text)
+        # TSV 数据流（非日志）：流式写出，避免一次性拼大字符串
+        def _render_tsv():
+            yield "project\tcategory\tpip_spec\timport_module\tnote\n"
+            for r in rows.rows:
+                yield "\t".join(r) + "\n"
+
+        sys.stdout.writelines(_render_tsv())
     logging.info("# manifest profile=%s: %d rows", profile, len(rows))
     return 0
 

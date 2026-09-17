@@ -86,7 +86,9 @@ class FunctionType:  # enum-like placeholder
     pass
 
 
-class connections:  # module-like namespace
+class _Connections:
+    """pymilvus.connections 兼容占位（真实库中 connections 本就是单例）。"""
+
     @staticmethod
     def connect(*args: Any, **kwargs: Any) -> None:
         raise MilvusException("pymilvus stubbed on HarmonyOS")
@@ -100,7 +102,9 @@ class connections:  # module-like namespace
         return False
 
 
-class utility:  # module-like namespace
+class _Utility:
+    """pymilvus.utility 兼容占位（真实库中 utility 本就是单例）。"""
+
     @staticmethod
     def has_collection(*args: Any, **kwargs: Any) -> bool:
         raise MilvusException("pymilvus stubbed on HarmonyOS")
@@ -108,6 +112,11 @@ class utility:  # module-like namespace
     @staticmethod
     def list_collections(*args: Any, **kwargs: Any) -> list:
         raise MilvusException("pymilvus stubbed on HarmonyOS")
+
+
+# 模块级单例：保持 pymilvus 官方 API 形态（pymilvus.connections.connect(...)）
+connections = _Connections()
+utility = _Utility()
 
 
 __version__ = "2.6.9+ohos-stub"

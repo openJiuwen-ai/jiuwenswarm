@@ -237,7 +237,8 @@ def _patch_maturin_module(mod) -> None:
     def _get_maturin_executable() -> list[str]:
         return [maturin_bin]
 
-    mod._get_maturin_executable = _get_maturin_executable
+    # 动态替换第三方库内部实现（按名 setattr 是 monkey-patch 的惯用形式）
+    setattr(mod, "_get_maturin_executable", _get_maturin_executable)
 
 
 def _patch_setuptools_rust_module(mod) -> None:
@@ -330,15 +331,15 @@ def _patch_setuptools_rust_rustc_info(mod) -> None:
         output = _sp.check_output([rustc_bin, "--print", "target-list"], env=out_env, text=True)
         return output.splitlines()
 
-    # Apply patches
+    # Apply patches（按名 setattr 动态替换第三方库内部实现）
     if hasattr(mod, "_rust_version"):
-        mod._rust_version = _patched_rust_version
+        setattr(mod, "_rust_version", _patched_rust_version)
         _grv = getattr(mod, "get_rust_version", None)
         if _grv and hasattr(_grv, "cache_clear"):
             _grv.cache_clear()
 
     if hasattr(mod, "_rust_version_verbose"):
-        mod._rust_version_verbose = _patched_rust_version_verbose
+        setattr(mod, "_rust_version_verbose", _patched_rust_version_verbose)
 
     if hasattr(mod, "get_rust_target_info"):
         mod.get_rust_target_info = _patched_get_rust_target_info
@@ -356,15 +357,16 @@ def _patch_setuptools_rust_rustc_info(mod) -> None:
         mod.get_rust_target_list = _patched_get_rust_target_list
 
 
-class _LazyPep517Patcher(importlib.abc.MetaPathFinder):
-    _TARGETS = {
-        "maturin": _patch_maturin_module,
-        "setuptools_rust.rust_extension": _patch_setuptools_rust_module,
-        "setuptools_rust.rustc_info": _patch_setuptools_rust_rustc_info,
-    }
+_PEP517_PATCH_TARGETS = {
+    "maturin": _patch_maturin_module,
+    "setuptools_rust.rust_extension": _patch_setuptools_rust_module,
+    "setuptools_rust.rustc_info": _patch_setuptools_rust_rustc_info,
+}
 
+
+class _LazyPep517Patcher(importlib.abc.MetaPathFinder):
     def find_spec(self, fullname, path, target=None):  # noqa: ARG002
-        patcher = self._TARGETS.get(fullname)
+        patcher = _PEP517_PATCH_TARGETS.get(fullname)
         if patcher is None:
             return None
         for finder in sys.meta_path:
@@ -391,8 +393,10 @@ class _LazyPep517Patcher(importlib.abc.MetaPathFinder):
 def _install_lazy_pep517_patchers() -> None:
     if any(isinstance(f, _LazyPep517Patcher) for f in sys.meta_path):
         return
-    sys.meta_path.insert(0, _LazyPep517Patcher())
-    for name, patcher in _LazyPep517Patcher._TARGETS.items():
+    # 拦截器必须先于标准 finder 被咨询（append 到末尾会使其永远轮不到，
+    # PEP 517 模块加载后无人 patch），因此显式重建 meta_path 把它放到最前。
+    sys.meta_path = [_LazyPep517Patcher()] + sys.meta_path
+    for name, patcher in _PEP517_PATCH_TARGETS.items():
         if name in sys.modules:
             patcher(sys.modules[name])
 
