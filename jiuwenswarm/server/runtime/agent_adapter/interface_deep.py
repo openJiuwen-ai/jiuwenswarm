@@ -6905,13 +6905,17 @@ class JiuWenSwarmDeepAdapter:
             self._retain_sys_operation(str(sys_operation.id))
 
         to_release = [sid for sid in previously_retained if sid != local_keep_id]
-        if (
+        # agent 与 local 共用同一张卡时：新 retain 已加上，只丢掉上一轮那一票。
+        same_card_as_local = (
             sys_operation is not None
             and local_keep_id is not None
             and str(sys_operation.id) == local_keep_id
+        )
+        prior_local_retain = (
+            local_keep_id is not None
             and previously_retained.count(local_keep_id) >= 1
-        ):
-            # agent 与 local 共用同一张卡：新 retain 已加上，只丢掉上一轮那一票。
+        )
+        if same_card_as_local and prior_local_retain:
             to_release.append(local_keep_id)
         self._release_sys_operations(to_release)
         return sys_operation
