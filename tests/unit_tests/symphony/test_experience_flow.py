@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import inspect
 import json
 from pathlib import Path
 from types import SimpleNamespace
@@ -11,11 +12,15 @@ from unittest.mock import AsyncMock, Mock
 import openjiuwen.symphony as core_symphony
 import pytest
 from openjiuwen.agent_evolving.trajectory.model import Trajectory
+from openjiuwen.agent_evolving.trajectory.processor import TrajectorySpanProcessor
 from openjiuwen.agent_evolving.trajectory.schema import SESSION_ID, TRAJECTORY_ID
 from openjiuwen.agent_evolving.trajectory.spans import attributes_from_map
 from openjiuwen.extensions.observability import semconv
 from openjiuwen.harness.rails.evolution import (
     SymphonyEdgeDecision,
+    SymphonyGraphEvolutionInput,
+    SymphonyGraphEvolutionRail,
+    TeamSymphonyGraphEvolutionRail,
     build_symphony_edge_candidates,
     build_symphony_execution_graph,
     project_symphony_execution_fragments,
@@ -42,6 +47,11 @@ from jiuwenswarm.server.runtime.skill.skill_manager import (
 from jiuwenswarm.server.runtime.skill.skillpack import load_skillpack
 from jiuwenswarm.symphony.config import symphony_config_from_dict
 from jiuwenswarm.symphony.experience import (
+    _SwarmOtelTruncationCompatMixin,
+    _SwarmSymphonyGraphEvolutionRail,
+    _SwarmTeamSymphonyGraphEvolutionRail,
+    _build_graph_evolution_rail,
+    _core_compatible_truncation_trajectory,
     JiuwenSwarmSkillAdapter,
     PublishedCapabilitySnapshotProvider,
     SkillPackNotInstallableError,
@@ -220,7 +230,9 @@ def rail_capture(monkeypatch):
         return SimpleNamespace()
 
     def install(name):
-        monkeypatch.setattr(f"openjiuwen.harness.rails.evolution.{name}", rail_factory)
+        monkeypatch.setattr(
+            f"jiuwenswarm.symphony.experience._Swarm{name}", rail_factory
+        )
         return captured, submissions
 
     return install
@@ -330,27 +342,322 @@ def test_target_adapter_rejects_branch_and_loop_structures(
         JiuwenSwarmSkillAdapter.render(package, tmp_path)
 
 
-def _otlp_span(name: str, span_id: int, *, skill: str | None = None) -> dict:
+def _otlp_span(
+    name: str,
+    span_id: int,
+    *,
+    skill: str | None = None,
+    arguments: object | None = None,
+    result: object | None = None,
+    authoritative: bool = False,
+    status: str = "STATUS_CODE_OK",
+) -> dict:
     attributes = {}
     if skill is not None:
         attributes = {
             semconv.GEN_AI_TOOL_NAME: "skill_tool",
-            semconv.GEN_AI_TOOL_CALL_ARGUMENTS: {
-                "skill_name": skill,
-                "relative_file_path": "SKILL.md",
-            },
-            semconv.GEN_AI_TOOL_CALL_RESULT: {"success": True},
+            semconv.GEN_AI_TOOL_CALL_ARGUMENTS: (
+                {
+                    "skill_name": skill,
+                    "relative_file_path": "SKILL.md",
+                }
+                if arguments is None
+                else arguments
+            ),
+            semconv.GEN_AI_TOOL_CALL_RESULT: (
+                {"success": True} if result is None else result
+            ),
         }
+        if authoritative:
+            attributes[semconv.OJ_TOOL_AUTHORITATIVE] = True
     return {
         "traceId": f"{1:032x}",
         "spanId": f"{span_id:016x}",
         "parentSpanId": f"{1:016x}" if span_id != 1 else None,
         "name": name,
         "attributes": attributes_from_map(attributes),
-        "status": {"code": "STATUS_CODE_OK"},
+        "status": {"code": status},
         "startTimeUnixNano": str(span_id),
         "endTimeUnixNano": str(span_id + 1),
     }
+
+
+def _trajectory(*spans: dict) -> Trajectory:
+    payload_spans = list(spans)
+    if payload_spans:
+        payload_spans[0].pop("parentSpanId", None)
+    return Trajectory.from_otlp(
+        {
+            "resourceSpans": [
+                {
+                    "resource": {
+                        "attributes": attributes_from_map(
+                            {
+                                TRAJECTORY_ID: "trajectory-compat",
+                                SESSION_ID: "session-compat",
+                            }
+                        )
+                    },
+                    "scopeSpans": [{"scope": {"name": "test"}, "spans": payload_spans}],
+                }
+            ]
+        }
+    )
+
+
+def test_otel_truncation_normalization_is_strict_and_non_mutating() -> None:
+    current = '{"success": true...<OTel attribute truncated: 16270 chars omitted>'
+    historical = '{"success": true...<truncated 5 chars>'
+    tool_span = _otlp_span(
+        "tool.skill_tool",
+        2,
+        skill="travel-guide-generator",
+        arguments='[{"skill_name": "travel-guide-generator"}...<OTel attribute truncated: 7 chars omitted>',
+        result=current,
+        authoritative=True,
+    )
+    non_target = "note ...<OTel attribute truncated: 9 chars omitted>"
+    tool_span["attributes"].extend(attributes_from_map({"custom.note": non_target}))
+    trajectory = _trajectory(
+        _otlp_span("agent.main", 1),
+        tool_span,
+    )
+    original = trajectory.to_otlp()
+
+    normalized = _core_compatible_truncation_trajectory(trajectory)
+    normalized_payload = normalized.to_otlp()
+    result_attributes = normalized_payload["resourceSpans"][0]["scopeSpans"][0][
+        "spans"
+    ][1]["attributes"]
+    normalized_result = next(
+        item["value"]["stringValue"]
+        for item in result_attributes
+        if item["key"] == semconv.GEN_AI_TOOL_CALL_RESULT
+    )
+    normalized_arguments = next(
+        item["value"]["stringValue"]
+        for item in result_attributes
+        if item["key"] == semconv.GEN_AI_TOOL_CALL_ARGUMENTS
+    )
+    normalized_non_target = next(
+        item["value"]["stringValue"]
+        for item in result_attributes
+        if item["key"] == "custom.note"
+    )
+
+    assert normalized_result == '{"success": true...<truncated 16270 chars>'
+    assert (
+        normalized_arguments
+        == '[{"skill_name": "travel-guide-generator"}...<truncated 7 chars>'
+    )
+    assert normalized_non_target == non_target
+    assert trajectory.to_otlp() == original
+    historical_trajectory = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span("tool.skill_tool", 2, skill="x", result=historical),
+    )
+    assert (
+        _core_compatible_truncation_trajectory(historical_trajectory)
+        is historical_trajectory
+    )
+
+
+@pytest.mark.parametrize(
+    "value",
+    [
+        "prefix ...<OTel attribute truncated: 0 chars omitted>",
+        "prefix ...<OTel attribute truncated: 12 chars omitted> suffix",
+        "prefix ...<OTel attribute truncated: 12 chars omitted",
+        "prefix <OTel attribute truncated: 12 chars omitted>",
+        "prefix ...<OTel attribute truncated: 12 chars omitted>\n",
+    ],
+)
+def test_otel_truncation_normalization_rejects_lookalikes(value: str) -> None:
+    trajectory = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span("tool.skill_tool", 2, skill="x", result=value, authoritative=True),
+    )
+
+    assert _core_compatible_truncation_trajectory(trajectory) is trajectory
+
+
+@pytest.mark.parametrize(
+    "rail_type",
+    [SymphonyGraphEvolutionRail, TeamSymphonyGraphEvolutionRail],
+)
+def test_compatibility_layer_locks_pinned_core_protected_signatures(rail_type) -> None:
+    assert tuple(inspect.signature(rail_type._capture_quality_issues).parameters) == (
+        "trajectory",
+    )
+    assert tuple(inspect.signature(rail_type._prepare_evolution_input).parameters) == (
+        "self",
+        "trajectory",
+        "ctx",
+    )
+
+
+def test_swarm_rail_accepts_otel_truncation_but_keeps_malformed_json_flag() -> None:
+    rail = object.__new__(_SwarmSymphonyGraphEvolutionRail)
+    accepted = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span(
+            "tool.skill_tool",
+            2,
+            skill="travel-guide-generator",
+            result='{"success": true...<OTel attribute truncated: 20 chars omitted>',
+            authoritative=True,
+        ),
+    )
+    malformed = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span("tool.skill_tool", 2, skill="broken", result='{"success": true'),
+    )
+
+    assert rail._capture_quality_issues(accepted) == ()
+    assert {issue["code"] for issue in rail._capture_quality_issues(malformed)} == {
+        "tool_payload_json_error"
+    }
+
+
+@pytest.mark.asyncio
+async def test_prepare_reprojects_authoritative_otel_truncated_skill_chain() -> None:
+    current = '{"success": true, "data": {"large": "value...<OTel attribute truncated: 123 chars omitted>'
+    trajectory = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span("tool.skill_tool", 2, skill="weather"),
+        _otlp_span(
+            "tool.skill_tool",
+            3,
+            skill="travel-guide-generator",
+            result=current,
+            authoritative=True,
+        ),
+    )
+    continuities = ((0, trajectory),)
+    initial_fragments = project_symphony_execution_fragments(continuities)
+    prepared = SymphonyGraphEvolutionInput(
+        trajectory=trajectory,
+        messages=(),
+        execution_fragments=initial_fragments,
+        execution_continuities=continuities,
+        capture_mode="agent",
+    )
+
+    class BaseRail:
+        async def _prepare_evolution_input(self, trajectory, ctx):
+            del trajectory, ctx
+            return prepared
+
+    class CompatRail(_SwarmOtelTruncationCompatMixin, BaseRail):
+        pass
+
+    repaired = await CompatRail()._prepare_evolution_input(trajectory, object())
+    assert repaired is not None
+    assert [fragment.capability_name for fragment in repaired.execution_fragments] == [
+        "weather",
+        "travel-guide-generator",
+    ]
+    candidates = build_symphony_edge_candidates(
+        repaired.execution_fragments,
+        repaired.execution_continuities,
+    )
+    assert [
+        (
+            candidate.source_fragment.capability_name,
+            candidate.target_fragment.capability_name,
+        )
+        for candidate in candidates
+    ] == [("weather", "travel-guide-generator")]
+
+
+@pytest.mark.parametrize(
+    ("authoritative", "status", "result"),
+    [
+        (
+            False,
+            "STATUS_CODE_OK",
+            '{"success": true...<OTel attribute truncated: 10 chars omitted>',
+        ),
+        (
+            True,
+            "STATUS_CODE_ERROR",
+            '{"success": true...<OTel attribute truncated: 10 chars omitted>',
+        ),
+        (
+            True,
+            "STATUS_CODE_OK",
+            '{"data": {}...<OTel attribute truncated: 10 chars omitted>',
+        ),
+    ],
+)
+def test_normalization_does_not_relax_skill_success_contract(
+    authoritative: bool,
+    status: str,
+    result: str,
+) -> None:
+    trajectory = _trajectory(
+        _otlp_span("agent.main", 1),
+        _otlp_span(
+            "tool.skill_tool",
+            2,
+            skill="untrusted",
+            result=result,
+            authoritative=authoritative,
+            status=status,
+        ),
+    )
+
+    fragments = project_symphony_execution_fragments(
+        ((0, _core_compatible_truncation_trajectory(trajectory)),)
+    )
+    assert not [
+        fragment for fragment in fragments if fragment.capability_type == "skill"
+    ]
+
+
+def test_swarm_graph_rail_types_bind_core_compatibility_layer() -> None:
+    assert issubclass(
+        _SwarmSymphonyGraphEvolutionRail,
+        _SwarmOtelTruncationCompatMixin,
+    )
+    assert issubclass(
+        _SwarmTeamSymphonyGraphEvolutionRail,
+        _SwarmOtelTruncationCompatMixin,
+    )
+
+
+@pytest.mark.parametrize(
+    ("capture_mode", "expected_type"),
+    [
+        ("agent", _SwarmSymphonyGraphEvolutionRail),
+        ("team", _SwarmTeamSymphonyGraphEvolutionRail),
+    ],
+)
+def test_graph_rail_factory_installs_real_swarm_compat_type(
+    monkeypatch,
+    tmp_path: Path,
+    capture_mode: str,
+    expected_type: type,
+) -> None:
+    runtime = SimpleNamespace(capture_graph_snapshot=lambda: {})
+    service = SimpleNamespace(
+        runtime=lambda: runtime,
+        submit_evolution_and_notify=AsyncMock(),
+    )
+    monkeypatch.setattr(
+        "jiuwenswarm.symphony.service.get_swarm_symphony_service",
+        lambda: service,
+    )
+
+    rail = _build_graph_evolution_rail(
+        tmp_path,
+        capture_mode=capture_mode,
+        model=SimpleNamespace(invoke=AsyncMock()),
+        channel_id=lambda: "web",
+        trajectory_span_processor=TrajectorySpanProcessor(),
+    )
+
+    assert type(rail) is expected_type
 
 
 def test_published_capability_snapshot_builds_nonempty_execution_edge(

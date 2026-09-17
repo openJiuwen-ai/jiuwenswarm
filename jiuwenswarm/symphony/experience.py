@@ -2,16 +2,153 @@
 
 from __future__ import annotations
 
+from copy import deepcopy
+from dataclasses import replace
 import json
 from pathlib import Path
-from typing import Any, Callable, Literal
+import re
+from typing import Any, Callable, Literal, Mapping
 
 import yaml  # type: ignore[import-untyped]
+from openjiuwen.agent_evolving.trajectory.model import Trajectory
+from openjiuwen.extensions.observability import semconv
 from openjiuwen.harness.rails.evolution import (  # type: ignore[import-untyped]
     CapabilityIdentity,
+    SymphonyGraphEvolutionInput,
+    SymphonyGraphEvolutionRail,
+    TeamSymphonyGraphEvolutionRail,
+    project_symphony_execution_fragments,
 )
 
 from jiuwenswarm.symphony.graph_storage import resolve_graph_artifact_dir
+
+
+# Compatibility for the Core revision pinned by JiuwenSwarm (d0bd83352f...).
+# That revision recognises the historical suffix below, while current OTel
+# redaction emits the more explicit marker matched here.  Keep this conversion
+# on detached trajectory copies so runtime observations remain authoritative.
+_OTEL_ATTRIBUTE_TRUNCATED_SUFFIX = re.compile(
+    r"\.\.\.<OTel attribute truncated: ([1-9]\d*) chars omitted>\Z"
+)
+_TOOL_PAYLOAD_ATTRIBUTE_KEYS = frozenset(
+    {
+        semconv.GEN_AI_TOOL_CALL_ARGUMENTS,
+        semconv.GEN_AI_TOOL_CALL_RESULT,
+    }
+)
+
+
+def _core_compatible_truncation_value(value: str) -> str | None:
+    match = _OTEL_ATTRIBUTE_TRUNCATED_SUFFIX.search(value)
+    if match is None:
+        return None
+    return f"{value[: match.start()]}...<truncated {match.group(1)} chars>"
+
+
+def _core_compatible_truncation_trajectory(trajectory: Trajectory) -> Trajectory:
+    """Return a detached trajectory whose OTel truncation suffixes Core understands."""
+
+    payload = deepcopy(trajectory.to_otlp())
+    changed = False
+    for resource_spans in payload.get("resourceSpans", ()):
+        if not isinstance(resource_spans, dict):
+            continue
+        for scope_spans in resource_spans.get("scopeSpans", ()):
+            if not isinstance(scope_spans, dict):
+                continue
+            for span in scope_spans.get("spans", ()):
+                if not isinstance(span, dict):
+                    continue
+                for attribute in span.get("attributes", ()):
+                    if (
+                        not isinstance(attribute, dict)
+                        or attribute.get("key") not in _TOOL_PAYLOAD_ATTRIBUTE_KEYS
+                    ):
+                        continue
+                    encoded = attribute.get("value")
+                    if not isinstance(encoded, dict):
+                        continue
+                    value = encoded.get("stringValue")
+                    if not isinstance(value, str):
+                        continue
+                    normalized = _core_compatible_truncation_value(value)
+                    if normalized is None:
+                        continue
+                    encoded["stringValue"] = normalized
+                    changed = True
+    return Trajectory.from_otlp(payload) if changed else trajectory
+
+
+class _SwarmOtelTruncationCompatMixin:
+    """Adapt current OTel truncation markers to the pinned Core rail contract."""
+
+    def _capture_quality_issues(
+        self,
+        trajectory: Trajectory | None,
+    ) -> tuple[Mapping[str, object], ...]:
+        normalized = (
+            _core_compatible_truncation_trajectory(trajectory)
+            if trajectory is not None
+            else None
+        )
+        capture_quality_issues = getattr(super(), "_capture_quality_issues")
+        return capture_quality_issues(normalized)
+
+    async def _prepare_evolution_input(
+        self,
+        trajectory: Trajectory,
+        ctx: Any,
+    ) -> SymphonyGraphEvolutionInput | None:
+        prepare_evolution_input = getattr(super(), "_prepare_evolution_input")
+        prepared = await prepare_evolution_input(trajectory, ctx)
+        if prepared is None:
+            return None
+        if not isinstance(prepared, SymphonyGraphEvolutionInput):
+            raise TypeError(
+                "Core Symphony rail returned an incompatible evolution input"
+            )
+
+        normalized_trajectory = _core_compatible_truncation_trajectory(
+            prepared.trajectory
+        )
+        normalized_continuities = tuple(
+            (index, _core_compatible_truncation_trajectory(item))
+            for index, item in prepared.execution_continuities
+        )
+        if normalized_trajectory is prepared.trajectory and all(
+            normalized is original
+            for (_, normalized), (_, original) in zip(
+                normalized_continuities,
+                prepared.execution_continuities,
+                strict=True,
+            )
+        ):
+            return prepared
+
+        fragments = project_symphony_execution_fragments(
+            normalized_continuities,
+            team_members_only=prepared.capture_mode == "team",
+        )
+        return replace(
+            prepared,
+            trajectory=normalized_trajectory,
+            execution_continuities=normalized_continuities,
+            execution_fragments=fragments,
+        )
+
+
+class _SwarmSymphonyGraphEvolutionRail(
+    _SwarmOtelTruncationCompatMixin,
+    SymphonyGraphEvolutionRail,
+):
+    """Single-agent graph rail compatible with current OTel truncation."""
+
+
+class _SwarmTeamSymphonyGraphEvolutionRail(
+    _SwarmOtelTruncationCompatMixin,
+    TeamSymphonyGraphEvolutionRail,
+):
+    """Team graph rail compatible with current OTel truncation."""
 
 
 def _build_graph_evolution_rail(
@@ -24,10 +161,6 @@ def _build_graph_evolution_rail(
 ) -> Any:
     """Share evidence wiring while callers retain their model and route ownership."""
     from openjiuwen.extensions.observability.demand import get_trajectory_span_processor
-    from openjiuwen.harness.rails.evolution import (
-        SymphonyGraphEvolutionRail,
-        TeamSymphonyGraphEvolutionRail,
-    )
     from jiuwenswarm.symphony.service import get_swarm_symphony_service
 
     service = get_swarm_symphony_service()
@@ -50,7 +183,9 @@ def _build_graph_evolution_rail(
         )
 
     rail = (
-        TeamSymphonyGraphEvolutionRail if mode == "team" else SymphonyGraphEvolutionRail
+        _SwarmTeamSymphonyGraphEvolutionRail
+        if mode == "team"
+        else _SwarmSymphonyGraphEvolutionRail
     )
     return rail(
         trajectory_span_processor=trajectory_span_processor
