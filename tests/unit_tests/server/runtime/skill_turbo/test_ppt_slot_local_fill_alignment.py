@@ -4,9 +4,19 @@
 
 from __future__ import annotations
 
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 import pytest
 
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+from skill_turbo_codes_ppt.ppt.ppt_page_gen import (
     _postprocess_content_template_fill_html,
     _postprocess_structural_template_fill_html,
     _repair_content_template_chrome,

@@ -1331,7 +1331,12 @@ class SkillTurboExecutor:
         """
         if not self._node_artifacts_holder:
             return
-        skill = self._env.skill_name or ""
+        # 产物溯源技能名：优先取 merge 后的执行 inputs，回退 env 构造期默认值（单 skill 场景两者一致）。
+        skill = str(
+            self._execution_inputs.get("skill_name")
+            or self._env.skill_name
+            or ""
+        )
         try:
             await save_node_artifacts(
                 session,
@@ -3545,6 +3550,13 @@ class SkillTurboExecutor:
 
     def _load_plan_namespace(self, plan_code: str) -> dict[str, Any]:
         self._ensure_skill_code_import_path()
+        # 外部动态包自愈：resume 重放 / 包注册表缺失时按 plan_code 重新发现注册
+        # （幂等；未命中则交由 import 自然抛错走降级链路）
+        from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
+            ensure_packages_for_plan_code,
+        )
+
+        ensure_packages_for_plan_code(plan_code)
         namespace = self._build_namespace()
         try:
             exec(plan_code, namespace)  # noqa: S102

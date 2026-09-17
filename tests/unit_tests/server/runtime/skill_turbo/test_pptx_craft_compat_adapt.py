@@ -4,11 +4,22 @@
 
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 import json
 
 import pytest
 
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+from skill_turbo_codes_ppt.ppt.ppt_page_gen import (
     PageGenContext,
     PageWorkerNode,
     _build_page_prompt,
@@ -564,7 +575,7 @@ async def test_generate_one_passes_original_html_to_content_template_fill(monkey
 
 
 def test_layout_fix_hint_chart_axis_range():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+    from skill_turbo_codes_ppt.ppt.ppt_page_gen import (
         _layout_fix_hint_from_cli_output,
     )
 
@@ -611,7 +622,7 @@ def test_designer_injection_includes_axis_range_rule():
 
 
 def test_strip_page_gen_excluded_text_basic_and_guards():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_common import (
+    from skill_turbo_codes_ppt.ppt.ppt_common import (
         PptCommon,
     )
 
@@ -647,7 +658,7 @@ def test_strip_page_gen_excluded_text_basic_and_guards():
 
 
 def test_p4_prompt_strips_notes_and_file_size_from_user_query():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.content_plan import (
+    from skill_turbo_codes_ppt.ppt.content_plan import (
         _build_p43_prompt,
     )
 
@@ -711,7 +722,7 @@ def test_free_gen_page_prompt_includes_speaker_notes_ban():
 
 
 def test_delivery_summary_records_unsupported_file_size():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery import (
+    from skill_turbo_codes_ppt.ppt.delivery import (
         DeliveryNode,
     )
 
@@ -736,7 +747,7 @@ def test_delivery_summary_records_unsupported_file_size():
 
 
 def test_p2_slot_prompt_mentions_file_size_and_notes_verbatim():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+    from skill_turbo_codes_ppt.ppt.requirement_collect import (
         _P21_SLOT_SYSTEM_PROMPT,
     )
 
@@ -746,7 +757,7 @@ def test_p2_slot_prompt_mentions_file_size_and_notes_verbatim():
 
 
 def test_merge_slot_payload_applies_notes_verbatim_and_file_size():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+    from skill_turbo_codes_ppt.ppt.requirement_collect import (
         _merge_slot_payload,
     )
 
@@ -765,7 +776,7 @@ def test_merge_slot_payload_applies_notes_verbatim_and_file_size():
 
 
 def test_merge_slot_payload_defaults_notes_verbatim_and_file_size():
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+    from skill_turbo_codes_ppt.ppt.requirement_collect import (
         _merge_slot_payload,
     )
 

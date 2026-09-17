@@ -4,6 +4,17 @@
 
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from unittest.mock import MagicMock
 
 import pytest
@@ -13,11 +24,11 @@ from jiuwenswarm.server.runtime.skill_turbo.thinking_seam import (
     resolve_skill_turbo_thinking_kwargs,
 )
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import DisableThinkingMixin, PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.deep_research import (
+from skill_turbo_codes_ppt.ppt.deep_research import (
     PageWorkerNode as P6PageWorkerNode,
     PrepareNode as P6PrepareNode,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_page_gen import (
+from skill_turbo_codes_ppt.ppt.ppt_page_gen import (
     PPTPageGenNode,
     PageWorkerNode as P8PageWorkerNode,
 )

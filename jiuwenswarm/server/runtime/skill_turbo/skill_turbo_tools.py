@@ -24,6 +24,158 @@ if TYPE_CHECKING:
 
 logger = logging.getLogger(__name__)
 
+
+def _collect_skill_entries() -> tuple[dict[str, str], bool]:
+    """双源扫描当前可见技能，返回 (external_name -> 条目文案, 外部源扫描是否成功)。
+
+    内置 skill_codes 目录 + 外部技能目录（turbo/turbo_codes，经
+    ``turbo_package_loader.discover_external_turbo_skills`` 走
+    ``resolve_agent_registered_skill_dirs`` 标准链路）下的 meta.json；
+    external_name 同名时外部覆盖内置。外部源扫描异常时返回 ok=False
+    （调用方可据此沿用上次成功清单，避免瞬时故障导致清单闪断）。
+    """
+    from pathlib import Path
+
+    from jiuwenswarm.server.runtime.skill_turbo.environment import (
+        _load_skill_meta,
+        find_skill_root_file,
+    )
+
+    # external_name -> 条目文案（外部源后写入覆盖内置同名条目）
+    entries_by_external: dict[str, str] = {}
+
+    def _add_entry(external_name: str, description: str, match_keywords: list) -> None:
+        trigger_hint = ""
+        if match_keywords:
+            trigger_hint = f"（触发词：{'、'.join(match_keywords[:5])}）"
+        entries_by_external[external_name] = f"{external_name}（{description}{trigger_hint}）"
+
+    # ─── 源一：内置 skill_codes 目录 ───────────────────────────
+    try:
+        skill_codes_dir = Path(__file__).resolve().parent / "skill_codes"
+        if skill_codes_dir.is_dir():
+            for skill_dir in sorted(skill_codes_dir.iterdir()):
+                if not skill_dir.is_dir():
+                    continue
+                name = skill_dir.name
+                if name.startswith("_") or name.startswith("."):
+                    continue
+                if find_skill_root_file(skill_dir) is None:
+                    continue
+                meta = _load_skill_meta(name, skill_dir)
+                _add_entry(
+                    str(meta.get("external_name") or name.replace("_", "-")),
+                    str(meta.get("description") or f"{name} 任务流"),
+                    list(meta.get("match_keywords") or [name]),
+                )
+    except Exception:
+        logger.warning(
+            "[ToolsLoader] builtin skill_codes description scan failed",
+            exc_info=True,
+        )
+
+    # ─── 源二：外部 turbo同名覆盖内置 ──
+    external_ok = True
+    try:
+        from jiuwenswarm.server.runtime.skill_turbo.turbo_package_loader import (
+            discover_external_turbo_skills,
+        )
+
+        for item in discover_external_turbo_skills():
+            _add_entry(
+                item.external_name,
+                str(item.meta.get("description") or f"{item.skill_name} 任务流"),
+                list(item.meta.get("match_keywords") or [item.skill_name]),
+            )
+    except Exception:
+        external_ok = False
+        logger.warning(
+            "[ToolsLoader] external turbo description scan failed",
+            exc_info=True,
+        )
+
+    return entries_by_external, external_ok
+
+
+def _render_tool_description(entries: dict[str, str]) -> str:
+    """把技能条目渲染为工具描述的清单主体。"""
+    ordered = [entries[k] for k in sorted(entries)]
+    skills_list = "、".join(ordered) if ordered else "暂无"
+    return (
+        "技能加速模块。当用户意图涉及技能类任务（如生成 PPT、文档转换等结构化产出）时，"
+        "可优先尝试调用此工具以获得更快的生成流程。工具内部会二次判断是否真正匹配已支持的技能，"
+        "不匹配时自动降级为普通对话。当前内部支持："
+        + skills_list
+        + "。"
+        "【重要】每次调用仅处理一个独立任务。若用户要求生成多个同类产物（如多份不同主题的 PPT），"
+        "必须为每个产物分别发起独立调用，且严格串行：等待前一次调用完全结束并收到返回结果后，"
+        "才能发起下一次调用。严禁在同一轮对话中并行发起多次调用。"
+    )
+
+
+# 静态尾部：模板排除段（临时措施，与清单无关，刷新时原样保留）
+_TEMPLATE_EXCLUSION_SUFFIX = (
+    "【临时排除】当任务需要使用自定义/指定模板时，不要调用此工具--"
+    "无论该模板路径是出现在当前用户消息里、引用历史会话中生成或上传的模板"
+    "（如“使用刚才生成的风格模板”“用之前那个模板”等自然语言引用）、"
+    "还是消息中含 模板目录路径、模板主文件路径、pack_dir 等字段名。"
+    "判断“是否涉及自定义模板”应基于语义。"
+    "当前 skill 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
+    "此排除规则为临时措施，待 skill 加速器适配模板功能后移除。"
+)
+
+
+def _build_tool_description() -> str:
+    """从已注册 skill 生成 tool description（内置 skill_codes + 外部 turbo 双源）。
+
+    模块导入时（@tool 装饰器求值 description 参数）执行一次作为初始值；
+    运行期由 ``refresh_skill_acceleration_description`` 在每次模型调用前
+    请求期刷新（见 SkillTurboPromptRail.before_model_call）——外部目录的
+    可见性依赖请求级上下文（session 绑定目录 / env），启动时刻不可见，
+    固化的初始清单可能为"暂无"，请求期刷新后即为当前真实清单。
+    """
+    entries, _external_ok = _collect_skill_entries()
+    return _render_tool_description(entries) + _TEMPLATE_EXCLUSION_SUFFIX
+
+
+# 最近一次外部源扫描成功的技能条目（进程级；瞬时扫描失败时沿用，防清单闪断）
+_last_good_entries: dict[str, str] = {}
+
+
+def refresh_skill_acceleration_description() -> list[str]:
+    """请求期刷新 skill_acceleration_exec 的 ToolCard.description，返回当前技能清单。
+
+    - 请求级上下文（session 绑定目录 / env）此时可见，外部发现能拿到真实清单；
+    - 幂等：清单无变化时不产生 card 写入；
+    - 异常安全：外部源扫描失败时沿用最近一次成功清单（``_last_good_entries``），
+      绝不让描述闪断为"暂无"；整体异常时保留 card 旧值并返回最近已知清单；
+    - 并发语义：ToolCard 为进程级共享对象，多请求并发下"最后写入生效"
+      （per-user sidecar 内并发请求可见技能目录一致，无实际冲突）。
+
+    Returns:
+        当前可见技能的 external_name 列表（排序后；空列表表示无加速技能）。
+    """
+    global _last_good_entries
+    try:
+        entries, external_ok = _collect_skill_entries()
+        if external_ok:
+            _last_good_entries = dict(entries)
+        elif _last_good_entries:
+            entries = _last_good_entries
+        card = globals().get("skill_turbo")
+        card_obj = getattr(card, "card", None)
+        if card_obj is not None:
+            new_desc = _render_tool_description(entries) + _TEMPLATE_EXCLUSION_SUFFIX
+            if card_obj.description != new_desc:
+                card_obj.description = new_desc
+        return sorted(entries)
+    except Exception:
+        logger.warning(
+            "[ToolsLoader] refresh skill_acceleration_exec description failed, keep old",
+            exc_info=True,
+        )
+        return sorted(_last_good_entries)
+
 # 中立收尾
 _SKILL_TURBO_STOP_HINT_NEUTRAL = (
     "\n\n[SYSTEM] The skill_acceleration_exec task has finished, but the internal "
@@ -34,6 +186,17 @@ _SKILL_TURBO_STOP_HINT_NEUTRAL = (
     "claim the file was sent. Do NOT call skill_acceleration_exec or skill_tool "
     "again for this task unless the user asks for a retry. Do NOT call "
     "send_file_to_user either; file delivery is handled by the internal pipeline."
+)
+
+# 通用交付确认收尾：非 PPT 技能（docx/xlsx 等）交付节点产物 info 声明
+# send_file_status=sent 时使用（与 NEUTRAL 的区别：明确文件已发送，
+# 禁止重复调用/重复发送）。PPT 技能不走本提示（有专属骨架路径）。
+_SKILL_TURBO_STOP_HINT_CONFIRMED = (
+    "\n\n[SYSTEM] The skill_acceleration_exec task has finished, and the internal "
+    "delivery pipeline confirmed that the file(s) have been generated and sent "
+    "to the user. Summarize the result for the user now based on the artifact "
+    "summary above. Do NOT call skill_acceleration_exec, skill_tool, or "
+    "send_file_to_user again for this task."
 )
 
 _PPT_DELIVERY_SUMMARY_POST_TOOL_HINT = (
@@ -255,18 +418,32 @@ def take_pending_ppt_delivery_summary() -> str:
     return text
 
 
+def _ppt_delivery_summary_start() -> str:
+    """PPT 交付总结骨架起始标记（常量归 ppt code 所有，经动态包引用）。
+
+    ppt 技能不在场（动态包未注册）时返回空串——调用方对空标记的
+    startswith 判断显式短路，走各自的兜底文案路径。
+    """
+    try:
+        from skill_turbo_codes_ppt.ppt.delivery_summary import (
+            DELIVERY_SUMMARY_START,
+        )
+
+        return str(DELIVERY_SUMMARY_START)
+    except Exception:
+        return ""
+
+
 async def emit_pending_ppt_delivery_summary(session: "Session") -> bool:
     """在外层 tool_result 之后发出无 task_id 的交付总结 chat.delta。
 
     返回是否实际发出。session 为 None 或骨架非法时静默跳过。
     """
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
-        DELIVERY_SUMMARY_START,
-    )
     from openjiuwen.core.session.stream.base import OutputSchema
 
     summary = take_pending_ppt_delivery_summary()
-    if not summary.startswith(DELIVERY_SUMMARY_START):
+    start_marker = _ppt_delivery_summary_start()
+    if not start_marker or not summary.startswith(start_marker):
         return False
     if session is None:
         logger.warning(
@@ -510,6 +687,25 @@ def _ppt_delivery_failed_error(artifact_holder: dict[str, Any] | None) -> str:
     )
 
 
+def _generic_delivery_confirmed(artifact_holder: dict[str, Any] | None) -> bool:
+    """非 PPT 技能的通用交付确认：任一节点产物 info 声明 send_file_status=sent。
+
+    仅认交付节点显式写入的确认信号（docx D8 / xlsx X9 的
+    ``__artifact__.info.send_file_status == "sent"``），不做模糊推断。
+    PPT 技能不经过本函数（有专属 p10_delivery 骨架路径，且 sent 必伴随
+    骨架，先行分支已拦截）。
+    """
+    for node_info in (artifact_holder or {}).values():
+        if not isinstance(node_info, dict):
+            continue
+        info = node_info.get("info")
+        if not isinstance(info, dict):
+            continue
+        if str(info.get("send_file_status") or "") == "sent":
+            return True
+    return False
+
+
 def visible_ppt_turbo_finish_text(
     holder: dict[str, Any] | None,
     *,
@@ -521,13 +717,10 @@ def visible_ppt_turbo_finish_text(
     成功时优先发 P10 已填好的交付骨架；没有骨架则用交付未确认的中立短句。
     失败只回可读错误。产物账本不得出现在返回值里。
     """
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
-        DELIVERY_SUMMARY_START,
-    )
-
     if success:
         skeleton = _ppt_delivery_summary(holder)
-        if skeleton.startswith(DELIVERY_SUMMARY_START):
+        start_marker = _ppt_delivery_summary_start()
+        if start_marker and skeleton.startswith(start_marker):
             return skeleton
         return PPT_TURBO_UNCONFIRMED_FINISH_TEXT
     text = str(detail or "").strip() or "任务未完成"
@@ -558,8 +751,13 @@ def _wrap_skill_turbo_result(
             parts.append(_PPT_DELIVERY_SUMMARY_POST_TOOL_HINT)
         else:
             clear_pending_ppt_delivery_summary()
-            # 无 P10 骨架 = 交付未确认，不宣称文件已发送。
-            parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL)
+            if _generic_delivery_confirmed(artifact_holder):
+                # 非 PPT 技能交付节点已确认发送（case_3 docx D8 send=sent
+                # 却被"未确认"提示误导重复发送）：按已确认收尾。
+                parts.append(_SKILL_TURBO_STOP_HINT_CONFIRMED)
+            else:
+                # 无 P10 骨架且无通用确认信号 = 交付未确认，不宣称文件已发送。
+                parts.append(_SKILL_TURBO_STOP_HINT_NEUTRAL)
         result_dict["result"] = "\n\n".join(p for p in parts if p)
     else:
         clear_pending_ppt_delivery_summary()
@@ -572,21 +770,7 @@ def _wrap_skill_turbo_result(
 
 @tool(
     name="skill_acceleration_exec",
-    description=(
-        "技能加速模块。当用户意图涉及技能类任务（如生成 PPT、文档转换等结构化产出）时，"
-        "可优先尝试调用此工具以获得更快的生成流程。工具内部会二次判断是否真正匹配已支持的技能，"
-        "不匹配时自动降级为普通对话。当前内部支持 ppt-craft 技能（PPT 演示文稿制作）。"
-        "【重要】每次调用仅处理一个独立任务。若用户要求生成多个同类产物（如多份不同主题的 PPT），"
-        "必须为每个产物分别发起独立调用，且严格串行：等待前一次调用完全结束并收到返回结果后，"
-        "才能发起下一次调用。严禁在同一轮对话中并行发起多次调用。"
-        "【临时排除】当任务需要使用自定义/指定模板时，不要调用此工具--"
-        "无论该模板路径是出现在当前用户消息里、引用历史会话中生成或上传的模板"
-        "（如“使用刚才生成的风格模板”“用之前那个模板”等自然语言引用）、"
-        "还是消息中含 模板目录路径、模板主文件路径、pack_dir 等字段名。"
-        "判断“是否涉及自定义模板”应基于语义。"
-        "当前 skill 加速器暂未适配模板包功能，此类请求应改用 skill_tool 走 pptx-craft 标准流程。"
-        "此排除规则为临时措施，待 skill 加速器适配模板功能后移除。"
-    ),
+    description=_build_tool_description(),
     stateless=True,
 )
 async def skill_turbo(query: str) -> dict[str, Any] | str:

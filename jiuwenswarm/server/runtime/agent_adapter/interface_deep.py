@@ -12304,7 +12304,10 @@ class JiuWenSwarmDeepAdapter:
         fallback_handler = self._create_skill_turbo_fallback_handler()
 
         return {
-            "skill_codes_dir": "jiuwenswarm.server.runtime.skill_turbo.skill_codes",
+            # skill_codes_dir 不再传入：外部 turbo 走
+            # resolve_agent_registered_skill_dirs 标准链路发现（见
+            # SkillTurboEnvironment._scan_external_turbo_skills）；
+            # 此前误传模块路径字符串（非文件系统路径），已移除。
             "tool_cards": tool_cards,
             "model_client": self._model,
             "fallback_handler": fallback_handler,
@@ -13471,10 +13474,8 @@ class JiuWenSwarmDeepAdapter:
                 # HITL resume bypasses skill_acceleration_exec / DeliverySummaryRail.
                 # Emit the P10 skeleton (or a safe short sentence), never the
                 # machine artifact dump that used to land in the main bubble.
-                from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
-                    DELIVERY_SUMMARY_START,
-                )
                 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
+                    _ppt_delivery_summary_start,
                     visible_ppt_turbo_finish_text,
                 )
 
@@ -13483,7 +13484,8 @@ class JiuWenSwarmDeepAdapter:
                     success=success,
                     detail=detail,
                 )
-                if success and text.startswith(DELIVERY_SUMMARY_START):
+                start_marker = _ppt_delivery_summary_start()
+                if success and start_marker and text.startswith(start_marker):
                     logger.info(
                         "[SkillTurboResume] emitted PPT delivery summary via "
                         "finish_text chars=%d",

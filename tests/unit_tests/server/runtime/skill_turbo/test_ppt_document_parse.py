@@ -1,5 +1,16 @@
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from pathlib import Path
 from typing import Any
 
@@ -9,13 +20,13 @@ from jiuwenswarm.agents.harness.common.rails.read_file_validation import (
     is_non_text_file_path,
     validate_read_file_result,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt import document_parse
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.document_parse import (
+from skill_turbo_codes_ppt.ppt import document_parse
+from skill_turbo_codes_ppt.ppt.document_parse import (
     DocumentParseNode,
     _filter_parseable_paths,
     _normalize_tool_text,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
     PPTGenRootNode,
 )
 from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidator
@@ -24,7 +35,7 @@ from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidator
 def test_document_parse_passes_builtin_skill_validation() -> None:
     source = Path(document_parse.__file__).read_text(encoding="utf-8")
     validator = PlanCodeValidator.for_builtin_skill_code(
-        ["jiuwenswarm.server.runtime.skill_turbo.skill_codes"]
+        ["skill_turbo_codes_ppt.ppt"]
     )
 
     assert validator.validate(source) == []
@@ -60,7 +71,7 @@ async def test_parse_with_retry_fails_without_read_file_degrade(
         return False
 
     async def _fail_parse_docs(*_args: Any, **_kwargs: Any) -> None:
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.utils.bash_utils import (
+        from skill_turbo_runtime.tool_utils import (
             BashExecError,
         )
 

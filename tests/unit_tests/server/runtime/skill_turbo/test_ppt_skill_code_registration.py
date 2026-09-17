@@ -3,6 +3,17 @@
 
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from pathlib import Path
 
 import pytest
@@ -15,11 +26,11 @@ from jiuwenswarm.server.runtime.skill_turbo.plan_node import (
     FallbackContractError,
     PlanNode,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt import requirement_collect as rc
+from skill_turbo_codes_ppt.ppt import requirement_collect as rc
 from jiuwenswarm.server.runtime.skill_turbo.validator import PlanCodeValidator
 
 _PPT_SKILL_DIR = Path(rc.__file__).resolve().parent
-_SKILL_CODES_PREFIX = "jiuwenswarm.server.runtime.skill_turbo.skill_codes"
+_SKILL_CODES_PREFIX = "skill_turbo_codes_ppt.ppt"
 
 
 def test_fallback_contract_error_reexported_from_plan_node() -> None:
@@ -46,10 +57,24 @@ def test_requirement_collect_must_not_import_fallback_handler() -> None:
     assert validator.validate(source) == []
 
 
-def test_env_scan_registers_ppt_skill() -> None:
+def test_env_scan_registers_ppt_skill(monkeypatch: pytest.MonkeyPatch) -> None:
+    """外部发现注册：resolve 目录指向 JIUWENSWARM_TEST_TURBO_SKILLS_DIR。"""
+    import os
+    from pathlib import Path
+
+    import jiuwenswarm.common.utils as jw_utils
+
+    root = Path(os.environ["JIUWENSWARM_TEST_TURBO_SKILLS_DIR"])
+    monkeypatch.setattr(
+        jw_utils, "resolve_agent_registered_skill_dirs", lambda: [root]
+    )
     SkillTurboEnvironment._scan_cache.clear()
-    env = SkillTurboEnvironment({"tools": {}, "model": None})
+    SkillTurboEnvironment._external_scan_cache.clear()
+    env = SkillTurboEnvironment(
+        {"tools": {}, "model": None, "skill_codes_dir": ""}
+    )
     assert env.has_skill("ppt")
+    assert env.skills["ppt"].package_name == "skill_turbo_codes_ppt"
 
 
 @pytest.mark.parametrize(

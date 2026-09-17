@@ -10,6 +10,17 @@ FallbackLimitExceededError 导致 stage6 规划执行终态失败。
 
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -20,7 +31,7 @@ from jiuwenswarm.server.runtime.skill_turbo.fallback_handler import (
     FallbackContractError,
 )
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+from skill_turbo_codes_ppt.ppt.requirement_collect import (
     RequirementCollectError,
 )
 

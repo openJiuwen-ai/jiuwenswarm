@@ -4,6 +4,17 @@
 
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from typing import Any
 from unittest.mock import AsyncMock, MagicMock
 
@@ -11,7 +22,7 @@ import pytest
 
 from jiuwenswarm.server.runtime.skill_turbo.executor import SkillTurboExecutor
 from jiuwenswarm.server.runtime.skill_turbo.plan_node import PlanNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
     _merge_subplan_result,
 )
 
@@ -119,7 +130,7 @@ def _make_executor() -> SkillTurboExecutor:
     env = MagicMock()
     env.config = {}
     env.skill_code_import_prefixes = (
-        "jiuwenswarm.server.runtime.skill_turbo.skill_codes",
+        "skill_turbo_codes_ppt.ppt",
     )
     return SkillTurboExecutor(environment=env)
 
@@ -414,7 +425,7 @@ class TestMergeSubplanResultIgnoresSkipFields:
 class TestPPTGenRootResumeProgressSilence:
     @pytest.mark.asyncio
     async def test_run_subplan_stream_silent_when_resume_skip(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 
@@ -440,7 +451,7 @@ class TestPPTGenRootResumeProgressSilence:
 
     @pytest.mark.asyncio
     async def test_skip_p3_subplan_stream_silent_when_resume_skip(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
             _P3_SKIP_MESSAGE,
         )
@@ -468,7 +479,7 @@ class TestPPTGenRootResumeProgressSilence:
 
     @pytest.mark.asyncio
     async def test_execute_stream_omits_root_banner_on_resume(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 
@@ -496,7 +507,7 @@ class TestPPTGenRootResumeProgressSilence:
 
     @pytest.mark.asyncio
     async def test_run_subplan_stream_omits_start_banner_for_in_progress_resume(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 
@@ -530,7 +541,7 @@ class TestPPTGenRootResumeProgressSilence:
     @pytest.mark.asyncio
     async def test_progress_banners_outside_before_and_after_hooks(self):
         """横幅位于 task 生命周期外，保持在左下主回答气泡展示。"""
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 
@@ -575,7 +586,7 @@ class TestPPTGenRootResumeProgressSilence:
 
     @pytest.mark.asyncio
     async def test_skip_p3_banners_between_before_and_after_hooks(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
             _P3_SKIP_MESSAGE,
         )
@@ -621,7 +632,7 @@ class TestPPTGenRootResumeProgressSilence:
     @pytest.mark.asyncio
     async def test_start_banner_close_does_not_open_task_context(self):
         """开始横幅处关闭流时 task.start 尚未发生，无需清理 task。"""
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 
@@ -658,7 +669,7 @@ class TestPPTGenRootResumeProgressSilence:
 
     @pytest.mark.asyncio
     async def test_silent_resume_skip_falls_back_when_skip_disagrees(self):
-        from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import (
+        from skill_turbo_codes_ppt.ppt.ppt_gen_root import (
             PPTGenRootNode,
         )
 

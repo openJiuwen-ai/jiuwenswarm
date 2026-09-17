@@ -1,18 +1,29 @@
 from __future__ import annotations
 
+
+import os as _os
+
+import pytest as _pytest
+
+if not _os.environ.get("JIUWENSWARM_TEST_TURBO_SKILLS_DIR"):
+    _pytest.skip(
+        "requires JIUWENSWARM_TEST_TURBO_SKILLS_DIR (external turbo layout)",
+        allow_module_level=True,
+    )
+
 from types import SimpleNamespace
 from typing import Any
 
 import pytest
 
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery import DeliveryNode
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.delivery_summary import (
+from skill_turbo_codes_ppt.ppt.delivery import DeliveryNode
+from skill_turbo_codes_ppt.ppt.delivery_summary import (
     DELIVERY_SUMMARY_START,
     build_delivery_summary_skeleton,
     is_backup_listing_path,
     parse_outline_pages,
 )
-from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.ppt_gen_root import PPTGenRootNode
+from skill_turbo_codes_ppt.ppt.ppt_gen_root import PPTGenRootNode
 from jiuwenswarm.server.runtime.skill_turbo.skill_turbo_tools import (
     PPT_TURBO_UNCONFIRMED_FINISH_TEXT,
     _SKILL_TURBO_ARTIFACT_SUMMARY_MARKER,
@@ -566,7 +577,7 @@ def test_visible_finish_text_failure_omits_artifact_dump() -> None:
 
 
 def test_requirement_artifact_uses_content_and_total_pages() -> None:
-    from jiuwenswarm.server.runtime.skill_turbo.skill_codes.ppt.requirement_collect import (
+    from skill_turbo_codes_ppt.ppt.requirement_collect import (
         _set_requirement_artifact,
     )
 
