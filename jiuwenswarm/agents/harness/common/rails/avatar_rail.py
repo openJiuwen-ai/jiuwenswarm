@@ -94,9 +94,9 @@ class AvatarPromptRail(DeepAgentRail):
         # 群聊数字分身模式：禁止写入记忆
         if is_group_digital_avatar:
             notice = (
-                "\n[群聊模式：禁止调用 write_memory/edit_memory]\n"
+                "\n[群聊模式：禁止调用 write_memory/edit_memory/coding_memory_write/coding_memory_edit/experience_learn]\n"
                 if language == "cn"
-                else "\n[Group chat mode: write_memory/edit_memory calls are prohibited]\n"
+                else "\n[Group chat mode: write_memory/edit_memory/coding_memory_write/coding_memory_edit/experience_learn calls are prohibited]\n"
             )
             section = PromptSection(
                 name="group_chat_memory_notice",
@@ -246,7 +246,7 @@ def _build_memory_disabled_prompt(language: str) -> str:
 
 **记忆写入功能当前已禁用。**
 
-- **禁止** 使用 write_memory、edit_memory 写入或修改记忆文件
+- **禁止** 使用 write_memory、edit_memory、coding_memory_write、coding_memory_edit、experience_learn 写入或修改记忆文件
 - **允许** 使用 memory_search、memory_get、read_memory 查询已有记忆
 - 如果用户要求记住某些内容，回复："记忆写入功能当前未启用，无法保存新信息，但我可以查询已有的记忆。"
 """
@@ -254,7 +254,7 @@ def _build_memory_disabled_prompt(language: str) -> str:
 
 **Memory write operations are currently disabled.**
 
-- **Do NOT** use write_memory or edit_memory to write or modify memory files
+- **Do NOT** use write_memory, edit_memory, coding_memory_write, coding_memory_edit, or experience_learn to write or modify memory files
 - **Allowed**: memory_search, memory_get, read_memory for reading existing memories
 - If the user asks to remember something, reply: "Memory writing is currently disabled, but I can query existing memories."
 """
@@ -268,7 +268,7 @@ def _build_memory_fully_disabled_prompt(language: str) -> str:
 **记忆系统当前已完全禁用。**
 
 - **禁止** 使用任何记忆工具：
-  - 写入工具：write_memory、edit_memory
+  - 写入工具：write_memory、edit_memory、coding_memory_write、coding_memory_edit、experience_learn
   - 读取工具：read_memory、memory_search、memory_get
 - 如果用户询问历史信息或要求记住某些内容，回复："记忆系统当前已禁用，我无法访问历史记录或保存新信息。"
 """
@@ -277,7 +277,7 @@ def _build_memory_fully_disabled_prompt(language: str) -> str:
 **The memory system is currently fully disabled.**
 
 - **Do NOT** use any memory tools:
-  - Write tools: write_memory, edit_memory
+  - Write tools: write_memory, edit_memory, coding_memory_write, coding_memory_edit, experience_learn
   - Read tools: read_memory, memory_search, memory_get
 - If the user asks about historical information or requests to remember something, reply: \
     "The memory system is currently disabled. I cannot access historical records or save new information."
