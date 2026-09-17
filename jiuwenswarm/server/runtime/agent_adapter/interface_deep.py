@@ -16884,6 +16884,7 @@ class JiuWenSwarmDeepAdapter:
                             if raw_output is not None:
                                 result_payload["raw_output"] = raw_output
                             for key in (
+                                "rendered_result",
                                 "status",
                                 "success",
                                 "is_error",

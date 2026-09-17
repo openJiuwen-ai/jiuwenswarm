@@ -6961,3 +6961,18 @@ def test_inject_swarmflow_context_explicit_request_acts_else_asks() -> None:
         # every listed run carries a stop call so "停止" is actionable
         assert 'swarmflow(resume_id="r1", action="stop")' in text
         assert 'swarmflow(resume_id="r2", action="stop")' in text
+
+
+def test_team_tool_result_truncation_covers_rendered_result():
+    limit = team_helpers._TEAM_TOOL_RESULT_TEXT_LIMIT
+    event = {
+        "event_type": "chat.tool_result",
+        "result": "r" * 10,
+        "rendered_result": "x" * (limit + 5),
+    }
+
+    trimmed = team_helpers._truncate_team_tool_result_event(event)
+
+    assert trimmed["rendered_result"] == "x" * limit
+    assert trimmed["result"] == "r" * 10
+    assert trimmed["truncated"] is True

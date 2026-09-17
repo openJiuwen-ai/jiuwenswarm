@@ -1850,7 +1850,7 @@ def _truncate_team_tool_result_event(parsed: dict[str, Any]) -> dict[str, Any]:
     next_event = dict(parsed)
     truncated = False
     original_size = 0
-    for key in ("result", "raw_output"):
+    for key in ("result", "rendered_result", "raw_output"):
         value = next_event.get(key)
         if not isinstance(value, str):
             continue
