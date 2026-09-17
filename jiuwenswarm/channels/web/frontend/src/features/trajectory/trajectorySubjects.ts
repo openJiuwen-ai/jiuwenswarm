@@ -35,9 +35,23 @@ export interface TrajectorySubjectGroups {
   byId: ReadonlyMap<string, TrajectorySubjectGroup>;
 }
 
+/**
+ * A subject as it stood when retention removed turns of it: how its earliest
+ * record was grouped, and when that record was observed.
+ */
+export interface TrajectoryRetiredSubject {
+  subject: TrajectorySubject;
+  firstObservedTimeUnixNano: string;
+}
+
 export interface TrajectorySubjectGroupingOptions {
   /** Team mode: skip the synthetic `main` group and treat team members as roots. */
   teamMode?: boolean;
+  /**
+   * Subjects retention removed turns of, by id. They keep the place and the
+   * tab ordinal their removed records gave them, even once none remain.
+   */
+  retiredSubjects?: ReadonlyMap<string, TrajectoryRetiredSubject>;
 }
 
 export interface TrajectorySubjectView<TSnapshot> {
@@ -291,7 +305,12 @@ export function groupTrajectorySubjects(
   options: TrajectorySubjectGroupingOptions = {},
 ): TrajectorySubjectGroups {
   const mutable = new Map<string, Omit<TrajectorySubjectGroup, 'label' | 'traceCount'>>();
-  const ensure = (subject: TrajectorySubject, observedTime: string | null) => {
+  const retiredSubjects = options.retiredSubjects ?? new Map<string, TrajectoryRetiredSubject>();
+  const ensure = (
+    subject: TrajectorySubject,
+    observedTime: string | null,
+    fixedSubject = false,
+  ) => {
     const current = mutable.get(subject.id);
     if (current !== undefined) {
       if (compareNano(observedTime, current.firstObservedTimeUnixNano) < 0) {
@@ -299,18 +318,26 @@ export function groupTrajectorySubjects(
       }
       return current;
     }
+    // A subject whose earliest records were retired is still grouped the way
+    // those records grouped it, and was first observed when they were. The
+    // synthetic main group never took its subject from a record.
+    const retired = retiredSubjects.get(subject.id);
+    const firstObserved = retired !== undefined
+      && compareNano(retired.firstObservedTimeUnixNano, observedTime) < 0
+      ? retired.firstObservedTimeUnixNano
+      : observedTime;
     const group = {
-      subject,
+      subject: fixedSubject ? subject : retired?.subject ?? subject,
       records: [],
       rawRecords: [],
       lifecycleByRecordId: new Map<string, 'running' | 'completed' | 'error'>(),
-      firstObservedTimeUnixNano: observedTime,
+      firstObservedTimeUnixNano: firstObserved,
     };
     mutable.set(subject.id, group);
     return group;
   };
 
-  if (!options.teamMode) ensure(mainSubject, null);
+  if (!options.teamMode) ensure(mainSubject, null, true);
   const belongsToTeam = (subject: TrajectorySubject): boolean => (
     subject.kind === 'team_leader' || subject.kind === 'team_member'
   );
@@ -347,6 +374,20 @@ export function groupTrajectorySubjects(
     }
   }
 
+  // Subjects whose every record was retired take no tab, but still hold the
+  // place and the ordinal they had, so the tabs that remain keep their labels.
+  const retiredOnly = new Set<string>();
+  for (const [subjectId, retired] of retiredSubjects) {
+    if (mutable.has(subjectId)) continue;
+    if (options.teamMode && !belongsToTeam(retired.subject)) continue;
+    if (retired.subject.kind === 'subagent'
+      && retired.subject.sessionId !== null
+      && ownerSessionId
+      && !retired.subject.sessionId.startsWith(`${ownerSessionId}_sub_`)) continue;
+    ensure(retired.subject, retired.firstObservedTimeUnixNano);
+    retiredOnly.add(subjectId);
+  }
+
   const ordered = [...mutable.values()].sort((left, right) => {
     if (left.subject.kind === 'main_agent') return right.subject.kind === 'main_agent' ? 0 : -1;
     if (right.subject.kind === 'main_agent') return 1;
@@ -375,6 +416,6 @@ export function groupTrajectorySubjects(
       label = `${group.subject.displayName} ${ordinal}`;
     }
     return { ...group, label, traceCount: traceCount(group.records) };
-  });
+  }).filter(group => !retiredOnly.has(group.subject.id));
   return { groups, byId: new Map(groups.map(group => [group.subject.id, group])) };
 }

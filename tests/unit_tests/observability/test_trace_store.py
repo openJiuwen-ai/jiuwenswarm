@@ -39,6 +39,7 @@ def _raw_record(
     parent_span_id: str = "",
     name: str = "agent.run",
     status_code: str = "STATUS_CODE_UNSET",
+    attributes: list[dict[str, Any]] | None = None,
 ) -> bytes:
     return json.dumps(
         {
@@ -57,7 +58,7 @@ def _raw_record(
                                     "startTimeUnixNano": "100",
                                     "endTimeUnixNano": "200",
                                     "status": {"code": status_code},
-                                    "attributes": [],
+                                    "attributes": attributes or [],
                                 }
                             ],
                         }
@@ -68,6 +69,13 @@ def _raw_record(
         ensure_ascii=False,
         separators=(",", ":"),
     ).encode("utf-8")
+
+
+def _turn_attributes(turn_id: str, turn_number: int) -> list[dict[str, Any]]:
+    return [
+        {"key": "openjiuwen.turn.id", "value": {"stringValue": turn_id}},
+        {"key": "openjiuwen.turn.number", "value": {"intValue": str(turn_number)}},
+    ]
 
 
 def _core_record(
@@ -1252,11 +1260,19 @@ async def test_partial_retention_rotates_epoch_and_rebuilds_remaining_view(
     tmp_path: Path,
 ) -> None:
     database_path = tmp_path / "trajectory.sqlite3"
-    expired = TraceRecordData.from_core_record(_core_record(), created_at=1)
+    # Retention removes whole turns: the expired turn goes, the turn written
+    # inside the window stays.
+    expired = TraceRecordData.from_core_record(
+        _core_record(
+            raw_json=_raw_record(_TRACE_ID, _ROOT_SPAN_ID, attributes=_turn_attributes("turn-1", 1)),
+        ),
+        created_at=1,
+    )
     retained = TraceRecordData.from_core_record(
         _core_record(
+            trace_id=_SECOND_TRACE_ID,
             span_id=_CHILD_SPAN_ID,
-            raw_json=_raw_record(_TRACE_ID, _CHILD_SPAN_ID),
+            raw_json=_raw_record(_SECOND_TRACE_ID, _CHILD_SPAN_ID, attributes=_turn_attributes("turn-2", 2)),
         ),
         created_at=100,
     )

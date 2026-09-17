@@ -24,6 +24,12 @@ import { createTrajectoryV2Reducer } from './projector/trajectory-v2-reducer';
 import type { OtlpExportTraceServiceRequest } from './shared/otlp';
 import type { TrajectoryDiagnostic, TrajectoryUsage } from './trajectory/model';
 import {
+  EMPTY_TRAJECTORY_CHECKPOINTS,
+  resolveTrajectoryCheckpoints,
+  type TrajectoryRetentionCheckpoints,
+} from './trajectoryCheckpoints';
+import {
+  getTrajectoryCheckpoints,
   getTrajectoryRawRecord,
   getTrajectoryArchive,
   getTrajectorySequences,
@@ -50,10 +56,11 @@ import {
 } from './trajectorySequences';
 import {
   exitTrajectoryReplay,
-  parseTrajectoryArchive,
+  isTrajectoryArchiveLimitError,
+  readTrajectoryArchive,
   shouldCatchUpTrajectory,
-  trajectoryArchiveView,
-  type TrajectoryArchive,
+  type TrajectoryArchiveProgress,
+  type TrajectoryArchiveReplay,
 } from './trajectoryArchive';
 import {
   changedTrajectoryUsageTraceIds,
@@ -95,7 +102,9 @@ const LIVE_HINT_PULL_INTERVAL_MS = 80;
 // A reader returning after a long disconnect walks forward a page at a time.
 // The cap bounds one refresh; whatever is left is picked up by the next.
 const MAX_FRAME_CATCH_UP_PAGES = 20;
-const MAX_ARCHIVE_BYTES = 128 * 1024 * 1024;
+// Retention between reading the checkpoints and listing the subjects shows as
+// two epochs; reading both again settles it unless retention keeps running.
+const MAX_CHECKPOINT_READ_ATTEMPTS = 3;
 
 /** Upstream project the trajectory renderer is adapted from (MIT; see NOTICE.md). */
 const DSH_PROJECT_URL = 'https://github.com/deepseek-ai/deepseek-harness';
@@ -171,6 +180,7 @@ interface PublishedTrajectoryWindow {
   readonly rawRecords: TrajectoryDetailRecord[];
   readonly lifecycleByRecordId: ReadonlyMap<string, 'running' | 'completed' | 'error'>;
   readonly sessionCumulativeUsageByRequestIdentity: ReadonlyMap<string, TrajectoryUsage>;
+  readonly checkpoints: TrajectoryRetentionCheckpoints;
 }
 
 const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
@@ -178,6 +188,7 @@ const EMPTY_PUBLISHED_WINDOW: PublishedTrajectoryWindow = {
   rawRecords: [],
   lifecycleByRecordId: new Map(),
   sessionCumulativeUsageByRequestIdentity: new Map(),
+  checkpoints: EMPTY_TRAJECTORY_CHECKPOINTS,
 };
 
 /**
@@ -225,7 +236,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     createTrajectorySubjectViewCache<ReturnType<typeof projectOtelTrajectory>>(),
   );
   const trajectoryV2ReducerRef = useRef(createTrajectoryV2Reducer());
+  // Replay projects through a reducer of its own. The live reducer keeps the
+  // session's events across publishes, and feeding it an archive's events
+  // would corrupt the live view and the replay alike.
+  const replayV2ReducerRef = useRef(createTrajectoryV2Reducer());
   const sessionCumulativeUsageRef = useRef(new Map<string, TrajectoryUsage>());
+  // What retention left for the session's removed turns, read before any of
+  // its records so every view starts from it.
+  const checkpointsRef = useRef<TrajectoryRetentionCheckpoints>(EMPTY_TRAJECTORY_CHECKPOINTS);
   // Highest frame watermark any trace hint has stated for this session.
   const hintedFrameSeqRef = useRef(0);
   const [publishedWindow, setPublishedWindow] = useState<PublishedTrajectoryWindow>(
@@ -239,11 +257,14 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   const [loading, setLoading] = useState(false);
   const [initialLoadProgress, setInitialLoadProgress] = useState<InitialLoadProgress | null>(null);
   const [exporting, setExporting] = useState(false);
-  const [replayArchive, setReplayArchive] = useState<TrajectoryArchive | null>(null);
-  // The file as imported. Exporting a replay saves these bytes: the parsed
-  // archive has its references resolved, and restating them would undo what
+  const [replayArchive, setReplayArchive] = useState<TrajectoryArchiveReplay | null>(null);
+  // The file as imported. Exporting a replay saves these bytes: the replayed
+  // view has its references resolved, and restating them would undo what
   // makes the addressed file small.
-  const replayArchiveTextRef = useRef<string | null>(null);
+  const replayArchiveFileRef = useRef<Blob | null>(null);
+  const [importProgress, setImportProgress] = useState<TrajectoryArchiveProgress | null>(null);
+  // A newer import supersedes one still reading; only the latest may publish.
+  const importGenerationRef = useRef(0);
   const [archiveError, setArchiveError] = useState<string | null>(null);
   const [archiveNotice, setArchiveNotice] = useState<string | null>(null);
   const [invalidRecordSeen, setInvalidRecordSeen] = useState(false);
@@ -267,11 +288,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     newText: '发送第一条消息后可查看轨迹。',
     retry: '重试',
     importArchive: '导入',
+    importingArchive: '导入中…',
+    importProgress: (percent: number, records: number) => `正在导入轨迹 ${percent}% · ${records} 条记录`,
     exportArchive: '导出',
     exportingArchive: '导出中…',
     exitReplay: '退出复现',
     replay: (sourceSession: string) => `只读复现 · ${sourceSession}`,
-    archiveTooLarge: '轨迹归档超过 128 MB，无法在浏览器中导入。',
+    archiveTooLarge: '轨迹归档超出浏览器导入上限，无法导入。',
     exportBrowserStarted: '轨迹归档下载已开始；请在浏览器下载列表确认文件。',
     exportBrowserSaved: '轨迹归档已保存到本地。',
     exportDesktopSaved: '轨迹归档已保存到本地。',
@@ -325,11 +348,13 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     newText: 'Send the first message to view its trajectory.',
     retry: 'Retry',
     importArchive: 'Import',
+    importingArchive: 'Importing…',
+    importProgress: (percent: number, records: number) => `Importing trajectory ${percent}% · ${records} records`,
     exportArchive: 'Export',
     exportingArchive: 'Exporting…',
     exitReplay: 'Exit replay',
     replay: (sourceSession: string) => `Read-only replay · ${sourceSession}`,
-    archiveTooLarge: 'The trajectory archive exceeds the 128 MB browser import limit.',
+    archiveTooLarge: 'The trajectory archive exceeds the browser import limits.',
     exportBrowserStarted: 'Trajectory archive download started; confirm it in the browser downloads list.',
     exportBrowserSaved: 'Trajectory archive saved locally.',
     exportDesktopSaved: 'Trajectory archive saved locally.',
@@ -387,6 +412,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         )),
       ),
       sessionCumulativeUsageByRequestIdentity: new Map(sessionCumulativeUsageRef.current),
+      checkpoints: checkpointsRef.current,
     });
   }, []);
 
@@ -454,6 +480,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     deferredPublishRef.current = false;
     subjectViewCacheRef.current.clear();
     trajectoryV2ReducerRef.current.clear();
+    checkpointsRef.current = EMPTY_TRAJECTORY_CHECKPOINTS;
     sessionCumulativeUsageRef.current.clear();
     hintedFrameSeqRef.current = 0;
     setPublishedWindow(EMPTY_PUBLISHED_WINDOW);
@@ -590,6 +617,15 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     }
   }, [loadChain]);
 
+  const loadCheckpoints = useCallback(async (signal: AbortSignal) => {
+    const response = await getTrajectoryCheckpoints(sessionId, { signal });
+    absorbSequencePage(sequenceCacheRef.current, response);
+    return {
+      storeEpoch: response.store_epoch,
+      checkpoints: resolveTrajectoryCheckpoints(response.checkpoints, sequenceCacheRef.current),
+    };
+  }, [sessionId]);
+
   const rebuildFromHead = useCallback((signal: AbortSignal): Promise<boolean> => {
     if (rebuildPromiseRef.current !== null) return rebuildPromiseRef.current;
     const coordinator = operationCoordinatorRef.current;
@@ -598,8 +634,27 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setLoading(true);
     const operation = (async () => {
       try {
-        const page = await listTrajectorySubjects(sessionId, { signal });
+        // Checkpoints and listing must describe one store epoch: records
+        // listed after a retention pass need the checkpoints it wrote.
+        let seeded = await loadCheckpoints(signal);
+        let page = await listTrajectorySubjects(sessionId, { signal });
+        for (
+          let attempt = 1;
+          page.store_epoch !== seeded.storeEpoch && attempt < MAX_CHECKPOINT_READ_ATTEMPTS;
+          attempt += 1
+        ) {
+          if (signal.aborted || !coordinator.isCurrent(generation)) return false;
+          seeded = await loadCheckpoints(signal);
+          page = await listTrajectorySubjects(sessionId, { signal });
+        }
         if (signal.aborted || !coordinator.isCurrent(generation)) return false;
+        if (page.store_epoch !== seeded.storeEpoch) {
+          throw new Error(chinese
+            ? '轨迹保留清理正在进行，请稍后重试。'
+            : 'Trajectory retention is running; retry shortly.');
+        }
+        checkpointsRef.current = seeded.checkpoints;
+        trajectoryV2ReducerRef.current.seed(seeded.checkpoints.v2Seeds);
         const total = page.items.reduce((count, summary) => count + summary.record_count, 0);
         initialLoadProgressRef.current = { generation, loaded: 0, total };
         setInitialLoadProgress({ loaded: 0, total });
@@ -641,6 +696,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     catchUpStreamFrames,
     chinese,
     clearPublishedWindow,
+    loadCheckpoints,
     loadSummaries,
     refreshSessionUsage,
     sessionId,
@@ -900,38 +956,42 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     };
   }, [catchUpAfterTerminalEvent, flushTraceHints, rebuildFromHead, refreshLatest, replayArchive, sessionId]);
 
-  const replayView = useMemo(
-    () => replayArchive === null ? null : trajectoryArchiveView(replayArchive),
-    [replayArchive],
-  );
+  const replayView = replayArchive?.view ?? null;
   const allDisplayedRecords = replayView?.records ?? publishedWindow.records;
   const allDisplayedRawRecords = replayView?.rawRecords ?? publishedWindow.rawRecords;
   const allDisplayedLifecycle = replayView?.lifecycleByRecordId
     ?? publishedWindow.lifecycleByRecordId;
+  const displayedCheckpoints = replayArchive?.checkpoints ?? publishedWindow.checkpoints;
   const displayedInvalidRecordSeen = replayView?.invalidRecordSeen ?? invalidRecordSeen;
   const subjectView = useMemo(() => subjectViewCacheRef.current.update(
     groupTrajectorySubjects(
       allDisplayedRecords,
       allDisplayedRawRecords,
       allDisplayedLifecycle,
-      replayArchive?.session_id ?? sessionId,
-      { teamMode },
+      replayArchive?.header.session_id ?? sessionId,
+      { teamMode, retiredSubjects: displayedCheckpoints.retiredSubjects },
     ),
+    // Replay projects exactly as the live view does, from what the archive
+    // carries: its own usage lines, its checkpoints and a reducer of its own.
     group => projectOtelTrajectory(group.records, {
+      checkpoint: displayedCheckpoints.projections.get(group.subject.id),
       lifecycleByRecordId: group.lifecycleByRecordId,
       sessionCumulativeUsageByRequestIdentity:
         replayArchive === null
           ? publishedWindow.sessionCumulativeUsageByRequestIdentity
-          : new Map(),
+          : replayArchive.sessionCumulativeUsageByRequestIdentity,
       unresolvedAttributesByRecordId: unresolvedAttributesByRecordId(group.rawRecords),
-      ...(replayArchive === null ? { v2Reducer: trajectoryV2ReducerRef.current } : {}),
+      v2Reducer: replayArchive === null
+        ? trajectoryV2ReducerRef.current
+        : replayV2ReducerRef.current,
     }),
   ), [
     allDisplayedLifecycle,
     allDisplayedRawRecords,
     allDisplayedRecords,
+    displayedCheckpoints,
     publishedWindow.sessionCumulativeUsageByRequestIdentity,
-    replayArchive?.session_id,
+    replayArchive,
     sessionId,
     teamMode,
   ]);
@@ -1020,7 +1080,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   );
   const rawData = replayView === null
     ? rawRecord?.otlp ?? (fetchedRaw?.identity === rawSelection ? fetchedRaw.data : undefined)
-    : replayView.rawDataByRecordId.get(rawSelection);
+    : rawRecord?.otlp ?? replayView.rawDataByRecordId.get(rawSelection);
 
   const loadSelectedRaw = useCallback(async () => {
     if (replayArchive !== null) return;
@@ -1062,18 +1122,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     setArchiveError(null);
     setArchiveNotice(null);
     try {
-      const text = replayArchive !== null && replayArchiveTextRef.current !== null
-        ? replayArchiveTextRef.current
-        : await getTrajectoryArchive(sessionId, { signal });
-      // Parse before saving so a file this viewer cannot replay is never written.
-      const archive = replayArchive ?? parseTrajectoryArchive(text);
-      const safeSession = archive.session_id.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'session';
-      const blob = new Blob([text], {
-        type: 'application/json;charset=utf-8',
-      });
+      // The server's zip and an imported file are both saved as they are:
+      // neither is parsed here, so a large archive costs one copy of itself.
+      const blob = replayArchive === null
+        ? await getTrajectoryArchive(sessionId, { signal })
+        : replayArchiveFileRef.current;
+      if (blob === null) throw new Error(copy.exportFailed);
+      const sourceSession = replayArchive?.header.session_id ?? sessionId;
+      const safeSession = sourceSession.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80) || 'session';
+      const extension = replayArchive?.container === 'jsonl' ? 'jsonl' : 'zip';
       const result = await saveBlobWithResult(
         blob,
-        `trajectory-${safeSession}.archive.json`,
+        `trajectory-${safeSession}.trajectory.${extension}`,
       );
       if (result.outcome === 'failed') throw new Error(copy.exportFailed);
       setArchiveNotice(result.outcome === 'cancelled'
@@ -1096,26 +1156,38 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
     const file = event.currentTarget.files?.[0];
     event.currentTarget.value = '';
     if (file === undefined) return;
+    importGenerationRef.current += 1;
+    const generation = importGenerationRef.current;
     setArchiveError(null);
     setArchiveNotice(null);
+    setImportProgress({ bytesRead: 0, totalBytes: file.size, records: 0 });
     try {
-      if (file.size > MAX_ARCHIVE_BYTES) throw new Error(copy.archiveTooLarge);
-      const text = await file.text();
-      const archive = parseTrajectoryArchive(text);
-      replayArchiveTextRef.current = text;
+      const archive = await readTrajectoryArchive(file, (progress) => {
+        if (importGenerationRef.current === generation) setImportProgress(progress);
+      });
+      if (importGenerationRef.current !== generation) return;
+      replayArchiveFileRef.current = file;
+      replayV2ReducerRef.current = createTrajectoryV2Reducer();
+      replayV2ReducerRef.current.seed(archive.checkpoints.v2Seeds);
       setReplayArchive(archive);
       setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
       setRawSelection('');
       setFetchedRaw(null);
       setRawError(null);
     } catch (importError) {
-      setArchiveError(errorMessage(importError, chinese));
+      if (importGenerationRef.current !== generation) return;
+      setArchiveError(isTrajectoryArchiveLimitError(importError)
+        ? copy.archiveTooLarge
+        : errorMessage(importError, chinese));
+    } finally {
+      if (importGenerationRef.current === generation) setImportProgress(null);
     }
   }, [chinese, copy.archiveTooLarge]);
 
   const exitReplay = useCallback(() => {
     const transition = exitTrajectoryReplay(replayArchive);
-    replayArchiveTextRef.current = null;
+    replayArchiveFileRef.current = null;
+    replayV2ReducerRef.current.clear();
     setReplayArchive(transition.archive);
     setSelectedSubjectId(teamModeRef.current ? null : MAIN_TRAJECTORY_SUBJECT_ID);
     setArchiveError(null);
@@ -1191,6 +1263,9 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   }, []);
 
   const rawHeightBounds = rawInspectorHeightBounds(rawContainerHeightPx);
+  const importPercent = importProgress === null || importProgress.totalBytes === 0
+    ? 100
+    : Math.min(100, Math.floor((importProgress.bytesRead / importProgress.totalBytes) * 100));
 
   const rawInspector = displayedRawRecords.length === 0 ? null : (
     <section
@@ -1287,7 +1362,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
   );
 
   const contentMode = trajectoryContentMode({
-    sessionId: replayArchive?.session_id ?? sessionId,
+    sessionId: replayArchive?.header.session_id ?? sessionId,
     loading: replayArchive === null ? loading : false,
     error: replayArchive === null ? error : null,
     projectedCount: teamMode ? allDisplayedRecords.length : displayedRecords.length,
@@ -1446,7 +1521,7 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
         <div className={css.summary}>
           {replayArchive === null
             ? copy.summary(displayedTraceCount, displayedRawRecords.length || displayedRecords.length)
-            : copy.replay(replayArchive.session_id)}
+            : copy.replay(replayArchive.header.session_id)}
           {displayedInvalidRecordSeen ? <span className={css.warning}> {copy.invalid}</span> : null}
         </div>
         <div className={css.archiveActions}>
@@ -1454,17 +1529,18 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
             ref={archiveInputRef}
             className={css.archiveInput}
             type="file"
-            accept="application/json,.json"
+            accept=".zip,.jsonl,application/zip"
             onChange={(event) => { void importArchive(event); }}
             data-testid="trajectory-archive-input"
           />
           <button
             type="button"
             className={css.archiveAction}
+            disabled={importProgress !== null}
             onClick={() => archiveInputRef.current?.click()}
             data-testid="trajectory-archive-import"
           >
-            {copy.importArchive}
+            {importProgress === null ? copy.importArchive : copy.importingArchive}
           </button>
           <button
             type="button"
@@ -1492,6 +1568,23 @@ export const TrajectoryPanel = memo(function TrajectoryPanel({
       )}
       {archiveNotice === null ? null : (
         <p className={css.archiveNotice} role="status">{archiveNotice}</p>
+      )}
+      {importProgress === null ? null : (
+        <div className={css.loadProgress} role="status" aria-live="polite">
+          <div className={css.loadProgressLabel}>
+            {copy.importProgress(importPercent, importProgress.records)}
+          </div>
+          <div
+            className={css.loadProgressTrack}
+            role="progressbar"
+            aria-label={copy.importingArchive}
+            aria-valuemin={0}
+            aria-valuemax={100}
+            aria-valuenow={importPercent}
+          >
+            <span className={css.loadProgressFill} style={{ width: `${importPercent}%` }} />
+          </div>
+        </div>
       )}
       {replayArchive === null && loading ? (
         <div className={css.loadProgress} role="status" aria-live="polite">

@@ -2681,6 +2681,125 @@ function turnSpanRecord({ attributes, name, spanId, startTimeUnixNano, traceId }
   };
 }
 
+test('schema-v2 events in one shared trace land on the turns they state', () => {
+  const traceId = '8'.repeat(32);
+  const first = v2Record({
+    eventId: 'event-shared-first',
+    sequence: 1,
+    traceId,
+    turn: 1,
+    turnId: 'member-turn-first',
+    payload: contextCommit('window-shared-first', null, [
+      contextMessage('message-shared-first', 'user', 'first task'),
+    ], []),
+  });
+  const second = v2Record({
+    eventId: 'event-shared-second',
+    sequence: 2,
+    traceId,
+    turn: 2,
+    turnId: 'member-turn-second',
+    payload: contextCommit('window-shared-second', 'window-shared-first', [
+      contextMessage('message-shared-first', 'user', 'first task'),
+      contextMessage('message-shared-second', 'user', 'second task'),
+    ], [
+      { op: 'insert', message_id: 'message-shared-second', index: 1, message: contextMessage('message-shared-second', 'user', 'second task') },
+    ]),
+  });
+
+  const snapshot = projectOtelTrajectory([first, second]);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2]);
+});
+
+test('a team lane splits one shared trace into the member turns its spans state', () => {
+  // A Team run keeps one trace for every member, and a member takes on several
+  // turns inside it. Each round's spans state their own turn, and a span that
+  // states none (a tool under the step) belongs to the turn of its ancestor.
+  const traceId = '7'.repeat(32);
+  const member = [
+    v2Attribute('gen_ai.conversation.id', 'team-session'),
+    v2Attribute('openjiuwen.execution.subject.id', 'team-member:team-session:alpha:researcher'),
+    v2Attribute('openjiuwen.execution.subject.kind', 'team_member'),
+  ];
+  const memberRound = (index, turnId, startTimeUnixNano) => {
+    const turn = [
+      v2Attribute('openjiuwen.turn.id', turnId),
+      v2Attribute('openjiuwen.turn.number', index, true),
+    ];
+    const roundSpanId = `a${index}`.padEnd(16, '0');
+    const stepSpanId = `b${index}`.padEnd(16, '0');
+    const round = turnSpanRecord({
+      name: `agent.researcher.task_iteration.${index}`,
+      spanId: roundSpanId,
+      startTimeUnixNano,
+      traceId,
+      attributes: [...member, ...turn, v2Attribute('openjiuwen.trajectory.record.kind', 'agent')],
+    });
+    round.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId = 'f'.repeat(16);
+    const step = turnSpanRecord({
+      name: 'agent.researcher.react_iteration.1',
+      spanId: stepSpanId,
+      startTimeUnixNano: startTimeUnixNano + 10,
+      traceId,
+      attributes: [
+        ...member,
+        ...turn,
+        v2Attribute('openjiuwen.trajectory.record.kind', 'step'),
+        v2Attribute('openjiuwen.step.number', 1, true),
+      ],
+    });
+    step.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId = roundSpanId;
+    const inference = turnSpanRecord({
+      name: 'llm.call',
+      spanId: `c${index}`.padEnd(16, '0'),
+      startTimeUnixNano: startTimeUnixNano + 20,
+      traceId,
+      attributes: [
+        ...member,
+        ...turn,
+        v2Attribute('openjiuwen.trajectory.record.kind', 'inference'),
+        v2Attribute('openjiuwen.step.number', 1, true),
+        v2Attribute('openjiuwen.inference.id', `inference-round-${index}`),
+        v2Attribute('gen_ai.output.messages', JSON.stringify([
+          structuredMessage('assistant', `round ${index} answer`),
+        ])),
+      ],
+    });
+    inference.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId = stepSpanId;
+    // States no turn of its own: only its ancestry places it.
+    const tool = turnSpanRecord({
+      name: 'execute_tool search',
+      spanId: `d${index}`.padEnd(16, '0'),
+      startTimeUnixNano: startTimeUnixNano + 30,
+      traceId,
+      attributes: [
+        ...member,
+        v2Attribute('openjiuwen.trajectory.record.kind', 'tool'),
+        v2Attribute('gen_ai.operation.name', 'execute_tool'),
+        v2Attribute('gen_ai.tool.name', 'search'),
+        v2Attribute('gen_ai.tool.call.result', `round ${index} result`),
+        v2Attribute('openjiuwen.step.number', 1, true),
+      ],
+    });
+    tool.resourceSpans[0].scopeSpans[0].spans[0].parentSpanId = stepSpanId;
+    return [round, step, inference, tool];
+  };
+
+  const snapshot = projectOtelTrajectory([
+    ...memberRound(1, 'member-turn-first', 1_000_000),
+    ...memberRound(2, 'member-turn-second', 2_000_000),
+  ]);
+
+  assert.deepEqual(snapshot.turns.map(turn => turn.turn), [1, 2]);
+  const cellText = turn => JSON.stringify(turn.groups.flatMap(group => group.cells));
+  assert.match(cellText(snapshot.turns[0]), /round 1 answer/);
+  assert.match(cellText(snapshot.turns[0]), /round 1 result/);
+  assert.doesNotMatch(cellText(snapshot.turns[0]), /round 2/);
+  assert.match(cellText(snapshot.turns[1]), /round 2 answer/);
+  assert.match(cellText(snapshot.turns[1]), /round 2 result/);
+});
+
 test('a resumed tool rejoins the step the interrupt paused', () => {
   // The interrupt pauses step 4; the resume finishes that step's tool work in
   // its own trace, where no step span was reopened to take an id from. It must

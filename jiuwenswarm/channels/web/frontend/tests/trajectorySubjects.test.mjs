@@ -7,10 +7,7 @@ import {
   MAIN_TRAJECTORY_SUBJECT_ID,
   UNASSIGNED_TRAJECTORY_SUBJECT_ID,
 } from '../node_modules/.cache/trajectory-window/trajectorySubjects.mjs';
-import {
-  parseTrajectoryArchive,
-  trajectoryArchiveView,
-} from '../node_modules/.cache/trajectory-window/trajectoryArchive.mjs';
+import { readTrajectoryArchive } from '../node_modules/.cache/trajectory-window/trajectoryArchive.mjs';
 
 const TRACE_ID = '11111111111111111111111111111111';
 
@@ -397,15 +394,17 @@ test('a subagent execution session owned by another chat is excluded', () => {
   assert.equal(result.byId.has(subagentTwo.id), false);
 });
 
-test('Archive v1 replay produces the same execution-subject groups as live records', () => {
+test('Archive v3 replay produces the same execution-subject groups as live records', async () => {
   const records = [
     record('0000000000000006', 'main request', '100', main),
     record('0000000000000007', 'subagent request', '200', subagentOne),
   ];
-  const archiveRecords = records.map((otlp, index) => {
+  const archiveLines = records.map((otlp, index) => {
     const span = otlp.resourceSpans[0].scopeSpans[0].spans[0];
     return {
+      type: 'record',
       record_id: `${span.traceId}:${span.spanId}`,
+      subject_id: index === 0 ? main.id : subagentOne.id,
       record_revision: 1,
       lifecycle: 'final',
       operation: 'upsert',
@@ -413,24 +412,25 @@ test('Archive v1 replay produces the same execution-subject groups as live recor
       observed_time_unix_nano: span.startTimeUnixNano,
       trace_id: span.traceId,
       span_id: span.spanId,
-      raw_json_base64: Buffer.from(JSON.stringify(otlp)).toString('base64'),
+      raw_json: JSON.stringify(otlp),
       raw_valid: true,
-      otlp,
     };
   });
-  const archive = parseTrajectoryArchive(JSON.stringify({
-    format: 'openjiuwen.trajectory.archive',
-    archive_version: 2,
-    session_id: 'session-main',
-    store_epoch: 'epoch-1',
-    revision: '2',
-    exported_at: '2026-08-21T00:00:00Z',
-    content_addressed: true,
-    sequences: {},
-    blobs: {},
-    records: archiveRecords,
-  }));
-  const replay = trajectoryArchiveView(archive);
+  const text = [
+    {
+      type: 'header',
+      format: 'openjiuwen.trajectory.archive',
+      archive_version: 3,
+      session_id: 'session-main',
+      store_epoch: 'epoch-1',
+      revision: '2',
+      exported_at: '2026-08-21T00:00:00Z',
+      stream_frames: false,
+    },
+    ...archiveLines,
+    { type: 'end', records: 2, lines: 3 },
+  ].map(line => `${JSON.stringify(line)}\n`).join('');
+  const replay = await readTrajectoryArchive(new Blob([text]));
   const live = groupTrajectorySubjects(
     records,
     records.map(detail),
@@ -440,9 +440,9 @@ test('Archive v1 replay produces the same execution-subject groups as live recor
     })),
   );
   const archived = groupTrajectorySubjects(
-    replay.records,
-    replay.rawRecords,
-    replay.lifecycleByRecordId,
+    replay.view.records,
+    replay.view.rawRecords,
+    replay.view.lifecycleByRecordId,
   );
 
   assert.deepEqual(
