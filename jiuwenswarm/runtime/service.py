@@ -2409,10 +2409,11 @@ class AgentRuntime:
     def _event_confirms_user_turn(event: RuntimeEvent) -> bool:
         """Return whether an Agent response accepted an ordinary user turn."""
 
+        from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
+
         return bool(
             event.ok
-            and event.event_type
-            not in {"chat.error", "runtime.error", "execution.error", "error"}
+            and event.event_type not in TERMINAL_ERROR_EVENT_TYPES
         )
 
     async def _supersede_bypassed_session_messages(

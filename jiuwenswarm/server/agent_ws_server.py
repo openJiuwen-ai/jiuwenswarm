@@ -177,7 +177,7 @@ from jiuwenswarm.runtime.request import (
     resolve_request_runtime_mode,
     sync_chat_request_metadata as _sync_chat_request_metadata,
 )
-from jiuwenswarm.runtime.events import RuntimeEvent
+from jiuwenswarm.runtime.events import RuntimeEvent, TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.runtime.host_services import (
     install_runtime_push_handler,
     restore_runtime_push_handler,
@@ -554,12 +554,7 @@ class _TurnOutcomeTracker:
             self.saw_runtime_accepted = True
         elif event_type == "chat.ask_user_question":
             self.waiting_user = True
-        if not event.ok or event_type in {
-            "chat.error",
-            "runtime.error",
-            "execution.error",
-            "error",
-        }:
+        if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
             self.fail(self._event_error(event))
 
     def fail(self, error: str) -> None:
@@ -3457,10 +3452,25 @@ class AgentWebSocketServer:
                     if isinstance(event.payload, dict)
                     else event.payload
                 )
-                if not event.ok:
+                event_type = (
+                    str(payload.get("event_type") or "")
+                    if isinstance(payload, dict)
+                    else ""
+                )
+                # 模型/Agent 级失败会以 chat.error / execution.error / team.error
+                # 等事件类型送达，且 ok 默认 True（RuntimeEvent.from_agent_message）。
+                # 仅靠 event.ok 会漏判这类终端失败，导致心跳本轮被误记为
+                # succeeded（界面显示「上次运行成功」）。与
+                # execute_internal_session_message / cron scheduler 对齐，按
+                # event_type 识别终端错误。
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     payload = dict(payload or {})
                     payload["event_type"] = "chat.error"
-                    payload.setdefault("error", "Runtime execution failed")
+                    payload["error"] = str(
+                        payload.get("error")
+                        or payload.get("message")
+                        or "Runtime execution failed"
+                    )
                 is_processing_start = (
                     isinstance(payload, dict)
                     and payload.get("event_type") == "chat.processing_status"
@@ -3490,7 +3500,7 @@ class AgentWebSocketServer:
                 )
                 if finishes_processing and pushed:
                     processing_finished = True
-                if not event.ok:
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_value = (
                         payload.get("error")
                         if isinstance(payload, dict)
@@ -3681,12 +3691,7 @@ class AgentWebSocketServer:
                     else ""
                 )
                 outcome_tracker.observe(event)
-                if not event.ok or event_type in {
-                    "chat.error",
-                    "runtime.error",
-                    "execution.error",
-                    "error",
-                }:
+                if not event.ok or event_type in TERMINAL_ERROR_EVENT_TYPES:
                     error_payload = dict(payload or {})
                     error_payload["event_type"] = "chat.error"
                     error_payload["error"] = str(

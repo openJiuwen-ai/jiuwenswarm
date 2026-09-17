@@ -26,6 +26,7 @@ from jiuwenswarm.gateway.cron.models import (
 )
 from jiuwenswarm.gateway.cron.store import CronJobStore
 from jiuwenswarm.gateway.message_handler.message_handler import MessageHandler
+from jiuwenswarm.runtime.events import TERMINAL_ERROR_EVENT_TYPES
 from jiuwenswarm.common.e2a.gateway_normalize import e2a_from_agent_fields
 from jiuwenswarm.common.schema.message import EventType, Message, ReqMethod
 from jiuwenswarm.common.work_mode import DEFAULT_WEB_WORK_MODE
@@ -1655,8 +1656,11 @@ class CronSchedulerService:
                         apply_cron_team_round_event(round_state, payload)
                         # team.error 由团队运行时直接抛出，不会经 gateway 归一化成
                         # chat.error；它同样是终端失败信号，漏认会让真实报错丢失，
-                        # 只剩「未产生有效报告」这种无因由的兜底文案。
-                        if event_type in ("chat.error", "execution.error", "team.error"):
+                        # 只剩「未产生有效报告」这种无因由的兜底文案。终端错误
+                        # 事件类型集合与 AgentServer 心跳/会话消息执行器、runtime
+                        # turn 判定共用 TERMINAL_ERROR_EVENT_TYPES，避免各消费者
+                        # 各自维护导致漏认（本 bug 的根因之一）。
+                        if event_type in TERMINAL_ERROR_EVENT_TYPES:
                             consume_meta["ok"] = False
                             err = str(
                                 (payload.get("error") or payload.get("message") or "").strip()
