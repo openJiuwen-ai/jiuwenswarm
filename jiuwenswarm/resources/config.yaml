@@ -492,7 +492,7 @@ team_observability:
   langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
   langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
-  file_retention_days: 7            # file exporter 文件保留天数
+  file_retention_days: 3            # file exporter 文件保留天数
 
 # ============================================================
 # 单 Agent / Coding Agent 可观测性配置
@@ -522,7 +522,7 @@ agent_observability:
   langfuse_public_key: ""           # Langfuse OTLP 认证 public key（可选）
   langfuse_secret_key: ""           # Langfuse OTLP 认证 secret key（可选）
   traces_dir: ""                    # file exporter 输出目录，默认 ~/.jiuwenswarm/.trace
-  file_retention_days: 7            # file exporter 文件保留天数
+  file_retention_days: 3            # file exporter 文件保留天数
 
 # ============================================================
 # 单 Agent 轨迹观测 Web 数据面
